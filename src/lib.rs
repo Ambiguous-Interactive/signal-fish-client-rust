@@ -9,18 +9,22 @@
 //!
 //! - **Transport-agnostic** — implement the [`Transport`] trait for any backend
 //! - **Wire-compatible** — all protocol types match the server's v2 format exactly
-//! - **WebSocket built-in** — default `transport-websocket` feature provides [`WebSocketTransport`]
-//! - **Event-driven** — receive typed [`SignalFishEvent`]s via a channel
+//! - **WebSocket built-in** — default `transport-websocket` feature provides `WebSocketTransport`
+//! - **Event-driven** — receive typed `SignalFishEvent`s via a channel
 //! - **Non-exhaustive** — all public enums/structs are `#[non_exhaustive]` for forward compatibility
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```text
 //! // Full usage examples coming in Phase 6+
 //! ```
 
 pub mod error;
 pub mod transport;
+
+// Re-export primary types for ergonomic imports.
+pub use error::SignalFishError;
+pub use transport::Transport;
 
 // Modules will be added in subsequent phases:
 // pub mod protocol;     // Phase 3

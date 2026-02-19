@@ -10,7 +10,7 @@
 //! Connection setup is intentionally NOT part of this trait — different
 //! transports have fundamentally different connection parameters (URLs for
 //! WebSocket, host:port for TCP, QUIC endpoints, etc.). Construct a connected
-//! transport externally, then pass it to [`SignalFishClient::start`].
+//! transport externally, then pass it to `SignalFishClient::start`.
 //!
 //! # Implementing a Custom Transport
 //!
@@ -54,7 +54,7 @@ use crate::error::SignalFishError;
 /// # Object Safety
 ///
 /// This trait is object-safe, so `Box<dyn Transport>` works for dynamic dispatch.
-/// However, [`SignalFishClient::start`] accepts `impl Transport` (monomorphized)
+/// However, `SignalFishClient::start` accepts `impl Transport` (monomorphized)
 /// for the common case.
 ///
 /// # Cancel Safety
