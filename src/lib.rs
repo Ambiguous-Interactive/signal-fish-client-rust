@@ -19,11 +19,12 @@
 //! // Full usage examples coming in Phase 6+
 //! ```
 
+pub mod error;
+pub mod transport;
+
 // Modules will be added in subsequent phases:
-// pub mod transport;    // Phase 2
 // pub mod protocol;     // Phase 3
 // pub mod error_codes;  // Phase 3
-// pub mod error;        // Phase 4
 // pub mod event;        // Phase 5
 // pub mod client;       // Phase 6
 // pub mod transports;   // Phase 7
