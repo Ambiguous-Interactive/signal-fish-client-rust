@@ -14,23 +14,58 @@
 //!
 //! ## Quick Start
 //!
-//! ```text
-//! // Full usage examples coming in Phase 6+
+//! ```rust,no_run
+//! use signal_fish_client::{
+//!     WebSocketTransport, SignalFishClient, SignalFishConfig,
+//!     JoinRoomParams, SignalFishEvent,
+//! };
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), signal_fish_client::SignalFishError> {
+//!     // 1. Connect a WebSocket transport to the signaling server.
+//!     let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//!
+//!     // 2. Build a client config with your application ID.
+//!     let config = SignalFishConfig::new("mb_app_abc123");
+//!
+//!     // 3. Start the client — returns a handle and an event receiver.
+//!     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
+//!
+//!     // 4. Join a room.
+//!     client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
+//!
+//!     // 5. Process events from the server.
+//!     while let Some(event) = event_rx.recv().await {
+//!         match event {
+//!             SignalFishEvent::RoomJoined { room_code, .. } => {
+//!                 println!("Joined room {room_code}");
+//!             }
+//!             SignalFishEvent::Disconnected { .. } => break,
+//!             _ => {}
+//!         }
+//!     }
+//!
+//!     // 6. Shut down gracefully.
+//!     client.shutdown().await;
+//!     Ok(())
+//! }
 //! ```
 
+pub mod client;
 pub mod error;
 pub mod error_codes;
 pub mod event;
 pub mod protocol;
 pub mod transport;
+pub mod transports;
 
 // Re-export primary types for ergonomic imports.
+pub use client::{JoinRoomParams, SignalFishClient, SignalFishConfig};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
 pub use event::SignalFishEvent;
 pub use protocol::{ClientMessage, ServerMessage};
 pub use transport::Transport;
 
-// Modules will be added in subsequent phases:
-// pub mod client;       // Phase 6
-// pub mod transports;   // Phase 7
+#[cfg(feature = "transport-websocket")]
+pub use transports::WebSocketTransport;

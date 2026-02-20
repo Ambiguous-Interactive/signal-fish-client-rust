@@ -16,7 +16,7 @@ transport-websocket = ["dep:tokio-tungstenite", "dep:futures-util"]
 
 [dependencies]
 # Async
-tokio = { version = "1", features = ["sync", "macros", "rt"] }
+tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
 async-trait = "0.1"
 
 # Serialization

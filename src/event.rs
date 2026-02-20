@@ -43,7 +43,6 @@ use crate::protocol::{
 /// }
 /// ```
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum SignalFishEvent {
     // ── Synthetic events ────────────────────────────────────────────
     /// The transport connection was established successfully.
