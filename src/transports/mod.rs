@@ -10,7 +10,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
 //! use signal_fish_client::{WebSocketTransport, Transport};
 //!

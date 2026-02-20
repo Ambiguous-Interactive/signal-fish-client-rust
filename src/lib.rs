@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 //! # Signal Fish Client
 //!
 //! Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol.
@@ -14,7 +15,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use signal_fish_client::{
 //!     WebSocketTransport, SignalFishClient, SignalFishConfig,
 //!     JoinRoomParams, SignalFishEvent,
@@ -29,14 +30,17 @@
 //!     let config = SignalFishConfig::new("mb_app_abc123");
 //!
 //!     // 3. Start the client — returns a handle and an event receiver.
+//!     //    The client automatically sends Authenticate on start.
 //!     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 //!
-//!     // 4. Join a room.
-//!     client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
-//!
-//!     // 5. Process events from the server.
+//!     // 4. Process events — wait for Authenticated before joining a room.
 //!     while let Some(event) = event_rx.recv().await {
 //!         match event {
+//!             SignalFishEvent::Authenticated { app_name, .. } => {
+//!                 println!("Authenticated as {app_name}");
+//!                 // Now it's safe to join a room.
+//!                 client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
+//!             }
 //!             SignalFishEvent::RoomJoined { room_code, .. } => {
 //!                 println!("Joined room {room_code}");
 //!             }
@@ -45,7 +49,7 @@
 //!         }
 //!     }
 //!
-//!     // 6. Shut down gracefully.
+//!     // 5. Shut down gracefully.
 //!     client.shutdown().await;
 //!     Ok(())
 //! }

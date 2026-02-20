@@ -5,7 +5,6 @@
 //!
 //! - `bytes::Bytes` → `Vec<u8>` with `#[serde(with = "serde_bytes")]`
 //! - `chrono::DateTime<Utc>` → `String` (ISO 8601)
-//! - No `rkyv` derives
 //! - No `rkyv` derives (server-only concern)
 
 use serde::{Deserialize, Serialize};
