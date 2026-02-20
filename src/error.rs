@@ -4,7 +4,6 @@ use thiserror::Error;
 
 /// Errors that can occur when using the Signal Fish client.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum SignalFishError {
     /// Failed to send a message through the transport.
     #[error("transport send error: {0}")]

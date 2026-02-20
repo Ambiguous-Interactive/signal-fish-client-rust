@@ -8,7 +8,7 @@ Transport-agnostic Rust client for the **Signal Fish** multiplayer signaling pro
 - **Wire-compatible** — all protocol types match the Signal Fish server's v2 format exactly
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio channel
-- **Non-exhaustive** — all public enums and payload structs are `#[non_exhaustive]` for forward compatibility
+- **Structured errors** — full `ErrorCode` enum with 39 variants for programmatic error handling
 
 ## Installation
 
