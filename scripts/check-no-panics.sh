@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+# ── Resolve paths relative to this script ────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -22,7 +27,9 @@ VIOLATIONS=0
 # ── Forbidden patterns ────────────────────────────────────────────────
 # These patterns are denied by Clippy lints in Cargo.toml. This script
 # provides a defense-in-depth check that catches patterns even when
-# Clippy is not run (e.g. in documentation code blocks).
+# Clippy is not run (e.g. during pre-commit checks or when Clippy is
+# skipped). Markdown documentation code blocks are validated separately
+# by scripts/extract-rust-snippets.sh.
 PATTERNS=(
     '\.unwrap()'
     '\.expect('
@@ -82,8 +89,9 @@ echo ""
 
 # ── Phase 2: Scan test files for missing opt-in ──────────────────────
 # Test files in tests/ are allowed to use panic-prone patterns, but they
-# MUST have a #![allow(...)] at the file top or a module-level #[allow]
-# to explicitly opt in. Files without the opt-in are flagged.
+# MUST contain a #![allow(...)] or #[allow(...)] attribute that
+# explicitly allows at least one panic-related Clippy lint (e.g.
+# clippy::unwrap_used). Files without this opt-in are flagged.
 echo -e "${YELLOW}Phase 2: Checking tests/ for panic-free opt-in...${NC}"
 
 TESTS_VIOLATIONS=0
@@ -104,9 +112,12 @@ if [ -d "tests" ]; then
             continue
         fi
 
-        # File has panic-prone patterns — verify it has an opt-in allow.
-        if ! grep -q '#!\[allow(' "$test_file" 2>/dev/null; then
-            echo -e "${RED}VIOLATION:${NC} $test_file uses panic-prone patterns without #![allow(...)]"
+        # File has panic-prone patterns — verify it explicitly opts in to at
+        # least one panic-related Clippy lint.  The check is split into two
+        # grep passes so it handles multi-line #![allow( ... )] blocks.
+        if ! grep -qE '#!?\[allow\(' "$test_file" 2>/dev/null || \
+           ! grep -qE 'clippy::(unwrap_used|expect_used|panic|todo|unimplemented)' "$test_file" 2>/dev/null; then
+            echo -e "${RED}VIOLATION:${NC} $test_file uses panic-prone patterns without allowing a panic-related lint (e.g. #![allow(clippy::unwrap_used)])"
             TESTS_VIOLATIONS=$((TESTS_VIOLATIONS + 1))
         fi
     done < <(find tests -name '*.rs' -type f)

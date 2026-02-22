@@ -117,6 +117,39 @@ pn = "pn"
 Use `[default.extend-words]` for word-level suppressions (affects all
 contexts, not just identifiers).
 
+### Shell scripts: Comments must match behavior
+
+When writing CI shell scripts, ensure that **every comment accurately describes
+what the code does**. Common pitfalls:
+
+- **Scope claims:** A comment saying "scans documentation code blocks" when the
+  script only scans `.rs` files. If markdown validation is handled by a separate
+  script, say so explicitly.
+- **Attribute syntax:** If a comment says both `#![allow(...)]` (file-level) and
+  `#[allow(...)]` (module-level) are accepted, the `grep` check must match both
+  forms. Use `grep -qE '#!?\[allow\('` to make the `!` optional.
+- **Multi-line attributes:** `grep` matches one line at a time. A regex like
+  `#!\[allow\(.*clippy::unwrap_used` will fail on multi-line `#![allow( ... )]`
+  blocks. Split into two passes: one to check for the attribute open, one to
+  check for the specific lint name.
+- **Overly broad checks:** `grep -q '#\[allow('` matches *any* allow attribute,
+  not just panic-related ones. Use a second grep to verify a specific lint name
+  is present (e.g., `clippy::unwrap_used`).
+
+### Shell scripts: Use REPO_ROOT for path resolution
+
+Scripts that use relative paths (e.g., `src`, `tests`) will silently fail if
+invoked from the wrong directory. Always resolve the repo root:
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+```
+
+This matches the pattern used in `scripts/extract-rust-snippets.sh` and
+`scripts/check-no-panics.sh`.
+
 ### MSRV drift
 
 When bumping the MSRV in `Cargo.toml`, many other files reference the

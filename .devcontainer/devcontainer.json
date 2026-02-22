@@ -5,28 +5,24 @@
   // Production-ready Rust development environment
   // Base: mcr.microsoft.com/devcontainers/rust:1-bookworm
   // =============================================================================
-
   "name": "Signal Fish Client SDK",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
   },
-
   // Pass --init so that PID 1 is a proper init process (prevents zombie processes
   // from accumulating when child processes terminate unexpectedly).
-  "runArgs": ["--init"],
-
+  "runArgs": [
+    "--init"
+  ],
   // =============================================================================
   // Container Settings
   // =============================================================================
-
   "remoteUser": "vscode",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-
   // =============================================================================
   // Volume Mounts
   // =============================================================================
-
   "mounts": [
     // Cargo registry cache - speeds up dependency downloads
     "source=signal-fish-cargo-registry,target=/home/vscode/.cargo/registry,type=volume",
@@ -43,31 +39,24 @@
     // See .devcontainer/README.md for configuration options
     "source=${localEnv:HOME}/.gnupg,target=/home/vscode/.gnupg,type=bind,readonly"
   ],
-
   // =============================================================================
   // Environment Variables
   // =============================================================================
-
   "containerEnv": {
     // Rust debugging
     "RUST_BACKTRACE": "1",
-    
     // Cargo configuration
     "CARGO_TERM_COLOR": "always",
-    
     // Terminal colors
     "TERM": "xterm-256color",
     "COLORTERM": "truecolor"
-    
     // Delta theme: set COLORSCHEME to "light" if using a light VS Code theme.
     // This affects git diff display. Default assumes dark theme.
     // Uncomment to override: "COLORSCHEME": "light"
   },
-
   // =============================================================================
   // Remote Environment Variables (container-side, injected by VS Code)
   // =============================================================================
-
   "remoteEnv": {
     // Promote the workspace folder from a JSON substitution into a real shell
     // environment variable accessible in lifecycle scripts (postStartCommand, etc.).
@@ -77,11 +66,9 @@
     // inside bash scripts without any extra plumbing.
     "CONTAINER_WORKSPACE_FOLDER": "${containerWorkspaceFolder}"
   },
-
   // =============================================================================
   // VS Code Customizations
   // =============================================================================
-
   "customizations": {
     "vscode": {
       // =========================================================================
@@ -93,17 +80,15 @@
         "serayuzgur.crates",
         "tamasfe.even-better-toml",
         "vadimcn.vscode-lldb",
-
         // GitHub Integration
         "GitHub.vscode-pull-request-github",
         "GitHub.vscode-github-actions",
         "GitHub.copilot",
         "GitHub.copilot-chat",
-
+        "openai.chatgpt",
         // AI Assistants
-        "Anthropic.claude-code",          // Official Anthropic Claude Code extension
-        "saoudrizwan.claude-dev",          // Cline (community extension, formerly Claude Dev)
-
+        "Anthropic.claude-code", // Official Anthropic Claude Code extension
+        "saoudrizwan.claude-dev", // Cline (community extension, formerly Claude Dev)
         // Code Quality & Visualization
         "usernamehw.errorlens",
         "eamodio.gitlens",
@@ -111,20 +96,16 @@
         "aaron-bond.better-comments",
         "oderwat.indent-rainbow",
         "christian-kohler.path-intellisense",
-
         // Productivity & Documentation
         "streetsidesoftware.code-spell-checker",
         "DavidAnson.vscode-markdownlint",
         "redhat.vscode-yaml",
         "rangav.vscode-thunder-client",
-
         // Docker
         "ms-azuretools.vscode-docker",
-
         // WebSocket Testing (useful for signaling client development)
         "nickmomrik.websocket-client"
       ],
-
       // =========================================================================
       // VS Code Settings
       // =========================================================================
@@ -135,18 +116,18 @@
         "editor.formatOnSave": true,
         "editor.tabSize": 4,
         "editor.insertSpaces": true,
-        "editor.rulers": [100],
+        "editor.rulers": [
+          100
+        ],
         "editor.bracketPairColorization.enabled": true,
         "editor.guides.bracketPairs": "active",
         "editor.inlayHints.enabled": "onUnlessPressed",
         "editor.semanticHighlighting.enabled": true,
-
         // -----------------------------------------------------------------------
         // Terminal Settings
         // -----------------------------------------------------------------------
         "terminal.integrated.defaultProfile.linux": "bash",
         "terminal.integrated.scrollback": 10000,
-
         // -----------------------------------------------------------------------
         // File Settings
         // -----------------------------------------------------------------------
@@ -156,7 +137,6 @@
         "files.watcherExclude": {
           "**/target/**": true
         },
-
         // -----------------------------------------------------------------------
         // Search Settings
         // -----------------------------------------------------------------------
@@ -164,7 +144,6 @@
           "**/target": true,
           "**/Cargo.lock": true
         },
-
         // -----------------------------------------------------------------------
         // Rust-Analyzer Settings
         // -----------------------------------------------------------------------
@@ -172,61 +151,58 @@
           "editor.defaultFormatter": "rust-lang.rust-analyzer",
           "editor.formatOnSave": true
         },
-
         // Enable all features for complete analysis
-        "rust-analyzer.cargo.features": ["all"],
-
+        "rust-analyzer.cargo.features": [
+          "all"
+        ],
         // Check on save with clippy
         "rust-analyzer.check.command": "clippy",
-        "rust-analyzer.check.extraArgs": ["--all-targets", "--all-features"],
-
+        "rust-analyzer.check.extraArgs": [
+          "--all-targets",
+          "--all-features"
+        ],
         // Inlay hints configuration
         "rust-analyzer.inlayHints.typeHints.enable": true,
         "rust-analyzer.inlayHints.parameterHints.enable": true,
         "rust-analyzer.inlayHints.chainingHints.enable": true,
         "rust-analyzer.inlayHints.closingBraceHints.enable": true,
         "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "skip_trivial",
-
         // Proc macro support
         "rust-analyzer.procMacro.enable": true,
         "rust-analyzer.procMacro.attributes.enable": true,
-
         // Cargo settings
         "rust-analyzer.cargo.buildScripts.enable": true,
         "rust-analyzer.cargo.autoreload": true,
-
         // Completion settings
         "rust-analyzer.completion.autoimport.enable": true,
         "rust-analyzer.completion.postfix.enable": true,
-
         // Diagnostics
         "rust-analyzer.diagnostics.enable": true,
         "rust-analyzer.diagnostics.experimental.enable": true,
-
         // -----------------------------------------------------------------------
         // LLDB Debugger Settings
         // -----------------------------------------------------------------------
         "lldb.showDisassembly": "never",
         "lldb.dereferencePointers": true,
-
         // -----------------------------------------------------------------------
         // Git Settings
         // -----------------------------------------------------------------------
         "git.autofetch": true,
         "git.confirmSync": false,
-
         // -----------------------------------------------------------------------
         // GitLens Settings
         // -----------------------------------------------------------------------
         "gitlens.codeLens.enabled": true,
         "gitlens.currentLine.enabled": true,
-
         // -----------------------------------------------------------------------
         // Error Lens Settings
         // -----------------------------------------------------------------------
-        "errorLens.enabledDiagnosticLevels": ["error", "warning", "hint"],
+        "errorLens.enabledDiagnosticLevels": [
+          "error",
+          "warning",
+          "hint"
+        ],
         "errorLens.delay": 500,
-
         // -----------------------------------------------------------------------
         // Todo Tree Settings
         // -----------------------------------------------------------------------
@@ -240,7 +216,6 @@
           "NOTE",
           "SAFETY"
         ],
-
         // -----------------------------------------------------------------------
         // Spell Checker Settings
         // -----------------------------------------------------------------------
@@ -268,21 +243,17 @@
       }
     }
   },
-
   // =============================================================================
   // Lifecycle Scripts
   // =============================================================================
-
   // Gracefully create host directories if they don't exist (runs on host before container starts)
   "initializeCommand": "mkdir -p ~/.ssh ~/.gnupg 2>/dev/null || true; touch ~/.gitconfig 2>/dev/null || true; echo 'Prerequisites checked'",
   "postCreateCommand": "if cargo fetch; then echo 'cargo fetch complete'; else echo 'WARNING: cargo fetch failed (continuing)'; fi; echo 'Signal Fish Client SDK dev container ready!'",
   // Runs on every container start. See .devcontainer/scripts/post-start.sh for details.
   "postStartCommand": "bash .devcontainer/scripts/post-start.sh",
   "postAttachCommand": "echo 'Welcome to Signal Fish Client SDK development environment!'",
-
   // =============================================================================
   // Additional Options
   // =============================================================================
-
   "shutdownAction": "stopContainer"
 }
