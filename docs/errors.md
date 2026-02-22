@@ -164,7 +164,7 @@ println!("{}", code.description());
 | Variant | Description |
 |---------|-------------|
 | `InternalError` | An internal server error occurred. |
-| `DatabaseError` | A database error occurred while processing your request. |
+| `StorageError` | A storage error occurred while processing your request. |
 | `ServiceUnavailable` | The service is temporarily unavailable. |
 
 ---

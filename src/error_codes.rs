@@ -68,7 +68,7 @@ pub enum ErrorCode {
 
     // Server errors
     InternalError,
-    DatabaseError,
+    StorageError,
     ServiceUnavailable,
 }
 
@@ -208,8 +208,8 @@ impl ErrorCode {
             Self::InternalError => {
                 "An internal server error occurred. Please try again or contact support if the issue persists."
             }
-            Self::DatabaseError => {
-                "A database error occurred while processing your request. Please try again later."
+            Self::StorageError => {
+                "A storage error occurred while processing your request. Please try again later."
             }
             Self::ServiceUnavailable => {
                 "The service is temporarily unavailable. Please try again in a few moments."

@@ -30,7 +30,7 @@ Reference for correctly parsing markdown content in scripts and preventing docum
 
 ### [Public API Design](public-api-design.md)
 
-Reference for #[non_exhaustive], semver, re-exports, feature flags, and MSRV in this crate.
+Reference for enum matching policy, semver, re-exports, feature flags, and MSRV in this crate.
 
 ### [Serde Patterns](serde-patterns.md)
 

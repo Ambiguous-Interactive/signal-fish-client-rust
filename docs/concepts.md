@@ -278,7 +278,7 @@ Error codes are grouped by category:
 | **Rate Limiting** | `RateLimitExceeded`, `TooManyConnections` |
 | **Reconnection** | `ReconnectionFailed`, `ReconnectionTokenInvalid`, `ReconnectionExpired` |
 | **Spectator** | `SpectatorNotAllowed`, `TooManySpectators`, `SpectatorJoinFailed` |
-| **Server** | `InternalError`, `DatabaseError`, `ServiceUnavailable` |
+| **Server** | `InternalError`, `StorageError`, `ServiceUnavailable` |
 
 !!! tip "Programmatic handling"
     Every `ErrorCode` variant has a `.description()` method that returns a
