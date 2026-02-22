@@ -80,6 +80,12 @@ running semver-checks.
 Use **asterisks** for emphasis (`*text*`, `**text**`), not underscores. This
 avoids MD049/MD050 violations with the default markdownlint configuration.
 
+This applies to **auto-generated markdown too**. The `scripts/pre-commit-llm.py`
+script generates `.llm/skills/index.md` — its footer must use `*...*` (asterisk),
+not `_..._` (underscore). Regression tests enforce this in both
+`tests/ci_config_tests.rs` (`llm_index_validation` module) and
+`scripts/test_pre_commit_llm.py` (`TestGenerateIndex` class).
+
 Bold text that acts as a section heading should be converted to a proper
 heading (`###`, `####`) rather than using `**Heading**` on its own line.
 
@@ -227,6 +233,8 @@ configuration drift:
 | `all_workflows_have_permissions` | Every workflow declares `permissions` |
 | `all_jobs_have_timeout` | Every job has `timeout-minutes` |
 | `action_references_are_sha_pinned` | Actions use SHA pins (except dtolnay) |
+| `index_md_uses_asterisk_emphasis` | Generated index.md uses `*` not `_` for emphasis |
+| `pre_commit_script_footer_uses_asterisk` | Script string literals use `*` emphasis |
 
 ## Debugging CI Failures
 
