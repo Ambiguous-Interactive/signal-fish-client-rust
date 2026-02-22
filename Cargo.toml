@@ -53,6 +53,7 @@ tokio-test = "0.4"
 futures-util = "0.3"
 serde_json = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
 
 [[example]]
 name = "basic_lobby"
@@ -60,6 +61,9 @@ required-features = ["transport-websocket"]
 
 [[example]]
 name = "custom_transport"
+
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
 
 [package.metadata.docs.rs]
 all-features = true

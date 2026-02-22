@@ -35,6 +35,7 @@ run_with_timeout() {
     fi
 }
 
+# shellcheck disable=SC2317  # Called indirectly via trap
 cleanup() {
     rm -f "$TEST_FILE" "$TEST_OUTPUT" "$ERROR_LOG" "$VERSION_LOG"
 }

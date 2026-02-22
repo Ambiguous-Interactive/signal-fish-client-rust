@@ -145,7 +145,7 @@ tool is missing, install it manually inside the container with `cargo install --
 
 The `~/.gnupg` directory is mounted **read-only** for security. If you need commit signing:
 
-**Option 1: GPG Agent Forwarding (Recommended)**
+#### Option 1: GPG Agent Forwarding (Recommended)
 
 Configure your host's `gpg-agent` to forward to the container by adding to your host's `~/.gnupg/gpg-agent.conf`:
 
@@ -153,7 +153,7 @@ Configure your host's `gpg-agent` to forward to the container by adding to your 
 extra-socket /path/to/socket
 ```
 
-**Option 2: SSH Signing**
+#### Option 2: SSH Signing
 
 Use SSH key signing instead of GPG:
 

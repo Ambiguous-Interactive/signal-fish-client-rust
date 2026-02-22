@@ -27,8 +27,61 @@ accept = ["2xx", "429"]
 accept = ["200..=299", "429"]
 ```
 
+The `header` field must be a TOML **map**, not an array:
+
+```toml
+# WRONG — array syntax
+header = ["Accept: text/html"]
+
+# CORRECT — map syntax
+[header]
+Accept = "text/html"
+```
+
 Always validate `.lychee.toml` with a TOML parser before committing. The
 `scripts/ci-validate.sh` script includes automated TOML validation.
+
+### ShellCheck SC2317 and trap handlers
+
+Functions used as `trap` handlers (`trap cleanup EXIT`) appear unreachable to
+ShellCheck because they are called indirectly by the shell, not by any visible
+call site. Suppress with a comment explaining why:
+
+```bash
+# shellcheck disable=SC2317 — called indirectly via trap
+cleanup() {
+    rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+```
+
+### cargo-machete false positives with serde attributes
+
+Dependencies used only via `#[serde(with = "...")]` attributes (e.g.,
+`serde_bytes`) are invisible to cargo-machete's static analysis because no
+`use` or `extern crate` statement references them. Add such crates to the
+ignore list in `Cargo.toml`:
+
+```toml
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+```
+
+### semver-checks on new crates
+
+`cargo semver-checks` compares the current API against the base branch. When
+the base branch does not contain the crate at all (e.g., the initial PR for a
+new package), the tool will fail because there is no baseline to diff against.
+The CI workflow must check for package existence on the base branch before
+running semver-checks.
+
+### markdownlint: Emphasis conventions
+
+Use **asterisks** for emphasis (`*text*`, `**text**`), not underscores. This
+avoids MD049/MD050 violations with the default markdownlint configuration.
+
+Bold text that acts as a section heading should be converted to a proper
+heading (`###`, `####`) rather than using `**Heading**` on its own line.
 
 ### markdownlint: New rules in updates
 

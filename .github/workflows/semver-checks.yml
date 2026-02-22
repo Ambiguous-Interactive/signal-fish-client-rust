@@ -64,8 +64,21 @@ jobs:
       - name: Generate lockfile
         run: cargo generate-lockfile
 
-      - name: Check semver compliance (PR — against base branch)
+      - name: Check if package exists on base branch
+        id: check-base-package
         if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git show "$BASE_SHA":Cargo.toml >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping semver check: package does not exist on base branch (new crate)"
+          fi
+
+      - name: Check semver compliance (PR — against base branch)
+        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: cargo semver-checks check-release --baseline-rev "$BASE_SHA"

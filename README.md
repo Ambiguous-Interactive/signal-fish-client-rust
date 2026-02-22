@@ -206,6 +206,7 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 ## Minimum Supported Rust Version (MSRV)
 
+<!-- markdownlint-disable-next-line MD036 -->
 **1.85.0**
 
 Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is considered a minor version change.

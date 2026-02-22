@@ -280,6 +280,8 @@ mod ci_workflow_policy {
             ".llm/skills/public-api-design.md",
             ".llm/skills/crate-publishing.md",
             ".llm/skills/async-rust-patterns.md",
+            ".devcontainer/Dockerfile",
+            "scripts/check-all.sh",
         ];
 
         for path in files_to_check {
@@ -530,6 +532,94 @@ mod dependency_policy {
             "dependabot.yml does not monitor the 'github-actions' ecosystem. \
              Dependabot must monitor GitHub Actions to receive automated updates \
              for workflow action versions, including security patches."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: ci_config_validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod ci_config_validation {
+    use super::*;
+
+    /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
+    /// field is an inline table (map), not an array. An array-typed `header`
+    /// was a real failure in CI — lychee silently ignores malformed headers.
+    #[test]
+    fn lychee_config_header_is_a_map() {
+        let contents = read_project_file(".lychee.toml");
+        let parsed: toml::Value =
+            toml::from_str(&contents).expect(".lychee.toml must be valid TOML");
+
+        let header = parsed.get("header").expect(
+            ".lychee.toml must have a 'header' field to set a User-Agent \
+             for link checking requests.",
+        );
+
+        assert!(
+            header.is_table(),
+            ".lychee.toml 'header' field must be an inline table (map), \
+             not an array. lychee expects headers as key-value pairs, e.g.: \
+             header = {{ user-agent = \"...\" }}. Found type: {}",
+            header.type_str()
+        );
+    }
+
+    /// Verify that `scripts/verify-sccache.sh` has the `shellcheck disable=SC2317`
+    /// directive where trap handlers are used. SC2317 warns about functions that
+    /// appear unreachable — but trap handlers are called indirectly by the shell,
+    /// not via direct call sites. Without this directive, ShellCheck produces
+    /// false positives on the `cleanup()` function.
+    #[test]
+    fn verify_sccache_has_shellcheck_sc2317_disable() {
+        let contents = read_project_file("scripts/verify-sccache.sh");
+
+        // The script must contain a SC2317 disable directive.
+        assert!(
+            contents.contains("shellcheck disable=SC2317"),
+            "scripts/verify-sccache.sh is missing '# shellcheck disable=SC2317'. \
+             This directive is required to suppress false positives on trap handler \
+             functions that ShellCheck incorrectly flags as unreachable."
+        );
+
+        // The script must also use `trap` to confirm it actually has trap handlers.
+        assert!(
+            contents.contains("trap "),
+            "scripts/verify-sccache.sh does not contain a 'trap' command. \
+             The SC2317 disable directive only makes sense if the script uses \
+             trap handlers."
+        );
+    }
+
+    /// Verify that `serde_bytes` is in the cargo-machete ignore list.
+    /// `serde_bytes` is used via `#[serde(with = "serde_bytes")]` attribute
+    /// annotations, which cargo-machete cannot detect as usage — it only looks
+    /// for explicit `use` statements and function calls. Without the ignore
+    /// entry, cargo-machete would incorrectly report it as an unused dependency.
+    #[test]
+    fn cargo_machete_ignores_serde_bytes() {
+        let cargo = read_project_file("Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
+
+        let ignored = parsed
+            .get("package")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("cargo-machete"))
+            .and_then(|cm| cm.get("ignored"))
+            .and_then(|i| i.as_array())
+            .expect(
+                "Cargo.toml must have [package.metadata.cargo-machete] ignored = [...] \
+                 to suppress false positives from cargo-machete.",
+            );
+
+        let has_serde_bytes = ignored.iter().any(|v| v.as_str() == Some("serde_bytes"));
+
+        assert!(
+            has_serde_bytes,
+            "Cargo.toml [package.metadata.cargo-machete] ignored list must include \
+             'serde_bytes'. This crate is used via #[serde(with = \"serde_bytes\")] \
+             attribute annotations which cargo-machete cannot detect as usage."
         );
     }
 }

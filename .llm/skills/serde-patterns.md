@@ -137,6 +137,11 @@ pub struct GameDataBinary {
 }
 ```
 
+**cargo-machete note:** Because `serde_bytes` is referenced only via the
+`#[serde(with = "serde_bytes")]` attribute (no `use` statement), cargo-machete
+will report it as unused. It must be listed in
+`[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
+
 ## UUID Serialization
 
 ```toml

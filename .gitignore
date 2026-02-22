@@ -46,3 +46,5 @@ PLAN.md
 
 logs_*
 *.zip
+
+.claude/

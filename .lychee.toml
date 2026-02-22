@@ -84,4 +84,4 @@ exclude_loopback = true
 exclude_private = true
 
 # User agent — some servers block requests without one
-header = ["user-agent=lychee (signal-fish-client CI)"]
+header = { user-agent = "lychee (signal-fish-client CI)" }

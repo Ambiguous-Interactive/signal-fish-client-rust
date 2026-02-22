@@ -15,6 +15,8 @@
 #   4. typos spell check           (optional — skipped if typos not installed)
 #   5. .lychee.toml syntax         (TOML validity)
 #   6. .markdownlint.json syntax   (JSON validity)
+#   7. shellcheck on scripts/*.sh  (optional — skipped if shellcheck not installed)
+#   8. markdownlint on *.md        (optional — skipped if markdownlint not installed)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -36,7 +38,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=6
+TOTAL_CHECKS=8
 PASSED=0
 SKIPPED=0
 
@@ -216,6 +218,40 @@ else
 
     if [ "$JSON_VALIDATED" = false ]; then
         skip ".markdownlint.json JSON check" "no JSON validator available (need python3, jq, or node)"
+    fi
+fi
+
+# ── Check 7: shellcheck on scripts/*.sh ────────────────────────────
+section_header 7 "Shell script lint (shellcheck scripts/*.sh)"
+
+if ! command -v shellcheck &>/dev/null; then
+    skip "shellcheck" "shellcheck is not installed (install: apt install shellcheck)"
+elif ! compgen -G "$REPO_ROOT/scripts/*.sh" > /dev/null; then
+    skip "shellcheck" "no .sh files found in scripts/"
+else
+    if shellcheck "$REPO_ROOT"/scripts/*.sh 2>&1; then
+        pass "All shell scripts pass shellcheck"
+    else
+        fail "shellcheck reported issues in scripts/*.sh"
+    fi
+fi
+
+# ── Check 8: markdownlint on *.md ──────────────────────────────────
+section_header 8 "Markdown lint (markdownlint **/*.md)"
+
+if ! command -v markdownlint-cli2 &>/dev/null && ! command -v markdownlint &>/dev/null; then
+    skip "markdownlint" "markdownlint is not installed (install: npm install -g markdownlint-cli2)"
+else
+    MDL_CMD=""
+    if command -v markdownlint-cli2 &>/dev/null; then
+        MDL_CMD="markdownlint-cli2"
+    else
+        MDL_CMD="markdownlint"
+    fi
+    if $MDL_CMD "**/*.md" 2>&1; then
+        pass "All Markdown files pass markdownlint"
+    else
+        fail "markdownlint reported issues in *.md files"
     fi
 fi
 
