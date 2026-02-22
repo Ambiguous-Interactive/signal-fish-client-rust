@@ -18,4 +18,4 @@ Run this before every commit. All three steps must pass with zero warnings.
 
 Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
 
-Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `ci-configuration`.
+Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `ci-configuration`, `markdown-and-doc-validation`.

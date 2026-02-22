@@ -42,22 +42,56 @@ def check_line_counts(md_files: list[Path]) -> list[str]:
 
 
 def extract_title(text: str) -> str:
-    """Extract the first H1 heading from markdown text."""
+    """Extract the first H1 heading from markdown text.
+
+    Headings inside fenced code blocks (``` or ~~~) are ignored.
+    """
+    fence_char = None
     for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("# "):
-            return line[2:].strip()
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            char = stripped[0]
+            if fence_char is not None:
+                if char == fence_char:
+                    fence_char = None
+                continue
+            fence_char = char
+            continue
+        if fence_char is not None:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
     return "(Untitled)"
 
 
 def extract_first_paragraph(text: str) -> str:
-    """Extract the first non-heading, non-blank paragraph of text."""
+    """Extract the first non-heading, non-blank paragraph of text.
+
+    Fenced code blocks (``` ... ``` and ~~~ ... ~~~) are properly skipped
+    so that lines inside a code fence are never treated as paragraph content.
+    Backtick fences and tilde fences are tracked independently per CommonMark.
+    """
     lines = text.splitlines()
     in_paragraph = False
+    fence_char = None
     paragraph_lines = []
 
     for line in lines:
         stripped = line.strip()
+        # Toggle code-fence state on opening/closing markers
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            char = stripped[0]
+            if fence_char is not None:
+                if char == fence_char:
+                    fence_char = None
+                continue
+            fence_char = char
+            if in_paragraph:
+                break
+            continue
+        # While inside a code fence, skip all lines
+        if fence_char is not None:
+            continue
         # Skip headings
         if stripped.startswith("#"):
             if in_paragraph:
@@ -65,11 +99,6 @@ def extract_first_paragraph(text: str) -> str:
             continue
         # Blank line ends a paragraph
         if not stripped:
-            if in_paragraph:
-                break
-            continue
-        # Skip code fences
-        if stripped.startswith("```"):
             if in_paragraph:
                 break
             continue
@@ -178,6 +207,30 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    # 4. Run devcontainer documentation validation (non-blocking)
+    validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
+    if validate_script.exists():
+        result = subprocess.run(
+            ["bash", str(validate_script)],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(
+                "\nWarning: devcontainer documentation validation failed:",
+                file=sys.stderr,
+            )
+            if result.stdout.strip():
+                for line in result.stdout.strip().splitlines():
+                    print(f"  {line}", file=sys.stderr)
+            if result.stderr.strip():
+                for line in result.stderr.strip().splitlines():
+                    print(f"  {line}", file=sys.stderr)
+        else:
+            if result.stdout.strip():
+                print(result.stdout.strip())
 
     # Report clean status
     counts = []

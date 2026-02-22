@@ -124,13 +124,11 @@ If the container fails to start due to mount issues, see the [Prerequisites](#pr
 
 ### Startup Reliability
 
-Devcontainer lifecycle hooks are configured as best-effort:
-
-- `postCreateCommand` runs `cargo fetch || true`
-- `updateContentCommand` runs `cargo check --all-features || true`
+The `postCreateCommand` lifecycle hook runs `cargo fetch` as best-effort — if it fails,
+the container still starts normally.
 
 This prevents transient network or registry issues from blocking container startup.
-Run `cargo fetch` or `cargo check --all-features` manually if you want strict verification.
+Run `cargo fetch` manually if you want strict verification.
 
 Cargo extension installs during image build are also best-effort. If a specific extension
 tool is missing, install it manually inside the container with `cargo install --locked <tool>`.
