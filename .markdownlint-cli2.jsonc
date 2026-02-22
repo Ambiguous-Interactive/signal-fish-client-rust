@@ -1,0 +1,15 @@
+// Configuration for markdownlint-cli2
+// See: https://github.com/DavidAnson/markdownlint-cli2#configuration
+//
+// Rule configuration lives in .markdownlint.json (auto-discovered by
+// markdownlint-cli2 when present in the same directory).
+{
+  // Directories to exclude from linting
+  "ignores": [
+    "target/**",
+    "site/**",
+    ".git/**",
+    ".venv/**",
+    "node_modules/**"
+  ]
+}

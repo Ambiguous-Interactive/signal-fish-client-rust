@@ -1,0 +1,48 @@
+# Signal Fish Client SDK — typos spell-checker configuration
+#
+# typos is a fast source code spell checker.
+# Docs: https://github.com/crate-ci/typos
+
+# ─────────────────────────────────────────────────────────────
+# Files / directories to skip entirely
+# ─────────────────────────────────────────────────────────────
+[files]
+extend-exclude = [
+    "target/",
+    "site/",
+    ".git/",
+    ".venv/",
+    # Lock files contain hashes and auto-generated content
+    "Cargo.lock",
+    # Node modules (if present from docs tooling)
+    "node_modules/",
+    # MkDocs build artifacts
+    "*.min.js",
+    "*.min.css",
+]
+
+# ─────────────────────────────────────────────────────────────
+# Default word list — domain-specific terms that are NOT typos
+# ─────────────────────────────────────────────────────────────
+[default]
+locale = "en-us"
+
+[default.extend-words]
+# Project-specific terms
+signalfish = "signalfish"
+tungstenite = "tungstenite"
+rustdocflags = "rustdocflags"
+msrv = "msrv"
+udeps = "udeps"
+machete = "machete"
+cyclonedx = "cyclonedx"
+sbom = "sbom"
+
+# ─────────────────────────────────────────────────────────────
+# Per-file identifier overrides — suppress false positives on
+# short variable names used as destructured tuple bindings.
+# ─────────────────────────────────────────────────────────────
+[default.extend-identifiers]
+# `pn` is used as an abbreviation for `player_name` in test
+# destructuring patterns (e.g. `let (gn, rc, pn, mp, …) = …`)
+pn = "pn"

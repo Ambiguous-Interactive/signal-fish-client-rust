@@ -1,0 +1,89 @@
+# Workflow lint and hygiene checks for signal-fish-client
+#
+# Runs on every push to main and on all pull requests that touch
+# workflow files, shell scripts, or this workflow itself.
+# Jobs: actionlint — workflow syntax, yamllint — YAML style, shellcheck — shell scripts
+#
+# Cancel in-progress runs on the same branch to save resources.
+
+name: Workflow Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/*.yml"
+      - ".github/*.yaml"
+      - "scripts/*.sh"
+      - ".yamllint.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/*.yml"
+      - ".github/*.yaml"
+      - "scripts/*.sh"
+      - ".yamllint.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # actionlint — validate GitHub Actions workflow syntax and semantics
+  # ──────────────────────────────────────────────────────────────
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install actionlint
+        # Pinned version — bump manually; not covered by Dependabot
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+      - name: Run actionlint
+        run: actionlint -color
+
+  # ──────────────────────────────────────────────────────────────
+  # yamllint — validate YAML style and syntax of workflow files
+  # ──────────────────────────────────────────────────────────────
+  yamllint:
+    name: Yamllint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install yamllint
+        run: pip install 'yamllint>=1.35,<2'
+
+      - name: Run yamllint
+        run: yamllint --strict .github/workflows/ .github/dependabot.yml .yamllint.yml
+
+  # ──────────────────────────────────────────────────────────────
+  # shellcheck — lint shell scripts in scripts/ directory
+  # ──────────────────────────────────────────────────────────────
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run shellcheck
+        run: shellcheck scripts/*.sh

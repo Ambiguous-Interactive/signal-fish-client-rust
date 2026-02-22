@@ -1,0 +1,43 @@
+repos:
+  # ── LLM folder enforcement ────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: llm-line-limit
+        name: ".llm/ line limit (max 300) + skills index"
+        language: python
+        entry: python scripts/pre-commit-llm.py
+        pass_filenames: false
+        always_run: true
+
+  # ── Rust formatting ───────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt (check)
+        language: system
+        entry: cargo fmt --all -- --check
+        pass_filenames: false
+        types: [rust]
+        always_run: true
+
+  # ── Rust linting ──────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy (all targets, all features)
+        language: system
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        pass_filenames: false
+        types: [rust]
+        always_run: true
+
+  # ── Rust tests (push only — too slow for every commit) ───────────────────
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: cargo test (all features)
+        language: system
+        entry: cargo test --all-features
+        pass_filenames: false
+        always_run: true
+        stages: [push]

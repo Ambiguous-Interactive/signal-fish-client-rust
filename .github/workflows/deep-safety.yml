@@ -1,0 +1,160 @@
+# Deep safety analysis for signal-fish-client
+#
+# Non-blocking scheduled lanes for thorough safety and quality analysis
+# that would be too slow or noisy for every PR.
+#
+# Jobs:
+#   miri    — Miri undefined behavior detection (nightly, sync tests only)
+#   fuzz    — Fuzz smoke tests for protocol parsing (nightly)
+#   mutants — Mutation testing on pure-logic modules (stable)
+#
+# Schedule: Weekdays at 04:00 UTC — staggered from unused-deps (05:00)
+# and security (06:00).
+#
+# All jobs use continue-on-error: true because these are informational
+# lanes — failures here are signals, not blockers.
+
+name: Deep Safety
+
+on:
+  schedule:
+    # Weekdays at 04:00 UTC — staggered from unused-deps at 05:00 and security at 06:00
+    - cron: "0 4 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Miri — detect undefined behavior via interpretation
+  #
+  # Scoped to synchronous test targets only. Miri does not support
+  # tokio's async runtime, so client_tests (all #[tokio::test])
+  # are excluded. protocol_tests and ci_config_tests are pure
+  # synchronous logic and run cleanly under Miri.
+  #
+  # This is an informational lane; failures do not block merges.
+  # ──────────────────────────────────────────────────────────────
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+
+      - name: Run Miri on protocol tests
+        run: cargo +nightly miri test --test protocol_tests --all-features
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+
+      - name: Run Miri on CI config tests
+        if: always()
+        run: cargo +nightly miri test --test ci_config_tests
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+
+  # ──────────────────────────────────────────────────────────────
+  # Fuzz — smoke test protocol parsers with random input
+  #
+  # Runs each fuzz target for 30 seconds to catch obvious panics
+  # or crashes in the JSON deserialization paths. This is a smoke
+  # test, not a deep fuzzing campaign.
+  #
+  # Fuzz targets exercise both UTF-8 (from_str) and raw byte
+  # (from_slice) deserialization paths for ServerMessage and
+  # ClientMessage.
+  # ──────────────────────────────────────────────────────────────
+  fuzz:
+    name: Fuzz smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@470679bc3a1580072dac4e67535d1aa3a3dcdf51  # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Generate lockfile
+        run: cd fuzz && cargo generate-lockfile
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        with:
+          workspaces: fuzz
+
+      - name: Fuzz ServerMessage parsing
+        run: cd fuzz && cargo +nightly fuzz run fuzz_server_message seeds/fuzz_server_message -- -max_total_time=30
+
+      - name: Fuzz ClientMessage parsing
+        if: always()
+        run: cd fuzz && cargo +nightly fuzz run fuzz_client_message seeds/fuzz_client_message -- -max_total_time=30
+
+  # ──────────────────────────────────────────────────────────────
+  # Mutation testing — verify test suite catches injected faults
+  #
+  # Focuses on the most testable, pure-logic modules: protocol,
+  # error_codes, and error. Mutations in async client code are
+  # excluded to keep runtime reasonable.
+  # ──────────────────────────────────────────────────────────────
+  mutants:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@470679bc3a1580072dac4e67535d1aa3a3dcdf51  # v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run mutation tests
+        run: cargo mutants --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: mutants-results-${{ github.sha }}-${{ github.run_number }}
+          path: mutants.out/
+          retention-days: 30

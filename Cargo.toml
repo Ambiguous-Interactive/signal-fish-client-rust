@@ -1,0 +1,78 @@
+[package]
+name = "signal-fish-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
+description = "Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol"
+repository = "https://github.com/ambiguous-interactive/signal-fish-client-rust"
+keywords = ["gamedev", "signaling", "multiplayer", "networking", "matchmaking"]
+categories = ["game-engines", "network-programming"]
+rust-version = "1.85.0"
+readme = "README.md"
+include = [
+    "src/**/*",
+    "examples/**/*",
+    "tests/**/*",
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+]
+
+[features]
+default = ["transport-websocket"]
+transport-websocket = ["dep:tokio-tungstenite", "dep:futures-util"]
+
+[dependencies]
+# Async
+tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_bytes = "0.11"
+
+# Identifiers
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+
+# Optional: WebSocket transport
+tokio-tungstenite = { version = "0.28", optional = true }
+futures-util = { version = "0.3", optional = true, features = ["sink"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+futures-util = "0.3"
+serde_json = "1.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+
+[[example]]
+name = "basic_lobby"
+required-features = ["transport-websocket"]
+
+[[example]]
+name = "custom_transport"
+
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

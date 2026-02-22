@@ -1,0 +1,99 @@
+# Semver API compatibility checks for signal-fish-client
+#
+# Runs on every push to main and on all pull requests.
+# Ensures public API changes follow semantic versioning rules.
+#
+# Jobs:
+#   semver-checks — verify API compatibility with cargo-semver-checks
+#
+# Push-to-main strategy:
+#   1. Check whether the crate has been published on crates.io.
+#   2. If published, run cargo-semver-checks against the latest release.
+#   3. If not yet published, skip the crates.io baseline check (no baseline
+#      exists to compare against).
+#
+# Cancel in-progress runs on the same branch to save resources.
+
+name: Semver Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # semver-checks — verify public API compatibility
+  #
+  # For PRs, compares the PR code against the base branch.
+  # For pushes to main, compares against the latest crates.io
+  # release (gracefully skipped if the crate is not yet published).
+  # ──────────────────────────────────────────────────────────────
+  semver-checks:
+    name: API compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@470679bc3a1580072dac4e67535d1aa3a3dcdf51  # v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Check if package exists on base branch
+        id: check-base-package
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git show "$BASE_SHA":Cargo.toml >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping semver check: package does not exist on base branch (new crate)"
+          fi
+
+      - name: Check semver compliance (PR — against base branch)
+        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: cargo semver-checks check-release --baseline-rev "$BASE_SHA"
+
+      - name: Check if crate is published on crates.io
+        id: check-published
+        if: github.event_name == 'push'
+        run: |
+          if CARGO_TERM_COLOR=never cargo search signal-fish-client --limit 1 2>/dev/null | grep -q '^signal-fish-client '; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "Crate not yet published on crates.io — skipping crates.io baseline check"
+          fi
+
+      - name: Check semver compliance (push — against crates.io)
+        if: github.event_name == 'push' && steps.check-published.outputs.published == 'true'
+        run: cargo semver-checks check-release

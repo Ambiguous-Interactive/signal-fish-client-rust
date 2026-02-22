@@ -1,0 +1,30 @@
+[package]
+name = "signal-fish-client-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+
+[dependencies.signal-fish-client]
+path = ".."
+default-features = false
+
+# Prevent this from interfering with workspace members.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_server_message"
+path = "fuzz_targets/fuzz_server_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_client_message"
+path = "fuzz_targets/fuzz_client_message.rs"
+doc = false

@@ -1,0 +1,60 @@
+# Dependabot v2 configuration for signal-fish-client
+#
+# Keeps Cargo dependencies and GitHub Actions up to date via automated PRs.
+# PRs target the default branch (main) and trigger the full CI check suite.
+#
+# Grouping strategy:
+#   - Cargo patch/minor updates are batched into a single PR to reduce noise.
+#   - GitHub Actions patch/minor updates are batched into a single PR.
+#   - Major version bumps (Cargo and Actions) get individual PRs for careful review.
+#
+# See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+  # ── Cargo (Rust) dependencies ──────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: America/New_York
+    labels:
+      - dependencies
+      - security
+    open-pull-requests-limit: 10
+    # Group patch and minor updates together to reduce PR churn.
+    # Major updates are left ungrouped so each gets its own PR for
+    # individual review (breaking changes require attention).
+    groups:
+      cargo-patch-minor:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+      include: scope
+
+  # ── GitHub Actions ─────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: America/New_York
+    labels:
+      - dependencies
+      - security
+    open-pull-requests-limit: 10
+    # Group patch and minor Actions updates together to reduce PR churn.
+    # Major updates are left ungrouped so each gets its own PR for
+    # individual review (breaking changes require attention).
+    groups:
+      github-actions-patch-minor:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "ci"
+      include: scope
