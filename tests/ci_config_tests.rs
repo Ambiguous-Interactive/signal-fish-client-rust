@@ -819,7 +819,7 @@ nav:
   - Guide:
     - Getting Started: getting-started.md
     - API: Client: api/client.md
-  - changelog.md
+  - other.md
 ";
             let refs = extract_nav_file_references(input);
             assert_eq!(
@@ -828,7 +828,7 @@ nav:
                     (2, "index.md".to_string()),
                     (4, "getting-started.md".to_string()),
                     (5, "api/client.md".to_string()),
-                    (6, "changelog.md".to_string()),
+                    (6, "other.md".to_string()),
                 ]
             );
         }

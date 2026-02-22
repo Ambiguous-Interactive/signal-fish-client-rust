@@ -93,23 +93,17 @@ pytest scripts/test_pre_commit_llm.py -v
 ### The Bug Pattern
 
 The `mkdocs.yml` `nav:` section references markdown files that must exist
-in the `docs/` directory. If a nav entry like `- Changelog: changelog.md`
-is added but the corresponding `docs/changelog.md` file is never created,
-`mkdocs build --strict` fails in CI.
+in the `docs/` directory. If a nav entry references a file that does not
+exist in `docs/`, `mkdocs build --strict` fails in CI.
 
-### The Fix: Snippet Includes for Root-Level Files
+### The Fix: Keep Root-Level Files Out of MkDocs Nav
 
-For files that live at the project root (e.g., `CHANGELOG.md`) but need
-to appear in the MkDocs site, create a thin wrapper in `docs/` that uses
-the `pymdownx.snippets` include directive:
-
-```markdown
---8<-- "CHANGELOG.md"
-```
-
-This inlines the root file's content at build time. The `base_path`
-defaults to the current working directory, so the path is relative to
-where `mkdocs build` is invoked (typically the repo root).
+Files that live at the project root (e.g., `CHANGELOG.md`) should **not**
+be referenced in the MkDocs `nav:` section because MkDocs requires all
+nav entries to resolve to files inside the `docs/` directory. Instead,
+keep root-level files as standalone project documents and link to them
+from docs pages where appropriate (e.g., a "see CHANGELOG.md" note),
+rather than creating thin wrapper files in `docs/` with snippet includes.
 
 ### The Validation Pattern
 
@@ -128,8 +122,8 @@ Three layers of validation catch this bug:
 ### Checklist for New Nav Entries
 
 - [ ] Does the referenced `.md` file exist in `docs/`?
-- [ ] If the source file lives at the project root, is a snippet include
-      wrapper used in `docs/`?
+- [ ] If the source file lives at the project root, avoid adding it to
+      the nav -- link to it from a docs page instead.
 - [ ] Does `mkdocs build --strict` pass locally?
 
 ## Documentation Validation: Preventing Drift
