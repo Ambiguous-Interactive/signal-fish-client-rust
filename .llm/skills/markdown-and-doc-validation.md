@@ -88,6 +88,50 @@ pytest scripts/test_pre_commit_llm.py -v
 - [ ] Is there a test that places misleading content inside a fence and
       asserts it never appears in the output?
 
+## MkDocs Nav Validation
+
+### The Bug Pattern
+
+The `mkdocs.yml` `nav:` section references markdown files that must exist
+in the `docs/` directory. If a nav entry like `- Changelog: changelog.md`
+is added but the corresponding `docs/changelog.md` file is never created,
+`mkdocs build --strict` fails in CI.
+
+### The Fix: Snippet Includes for Root-Level Files
+
+For files that live at the project root (e.g., `CHANGELOG.md`) but need
+to appear in the MkDocs site, create a thin wrapper in `docs/` that uses
+the `pymdownx.snippets` include directive:
+
+```markdown
+--8<-- "CHANGELOG.md"
+```
+
+This inlines the root file's content at build time. The `base_path`
+defaults to the current working directory, so the path is relative to
+where `mkdocs build` is invoked (typically the repo root).
+
+### The Validation Pattern
+
+Three layers of validation catch this bug:
+
+1. **Rust test** (`tests/ci_config_tests.rs` `mkdocs_nav_validation`):
+   Parses `mkdocs.yml` nav entries, verifies each `.md` reference exists
+   in `docs/`. Runs on every `cargo test` invocation, including CI.
+
+2. **Pre-commit hook** (`scripts/pre-commit-llm.py` `validate_mkdocs_nav`):
+   Same check at commit time. Blocks commits that would break MkDocs.
+
+3. **CI validate script** (`scripts/ci-validate.sh` check 9):
+   Shell-based nav validation for the local CI validation suite.
+
+### Checklist for New Nav Entries
+
+- [ ] Does the referenced `.md` file exist in `docs/`?
+- [ ] If the source file lives at the project root, is a snippet include
+      wrapper used in `docs/`?
+- [ ] Does `mkdocs build --strict` pass locally?
+
 ## Documentation Validation: Preventing Drift
 
 ### The Problem

@@ -17,6 +17,7 @@
 #   6. .markdownlint.json syntax   (JSON validity)
 #   7. shellcheck on scripts/*.sh  (optional — skipped if shellcheck not installed)
 #   8. markdownlint on *.md        (optional — skipped if markdownlint not installed)
+#   9. mkdocs nav validation       (all nav-referenced files exist in docs/)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -38,7 +39,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=8
+TOTAL_CHECKS=9
 PASSED=0
 SKIPPED=0
 
@@ -252,6 +253,55 @@ else
         pass "All Markdown files pass markdownlint"
     else
         fail "markdownlint reported issues in *.md files"
+    fi
+fi
+
+# ── Check 9: mkdocs nav validation ──────────────────────────────────
+section_header 9 "MkDocs nav validation (docs/ file references)"
+
+MKDOCS_YML="$REPO_ROOT/mkdocs.yml"
+DOCS_DIR="$REPO_ROOT/docs"
+
+if [ ! -f "$MKDOCS_YML" ]; then
+    skip "MkDocs nav check" "mkdocs.yml not found"
+elif [ ! -d "$DOCS_DIR" ]; then
+    skip "MkDocs nav check" "docs/ directory not found"
+else
+    MKDOCS_NAV_OK=true
+    # Extract file references from the nav section of mkdocs.yml
+    # Nav entries look like: `  - Label: filename.md`
+    IN_NAV=false
+    while IFS= read -r line; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        if [ "$trimmed" = "nav:" ]; then
+            IN_NAV=true
+            continue
+        fi
+        if $IN_NAV && [ -n "$line" ] && [[ ! "$line" =~ ^[[:space:]] ]] && [[ ! "$line" =~ ^# ]]; then
+            break
+        fi
+        if ! $IN_NAV; then
+            continue
+        fi
+        # Match labeled entries like: `  - Label: something.md`
+        # and bare entries like: `  - something.md`
+        FILE_REF=""
+        if [[ "$trimmed" =~ ^-\ .+:\ (.+\.md)$ ]]; then
+            FILE_REF="${BASH_REMATCH[1]}"
+        elif [[ "$trimmed" =~ ^-\ (.+\.md)$ ]]; then
+            FILE_REF="${BASH_REMATCH[1]}"
+        fi
+        if [ -n "$FILE_REF" ] && [ ! -f "$DOCS_DIR/$FILE_REF" ]; then
+            echo -e "${RED}MISSING${NC}: mkdocs.yml nav references '$FILE_REF' but docs/$FILE_REF does not exist"
+            MKDOCS_NAV_OK=false
+        fi
+    done < "$MKDOCS_YML"
+
+    if $MKDOCS_NAV_OK; then
+        pass "All mkdocs.yml nav file references exist in docs/"
+    else
+        fail "mkdocs.yml nav references files that do not exist in docs/"
     fi
 fi
 

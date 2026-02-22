@@ -625,6 +625,217 @@ mod ci_config_validation {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module: mkdocs_nav_validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod mkdocs_nav_validation {
+    use super::*;
+
+    /// Extracts all markdown file references from the mkdocs.yml nav section.
+    /// Nav entries look like `      - Label: filename.md` with varying indentation.
+    fn extract_nav_file_references(mkdocs_content: &str) -> Vec<(usize, String)> {
+        let mut results = Vec::new();
+        let mut in_nav = false;
+
+        for (line_num, line) in mkdocs_content.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // Detect the start of the nav section
+            if trimmed == "nav:" {
+                in_nav = true;
+                continue;
+            }
+
+            // Detect exit from nav section (top-level key)
+            if in_nav && !line.is_empty() && !line.starts_with(' ') && !line.starts_with('#') {
+                break;
+            }
+
+            if !in_nav {
+                continue;
+            }
+
+            // Nav entries look like: `  - Label: filename.md`
+            // or: `      - Label: filename.md`
+            // or bare entries: `  - filename.md`
+            if let Some(pos) = trimmed.strip_prefix("- ") {
+                if let Some(colon_pos) = pos.rfind(": ") {
+                    // Labeled entry — split on the LAST `: ` to handle labels with colons
+                    let file_ref = pos[colon_pos + 2..].trim();
+                    if file_ref.ends_with(".md") {
+                        results.push((line_num + 1, file_ref.to_string()));
+                    }
+                } else if pos.trim().ends_with(".md") {
+                    // Bare entry without a label (e.g., `- filename.md`)
+                    results.push((line_num + 1, pos.trim().to_string()));
+                }
+            }
+        }
+
+        results
+    }
+
+    #[test]
+    fn all_nav_referenced_files_exist_in_docs_dir() {
+        let mkdocs = read_project_file("mkdocs.yml");
+        let nav_refs = extract_nav_file_references(&mkdocs);
+
+        assert!(
+            !nav_refs.is_empty(),
+            "Could not extract any file references from mkdocs.yml nav section. \
+             Either the nav section is missing or the parser needs updating."
+        );
+
+        let docs_dir = project_root().join("docs");
+        assert!(
+            docs_dir.is_dir(),
+            "docs/ directory does not exist. MkDocs requires a docs directory."
+        );
+
+        for (line_num, file_ref) in &nav_refs {
+            let full_path = docs_dir.join(file_ref);
+            assert!(
+                full_path.is_file(),
+                "mkdocs.yml nav (line {line_num}) references '{file_ref}' but \
+                 the file does not exist at '{}'. \
+                 Every file referenced in the mkdocs.yml nav section must exist \
+                 in the docs/ directory, otherwise `mkdocs build --strict` will fail.",
+                full_path.display()
+            );
+        }
+    }
+
+    /// Verify that nav references cover all markdown files in docs/ (excluding
+    /// includes/ and other special directories). This catches orphaned pages.
+    ///
+    /// NOTE: This test intentionally only checks top-level files in docs/.
+    /// It does not recurse into subdirectories because all current nav entries
+    /// reference top-level files. If subdirectory pages are added in the future,
+    /// this test should be extended to walk docs/ recursively and build relative
+    /// paths for comparison.
+    #[test]
+    fn no_orphaned_docs_pages() {
+        let mkdocs = read_project_file("mkdocs.yml");
+        let nav_refs = extract_nav_file_references(&mkdocs);
+
+        // Build a set of just the file name (last component) for top-level
+        // comparison. Nav references may include subdirectory paths like
+        // "api/overview.md"; we use the full reference as-is since we only
+        // check top-level docs/ files here.
+        let nav_files: std::collections::HashSet<String> =
+            nav_refs.into_iter().map(|(_, f)| f).collect();
+
+        let docs_dir = project_root().join("docs");
+        if !docs_dir.is_dir() {
+            return;
+        }
+
+        for entry in std::fs::read_dir(&docs_dir).unwrap() {
+            let entry = entry.unwrap();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip directories — this test only checks top-level files.
+            if entry.file_type().unwrap().is_dir() {
+                continue;
+            }
+
+            // Only check .md files
+            if !file_name.ends_with(".md") {
+                continue;
+            }
+
+            assert!(
+                nav_files.contains(&file_name),
+                "docs/{file_name} exists but is not referenced in mkdocs.yml nav. \
+                 Either add it to the nav section or remove it to prevent orphaned pages."
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn standard_labeled_entry() {
+            let input = "nav:\n  - Home: index.md\n";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(refs, vec![(2, "index.md".to_string())]);
+        }
+
+        #[test]
+        fn bare_entry_without_label() {
+            let input = "nav:\n  - index.md\n";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(refs, vec![(2, "index.md".to_string())]);
+        }
+
+        #[test]
+        fn label_with_colons() {
+            let input = "nav:\n  - API: Client: client.md\n";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(refs, vec![(2, "client.md".to_string())]);
+        }
+
+        #[test]
+        fn section_only_header_no_file() {
+            let input = "nav:\n  - Section:\n";
+            let refs = extract_nav_file_references(input);
+            assert!(
+                refs.is_empty(),
+                "Section-only headers should not produce file references"
+            );
+        }
+
+        #[test]
+        fn deeply_nested_entry() {
+            let input = "nav:\n        - Deep: deep.md\n";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(refs, vec![(2, "deep.md".to_string())]);
+        }
+
+        #[test]
+        fn empty_nav_section() {
+            let input = "nav:\ntheme:\n  name: material\n";
+            let refs = extract_nav_file_references(input);
+            assert!(
+                refs.is_empty(),
+                "Empty nav section should produce no references"
+            );
+        }
+
+        #[test]
+        fn subdirectory_file_reference() {
+            let input = "nav:\n  - Overview: api/overview.md\n";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(refs, vec![(2, "api/overview.md".to_string())]);
+        }
+
+        #[test]
+        fn multiple_nav_entries() {
+            let input = "\
+nav:
+  - Home: index.md
+  - Guide:
+    - Getting Started: getting-started.md
+    - API: Client: api/client.md
+  - changelog.md
+";
+            let refs = extract_nav_file_references(input);
+            assert_eq!(
+                refs,
+                vec![
+                    (2, "index.md".to_string()),
+                    (4, "getting-started.md".to_string()),
+                    (5, "api/client.md".to_string()),
+                    (6, "changelog.md".to_string()),
+                ]
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module: llm_index_validation
 // ─────────────────────────────────────────────────────────────────────────────
 
