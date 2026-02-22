@@ -502,6 +502,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 !!! tip
-    All public enums in this crate are exhaustive (no `#[non_exhaustive]`), so you can
-    match every variant without a wildcard arm. A `_ => {}` catch-all is optional — use
-    it for convenience when you only care about a subset of events.
+    All public enums in this crate are exhaustive. Match event enums with
+    explicit variant arms and avoid `_ => {}` catch-all arms so compiler errors
+    surface unhandled variants during upgrades.

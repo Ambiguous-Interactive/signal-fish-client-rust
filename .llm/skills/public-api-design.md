@@ -1,10 +1,10 @@
 # Public API Design
 
-Reference for #[non_exhaustive], semver, re-exports, feature flags, and MSRV in this crate.
+Reference for enum matching policy, semver, re-exports, feature flags, and MSRV in this crate.
 
-## #[non_exhaustive]
+## Exhaustive Matching Policy
 
-No public types in this crate carry `#[non_exhaustive]`. Every public enum and
+Public enums in this crate must be matched explicitly. Every public enum and
 struct is exhaustive. This includes:
 
 - `SignalFishEvent` — exhaustive; adding variants is a semver breaking change
@@ -16,18 +16,18 @@ struct is exhaustive. This includes:
 
 ### Consumer Impact
 
-Because all enums are exhaustive, consumers matching `SignalFishEvent` or
-`ErrorCode` do NOT need a wildcard arm from the compiler's perspective, but
-adding one is good practice for forward compatibility at the cost of silencing
-exhaustiveness checks:
+Because enums are exhaustive, consumers should avoid wildcard arms when matching
+`SignalFishEvent` or `ErrorCode`. Wildcard arms suppress compile-time checks
+for newly added variants:
 
 ```rust
 match event {
     SignalFishEvent::RoomJoined { room_code, .. } => { /* ... */ }
     SignalFishEvent::Disconnected { reason } => { /* ... */ }
-    // Adding a wildcard arm here is valid but means the compiler will not
-    // warn if a new variant is added and left unhandled.
-    _ => {}
+    // Avoid wildcard arms in enum matches so missing variants are compile
+    // errors during upgrades.
+    SignalFishEvent::Connected => {}
+    // ...handle remaining variants explicitly...
 }
 ```
 
@@ -133,8 +133,8 @@ This crate is pre-1.0 (0.1.0). Under semver:
 
 | Change | Breaking? |
 |--------|-----------|
-| Add variant to `SignalFishEvent` (not non-exhaustive) | Yes |
-| Add variant to `SignalFishError` (not non-exhaustive) | Yes |
+| Add variant to `SignalFishEvent` | Yes |
+| Add variant to `SignalFishError` | Yes |
 | Remove public item | Yes |
 | Change public function signature | Yes |
 | Add required method to `Transport` trait | Yes |

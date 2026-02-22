@@ -4,7 +4,7 @@ Reference for thiserror patterns, SignalFishError design, and error propagation 
 
 ## SignalFishError Overview
 
-Defined in `src/error.rs` using `thiserror`. Does NOT carry `#[non_exhaustive]`.
+Defined in `src/error.rs` using `thiserror`. This enum is exhaustive.
 
 ```rust
 use crate::error_codes::ErrorCode;
@@ -98,7 +98,7 @@ async fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-Defined in `src/error_codes.rs`. Does NOT carry `#[non_exhaustive]`. 40 variants:
+Defined in `src/error_codes.rs`. This enum is exhaustive. 40 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +131,7 @@ pub enum ErrorCode {
     SpectatorNotAllowed, TooManySpectators, NotASpectator, SpectatorJoinFailed,
 
     // Server (3)
-    InternalError, DatabaseError, ServiceUnavailable,
+    InternalError, StorageError, ServiceUnavailable,
 }
 ```
 

@@ -785,7 +785,7 @@ fn error_code_round_trip_all_variants() {
         ErrorCode::NotASpectator,
         ErrorCode::SpectatorJoinFailed,
         ErrorCode::InternalError,
-        ErrorCode::DatabaseError,
+        ErrorCode::StorageError,
         ErrorCode::ServiceUnavailable,
     ];
     for variant in &variants {

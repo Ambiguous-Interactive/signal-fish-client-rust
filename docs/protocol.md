@@ -472,9 +472,9 @@ Every message on the wire is a JSON object with two top-level keys:
 ## Exhaustive Enums
 
 All public enums in this crate (`SignalFishEvent`, `ErrorCode`, `SignalFishError`, etc.) are
-**exhaustive** — they do not carry `#[non_exhaustive]`. Adding new variants is a semver
-breaking change, so your `match` expressions will always get a compile-time error if a new
-variant is introduced in a major version bump.
+**exhaustive**. Adding new variants is a semver breaking change, so your `match`
+expressions should stay explicit to preserve compile-time detection when a major
+version introduces new variants.
 
 You can match exhaustively without a wildcard arm:
 
@@ -486,5 +486,5 @@ match event {
 }
 ```
 
-If you prefer, you may still include a `_ => {}` catch-all for convenience, but it is not
-required for forward compatibility.
+Avoid `_ => {}` catch-all arms for public enum matches so unhandled variants
+remain compile-time errors.

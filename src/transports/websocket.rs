@@ -181,7 +181,7 @@ impl Transport for WebSocketTransport {
                 Message::Frame(_) => {
                     // This variant is never produced by the read half of the stream;
                     // it exists only for exhaustiveness against future `Message`
-                    // variants. We keep the arm to silence non-exhaustive warnings.
+                    // variants. We keep the arm to satisfy exhaustiveness checks.
                     tracing::debug!("received raw WebSocket frame, skipping");
                     // Continue the loop.
                 }

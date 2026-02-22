@@ -182,11 +182,12 @@ transports (QUIC, raw TCP, etc.) need only implement three async methods.
 v2 JSON protocol. Never change serde attributes without verifying against
 the server spec. See `skills/serde-patterns.md` for details.
 
-### `#[non_exhaustive]`
+### Exhaustive Public Types
 
-No public enums in this crate carry `#[non_exhaustive]`. `SignalFishEvent`,
-`ErrorCode`, `SignalFishError`, and all protocol payload structs are exhaustive.
-Adding variants to any of these enums is a semver breaking change.
+Public enums and protocol payload structs are exhaustive. `SignalFishEvent`,
+`ErrorCode`, `SignalFishError`, and protocol payload types all require explicit
+handling of their known variants. Adding variants to these enums is a semver
+breaking change.
 
 ### No Heavy Dependencies
 
