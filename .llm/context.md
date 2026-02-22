@@ -9,7 +9,7 @@
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
-- **Repository:** <https://github.com/ambiguous-interactive/signal-fish-client>
+- **Repository:** <https://github.com/ambiguous-interactive/signal-fish-client-rust>
 
 ## Purpose
 
