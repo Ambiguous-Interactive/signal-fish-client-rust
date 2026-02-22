@@ -189,13 +189,55 @@ transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI
 for reproducible MSRV testing:
 
 ```yaml
-- uses: dtolnay/rust-toolchain@1.85.0
+- uses: dtolnay/rust-toolchain@stable
+  with:
+    toolchain: 1.85.0
 - run: cargo generate-lockfile
 - run: cargo build --locked --all-features
 - run: cargo test --locked --all-features
 ```
 
+### MSRV workflow incident: dtolnay ref vs explicit toolchain
+
+`dtolnay/rust-toolchain` action refs are action release refs, **not** Rust
+toolchain versions. A ref like `@1.100.0` can exist while being unrelated to
+the intended MSRV and silently run a newer compiler than expected.
+
+Use this pattern for MSRV jobs:
+
+```yaml
+- uses: dtolnay/rust-toolchain@stable
+  with:
+    toolchain: <msrv-from-Cargo.toml>
+```
+
+Avoid this anti-pattern:
+
+```yaml
+- uses: dtolnay/rust-toolchain@1.85.0
+```
+
+Prevention checks in this repository:
+
+- `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
+  validates the extracted `msrv` job block, not generic substring matches.
+- `tests/ci_config_tests.rs::ci_workflow_policy::msrv_toolchain_step_regressions_are_caught`
+  includes regression cases for `@1.*` refs and missing `with.toolchain`.
+- `scripts/check-workflows.sh` fails fast on problematic
+  `dtolnay/rust-toolchain@1.*` usage with actionable remediation text.
+
 ## Validation Scripts
+
+### Failure triage checklist
+
+Start with the first command in the matching row to localize failures quickly.
+
+| Symptom in CI | First command/script to run |
+|---|---|
+| Workflow YAML/action pin/toolchain policy failure | `bash scripts/check-workflows.sh` |
+| CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
+| Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
+| Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 
 ### `scripts/ci-validate.sh`
 

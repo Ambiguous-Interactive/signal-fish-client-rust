@@ -196,6 +196,80 @@ mod ci_workflow_policy {
         "publish-dry-run",
     ];
 
+    fn cargo_msrv_version() -> String {
+        let cargo = read_project_file("Cargo.toml");
+        cargo
+            .lines()
+            .find(|line| line.starts_with("rust-version"))
+            .and_then(|line| line.split('"').nth(1))
+            .map(std::string::ToString::to_string)
+            .expect("Cargo.toml must declare a quoted rust-version")
+    }
+
+    fn extract_job_block(contents: &str, job_name: &str) -> Option<String> {
+        let header = format!("  {job_name}:");
+        let mut in_job = false;
+        let mut job_lines = Vec::new();
+
+        for line in contents.lines() {
+            if !in_job {
+                if line.trim_end() == header {
+                    in_job = true;
+                    job_lines.push(line);
+                }
+                continue;
+            }
+
+            let is_next_job = line.starts_with("  ")
+                && !line.starts_with("    ")
+                && line.trim_end().ends_with(':');
+            if is_next_job {
+                break;
+            }
+            job_lines.push(line);
+        }
+
+        in_job.then(|| job_lines.join("\n"))
+    }
+
+    fn validate_msrv_toolchain_step(msrv_job_block: &str, version: &str) -> Result<(), String> {
+        let has_numeric_dtolnay_ref = msrv_job_block.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("- uses: dtolnay/rust-toolchain@")
+                .or_else(|| trimmed.strip_prefix("uses: dtolnay/rust-toolchain@"))
+                .and_then(|reference| reference.chars().next())
+                .is_some_and(|first| first.is_ascii_digit())
+        });
+
+        if has_numeric_dtolnay_ref {
+            return Err(
+                "MSRV job uses a numeric dtolnay/rust-toolchain ref. Use @stable with explicit with.toolchain instead."
+                    .to_string(),
+            );
+        }
+
+        if !msrv_job_block.contains("uses: dtolnay/rust-toolchain@stable") {
+            return Err("MSRV job is missing 'uses: dtolnay/rust-toolchain@stable'.".to_string());
+        }
+
+        let parsed_toolchain = msrv_job_block.lines().find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("toolchain:")
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .map(std::string::ToString::to_string)
+        });
+
+        if parsed_toolchain.as_deref() != Some(version) {
+            return Err(format!(
+                "MSRV job is missing explicit 'toolchain: {version}' (quoted or unquoted) in the rust-toolchain step."
+            ));
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn ci_contains_all_required_jobs() {
         let contents = ci_contents();
@@ -235,25 +309,73 @@ mod ci_workflow_policy {
     #[test]
     fn ci_msrv_matches_cargo_toml() {
         let ci = ci_contents();
-        let cargo = read_project_file("Cargo.toml");
+        let version = cargo_msrv_version();
+        let msrv_job = extract_job_block(&ci, "msrv").unwrap_or_else(|| {
+            panic!(
+                "ci.yml is missing the 'msrv' job block under jobs:. \
+                 Expected a sibling job header '  msrv:' in .github/workflows/ci.yml"
+            )
+        });
 
-        // Extract rust-version from Cargo.toml.
-        let cargo_msrv = cargo
-            .lines()
-            .find(|line| line.starts_with("rust-version"))
-            .expect("Cargo.toml must declare a rust-version");
-        // Extract the version string between quotes.
-        let version = cargo_msrv
-            .split('"')
-            .nth(1)
-            .expect("rust-version must be quoted in Cargo.toml");
+        let validation = validate_msrv_toolchain_step(&msrv_job, &version);
 
         assert!(
-            ci.contains(version),
-            "ci.yml does not reference the MSRV '{version}' from Cargo.toml. \
-             The CI MSRV job must test the exact version declared in Cargo.toml \
-             to prevent silent breakage for downstream users."
+            validation.is_ok(),
+            "MSRV job in ci.yml does not match Cargo.toml rust-version '{version}'.\n\
+             Validation error: {}\n\
+             Extracted msrv job block:\n{msrv_job}",
+            validation
+                .err()
+                .unwrap_or_else(|| "unknown MSRV validation error".to_string())
         );
+    }
+
+    #[test]
+    fn msrv_toolchain_step_regressions_are_caught() {
+        struct Case {
+            name: &'static str,
+            job_block: &'static str,
+            expected_ok: bool,
+        }
+
+        let cases = [
+            Case {
+                name: "valid_stable_with_explicit_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: 1.85.0",
+                expected_ok: true,
+            },
+            Case {
+                name: "valid_stable_with_quoted_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: \"1.85.0\"",
+                expected_ok: true,
+            },
+            Case {
+                name: "ref_only_numeric_version_without_with_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@1.85.0",
+                expected_ok: false,
+            },
+            Case {
+                name: "stable_without_explicit_with_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable",
+                expected_ok: false,
+            },
+        ];
+
+        for case in cases {
+            let result = validate_msrv_toolchain_step(case.job_block, "1.85.0");
+            assert_eq!(
+                result.is_ok(),
+                case.expected_ok,
+                "MSRV validator regression for case '{}'.\n\
+                 Expected success: {}\n\
+                 Result: {:?}\n\
+                 Job block:\n{}",
+                case.name,
+                case.expected_ok,
+                result,
+                case.job_block
+            );
+        }
     }
 
     /// Verify that key documentation and config files reference the same MSRV
@@ -262,12 +384,7 @@ mod ci_workflow_policy {
     #[test]
     #[allow(clippy::indexing_slicing)]
     fn msrv_consistent_across_key_files() {
-        let cargo = read_project_file("Cargo.toml");
-        let version = cargo
-            .lines()
-            .find(|line| line.starts_with("rust-version"))
-            .and_then(|line| line.split('"').nth(1))
-            .expect("Cargo.toml must declare a rust-version");
+        let version = cargo_msrv_version();
 
         // Files that should reference the canonical MSRV value.
         // Keep this list in sync with the MSRV drift section in
@@ -287,7 +404,7 @@ mod ci_workflow_policy {
         for path in files_to_check {
             let contents = read_project_file(path);
             assert!(
-                contents.contains(version),
+                contents.contains(&version),
                 "{path} does not reference the MSRV '{version}' from Cargo.toml. \
                  Update the MSRV reference in this file to match Cargo.toml."
             );
@@ -391,8 +508,10 @@ mod workflow_security {
     // A tag reference like `uses: actions/checkout@v4` is NOT acceptable
     // because tags are mutable and can be moved to point at different commits.
     //
-    // We allow `dtolnay/rust-toolchain@<channel>` because that action is
-    // designed to be referenced by channel name (stable, nightly, 1.85.0).
+    // We allow `dtolnay/rust-toolchain@<channel>` to be non-SHA in this test.
+    // MSRV policy is validated separately: the `msrv` job must use
+    // `dtolnay/rust-toolchain@stable` with explicit `with.toolchain` matching
+    // Cargo.toml rust-version.
     #[test]
     fn action_references_are_sha_pinned() {
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
@@ -460,6 +579,46 @@ mod workflow_security {
                 );
             }
         }
+    }
+
+    #[test]
+    fn check_workflows_script_enforces_msrv_toolchain_match() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        assert!(
+            contents.contains("mktemp -t signal-fish-toolchain-violations"),
+            "scripts/check-workflows.sh must use mktemp for temporary toolchain scan output."
+        );
+
+        assert!(
+            contents.contains("trap cleanup EXIT"),
+            "scripts/check-workflows.sh must register trap cleanup for temp file removal."
+        );
+
+        assert!(
+            contents.contains("grep_status=$?"),
+            "scripts/check-workflows.sh must capture grep exit status to distinguish no-match vs execution errors."
+        );
+
+        assert!(
+            contents.contains("[ \"$grep_status\" -gt 1 ]"),
+            "scripts/check-workflows.sh must fail when grep exits with status > 1 (execution error)."
+        );
+
+        assert!(
+            contents.contains("CARGO_MSRV="),
+            "scripts/check-workflows.sh must read Cargo.toml rust-version as canonical MSRV."
+        );
+
+        assert!(
+            contents.contains("CI_MSRV_TOOLCHAIN="),
+            "scripts/check-workflows.sh must extract the msrv job toolchain from ci.yml."
+        );
+
+        assert!(
+            contents.contains("[ \"$CI_MSRV_TOOLCHAIN\" != \"$CARGO_MSRV\" ]"),
+            "scripts/check-workflows.sh must fail when ci.yml msrv toolchain does not match Cargo.toml rust-version."
+        );
     }
 }
 

@@ -116,7 +116,7 @@ used in this crate for:
 
 ```yaml
 - name: Test on MSRV
-  uses: dtolnay/rust-toolchain@master
+    uses: dtolnay/rust-toolchain@stable
   with:
     toolchain: "1.85.0"
 - run: cargo test --all-features
