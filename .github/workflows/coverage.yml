@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload HTML coverage report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: coverage-html-${{ github.sha }}-${{ github.run_number }}
           path: coverage-html/
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload LCOV coverage data
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: coverage-lcov-${{ github.sha }}-${{ github.run_number }}
           path: lcov.info
