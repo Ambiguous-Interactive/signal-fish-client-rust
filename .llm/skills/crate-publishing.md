@@ -13,8 +13,8 @@ rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
 authors = ["Ambiguous Interactive"]
 description = "Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol"
-repository = "https://github.com/ambiguous-interactive/signal-fish-client"
-homepage = "https://github.com/ambiguous-interactive/signal-fish-client"
+repository = "https://github.com/ambiguous-interactive/signal-fish-client-rust"
+homepage = "https://github.com/ambiguous-interactive/signal-fish-client-rust"
 documentation = "https://docs.rs/signal-fish-client"
 readme = "README.md"
 keywords = ["gamedev", "signaling", "multiplayer", "networking", "matchmaking"]
@@ -177,8 +177,8 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 - 26-variant `SignalFishEvent` enum
 - 40-variant `ErrorCode` enum
 
-[Unreleased]: https://github.com/ambiguous-interactive/signal-fish-client/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ambiguous-interactive/signal-fish-client/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ambiguous-interactive/signal-fish-client-rust/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ambiguous-interactive/signal-fish-client-rust/releases/tag/v0.1.0
 ```
 
 ## Common Publishing Issues

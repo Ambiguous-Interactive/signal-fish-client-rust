@@ -25,10 +25,10 @@ FROM mcr.microsoft.com/devcontainers/rust:1-bookworm
 # OCI Labels (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 # =============================================================================
 LABEL org.opencontainers.image.title="Signal Fish Client SDK Dev Container" \
-      org.opencontainers.image.description="Rust development environment for Signal Fish Client SDK" \
-      org.opencontainers.image.vendor="Ambiguous Interactive" \
-      org.opencontainers.image.source="https://github.com/ambiguous-interactive/signal-fish-client" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Rust development environment for Signal Fish Client SDK" \
+    org.opencontainers.image.vendor="Ambiguous Interactive" \
+    org.opencontainers.image.source="https://github.com/ambiguous-interactive/signal-fish-client-rust" \
+    org.opencontainers.image.licenses="MIT"
 
 # Use bash with pipefail for consistent behavior
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -52,11 +52,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # in BuildKit's cache store — so image size is unaffected.
 RUN rm -f /etc/apt/apt.conf.d/docker-clean \
     && printf '%s\n' \
-        'APT::Keep-Downloaded-Packages "true";' \
-        'Acquire::Retries "5";' \
-        'Acquire::http::Timeout "30";' \
-        'Acquire::https::Timeout "30";' \
-        > /etc/apt/apt.conf.d/devcontainer
+    'APT::Keep-Downloaded-Packages "true";' \
+    'Acquire::Retries "5";' \
+    'Acquire::http::Timeout "30";' \
+    'Acquire::https::Timeout "30";' \
+    > /etc/apt/apt.conf.d/devcontainer
 
 # =============================================================================
 # Layer 1: Base System Packages
@@ -70,26 +70,26 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
     && apt-get install -y --no-install-recommends \
-        # Core utilities
-        curl \
-        wget \
-        gnupg \
-        ca-certificates \
-        # Build dependencies for cargo tools
-        pkg-config \
-        libssl-dev \
-        # Development tools
-        ripgrep \
-        fd-find \
-        bat \
-        jq \
-        fzf \
-        # Fast linker (clang required as linker driver for mold)
-        # Note: mold and clang are unpinned to receive security updates.
-        # Debian's exact versions change frequently and vary by architecture.
-        # The base image pin (above) provides reproducibility when needed.
-        mold \
-        clang
+    # Core utilities
+    curl \
+    wget \
+    gnupg \
+    ca-certificates \
+    # Build dependencies for cargo tools
+    pkg-config \
+    libssl-dev \
+    # Development tools
+    ripgrep \
+    fd-find \
+    bat \
+    jq \
+    fzf \
+    # Fast linker (clang required as linker driver for mold)
+    # Note: mold and clang are unpinned to receive security updates.
+    # Debian's exact versions change frequently and vary by architecture.
+    # The base image pin (above) provides reproducibility when needed.
+    mold \
+    clang
 
 # =============================================================================
 # Layer 2: External Repository Packages (eza, GitHub CLI)
@@ -108,26 +108,26 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if mkdir -p /etc/apt/keyrings \
-        # Set up eza repository with GPG key verification
-        && wget -qO /tmp/eza.asc https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
-        && gpg --dearmor < /tmp/eza.asc > /etc/apt/keyrings/gierens.gpg \
-        && rm /tmp/eza.asc \
-        && echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] https://deb.gierens.de stable main" \
-            > /etc/apt/sources.list.d/gierens.list \
-        && chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list \
-        # Set up GitHub CLI repository
-        && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-        && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-            > /etc/apt/sources.list.d/github-cli.list \
-        # Update index for new repos and install
-        && apt-get update \
-        && apt-get install -y --no-install-recommends eza gh; then \
-        eza --version || true; \
-        gh --version || true; \
+    # Set up eza repository with GPG key verification
+    && wget -qO /tmp/eza.asc https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
+    && gpg --dearmor < /tmp/eza.asc > /etc/apt/keyrings/gierens.gpg \
+    && rm /tmp/eza.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/gierens.gpg] https://deb.gierens.de stable main" \
+    > /etc/apt/sources.list.d/gierens.list \
+    && chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list \
+    # Set up GitHub CLI repository
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    # Update index for new repos and install
+    && apt-get update \
+    && apt-get install -y --no-install-recommends eza gh; then \
+    eza --version || true; \
+    gh --version || true; \
     else \
-        echo "WARNING: optional tools (eza/gh) unavailable; continuing build"; \
+    echo "WARNING: optional tools (eza/gh) unavailable; continuing build"; \
     fi
 
 # =============================================================================
@@ -144,17 +144,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     ARCH=$(dpkg --print-architecture) \
     && if curl -fsSL --retry 3 --retry-delay 2 \
-            "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/git-delta_${DELTA_VERSION}_${ARCH}.deb" \
-            -o /tmp/delta.deb; then \
-         # Use apt-get (not dpkg -i) to automatically resolve runtime library dependencies
-         if apt-get update && apt-get install -y --no-install-recommends /tmp/delta.deb; then \
-             delta --version || true; \
-         else \
-             echo "WARNING: delta package install failed; continuing without delta"; \
-         fi; \
-     else \
-         echo "WARNING: delta download failed; continuing without delta"; \
-     fi \
+    "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/git-delta_${DELTA_VERSION}_${ARCH}.deb" \
+    -o /tmp/delta.deb; then \
+    # Use apt-get (not dpkg -i) to automatically resolve runtime library dependencies
+    if apt-get update && apt-get install -y --no-install-recommends /tmp/delta.deb; then \
+    delta --version || true; \
+    else \
+    echo "WARNING: delta package install failed; continuing without delta"; \
+    fi; \
+    else \
+    echo "WARNING: delta download failed; continuing without delta"; \
+    fi \
     && rm -f /tmp/delta.deb
 
 # =============================================================================
@@ -167,14 +167,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Note: user-level keys in ~/.gitconfig still take precedence over these system
 # defaults — users can override any setting in their own git config.
 RUN if command -v delta >/dev/null 2>&1; then \
-        git config --system core.pager "delta" \
-        && git config --system interactive.diffFilter "delta --color-only" \
-        && git config --system delta.navigate true \
-        && git config --system delta.light false \
-        && git config --system delta.line-numbers true \
-        && git config --system delta.side-by-side true; \
+    git config --system core.pager "delta" \
+    && git config --system interactive.diffFilter "delta --color-only" \
+    && git config --system delta.navigate true \
+    && git config --system delta.light false \
+    && git config --system delta.line-numbers true \
+    && git config --system delta.side-by-side true; \
     else \
-        echo "INFO: delta not found; leaving git pager default"; \
+    echo "INFO: delta not found; leaving git pager default"; \
     fi \
     && git config --system merge.conflictstyle diff3 \
     && git config --system diff.colorMoved default
@@ -209,8 +209,8 @@ COPY --chown=vscode:vscode .devcontainer/.cargo/config.toml /home/vscode/.cargo/
 RUN RUST_VERSION=$(rustc --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
     && REQUIRED_VERSION="1.85.0" \
     && if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$RUST_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then \
-         echo "ERROR: Rust $RUST_VERSION does not meet MSRV $REQUIRED_VERSION" && exit 1; \
-       fi \
+    echo "ERROR: Rust $RUST_VERSION does not meet MSRV $REQUIRED_VERSION" && exit 1; \
+    fi \
     && echo "Rust $RUST_VERSION meets MSRV $REQUIRED_VERSION" \
     && rustup component add rust-src
 
@@ -231,13 +231,13 @@ ARG CARGO_BINSTALL_VERSION=1.17.5
 RUN tmpdir=$(mktemp -d) \
     && ARCH=$(uname -m) \
     && case "$ARCH" in \
-        x86_64)  BINSTALL_ARCH="x86_64-unknown-linux-musl" ;; \
-        aarch64) BINSTALL_ARCH="aarch64-unknown-linux-musl" ;; \
-        *) echo "ERROR: Unsupported architecture for cargo-binstall: $ARCH" && exit 1 ;; \
+    x86_64)  BINSTALL_ARCH="x86_64-unknown-linux-musl" ;; \
+    aarch64) BINSTALL_ARCH="aarch64-unknown-linux-musl" ;; \
+    *) echo "ERROR: Unsupported architecture for cargo-binstall: $ARCH" && exit 1 ;; \
     esac \
     && curl -fsSL --retry 3 --retry-delay 2 \
-        "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-${BINSTALL_ARCH}.tgz" \
-        -o "$tmpdir/cargo-binstall.tgz" \
+    "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-${BINSTALL_ARCH}.tgz" \
+    -o "$tmpdir/cargo-binstall.tgz" \
     && tar -xzf "$tmpdir/cargo-binstall.tgz" -C "$tmpdir" \
     # Use -print -quit to avoid a broken pipe with pipefail when piping to head -n1
     && BINSTALL_BIN=$(find "$tmpdir" -name "cargo-binstall" -type f -print -quit) \
@@ -261,30 +261,30 @@ RUN tmpdir=$(mktemp -d) \
 RUN --mount=type=cache,target=/home/vscode/.cargo/registry,uid=1000,gid=1000 \
     --mount=type=cache,target=/home/vscode/.cargo/git,uid=1000,gid=1000 \
     tools=( \
-      cargo-watch@8.5.2 \
-      cargo-edit@0.13.0 \
-      cargo-audit@0.21.0 \
-      cargo-deny@0.16.1 \
-      cargo-outdated@0.15.0 \
-      cargo-expand@1.0.88 \
-      cargo-bloat@0.12.1 \
-      cargo-nextest@0.9.82 \
-      cargo-tarpaulin@0.31.3 \
-      cargo-machete@0.7.0 \
+    cargo-watch@8.5.2 \
+    cargo-edit@0.13.0 \
+    cargo-audit@0.21.0 \
+    cargo-deny@0.16.1 \
+    cargo-outdated@0.15.0 \
+    cargo-expand@1.0.88 \
+    cargo-bloat@0.12.1 \
+    cargo-nextest@0.9.82 \
+    cargo-tarpaulin@0.31.3 \
+    cargo-machete@0.7.0 \
     ) \
     && failed_tools=() \
     && for tool in "${tools[@]}"; do \
-         echo "Installing optional cargo tool: ${tool}"; \
-         if cargo binstall --no-confirm "${tool}"; then \
-             echo "Installed ${tool}"; \
-         else \
-             echo "WARNING: Failed to install optional cargo tool '${tool}'; continuing build"; \
-             failed_tools+=("${tool}"); \
-         fi; \
-       done \
+    echo "Installing optional cargo tool: ${tool}"; \
+    if cargo binstall --no-confirm "${tool}"; then \
+    echo "Installed ${tool}"; \
+    else \
+    echo "WARNING: Failed to install optional cargo tool '${tool}'; continuing build"; \
+    failed_tools+=("${tool}"); \
+    fi; \
+    done \
     && if [ ${#failed_tools[@]} -gt 0 ]; then \
-         echo "WARNING: Optional cargo tools not installed: ${failed_tools[*]}"; \
-       fi
+    echo "WARNING: Optional cargo tools not installed: ${failed_tools[*]}"; \
+    fi
 
 # =============================================================================
 # Shell Aliases
