@@ -1,9 +1,10 @@
-"""Tests for extract_first_paragraph, extract_title, and generate_index in pre-commit-llm.py."""
+"""Tests for extract_first_paragraph, extract_title, generate_index, and validate_mkdocs_nav in pre-commit-llm.py."""
 
 import importlib.util
 import re
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -21,6 +22,7 @@ _spec.loader.exec_module(_mod)
 extract_first_paragraph = _mod.extract_first_paragraph
 extract_title = _mod.extract_title
 generate_index = _mod.generate_index
+validate_mkdocs_nav = _mod.validate_mkdocs_nav
 
 
 # ===================================================================
@@ -626,3 +628,175 @@ class TestGenerateIndex:
         # (117 chars + "...")
         assert long_desc not in output
         assert "A" * 117 + "..." in output
+
+
+# ===================================================================
+# Tests for validate_mkdocs_nav
+# ===================================================================
+
+
+class TestValidateMkdocsNav:
+    """Tests for the validate_mkdocs_nav function and its I/O error handling."""
+
+    def test_unreadable_mkdocs_yml(self, tmp_path, monkeypatch):
+        """When read_text raises OSError, validate_mkdocs_nav returns an error message."""
+        # Set up a fake repo root with mkdocs.yml and docs/ present
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text("nav:\n  - Home: index.md\n", encoding="utf-8")
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        # Mock read_text to raise OSError when called on the mkdocs.yml path
+        original_read_text = Path.read_text
+
+        def mock_read_text(self, *args, **kwargs):
+            if self.name == "mkdocs.yml":
+                raise OSError("Permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", mock_read_text):
+            errors = validate_mkdocs_nav()
+
+        assert len(errors) == 1
+        assert "Could not read" in errors[0]
+        assert "Permission denied" in errors[0]
+
+    def test_is_file_oserror_continues(self, tmp_path, monkeypatch):
+        """When is_file raises OSError for one entry, the error is reported
+        but validation continues checking subsequent entries."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        # Create mkdocs.yml with two nav entries
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text(
+            "nav:\n"
+            "  - First: first.md\n"
+            "  - Second: second.md\n",
+            encoding="utf-8",
+        )
+
+        # Neither file exists, but first.md will raise OSError on is_file
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        original_is_file = Path.is_file
+
+        def mock_is_file(self):
+            if self.name == "first.md":
+                raise OSError("I/O error on first.md")
+            return original_is_file(self)
+
+        with patch.object(Path, "is_file", mock_is_file):
+            errors = validate_mkdocs_nav()
+
+        # Should have two errors: one OSError for first.md, one missing for second.md
+        assert len(errors) == 2
+
+        # First error: the OSError catch
+        assert "Could not check" in errors[0]
+        assert "I/O error on first.md" in errors[0]
+
+        # Second error: the normal missing-file error for second.md
+        assert "second.md" in errors[1]
+        assert "does not exist" in errors[1]
+
+    def test_valid_nav_no_errors(self, tmp_path, monkeypatch):
+        """When all nav-referenced files exist, no errors are returned."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        # Create the referenced files
+        (docs_dir / "index.md").write_text("# Home\n", encoding="utf-8")
+        (docs_dir / "guide.md").write_text("# Guide\n", encoding="utf-8")
+
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text(
+            "nav:\n"
+            "  - Home: index.md\n"
+            "  - Guide: guide.md\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_mkdocs_nav()
+        assert errors == []
+
+    def test_no_mkdocs_yml_returns_empty(self, tmp_path, monkeypatch):
+        """When REPO_ROOT has no mkdocs.yml, validate_mkdocs_nav returns an empty list."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_mkdocs_nav()
+        assert errors == []
+
+    def test_no_docs_dir_returns_empty(self, tmp_path, monkeypatch):
+        """When REPO_ROOT has mkdocs.yml but no docs/ directory, returns empty list."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text(
+            "nav:\n"
+            "  - Home: index.md\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_mkdocs_nav()
+        assert errors == []
+
+    def test_bare_entry_without_label(self, tmp_path, monkeypatch):
+        """A bare nav entry like `- index.md` (no label) produces no errors
+        when the file exists."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        # Create the referenced file
+        (docs_dir / "index.md").write_text("# Home\n", encoding="utf-8")
+
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text(
+            "nav:\n"
+            "  - index.md\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_mkdocs_nav()
+        assert errors == []
+
+    def test_missing_nav_file_reports_error(self, tmp_path, monkeypatch):
+        """A nav entry pointing to a non-existent file produces an error."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        mkdocs_yml = fake_root / "mkdocs.yml"
+        mkdocs_yml.write_text(
+            "nav:\n"
+            "  - Missing: does-not-exist.md\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_mkdocs_nav()
+        assert len(errors) == 1
+        assert "does-not-exist.md" in errors[0]
+        assert "does not exist" in errors[0]

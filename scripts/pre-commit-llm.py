@@ -6,6 +6,7 @@ Checks:
 1. No .md file under .llm/ exceeds 300 lines.
 2. Auto-generates .llm/skills/index.md from skill file headings and descriptions.
 3. Stages the auto-generated index file with git add.
+4. Validates that all mkdocs.yml nav references point to existing files in docs/.
 """
 
 import subprocess
@@ -167,6 +168,72 @@ def git_add(path: Path) -> None:
         print(f"Warning: could not stage {rel}: {result.stderr.strip()}", file=sys.stderr)
 
 
+def validate_mkdocs_nav() -> list[str]:
+    """Validate that all files referenced in mkdocs.yml nav exist in docs/.
+
+    Returns a list of error messages for missing files.
+    """
+    mkdocs_yml = REPO_ROOT / "mkdocs.yml"
+    docs_dir = REPO_ROOT / "docs"
+    errors = []
+
+    if not mkdocs_yml.exists():
+        return errors
+    if not docs_dir.is_dir():
+        return errors
+
+    try:
+        content = mkdocs_yml.read_text(encoding="utf-8")
+    except OSError as e:
+        errors.append(f"  Could not read {mkdocs_yml}: {e}")
+        return errors
+    in_nav = False
+
+    for line_num, line in enumerate(content.splitlines(), start=1):
+        trimmed = line.strip()
+
+        # Detect the start of the nav section
+        if trimmed == "nav:":
+            in_nav = True
+            continue
+
+        # Detect exit from nav section (top-level key)
+        if in_nav and line and not line.startswith(" ") and not line.startswith("#"):
+            break
+
+        if not in_nav:
+            continue
+
+        # Nav entries look like: `  - Label: filename.md`
+        # or bare entries: `  - filename.md`
+        if trimmed.startswith("- "):
+            rest = trimmed[2:]
+            # Split on the LAST `: ` to handle labels with colons
+            colon_pos = rest.rfind(": ")
+            if colon_pos != -1:
+                file_ref = rest[colon_pos + 2:].strip()
+            elif rest.strip().endswith(".md"):
+                # Bare entry without a label (e.g., `- filename.md`)
+                file_ref = rest.strip()
+            else:
+                file_ref = None
+
+            if file_ref and file_ref.endswith(".md"):
+                full_path = docs_dir / file_ref
+                try:
+                    exists = full_path.is_file()
+                except OSError as e:
+                    errors.append(f"  Could not check {full_path}: {e}")
+                    continue
+                if not exists:
+                    errors.append(
+                        f"  mkdocs.yml nav (line {line_num}) references "
+                        f"'{file_ref}' but docs/{file_ref} does not exist."
+                    )
+
+    return errors
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -193,20 +260,9 @@ def main() -> int:
     all_md = find_md_files(LLM_DIR)
 
     # 3. Check line counts for all .md files under .llm/
-    errors = check_line_counts(all_md)
-
-    if errors:
-        print(
-            f"\nPre-commit hook FAILED: The following .llm/ files exceed {MAX_LINES} lines:",
-            file=sys.stderr,
-        )
-        for error in errors:
-            print(error, file=sys.stderr)
-        print(
-            "\nPlease split these files or reduce their content before committing.",
-            file=sys.stderr,
-        )
-        return 1
+    all_errors = []
+    line_count_errors = check_line_counts(all_md)
+    all_errors.extend(line_count_errors)
 
     # 4. Run devcontainer documentation validation (non-blocking)
     validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
@@ -231,6 +287,37 @@ def main() -> int:
         else:
             if result.stdout.strip():
                 print(result.stdout.strip())
+
+    # 5. Validate mkdocs.yml nav references (blocking)
+    nav_errors = validate_mkdocs_nav()
+    all_errors.extend(nav_errors)
+
+    # 6. Report all collected errors together
+    if all_errors:
+        if line_count_errors:
+            print(
+                f"\nPre-commit hook FAILED: The following .llm/ files exceed {MAX_LINES} lines:",
+                file=sys.stderr,
+            )
+            for error in line_count_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nPlease split these files or reduce their content before committing.",
+                file=sys.stderr,
+            )
+        if nav_errors:
+            print(
+                "\nPre-commit hook FAILED: mkdocs.yml nav references missing files:",
+                file=sys.stderr,
+            )
+            for error in nav_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nEvery file in mkdocs.yml nav must exist in docs/. "
+                "Either create the file or remove the nav entry.",
+                file=sys.stderr,
+            )
+        return 1
 
     # Report clean status
     counts = []

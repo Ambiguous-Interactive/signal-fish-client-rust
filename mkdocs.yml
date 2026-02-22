@@ -127,5 +127,3 @@ nav:
       - Protocol Types: protocol.md
   - Examples:
       - Walkthroughs: examples.md
-  - Reference:
-      - Changelog: changelog.md
