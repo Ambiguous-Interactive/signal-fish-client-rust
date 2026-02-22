@@ -1,0 +1,1 @@
+{"type":"JoinRoom","data":{"game_name":"my-game","player_name":"Alice","room_code":"ABC123","max_players":4}}

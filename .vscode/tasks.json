@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Cargo: Security Audit",
+      "type": "shell",
+      "command": "cargo audit",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Cargo: Deny Check",
+      "type": "shell",
+      "command": "cargo deny check",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Cargo: Full Check (fmt + clippy + test)",
+      "type": "shell",
+      "command": "cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": "$rustc"
+    }
+  ]
+}

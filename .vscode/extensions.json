@@ -1,0 +1,45 @@
+{
+  // =============================================================================
+  // Signal Fish Client SDK - Recommended Extensions
+  // =============================================================================
+  // These are recommendations for users developing outside the devcontainer.
+  // The devcontainer.json installs these automatically when using VS Code
+  // with the Dev Containers extension.
+  // =============================================================================
+
+  "recommendations": [
+    // Dev Containers (required for devcontainer support)
+    "ms-vscode-remote.remote-containers",
+
+    // Rust Development
+    "rust-lang.rust-analyzer",
+    "serayuzgur.crates",
+    "tamasfe.even-better-toml",
+    "vadimcn.vscode-lldb",
+
+    // GitHub Integration
+    "GitHub.vscode-pull-request-github",
+    "GitHub.vscode-github-actions",
+    "GitHub.copilot",
+    "GitHub.copilot-chat",
+
+    // AI Assistants
+    "Anthropic.claude-code",          // Official Anthropic Claude Code extension
+    "saoudrizwan.claude-dev",          // Cline (community extension, formerly Claude Dev)
+
+    // Code Quality & Visualization
+    "usernamehw.errorlens",
+    "eamodio.gitlens",
+    "Gruntfuggly.todo-tree",
+    "aaron-bond.better-comments",
+    "oderwat.indent-rainbow",
+    "christian-kohler.path-intellisense",
+
+    // Productivity & Documentation
+    "streetsidesoftware.code-spell-checker",
+    "DavidAnson.vscode-markdownlint",
+    "redhat.vscode-yaml"
+  ],
+
+  "unwantedRecommendations": []
+}

@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
 //! Protocol serialization tests for the Signal Fish Client.
 //!
 //! Verifies round-trip serialization of every protocol type, including all

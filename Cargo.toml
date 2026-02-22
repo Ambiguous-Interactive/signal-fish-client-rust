@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 authors = ["Ambiguous Interactive"]
 description = "Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol"
-repository = "https://github.com/Ambiguous-Interactive/signal-fish-client"
+repository = "https://github.com/ambiguous-interactive/signal-fish-client"
 keywords = ["gamedev", "signaling", "multiplayer", "networking", "matchmaking"]
 categories = ["game-engines", "network-programming"]
 rust-version = "1.75.0"
@@ -64,3 +64,11 @@ name = "custom_transport"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

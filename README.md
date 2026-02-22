@@ -1,10 +1,24 @@
-# Signal Fish Client
+<p align="center">
+  <img src="docs/assets/logo-banner.svg" alt="Signal Fish Client SDK" width="600">
+</p>
 
-[![Crates.io](https://img.shields.io/crates/v/signal-fish-client.svg)](https://crates.io/crates/signal-fish-client)
-[![docs.rs](https://img.shields.io/docsrs/signal-fish-client)](https://docs.rs/signal-fish-client)
-[![CI](https://github.com/Ambiguous-Interactive/signal-fish-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Ambiguous-Interactive/signal-fish-client/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.75.0-blue.svg)](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://crates.io/crates/signal-fish-client">
+    <img src="https://img.shields.io/crates/v/signal-fish-client.svg" alt="Crates.io">
+  </a>
+  <a href="https://docs.rs/signal-fish-client">
+    <img src="https://img.shields.io/docsrs/signal-fish-client" alt="docs.rs">
+  </a>
+  <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml">
+    <img src="https://github.com/Ambiguous-Interactive/signal-fish-client/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html">
+    <img src="https://img.shields.io/badge/MSRV-1.75.0-blue.svg" alt="MSRV">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
+  </a>
+</p>
 
 Transport-agnostic async Rust client for the **Signal Fish** multiplayer signaling protocol. Connect to a Signal Fish server over any bidirectional transport, authenticate, join rooms, and receive strongly-typed events — all through a simple channel-based API.
 
@@ -149,8 +163,46 @@ impl Transport for MyTransport {
 Key requirements:
 
 - `recv()` **must** be cancel-safe (it's used inside `tokio::select!`)
-- Connection setup happens _before_ constructing the transport — the trait only covers message I/O
+- Connection setup happens *before* constructing the transport — the trait only covers message I/O
 - The transport must be `Send + 'static` (required by the async task boundary)
+
+## Development
+
+### Run CI Locally
+
+A unified script runs all CI checks locally:
+
+```sh
+# Run all checks (matches CI exactly)
+bash scripts/check-all.sh
+
+# Quick mode: fmt + clippy + test only
+bash scripts/check-all.sh --quick
+```
+
+### Mandatory baseline
+
+```sh
+cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+```
+
+### Additional quality checks
+
+| Command | CI Workflow | Install |
+| ------- | ----------- | ------- |
+| `cargo deny check` | ci.yml | `cargo install cargo-deny` |
+| `cargo audit` | security-supply-chain.yml | `cargo install cargo-audit` |
+| `bash scripts/check-no-panics.sh` | no-panics.yml | (built-in) |
+| `typos` | docs-validation.yml | `cargo install typos-cli` |
+| `markdownlint-cli2 "**/*.md"` | docs-validation.yml | `npm install -g markdownlint-cli2` |
+| `lychee --config .lychee.toml "**/*.md"` | docs-validation.yml | `cargo install lychee` |
+| `cargo machete` | unused-deps.yml | `cargo install cargo-machete` |
+| `cargo semver-checks check-release` | semver-checks.yml | `cargo install cargo-semver-checks` |
+| `bash scripts/check-workflows.sh` | workflow-lint.yml | (built-in) |
+| `cargo +nightly miri test --test protocol_tests` | deep-safety.yml | `rustup component add miri --toolchain nightly` |
+| `cd fuzz && cargo +nightly fuzz run ...` | deep-safety.yml | `cargo install cargo-fuzz` |
+| `cargo mutants --file src/protocol.rs ...` | deep-safety.yml | `cargo install cargo-mutants` |
+| `cargo llvm-cov --all-features --summary-only` | coverage.yml | `cargo install cargo-llvm-cov` + `rustup component add llvm-tools-preview` |
 
 ## Minimum Supported Rust Version (MSRV)
 

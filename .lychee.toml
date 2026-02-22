@@ -1,0 +1,85 @@
+# Signal Fish Client SDK — lychee link-checker configuration
+#
+# lychee is a fast, async link checker for markdown and HTML.
+# Docs: https://lychee.cli.rs
+
+# ─────────────────────────────────────────────────────────────
+# Input / output
+# ─────────────────────────────────────────────────────────────
+
+# Check links in markdown files across the repository
+glob_ignore_case = true
+
+# ─────────────────────────────────────────────────────────────
+# Directories and paths to exclude from scanning
+# ─────────────────────────────────────────────────────────────
+exclude_path = [
+    "^target/",
+    "^site/",
+    "^\\.git/",
+    "^\\.venv/",
+    "^node_modules/",
+]
+
+# ─────────────────────────────────────────────────────────────
+# URL patterns to exclude from checking
+# ─────────────────────────────────────────────────────────────
+exclude = [
+    # Mail links — cannot be validated
+    "^mailto:",
+
+    # GitHub repository URLs that may not exist yet (pre-publish)
+    # Both the old name and current name patterns
+    "^https://github\\.com/[Aa]mbiguous-?[Ii]nteractive/signal-fish-client",
+
+    # crates.io and docs.rs — the crate may not be published yet
+    "^https://crates\\.io/crates/signal-fish-client",
+    "^https://docs\\.rs/signal-fish-client",
+
+    # Badge image URLs — shields.io can be flaky and badges may not
+    # exist for unpublished crates
+    "^https://img\\.shields\\.io/",
+
+    # GitHub Actions status badges — may 404 before repo is public
+    "^https://github\\.com/[Aa]mbiguous-?[Ii]nteractive/signal-fish-client.*/actions",
+
+    # Anchor-only links (intra-page) — mkdocs generates these
+    "^#",
+]
+
+# ─────────────────────────────────────────────────────────────
+# HTTP behaviour — tune for CI reliability
+# ─────────────────────────────────────────────────────────────
+
+# Accept HTTP 429 (Too Many Requests) as valid — the link exists,
+# the server is just rate-limiting us.
+accept = ["2xx", "429"]
+
+# Number of retries before marking a link as broken
+max_retries = 3
+
+# Timeout per request (seconds)
+timeout = 30
+
+# Delay between retries (seconds)
+retry_wait_time = 5
+
+# Maximum number of concurrent requests (be polite to external servers)
+max_concurrency = 8
+
+# Follow redirects (e.g. http -> https upgrades)
+max_redirects = 10
+
+# ─────────────────────────────────────────────────────────────
+# Misc
+# ─────────────────────────────────────────────────────────────
+
+# Do not require HTTPS — some legitimate links use HTTP
+require_https = false
+
+# Exclude loopback and private IP addresses — never reachable in CI
+exclude_loopback = true
+exclude_private = true
+
+# User agent — some servers block requests without one
+header = ["user-agent=lychee (signal-fish-client CI)"]

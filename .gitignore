@@ -25,3 +25,18 @@ Cargo.lock
 
 # macOS
 .DS_Store
+
+# Python virtual environment (MkDocs docs build)
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# MkDocs build output
+site/
+
+# Fuzz artifacts
+fuzz/artifacts/
+fuzz/corpus/

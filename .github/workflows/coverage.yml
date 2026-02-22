@@ -1,0 +1,86 @@
+# Code coverage for signal-fish-client
+#
+# Generates LLVM source-based code coverage using cargo-llvm-cov and uploads
+# the report as an artifact for trend tracking.
+#
+# Runs on every push to main and every PR for continuous tracking. Scheduled
+# weekdays at 03:00 UTC — staggered before deep-safety at 04:00.
+
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekdays at 03:00 UTC — staggered before deep-safety at 04:00
+    - cron: "0 3 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@470679bc3a1580072dac4e67535d1aa3a3dcdf51  # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+
+      - name: Run tests with coverage instrumentation
+        run: cargo llvm-cov --all-features --no-report
+
+      - name: Generate LCOV report
+        run: cargo llvm-cov --all-features --no-run --lcov --output-path lcov.info
+
+      - name: Generate HTML report
+        run: cargo llvm-cov --all-features --no-run --html --output-dir coverage-html
+
+      - name: Upload HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: coverage-html-${{ github.sha }}-${{ github.run_number }}
+          path: coverage-html/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload LCOV coverage data
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: coverage-lcov-${{ github.sha }}-${{ github.run_number }}
+          path: lcov.info
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Print coverage summary
+        if: always()
+        run: cargo llvm-cov --all-features --no-run --summary-only

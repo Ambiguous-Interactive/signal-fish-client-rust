@@ -1,10 +1,10 @@
-# Claude AI — Repository Guidelines
+# Signal Fish Client SDK — Claude AI Guidelines
 
-## Project Identity
+This is the **Signal Fish Client SDK** by Ambiguous Interactive — a transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol.
 
-- **Company:** Ambiguous Interactive
-- **Product:** Signal Fish Client SDK
-- **Crate:** `signal-fish-client`
+## Canonical Reference
+
+Read `.llm/context.md` for the full project context (architecture, design decisions, dependencies, and conventions).
 
 ## Mandatory Workflow
 
@@ -12,23 +12,10 @@
 cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
 ```
 
-## Architecture
+Run this before every commit. All three steps must pass with zero warnings.
 
-This is a transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol.
+## Skills
 
-- `src/transport.rs` — `Transport` trait (async bidirectional text messages)
-- `src/protocol.rs` — Wire-compatible protocol types (`ClientMessage`, `ServerMessage`)
-- `src/error_codes.rs` — `ErrorCode` enum (39 variants from server)
-- `src/error.rs` — `SignalFishError` error type
-- `src/event.rs` — `SignalFishEvent` high-level event stream
-- `src/client.rs` — `SignalFishClient` async client implementation
-- `src/transports/websocket.rs` — WebSocket transport (feature: `transport-websocket`)
+Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
 
-## Key Decisions
-
-- Transport-agnostic via `Transport` trait
-- Wire-compatible with Signal Fish server v2 protocol
-- `#[non_exhaustive]` on all public enums and payload structs
-- Timestamps as `String` (no `chrono` dependency)
-- Binary payloads as `Vec<u8>` (no `bytes` dependency)
-- UUIDs for player/room IDs (matching server)
+Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`.

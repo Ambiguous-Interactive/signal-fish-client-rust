@@ -1,0 +1,26 @@
+---
+# yamllint configuration tuned for GitHub Actions workflow files.
+#
+# Key overrides:
+#   - document-start disabled (workflow files omit ---)
+#   - truthy check-keys disabled (GHA uses `on:` which is a YAML truthy value)
+#   - line-length raised to 200 (GHA expressions can be long)
+#   - comments min-spaces-from-content set to 1 (default 2 is too strict for our style)
+#   - comments-indentation disabled (section-header comments are non-standard)
+
+extends: default
+
+rules:
+  document-start: disable
+  truthy:
+    check-keys: false
+  line-length:
+    max: 200
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable

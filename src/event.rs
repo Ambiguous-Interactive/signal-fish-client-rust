@@ -477,6 +477,14 @@ impl From<ServerMessage> for SignalFishEvent {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
     use crate::protocol::{

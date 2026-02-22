@@ -117,7 +117,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Fake server: read the Authenticate message and respond ──────
     // The client auto-sends Authenticate on start.
-    let auth_msg = server.rx.recv().await.expect("should receive Authenticate");
+    let Some(auth_msg) = server.rx.recv().await else {
+        return Err("server channel closed before Authenticate was received".into());
+    };
     tracing::info!("Server received: {auth_msg}");
 
     // Respond with a synthetic Authenticated event (the JSON must match

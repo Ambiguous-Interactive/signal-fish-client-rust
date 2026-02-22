@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
 //! Integration-style client tests for the Signal Fish Client.
 //!
 //! Uses the shared `MockTransport` from `tests/common` to script server

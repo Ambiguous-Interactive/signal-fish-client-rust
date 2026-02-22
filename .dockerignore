@@ -1,0 +1,41 @@
+# =============================================================================
+# Signal Fish Client SDK - Docker Build Ignore
+# =============================================================================
+# Exclude files not needed for container build to speed up context transfer
+# =============================================================================
+
+# Build artifacts
+target/
+*.rlib
+*.rmeta
+*.d
+
+# Version control
+.git/
+.gitignore
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation build
+docs/build/
+
+# Test artifacts
+*.profraw
+lcov.info
+tarpaulin-report.html
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Backup and env files
+*.orig
+.env*

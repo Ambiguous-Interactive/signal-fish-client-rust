@@ -655,6 +655,14 @@ async fn emit_disconnected(
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
     use crate::protocol::{LobbyState, RateLimitInfo, RoomJoinedPayload};

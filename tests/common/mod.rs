@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
 //! Shared test utilities for Signal Fish Client integration tests.
 //!
 //! Provides a channel-based [`MockTransport`] and helper functions for
