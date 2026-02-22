@@ -47,7 +47,7 @@ let config = SignalFishConfig {
 
 Parameters for joining (or creating) a room, constructed via a builder pattern.
 Only `game_name` and `player_name` are required. Leave `room_code` as `None`
-for quick-match / auto-create behaviour.
+for quick-match / auto-create behavior.
 
 ### Constructor
 

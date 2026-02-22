@@ -206,7 +206,7 @@ network**.
 ### Simplified source
 
 !!! note
-    The actual [`examples/custom_transport.rs`](https://github.com/AmbiguousInteractive/signal-fish-client/blob/main/examples/custom_transport.rs) uses the `tracing` crate for structured logging. The version below uses `println!` for simplicity.
+    The actual [`examples/custom_transport.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client/blob/main/examples/custom_transport.rs) uses the `tracing` crate for structured logging. The version below uses `println!` for simplicity.
 
 ```rust
 use async_trait::async_trait;
@@ -326,7 +326,7 @@ Only three methods are required:
 
 | Method | Purpose |
 |---|---|
-| `send` | Push a serialised message toward the server. |
+| `send` | Push a serialized message toward the server. |
 | `recv` | Await the next message from the server (returns `None` on close). |
 | `close` | Perform any cleanup (no-op here). |
 

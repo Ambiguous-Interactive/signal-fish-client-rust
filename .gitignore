@@ -43,3 +43,6 @@ fuzz/corpus/
 
 progress/
 PLAN.md
+
+logs_*
+*.zip

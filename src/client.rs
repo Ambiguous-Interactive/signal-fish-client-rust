@@ -89,7 +89,7 @@ impl SignalFishConfig {
 /// Parameters for joining (or creating) a room.
 ///
 /// Only `game_name` and `player_name` are required. Leave `room_code` as
-/// `None` for quick-match / auto-create behaviour.
+/// `None` for quick-match / auto-create behavior.
 ///
 /// Use [`JoinRoomParams::new`] to construct an instance — the `Default` impl
 /// produces empty strings for the required fields and is intended only for

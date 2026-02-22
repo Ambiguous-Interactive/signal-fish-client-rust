@@ -12,6 +12,10 @@ Each skill is a focused, practical guide for a specific topic in this codebase.
 
 Practical reference for tokio, async/await, task spawning, select!, and channels as used in this codebase.
 
+### [CI Configuration](ci-configuration.md)
+
+Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
+
 ### [Crate Publishing](crate-publishing.md)
 
 Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.

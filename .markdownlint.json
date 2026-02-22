@@ -63,5 +63,12 @@
   "comment-22": "MD050: Strong emphasis style — standardize on double asterisks.",
   "MD050": {
     "style": "asterisk"
-  }
+  },
+
+  "comment-23": "MD060: Table column style — disabled; triggers false positives on compact",
+  "comment-24": "pipe-separated tables widely used in this repo. Tables are readable as-is.",
+  "MD060": false,
+
+  "comment-25": "MD058: Blanks around tables — disabled for mkdocs-material compatibility.",
+  "MD058": false
 }

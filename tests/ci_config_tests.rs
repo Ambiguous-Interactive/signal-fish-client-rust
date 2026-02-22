@@ -255,6 +255,42 @@ mod ci_workflow_policy {
              to prevent silent breakage for downstream users."
         );
     }
+
+    /// Verify that key documentation and config files reference the same MSRV
+    /// as Cargo.toml. Prevents drift where Cargo.toml is bumped but docs or
+    /// scripts are left with the old version.
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn msrv_consistent_across_key_files() {
+        let cargo = read_project_file("Cargo.toml");
+        let version = cargo
+            .lines()
+            .find(|line| line.starts_with("rust-version"))
+            .and_then(|line| line.split('"').nth(1))
+            .expect("Cargo.toml must declare a rust-version");
+
+        // Files that should reference the canonical MSRV value.
+        // Keep this list in sync with the MSRV drift section in
+        // .llm/skills/ci-configuration.md.
+        let files_to_check = [
+            ".llm/context.md",
+            "README.md",
+            "docs/index.md",
+            "docs/getting-started.md",
+            ".llm/skills/public-api-design.md",
+            ".llm/skills/crate-publishing.md",
+            ".llm/skills/async-rust-patterns.md",
+        ];
+
+        for path in files_to_check {
+            let contents = read_project_file(path);
+            assert!(
+                contents.contains(version),
+                "{path} does not reference the MSRV '{version}' from Cargo.toml. \
+                 Update the MSRV reference in this file to match Cargo.toml."
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,7 +390,7 @@ mod workflow_security {
     // because tags are mutable and can be moved to point at different commits.
     //
     // We allow `dtolnay/rust-toolchain@<channel>` because that action is
-    // designed to be referenced by channel name (stable, nightly, 1.75.0).
+    // designed to be referenced by channel name (stable, nightly, 1.85.0).
     #[test]
     fn action_references_are_sha_pinned() {
         for workflow_path in REQUIRED_WORKFLOW_PATHS {

@@ -28,7 +28,7 @@
 #  17. Code coverage          (optional — requires cargo-llvm-cov)
 #
 # Notes:
-#   - MSRV (1.75.0) verification is CI-only (requires rustup toolchain override)
+#   - MSRV (1.85.0) verification is CI-only (requires rustup toolchain override)
 #   - --quick runs only the mandatory baseline (phases 1-3)
 #
 # Exit codes:

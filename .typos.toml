@@ -37,3 +37,12 @@ udeps = "udeps"
 machete = "machete"
 cyclonedx = "cyclonedx"
 sbom = "sbom"
+
+# ─────────────────────────────────────────────────────────────
+# Per-file identifier overrides — suppress false positives on
+# short variable names used as destructured tuple bindings.
+# ─────────────────────────────────────────────────────────────
+[default.extend-identifiers]
+# `pn` is used as an abbreviation for `player_name` in test
+# destructuring patterns (e.g. `let (gn, rc, pn, mp, …) = …`)
+pn = "pn"

@@ -20,7 +20,7 @@ async fn main() { /* ... */ }
 
 ## Async Trait Methods
 
-MSRV is 1.75.0. AFIT (async fn in trait) is stabilized but `async-trait` is
+MSRV is 1.85.0. AFIT (async fn in trait) is stabilized but `async-trait` is
 still used here for object safety and compatibility:
 
 ```rust
@@ -96,7 +96,7 @@ loop {
 
 `transport.recv()` MUST be cancel-safe because `select!` may cancel it.
 
-## tokio::select!
+## tokio::select
 
 Use `select!` to race multiple async operations:
 

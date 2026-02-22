@@ -8,8 +8,8 @@
 #   1. Runs scripts/pre-commit-llm.py (line-limit check + skills index generation)
 #   2. Optionally uses the pre-commit framework if it is installed
 #
-# Hook behaviour:
-#   On every commit : llm-line-limit, cargo-fmt, cargo-clippy
+# Hook behavior:
+#   On every commit : llm-line-limit, cargo-fmt, cargo-clippy, typos (optional)
 #   On push only    : cargo-test (too slow for every commit)
 
 set -euo pipefail
@@ -63,6 +63,22 @@ if ! cargo clippy --all-targets --all-features -- -D warnings; then
     exit 1
 fi
 
+# ── Spell check (typos) — optional ───────────────────────────────────────
+if command -v typos &>/dev/null; then
+    if [ -f "${REPO_ROOT}/.typos.toml" ]; then
+        if ! typos --config "${REPO_ROOT}/.typos.toml"; then
+            echo ""
+            echo "Commit aborted: typos spell check found errors."
+            echo "Fix the spelling issues above, then re-stage and commit."
+            echo "To add exceptions, edit .typos.toml."
+            exit 1
+        fi
+    fi
+else
+    echo "Note: typos is not installed — skipping spell check."
+    echo "  Install: cargo install typos-cli"
+fi
+
 echo "All pre-commit checks passed."
 HOOK_SCRIPT
 
@@ -96,6 +112,7 @@ echo "The pre-commit hook runs on every 'git commit':"
 echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. cargo fmt --all -- --check"
 echo "  3. cargo clippy --all-targets --all-features -- -D warnings"
+echo "  4. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"

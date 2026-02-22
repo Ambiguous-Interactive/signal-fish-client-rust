@@ -147,7 +147,7 @@ let (transport, _, _) = MockTransport::new(vec![
 
 ## Test Organization
 
-```
+```text
 tests/
   client_tests.rs     ← integration tests (public API only)
   common/

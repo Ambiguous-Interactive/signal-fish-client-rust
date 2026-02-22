@@ -97,11 +97,11 @@ pub struct WebSocketTransport { /* ... */ }
 
 ## MSRV Policy
 
-Current MSRV: **Rust 1.75.0**
+Current MSRV: **Rust 1.85.0**
 
 ```toml
 [package]
-rust-version = "1.75.0"
+rust-version = "1.85.0"
 ```
 
 ### MSRV Note on AFIT
@@ -118,7 +118,7 @@ used in this crate for:
 - name: Test on MSRV
   uses: dtolnay/rust-toolchain@master
   with:
-    toolchain: "1.75.0"
+    toolchain: "1.85.0"
 - run: cargo test --all-features
 ```
 

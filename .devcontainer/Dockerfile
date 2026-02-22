@@ -203,11 +203,11 @@ COPY --chown=vscode:vscode .devcontainer/.cargo/config.toml /home/vscode/.cargo/
 # Layer 4: MSRV Verification and Rust Components
 # =============================================================================
 
-# Verify Rust version meets minimum supported version (MSRV: 1.75.0), then
+# Verify Rust version meets minimum supported version (MSRV: 1.85.0), then
 # add rust-src for std library browsing. Combined in one layer to avoid an
 # extra image layer for a trivial command.
 RUN RUST_VERSION=$(rustc --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
-    && REQUIRED_VERSION="1.75.0" \
+    && REQUIRED_VERSION="1.85.0" \
     && if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$RUST_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then \
          echo "ERROR: Rust $RUST_VERSION does not meet MSRV $REQUIRED_VERSION" && exit 1; \
        fi \

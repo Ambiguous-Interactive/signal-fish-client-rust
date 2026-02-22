@@ -6,7 +6,7 @@ Get up and running with the Signal Fish Client SDK in minutes.
 
 Before you begin, make sure you have:
 
-- **Rust 1.75.0** or newer (`rustup update stable`)
+- **Rust 1.85.0** or newer (`rustup update stable`)
 - A **tokio** async runtime (the SDK is async-first)
 - A running **Signal Fish server** URL (e.g., `ws://localhost:3536/ws`)
 - An **App ID** registered with your Signal Fish server

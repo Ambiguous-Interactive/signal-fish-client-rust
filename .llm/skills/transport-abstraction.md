@@ -25,6 +25,7 @@ pub trait Transport: Send + 'static {
 ```
 
 Key points:
+
 - The trait bound is `Send + 'static`, NOT `Sync`.
 - `recv` returns `Option<Result<...>>`, not `Result<Option<...>>`. `None` is
   a clean close; `Some(Err(e))` is a transport error.

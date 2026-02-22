@@ -7,9 +7,9 @@
 - **Crate:** `signal-fish-client`
 - **Version:** 0.1.0
 - **Edition:** 2021
-- **MSRV:** 1.75.0
+- **MSRV:** 1.85.0
 - **License:** MIT
-- **Repository:** https://github.com/ambiguous-interactive/signal-fish-client
+- **Repository:** <https://github.com/ambiguous-interactive/signal-fish-client>
 
 ## Purpose
 
@@ -170,31 +170,37 @@ transport is closed.
 ## Key Design Decisions
 
 ### Transport Agnosticism
+
 The `Transport` trait decouples protocol logic from network I/O. Tests use
 in-memory `VecDeque`-backed transports. Production code uses WebSocket. Custom
 transports (QUIC, raw TCP, etc.) need only implement three async methods.
 
 ### Wire Compatibility
+
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
 v2 JSON protocol. Never change serde attributes without verifying against
 the server spec. See `skills/serde-patterns.md` for details.
 
 ### `#[non_exhaustive]`
+
 No public enums in this crate carry `#[non_exhaustive]`. `SignalFishEvent`,
 `ErrorCode`, `SignalFishError`, and all protocol payload structs are exhaustive.
 Adding variants to any of these enums is a semver breaking change.
 
 ### No Heavy Dependencies
+
 - No `chrono` — timestamps remain `String` from the server
 - No `bytes` — binary payloads are `Vec<u8>` with `serde_bytes`
 - No `reqwest` — HTTP is out of scope
 
 ### UUID Convention
+
 Player IDs and room IDs are `uuid::Uuid`, serialized as lowercase hyphenated
 strings to match server expectations.
 
 ### Connection / Auth Flow
+
 1. `SignalFishClient::start(transport, config)` queues `ClientMessage::Authenticate`
    immediately before spawning the transport loop.
 2. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
@@ -217,7 +223,7 @@ reference.
 
 ## `.llm/` Structure
 
-```
+```text
 .llm/
   context.md          ← you are here (canonical source of truth)
   skills/
@@ -239,6 +245,7 @@ Skills are focused reference guides for common tasks in this codebase. See
 ## Pre-commit Enforcement
 
 A pre-commit hook enforces:
+
 1. No `.llm/*.md` file exceeds 300 lines (`scripts/pre-commit-llm.py`)
 2. `skills/index.md` is auto-regenerated from skill file headings
 3. `cargo fmt --all -- --check` passes

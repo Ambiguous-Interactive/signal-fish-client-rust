@@ -12,8 +12,8 @@
   <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml">
     <img src="https://github.com/Ambiguous-Interactive/signal-fish-client/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html">
-    <img src="https://img.shields.io/badge/MSRV-1.75.0-blue.svg" alt="MSRV">
+  <a href="https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html">
+    <img src="https://img.shields.io/badge/MSRV-1.85.0-blue.svg" alt="MSRV">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
@@ -206,7 +206,7 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 ## Minimum Supported Rust Version (MSRV)
 
-**1.75.0**
+**1.85.0**
 
 Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is considered a minor version change.
 

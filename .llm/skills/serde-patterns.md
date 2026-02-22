@@ -25,6 +25,7 @@ pub enum ClientMessage {
 ```
 
 This produces JSON like:
+
 ```json
 { "type": "Authenticate", "data": { "app_id": "mb_app_abc123" } }
 { "type": "JoinRoom", "data": { "game_name": "my-game", "player_name": "Alice" } }
@@ -38,6 +39,7 @@ against the server.
 
 `ServerMessage` uses the same `#[serde(tag = "type", content = "data")]`
 pattern:
+
 ```json
 { "type": "Authenticated", "data": { "app_name": "...", "rate_limits": { ... } } }
 { "type": "RoomJoined", "data": { "room_id": "...", "room_code": "ABC123", ... } }
@@ -142,6 +144,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 ```
 
 With the `serde` feature, `Uuid` serializes as a lowercase hyphenated string:
+
 ```json
 "player_id": "550e8400-e29b-41d4-a716-446655440000"
 ```
