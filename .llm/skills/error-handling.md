@@ -7,6 +7,7 @@ Reference for thiserror patterns, SignalFishError design, and error propagation 
 Defined in `src/error.rs` using `thiserror`. Does NOT carry `#[non_exhaustive]`.
 
 ```rust
+use crate::error_codes::ErrorCode;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,7 +40,7 @@ pub enum SignalFishError {
     #[error("server error: {message}")]
     ServerError {
         message: String,
-        error_code: Option<String>,
+        error_code: Option<ErrorCode>,
     },
 
     /// An operation timed out.

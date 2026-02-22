@@ -30,7 +30,7 @@ variants**:
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
-| `ServerError` | `message: String`, `error_code: Option<String>` | The server returned an error message. |
+| `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 

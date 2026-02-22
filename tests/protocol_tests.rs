@@ -1595,6 +1595,42 @@ fn client_message_unit_variant_has_no_data() {
         val.get("data").is_none(),
         "Ping should have no 'data' field"
     );
+    let obj = val.as_object().expect("object");
+    assert_eq!(
+        obj.len(),
+        1,
+        "Ping should serialize with only the 'type' field"
+    );
+}
+
+#[test]
+fn client_message_leave_room_unit_variant_has_no_data() {
+    let msg = ClientMessage::LeaveRoom;
+    let json = serde_json::to_string(&msg).expect("serialize");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["type"], "LeaveRoom");
+    assert!(val.get("data").is_none());
+    let obj = val.as_object().expect("object");
+    assert_eq!(
+        obj.len(),
+        1,
+        "LeaveRoom should serialize with only the 'type' field"
+    );
+}
+
+#[test]
+fn client_message_leave_spectator_unit_variant_has_no_data() {
+    let msg = ClientMessage::LeaveSpectator;
+    let json = serde_json::to_string(&msg).expect("serialize");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["type"], "LeaveSpectator");
+    assert!(val.get("data").is_none());
+    let obj = val.as_object().expect("object");
+    assert_eq!(
+        obj.len(),
+        1,
+        "LeaveSpectator should serialize with only the 'type' field"
+    );
 }
 
 #[test]
@@ -1621,6 +1657,27 @@ fn server_message_unit_variant_has_no_data() {
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
     assert_eq!(val["type"], "Pong");
     assert!(val.get("data").is_none());
+    let obj = val.as_object().expect("object");
+    assert_eq!(
+        obj.len(),
+        1,
+        "Pong should serialize with only the 'type' field"
+    );
+}
+
+#[test]
+fn server_message_room_left_unit_variant_has_no_data() {
+    let msg = ServerMessage::RoomLeft;
+    let json = serde_json::to_string(&msg).expect("serialize");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["type"], "RoomLeft");
+    assert!(val.get("data").is_none());
+    let obj = val.as_object().expect("object");
+    assert_eq!(
+        obj.len(),
+        1,
+        "RoomLeft should serialize with only the 'type' field"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════

@@ -1,5 +1,6 @@
 //! Error types for the Signal Fish client.
 
+use crate::error_codes::ErrorCode;
 use thiserror::Error;
 
 /// Errors that can occur when using the Signal Fish client.
@@ -35,7 +36,7 @@ pub enum SignalFishError {
         /// Human-readable error message from the server.
         message: String,
         /// Structured error code, if provided by the server.
-        error_code: Option<String>,
+        error_code: Option<ErrorCode>,
     },
 
     /// An operation timed out.
@@ -49,3 +50,35 @@ pub enum SignalFishError {
 
 /// A specialized [`Result`] type for Signal Fish client operations.
 pub type Result<T> = std::result::Result<T, SignalFishError>;
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_error_uses_typed_error_code() {
+        let err = SignalFishError::ServerError {
+            message: "room full".into(),
+            error_code: Some(ErrorCode::RoomFull),
+        };
+
+        if let SignalFishError::ServerError {
+            message,
+            error_code,
+        } = err
+        {
+            assert_eq!(message, "room full");
+            assert_eq!(error_code, Some(ErrorCode::RoomFull));
+        } else {
+            panic!("expected ServerError");
+        }
+    }
+}

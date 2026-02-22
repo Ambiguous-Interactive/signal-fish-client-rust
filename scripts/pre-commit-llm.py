@@ -8,8 +8,6 @@ Checks:
 3. Stages the auto-generated index file with git add.
 """
 
-import os
-import re
 import subprocess
 import sys
 from pathlib import Path

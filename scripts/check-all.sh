@@ -118,6 +118,17 @@ require_cmd rustfmt "rustup component add rustfmt"
 # Clippy is a cargo subcommand; verify via cargo-clippy binary
 require_cmd cargo-clippy "rustup component add clippy"
 
+echo -e "${YELLOW}Preflight: Checking fuzz seeds for forbidden '\"data\":null'...${NC}"
+if grep -R -n -E '"data"[[:space:]]*:[[:space:]]*null' \
+    fuzz/seeds/fuzz_client_message \
+    fuzz/seeds/fuzz_server_message; then
+    echo -e "${RED}ERROR: Found forbidden '\"data\":null' in fuzz seed files.${NC}" >&2
+    echo "  Unit variants must serialize without a data field (e.g., {\"type\":\"Ping\"})." >&2
+    exit 1
+fi
+echo -e "${GREEN}Preflight: PASS${NC}"
+echo ""
+
 # ── Phase 1: cargo fmt ──────────────────────────────────────────────
 echo -e "${YELLOW}Phase 1/$TOTAL_PHASES: Checking formatting (cargo fmt)...${NC}"
 if cargo fmt --check 2>&1; then

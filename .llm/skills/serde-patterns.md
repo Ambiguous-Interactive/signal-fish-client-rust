@@ -32,6 +32,29 @@ This produces JSON like:
 { "type": "LeaveRoom" }
 ```
 
+### Unit Variants: Never include `"data": null`
+
+For adjacently-tagged enums in this crate, unit variants serialize as only a
+`type` tag. The `data` key is omitted entirely.
+
+✅ Canonical:
+
+```json
+{ "type": "Ping" }
+{ "type": "Pong" }
+{ "type": "LeaveRoom" }
+{ "type": "RoomLeft" }
+```
+
+❌ Non-canonical (do not use in fixtures/seeds):
+
+```json
+{ "type": "Ping", "data": null }
+```
+
+Apply this rule consistently in tests and fuzz seeds to avoid drift from
+serde's canonical wire format.
+
 Variant names are **PascalCase** in JSON (serde default — no `rename_all` on
 the enum itself). This matches the Signal Fish server v2 protocol exactly.
 Do NOT add `rename_all` to `ClientMessage` or `ServerMessage` without verifying

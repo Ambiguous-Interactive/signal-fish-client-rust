@@ -27,9 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SignalFishConfig` — client configuration with `new(app_id)` constructor
 - `JoinRoomParams` — builder pattern with `new(game_name, player_name)`, `.with_max_players()`, `.with_room_code()`, `.with_supports_authority()`, `.with_relay_transport()`
 - Protocol types: `PlayerId`, `RoomId`, `PlayerInfo`, `ConnectionInfo`, `RelayTransport`, `LobbyState`, `PeerConnectionInfo`, `SpectatorInfo`, `RateLimitInfo`, `ProtocolInfoPayload`, `GameDataEncoding`
-- 185 tests covering protocol serialization, event mapping, client API, error handling, and transport
+- 200 tests covering protocol serialization, event mapping, client API, error handling, and transport
 - `basic_lobby` example — full WebSocket lifecycle with Ctrl+C support
 - `custom_transport` example — channel-based loopback transport implementation
 - Comprehensive README with quick start, architecture overview, feature flags, and custom transport guide
 - `deny.toml` for dependency auditing
 - MIT license
+
+### Changed
+
+- **API change:** `SignalFishError::ServerError.error_code` now uses `Option<ErrorCode>` instead of `Option<String>`.
+- **Migration guidance:** update pattern matches and handling to account for missing server codes:
+  - Before: `SignalFishError::ServerError { message, error_code }` where `error_code` is `Option<String>`
+  - After: `SignalFishError::ServerError { message, error_code }` where `error_code` is `Option<ErrorCode>`
+  - Recommended handling: `match error_code { Some(code) => ..., None => ... }`

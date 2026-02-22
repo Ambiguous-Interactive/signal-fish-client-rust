@@ -246,7 +246,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `Serialization(serde_json::Error)` | JSON serialization / deserialization failed. |
 | `NotConnected` | Attempted an operation without an active connection. |
 | `NotInRoom` | Attempted a room operation without being in a room. |
-| `ServerError { message, error_code }` | The server returned an error. |
+| `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
 | `Timeout` | An operation exceeded its time limit. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
