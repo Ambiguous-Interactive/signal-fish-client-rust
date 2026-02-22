@@ -126,6 +126,60 @@ Three layers of validation catch this bug:
       the nav -- link to it from a docs page instead.
 - [ ] Does `mkdocs build --strict` pass locally?
 
+### Error Handling in Validation Functions
+
+Every validation function that reads files or checks the filesystem must
+handle `OSError` (Python) or propagate errors cleanly (Rust). Unhandled
+I/O errors crash the entire validation pipeline rather than producing a
+clear, actionable failure message.
+
+*Pattern (Python):*
+
+```python
+def validate_something() -> list[str]:
+    errors = []
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as e:
+        errors.append(f"  Could not read {path}: {e}")
+        return errors
+    # ... parse content ...
+    for item in items:
+        try:
+            exists = item_path.is_file()
+        except OSError as e:
+            errors.append(f"  Could not check {item_path}: {e}")
+            continue
+    return errors
+```
+
+*Checklist for validation functions:*
+
+- [ ] Is every `read_text()` / `read_to_string()` wrapped in error
+      handling?
+- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped in error
+      handling for non-critical paths?
+- [ ] Do error messages follow the same format as existing validators
+      (indented with two spaces, descriptive)?
+- [ ] Does the function continue checking remaining items after a
+      single I/O error (rather than aborting entirely)?
+
+### Comment Accuracy in Comparison Logic
+
+When validation code builds a collection for comparison (e.g., a
+`HashSet` of nav references), the comment must accurately describe
+what the collection contains and how comparisons work. Misleading
+comments about "basenames" vs "full paths" can hide subtle bugs.
+
+*Checklist for comparison logic comments:*
+
+- [ ] Does the comment accurately describe what is collected (full
+      paths, basenames, normalized forms)?
+- [ ] Does the comment explain the comparison semantics (exact match,
+      contains, prefix)?
+- [ ] If the comparison scope is limited (e.g., top-level files only),
+      is that limitation clearly stated?
+
 ## Documentation Validation: Preventing Drift
 
 ### The Problem

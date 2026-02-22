@@ -718,10 +718,11 @@ mod mkdocs_nav_validation {
         let mkdocs = read_project_file("mkdocs.yml");
         let nav_refs = extract_nav_file_references(&mkdocs);
 
-        // Build a set of just the file name (last component) for top-level
-        // comparison. Nav references may include subdirectory paths like
-        // "api/overview.md"; we use the full reference as-is since we only
-        // check top-level docs/ files here.
+        // Build a set of nav references as-is (full paths like
+        // "api/overview.md" or top-level names like "index.md").
+        // Since this test only checks top-level docs/ files, a
+        // top-level file must appear as a bare filename in the nav
+        // to be considered referenced.
         let nav_files: std::collections::HashSet<String> =
             nav_refs.into_iter().map(|(_, f)| f).collect();
 

@@ -182,7 +182,11 @@ def validate_mkdocs_nav() -> list[str]:
     if not docs_dir.is_dir():
         return errors
 
-    content = mkdocs_yml.read_text(encoding="utf-8")
+    try:
+        content = mkdocs_yml.read_text(encoding="utf-8")
+    except OSError as e:
+        errors.append(f"  Could not read {mkdocs_yml}: {e}")
+        return errors
     in_nav = False
 
     for line_num, line in enumerate(content.splitlines(), start=1):
@@ -216,7 +220,12 @@ def validate_mkdocs_nav() -> list[str]:
 
             if file_ref and file_ref.endswith(".md"):
                 full_path = docs_dir / file_ref
-                if not full_path.is_file():
+                try:
+                    exists = full_path.is_file()
+                except OSError as e:
+                    errors.append(f"  Could not check {full_path}: {e}")
+                    continue
+                if not exists:
                     errors.append(
                         f"  mkdocs.yml nav (line {line_num}) references "
                         f"'{file_ref}' but docs/{file_ref} does not exist."
