@@ -115,10 +115,7 @@ used in this crate for:
 ### Testing MSRV in CI
 
 ```yaml
-- name: Test on MSRV
-  uses: dtolnay/rust-toolchain@master
-  with:
-    toolchain: "1.85.0"
+- { name: Test on MSRV, uses: dtolnay/rust-toolchain@stable, with: { toolchain: "1.85.0" } }
 - run: cargo test --all-features
 ```
 

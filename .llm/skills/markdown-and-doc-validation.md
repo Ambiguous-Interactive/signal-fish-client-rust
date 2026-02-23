@@ -88,6 +88,16 @@ pytest scripts/test_pre_commit_llm.py -v
 - [ ] Is there a test that places misleading content inside a fence and
       asserts it never appears in the output?
 
+## YAML Workflow Snippet Shape Validation
+
+Fenced YAML workflow examples should keep step keys aligned under the same
+list-item mapping. In a step like `- name: ...`, sibling keys (`uses`, `with`,
+`run`) must align with `name` (not be over-indented).
+
+The pre-commit hook validates this shape in `.llm/*.md` fenced YAML blocks and
+fails on malformed snippets, preventing docs examples from drifting into invalid
+workflow structure.
+
 ## MkDocs Nav Validation
 
 ### The Bug Pattern

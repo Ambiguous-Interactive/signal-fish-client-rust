@@ -196,6 +196,93 @@ mod ci_workflow_policy {
         "publish-dry-run",
     ];
 
+    fn cargo_msrv_version() -> String {
+        let cargo = read_project_file("Cargo.toml");
+        cargo
+            .lines()
+            .find(|line| line.starts_with("rust-version"))
+            .and_then(|line| line.split('"').nth(1))
+            .map(std::string::ToString::to_string)
+            .expect("Cargo.toml must declare a quoted rust-version")
+    }
+
+    fn extract_job_block(contents: &str, job_name: &str) -> Option<String> {
+        let header = format!("  {job_name}:");
+        let mut in_job = false;
+        let mut job_lines = Vec::new();
+
+        for line in contents.lines() {
+            if !in_job {
+                if line.trim_end() == header {
+                    in_job = true;
+                    job_lines.push(line);
+                }
+                continue;
+            }
+
+            let is_next_job = line.starts_with("  ")
+                && !line.starts_with("    ")
+                && line.trim_end().ends_with(':');
+            if is_next_job {
+                break;
+            }
+            job_lines.push(line);
+        }
+
+        in_job.then(|| job_lines.join("\n"))
+    }
+
+    fn is_semver_like_dtolnay_ref(reference: &str) -> bool {
+        !reference.is_empty()
+            && reference.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+            && reference.chars().any(|ch| ch.is_ascii_digit())
+    }
+
+    fn validate_msrv_toolchain_step(msrv_job_block: &str, version: &str) -> Result<(), String> {
+        let has_semver_like_dtolnay_ref = msrv_job_block.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("- uses: dtolnay/rust-toolchain@")
+                .or_else(|| trimmed.strip_prefix("uses: dtolnay/rust-toolchain@"))
+                .map(|reference| {
+                    reference
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                })
+                .is_some_and(is_semver_like_dtolnay_ref)
+        });
+
+        if has_semver_like_dtolnay_ref {
+            return Err(
+                "MSRV job uses a semver-like dtolnay/rust-toolchain ref (digits/dots only). Use @stable with explicit with.toolchain instead."
+                    .to_string(),
+            );
+        }
+
+        if !msrv_job_block.contains("uses: dtolnay/rust-toolchain@stable") {
+            return Err("MSRV job is missing 'uses: dtolnay/rust-toolchain@stable'.".to_string());
+        }
+
+        let parsed_toolchain = msrv_job_block.lines().find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("toolchain:")
+                .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+                .map(std::string::ToString::to_string)
+        });
+
+        if parsed_toolchain.as_deref() != Some(version) {
+            return Err(format!(
+                "MSRV job is missing explicit 'toolchain: {version}' (quoted or unquoted) in the rust-toolchain step."
+            ));
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn ci_contains_all_required_jobs() {
         let contents = ci_contents();
@@ -235,25 +322,95 @@ mod ci_workflow_policy {
     #[test]
     fn ci_msrv_matches_cargo_toml() {
         let ci = ci_contents();
-        let cargo = read_project_file("Cargo.toml");
+        let version = cargo_msrv_version();
+        let msrv_job = extract_job_block(&ci, "msrv").unwrap_or_else(|| {
+            panic!(
+                "ci.yml is missing the 'msrv' job block under jobs:. \
+                 Expected a sibling job header '  msrv:' in .github/workflows/ci.yml"
+            )
+        });
 
-        // Extract rust-version from Cargo.toml.
-        let cargo_msrv = cargo
-            .lines()
-            .find(|line| line.starts_with("rust-version"))
-            .expect("Cargo.toml must declare a rust-version");
-        // Extract the version string between quotes.
-        let version = cargo_msrv
-            .split('"')
-            .nth(1)
-            .expect("rust-version must be quoted in Cargo.toml");
+        let validation = validate_msrv_toolchain_step(&msrv_job, &version);
 
         assert!(
-            ci.contains(version),
-            "ci.yml does not reference the MSRV '{version}' from Cargo.toml. \
-             The CI MSRV job must test the exact version declared in Cargo.toml \
-             to prevent silent breakage for downstream users."
+            validation.is_ok(),
+            "MSRV job in ci.yml does not match Cargo.toml rust-version '{version}'.\n\
+             Validation error: {}\n\
+             Extracted msrv job block:\n{msrv_job}",
+            validation
+                .err()
+                .unwrap_or_else(|| "unknown MSRV validation error".to_string())
         );
+    }
+
+    #[test]
+    fn msrv_toolchain_step_regressions_are_caught() {
+        struct Case {
+            name: &'static str,
+            job_block: &'static str,
+            expected_ok: bool,
+            expected_error_contains: Option<&'static str>,
+        }
+
+        let cases = [
+            Case {
+                name: "valid_stable_with_explicit_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: 1.85.0",
+                expected_ok: true,
+                expected_error_contains: None,
+            },
+            Case {
+                name: "valid_stable_with_quoted_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: \"1.85.0\"",
+                expected_ok: true,
+                expected_error_contains: None,
+            },
+            Case {
+                name: "semver_like_ref_without_with_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@1.85.0",
+                expected_ok: false,
+                expected_error_contains: Some("semver-like dtolnay/rust-toolchain ref"),
+            },
+            Case {
+                name: "digit_leading_sha_ref_is_not_semver_like",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@1a2b3c4d5e6f77889900aabbccddeeff00112233\n        with:\n          toolchain: 1.85.0",
+                expected_ok: false,
+                expected_error_contains: Some("missing 'uses: dtolnay/rust-toolchain@stable'"),
+            },
+            Case {
+                name: "stable_without_explicit_with_toolchain",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable",
+                expected_ok: false,
+                expected_error_contains: Some("missing explicit 'toolchain: 1.85.0'"),
+            },
+        ];
+
+        for case in cases {
+            let result = validate_msrv_toolchain_step(case.job_block, "1.85.0");
+            assert_eq!(
+                result.is_ok(),
+                case.expected_ok,
+                "MSRV validator regression for case '{}'.\n\
+                 Expected success: {}\n\
+                 Result: {:?}\n\
+                 Job block:\n{}",
+                case.name,
+                case.expected_ok,
+                result,
+                case.job_block
+            );
+
+            if let Some(expected_error_fragment) = case.expected_error_contains {
+                let error = result.expect_err("case must fail when expected_error_contains is set");
+                assert!(
+                    error.contains(expected_error_fragment),
+                    "MSRV validator regression for case '{}': expected error to contain '{}', got '{}'.",
+                    case.name,
+                    expected_error_fragment,
+                    error
+                );
+            }
+        }
     }
 
     /// Verify that key documentation and config files reference the same MSRV
@@ -262,12 +419,7 @@ mod ci_workflow_policy {
     #[test]
     #[allow(clippy::indexing_slicing)]
     fn msrv_consistent_across_key_files() {
-        let cargo = read_project_file("Cargo.toml");
-        let version = cargo
-            .lines()
-            .find(|line| line.starts_with("rust-version"))
-            .and_then(|line| line.split('"').nth(1))
-            .expect("Cargo.toml must declare a rust-version");
+        let version = cargo_msrv_version();
 
         // Files that should reference the canonical MSRV value.
         // Keep this list in sync with the MSRV drift section in
@@ -287,7 +439,7 @@ mod ci_workflow_policy {
         for path in files_to_check {
             let contents = read_project_file(path);
             assert!(
-                contents.contains(version),
+                contents.contains(&version),
                 "{path} does not reference the MSRV '{version}' from Cargo.toml. \
                  Update the MSRV reference in this file to match Cargo.toml."
             );
@@ -391,8 +543,10 @@ mod workflow_security {
     // A tag reference like `uses: actions/checkout@v4` is NOT acceptable
     // because tags are mutable and can be moved to point at different commits.
     //
-    // We allow `dtolnay/rust-toolchain@<channel>` because that action is
-    // designed to be referenced by channel name (stable, nightly, 1.85.0).
+    // We allow `dtolnay/rust-toolchain@<channel>` to be non-SHA in this test.
+    // MSRV policy is validated separately: the `msrv` job must use
+    // `dtolnay/rust-toolchain@stable` with explicit `with.toolchain` matching
+    // Cargo.toml rust-version.
     #[test]
     fn action_references_are_sha_pinned() {
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
@@ -460,6 +614,104 @@ mod workflow_security {
                 );
             }
         }
+    }
+
+    #[test]
+    fn check_workflows_script_enforces_msrv_toolchain_match() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        assert!(
+            contents.contains("mktemp -t signal-fish-toolchain-violations"),
+            "scripts/check-workflows.sh must use mktemp for temporary toolchain scan output."
+        );
+
+        assert!(
+            contents.contains("trap cleanup EXIT"),
+            "scripts/check-workflows.sh must register trap cleanup for temp file removal."
+        );
+
+        assert!(
+            contents.contains("grep_status=$?"),
+            "scripts/check-workflows.sh must capture grep exit status to distinguish no-match vs execution errors."
+        );
+
+        assert!(
+            contents.contains("@[0-9]+(\\.[0-9]+)*"),
+            "scripts/check-workflows.sh must detect only semver-like dtolnay refs (digits and dots only)."
+        );
+
+        assert!(
+            contents.contains("[ \"$grep_status\" -gt 1 ]"),
+            "scripts/check-workflows.sh must fail when grep exits with status > 1 (execution error)."
+        );
+
+        assert!(
+            contents.contains("CARGO_MSRV="),
+            "scripts/check-workflows.sh must read Cargo.toml rust-version as canonical MSRV."
+        );
+
+        assert!(
+            contents.contains("CI_MSRV_TOOLCHAIN="),
+            "scripts/check-workflows.sh must extract the msrv job toolchain from ci.yml."
+        );
+
+        assert!(
+            contents.contains("[ \"$CI_MSRV_TOOLCHAIN\" != \"$CARGO_MSRV\" ]"),
+            "scripts/check-workflows.sh must fail when ci.yml msrv toolchain does not match Cargo.toml rust-version."
+        );
+    }
+
+    /// Verify that the CARGO_MSRV empty-check properly guards subsequent
+    /// comparisons. If CARGO_MSRV extraction fails and produces an empty
+    /// string, the script must NOT fall through to compare the empty value
+    /// against CI_MSRV_TOOLCHAIN, which would produce a confusing error
+    /// message like "Cargo.toml rust-version is '' but ci.yml msrv
+    /// toolchain is '1.85.0'".
+    ///
+    /// The fix: the `if [ -z "$CARGO_MSRV" ]` block must use an `else`
+    /// (or early return) so that CI_MSRV_BLOCK extraction and the
+    /// CARGO_MSRV vs CI_MSRV_TOOLCHAIN comparison only run when
+    /// CARGO_MSRV is non-empty.
+    #[test]
+    fn check_workflows_script_guards_empty_cargo_msrv() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        // Find the line with `[ -z "$CARGO_MSRV" ]` and the line with
+        // `CI_MSRV_BLOCK=`. Between them there must be an `else` keyword
+        // (indicating the subsequent logic is inside the else branch),
+        // not just a bare `fi` (which would allow fall-through).
+        let msrv_empty_check_pos = contents
+            .find("[ -z \"$CARGO_MSRV\" ]")
+            .expect("scripts/check-workflows.sh must check for empty CARGO_MSRV");
+
+        let ci_block_extraction_pos = contents[msrv_empty_check_pos..]
+            .find("CI_MSRV_BLOCK=")
+            .map(|offset| msrv_empty_check_pos + offset)
+            .expect("scripts/check-workflows.sh must extract CI_MSRV_BLOCK after CARGO_MSRV check");
+
+        let between = &contents[msrv_empty_check_pos..ci_block_extraction_pos];
+
+        assert!(
+            between.contains("else"),
+            "scripts/check-workflows.sh: The CI_MSRV_BLOCK extraction must be \
+             inside an `else` branch of the CARGO_MSRV empty check. Without \
+             this guard, a failed CARGO_MSRV extraction falls through and \
+             produces confusing mismatch errors with an empty version string.\n\
+             Content between empty check and CI_MSRV_BLOCK extraction:\n{between}"
+        );
+
+        // Also verify there is no bare `fi` without an `else` between the
+        // empty check and CI_MSRV_BLOCK extraction. The `else` must come
+        // before any `fi` that would close the empty check's if-block.
+        let else_pos = between.find("else").unwrap();
+        let fi_before_else = between[..else_pos].lines().any(|line| line.trim() == "fi");
+
+        assert!(
+            !fi_before_else,
+            "scripts/check-workflows.sh: Found a bare `fi` before the `else` \
+             in the CARGO_MSRV empty check. This means the if-block closes \
+             before the else branch, causing fall-through on empty CARGO_MSRV."
+        );
     }
 }
 
@@ -543,6 +795,65 @@ mod dependency_policy {
 mod ci_config_validation {
     use super::*;
 
+    fn validate_sc2317_directive_line(
+        path: &str,
+        line_number: usize,
+        directive_line: &str,
+    ) -> Result<(), String> {
+        let prefix = "# shellcheck disable=SC2317";
+
+        if !directive_line.starts_with(prefix) {
+            return Err(format!(
+                "{path}:{line_number}: directive must start with '{prefix}'; got: {directive_line}"
+            ));
+        }
+
+        for forbidden in [" -- ", " — ", " – "] {
+            if directive_line.contains(forbidden) {
+                return Err(format!(
+                    "{path}:{line_number}: directive must not contain '{forbidden}'; got: {directive_line}"
+                ));
+            }
+        }
+
+        let trailing = directive_line.strip_prefix(prefix).unwrap_or("").trim();
+        if !trailing.is_empty() && !directive_line.contains("  # ") {
+            return Err(format!(
+                "{path}:{line_number}: directive rationale must use '  # '; got: {directive_line}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn validate_sc2317_directive_in_script(path: &str) -> Result<(), String> {
+        let contents = read_project_file(path);
+
+        if !contents.contains("shellcheck disable=SC2317") {
+            return Err(format!(
+                "{path}: missing 'shellcheck disable=SC2317' directive"
+            ));
+        }
+
+        if !contents.contains("trap ") {
+            return Err(format!(
+                "{path}: missing 'trap ' usage required for trap-handler SC2317 suppression"
+            ));
+        }
+
+        let (directive_line_index, directive_line) = contents
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("shellcheck disable=SC2317"))
+            .ok_or_else(|| {
+                format!(
+                    "{path}: could not locate directive line containing 'shellcheck disable=SC2317'"
+                )
+            })?;
+
+        validate_sc2317_directive_line(path, directive_line_index + 1, directive_line)
+    }
+
     /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
     /// field is an inline table (map), not an array. An array-typed `header`
     /// was a real failure in CI — lychee silently ignores malformed headers.
@@ -566,30 +877,49 @@ mod ci_config_validation {
         );
     }
 
-    /// Verify that `scripts/verify-sccache.sh` has the `shellcheck disable=SC2317`
-    /// directive where trap handlers are used. SC2317 warns about functions that
-    /// appear unreachable — but trap handlers are called indirectly by the shell,
-    /// not via direct call sites. Without this directive, ShellCheck produces
-    /// false positives on the `cleanup()` function.
+    /// Verify that trap-handler scripts use a parse-safe SC2317 directive style.
+    /// The directive line must start with `# shellcheck disable=SC2317`, avoid
+    /// inline dash separators, and if a rationale is present it must be added via
+    /// a second comment marker (`  # rationale`).
     #[test]
-    fn verify_sccache_has_shellcheck_sc2317_disable() {
-        let contents = read_project_file("scripts/verify-sccache.sh");
+    fn trap_handler_scripts_use_parse_safe_sc2317_disable_directive() {
+        for path in ["scripts/verify-sccache.sh", "scripts/check-workflows.sh"] {
+            let validation = validate_sc2317_directive_in_script(path);
+            assert!(validation.is_ok(), "{}", validation.unwrap_err());
+        }
+    }
 
-        // The script must contain a SC2317 disable directive.
-        assert!(
-            contents.contains("shellcheck disable=SC2317"),
-            "scripts/verify-sccache.sh is missing '# shellcheck disable=SC2317'. \
-             This directive is required to suppress false positives on trap handler \
-             functions that ShellCheck incorrectly flags as unreachable."
-        );
+    #[test]
+    fn sc2317_disable_directive_rejects_dash_separators() {
+        struct Case {
+            name: &'static str,
+            directive_line: &'static str,
+        }
 
-        // The script must also use `trap` to confirm it actually has trap handlers.
-        assert!(
-            contents.contains("trap "),
-            "scripts/verify-sccache.sh does not contain a 'trap' command. \
-             The SC2317 disable directive only makes sense if the script uses \
-             trap handlers."
-        );
+        let cases = [
+            Case {
+                name: "double-hyphen separator",
+                directive_line: "# shellcheck disable=SC2317 -- called indirectly via trap",
+            },
+            Case {
+                name: "em-dash separator",
+                directive_line: "# shellcheck disable=SC2317 — called indirectly via trap",
+            },
+            Case {
+                name: "en-dash separator",
+                directive_line: "# shellcheck disable=SC2317 – called indirectly via trap",
+            },
+        ];
+
+        for case in cases {
+            let result = validate_sc2317_directive_line("<case>", 1, case.directive_line);
+            assert!(
+                result.is_err(),
+                "case '{}' should be rejected but passed: {}",
+                case.name,
+                case.directive_line
+            );
+        }
     }
 
     /// Verify that `serde_bytes` is in the cargo-machete ignore list.
@@ -1008,6 +1338,94 @@ mod llm_index_validation {
         assert!(
             in_generate_index,
             "Could not find `def generate_index(` in scripts/pre-commit-llm.py"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: markdown_policy_validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod markdown_policy_validation {
+    use super::*;
+
+    fn is_heading_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let hash_count = trimmed.chars().take_while(|&ch| ch == '#').count();
+        hash_count > 0 && hash_count <= 6 && trimmed.chars().nth(hash_count) == Some(' ')
+    }
+
+    #[test]
+    fn llm_skills_headings_have_blank_lines_around_them() {
+        let skills_dir = project_root().join(".llm/skills");
+        let mut markdown_files: Vec<PathBuf> = std::fs::read_dir(&skills_dir)
+            .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", skills_dir.display()))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+
+        markdown_files.sort();
+        assert!(
+            !markdown_files.is_empty(),
+            "No markdown files found in '{}'.",
+            skills_dir.display()
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in markdown_files {
+            let relative = path
+                .strip_prefix(project_root())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()));
+            let lines: Vec<&str> = contents.lines().collect();
+            let mut in_fenced_code_block = false;
+
+            for (idx, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    in_fenced_code_block = !in_fenced_code_block;
+                    continue;
+                }
+
+                if in_fenced_code_block {
+                    continue;
+                }
+
+                if !is_heading_line(line) {
+                    continue;
+                }
+
+                if idx > 0 && !lines[idx - 1].trim().is_empty() {
+                    violations.push(format!(
+                        "{relative}:{} heading is missing a blank line above: `{}`",
+                        idx + 1,
+                        line.trim()
+                    ));
+                }
+
+                if idx + 1 < lines.len()
+                    && !lines[idx + 1].trim().is_empty()
+                    && !is_heading_line(lines[idx + 1])
+                {
+                    violations.push(format!(
+                        "{relative}:{} heading is missing a blank line below: `{}`",
+                        idx + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Markdown heading spacing policy violations detected:\n{}",
+            violations.join("\n")
         );
     }
 }

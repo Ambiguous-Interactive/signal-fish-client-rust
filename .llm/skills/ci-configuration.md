@@ -48,12 +48,15 @@ ShellCheck because they are called indirectly by the shell, not by any visible
 call site. Suppress with a comment explaining why:
 
 ```bash
-# shellcheck disable=SC2317 — called indirectly via trap
+# shellcheck disable=SC2317  # called indirectly via trap
 cleanup() {
     rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
 ```
+
+Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second
+comment segment using ` # ` so ShellCheck parses the directive reliably.
 
 ### cargo-machete false positives with serde attributes
 
@@ -88,6 +91,27 @@ not `_..._` (underscore). Regression tests enforce this in both
 
 Bold text that acts as a section heading should be converted to a proper
 heading (`###`, `####`) rather than using `**Heading**` on its own line.
+
+### markdownlint: Heading spacing (MD022)
+
+Markdown headings must be surrounded by blank lines. A common failure pattern
+is writing prose immediately followed by a heading:
+
+```markdown
+Reference text.
+## Section
+```
+
+Use:
+
+```markdown
+Reference text.
+
+## Section
+```
+
+This rule is enforced in CI by markdownlint and by
+`tests/ci_config_tests.rs::markdown_policy_validation`.
 
 ### markdownlint: New rules in updates
 
@@ -142,6 +166,44 @@ what the code does**. Common pitfalls:
   not just panic-related ones. Use a second grep to verify a specific lint name
   is present (e.g., `clippy::unwrap_used`).
 
+### Shell scripts: Guard subsequent logic after extraction failures
+
+When a shell script extracts a value (e.g., parsing a version from a file) and
+checks whether extraction succeeded, ensure that **all subsequent logic depending
+on that value** is inside the success branch. A common bug:
+
+```bash
+# BUG: fall-through on extraction failure
+VALUE="$(awk '...' some-file)"
+if [ -z "$VALUE" ]; then
+    echo "Extraction failed"
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+# This code runs even when VALUE is empty!
+if [ "$VALUE" != "$OTHER" ]; then
+    echo "Mismatch: '$VALUE' vs '$OTHER'"  # Confusing: '' vs 'expected'
+fi
+```
+
+Fix: use `else` to guard dependent logic, or exit/continue early:
+
+```bash
+# CORRECT: else branch guards dependent logic
+VALUE="$(awk '...' some-file)"
+if [ -z "$VALUE" ]; then
+    echo "Extraction failed"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    # Only runs when VALUE is non-empty
+    if [ "$VALUE" != "$OTHER" ]; then
+        echo "Mismatch: '$VALUE' vs '$OTHER'"
+    fi
+fi
+```
+
+This pattern is enforced by the regression test
+`ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+
 ### Shell scripts: Use REPO_ROOT for path resolution
 
 Scripts that use relative paths (e.g., `src`, `tests`) will silently fail if
@@ -189,13 +251,59 @@ transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI
 for reproducible MSRV testing:
 
 ```yaml
-- uses: dtolnay/rust-toolchain@1.85.0
+- uses: dtolnay/rust-toolchain@stable
+  with:
+    toolchain: 1.85.0
 - run: cargo generate-lockfile
 - run: cargo build --locked --all-features
 - run: cargo test --locked --all-features
 ```
 
+### MSRV workflow incident: dtolnay ref vs explicit toolchain
+
+`dtolnay/rust-toolchain` action refs are action release refs, **not** Rust
+toolchain versions. A ref like `@1.100.0` can exist while being unrelated to
+the intended MSRV and silently run a newer compiler than expected.
+
+Use this pattern for MSRV jobs:
+
+```yaml
+- uses: dtolnay/rust-toolchain@stable
+  with:
+    toolchain: <msrv-from-Cargo.toml>
+```
+
+Avoid this anti-pattern:
+
+```yaml
+- uses: dtolnay/rust-toolchain@1.85.0
+```
+
+Prevention checks in this repository:
+
+- `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
+  validates the extracted `msrv` job block, not generic substring matches.
+- `tests/ci_config_tests.rs::ci_workflow_policy::msrv_toolchain_step_regressions_are_caught`
+  includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
+- `scripts/check-workflows.sh` fails fast on problematic
+  `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
+
+Implementation note: semver-like detection should match only refs made of digits
+and dots. Do not classify digit-leading SHAs (hex refs containing letters) as
+semver-like; those are handled by the normal `@stable` requirement checks.
+
 ## Validation Scripts
+
+### Failure triage checklist
+
+Start with the first command in the matching row to localize failures quickly.
+
+| Symptom in CI | First command/script to run |
+|---|---|
+| Workflow YAML/action pin/toolchain policy failure | `bash scripts/check-workflows.sh` |
+| CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
+| Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
+| Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 
 ### `scripts/ci-validate.sh`
 
@@ -212,56 +320,3 @@ Lightweight local CI validation covering the most common failure points:
 
 Full 17-phase CI parity script. Use `--quick` for the mandatory baseline
 (phases 1-3 only).
-
-### `scripts/install-hooks.sh`
-
-Installs pre-commit and pre-push hooks. Pre-commit runs: LLM line limits,
-cargo fmt, cargo clippy, typos (optional). Pre-push runs: cargo test.
-
-## CI Config Tests
-
-`tests/ci_config_tests.rs` contains data-driven tests that prevent
-configuration drift:
-
-| Test | What it validates |
-|------|-------------------|
-| `workflow_existence` | Required workflow files exist |
-| `config_existence` | Config files (`.typos.toml`, etc.) exist |
-| `script_existence` | Required scripts exist |
-| `ci_msrv_matches_cargo_toml` | CI MSRV job matches `Cargo.toml` |
-| `msrv_consistent_across_key_files` | Docs reference same MSRV as `Cargo.toml` |
-| `all_workflows_have_permissions` | Every workflow declares `permissions` |
-| `all_jobs_have_timeout` | Every job has `timeout-minutes` |
-| `action_references_are_sha_pinned` | Actions use SHA pins (except dtolnay) |
-| `index_md_uses_asterisk_emphasis` | Generated index.md uses `*` not `_` for emphasis |
-| `pre_commit_script_footer_uses_asterisk` | Script string literals use `*` emphasis |
-
-## Debugging CI Failures
-
-### Workflow: Spell Check fails
-
-1. Run `typos --config .typos.toml` locally
-2. If false positive on a word: add to `[default.extend-words]`
-3. If false positive on a variable name: add to `[default.extend-identifiers]`
-4. If legitimate typo: fix the spelling
-
-### Workflow: Link Check fails
-
-1. Run `lychee --config .lychee.toml "**/*.md"` locally
-2. If external URL is flaky: add pattern to `exclude` in `.lychee.toml`
-3. If URL does not exist yet (pre-publish): add to `exclude`
-4. If config syntax error: validate TOML with `python3 -c "import tomllib; ..."`
-
-### Workflow: Markdownlint fails
-
-1. Run `markdownlint-cli2 "**/*.md"` locally
-2. If new rule is too strict: disable in `.markdownlint.json`
-3. If formatting issue: fix the markdown
-4. Check markdownlint version — new versions add new rules
-
-### Workflow: MSRV fails
-
-1. Check `Cargo.toml` `rust-version` value
-2. Run `cargo +<msrv> build --all-features` locally
-3. If dependency requires newer Rust: bump MSRV and update all references
-4. Run `cargo test msrv_consistent` to verify no drift

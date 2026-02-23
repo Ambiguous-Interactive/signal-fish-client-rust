@@ -6,10 +6,11 @@
 #
 # This script installs a pre-commit hook that:
 #   1. Runs scripts/pre-commit-llm.py (line-limit check + skills index generation)
-#   2. Optionally uses the pre-commit framework if it is installed
+#   2. Runs markdownlint if available (to catch docs formatting drift early)
+#   3. Optionally uses the pre-commit framework if it is installed
 #
 # Hook behavior:
-#   On every commit : llm-line-limit, cargo-fmt, cargo-clippy, typos (optional)
+#   On every commit : llm-line-limit, markdownlint (optional), cargo-fmt, cargo-clippy, typos (optional)
 #   On push only    : cargo-test (too slow for every commit)
 
 set -euo pipefail
@@ -46,6 +47,26 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # ── LLM line limit + skills index ─────────────────────────────────────────
 python3 "${REPO_ROOT}/scripts/pre-commit-llm.py"
+
+# ── Markdown lint (optional) ───────────────────────────────────────────────
+if command -v markdownlint-cli2 &>/dev/null; then
+    if ! markdownlint-cli2 "**/*.md"; then
+        echo ""
+        echo "Commit aborted: markdownlint-cli2 reported Markdown issues."
+        echo "Fix the markdown issues above, then re-stage and commit."
+        exit 1
+    fi
+elif command -v markdownlint &>/dev/null; then
+    if ! markdownlint "**/*.md"; then
+        echo ""
+        echo "Commit aborted: markdownlint reported Markdown issues."
+        echo "Fix the markdown issues above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: markdownlint is not installed — skipping markdown lint."
+    echo "  Install: npm install -g markdownlint-cli2"
+fi
 
 # ── Cargo fmt check ───────────────────────────────────────────────────────
 if ! cargo fmt --all -- --check; then
@@ -110,9 +131,10 @@ echo "Pre-push hook installed at:   ${PUSH_HOOK_FILE}"
 echo ""
 echo "The pre-commit hook runs on every 'git commit':"
 echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
-echo "  2. cargo fmt --all -- --check"
-echo "  3. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  4. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  2. markdownlint on **/*.md     (optional, skipped if not installed)"
+echo "  3. cargo fmt --all -- --check"
+echo "  4. cargo clippy --all-targets --all-features -- -D warnings"
+echo "  5. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"

@@ -18,6 +18,7 @@
 #   7. shellcheck on scripts/*.sh  (optional — skipped if shellcheck not installed)
 #   8. markdownlint on *.md        (optional — skipped if markdownlint not installed)
 #   9. mkdocs nav validation       (all nav-referenced files exist in docs/)
+#  10. workflow guard checks        (delegates to scripts/check-workflows.sh)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -39,7 +40,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=9
+TOTAL_CHECKS=10
 PASSED=0
 SKIPPED=0
 
@@ -303,6 +304,19 @@ else
     else
         fail "mkdocs.yml nav references files that do not exist in docs/"
     fi
+fi
+
+# ── Check 10: workflow guard checks ─────────────────────────────────
+section_header 10 "Workflow guard checks (scripts/check-workflows.sh)"
+
+if [ -f "$SCRIPT_DIR/check-workflows.sh" ]; then
+    if bash "$SCRIPT_DIR/check-workflows.sh" 2>&1; then
+        pass "Workflow guard checks passed"
+    else
+        fail "Workflow guard checks failed"
+    fi
+else
+    skip "Workflow guard checks" "scripts/check-workflows.sh not found"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ Checks:
 
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 MAX_LINES = 300
@@ -234,6 +235,85 @@ def validate_mkdocs_nav() -> list[str]:
     return errors
 
 
+def validate_yaml_step_indentation(md_files: list[Path]) -> list[str]:
+    """Validate fenced YAML step blocks use consistent step key indentation.
+
+    Detects malformed snippets where step keys (`name:`, `uses:`, `with:`, `run:`)
+    are not aligned exactly to the list-item mapping key indentation established
+    by each `- ...` step item.
+    """
+    errors = []
+
+    for path in md_files:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read {path}: {e}")
+            continue
+
+        in_yaml_fence = False
+        fence_char = None
+        expected_step_key_indent = None
+        step_item_indent = None
+
+        for line_num, line in enumerate(content.splitlines(), start=1):
+            stripped = line.strip()
+
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                char = stripped[0]
+                if fence_char is not None:
+                    if char == fence_char:
+                        fence_char = None
+                        in_yaml_fence = False
+                        expected_step_key_indent = None
+                        step_item_indent = None
+                    continue
+
+                fence_char = char
+                fence_lang = stripped[3:].strip().lower()
+                in_yaml_fence = fence_lang in {"yaml", "yml"}
+                expected_step_key_indent = None
+                step_item_indent = None
+                continue
+
+            if fence_char is None or not in_yaml_fence:
+                continue
+
+            step_name_match = re.match(r"^(\s*)-\s+name\s*:", line)
+            if step_name_match:
+                step_item_indent = len(step_name_match.group(1))
+                expected_step_key_indent = step_item_indent + 2
+                continue
+
+            # Keep alignment context only when a sibling top-level step item starts.
+            # Nested list items under `with`/other mappings must not reset alignment.
+            step_item_match = re.match(r"^(\s*)-\s+", line)
+            if step_item_match and step_item_indent is not None:
+                item_indent = len(step_item_match.group(1))
+                if item_indent == step_item_indent:
+                    expected_step_key_indent = step_item_indent + 2
+                continue
+
+            step_key_match = re.match(r"^(\s*)(uses|with|run)\s*:", line)
+            if step_key_match and expected_step_key_indent is not None:
+                actual_indent = len(step_key_match.group(1))
+                key_name = step_key_match.group(2)
+                if actual_indent != expected_step_key_indent:
+                    direction = (
+                        "over-indented"
+                        if actual_indent > expected_step_key_indent
+                        else "under-indented"
+                    )
+                    rel = path.relative_to(REPO_ROOT)
+                    errors.append(
+                        f"  {rel}:{line_num} malformed fenced YAML step: "
+                        f"`{key_name}:` is {direction} (got {actual_indent}, "
+                        f"expected {expected_step_key_indent})."
+                    )
+
+    return errors
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -292,7 +372,11 @@ def main() -> int:
     nav_errors = validate_mkdocs_nav()
     all_errors.extend(nav_errors)
 
-    # 6. Report all collected errors together
+    # 6. Validate fenced YAML workflow step indentation in docs (blocking)
+    yaml_step_indentation_errors = validate_yaml_step_indentation(all_md)
+    all_errors.extend(yaml_step_indentation_errors)
+
+    # 7. Report all collected errors together
     if all_errors:
         if line_count_errors:
             print(
@@ -315,6 +399,18 @@ def main() -> int:
             print(
                 "\nEvery file in mkdocs.yml nav must exist in docs/. "
                 "Either create the file or remove the nav entry.",
+                file=sys.stderr,
+            )
+        if yaml_step_indentation_errors:
+            print(
+                "\nPre-commit hook FAILED: malformed fenced YAML step indentation:",
+                file=sys.stderr,
+            )
+            for error in yaml_step_indentation_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nIn fenced YAML examples, align `uses:`, `with:`, and `run:` "
+                "with the same step item key alignment as `- name:`.",
                 file=sys.stderr,
             )
         return 1
