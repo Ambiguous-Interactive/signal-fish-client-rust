@@ -151,6 +151,10 @@ mod script_existence {
             "The check-all script runs the complete local verification suite.",
         ),
         (
+            "scripts/check-docsrs.sh",
+            "The docs.rs check script verifies nightly/docsrs rustdoc compatibility before release.",
+        ),
+        (
             "scripts/check-no-panics.sh",
             "The panic-free policy check script is used by the no-panics workflow.",
         ),
@@ -170,6 +174,102 @@ mod script_existence {
             assert!(
                 project_file_exists(path),
                 "Required script '{path}' is missing. {reason}"
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: docsrs_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod docsrs_policy {
+    use super::*;
+
+    #[test]
+    fn removed_doc_auto_cfg_feature_is_not_used() {
+        let lib_rs = read_project_file("src/lib.rs");
+        let banned_patterns = ["feature(doc_auto_cfg)"];
+
+        let found: Vec<&str> = banned_patterns
+            .iter()
+            .copied()
+            .filter(|pattern| lib_rs.contains(pattern))
+            .collect();
+
+        assert!(
+            found.is_empty(),
+            "src/lib.rs contains removed rustdoc feature gates: {found:?}. \
+             The `doc_auto_cfg` feature was removed in Rust 1.92; use docs.rs-compatible \
+             configuration without that gate."
+        );
+    }
+
+    #[test]
+    fn cargo_toml_docs_rs_metadata_is_present() {
+        let cargo_content = read_project_file("Cargo.toml");
+        let parsed: toml::Value =
+            toml::from_str(&cargo_content).expect("Cargo.toml must be valid TOML");
+
+        let docs_rs = parsed
+            .get("package")
+            .and_then(|package| package.get("metadata"))
+            .and_then(|metadata| metadata.get("docs"))
+            .and_then(|docs| docs.get("rs"))
+            .expect("Cargo.toml must define [package.metadata.docs.rs]");
+
+        let all_features = docs_rs
+            .get("all-features")
+            .and_then(toml::Value::as_bool)
+            .or_else(|| docs_rs.get("all_features").and_then(toml::Value::as_bool))
+            .expect("[package.metadata.docs.rs] must set all-features = true");
+        assert!(
+            all_features,
+            "[package.metadata.docs.rs] must set all-features = true"
+        );
+
+        let rustdoc_args = docs_rs
+            .get("rustdoc-args")
+            .or_else(|| docs_rs.get("rustdoc_args"))
+            .and_then(toml::Value::as_array)
+            .expect("[package.metadata.docs.rs] must set rustdoc-args");
+
+        let has_docsrs_cfg = rustdoc_args.windows(2).any(|pair| {
+            pair.first().and_then(toml::Value::as_str) == Some("--cfg")
+                && pair.get(1).and_then(toml::Value::as_str) == Some("docsrs")
+        });
+
+        assert!(
+            has_docsrs_cfg,
+            "[package.metadata.docs.rs].rustdoc-args must include [\"--cfg\", \"docsrs\"]"
+        );
+    }
+
+    #[test]
+    fn ci_and_publish_workflows_run_docsrs_check_script() {
+        struct Case {
+            workflow_path: &'static str,
+            required_snippet: &'static str,
+        }
+
+        let cases = [
+            Case {
+                workflow_path: ".github/workflows/ci.yml",
+                required_snippet: "bash scripts/check-docsrs.sh",
+            },
+            Case {
+                workflow_path: ".github/workflows/publish.yml",
+                required_snippet: "bash scripts/check-docsrs.sh",
+            },
+        ];
+
+        for case in cases {
+            let contents = read_project_file(case.workflow_path);
+            assert!(
+                contents.contains(case.required_snippet),
+                "{} must run '{}'. This prevents docs.rs-only nightly breakage from reaching releases.",
+                case.workflow_path,
+                case.required_snippet
             );
         }
     }

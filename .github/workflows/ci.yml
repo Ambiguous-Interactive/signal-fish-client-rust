@@ -121,6 +121,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
       - run: cargo doc --all-features --no-deps
+      - run: rustup toolchain install nightly --profile minimal
+      - run: bash scripts/check-docsrs.sh
 
   # ──────────────────────────────────────────────────────────────
   # cargo-deny — license and advisory audit

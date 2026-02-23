@@ -219,6 +219,20 @@ else
     PHASE_RESULTS[4]="FAIL"
     FAILURES=$((FAILURES + 1))
 fi
+
+if command -v rustup &>/dev/null && rustup run nightly cargo --version &>/dev/null; then
+    echo -e "${YELLOW}  docs.rs simulation: running scripts/check-docsrs.sh${NC}"
+    if bash "$SCRIPT_DIR/check-docsrs.sh" 2>&1; then
+        echo -e "${GREEN}  docs.rs simulation: PASS${NC}"
+    else
+        echo -e "${RED}  docs.rs simulation: FAIL${NC}"
+        PHASE_RESULTS[4]="FAIL"
+        FAILURES=$((FAILURES + 1))
+    fi
+else
+    echo -e "${YELLOW}  docs.rs simulation: SKIP (nightly toolchain not installed)${NC}"
+    echo "    Install: rustup toolchain install nightly --profile minimal"
+fi
 echo ""
 
 # ── Phase 5: cargo deny ────────────────────────────────────────────

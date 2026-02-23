@@ -53,11 +53,18 @@ Use `docsrs` flag to annotate feature-gated items in docs:
 pub struct WebSocketTransport { /* ... */ }
 ```
 
+Do not use `#![cfg_attr(docsrs, feature(doc_auto_cfg))]` in crate roots.
+`doc_auto_cfg` was removed in Rust 1.92 (merged into `doc_cfg`) and breaks
+docs.rs nightly builds.
+
 ## Local Documentation Build
 
 ```shell
 # Build docs with all features, open in browser
 RUSTDOCFLAGS="--cfg docsrs" cargo doc --all-features --open --no-deps
+
+# Simulate docs.rs nightly behavior exactly as CI does
+bash scripts/check-docsrs.sh
 
 # Check for broken doc links
 cargo doc --all-features 2>&1 | grep "warning\|error"
@@ -116,8 +123,9 @@ cargo package --list
 # 4. Do a dry run
 cargo publish --dry-run --allow-dirty
 
-# 5. Check docs build cleanly
-RUSTDOCFLAGS="--cfg docsrs" cargo doc --all-features --no-deps
+# 5. Check docs build cleanly (stable + docs.rs nightly simulation)
+cargo doc --all-features --no-deps
+bash scripts/check-docsrs.sh
 
 # 6. Verify version in Cargo.toml matches tag
 grep '^version' Cargo.toml
