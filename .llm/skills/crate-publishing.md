@@ -7,14 +7,14 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
-authors = ["Ambiguous Interactive"]
+authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
 description = "Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol"
-repository = "https://github.com/ambiguous-interactive/signal-fish-client-rust"
-homepage = "https://github.com/ambiguous-interactive/signal-fish-client-rust"
+repository = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust"
+homepage = "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/"
 documentation = "https://docs.rs/signal-fish-client"
 readme = "README.md"
 keywords = ["gamedev", "signaling", "multiplayer", "networking", "matchmaking"]
@@ -33,6 +33,10 @@ include = [
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list
 - `include`: excludes `.llm/`, `scripts/`, `.github/`, target from the published package
+- `homepage`: project website / user guide (GitHub Pages URL)
+- `documentation`: API reference (docs.rs URL)
+- `.llm/context.md` must list **both** URLs separately so that LLM
+  agents can distinguish the user guide from the API docs
 
 ## docs.rs Configuration
 
@@ -177,8 +181,8 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 - 26-variant `SignalFishEvent` enum
 - 40-variant `ErrorCode` enum
 
-[Unreleased]: https://github.com/ambiguous-interactive/signal-fish-client-rust/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ambiguous-interactive/signal-fish-client-rust/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/releases/tag/v0.1.0
 ```
 
 ## Common Publishing Issues

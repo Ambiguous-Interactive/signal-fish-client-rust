@@ -314,6 +314,60 @@ def validate_yaml_step_indentation(md_files: list[Path]) -> list[str]:
     return errors
 
 
+def validate_doc_nav_card_consistency() -> list[str]:
+    """Validate that nav card labels in docs/index.md match page H1 headings.
+
+    Returns a list of error messages for mismatched labels.
+    """
+    index_path = REPO_ROOT / "docs" / "index.md"
+    docs_dir = REPO_ROOT / "docs"
+    errors = []
+
+    if not index_path.exists():
+        return errors
+
+    try:
+        content = index_path.read_text(encoding="utf-8")
+    except OSError as e:
+        errors.append(f"  Could not read {index_path}: {e}")
+        return errors
+
+    card_pattern = re.compile(
+        r"\[:octicons-arrow-right-24:\s+(.+?)\]\(([^)]+\.md)\)"
+    )
+
+    for match in card_pattern.finditer(content):
+        label = match.group(1)
+        filename = match.group(2)
+
+        # Skip external URLs
+        if filename.startswith("http"):
+            continue
+
+        target_path = docs_dir / filename
+        try:
+            target_content = target_path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read docs/{filename}: {e}")
+            continue
+
+        h1 = extract_title(target_content)
+        if h1 == "(Untitled)":
+            errors.append(
+                f"  docs/{filename} has no H1 heading. "
+                f"Every docs page must start with a `# Title` heading."
+            )
+            continue
+
+        if label != h1:
+            errors.append(
+                f"  Card label \"{label}\" does not match H1 \"{h1}\" "
+                f"in docs/{filename}."
+            )
+
+    return errors
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -376,7 +430,11 @@ def main() -> int:
     yaml_step_indentation_errors = validate_yaml_step_indentation(all_md)
     all_errors.extend(yaml_step_indentation_errors)
 
-    # 7. Report all collected errors together
+    # 7. Validate nav card labels match page titles (blocking)
+    nav_card_errors = validate_doc_nav_card_consistency()
+    all_errors.extend(nav_card_errors)
+
+    # 8. Report all collected errors together
     if all_errors:
         if line_count_errors:
             print(
@@ -411,6 +469,18 @@ def main() -> int:
             print(
                 "\nIn fenced YAML examples, align `uses:`, `with:`, and `run:` "
                 "with the same step item key alignment as `- name:`.",
+                file=sys.stderr,
+            )
+        if nav_card_errors:
+            print(
+                "\nPre-commit hook FAILED: nav card labels do not match page titles:",
+                file=sys.stderr,
+            )
+            for error in nav_card_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nUpdate card labels in docs/index.md to match the H1 heading "
+                "of each target page.",
                 file=sys.stderr,
             )
         return 1

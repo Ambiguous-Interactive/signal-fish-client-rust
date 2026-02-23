@@ -190,6 +190,39 @@ comments about "basenames" vs "full paths" can hide subtle bugs.
 - [ ] If the comparison scope is limited (e.g., top-level files only),
       is that limitation clearly stated?
 
+## Navigation Card Label Consistency
+
+### The Bug Pattern
+
+Navigation cards in `docs/index.md` use the pattern
+`[:octicons-arrow-right-24: LABEL](FILENAME)`. When a page's H1 heading
+is updated but the card label is not, the two drift apart — confusing
+users who see one title on the landing page and a different title on the
+actual page.
+
+### The Fix
+
+Always use the target page's H1 heading as the card label. When
+renaming a page, update both the page heading **and** the card in
+`docs/index.md`.
+
+### Validation Layers
+
+1. **Rust test** (`tests/ci_config_tests.rs` `docs_nav_card_consistency`):
+   Extracts card links from `docs/index.md`, reads each target file's
+   H1, and asserts they match. Runs on every `cargo test`.
+
+2. **Pre-commit hook** (`scripts/pre-commit-llm.py`
+   `validate_doc_nav_card_consistency`): Same check at commit time.
+   Blocks commits with mismatched labels.
+
+### Checklist for Adding or Editing Nav Cards
+
+- [ ] Does the card label exactly match the H1 of the target page?
+- [ ] If the target page's H1 changed, is the card label updated too?
+- [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
+      test?
+
 ## Documentation Validation: Preventing Drift
 
 ### The Problem

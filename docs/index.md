@@ -81,31 +81,31 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
 <div class="grid cards" markdown>
 
-- :material-rocket-launch:{ .lg .middle } **Getting Started**
+- :material-rocket-launch:{ .lg .middle } **Installation & Quick Start**
 
     ---
 
     Install the crate, set up Tokio, and make your first connection in under five minutes.
 
-    [:octicons-arrow-right-24: Getting Started](getting-started.md)
+    [:octicons-arrow-right-24: Installation & Quick Start](getting-started.md)
 
-- :material-book-open-variant:{ .lg .middle } **API Reference**
+- :material-book-open-variant:{ .lg .middle } **Client API Reference**
 
     ---
 
-    Detailed guides for the Client, Transport trait, Events, Errors, and Protocol types.
+    Configuration, builder methods, and command reference for `SignalFishClient`.
 
-    [:octicons-arrow-right-24: API Reference](client.md)
+    [:octicons-arrow-right-24: Client API Reference](client.md)
 
-- :material-code-tags:{ .lg .middle } **Examples**
+- :material-code-tags:{ .lg .middle } **Example Walkthroughs**
 
     ---
 
     Walkthroughs of real-world usage patterns — lobby management, custom transports, and more.
 
-    [:octicons-arrow-right-24: Examples](examples.md)
+    [:octicons-arrow-right-24: Example Walkthroughs](examples.md)
 
-- :material-file-document:{ .lg .middle } **docs.rs**
+- :material-file-document:{ .lg .middle } **API Docs (docs.rs)**
 
     ---
 
@@ -122,7 +122,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Resource | URL |
 |----------|-----|
 | **GitHub Repository** | [Ambiguous-Interactive/signal-fish-client-rust](https://github.com/Ambiguous-Interactive/signal-fish-client-rust) |
-| **Documentation** | [signal-fish-client-rust](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
+| **Guide (GitHub Pages)** | [Signal Fish Client SDK](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
 | **crates.io** | [signal-fish-client](https://crates.io/crates/signal-fish-client) |
 | **docs.rs** | [signal-fish-client](https://docs.rs/signal-fish-client) |
 
