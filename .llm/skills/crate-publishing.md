@@ -168,7 +168,7 @@ jobs:
 ```shell
 # Bump version (0.1.0 → 0.2.0)
 # 1. Update version in Cargo.toml
-# 2. Update CHANGELOG.md
+# 2. Update CHANGELOG.md (user-visible changes only; exclude internal tooling/test/CI details)
 # 3. Commit: "chore: release 0.2.0"
 # 4. Tag: git tag -s v0.2.0 -m "Release 0.2.0"
 # 5. Push: git push && git push --tags

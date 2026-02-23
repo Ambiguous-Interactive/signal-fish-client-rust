@@ -85,6 +85,18 @@ def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[P
                 rf"\g<1>{crate_version}\g<3>",
             )
         ],
+        REPO_ROOT / "docs" / "client.md": [
+            (
+                re.compile(r'(sdk_version:\s*Some\(")([^"]+)("\.into\(\)\),)'),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / "docs" / "protocol.md": [
+            (
+                re.compile(r'("sdk_version"\s*:\s*")([^"]+)(")'),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
         REPO_ROOT / ".llm" / "context.md": [
             (
                 re.compile(r"(- \*\*Version:\*\*\s*)([^\s]+)"),

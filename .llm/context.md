@@ -25,6 +25,13 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## Changelog Policy
+
+Only add `CHANGELOG.md` entries for user-visible changes.
+
+- Include: public API, behavior, protocol, feature flags, error-model, MSRV/dependency changes that affect consumers.
+- Exclude: internal-only updates such as CI/script/pre-commit automation, refactors, tests, and non-behavioral maintenance.
+
 ## Architecture — 7 Core Modules
 
 | File | Purpose |

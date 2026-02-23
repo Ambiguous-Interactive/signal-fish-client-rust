@@ -20,6 +20,13 @@ User-visible means any change that can affect crate consumers, including:
 Do not add changelog entries for internal-only refactors that preserve behavior
 and public surface area.
 
+Internal implementation details must stay out of `CHANGELOG.md`, including:
+
+- CI/workflow/script changes
+- Pre-commit or release automation updates
+- Test-only additions/refactors
+- Internal code cleanup with no observable behavior/API change
+
 ## Required Workflow Step
 
 Before finalizing a user-visible change:

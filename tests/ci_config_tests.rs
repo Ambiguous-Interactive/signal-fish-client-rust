@@ -664,6 +664,27 @@ mod crate_version_consistency {
              Cargo.toml metadata snippet."
         );
     }
+
+    #[test]
+    fn sdk_version_examples_use_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+
+        let client_contents = read_project_file("docs/client.md");
+        let client_expected = format!("sdk_version: Some(\"{cargo_version}\".into()),");
+        assert!(
+            client_contents.contains(&client_expected),
+            "docs/client.md must keep its SignalFishConfig `sdk_version` example \
+             synchronized with Cargo.toml package version.\nExpected line: `{client_expected}`"
+        );
+
+        let protocol_contents = read_project_file("docs/protocol.md");
+        let protocol_expected = format!("\"sdk_version\": \"{cargo_version}\"");
+        assert!(
+            protocol_contents.contains(&protocol_expected),
+            "docs/protocol.md must keep its Authenticate payload `sdk_version` \
+             example synchronized with Cargo.toml package version.\nExpected fragment: `{protocol_expected}`"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

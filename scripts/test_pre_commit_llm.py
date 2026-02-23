@@ -305,6 +305,20 @@ class TestCrateVersionSync:
             'signal-fish-client = { version = "*", features = ["transport-websocket"] }\n',
             encoding="utf-8",
         )
+        (fake_root / "docs" / "client.md").write_text(
+            'sdk_version: Some("0.1.0".into()),\n',
+            encoding="utf-8",
+        )
+        (fake_root / "docs" / "protocol.md").write_text(
+            '{\n'
+            '  "type": "Authenticate",\n'
+            '  "data": {\n'
+            '    "sdk_version": "0.1.0",\n'
+            '    "minimum_version": "0.1.0"\n'
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
         (fake_root / ".llm" / "context.md").write_text(
             "- **Version:** 0.1.0\n",
             encoding="utf-8",
@@ -327,6 +341,8 @@ class TestCrateVersionSync:
             "README.md",
             "docs/getting-started.md",
             "docs/index.md",
+            "docs/client.md",
+            "docs/protocol.md",
             ".llm/context.md",
             ".llm/skills/crate-publishing.md",
         }
@@ -340,6 +356,12 @@ class TestCrateVersionSync:
         assert 'version = "1.2.3"' in (
             fake_root / "docs" / "index.md"
         ).read_text(encoding="utf-8")
+        assert 'sdk_version: Some("1.2.3".into()),' in (
+            fake_root / "docs" / "client.md"
+        ).read_text(encoding="utf-8")
+        protocol = (fake_root / "docs" / "protocol.md").read_text(encoding="utf-8")
+        assert '"sdk_version": "1.2.3"' in protocol
+        assert '"minimum_version": "0.1.0"' in protocol
         assert "- **Version:** 1.2.3" in (
             fake_root / ".llm" / "context.md"
         ).read_text(encoding="utf-8")

@@ -164,6 +164,10 @@ Three layers of validation catch this bug:
 
 Keep a Changelog examples must keep version links synchronized.
 
+Scope reminder: changelog entries are for user-visible behavior/API changes only.
+Do not add internal-only implementation items (CI/scripts/tests/refactors with no
+consumer impact).
+
 - `[Unreleased]` should compare from the latest released tag: `.../compare/vX.Y.Z...HEAD`
 - Latest version link (`[X.Y.Z]`) should either:
   - point to `.../releases/tag/vX.Y.Z`, or
