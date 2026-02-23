@@ -15,7 +15,7 @@
   <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml">
     <img src="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html">
+  <a href="https://doc.rust-lang.org/stable/releases.html#version-1850-2025-02-20">
     <img src="https://img.shields.io/badge/MSRV-1.85.0-blue.svg" alt="MSRV">
   </a>
   <a href="LICENSE">

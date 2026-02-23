@@ -1096,6 +1096,60 @@ mod ci_config_validation {
         );
     }
 
+    #[test]
+    fn msrv_badge_links_use_stable_rust_release_notes() {
+        struct Case {
+            path: &'static str,
+            marker: &'static str,
+            required_url: &'static str,
+        }
+
+        let cases = [
+            Case {
+                path: "README.md",
+                marker: "MSRV",
+                required_url: "https://doc.rust-lang.org/stable/releases.html",
+            },
+            Case {
+                path: "docs/index.md",
+                marker: "[![MSRV]",
+                required_url: "https://doc.rust-lang.org/stable/releases.html",
+            },
+        ];
+
+        for case in cases {
+            let contents = read_project_file(case.path);
+            let marker_line = contents
+                .lines()
+                .find(|line| line.contains(case.marker))
+                .map(std::string::ToString::to_string)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} does not contain an MSRV badge/link marker '{}'.",
+                        case.path, case.marker
+                    )
+                });
+
+            assert!(
+                contents.contains(case.required_url),
+                "{} MSRV link must target stable Rust release notes ({}) \
+                 to avoid flaky blog.rust-lang.org availability in CI.\n\
+                 Marker line: {}",
+                case.path,
+                case.required_url,
+                marker_line
+            );
+            assert!(
+                !contents.contains("https://blog.rust-lang.org/"),
+                "{} MSRV link must not target blog.rust-lang.org due to \
+                 intermittent 503 responses in CI.\n\
+                 Marker line: {}",
+                case.path,
+                marker_line
+            );
+        }
+    }
+
     /// Verify that trap-handler scripts use a parse-safe SC2317 directive style.
     /// The directive line must start with `# shellcheck disable=SC2317`, avoid
     /// inline dash separators, and if a rationale is present it must be added via
@@ -1643,10 +1697,68 @@ mod llm_index_validation {
 mod markdown_policy_validation {
     use super::*;
 
+    const LLM_MAX_LINES: usize = 300;
+
     fn is_heading_line(line: &str) -> bool {
         let trimmed = line.trim_start();
         let hash_count = trimmed.chars().take_while(|&ch| ch == '#').count();
         hash_count > 0 && hash_count <= 6 && trimmed.chars().nth(hash_count) == Some(' ')
+    }
+
+    #[test]
+    fn llm_markdown_files_respect_line_limit() {
+        let llm_dir = project_root().join(".llm");
+        let mut stack = vec![llm_dir.clone()];
+        let mut markdown_files: Vec<PathBuf> = Vec::new();
+
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", dir.display()))
+            {
+                let entry = entry
+                    .unwrap_or_else(|e| panic!("Failed to read entry in '{}': {e}", dir.display()));
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    markdown_files.push(path);
+                }
+            }
+        }
+
+        markdown_files.sort();
+        assert!(
+            !markdown_files.is_empty(),
+            "No markdown files found in '{}'.",
+            llm_dir.display()
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in markdown_files {
+            let line_count = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()))
+                .lines()
+                .count();
+            if line_count > LLM_MAX_LINES {
+                let relative = path
+                    .strip_prefix(project_root())
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                violations.push(format!(
+                    "{relative}: {line_count} lines (limit is {LLM_MAX_LINES})"
+                ));
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            ".llm/ markdown files exceed {LLM_MAX_LINES} lines:\n{}",
+            violations.join("\n")
+        );
     }
 
     #[test]

@@ -41,6 +41,23 @@ Accept = "text/html"
 Always validate `.lychee.toml` with a TOML parser before committing. The
 `scripts/ci-validate.sh` script includes automated TOML validation.
 
+### lychee: Avoid flaky external docs for badges
+
+Some external docs/blog hosts intermittently return `503` in CI even when
+links are valid. This creates nondeterministic failures in link-check jobs.
+
+For MSRV badges and similar stable references, prefer canonical, long-lived
+documentation pages over blog posts:
+
+- Prefer: `https://doc.rust-lang.org/stable/releases.html#...`
+- Avoid in badges: `https://blog.rust-lang.org/...`
+
+Regression policy:
+
+- Keep `README.md` and `docs/index.md` MSRV links pointed at
+  `doc.rust-lang.org/stable/releases.html`.
+- `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+
 ### ShellCheck SC2317 and trap handlers
 
 Functions used as `trap` handlers (`trap cleanup EXIT`) appear unreachable to
@@ -158,22 +175,11 @@ contexts, not just identifiers).
 
 ### Shell scripts: Comments must match behavior
 
-When writing CI shell scripts, ensure that **every comment accurately describes
-what the code does**. Common pitfalls:
-
-- **Scope claims:** A comment saying "scans documentation code blocks" when the
-  script only scans `.rs` files. If markdown validation is handled by a separate
-  script, say so explicitly.
-- **Attribute syntax:** If a comment says both `#![allow(...)]` (file-level) and
-  `#[allow(...)]` (module-level) are accepted, the `grep` check must match both
-  forms. Use `grep -qE '#!?\[allow\('` to make the `!` optional.
-- **Multi-line attributes:** `grep` matches one line at a time. A regex like
-  `#!\[allow\(.*clippy::unwrap_used` will fail on multi-line `#![allow( ... )]`
-  blocks. Split into two passes: one to check for the attribute open, one to
-  check for the specific lint name.
-- **Overly broad checks:** `grep -q '#\[allow('` matches *any* allow attribute,
-  not just panic-related ones. Use a second grep to verify a specific lint name
-  is present (e.g., `clippy::unwrap_used`).
+Keep comments in CI shell scripts behaviorally exact:
+- Match stated scope (for example, `.rs` only vs docs/code blocks).
+- If comments mention both `#![allow(...)]` and `#[allow(...)]`, checks must handle both (for example `grep -qE '#!?\[allow\('`).
+- Remember `grep` is line-based; validate multi-line attributes with staged checks.
+- Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
 
 ### Shell scripts: Guard subsequent logic after extraction failures
 
