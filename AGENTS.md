@@ -14,8 +14,13 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## Changelog Policy
+
+For any user-visible change, update `CHANGELOG.md` in the same PR under
+`## [Unreleased]`, following Keep a Changelog categories.
+
 ## Skills
 
 Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
 
-Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`.
+Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `changelog-discipline`, `keep-a-changelog-format`.

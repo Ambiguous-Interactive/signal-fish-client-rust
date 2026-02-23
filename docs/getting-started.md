@@ -29,14 +29,14 @@ cargo add signal-fish-client
 
 ```toml
 [dependencies]
-signal-fish-client = "0.2.2"
+signal-fish-client = "0.2.3"
 ```
 
 #### Without default features (bring your own transport)
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.2.2", default-features = false }
+signal-fish-client = { version = "0.2.3", default-features = false }
 ```
 
 !!! tip
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 !!! note
     `WebSocketTransport` requires the `transport-websocket` feature, which is enabled by default. If you disabled default features you will need to re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.2.2", default-features = false, features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.2.3", default-features = false, features = ["transport-websocket"] }
     ```
 
 ## What Happens Under the Hood

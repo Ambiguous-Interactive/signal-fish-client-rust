@@ -73,7 +73,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 !!! tip "Feature flag"
     `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.2.2", features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.2.3", features = ["transport-websocket"] }
     ```
 
 ---
