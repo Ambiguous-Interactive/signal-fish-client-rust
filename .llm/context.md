@@ -253,6 +253,7 @@ A pre-commit hook enforces:
 2. `skills/index.md` is auto-regenerated from skill file headings
 3. `cargo fmt --all -- --check` passes
 4. `cargo clippy --all-targets --all-features -- -D warnings` passes
+5. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
 
 `cargo test` is part of the mandatory workflow but runs on push, not every
 commit, because it is too slow for a blocking hook. Run it manually before

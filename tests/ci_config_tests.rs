@@ -232,19 +232,32 @@ mod ci_workflow_policy {
         in_job.then(|| job_lines.join("\n"))
     }
 
+    fn is_semver_like_dtolnay_ref(reference: &str) -> bool {
+        !reference.is_empty()
+            && reference.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+            && reference.chars().any(|ch| ch.is_ascii_digit())
+    }
+
     fn validate_msrv_toolchain_step(msrv_job_block: &str, version: &str) -> Result<(), String> {
-        let has_numeric_dtolnay_ref = msrv_job_block.lines().any(|line| {
+        let has_semver_like_dtolnay_ref = msrv_job_block.lines().any(|line| {
             let trimmed = line.trim();
             trimmed
                 .strip_prefix("- uses: dtolnay/rust-toolchain@")
                 .or_else(|| trimmed.strip_prefix("uses: dtolnay/rust-toolchain@"))
-                .and_then(|reference| reference.chars().next())
-                .is_some_and(|first| first.is_ascii_digit())
+                .map(|reference| {
+                    reference
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                })
+                .is_some_and(is_semver_like_dtolnay_ref)
         });
 
-        if has_numeric_dtolnay_ref {
+        if has_semver_like_dtolnay_ref {
             return Err(
-                "MSRV job uses a numeric dtolnay/rust-toolchain ref. Use @stable with explicit with.toolchain instead."
+                "MSRV job uses a semver-like dtolnay/rust-toolchain ref (digits/dots only). Use @stable with explicit with.toolchain instead."
                     .to_string(),
             );
         }
@@ -336,6 +349,7 @@ mod ci_workflow_policy {
             name: &'static str,
             job_block: &'static str,
             expected_ok: bool,
+            expected_error_contains: Option<&'static str>,
         }
 
         let cases = [
@@ -343,21 +357,31 @@ mod ci_workflow_policy {
                 name: "valid_stable_with_explicit_toolchain",
                 job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: 1.85.0",
                 expected_ok: true,
+                expected_error_contains: None,
             },
             Case {
                 name: "valid_stable_with_quoted_toolchain",
                 job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable\n        with:\n          toolchain: \"1.85.0\"",
                 expected_ok: true,
+                expected_error_contains: None,
             },
             Case {
-                name: "ref_only_numeric_version_without_with_toolchain",
+                name: "semver_like_ref_without_with_toolchain",
                 job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@1.85.0",
                 expected_ok: false,
+                expected_error_contains: Some("semver-like dtolnay/rust-toolchain ref"),
+            },
+            Case {
+                name: "digit_leading_sha_ref_is_not_semver_like",
+                job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@1a2b3c4d5e6f77889900aabbccddeeff00112233\n        with:\n          toolchain: 1.85.0",
+                expected_ok: false,
+                expected_error_contains: Some("missing 'uses: dtolnay/rust-toolchain@stable'"),
             },
             Case {
                 name: "stable_without_explicit_with_toolchain",
                 job_block: "  msrv:\n    steps:\n      - uses: dtolnay/rust-toolchain@stable",
                 expected_ok: false,
+                expected_error_contains: Some("missing explicit 'toolchain: 1.85.0'"),
             },
         ];
 
@@ -375,6 +399,17 @@ mod ci_workflow_policy {
                 result,
                 case.job_block
             );
+
+            if let Some(expected_error_fragment) = case.expected_error_contains {
+                let error = result.expect_err("case must fail when expected_error_contains is set");
+                assert!(
+                    error.contains(expected_error_fragment),
+                    "MSRV validator regression for case '{}': expected error to contain '{}', got '{}'.",
+                    case.name,
+                    expected_error_fragment,
+                    error
+                );
+            }
         }
     }
 
@@ -598,6 +633,11 @@ mod workflow_security {
         assert!(
             contents.contains("grep_status=$?"),
             "scripts/check-workflows.sh must capture grep exit status to distinguish no-match vs execution errors."
+        );
+
+        assert!(
+            contents.contains("@[0-9]+(\\.[0-9]+)*"),
+            "scripts/check-workflows.sh must detect only semver-like dtolnay refs (digits and dots only)."
         );
 
         assert!(

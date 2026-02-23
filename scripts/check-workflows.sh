@@ -92,9 +92,9 @@ echo ""
 # ── Phase 4: rust-toolchain usage guard — catch MSRV misconfiguration ──
 echo -e "${YELLOW}Phase 4: Checking dtolnay/rust-toolchain usage patterns...${NC}"
 
-if grep -R -n -E 'uses:[[:space:]]*dtolnay/rust-toolchain@[0-9]' .github/workflows/*.yml >"$TMP_TOOLCHAIN_VIOLATIONS"; then
+if grep -R -n -E "uses:[[:space:]]*['\"]?dtolnay/rust-toolchain@[0-9]+(\.[0-9]+)*(['\"])?([[:space:]]|$|#)" .github/workflows/*.yml >"$TMP_TOOLCHAIN_VIOLATIONS"; then
     echo -e "${RED}Phase 4: FAIL${NC}"
-    echo "Found numeric dtolnay/rust-toolchain refs (e.g. @1.x, @2.x, @3) in workflow files:"
+    echo "Found semver-like dtolnay/rust-toolchain refs (digits and dots only, e.g. @1.85.0) in workflow files:"
     cat "$TMP_TOOLCHAIN_VIOLATIONS"
     echo ""
     echo "Action: Use 'dtolnay/rust-toolchain@stable' and set the Rust version via:"
@@ -106,7 +106,7 @@ else
 
     if [ "$grep_status" -gt 1 ]; then
         echo -e "${RED}Phase 4: FAIL${NC}"
-        echo "Error: grep execution failed while scanning workflow files for numeric dtolnay refs."
+        echo "Error: grep execution failed while scanning workflow files for semver-like (digits/dots only) dtolnay refs."
         echo "Action: Verify .github/workflows/*.yml files are readable and retry."
         VIOLATIONS=$((VIOLATIONS + 1))
     else

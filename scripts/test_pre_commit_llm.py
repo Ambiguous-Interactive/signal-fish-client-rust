@@ -23,6 +23,7 @@ extract_first_paragraph = _mod.extract_first_paragraph
 extract_title = _mod.extract_title
 generate_index = _mod.generate_index
 validate_mkdocs_nav = _mod.validate_mkdocs_nav
+validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 
 
 # ===================================================================
@@ -800,3 +801,240 @@ class TestValidateMkdocsNav:
         assert len(errors) == 1
         assert "does-not-exist.md" in errors[0]
         assert "does not exist" in errors[0]
+
+
+# ===================================================================
+# Tests for validate_yaml_step_indentation
+# ===================================================================
+
+
+class TestValidateYamlStepIndentation:
+    """Tests for fenced YAML step indentation validation."""
+
+    def test_valid_yaml_step_indentation_passes(self, tmp_path, monkeypatch):
+        """Correctly aligned step keys in fenced YAML should not error."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "example.md"
+        doc.write_text(
+            "# Example\n\n"
+            "```yaml\n"
+            "- name: Test on MSRV\n"
+            "  uses: dtolnay/rust-toolchain@stable\n"
+            "  with:\n"
+            "    toolchain: 1.85.0\n"
+            "- run: cargo test --all-features\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert errors == []
+
+    def test_over_indented_uses_is_reported(self, tmp_path, monkeypatch):
+        """Over-indented uses/with keys in fenced YAML should be blocked."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "bad-example.md"
+        doc.write_text(
+            "# Bad Example\n\n"
+            "```yaml\n"
+            "- name: Test on MSRV\n"
+            "    uses: dtolnay/rust-toolchain@stable\n"
+            "    with:\n"
+            "      toolchain: 1.85.0\n"
+            "- run: cargo test --all-features\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert len(errors) == 2
+        assert "bad-example.md" in errors[0]
+        assert "`uses:` is over-indented" in errors[0]
+        assert "`with:` is over-indented" in errors[1]
+
+    def test_under_indented_step_keys_are_reported(self, tmp_path, monkeypatch):
+        """Under-indented uses/with/run keys in a step should be blocked."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "under-indented.md"
+        doc.write_text(
+            "# Under-indented Example\n\n"
+            "```yaml\n"
+            "- name: Test on MSRV\n"
+            " uses: dtolnay/rust-toolchain@stable\n"
+            " with:\n"
+            "   toolchain: 1.85.0\n"
+            " run: cargo test --all-features\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert len(errors) == 3
+        assert "under-indented.md" in errors[0]
+        assert "`uses:` is under-indented" in errors[0]
+        assert "`with:` is under-indented" in errors[1]
+        assert "`run:` is under-indented" in errors[2]
+
+    def test_nested_with_name_mapping_passes(self, tmp_path, monkeypatch):
+        """A plain nested `name:` under `with` should not be treated as a step key."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "nested-with-name.md"
+        doc.write_text(
+            "# Nested with name\n\n"
+            "```yaml\n"
+            "- name: Build\n"
+            "  uses: actions/cache@v4\n"
+            "  with:\n"
+            "    name: rust-cache\n"
+            "    path: target\n"
+            "- run: cargo test --all-features\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert errors == []
+
+    def test_nested_list_under_with_does_not_reset_step_alignment(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Nested list items under `with` should not change sibling step-key alignment."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "nested-list-with.md"
+        doc.write_text(
+            "# Nested list under with\n\n"
+            "```yaml\n"
+            "- name: Build\n"
+            "  uses: actions/example@v1\n"
+            "  with:\n"
+            "    include:\n"
+            "      - linux\n"
+            "      - macos\n"
+            "  run: echo done\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert errors == []
+
+    @pytest.mark.parametrize(
+        "fence_open,fence_close",
+        [
+            ("~~~yaml", "~~~"),
+            ("~~~YML", "~~~"),
+        ],
+    )
+    def test_tilde_yaml_fence_is_validated(
+        self,
+        tmp_path,
+        monkeypatch,
+        fence_open,
+        fence_close,
+    ):
+        """YAML in tilde fences should be validated the same as backticks."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "tilde-yaml.md"
+        doc.write_text(
+            "# Tilde YAML\n\n"
+            f"{fence_open}\n"
+            "- name: Test on MSRV\n"
+            "    uses: dtolnay/rust-toolchain@stable\n"
+            f"{fence_close}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert len(errors) == 1
+        assert "`uses:` is over-indented" in errors[0]
+
+    @pytest.mark.parametrize(
+        "fence_open",
+        [
+            "```yaml",
+            "```YAML",
+            "``` yml",
+            "```   Yaml   ",
+            "~~~ yaml",
+        ],
+    )
+    def test_fence_language_case_and_spacing_variants_are_supported(
+        self,
+        tmp_path,
+        monkeypatch,
+        fence_open,
+    ):
+        """Fence language parsing should honor supported case/spacing variants."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "fence-variants.md"
+        close = "~~~" if fence_open.startswith("~~~") else "```"
+        doc.write_text(
+            "# Fence Variants\n\n"
+            f"{fence_open}\n"
+            "- name: Build\n"
+            "    run: cargo test --all-features\n"
+            f"{close}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert len(errors) == 1
+        assert "`run:` is over-indented" in errors[0]
+
+    def test_non_yaml_fence_is_ignored(self, tmp_path, monkeypatch):
+        """Workflow-like snippets in non-yaml fences should not be checked."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "shell-example.md"
+        doc.write_text(
+            "# Shell Example\n\n"
+            "```bash\n"
+            "- name: Not YAML\n"
+            "    uses: dtolnay/rust-toolchain@stable\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_yaml_step_indentation([doc])
+        assert errors == []

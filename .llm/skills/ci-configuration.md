@@ -1,7 +1,6 @@
 # CI Configuration
 
 Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
-
 ## Config File Inventory
 
 | File | Tool | Format | Purpose |
@@ -263,9 +262,13 @@ Prevention checks in this repository:
 - `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
   validates the extracted `msrv` job block, not generic substring matches.
 - `tests/ci_config_tests.rs::ci_workflow_policy::msrv_toolchain_step_regressions_are_caught`
-  includes regression cases for `@1.*` refs and missing `with.toolchain`.
+  includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
 - `scripts/check-workflows.sh` fails fast on problematic
-  `dtolnay/rust-toolchain@1.*` usage with actionable remediation text.
+  `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
+
+Implementation note: semver-like detection should match only refs made of digits
+and dots. Do not classify digit-leading SHAs (hex refs containing letters) as
+semver-like; those are handled by the normal `@stable` requirement checks.
 
 ## Validation Scripts
 
@@ -295,58 +298,3 @@ Lightweight local CI validation covering the most common failure points:
 
 Full 17-phase CI parity script. Use `--quick` for the mandatory baseline
 (phases 1-3 only).
-
-### `scripts/install-hooks.sh`
-
-Installs pre-commit and pre-push hooks. Pre-commit runs: LLM line limits,
-cargo fmt, cargo clippy, typos (optional). Pre-push runs: cargo test.
-
-## CI Config Tests
-
-`tests/ci_config_tests.rs` contains data-driven tests that prevent
-configuration drift:
-
-| Test | What it validates |
-|------|-------------------|
-| `workflow_existence` | Required workflow files exist |
-| `config_existence` | Config files (`.typos.toml`, etc.) exist |
-| `script_existence` | Required scripts exist |
-| `ci_msrv_matches_cargo_toml` | CI MSRV job matches `Cargo.toml` |
-| `msrv_consistent_across_key_files` | Docs reference same MSRV as `Cargo.toml` |
-| `all_workflows_have_permissions` | Every workflow declares `permissions` |
-| `all_jobs_have_timeout` | Every job has `timeout-minutes` |
-| `action_references_are_sha_pinned` | Actions use SHA pins (except dtolnay) |
-| `index_md_uses_asterisk_emphasis` | Generated index.md uses `*` not `_` for emphasis |
-| `pre_commit_script_footer_uses_asterisk` | Script string literals use `*` emphasis |
-| `check_workflows_script_enforces_msrv_toolchain_match` | `check-workflows.sh` has required MSRV validation logic |
-| `check_workflows_script_guards_empty_cargo_msrv` | Empty CARGO_MSRV guards subsequent comparisons |
-
-## Debugging CI Failures
-
-### Workflow: Spell Check fails
-
-1. Run `typos --config .typos.toml` locally
-2. If false positive on a word: add to `[default.extend-words]`
-3. If false positive on a variable name: add to `[default.extend-identifiers]`
-4. If legitimate typo: fix the spelling
-
-### Workflow: Link Check fails
-
-1. Run `lychee --config .lychee.toml "**/*.md"` locally
-2. If external URL is flaky: add pattern to `exclude` in `.lychee.toml`
-3. If URL does not exist yet (pre-publish): add to `exclude`
-4. If config syntax error: validate TOML with `python3 -c "import tomllib; ..."`
-
-### Workflow: Markdownlint fails
-
-1. Run `markdownlint-cli2 "**/*.md"` locally
-2. If new rule is too strict: disable in `.markdownlint.json`
-3. If formatting issue: fix the markdown
-4. Check markdownlint version — new versions add new rules
-
-### Workflow: MSRV fails
-
-1. Check `Cargo.toml` `rust-version` value
-2. Run `cargo +<msrv> build --all-features` locally
-3. If dependency requires newer Rust: bump MSRV and update all references
-4. Run `cargo test msrv_consistent` to verify no drift
