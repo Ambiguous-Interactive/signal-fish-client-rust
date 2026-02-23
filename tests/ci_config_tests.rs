@@ -620,6 +620,59 @@ mod workflow_security {
             "scripts/check-workflows.sh must fail when ci.yml msrv toolchain does not match Cargo.toml rust-version."
         );
     }
+
+    /// Verify that the CARGO_MSRV empty-check properly guards subsequent
+    /// comparisons. If CARGO_MSRV extraction fails and produces an empty
+    /// string, the script must NOT fall through to compare the empty value
+    /// against CI_MSRV_TOOLCHAIN, which would produce a confusing error
+    /// message like "Cargo.toml rust-version is '' but ci.yml msrv
+    /// toolchain is '1.85.0'".
+    ///
+    /// The fix: the `if [ -z "$CARGO_MSRV" ]` block must use an `else`
+    /// (or early return) so that CI_MSRV_BLOCK extraction and the
+    /// CARGO_MSRV vs CI_MSRV_TOOLCHAIN comparison only run when
+    /// CARGO_MSRV is non-empty.
+    #[test]
+    fn check_workflows_script_guards_empty_cargo_msrv() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        // Find the line with `[ -z "$CARGO_MSRV" ]` and the line with
+        // `CI_MSRV_BLOCK=`. Between them there must be an `else` keyword
+        // (indicating the subsequent logic is inside the else branch),
+        // not just a bare `fi` (which would allow fall-through).
+        let msrv_empty_check_pos = contents
+            .find("[ -z \"$CARGO_MSRV\" ]")
+            .expect("scripts/check-workflows.sh must check for empty CARGO_MSRV");
+
+        let ci_block_extraction_pos = contents[msrv_empty_check_pos..]
+            .find("CI_MSRV_BLOCK=")
+            .map(|offset| msrv_empty_check_pos + offset)
+            .expect("scripts/check-workflows.sh must extract CI_MSRV_BLOCK after CARGO_MSRV check");
+
+        let between = &contents[msrv_empty_check_pos..ci_block_extraction_pos];
+
+        assert!(
+            between.contains("else"),
+            "scripts/check-workflows.sh: The CI_MSRV_BLOCK extraction must be \
+             inside an `else` branch of the CARGO_MSRV empty check. Without \
+             this guard, a failed CARGO_MSRV extraction falls through and \
+             produces confusing mismatch errors with an empty version string.\n\
+             Content between empty check and CI_MSRV_BLOCK extraction:\n{between}"
+        );
+
+        // Also verify there is no bare `fi` without an `else` between the
+        // empty check and CI_MSRV_BLOCK extraction. The `else` must come
+        // before any `fi` that would close the empty check's if-block.
+        let else_pos = between.find("else").unwrap();
+        let fi_before_else = between[..else_pos].lines().any(|line| line.trim() == "fi");
+
+        assert!(
+            !fi_before_else,
+            "scripts/check-workflows.sh: Found a bare `fi` before the `else` \
+             in the CARGO_MSRV empty check. This means the if-block closes \
+             before the else branch, causing fall-through on empty CARGO_MSRV."
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -702,6 +755,65 @@ mod dependency_policy {
 mod ci_config_validation {
     use super::*;
 
+    fn validate_sc2317_directive_line(
+        path: &str,
+        line_number: usize,
+        directive_line: &str,
+    ) -> Result<(), String> {
+        let prefix = "# shellcheck disable=SC2317";
+
+        if !directive_line.starts_with(prefix) {
+            return Err(format!(
+                "{path}:{line_number}: directive must start with '{prefix}'; got: {directive_line}"
+            ));
+        }
+
+        for forbidden in [" -- ", " — ", " – "] {
+            if directive_line.contains(forbidden) {
+                return Err(format!(
+                    "{path}:{line_number}: directive must not contain '{forbidden}'; got: {directive_line}"
+                ));
+            }
+        }
+
+        let trailing = directive_line.strip_prefix(prefix).unwrap_or("").trim();
+        if !trailing.is_empty() && !directive_line.contains("  # ") {
+            return Err(format!(
+                "{path}:{line_number}: directive rationale must use '  # '; got: {directive_line}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn validate_sc2317_directive_in_script(path: &str) -> Result<(), String> {
+        let contents = read_project_file(path);
+
+        if !contents.contains("shellcheck disable=SC2317") {
+            return Err(format!(
+                "{path}: missing 'shellcheck disable=SC2317' directive"
+            ));
+        }
+
+        if !contents.contains("trap ") {
+            return Err(format!(
+                "{path}: missing 'trap ' usage required for trap-handler SC2317 suppression"
+            ));
+        }
+
+        let (directive_line_index, directive_line) = contents
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("shellcheck disable=SC2317"))
+            .ok_or_else(|| {
+                format!(
+                    "{path}: could not locate directive line containing 'shellcheck disable=SC2317'"
+                )
+            })?;
+
+        validate_sc2317_directive_line(path, directive_line_index + 1, directive_line)
+    }
+
     /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
     /// field is an inline table (map), not an array. An array-typed `header`
     /// was a real failure in CI — lychee silently ignores malformed headers.
@@ -725,30 +837,49 @@ mod ci_config_validation {
         );
     }
 
-    /// Verify that `scripts/verify-sccache.sh` has the `shellcheck disable=SC2317`
-    /// directive where trap handlers are used. SC2317 warns about functions that
-    /// appear unreachable — but trap handlers are called indirectly by the shell,
-    /// not via direct call sites. Without this directive, ShellCheck produces
-    /// false positives on the `cleanup()` function.
+    /// Verify that trap-handler scripts use a parse-safe SC2317 directive style.
+    /// The directive line must start with `# shellcheck disable=SC2317`, avoid
+    /// inline dash separators, and if a rationale is present it must be added via
+    /// a second comment marker (`  # rationale`).
     #[test]
-    fn verify_sccache_has_shellcheck_sc2317_disable() {
-        let contents = read_project_file("scripts/verify-sccache.sh");
+    fn trap_handler_scripts_use_parse_safe_sc2317_disable_directive() {
+        for path in ["scripts/verify-sccache.sh", "scripts/check-workflows.sh"] {
+            let validation = validate_sc2317_directive_in_script(path);
+            assert!(validation.is_ok(), "{}", validation.unwrap_err());
+        }
+    }
 
-        // The script must contain a SC2317 disable directive.
-        assert!(
-            contents.contains("shellcheck disable=SC2317"),
-            "scripts/verify-sccache.sh is missing '# shellcheck disable=SC2317'. \
-             This directive is required to suppress false positives on trap handler \
-             functions that ShellCheck incorrectly flags as unreachable."
-        );
+    #[test]
+    fn sc2317_disable_directive_rejects_dash_separators() {
+        struct Case {
+            name: &'static str,
+            directive_line: &'static str,
+        }
 
-        // The script must also use `trap` to confirm it actually has trap handlers.
-        assert!(
-            contents.contains("trap "),
-            "scripts/verify-sccache.sh does not contain a 'trap' command. \
-             The SC2317 disable directive only makes sense if the script uses \
-             trap handlers."
-        );
+        let cases = [
+            Case {
+                name: "double-hyphen separator",
+                directive_line: "# shellcheck disable=SC2317 -- called indirectly via trap",
+            },
+            Case {
+                name: "em-dash separator",
+                directive_line: "# shellcheck disable=SC2317 — called indirectly via trap",
+            },
+            Case {
+                name: "en-dash separator",
+                directive_line: "# shellcheck disable=SC2317 – called indirectly via trap",
+            },
+        ];
+
+        for case in cases {
+            let result = validate_sc2317_directive_line("<case>", 1, case.directive_line);
+            assert!(
+                result.is_err(),
+                "case '{}' should be rejected but passed: {}",
+                case.name,
+                case.directive_line
+            );
+        }
     }
 
     /// Verify that `serde_bytes` is in the cargo-machete ignore list.

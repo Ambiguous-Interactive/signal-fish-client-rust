@@ -24,7 +24,7 @@ VIOLATIONS=0
 
 TMP_TOOLCHAIN_VIOLATIONS="$(mktemp -t signal-fish-toolchain-violations.XXXXXX)"
 
-# shellcheck disable=SC2317 -- called indirectly via trap
+# shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
 }
@@ -117,56 +117,56 @@ else
             echo "Could not read rust-version from Cargo.toml."
             echo "Action: Add a quoted rust-version (e.g., rust-version = \"1.85.0\") to Cargo.toml."
             VIOLATIONS=$((VIOLATIONS + 1))
-        fi
-
-        CI_MSRV_BLOCK="$(awk '
-        /^  msrv:/ {in_msrv=1}
-        in_msrv && /^  [a-zA-Z0-9-]+:/ && $0 !~ /^  msrv:/ {exit}
-        in_msrv {print}
-    ' .github/workflows/ci.yml)"
-
-        if [ -z "$CI_MSRV_BLOCK" ]; then
-            echo -e "${RED}Phase 4: FAIL${NC}"
-            echo "Action: Add an 'msrv' job to .github/workflows/ci.yml with explicit rust-toolchain setup."
-            VIOLATIONS=$((VIOLATIONS + 1))
-        elif [[ "$CI_MSRV_BLOCK" != *"uses: dtolnay/rust-toolchain@stable"* ]]; then
-            echo -e "${RED}Phase 4: FAIL${NC}"
-            echo "MSRV job exists but does not use 'dtolnay/rust-toolchain@stable' in .github/workflows/ci.yml."
-            echo "Action: In the msrv job, use:"
-            echo "  - uses: dtolnay/rust-toolchain@stable"
-            echo "    with:"
-            echo "      toolchain: <msrv-version-from-Cargo.toml>"
-            echo ""
-            echo "Current extracted msrv block:"
-            echo "$CI_MSRV_BLOCK"
-            VIOLATIONS=$((VIOLATIONS + 1))
         else
-            CI_MSRV_TOOLCHAIN="$(printf '%s\n' "$CI_MSRV_BLOCK" | awk '/toolchain:[[:space:]]*/ {sub(/.*toolchain:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}')"
-            CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\"}"
-            CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\"}"
-            CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\'}"
-            CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\'}"
+            CI_MSRV_BLOCK="$(awk '
+                /^  msrv:/ {in_msrv=1}
+                in_msrv && /^  [a-zA-Z0-9-]+:/ && $0 !~ /^  msrv:/ {exit}
+                in_msrv {print}
+            ' .github/workflows/ci.yml)"
 
-            if [ -z "$CI_MSRV_TOOLCHAIN" ]; then
+            if [ -z "$CI_MSRV_BLOCK" ]; then
                 echo -e "${RED}Phase 4: FAIL${NC}"
-                echo "MSRV job exists but does not set an explicit 'with.toolchain' value in .github/workflows/ci.yml."
-                echo "Action: In the msrv job, set:"
-                echo "  with:"
-                echo "    toolchain: $CARGO_MSRV"
-                echo ""
-                echo "Current extracted msrv block:"
-                echo "$CI_MSRV_BLOCK"
+                echo "Action: Add an 'msrv' job to .github/workflows/ci.yml with explicit rust-toolchain setup."
                 VIOLATIONS=$((VIOLATIONS + 1))
-            elif [ "$CI_MSRV_TOOLCHAIN" != "$CARGO_MSRV" ]; then
+            elif [[ "$CI_MSRV_BLOCK" != *"uses: dtolnay/rust-toolchain@stable"* ]]; then
                 echo -e "${RED}Phase 4: FAIL${NC}"
-                echo "MSRV mismatch: Cargo.toml rust-version is '$CARGO_MSRV' but ci.yml msrv toolchain is '$CI_MSRV_TOOLCHAIN'."
-                echo "Action: Update .github/workflows/ci.yml msrv toolchain to match Cargo.toml rust-version."
+                echo "MSRV job exists but does not use 'dtolnay/rust-toolchain@stable' in .github/workflows/ci.yml."
+                echo "Action: In the msrv job, use:"
+                echo "  - uses: dtolnay/rust-toolchain@stable"
+                echo "    with:"
+                echo "      toolchain: <msrv-version-from-Cargo.toml>"
                 echo ""
                 echo "Current extracted msrv block:"
                 echo "$CI_MSRV_BLOCK"
                 VIOLATIONS=$((VIOLATIONS + 1))
             else
-                echo -e "${GREEN}Phase 4: PASS${NC}"
+                CI_MSRV_TOOLCHAIN="$(printf '%s\n' "$CI_MSRV_BLOCK" | awk '/toolchain:[[:space:]]*/ {sub(/.*toolchain:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}')"
+                CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\"}"
+                CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\"}"
+                CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\'}"
+                CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\'}"
+
+                if [ -z "$CI_MSRV_TOOLCHAIN" ]; then
+                    echo -e "${RED}Phase 4: FAIL${NC}"
+                    echo "MSRV job exists but does not set an explicit 'with.toolchain' value in .github/workflows/ci.yml."
+                    echo "Action: In the msrv job, set:"
+                    echo "  with:"
+                    echo "    toolchain: $CARGO_MSRV"
+                    echo ""
+                    echo "Current extracted msrv block:"
+                    echo "$CI_MSRV_BLOCK"
+                    VIOLATIONS=$((VIOLATIONS + 1))
+                elif [ "$CI_MSRV_TOOLCHAIN" != "$CARGO_MSRV" ]; then
+                    echo -e "${RED}Phase 4: FAIL${NC}"
+                    echo "MSRV mismatch: Cargo.toml rust-version is '$CARGO_MSRV' but ci.yml msrv toolchain is '$CI_MSRV_TOOLCHAIN'."
+                    echo "Action: Update .github/workflows/ci.yml msrv toolchain to match Cargo.toml rust-version."
+                    echo ""
+                    echo "Current extracted msrv block:"
+                    echo "$CI_MSRV_BLOCK"
+                    VIOLATIONS=$((VIOLATIONS + 1))
+                else
+                    echo -e "${GREEN}Phase 4: PASS${NC}"
+                fi
             fi
         fi
     fi

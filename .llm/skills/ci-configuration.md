@@ -48,12 +48,15 @@ ShellCheck because they are called indirectly by the shell, not by any visible
 call site. Suppress with a comment explaining why:
 
 ```bash
-# shellcheck disable=SC2317 — called indirectly via trap
+# shellcheck disable=SC2317  # called indirectly via trap
 cleanup() {
     rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
 ```
+
+Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second
+comment segment using ` # ` so ShellCheck parses the directive reliably.
 
 ### cargo-machete false positives with serde attributes
 
@@ -141,6 +144,44 @@ what the code does**. Common pitfalls:
 - **Overly broad checks:** `grep -q '#\[allow('` matches *any* allow attribute,
   not just panic-related ones. Use a second grep to verify a specific lint name
   is present (e.g., `clippy::unwrap_used`).
+
+### Shell scripts: Guard subsequent logic after extraction failures
+
+When a shell script extracts a value (e.g., parsing a version from a file) and
+checks whether extraction succeeded, ensure that **all subsequent logic depending
+on that value** is inside the success branch. A common bug:
+
+```bash
+# BUG: fall-through on extraction failure
+VALUE="$(awk '...' some-file)"
+if [ -z "$VALUE" ]; then
+    echo "Extraction failed"
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+# This code runs even when VALUE is empty!
+if [ "$VALUE" != "$OTHER" ]; then
+    echo "Mismatch: '$VALUE' vs '$OTHER'"  # Confusing: '' vs 'expected'
+fi
+```
+
+Fix: use `else` to guard dependent logic, or exit/continue early:
+
+```bash
+# CORRECT: else branch guards dependent logic
+VALUE="$(awk '...' some-file)"
+if [ -z "$VALUE" ]; then
+    echo "Extraction failed"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    # Only runs when VALUE is non-empty
+    if [ "$VALUE" != "$OTHER" ]; then
+        echo "Mismatch: '$VALUE' vs '$OTHER'"
+    fi
+fi
+```
+
+This pattern is enforced by the regression test
+`ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 
@@ -277,6 +318,8 @@ configuration drift:
 | `action_references_are_sha_pinned` | Actions use SHA pins (except dtolnay) |
 | `index_md_uses_asterisk_emphasis` | Generated index.md uses `*` not `_` for emphasis |
 | `pre_commit_script_footer_uses_asterisk` | Script string literals use `*` emphasis |
+| `check_workflows_script_enforces_msrv_toolchain_match` | `check-workflows.sh` has required MSRV validation logic |
+| `check_workflows_script_guards_empty_cargo_msrv` | Empty CARGO_MSRV guards subsequent comparisons |
 
 ## Debugging CI Failures
 
