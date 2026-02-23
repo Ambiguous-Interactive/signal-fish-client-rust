@@ -98,7 +98,7 @@ FAILURES=0
 # Mark a phase as failed and increment FAILURES only once per phase.
 mark_phase_fail() {
     local phase="$1"
-    if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
+    if [ "${PHASE_RESULTS[phase]}" != "FAIL" ]; then
         FAILURES=$((FAILURES + 1))
     fi
     PHASE_RESULTS[phase]="FAIL"
@@ -196,13 +196,13 @@ if [ "$QUICK" = true ]; then
     # Jump to summary
     echo -e "${BOLD}${YELLOW}=== Summary (--quick) ===${NC}"
     for i in $(seq 1 "$TOTAL_PHASES"); do
-        case "${PHASE_RESULTS[$i]}" in
+        case "${PHASE_RESULTS[i]}" in
             PASS) color="$GREEN" ;;
             FAIL) color="$RED" ;;
             SKIP) color="$YELLOW" ;;
             *)    color="$NC" ;;
         esac
-        printf "  Phase %2d: ${color}%-4s${NC}  %s\n" "$i" "${PHASE_RESULTS[$i]}" "${PHASE_NAMES[$i]}"
+        printf "  Phase %2d: ${color}%-4s${NC}  %s\n" "$i" "${PHASE_RESULTS[i]}" "${PHASE_NAMES[i]}"
     done
     echo ""
 
@@ -610,14 +610,14 @@ echo ""
 # ── Summary ─────────────────────────────────────────────────────────
 echo -e "${BOLD}${YELLOW}=== Summary ===${NC}"
 for i in $(seq 1 "$TOTAL_PHASES"); do
-    case "${PHASE_RESULTS[$i]}" in
+    case "${PHASE_RESULTS[i]}" in
         PASS) color="$GREEN" ;;
         FAIL) color="$RED" ;;
         WARN) color="$YELLOW" ;;
         SKIP) color="$YELLOW" ;;
         *)    color="$NC" ;;
     esac
-    printf "  Phase %2d: ${color}%-4s${NC}  %s\n" "$i" "${PHASE_RESULTS[$i]}" "${PHASE_NAMES[$i]}"
+    printf "  Phase %2d: ${color}%-4s${NC}  %s\n" "$i" "${PHASE_RESULTS[i]}" "${PHASE_NAMES[i]}"
 done
 echo ""
 

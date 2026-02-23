@@ -68,6 +68,20 @@ else
     echo "  Install: npm install -g markdownlint-cli2"
 fi
 
+# ── Shell lint (optional) ──────────────────────────────────────────────────
+if command -v shellcheck &>/dev/null; then
+    if ! shellcheck "${REPO_ROOT}"/scripts/*.sh; then
+        echo ""
+        echo "Commit aborted: shellcheck reported shell script issues."
+        echo "Fix the shell issues above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: shellcheck is not installed — skipping shell lint."
+    echo "  Install: apt install shellcheck"
+    echo "       or: brew install shellcheck"
+fi
+
 # ── Cargo fmt check ───────────────────────────────────────────────────────
 if ! cargo fmt --all -- --check; then
     echo ""
@@ -132,9 +146,10 @@ echo ""
 echo "The pre-commit hook runs on every 'git commit':"
 echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. markdownlint on **/*.md     (optional, skipped if not installed)"
-echo "  3. cargo fmt --all -- --check"
-echo "  4. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  5. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  3. shellcheck scripts/*.sh     (optional, skipped if not installed)"
+echo "  4. cargo fmt --all -- --check"
+echo "  5. cargo clippy --all-targets --all-features -- -D warnings"
+echo "  6. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"

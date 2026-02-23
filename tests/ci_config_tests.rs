@@ -1065,51 +1065,77 @@ mod ci_config_validation {
 
     #[test]
     fn check_all_script_avoids_shellcheck_sc2004_array_index_style() {
-        struct Case {
-            name: &'static str,
-            path: &'static str,
-            forbidden_snippet: &'static str,
-        }
+        let path = "scripts/check-all.sh";
+        let contents = read_project_file(path);
 
-        let cases = [
-            Case {
-                name: "phase_fail_marker_uses_dollar_prefixed_index",
-                path: "scripts/check-all.sh",
-                forbidden_snippet: "PHASE_RESULTS[$phase]=\"FAIL\"",
-            },
-            Case {
-                name: "phase_fail_marker_uses_braced_dollar_prefixed_index",
-                path: "scripts/check-all.sh",
-                forbidden_snippet: "PHASE_RESULTS[${phase}]=\"FAIL\"",
-            },
-        ];
+        let offenders: Vec<(usize, String)> = contents
+            .lines()
+            .enumerate()
+            .filter_map(|(line_idx, line)| {
+                let has_phase_results_dollar_index =
+                    line.contains("PHASE_RESULTS[$") || line.contains("PHASE_RESULTS[${");
+                let has_phase_names_dollar_index =
+                    line.contains("PHASE_NAMES[$") || line.contains("PHASE_NAMES[${");
 
-        for case in cases {
-            let contents = read_project_file(case.path);
+                if has_phase_results_dollar_index || has_phase_names_dollar_index {
+                    Some((line_idx + 1, line.trim_end().to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-            let found_line = contents
-                .lines()
-                .enumerate()
-                .find(|(_, line)| line.contains(case.forbidden_snippet))
-                .map(|(line_idx, line)| (line_idx + 1, line.trim_end().to_string()));
+        assert!(
+            offenders.is_empty(),
+            "Found ShellCheck SC2004-prone array index style in {}.\n\
+             Offending lines (use [name] without '$' in array indexes):\n{}",
+            path,
+            offenders
+                .iter()
+                .map(|(line_no, line)| format!("{line_no}: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 
-            assert!(
-                found_line.is_none(),
-                "Case '{}' failed: found ShellCheck SC2004-prone array index style \
-                 in {}:{}.\n\
-                 Forbidden snippet: `{}`\n\
-                 Line: `{}`\n\
-                 Use `PHASE_RESULTS[phase]` (without `$`) for arithmetic array indexes.",
-                case.name,
-                case.path,
-                found_line.as_ref().map(|(line, _)| *line).unwrap_or(0),
-                case.forbidden_snippet,
-                found_line
-                    .as_ref()
-                    .map(|(_, line)| line.as_str())
-                    .unwrap_or("<unavailable>")
-            );
-        }
+    #[test]
+    fn install_hooks_hook_script_includes_optional_shellcheck() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        assert!(
+            contents.contains("if command -v shellcheck &>/dev/null; then"),
+            "scripts/install-hooks.sh must include an optional shellcheck block \
+             in the generated pre-commit hook."
+        );
+
+        assert!(
+            contents.contains("shellcheck \"${REPO_ROOT}\"/scripts/*.sh"),
+            "scripts/install-hooks.sh must run shellcheck on scripts/*.sh \
+             (repo-root resolved) in the generated pre-commit hook."
+        );
+    }
+
+    #[test]
+    fn ci_configuration_skill_documents_sc2004_for_reads_and_writes() {
+        let contents = read_project_file(".llm/skills/ci-configuration.md");
+
+        assert!(
+            contents.contains("applies to both reads and writes"),
+            ".llm/skills/ci-configuration.md must state that SC2004 guidance \
+             applies to both reads and writes."
+        );
+
+        assert!(
+            contents.contains("${PHASE_RESULTS[phase]}"),
+            ".llm/skills/ci-configuration.md must include a read example using \
+             $PHASE_RESULTS[phase] syntax (without '$' in the index)."
+        );
+
+        assert!(
+            contents.contains("PHASE_RESULTS[phase]=\"FAIL\""),
+            ".llm/skills/ci-configuration.md must include a write example using \
+             `PHASE_RESULTS[phase]=\"FAIL\"` (without '$' in the index)."
+        );
     }
 
     /// Verify that `serde_bytes` is in the cargo-machete ignore list.

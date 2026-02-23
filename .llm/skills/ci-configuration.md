@@ -61,13 +61,19 @@ comment segment using ` # ` so ShellCheck parses the directive reliably.
 ### ShellCheck SC2004 and array indexes
 
 Array indexes in Bash are arithmetic context. Do not prefix index variables with
-`$` inside `[...]` or ShellCheck will flag SC2004.
+`$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes.
 
 ```bash
 # WRONG
+if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
+    :
+fi
 PHASE_RESULTS[$phase]="FAIL"
 
 # CORRECT
+if [ "${PHASE_RESULTS[phase]}" != "FAIL" ]; then
+    :
+fi
 PHASE_RESULTS[phase]="FAIL"
 ```
 
