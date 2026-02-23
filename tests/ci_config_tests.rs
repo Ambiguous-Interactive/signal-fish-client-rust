@@ -1341,3 +1341,91 @@ mod llm_index_validation {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: markdown_policy_validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod markdown_policy_validation {
+    use super::*;
+
+    fn is_heading_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let hash_count = trimmed.chars().take_while(|&ch| ch == '#').count();
+        hash_count > 0 && hash_count <= 6 && trimmed.chars().nth(hash_count) == Some(' ')
+    }
+
+    #[test]
+    fn llm_skills_headings_have_blank_lines_around_them() {
+        let skills_dir = project_root().join(".llm/skills");
+        let mut markdown_files: Vec<PathBuf> = std::fs::read_dir(&skills_dir)
+            .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", skills_dir.display()))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+
+        markdown_files.sort();
+        assert!(
+            !markdown_files.is_empty(),
+            "No markdown files found in '{}'.",
+            skills_dir.display()
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in markdown_files {
+            let relative = path
+                .strip_prefix(project_root())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()));
+            let lines: Vec<&str> = contents.lines().collect();
+            let mut in_fenced_code_block = false;
+
+            for (idx, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+
+                if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                    in_fenced_code_block = !in_fenced_code_block;
+                    continue;
+                }
+
+                if in_fenced_code_block {
+                    continue;
+                }
+
+                if !is_heading_line(line) {
+                    continue;
+                }
+
+                if idx > 0 && !lines[idx - 1].trim().is_empty() {
+                    violations.push(format!(
+                        "{relative}:{} heading is missing a blank line above: `{}`",
+                        idx + 1,
+                        line.trim()
+                    ));
+                }
+
+                if idx + 1 < lines.len()
+                    && !lines[idx + 1].trim().is_empty()
+                    && !is_heading_line(lines[idx + 1])
+                {
+                    violations.push(format!(
+                        "{relative}:{} heading is missing a blank line below: `{}`",
+                        idx + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Markdown heading spacing policy violations detected:\n{}",
+            violations.join("\n")
+        );
+    }
+}

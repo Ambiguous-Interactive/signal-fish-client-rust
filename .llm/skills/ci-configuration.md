@@ -1,6 +1,7 @@
 # CI Configuration
 
 Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
+
 ## Config File Inventory
 
 | File | Tool | Format | Purpose |
@@ -90,6 +91,27 @@ not `_..._` (underscore). Regression tests enforce this in both
 
 Bold text that acts as a section heading should be converted to a proper
 heading (`###`, `####`) rather than using `**Heading**` on its own line.
+
+### markdownlint: Heading spacing (MD022)
+
+Markdown headings must be surrounded by blank lines. A common failure pattern
+is writing prose immediately followed by a heading:
+
+```markdown
+Reference text.
+## Section
+```
+
+Use:
+
+```markdown
+Reference text.
+
+## Section
+```
+
+This rule is enforced in CI by markdownlint and by
+`tests/ci_config_tests.rs::markdown_policy_validation`.
 
 ### markdownlint: New rules in updates
 
