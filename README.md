@@ -211,6 +211,18 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is considered a minor version change.
 
+## AI Disclosure
+
+> 🤖 **AI Disclosure**
+>
+> This project was developed with **substantial AI assistance**. The protocol
+> design and core technology concepts were created entirely by humans, but the
+> vast majority of the code, documentation, and tests were written with the
+> help of **Claude Opus 4.6** and **Codex 5.3**. Human oversight covered code
+> review and architectural decisions, but day-to-day implementation was
+> primarily AI-driven. This transparency is provided so users can make informed
+> decisions about using this crate.
+
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2025-2026 Ambiguous Interactive
