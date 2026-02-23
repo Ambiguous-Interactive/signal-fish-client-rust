@@ -1705,6 +1705,20 @@ mod markdown_policy_validation {
         hash_count > 0 && hash_count <= 6 && trimmed.chars().nth(hash_count) == Some(' ')
     }
 
+    fn is_list_item_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+            return true;
+        }
+
+        let Some((number, remainder)) = trimmed.split_once('.') else {
+            return false;
+        };
+        !number.is_empty()
+            && number.chars().all(|ch| ch.is_ascii_digit())
+            && remainder.starts_with(' ')
+    }
+
     #[test]
     fn llm_markdown_files_respect_line_limit() {
         let llm_dir = project_root().join(".llm");
@@ -1833,6 +1847,62 @@ mod markdown_policy_validation {
             "Markdown heading spacing policy violations detected:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn list_introduction_lines_require_blank_spacing_before_list_items() {
+        let cases = [
+            (
+                ".llm/skills/ci-configuration.md",
+                "Keep comments in CI shell scripts behaviorally exact:",
+            ),
+            (
+                ".llm/skills/ci-configuration.md",
+                "version and must be updated in sync:",
+            ),
+        ];
+
+        for (path, intro_line) in cases {
+            let content = read_project_file(path);
+            let lines: Vec<&str> = content.lines().collect();
+            let intro_idx = lines
+                .iter()
+                .position(|line| line.trim() == intro_line)
+                .unwrap_or_else(|| {
+                    panic!("Could not find intro line `{intro_line}` in {path}");
+                });
+
+            let blank_line = lines.get(intro_idx + 1).unwrap_or_else(|| {
+                panic!(
+                    "{path}:{line} intro line `{intro_line}` must be followed by a blank line and list items",
+                    line = intro_idx + 1
+                )
+            });
+            assert!(
+                blank_line.trim().is_empty(),
+                "{path}:{line} intro line `{intro_line}` must be followed by a blank line before list items",
+                line = intro_idx + 1
+            );
+
+            let first_non_empty_after_intro = lines
+                .iter()
+                .skip(intro_idx + 1)
+                .position(|line| !line.trim().is_empty())
+                .map(|offset| intro_idx + 1 + offset)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{path}:{line} intro line `{intro_line}` must be followed by list items",
+                        line = intro_idx + 1
+                    )
+                });
+
+            assert!(
+                is_list_item_line(lines[first_non_empty_after_intro]),
+                "{path}:{line} expected first non-empty line after `{intro_line}` to be a list item, found `{found}`",
+                line = first_non_empty_after_intro + 1,
+                found = lines[first_non_empty_after_intro].trim()
+            );
+        }
     }
 }
 

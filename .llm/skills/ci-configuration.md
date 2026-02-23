@@ -38,16 +38,13 @@ header = ["Accept: text/html"]
 Accept = "text/html"
 ```
 
-Always validate `.lychee.toml` with a TOML parser before committing. The
-`scripts/ci-validate.sh` script includes automated TOML validation.
+Always validate `.lychee.toml` with a TOML parser before committing. The `scripts/ci-validate.sh` script includes automated TOML validation.
 
 ### lychee: Avoid flaky external docs for badges
 
-Some external docs/blog hosts intermittently return `503` in CI even when
-links are valid. This creates nondeterministic failures in link-check jobs.
+Some external docs/blog hosts intermittently return `503` in CI even when links are valid. This creates nondeterministic failures in link-check jobs.
 
-For MSRV badges and similar stable references, prefer canonical, long-lived
-documentation pages over blog posts:
+For MSRV badges and similar stable references, prefer canonical, long-lived documentation pages over blog posts:
 
 - Prefer: `https://doc.rust-lang.org/stable/releases.html#...`
 - Avoid in badges: `https://blog.rust-lang.org/...`
@@ -72,8 +69,7 @@ cleanup() {
 trap cleanup EXIT
 ```
 
-Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second
-comment segment using ` # ` so ShellCheck parses the directive reliably.
+Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second comment segment using ` # ` so ShellCheck parses the directive reliably.
 
 ### ShellCheck SC2004 and array indexes
 
@@ -94,15 +90,11 @@ fi
 PHASE_RESULTS[phase]="FAIL"
 ```
 
-This pitfall is enforced by
-`tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
 
 ### cargo-machete false positives with serde attributes
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g.,
-`serde_bytes`) are invisible to cargo-machete's static analysis because no
-`use` or `extern crate` statement references them. Add such crates to the
-ignore list in `Cargo.toml`:
+Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete's static analysis because no `use` or `extern crate` statement references them. Add such crates to the ignore list in `Cargo.toml`:
 
 ```toml
 [package.metadata.cargo-machete]
@@ -111,11 +103,7 @@ ignored = ["serde_bytes"]
 
 ### semver-checks on new crates
 
-`cargo semver-checks` compares the current API against the base branch. When
-the base branch does not contain the crate at all (e.g., the initial PR for a
-new package), the tool will fail because there is no baseline to diff against.
-The CI workflow must check for package existence on the base branch before
-running semver-checks.
+`cargo semver-checks` compares the current API against the base branch. When the base branch does not contain the crate at all (e.g., the initial PR for a new package), the tool will fail because there is no baseline to diff against. The CI workflow must check for package existence on the base branch before running semver-checks.
 
 ### markdownlint: Emphasis conventions
 
@@ -138,6 +126,15 @@ and after each heading block).
 
 This rule is enforced in CI by markdownlint and by
 `tests/ci_config_tests.rs::markdown_policy_validation`.
+
+### markdownlint: List spacing (MD032)
+
+Markdown lists must be surrounded by blank lines. If a paragraph introduces a
+list (for example ending with a colon), add an empty line before the first list
+item.
+
+This is enforced in CI by markdownlint and by
+`tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
 
 ### markdownlint: New rules in updates
 
@@ -176,6 +173,7 @@ contexts, not just identifiers).
 ### Shell scripts: Comments must match behavior
 
 Keep comments in CI shell scripts behaviorally exact:
+
 - Match stated scope (for example, `.rs` only vs docs/code blocks).
 - If comments mention both `#![allow(...)]` and `#[allow(...)]`, checks must handle both (for example `grep -qE '#!?\[allow\('`).
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
