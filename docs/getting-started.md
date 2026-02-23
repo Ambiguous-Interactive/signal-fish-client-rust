@@ -117,7 +117,7 @@ When you call `SignalFishClient::start`, the SDK:
 
 1. **Spawns a background task** that drives the transport — reading incoming messages and writing outgoing ones.
 2. **Auto-authenticates** by immediately sending an `Authenticate` message with the App ID from your `SignalFishConfig`.
-3. **Emits typed events** on a bounded `tokio::sync::mpsc` channel (capacity **256**). Your application consumes these via the `event_rx` receiver returned from `start`.
+3. **Emits typed events** on a bounded `tokio::sync::mpsc` channel (default capacity **256**, configurable via [`SignalFishConfig::event_channel_capacity`](client.md#signalfishconfig)). Your application consumes these via the `event_rx` receiver returned from `start`.
 
 You interact with the server by calling methods on the `SignalFishClient` handle (e.g., `join_room`, `send_game_data`). These enqueue outgoing messages that the background task sends over the transport.
 
@@ -125,6 +125,8 @@ You interact with the server by calling methods on the `SignalFishClient` handle
     If your event-processing loop cannot keep up with the server, events will be
     **dropped** (with a warning logged) to avoid blocking the transport loop. The
     `Disconnected` event is always delivered. Design your handler to stay responsive.
+    You can increase the buffer by setting `event_channel_capacity` on your
+    `SignalFishConfig`.
 
 ## Next Steps
 

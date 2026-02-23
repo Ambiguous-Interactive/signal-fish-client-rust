@@ -100,12 +100,16 @@ Required second argument to `SignalFishClient::start`. Only `app_id` is required
 ```rust
 pub struct SignalFishConfig {
     pub app_id: String,
-    pub sdk_version: Option<String>,   // defaults to crate version
-    pub platform: Option<String>,      // e.g. "unity", "godot", "rust"
+    pub sdk_version: Option<String>,          // defaults to crate version
+    pub platform: Option<String>,             // e.g. "unity", "godot", "rust"
     pub game_data_format: Option<GameDataEncoding>,
+    pub event_channel_capacity: usize,        // defaults to 256
+    pub shutdown_timeout: std::time::Duration, // defaults to 1 second
 }
 
-let config = SignalFishConfig::new("mb_app_abc123");
+let config = SignalFishConfig::new("mb_app_abc123")
+    .with_event_channel_capacity(512)
+    .with_shutdown_timeout(std::time::Duration::from_secs(5));
 ```
 
 ### JoinRoomParams

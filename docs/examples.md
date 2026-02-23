@@ -363,10 +363,11 @@ shutting down.
 cargo run --example custom_transport
 ```
 
-Expected output:
+Expected output (from the simplified source above; the actual example uses
+`tracing` so output includes timestamps and log levels):
 
 ```text
-Server received: {"type":"Authenticate","data":{"app_id":"mb_app_test"}}
+Server received: {"type":"Authenticate","data":{"app_id":"mb_app_test","sdk_version":"<version>"}}
 Event: Connected (synthetic)
 Event: Authenticated — app_name=Test App
 Done — saw 2 event(s). Custom transport works!
