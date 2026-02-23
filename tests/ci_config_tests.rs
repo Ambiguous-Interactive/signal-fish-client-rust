@@ -200,9 +200,26 @@ mod docsrs_policy {
         assert!(
             found.is_empty(),
             "src/lib.rs contains removed rustdoc feature gates: {found:?}. \
-             The `doc_auto_cfg` feature was removed in Rust 1.92; use docs.rs-compatible \
+             The `doc_auto_cfg` feature is removed from rustdoc; use docs.rs-compatible \
              configuration without that gate."
         );
+    }
+
+    #[test]
+    fn doc_auto_cfg_guidance_avoids_release_specific_removal_versions() {
+        let files = [".llm/skills/crate-publishing.md"];
+
+        for path in files {
+            let contents = read_project_file(path);
+            if contents.contains("doc_auto_cfg") {
+                assert!(
+                    !contents.contains("removed in Rust "),
+                    "{path} includes release-specific wording ('removed in Rust ...') \
+                     for `doc_auto_cfg`. Prefer stable wording like 'removed from rustdoc' \
+                     to avoid stale guidance."
+                );
+            }
+        }
     }
 
     #[test]
@@ -272,6 +289,30 @@ mod docsrs_policy {
                 case.required_snippet
             );
         }
+    }
+
+    #[test]
+    fn check_all_docsrs_failure_does_not_double_count_phase_4_failures() {
+        let contents = read_project_file("scripts/check-all.sh");
+
+        assert!(
+            contents.contains("mark_phase_fail()"),
+            "scripts/check-all.sh must define mark_phase_fail() so repeated \
+             sub-check failures within the same phase do not inflate the \
+             overall FAILURES count."
+        );
+
+        let docsrs_fail_pos = contents.find("docs.rs simulation: FAIL").expect(
+            "scripts/check-all.sh must report docs.rs simulation failures in the Phase 4 block",
+        );
+        let docsrs_tail = &contents[docsrs_fail_pos..];
+
+        assert!(
+            docsrs_tail.contains("mark_phase_fail 4"),
+            "scripts/check-all.sh must use mark_phase_fail 4 when docs.rs \
+             simulation fails, so Phase 4 remains a single failed phase \
+             in the final summary."
+        );
     }
 }
 

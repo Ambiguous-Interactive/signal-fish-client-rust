@@ -1,4 +1,4 @@
-"""Tests for extract_first_paragraph, extract_title, generate_index, validate_mkdocs_nav, and validate_doc_nav_card_consistency in pre-commit-llm.py."""
+"""Tests for pre-commit-llm.py helper and validation functions."""
 
 import importlib.util
 import re
@@ -26,6 +26,7 @@ validate_mkdocs_nav = _mod.validate_mkdocs_nav
 validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
 validate_changelog_example_links = _mod.validate_changelog_example_links
+validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 
 
 # ===================================================================
@@ -1292,3 +1293,49 @@ class TestValidateChangelogExampleLinks:
             errors = validate_changelog_example_links([Path(".llm/skill.md")])
         assert len(errors) == 1
         assert ".llm/skill.md" in errors[0]
+
+
+# ===================================================================
+# Tests for validate_unstable_feature_wording
+# ===================================================================
+
+
+class TestValidateUnstableFeatureWording:
+    """Tests for stale release-specific unstable feature wording checks."""
+
+    def test_doc_auto_cfg_with_version_specific_wording_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        skill = llm_dir / "skill.md"
+        skill.write_text(
+            "# Skill\n\n"
+            "`doc_auto_cfg` was removed in Rust 1.92.\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_unstable_feature_wording([skill])
+        assert len(errors) == 1
+        assert "removed in Rust" in errors[0]
+
+    def test_doc_auto_cfg_with_stable_wording_passes(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        skill = llm_dir / "skill.md"
+        skill.write_text(
+            "# Skill\n\n"
+            "`doc_auto_cfg` was removed from rustdoc.\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_unstable_feature_wording([skill])
+        assert errors == []

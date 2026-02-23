@@ -7,6 +7,7 @@ Checks:
 2. Auto-generates .llm/skills/index.md from skill file headings and descriptions.
 3. Stages the auto-generated index file with git add.
 4. Validates that all mkdocs.yml nav references point to existing files in docs/.
+5. Rejects stale release-specific wording for unstable rustdoc removals.
 """
 
 import subprocess
@@ -466,6 +467,28 @@ def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
     return errors
 
 
+def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
+    """Reject stale release-specific wording for unstable rustdoc removals."""
+    errors = []
+
+    for path in md_files:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read {path}: {e}")
+            continue
+
+        if "doc_auto_cfg" in content and "removed in Rust " in content:
+            rel = path.relative_to(REPO_ROOT)
+            errors.append(
+                f"  {rel}: avoid release-specific wording ('removed in Rust ...') "
+                "for `doc_auto_cfg`. Use stable wording such as "
+                "'removed from rustdoc'."
+            )
+
+    return errors
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -536,7 +559,11 @@ def main() -> int:
     changelog_link_errors = validate_changelog_example_links(all_md)
     all_errors.extend(changelog_link_errors)
 
-    # 9. Report all collected errors together
+    # 9. Validate unstable feature wording in .llm markdown (blocking)
+    unstable_wording_errors = validate_unstable_feature_wording(all_md)
+    all_errors.extend(unstable_wording_errors)
+
+    # 10. Report all collected errors together
     if all_errors:
         if line_count_errors:
             print(
@@ -595,6 +622,19 @@ def main() -> int:
             print(
                 "\nIn changelog examples, [Unreleased] must compare from the latest "
                 "released version and that release link must point to the same tag.",
+                file=sys.stderr,
+            )
+        if unstable_wording_errors:
+            print(
+                "\nPre-commit hook FAILED: stale unstable-feature wording detected:",
+                file=sys.stderr,
+            )
+            for error in unstable_wording_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nAvoid release-specific claims like 'removed in Rust X.Y'. "
+                "Prefer wording that stays accurate over time, such as "
+                "'removed from rustdoc'.",
                 file=sys.stderr,
             )
         return 1

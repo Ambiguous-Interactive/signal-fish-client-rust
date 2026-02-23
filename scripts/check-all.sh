@@ -95,6 +95,15 @@ done
 
 FAILURES=0
 
+# Mark a phase as failed and increment FAILURES only once per phase.
+mark_phase_fail() {
+    local phase="$1"
+    if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
+        FAILURES=$((FAILURES + 1))
+    fi
+    PHASE_RESULTS[$phase]="FAIL"
+}
+
 # ── Helper: require a command or abort ───────────────────────────────
 require_cmd() {
     local cmd="$1"
@@ -136,8 +145,7 @@ if cargo fmt --check 2>&1; then
     PHASE_RESULTS[1]="PASS"
 else
     echo -e "${RED}Phase 1: FAIL${NC}"
-    PHASE_RESULTS[1]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 1
 fi
 echo ""
 
@@ -155,8 +163,7 @@ for feature_flags in "" "--all-features" "--no-default-features"; do
 done
 if [ "$PHASE2_FAIL" = true ]; then
     echo -e "${RED}Phase 2: FAIL${NC}"
-    PHASE_RESULTS[2]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 2
 else
     echo -e "${GREEN}Phase 2: PASS${NC}"
     PHASE_RESULTS[2]="PASS"
@@ -177,8 +184,7 @@ for feature_flags in "" "--all-features" "--no-default-features"; do
 done
 if [ "$PHASE3_FAIL" = true ]; then
     echo -e "${RED}Phase 3: FAIL${NC}"
-    PHASE_RESULTS[3]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 3
 else
     echo -e "${GREEN}Phase 3: PASS${NC}"
     PHASE_RESULTS[3]="PASS"
@@ -216,8 +222,7 @@ if RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps 2>&1; then
     PHASE_RESULTS[4]="PASS"
 else
     echo -e "${RED}Phase 4: FAIL${NC}"
-    PHASE_RESULTS[4]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 4
 fi
 
 if command -v rustup &>/dev/null && rustup run nightly cargo --version &>/dev/null; then
@@ -226,8 +231,7 @@ if command -v rustup &>/dev/null && rustup run nightly cargo --version &>/dev/nu
         echo -e "${GREEN}  docs.rs simulation: PASS${NC}"
     else
         echo -e "${RED}  docs.rs simulation: FAIL${NC}"
-        PHASE_RESULTS[4]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 4
     fi
 else
     echo -e "${YELLOW}  docs.rs simulation: SKIP (nightly toolchain not installed)${NC}"
@@ -247,8 +251,7 @@ else
         PHASE_RESULTS[5]="PASS"
     else
         echo -e "${RED}Phase 5: FAIL${NC}"
-        PHASE_RESULTS[5]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 5
     fi
 fi
 echo ""
@@ -269,8 +272,7 @@ else
         PHASE_RESULTS[6]="PASS"
     else
         echo -e "${RED}Phase 6: FAIL${NC}"
-        PHASE_RESULTS[6]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 6
     fi
 fi
 echo ""
@@ -283,8 +285,7 @@ if [ -f "$SCRIPT_DIR/check-no-panics.sh" ]; then
         PHASE_RESULTS[7]="PASS"
     else
         echo -e "${RED}Phase 7: FAIL${NC}"
-        PHASE_RESULTS[7]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 7
     fi
 else
     echo -e "${YELLOW}SKIP: scripts/check-no-panics.sh not found.${NC}"
@@ -347,8 +348,7 @@ fi
 
 if [ "$PHASE8_FAILURES" -gt 0 ]; then
     echo -e "${RED}Phase 8: FAIL ($PHASE8_FAILURES sub-check(s) failed)${NC}"
-    PHASE_RESULTS[8]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 8
 elif [ "$PHASE8_RAN" -eq 0 ]; then
     echo -e "${YELLOW}Phase 8: SKIP (no docs validation tools installed)${NC}"
     PHASE_RESULTS[8]="SKIP"
@@ -370,8 +370,7 @@ else
         PHASE_RESULTS[9]="PASS"
     else
         echo -e "${RED}Phase 9: FAIL${NC}"
-        PHASE_RESULTS[9]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 9
     fi
 fi
 echo ""
@@ -384,8 +383,7 @@ if [ -f "$SCRIPT_DIR/check-workflows.sh" ]; then
         PHASE_RESULTS[10]="PASS"
     else
         echo -e "${RED}Phase 10: FAIL${NC}"
-        PHASE_RESULTS[10]="FAIL"
-        FAILURES=$((FAILURES + 1))
+        mark_phase_fail 10
     fi
 else
     echo -e "${YELLOW}SKIP: scripts/check-workflows.sh not found.${NC}"
@@ -447,8 +445,7 @@ fi
 
 if [ "$PHASE12_FAILURES" -gt 0 ]; then
     echo -e "${RED}Phase 12: FAIL ($PHASE12_FAILURES sub-check(s) failed)${NC}"
-    PHASE_RESULTS[12]="FAIL"
-    FAILURES=$((FAILURES + 1))
+    mark_phase_fail 12
 else
     echo -e "${GREEN}Phase 12: PASS${NC}"
     PHASE_RESULTS[12]="PASS"
@@ -478,8 +475,7 @@ else
                 PHASE_RESULTS[13]="PASS"
             else
                 echo -e "${RED}Phase 13: FAIL${NC}"
-                PHASE_RESULTS[13]="FAIL"
-                FAILURES=$((FAILURES + 1))
+                mark_phase_fail 13
             fi
         else
             echo -e "${YELLOW}SKIP: Baseline revision does not contain crate source.${NC}"

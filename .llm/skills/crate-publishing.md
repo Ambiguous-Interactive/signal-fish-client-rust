@@ -54,7 +54,7 @@ pub struct WebSocketTransport { /* ... */ }
 ```
 
 Do not use `#![cfg_attr(docsrs, feature(doc_auto_cfg))]` in crate roots.
-`doc_auto_cfg` was removed in Rust 1.92 (merged into `doc_cfg`) and breaks
+`doc_auto_cfg` was removed from rustdoc (its behavior merged into `doc_cfg`) and breaks
 docs.rs nightly builds.
 
 ## Local Documentation Build
