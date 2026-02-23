@@ -97,10 +97,10 @@ pub struct SignalFishConfig {
     ///
     /// When [`SignalFishClient::shutdown`] is called, the background transport
     /// loop is given this much time to close the transport and emit a final
-    /// `Disconnected` event. If the timeout expires the task is abandoned.
+    /// `Disconnected` event. If the timeout expires the task is aborted.
     ///
-    /// Defaults to **1 second**. A zero timeout will cause the transport loop
-    /// to be abandoned immediately without waiting for graceful shutdown.
+    /// Defaults to **1 second**. A zero timeout aborts the transport loop
+    /// immediately without waiting for graceful shutdown.
     pub shutdown_timeout: Duration,
 }
 
@@ -122,14 +122,14 @@ impl SignalFishConfig {
     /// Defaults to **256**. Values below 1 are clamped to 1.
     #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
-        self.event_channel_capacity = capacity;
+        self.event_channel_capacity = capacity.max(1);
         self
     }
 
     /// Set the timeout for the graceful shutdown.
     ///
-    /// Defaults to **1 second**. A zero timeout will cause the transport loop
-    /// to be abandoned immediately without waiting for graceful shutdown.
+    /// Defaults to **1 second**. A zero timeout aborts the transport loop
+    /// immediately without waiting for graceful shutdown.
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
@@ -447,12 +447,20 @@ impl SignalFishClient {
             let _ = tx.send(());
         }
 
-        // Await the transport loop with a timeout; log a warning if it doesn't exit in time.
-        if let Some(task) = self.task.take() {
-            match tokio::time::timeout(self.shutdown_timeout, task).await {
-                Ok(_) => {}
+        // Await the transport loop with a timeout. If it doesn't exit in time,
+        // abort it so the task cannot detach and run indefinitely.
+        if let Some(mut task) = self.task.take() {
+            match tokio::time::timeout(self.shutdown_timeout, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    warn!("transport loop terminated with join error: {join_err}");
+                }
                 Err(_) => {
-                    warn!("transport loop did not exit within timeout");
+                    warn!("transport loop did not exit within timeout; aborting task");
+                    task.abort();
+                    if let Err(join_err) = task.await {
+                        debug!("transport loop aborted: {join_err}");
+                    }
                 }
             }
         }
@@ -1000,10 +1008,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_event_channel_capacity_does_not_panic() {
-        let (transport, _sent, _closed) = MockTransport::new(vec![Some(Ok(authenticated_json()))]);
-
+    async fn event_channel_capacity_is_clamped_to_one() {
         let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(0);
+        assert_eq!(config.event_channel_capacity, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_event_channel_capacity_does_not_panic() {
+        let (transport, _sent, _closed) = MockTransport::new(vec![]);
+
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(0)
+            .with_shutdown_timeout(std::time::Duration::from_millis(50));
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
         // Should not panic despite capacity 0 — clamped to 1.
@@ -1063,6 +1079,73 @@ mod tests {
 
         // Shutdown should complete successfully with the custom timeout.
         client.shutdown().await;
+        assert!(!client.is_connected());
+    }
+
+    /// Transport that hangs forever in `close()` so shutdown timeout/abort can be tested.
+    struct HangingCloseTransport {
+        close_called: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl HangingCloseTransport {
+        fn new() -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let close_called = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    close_called: Arc::clone(&close_called),
+                    dropped: Arc::clone(&dropped),
+                },
+                close_called,
+                dropped,
+            )
+        }
+    }
+
+    impl Drop for HangingCloseTransport {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[async_trait]
+    impl Transport for HangingCloseTransport {
+        async fn send(&mut self, _message: String) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            self.close_called.store(true, Ordering::Release);
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_stuck_transport_task() {
+        let (transport, close_called, dropped) = HangingCloseTransport::new();
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(20));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Drain Connected so the channel remains uncongested.
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+
+        client.shutdown().await;
+
+        assert!(
+            close_called.load(Ordering::Acquire),
+            "transport.close() should have been attempted during graceful shutdown"
+        );
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "timed-out shutdown should abort and drop the transport loop task"
+        );
         assert!(!client.is_connected());
     }
 

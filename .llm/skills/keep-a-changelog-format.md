@@ -49,6 +49,9 @@ When releasing:
 2. Keep category headings and bullets intact.
 3. Update compare links at the bottom of `CHANGELOG.md`.
 
+Do not create an undated `## [x.y.z]` section in feature PRs. Keep those
+changes under `## [Unreleased]` until release cutover.
+
 Example links:
 
 ```markdown

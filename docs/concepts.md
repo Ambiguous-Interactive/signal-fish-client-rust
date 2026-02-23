@@ -215,8 +215,7 @@ Under the hood this:
 2. The loop calls `transport.close()` and emits `SignalFishEvent::Disconnected`.
 3. `shutdown()` awaits the background task with a configurable timeout (default
    **1 second**, set via `SignalFishConfig::shutdown_timeout`). If the task does
-   not finish in time, it is abandoned (but still runs to completion in the
-   background).
+   not finish in time, it is aborted to prevent detached background work.
 
 ### Drop Fallback
 

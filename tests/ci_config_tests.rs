@@ -607,6 +607,28 @@ mod ci_workflow_policy {
 mod crate_version_consistency {
     use super::*;
 
+    fn is_semver(value: &str) -> bool {
+        let mut parts = value.split('.');
+        let Some(major) = parts.next() else {
+            return false;
+        };
+        let Some(minor) = parts.next() else {
+            return false;
+        };
+        let Some(patch) = parts.next() else {
+            return false;
+        };
+        if parts.next().is_some() {
+            return false;
+        }
+        !major.is_empty()
+            && !minor.is_empty()
+            && !patch.is_empty()
+            && major.chars().all(|c| c.is_ascii_digit())
+            && minor.chars().all(|c| c.is_ascii_digit())
+            && patch.chars().all(|c| c.is_ascii_digit())
+    }
+
     #[test]
     fn llm_context_version_matches_cargo_package_version() {
         let cargo_version = cargo_package_version();
@@ -684,6 +706,74 @@ mod crate_version_consistency {
             "docs/protocol.md must keep its Authenticate payload `sdk_version` \
              example synchronized with Cargo.toml package version.\nExpected fragment: `{protocol_expected}`"
         );
+    }
+
+    #[test]
+    fn all_semver_sdk_version_literals_in_docs_match_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let files = [
+            "README.md",
+            "docs/index.md",
+            "docs/getting-started.md",
+            "docs/client.md",
+            "docs/protocol.md",
+            "docs/examples.md",
+            "docs/events.md",
+            "docs/concepts.md",
+            "docs/errors.md",
+            "docs/transport.md",
+        ];
+
+        for path in files {
+            let contents = read_project_file(path);
+            for (line_num, line) in contents.lines().enumerate() {
+                if !line.contains("sdk_version") {
+                    continue;
+                }
+
+                for (idx, segment) in line.split('"').enumerate() {
+                    if idx % 2 == 0 || !is_semver(segment) {
+                        continue;
+                    }
+
+                    assert_eq!(
+                        segment,
+                        cargo_version,
+                        "{path}:{} contains stale semver `sdk_version` literal `{segment}`. \
+                         Expected `{cargo_version}` (from Cargo.toml) or a placeholder like `<version>`.",
+                        line_num + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changelog_current_version_header_is_dated_or_absent() {
+        let cargo_version = cargo_package_version();
+        let changelog = read_project_file("CHANGELOG.md");
+        let plain_header = format!("## [{cargo_version}]");
+        let dated_prefix = format!("## [{cargo_version}] - ");
+
+        for (line_num, line) in changelog.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed == plain_header {
+                panic!(
+                    "CHANGELOG.md:{} has an undated current-version header `{plain_header}`. \
+                     Keep feature PR entries under `## [Unreleased]`, or use \
+                     `## [{cargo_version}] - YYYY-MM-DD` for release cutover PRs.",
+                    line_num + 1
+                );
+            }
+
+            if trimmed.starts_with(&plain_header) && !trimmed.starts_with(&dated_prefix) {
+                panic!(
+                    "CHANGELOG.md:{} has malformed current-version header `{trimmed}`. \
+                     Expected either no current-version header, or `## [{cargo_version}] - YYYY-MM-DD`.",
+                    line_num + 1
+                );
+            }
+        }
     }
 }
 

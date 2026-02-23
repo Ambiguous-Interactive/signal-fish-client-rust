@@ -6,12 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
 
-## [0.2.3]
+- `SignalFishConfig::with_event_channel_capacity` now clamps values below `1` to `1`, so the stored config value matches documented behavior.
 
-### Added
+### Fixed
 
-- Added `SignalFishConfig` for minor configuration bits
+- `SignalFishClient::shutdown` now aborts the background transport task if graceful shutdown exceeds `shutdown_timeout`, preventing detached tasks from running indefinitely.
+- Hardened shutdown-related tests around tiny event channel capacities to avoid race-prone behavior under backpressure.
 
 ## [0.2.2]
 

@@ -170,6 +170,17 @@ match timeout(Duration::from_secs(5), transport.recv()).await {
 }
 ```
 
+When timing out a `JoinHandle`, avoid consuming the handle with `timeout(..., handle)`.
+Use `&mut handle` so the handle is retained on timeout and can be aborted:
+
+```rust
+let mut task = tokio::spawn(background_work());
+if timeout(Duration::from_secs(1), &mut task).await.is_err() {
+    task.abort();
+    let _ = task.await; // consume JoinError after abort
+}
+```
+
 ## Mutex in Async
 
 Use `tokio::sync::Mutex` when holding the guard across `.await`:
