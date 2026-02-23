@@ -15,6 +15,10 @@ longer exists. This drift causes bad setup guidance and CI surprises.
 3. Verify each mentioned key exists in the real config.
 4. Fail with a clear message when docs and config differ.
 
+For multi-check scripts, keep errors grouped by category and print one section
+per category before returning non-zero. Avoid a single opaque aggregate that
+can fail without telling the user which check broke.
+
 Example pattern (`scripts/validate-devcontainer-docs.sh`):
 
 ```bash
@@ -41,6 +45,12 @@ done
 - [ ] Is there a validator that cross-references docs against config?
 - [ ] Does CI run that validator?
 - [ ] For JSONC files, does validation use JSONC-safe matching (for example, `grep`)?
+- [ ] Do tests assert both non-zero status and the exact user-facing error section?
+
+## Test Organization
+
+Keep orchestration tests (`main()` workflow/reporting behavior) in a dedicated
+test class or module, separate from helper function parsing tests.
 
 ## When to Add a New Validator
 

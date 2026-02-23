@@ -349,31 +349,6 @@ class TestCrateVersionSync:
         assert 'version = "1.2.3"' in publishing
         assert "# Bump version (0.1.0 -> 0.2.0)" in publishing
 
-    def test_main_workflow_step_comments_are_contiguous(self):
-        """Numbered workflow comments in main() remain contiguous after edits."""
-        source = _SCRIPT_PATH.read_text(encoding="utf-8")
-        main_match = re.search(
-            r'def main\(\) -> int:\n(?P<body>.*?)(?:\n\nif __name__ == "__main__":)',
-            source,
-            flags=re.DOTALL,
-        )
-        assert main_match is not None, "Could not locate main() in pre-commit script."
-
-        main_body = main_match.group("body")
-        step_numbers = [
-            int(match.group(1))
-            for match in re.finditer(r"^\s*#\s+(\d+)\.\s", main_body, flags=re.MULTILINE)
-        ]
-
-        assert len(step_numbers) >= 10, (
-            "Expected at least 10 numbered workflow comments in main(); "
-            f"found {len(step_numbers)}."
-        )
-        assert step_numbers == list(range(1, len(step_numbers) + 1)), (
-            "Numbered workflow comments in main() must be contiguous and start at 1. "
-            f"Found: {step_numbers}."
-        )
-
     def test_tilde_fence_is_skipped(self):
         """Tilde fences (~~~) are recognized and their content is skipped."""
         text = """\
@@ -455,6 +430,119 @@ more content"""
         result = extract_first_paragraph(text)
         assert result == "Paragraph before the fence."
         assert "unclosed" not in result
+
+
+# ===================================================================
+# Tests for main() workflow and reporting behavior
+# ===================================================================
+
+
+class TestMainFunctionValidation:
+    """Tests for main() orchestration and user-facing failure output."""
+
+    def _patch_main_for_isolated_error_reporting(self, monkeypatch, tmp_path):
+        """Patch main() dependencies so tests focus on error reporting behavior."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        monkeypatch.setattr(_mod, "LLM_DIR", llm_dir)
+        monkeypatch.setattr(_mod, "SKILLS_DIR", llm_dir / "skills")
+        monkeypatch.setattr(_mod, "INDEX_FILE", llm_dir / "skills" / "index.md")
+        monkeypatch.setattr(_mod, "find_md_files", lambda _directory: [])
+        monkeypatch.setattr(_mod, "validate_mkdocs_nav", lambda: [])
+        monkeypatch.setattr(_mod, "validate_yaml_step_indentation", lambda _md: [])
+        monkeypatch.setattr(_mod, "validate_doc_nav_card_consistency", lambda: [])
+        monkeypatch.setattr(_mod, "validate_changelog_example_links", lambda _md: [])
+        monkeypatch.setattr(_mod, "validate_unstable_feature_wording", lambda _md: [])
+
+    def test_main_workflow_step_comments_are_contiguous(self):
+        """Numbered workflow comments in main() remain contiguous after edits."""
+        source = _SCRIPT_PATH.read_text(encoding="utf-8")
+        main_match = re.search(
+            r'def main\(\) -> int:\n(?P<body>.*?)(?:\n\nif __name__ == "__main__":)',
+            source,
+            flags=re.DOTALL,
+        )
+        assert main_match is not None, "Could not locate main() in pre-commit script."
+
+        main_body = main_match.group("body")
+        step_numbers = [
+            int(match.group(1))
+            for match in re.finditer(r"^\s*#\s+(\d+)\.\s", main_body, flags=re.MULTILINE)
+        ]
+
+        assert len(step_numbers) >= 10, (
+            "Expected at least 10 numbered workflow comments in main(); "
+            f"found {len(step_numbers)}."
+        )
+        assert step_numbers == list(range(1, len(step_numbers) + 1)), (
+            "Numbered workflow comments in main() must be contiguous and start at 1. "
+            f"Found: {step_numbers}."
+        )
+
+    def test_main_reports_cargo_version_read_failure(self, tmp_path, monkeypatch, capsys):
+        """Cargo version parse/read failures must appear in the final error report."""
+        self._patch_main_for_isolated_error_reporting(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            _mod,
+            "read_cargo_package_version",
+            lambda: (_ for _ in ()).throw(RuntimeError("Could not read Cargo.toml")),
+        )
+
+        result = _mod.main()
+        captured = capsys.readouterr()
+
+        assert result == 1
+        assert "crate version synchronization checks failed" in captured.err
+        assert "Could not read Cargo.toml" in captured.err
+
+    def test_main_reports_sync_reference_write_failures(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Version sync write/read failures must appear in the final error report."""
+        self._patch_main_for_isolated_error_reporting(monkeypatch, tmp_path)
+        monkeypatch.setattr(_mod, "read_cargo_package_version", lambda: "1.2.3")
+        monkeypatch.setattr(
+            _mod,
+            "sync_crate_version_references",
+            lambda _version: (["  Could not write README.md: Permission denied"], []),
+        )
+
+        result = _mod.main()
+        captured = capsys.readouterr()
+
+        assert result == 1
+        assert "crate version synchronization checks failed" in captured.err
+        assert "Could not write README.md: Permission denied" in captured.err
+
+    def test_main_reports_skills_index_write_failures(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Index write failures must be reported as a structured blocking section."""
+        self._patch_main_for_isolated_error_reporting(monkeypatch, tmp_path)
+        monkeypatch.setattr(_mod, "read_cargo_package_version", lambda: "1.2.3")
+        monkeypatch.setattr(_mod, "sync_crate_version_references", lambda _v: ([], []))
+
+        skills_dir = tmp_path / "repo" / ".llm" / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "example.md").write_text(
+            "# Example Skill\n\nDescription.\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            _mod, "INDEX_FILE", tmp_path / "repo" / ".llm" / "missing" / "index.md"
+        )
+
+        result = _mod.main()
+        captured = capsys.readouterr()
+
+        assert result == 1
+        assert "skills index generation failed" in captured.err
+        assert "Could not write" in captured.err
 
 
 # ===================================================================
