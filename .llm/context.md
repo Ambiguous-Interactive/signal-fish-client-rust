@@ -10,7 +10,8 @@
 - **MSRV:** 1.85.0
 - **License:** MIT
 - **Repository:** <https://github.com/Ambiguous-Interactive/signal-fish-client-rust>
-- **Documentation:** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/>
+- **Guide (GitHub Pages):** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/>
+- **API Docs (docs.rs):** <https://docs.rs/signal-fish-client>
 
 ## Purpose
 

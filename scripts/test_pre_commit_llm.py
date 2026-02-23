@@ -1,4 +1,4 @@
-"""Tests for extract_first_paragraph, extract_title, generate_index, and validate_mkdocs_nav in pre-commit-llm.py."""
+"""Tests for extract_first_paragraph, extract_title, generate_index, validate_mkdocs_nav, and validate_doc_nav_card_consistency in pre-commit-llm.py."""
 
 import importlib.util
 import re
@@ -24,6 +24,7 @@ extract_title = _mod.extract_title
 generate_index = _mod.generate_index
 validate_mkdocs_nav = _mod.validate_mkdocs_nav
 validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
+validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
 
 
 # ===================================================================
@@ -1037,4 +1038,142 @@ class TestValidateYamlStepIndentation:
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
 
         errors = validate_yaml_step_indentation([doc])
+        assert errors == []
+
+
+# ===================================================================
+# Tests for validate_doc_nav_card_consistency
+# ===================================================================
+
+
+class TestValidateDocNavCardConsistency:
+    """Tests for the validate_doc_nav_card_consistency function."""
+
+    def test_matching_labels_no_errors(self, tmp_path, monkeypatch):
+        """When card labels match the target file H1 headings, no errors are returned."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        # Create a target page with an H1 heading
+        (docs_dir / "getting-started.md").write_text(
+            "# Getting Started\n\nSome content.\n",
+            encoding="utf-8",
+        )
+
+        # Create docs/index.md with a matching nav card
+        (docs_dir / "index.md").write_text(
+            "# Home\n\n"
+            "[:octicons-arrow-right-24: Getting Started](getting-started.md)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
+        assert errors == []
+
+    def test_mismatched_labels_reports_error(self, tmp_path, monkeypatch):
+        """When a card label doesn't match the target H1, an error is reported."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        (docs_dir / "client.md").write_text(
+            "# Client API\n\nReference docs.\n",
+            encoding="utf-8",
+        )
+
+        (docs_dir / "index.md").write_text(
+            "# Home\n\n"
+            "[:octicons-arrow-right-24: Wrong Label](client.md)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
+        assert len(errors) == 1
+        assert 'Card label "Wrong Label"' in errors[0]
+        assert '"Client API"' in errors[0]
+        assert "client.md" in errors[0]
+
+    def test_missing_target_file_reports_error(self, tmp_path, monkeypatch):
+        """When the target .md file doesn't exist, an error is reported without crashing."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        (docs_dir / "index.md").write_text(
+            "# Home\n\n"
+            "[:octicons-arrow-right-24: Nonexistent](nonexistent.md)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
+        assert len(errors) == 1
+        assert "nonexistent.md" in errors[0]
+
+    def test_external_url_cards_are_skipped(self, tmp_path, monkeypatch):
+        """Cards pointing to external http:// URLs are silently skipped."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        # The regex only matches links ending in .md, so an http URL ending
+        # in .md would be the edge case to verify.  The function also has an
+        # explicit startswith("http") guard.
+        (docs_dir / "index.md").write_text(
+            "# Home\n\n"
+            "[:octicons-arrow-right-24: docs.rs](https://docs.rs/signal-fish-client)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
+        assert errors == []
+
+    def test_missing_h1_heading_in_target(self, tmp_path, monkeypatch):
+        """When the target file has no H1 heading, an error about the missing heading is reported."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+
+        (docs_dir / "transport.md").write_text(
+            "Some content without a heading.\n",
+            encoding="utf-8",
+        )
+
+        (docs_dir / "index.md").write_text(
+            "# Home\n\n"
+            "[:octicons-arrow-right-24: Transport](transport.md)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
+        assert len(errors) == 1
+        assert "no H1 heading" in errors[0]
+        assert "transport.md" in errors[0]
+
+    def test_missing_docs_index_returns_empty(self, tmp_path, monkeypatch):
+        """When docs/index.md doesn't exist, an empty list is returned."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        docs_dir = fake_root / "docs"
+        docs_dir.mkdir()
+        # No index.md created
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors = validate_doc_nav_card_consistency()
         assert errors == []

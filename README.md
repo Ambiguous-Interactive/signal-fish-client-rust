@@ -232,4 +232,4 @@ Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is
 
 ---
 
-📖 **[Full documentation on GitHub Pages](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/)**
+📖 **[Full guide on GitHub Pages](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/)** | 📚 **[API reference on docs.rs](https://docs.rs/signal-fish-client)**

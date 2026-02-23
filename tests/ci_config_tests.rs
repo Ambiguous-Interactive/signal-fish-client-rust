@@ -1429,3 +1429,180 @@ mod markdown_policy_validation {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: docs_nav_card_consistency
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod docs_nav_card_consistency {
+    use super::*;
+
+    /// Extract the first H1 heading (`# Title`) from markdown content,
+    /// skipping lines inside fenced code blocks.
+    fn extract_h1(content: &str) -> Option<String> {
+        let mut fence_char: Option<char> = None;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                let ch = trimmed.chars().next().unwrap();
+                if let Some(fc) = fence_char {
+                    if ch == fc {
+                        fence_char = None;
+                    }
+                } else {
+                    fence_char = Some(ch);
+                }
+                continue;
+            }
+            if fence_char.is_some() {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("# ") {
+                return Some(rest.trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Extract navigation card links from `docs/index.md`.
+    ///
+    /// Matches the pattern `[:octicons-arrow-right-24: LABEL](FILENAME)`
+    /// and returns `(label, filename)` pairs for local `.md` files only.
+    fn extract_nav_card_links(content: &str) -> Vec<(String, String)> {
+        let mut results = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            // Pattern: [:octicons-arrow-right-24: LABEL](FILENAME)
+            let prefix = "[:octicons-arrow-right-24: ";
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                // rest = "LABEL](FILENAME)"
+                if let Some(bracket_pos) = rest.find("](") {
+                    let label = rest[..bracket_pos].to_string();
+                    let after = &rest[bracket_pos + 2..];
+                    if let Some(paren_pos) = after.find(')') {
+                        let filename = after[..paren_pos].to_string();
+                        // Only include local .md files (skip external URLs)
+                        if filename.ends_with(".md") && !filename.starts_with("http") {
+                            results.push((label, filename));
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Verify that every navigation card link label in `docs/index.md`
+    /// matches the H1 heading of the target page. This prevents drift
+    /// between card labels and actual page titles.
+    #[test]
+    fn nav_card_labels_match_page_titles() {
+        let index_content = read_project_file("docs/index.md");
+        let cards = extract_nav_card_links(&index_content);
+
+        assert!(
+            !cards.is_empty(),
+            "Expected to find navigation card links in docs/index.md"
+        );
+
+        let mut mismatches: Vec<String> = Vec::new();
+
+        for (label, filename) in &cards {
+            let rel_path = format!("docs/{filename}");
+            let target_content = read_project_file(&rel_path);
+            let h1 = extract_h1(&target_content).unwrap_or_else(|| {
+                panic!(
+                    "docs/{filename} has no H1 heading. \
+                     Every docs page must start with a `# Title` heading."
+                )
+            });
+
+            if *label != h1 {
+                mismatches.push(format!(
+                    "  Card label \"{label}\" does not match H1 \"{h1}\" in docs/{filename}"
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "Navigation card labels in docs/index.md do not match page titles:\n{}\n\
+             Update the card labels to match the H1 headings of the target pages.",
+            mismatches.join("\n")
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn extracts_local_md_links() {
+            let content = r#"
+    [:octicons-arrow-right-24: Getting Started](getting-started.md)
+    [:octicons-arrow-right-24: docs.rs](https://docs.rs/signal-fish-client)
+"#;
+            let links = extract_nav_card_links(content);
+            assert_eq!(links.len(), 1);
+            assert_eq!(links[0].0, "Getting Started");
+            assert_eq!(links[0].1, "getting-started.md");
+        }
+
+        #[test]
+        fn extracts_h1_skipping_fenced_blocks() {
+            let content = "```\n# Not a title\n```\n# Real Title\n";
+            assert_eq!(extract_h1(content), Some("Real Title".to_string()));
+        }
+
+        #[test]
+        fn no_h1_returns_none() {
+            let content = "## Only H2\nSome text.\n";
+            assert_eq!(extract_h1(content), None);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: llm_context_urls_validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod llm_context_urls_validation {
+    use super::*;
+
+    /// Verify that `.llm/context.md` lists both the `homepage` and
+    /// `documentation` URLs from `Cargo.toml`. This prevents drift where
+    /// `context.md` only mentions one URL while the crate metadata has both.
+    #[test]
+    fn context_md_contains_both_cargo_urls() {
+        let cargo_content = read_project_file("Cargo.toml");
+        let context_content = read_project_file(".llm/context.md");
+
+        let parsed: toml::Value =
+            toml::from_str(&cargo_content).expect("Cargo.toml must be valid TOML");
+        let package = parsed
+            .get("package")
+            .expect("Cargo.toml must have a [package] section");
+
+        let homepage = package
+            .get("homepage")
+            .and_then(|v| v.as_str())
+            .expect("Cargo.toml must have a homepage field");
+
+        let documentation = package
+            .get("documentation")
+            .and_then(|v| v.as_str())
+            .expect("Cargo.toml must have a documentation field");
+
+        assert!(
+            context_content.contains(homepage),
+            ".llm/context.md does not contain the Cargo.toml homepage URL: {homepage}\n\
+             Both homepage and documentation URLs from Cargo.toml must appear in context.md."
+        );
+
+        assert!(
+            context_content.contains(documentation),
+            ".llm/context.md does not contain the Cargo.toml documentation URL: {documentation}\n\
+             Both homepage and documentation URLs from Cargo.toml must appear in context.md."
+        );
+    }
+}
