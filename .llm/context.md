@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.2.0
+- **Version:** 0.2.2
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -234,6 +234,7 @@ reference.
     async-rust-patterns.md
     ci-configuration.md
     crate-publishing.md
+    doc-drift-validation.md
     error-handling.md
     markdown-and-doc-validation.md
     public-api-design.md

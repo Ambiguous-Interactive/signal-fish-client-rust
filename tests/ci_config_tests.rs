@@ -32,6 +32,18 @@ fn read_project_file(relative_path: &str) -> String {
     })
 }
 
+/// Reads Cargo.toml and returns package version.
+fn cargo_package_version() -> String {
+    let cargo = read_project_file("Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
+    parsed
+        .get("package")
+        .and_then(|v| v.get("version"))
+        .and_then(toml::Value::as_str)
+        .map(std::string::ToString::to_string)
+        .expect("Cargo.toml must define [package].version as a string")
+}
+
 /// Returns true if a file (not directory) exists relative to the project root.
 fn project_file_exists(relative_path: &str) -> bool {
     project_root().join(relative_path).is_file()
@@ -589,6 +601,72 @@ mod ci_workflow_policy {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module: crate_version_consistency
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod crate_version_consistency {
+    use super::*;
+
+    #[test]
+    fn llm_context_version_matches_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let context = read_project_file(".llm/context.md");
+        let expected_line = format!("- **Version:** {cargo_version}");
+        assert!(
+            context.contains(&expected_line),
+            ".llm/context.md must contain `{expected_line}` so the project context \
+             stays synchronized with Cargo.toml package version."
+        );
+    }
+
+    #[test]
+    fn dependency_snippets_use_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let files = ["README.md", "docs/getting-started.md", "docs/index.md"];
+
+        for path in files {
+            let contents = read_project_file(path);
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("signal-fish-client =") {
+                    continue;
+                }
+
+                if trimmed.contains('{') {
+                    let expected = format!("version = \"{cargo_version}\"");
+                    assert!(
+                        trimmed.contains(&expected),
+                        "{path}:{} has signal-fish-client inline table without canonical \
+                         crate version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                        line_num + 1
+                    );
+                } else {
+                    let expected = format!("signal-fish-client = \"{cargo_version}\"");
+                    assert!(
+                        trimmed.contains(&expected),
+                        "{path}:{} has non-canonical signal-fish-client dependency line.\n\
+                         Line: `{trimmed}`\nExpected `{expected}`.",
+                        line_num + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crate_publishing_skill_package_snippet_matches_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let contents = read_project_file(".llm/skills/crate-publishing.md");
+        let expected = format!("version = \"{cargo_version}\"");
+        assert!(
+            contents.contains(&expected),
+            ".llm/skills/crate-publishing.md must include `{expected}` in the \
+             Cargo.toml metadata snippet."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module: workflow_security
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1016,6 +1094,60 @@ mod ci_config_validation {
              header = {{ user-agent = \"...\" }}. Found type: {}",
             header.type_str()
         );
+    }
+
+    #[test]
+    fn msrv_badge_links_use_stable_rust_release_notes() {
+        struct Case {
+            path: &'static str,
+            marker: &'static str,
+            required_url: &'static str,
+        }
+
+        let cases = [
+            Case {
+                path: "README.md",
+                marker: "MSRV",
+                required_url: "https://doc.rust-lang.org/stable/releases.html",
+            },
+            Case {
+                path: "docs/index.md",
+                marker: "[![MSRV]",
+                required_url: "https://doc.rust-lang.org/stable/releases.html",
+            },
+        ];
+
+        for case in cases {
+            let contents = read_project_file(case.path);
+            let marker_line = contents
+                .lines()
+                .find(|line| line.contains(case.marker))
+                .map(std::string::ToString::to_string)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} does not contain an MSRV badge/link marker '{}'.",
+                        case.path, case.marker
+                    )
+                });
+
+            assert!(
+                contents.contains(case.required_url),
+                "{} MSRV link must target stable Rust release notes ({}) \
+                 to avoid flaky blog.rust-lang.org availability in CI.\n\
+                 Marker line: {}",
+                case.path,
+                case.required_url,
+                marker_line
+            );
+            assert!(
+                !contents.contains("https://blog.rust-lang.org/"),
+                "{} MSRV link must not target blog.rust-lang.org due to \
+                 intermittent 503 responses in CI.\n\
+                 Marker line: {}",
+                case.path,
+                marker_line
+            );
+        }
     }
 
     /// Verify that trap-handler scripts use a parse-safe SC2317 directive style.
@@ -1565,10 +1697,82 @@ mod llm_index_validation {
 mod markdown_policy_validation {
     use super::*;
 
+    const LLM_MAX_LINES: usize = 300;
+
     fn is_heading_line(line: &str) -> bool {
         let trimmed = line.trim_start();
         let hash_count = trimmed.chars().take_while(|&ch| ch == '#').count();
         hash_count > 0 && hash_count <= 6 && trimmed.chars().nth(hash_count) == Some(' ')
+    }
+
+    fn is_list_item_line(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+            return true;
+        }
+
+        let Some((number, remainder)) = trimmed.split_once('.') else {
+            return false;
+        };
+        !number.is_empty()
+            && number.chars().all(|ch| ch.is_ascii_digit())
+            && remainder.starts_with(' ')
+    }
+
+    #[test]
+    fn llm_markdown_files_respect_line_limit() {
+        let llm_dir = project_root().join(".llm");
+        let mut stack = vec![llm_dir.clone()];
+        let mut markdown_files: Vec<PathBuf> = Vec::new();
+
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", dir.display()))
+            {
+                let entry = entry
+                    .unwrap_or_else(|e| panic!("Failed to read entry in '{}': {e}", dir.display()));
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    markdown_files.push(path);
+                }
+            }
+        }
+
+        markdown_files.sort();
+        assert!(
+            !markdown_files.is_empty(),
+            "No markdown files found in '{}'.",
+            llm_dir.display()
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in markdown_files {
+            let line_count = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()))
+                .lines()
+                .count();
+            if line_count > LLM_MAX_LINES {
+                let relative = path
+                    .strip_prefix(project_root())
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                violations.push(format!(
+                    "{relative}: {line_count} lines (limit is {LLM_MAX_LINES})"
+                ));
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            ".llm/ markdown files exceed {LLM_MAX_LINES} lines:\n{}",
+            violations.join("\n")
+        );
     }
 
     #[test]
@@ -1643,6 +1847,62 @@ mod markdown_policy_validation {
             "Markdown heading spacing policy violations detected:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn list_introduction_lines_require_blank_spacing_before_list_items() {
+        let cases = [
+            (
+                ".llm/skills/ci-configuration.md",
+                "Keep comments in CI shell scripts behaviorally exact:",
+            ),
+            (
+                ".llm/skills/ci-configuration.md",
+                "version and must be updated in sync:",
+            ),
+        ];
+
+        for (path, intro_line) in cases {
+            let content = read_project_file(path);
+            let lines: Vec<&str> = content.lines().collect();
+            let intro_idx = lines
+                .iter()
+                .position(|line| line.trim() == intro_line)
+                .unwrap_or_else(|| {
+                    panic!("Could not find intro line `{intro_line}` in {path}");
+                });
+
+            let blank_line = lines.get(intro_idx + 1).unwrap_or_else(|| {
+                panic!(
+                    "{path}:{line} intro line `{intro_line}` must be followed by a blank line and list items",
+                    line = intro_idx + 1
+                )
+            });
+            assert!(
+                blank_line.trim().is_empty(),
+                "{path}:{line} intro line `{intro_line}` must be followed by a blank line before list items",
+                line = intro_idx + 1
+            );
+
+            let first_non_empty_after_intro = lines
+                .iter()
+                .skip(intro_idx + 1)
+                .position(|line| !line.trim().is_empty())
+                .map(|offset| intro_idx + 1 + offset)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{path}:{line} intro line `{intro_line}` must be followed by list items",
+                        line = intro_idx + 1
+                    )
+                });
+
+            assert!(
+                is_list_item_line(lines[first_non_empty_after_intro]),
+                "{path}:{line} expected first non-empty line after `{intro_line}` to be a list item, found `{found}`",
+                line = first_non_empty_after_intro + 1,
+                found = lines[first_non_empty_after_intro].trim()
+            );
+        }
     }
 }
 

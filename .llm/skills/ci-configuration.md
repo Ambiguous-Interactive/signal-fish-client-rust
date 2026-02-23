@@ -38,8 +38,22 @@ header = ["Accept: text/html"]
 Accept = "text/html"
 ```
 
-Always validate `.lychee.toml` with a TOML parser before committing. The
-`scripts/ci-validate.sh` script includes automated TOML validation.
+Always validate `.lychee.toml` with a TOML parser before committing. The `scripts/ci-validate.sh` script includes automated TOML validation.
+
+### lychee: Avoid flaky external docs for badges
+
+Some external docs/blog hosts intermittently return `503` in CI even when links are valid. This creates nondeterministic failures in link-check jobs.
+
+For MSRV badges and similar stable references, prefer canonical, long-lived documentation pages over blog posts:
+
+- Prefer: `https://doc.rust-lang.org/stable/releases.html#...`
+- Avoid in badges: `https://blog.rust-lang.org/...`
+
+Regression policy:
+
+- Keep `README.md` and `docs/index.md` MSRV links pointed at
+  `doc.rust-lang.org/stable/releases.html`.
+- `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -55,8 +69,7 @@ cleanup() {
 trap cleanup EXIT
 ```
 
-Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second
-comment segment using ` # ` so ShellCheck parses the directive reliably.
+Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second comment segment using ` # ` so ShellCheck parses the directive reliably.
 
 ### ShellCheck SC2004 and array indexes
 
@@ -77,15 +90,11 @@ fi
 PHASE_RESULTS[phase]="FAIL"
 ```
 
-This pitfall is enforced by
-`tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
 
 ### cargo-machete false positives with serde attributes
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g.,
-`serde_bytes`) are invisible to cargo-machete's static analysis because no
-`use` or `extern crate` statement references them. Add such crates to the
-ignore list in `Cargo.toml`:
+Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete's static analysis because no `use` or `extern crate` statement references them. Add such crates to the ignore list in `Cargo.toml`:
 
 ```toml
 [package.metadata.cargo-machete]
@@ -94,11 +103,7 @@ ignored = ["serde_bytes"]
 
 ### semver-checks on new crates
 
-`cargo semver-checks` compares the current API against the base branch. When
-the base branch does not contain the crate at all (e.g., the initial PR for a
-new package), the tool will fail because there is no baseline to diff against.
-The CI workflow must check for package existence on the base branch before
-running semver-checks.
+`cargo semver-checks` compares the current API against the base branch. When the base branch does not contain the crate at all (e.g., the initial PR for a new package), the tool will fail because there is no baseline to diff against. The CI workflow must check for package existence on the base branch before running semver-checks.
 
 ### markdownlint: Emphasis conventions
 
@@ -116,24 +121,20 @@ heading (`###`, `####`) rather than using `**Heading**` on its own line.
 
 ### markdownlint: Heading spacing (MD022)
 
-Markdown headings must be surrounded by blank lines. A common failure pattern
-is writing prose immediately followed by a heading:
-
-```markdown
-Reference text.
-## Section
-```
-
-Use:
-
-```markdown
-Reference text.
-
-## Section
-```
+Markdown headings must be surrounded by blank lines (leave an empty line before
+and after each heading block).
 
 This rule is enforced in CI by markdownlint and by
 `tests/ci_config_tests.rs::markdown_policy_validation`.
+
+### markdownlint: List spacing (MD032)
+
+Markdown lists must be surrounded by blank lines. If a paragraph introduces a
+list (for example ending with a colon), add an empty line before the first list
+item.
+
+This is enforced in CI by markdownlint and by
+`tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
 
 ### markdownlint: New rules in updates
 
@@ -171,57 +172,19 @@ contexts, not just identifiers).
 
 ### Shell scripts: Comments must match behavior
 
-When writing CI shell scripts, ensure that **every comment accurately describes
-what the code does**. Common pitfalls:
+Keep comments in CI shell scripts behaviorally exact:
 
-- **Scope claims:** A comment saying "scans documentation code blocks" when the
-  script only scans `.rs` files. If markdown validation is handled by a separate
-  script, say so explicitly.
-- **Attribute syntax:** If a comment says both `#![allow(...)]` (file-level) and
-  `#[allow(...)]` (module-level) are accepted, the `grep` check must match both
-  forms. Use `grep -qE '#!?\[allow\('` to make the `!` optional.
-- **Multi-line attributes:** `grep` matches one line at a time. A regex like
-  `#!\[allow\(.*clippy::unwrap_used` will fail on multi-line `#![allow( ... )]`
-  blocks. Split into two passes: one to check for the attribute open, one to
-  check for the specific lint name.
-- **Overly broad checks:** `grep -q '#\[allow('` matches *any* allow attribute,
-  not just panic-related ones. Use a second grep to verify a specific lint name
-  is present (e.g., `clippy::unwrap_used`).
+- Match stated scope (for example, `.rs` only vs docs/code blocks).
+- If comments mention both `#![allow(...)]` and `#[allow(...)]`, checks must handle both (for example `grep -qE '#!?\[allow\('`).
+- Remember `grep` is line-based; validate multi-line attributes with staged checks.
+- Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
 
 ### Shell scripts: Guard subsequent logic after extraction failures
 
-When a shell script extracts a value (e.g., parsing a version from a file) and
-checks whether extraction succeeded, ensure that **all subsequent logic depending
-on that value** is inside the success branch. A common bug:
-
-```bash
-# BUG: fall-through on extraction failure
-VALUE="$(awk '...' some-file)"
-if [ -z "$VALUE" ]; then
-    echo "Extraction failed"
-    VIOLATIONS=$((VIOLATIONS + 1))
-fi
-# This code runs even when VALUE is empty!
-if [ "$VALUE" != "$OTHER" ]; then
-    echo "Mismatch: '$VALUE' vs '$OTHER'"  # Confusing: '' vs 'expected'
-fi
-```
-
-Fix: use `else` to guard dependent logic, or exit/continue early:
-
-```bash
-# CORRECT: else branch guards dependent logic
-VALUE="$(awk '...' some-file)"
-if [ -z "$VALUE" ]; then
-    echo "Extraction failed"
-    VIOLATIONS=$((VIOLATIONS + 1))
-else
-    # Only runs when VALUE is non-empty
-    if [ "$VALUE" != "$OTHER" ]; then
-        echo "Mismatch: '$VALUE' vs '$OTHER'"
-    fi
-fi
-```
+When a shell script extracts a value (for example from `awk`/`grep`) and
+validates extraction, all dependent comparisons must stay inside the success
+branch (`else`) or return early (`continue`/`exit`). Avoid fall-through that
+produces confusing mismatch logs with empty values.
 
 This pattern is enforced by the regression test
 `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
@@ -295,12 +258,6 @@ Use this pattern for MSRV jobs:
     toolchain: <msrv-from-Cargo.toml>
 ```
 
-Avoid this anti-pattern:
-
-```yaml
-- uses: dtolnay/rust-toolchain@1.85.0
-```
-
 Prevention checks in this repository:
 
 - `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
@@ -309,10 +266,6 @@ Prevention checks in this repository:
   includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
 - `scripts/check-workflows.sh` fails fast on problematic
   `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
-
-Implementation note: semver-like detection should match only refs made of digits
-and dots. Do not classify digit-leading SHAs (hex refs containing letters) as
-semver-like; those are handled by the normal `@stable` requirement checks.
 
 ## Validation Scripts
 

@@ -6,8 +6,9 @@
 #
 # This script installs a pre-commit hook that:
 #   1. Runs scripts/pre-commit-llm.py (line-limit check + skills index generation)
-#   2. Runs markdownlint if available (to catch docs formatting drift early)
-#   3. Optionally uses the pre-commit framework if it is installed
+#   2. Runs scripts/test_pre_commit_llm.py with pytest if available
+#   3. Runs markdownlint if available (to catch docs formatting drift early)
+#   4. Optionally uses the pre-commit framework if it is installed
 #
 # Hook behavior:
 #   On every commit : llm-line-limit, markdownlint (optional), cargo-fmt, cargo-clippy, typos (optional)
@@ -47,6 +48,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # ── LLM line limit + skills index ─────────────────────────────────────────
 python3 "${REPO_ROOT}/scripts/pre-commit-llm.py"
+
+# ── Python tests for pre-commit hook logic (optional) ─────────────────────
+if command -v pytest &>/dev/null; then
+    if ! pytest -q "${REPO_ROOT}/scripts/test_pre_commit_llm.py"; then
+        echo ""
+        echo "Commit aborted: pre-commit LLM script tests failed."
+        echo "Fix the failing tests above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: pytest is not installed — skipping pre-commit LLM script tests."
+fi
 
 # ── Markdown lint (optional) ───────────────────────────────────────────────
 if command -v markdownlint-cli2 &>/dev/null; then
@@ -145,11 +158,12 @@ echo "Pre-push hook installed at:   ${PUSH_HOOK_FILE}"
 echo ""
 echo "The pre-commit hook runs on every 'git commit':"
 echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
-echo "  2. markdownlint on **/*.md     (optional, skipped if not installed)"
-echo "  3. shellcheck scripts/*.sh     (optional, skipped if not installed)"
-echo "  4. cargo fmt --all -- --check"
-echo "  5. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  6. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  2. pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
+echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
+echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
+echo "  5. cargo fmt --all -- --check"
+echo "  6. cargo clippy --all-targets --all-features -- -D warnings"
+echo "  7. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"

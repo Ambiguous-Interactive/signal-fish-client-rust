@@ -9,13 +9,24 @@ repos:
         pass_filenames: false
         always_run: true
 
+  - repo: local
+    hooks:
+      - id: pre-commit-llm-pytest
+        name: "pre-commit-llm.py tests (optional)"
+        language: system
+        entry: >-
+          bash -c 'if command -v pytest >/dev/null 2>&1; then pytest -q scripts/test_pre_commit_llm.py; else echo "SKIP: pytest not installed."; fi'
+        pass_filenames: false
+        always_run: true
+
   # ── Markdown linting (optional) ──────────────────────────────────────────
   - repo: local
     hooks:
       - id: markdownlint-optional
         name: markdownlint (optional)
         language: system
-        entry: bash -c 'if command -v markdownlint-cli2 >/dev/null 2>&1; then markdownlint-cli2 "**/*.md"; elif command -v markdownlint >/dev/null 2>&1; then markdownlint "**/*.md"; else echo "SKIP: markdownlint not installed."; fi'
+        entry: >-
+          bash -c 'if command -v markdownlint-cli2 >/dev/null 2>&1; then markdownlint-cli2 "**/*.md"; elif command -v markdownlint >/dev/null 2>&1; then markdownlint "**/*.md"; else echo "SKIP: markdownlint not installed."; fi'
         pass_filenames: false
         types: [markdown]
         always_run: true
@@ -26,7 +37,8 @@ repos:
       - id: shellcheck-optional
         name: shellcheck (optional)
         language: system
-        entry: bash -c 'if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; else echo "SKIP: shellcheck not installed."; fi'
+        entry: >-
+          bash -c 'if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; else echo "SKIP: shellcheck not installed."; fi'
         pass_filenames: false
         always_run: true
 

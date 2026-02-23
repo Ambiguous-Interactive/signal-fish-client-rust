@@ -2,12 +2,12 @@
 """
 Pre-commit hook for .llm/ folder enforcement.
 
-Checks:
-1. No .md file under .llm/ exceeds 300 lines.
-2. Auto-generates .llm/skills/index.md from skill file headings and descriptions.
-3. Stages the auto-generated index file with git add.
-4. Validates that all mkdocs.yml nav references point to existing files in docs/.
-5. Rejects stale release-specific wording for unstable rustdoc removals.
+Checks include:
+- Sync selected crate-version references to Cargo.toml package version.
+- Enforce .llm markdown line limits.
+- Auto-generate .llm/skills/index.md from skill file headings/descriptions.
+- Validate docs and mkdocs consistency checks.
+- Reject stale release-specific wording for unstable rustdoc removals.
 """
 
 import subprocess
@@ -20,6 +20,107 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LLM_DIR = REPO_ROOT / ".llm"
 SKILLS_DIR = LLM_DIR / "skills"
 INDEX_FILE = SKILLS_DIR / "index.md"
+
+
+def read_cargo_package_version() -> str:
+    """Read `[package].version` from Cargo.toml."""
+    cargo_toml = REPO_ROOT / "Cargo.toml"
+    try:
+        content = cargo_toml.read_text(encoding="utf-8")
+    except OSError as e:
+        raise RuntimeError(f"Could not read {cargo_toml}: {e}") from e
+
+    in_package_section = False
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_package_section = stripped == "[package]"
+            continue
+
+        if not in_package_section:
+            continue
+
+        match = re.match(r'^version\s*=\s*"([^"]+)"\s*$', stripped)
+        if match:
+            return match.group(1)
+
+    raise RuntimeError("Cargo.toml [package].version is missing or invalid.")
+
+
+def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[Path]]:
+    """Sync selected docs/context references to the canonical crate version."""
+    errors = []
+    changed_files = []
+    replacements = {
+        REPO_ROOT / "README.md": [
+            (
+                re.compile(r'(signal-fish-client\s*=\s*")([^"]+)(")'),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+        ],
+        REPO_ROOT / "docs" / "getting-started.md": [
+            (
+                re.compile(r'(signal-fish-client\s*=\s*")([^"]+)(")'),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+        ],
+        REPO_ROOT / "docs" / "index.md": [
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / ".llm" / "context.md": [
+            (
+                re.compile(r"(- \*\*Version:\*\*\s*)([^\s]+)"),
+                rf"\g<1>{crate_version}",
+            )
+        ],
+        REPO_ROOT / ".llm" / "skills" / "crate-publishing.md": [
+            (
+                re.compile(r'(^version\s*=\s*")([^"]+)(")', flags=re.MULTILINE),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+    }
+
+    for path, path_replacements in replacements.items():
+        if not path.exists():
+            continue
+        try:
+            original = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read {path}: {e}")
+            continue
+
+        updated = original
+        for pattern, replacement in path_replacements:
+            updated = pattern.sub(replacement, updated)
+
+        if updated != original:
+            try:
+                path.write_text(updated, encoding="utf-8")
+            except OSError as e:
+                errors.append(f"  Could not write {path}: {e}")
+                continue
+            changed_files.append(path)
+
+    return errors, changed_files
 
 
 def find_md_files(directory: Path) -> list[Path]:
@@ -494,8 +595,25 @@ def main() -> int:
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
         return 0
 
-    # 1. Collect all .md files under .llm/
+    # 1. Sync selected version references from Cargo.toml (blocking on errors)
+    version_sync_errors = []
+    try:
+        crate_version = read_cargo_package_version()
+    except RuntimeError as e:
+        version_sync_errors.append(f"  {e}")
+        crate_version = None
+
+    if crate_version is not None:
+        sync_errors, changed_files = sync_crate_version_references(crate_version)
+        version_sync_errors.extend(sync_errors)
+        for changed in changed_files:
+            git_add(changed)
+            rel = changed.relative_to(REPO_ROOT)
+            print(f"Synced crate version reference in {rel} -> {crate_version}")
+
+    # 2. Collect all .md files under .llm/
     all_md = find_md_files(LLM_DIR)
+    index_generation_errors = []
 
     # Separate skill files (excluding index.md itself) from other .llm/ files
     skill_files = sorted(
@@ -503,23 +621,30 @@ def main() -> int:
         if f.name != "index.md"
     ) if SKILLS_DIR.exists() else []
 
-    # 2. Generate the index BEFORE line-count checks
+    # 3. Generate the index BEFORE line-count checks
     #    so that the index can be checked too
     if skill_files:
         index_content = generate_index(skill_files)
-        INDEX_FILE.write_text(index_content, encoding="utf-8")
-        git_add(INDEX_FILE)
-        print(f"Generated .llm/skills/index.md ({len(index_content.splitlines())} lines)")
+        try:
+            INDEX_FILE.write_text(index_content, encoding="utf-8")
+        except OSError as e:
+            index_generation_errors.append(
+                f"  Could not write {INDEX_FILE}: {e}"
+            )
+        else:
+            git_add(INDEX_FILE)
+            print(
+                f"Generated .llm/skills/index.md "
+                f"({len(index_content.splitlines())} lines)"
+            )
 
     # Refresh the list after generating index
     all_md = find_md_files(LLM_DIR)
 
-    # 3. Check line counts for all .md files under .llm/
-    all_errors = []
+    # 4. Check line counts for all .md files under .llm/
     line_count_errors = check_line_counts(all_md)
-    all_errors.extend(line_count_errors)
 
-    # 4. Run devcontainer documentation validation (non-blocking)
+    # 5. Run devcontainer documentation validation (non-blocking)
     validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
     if validate_script.exists():
         result = subprocess.run(
@@ -543,100 +668,72 @@ def main() -> int:
             if result.stdout.strip():
                 print(result.stdout.strip())
 
-    # 5. Validate mkdocs.yml nav references (blocking)
+    # 6. Validate mkdocs.yml nav references (blocking)
     nav_errors = validate_mkdocs_nav()
-    all_errors.extend(nav_errors)
 
-    # 6. Validate fenced YAML workflow step indentation in docs (blocking)
+    # 7. Validate fenced YAML workflow step indentation in docs (blocking)
     yaml_step_indentation_errors = validate_yaml_step_indentation(all_md)
-    all_errors.extend(yaml_step_indentation_errors)
 
-    # 7. Validate nav card labels match page titles (blocking)
+    # 8. Validate nav card labels match page titles (blocking)
     nav_card_errors = validate_doc_nav_card_consistency()
-    all_errors.extend(nav_card_errors)
 
-    # 8. Validate changelog-style reference links are version-consistent (blocking)
+    # 9. Validate changelog-style reference links are version-consistent (blocking)
     changelog_link_errors = validate_changelog_example_links(all_md)
-    all_errors.extend(changelog_link_errors)
 
-    # 9. Validate unstable feature wording in .llm markdown (blocking)
+    # 10. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
-    all_errors.extend(unstable_wording_errors)
+    # 11. Report all collected errors together
+    error_sections = [
+        (
+            version_sync_errors,
+            "crate version synchronization checks failed:",
+            "Fix Cargo.toml version parsing or read/write permissions in version-sync target files.",
+        ),
+        (
+            line_count_errors,
+            f"the following .llm/ files exceed {MAX_LINES} lines:",
+            "Please split these files or reduce their content before committing.",
+        ),
+        (
+            index_generation_errors,
+            "skills index generation failed:",
+            "Ensure .llm/skills/index.md is writable and parent directories exist.",
+        ),
+        (
+            nav_errors,
+            "mkdocs.yml nav references missing files:",
+            "Every file in mkdocs.yml nav must exist in docs/. Either create the file or remove the nav entry.",
+        ),
+        (
+            yaml_step_indentation_errors,
+            "malformed fenced YAML step indentation:",
+            "In fenced YAML examples, align `uses:`, `with:`, and `run:` with the same step item key alignment as `- name:`.",
+        ),
+        (
+            nav_card_errors,
+            "nav card labels do not match page titles:",
+            "Update card labels in docs/index.md to match the H1 heading of each target page.",
+        ),
+        (
+            changelog_link_errors,
+            "changelog reference links are inconsistent:",
+            "In changelog examples, [Unreleased] must compare from the latest released version and that release link must point to the same tag.",
+        ),
+        (
+            unstable_wording_errors,
+            "stale unstable-feature wording detected:",
+            "Avoid release-specific claims like 'removed in Rust X.Y'. Prefer wording that stays accurate over time, such as 'removed from rustdoc'.",
+        ),
+    ]
 
-    # 10. Report all collected errors together
-    if all_errors:
-        if line_count_errors:
-            print(
-                f"\nPre-commit hook FAILED: The following .llm/ files exceed {MAX_LINES} lines:",
-                file=sys.stderr,
-            )
-            for error in line_count_errors:
+    if any(errors for errors, _, _ in error_sections):
+        for errors, title, guidance in error_sections:
+            if not errors:
+                continue
+            print(f"\nPre-commit hook FAILED: {title}", file=sys.stderr)
+            for error in errors:
                 print(error, file=sys.stderr)
-            print(
-                "\nPlease split these files or reduce their content before committing.",
-                file=sys.stderr,
-            )
-        if nav_errors:
-            print(
-                "\nPre-commit hook FAILED: mkdocs.yml nav references missing files:",
-                file=sys.stderr,
-            )
-            for error in nav_errors:
-                print(error, file=sys.stderr)
-            print(
-                "\nEvery file in mkdocs.yml nav must exist in docs/. "
-                "Either create the file or remove the nav entry.",
-                file=sys.stderr,
-            )
-        if yaml_step_indentation_errors:
-            print(
-                "\nPre-commit hook FAILED: malformed fenced YAML step indentation:",
-                file=sys.stderr,
-            )
-            for error in yaml_step_indentation_errors:
-                print(error, file=sys.stderr)
-            print(
-                "\nIn fenced YAML examples, align `uses:`, `with:`, and `run:` "
-                "with the same step item key alignment as `- name:`.",
-                file=sys.stderr,
-            )
-        if nav_card_errors:
-            print(
-                "\nPre-commit hook FAILED: nav card labels do not match page titles:",
-                file=sys.stderr,
-            )
-            for error in nav_card_errors:
-                print(error, file=sys.stderr)
-            print(
-                "\nUpdate card labels in docs/index.md to match the H1 heading "
-                "of each target page.",
-                file=sys.stderr,
-            )
-        if changelog_link_errors:
-            print(
-                "\nPre-commit hook FAILED: changelog reference links are inconsistent:",
-                file=sys.stderr,
-            )
-            for error in changelog_link_errors:
-                print(error, file=sys.stderr)
-            print(
-                "\nIn changelog examples, [Unreleased] must compare from the latest "
-                "released version and that release link must point to the same tag.",
-                file=sys.stderr,
-            )
-        if unstable_wording_errors:
-            print(
-                "\nPre-commit hook FAILED: stale unstable-feature wording detected:",
-                file=sys.stderr,
-            )
-            for error in unstable_wording_errors:
-                print(error, file=sys.stderr)
-            print(
-                "\nAvoid release-specific claims like 'removed in Rust X.Y'. "
-                "Prefer wording that stays accurate over time, such as "
-                "'removed from rustdoc'.",
-                file=sys.stderr,
-            )
+            print(f"\n{guidance}", file=sys.stderr)
         return 1
 
     # Report clean status
