@@ -2,25 +2,26 @@ site_name: Signal Fish Client SDK
 site_description: "Transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
 site_url: https://Ambiguous-Interactive.github.io/signal-fish-client-rust/
 repo_url: https://github.com/Ambiguous-Interactive/signal-fish-client-rust
-repo_name: Ambiguous-Interactive/signal-fish-client-rust
+repo_name: signal-fish-client-rust
 edit_uri: edit/main/docs/
-docs_dir: docs
 
 theme:
   name: material
   palette:
-    - scheme: default
-      primary: teal
-      accent: orange
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: teal
-      accent: orange
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
   features:
     - navigation.instant
     - navigation.instant.prefetch
@@ -45,11 +46,13 @@ theme:
     - header.autohide
   icon:
     repo: fontawesome/brands/github
+  font:
+    text: Roboto
+    code: Roboto Mono
 
 plugins:
   - search:
       separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
-  - tags
 
 markdown_extensions:
   - abbr
@@ -61,6 +64,7 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      permalink_title: Anchor link to this section
       toc_depth: 3
   - pymdownx.arithmatex:
       generic: true
@@ -112,7 +116,14 @@ extra:
   generator: false
 
 extra_css:
-  - stylesheets/custom.css
+  - stylesheets/extra.css
+
+validation:
+  nav:
+    omitted_files: info
+  links:
+    not_found: info
+    unrecognized_links: info
 
 nav:
   - Home: index.md

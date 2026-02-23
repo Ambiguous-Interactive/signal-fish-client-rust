@@ -122,6 +122,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Resource | URL |
 |----------|-----|
 | **GitHub Repository** | [Ambiguous-Interactive/signal-fish-client-rust](https://github.com/Ambiguous-Interactive/signal-fish-client-rust) |
+| **Documentation** | [signal-fish-client-rust](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
 | **crates.io** | [signal-fish-client](https://crates.io/crates/signal-fish-client) |
 | **docs.rs** | [signal-fish-client](https://docs.rs/signal-fish-client) |
 
