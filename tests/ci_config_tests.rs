@@ -1063,6 +1063,55 @@ mod ci_config_validation {
         }
     }
 
+    #[test]
+    fn check_all_script_avoids_shellcheck_sc2004_array_index_style() {
+        struct Case {
+            name: &'static str,
+            path: &'static str,
+            forbidden_snippet: &'static str,
+        }
+
+        let cases = [
+            Case {
+                name: "phase_fail_marker_uses_dollar_prefixed_index",
+                path: "scripts/check-all.sh",
+                forbidden_snippet: "PHASE_RESULTS[$phase]=\"FAIL\"",
+            },
+            Case {
+                name: "phase_fail_marker_uses_braced_dollar_prefixed_index",
+                path: "scripts/check-all.sh",
+                forbidden_snippet: "PHASE_RESULTS[${phase}]=\"FAIL\"",
+            },
+        ];
+
+        for case in cases {
+            let contents = read_project_file(case.path);
+
+            let found_line = contents
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains(case.forbidden_snippet))
+                .map(|(line_idx, line)| (line_idx + 1, line.trim_end().to_string()));
+
+            assert!(
+                found_line.is_none(),
+                "Case '{}' failed: found ShellCheck SC2004-prone array index style \
+                 in {}:{}.\n\
+                 Forbidden snippet: `{}`\n\
+                 Line: `{}`\n\
+                 Use `PHASE_RESULTS[phase]` (without `$`) for arithmetic array indexes.",
+                case.name,
+                case.path,
+                found_line.as_ref().map(|(line, _)| *line).unwrap_or(0),
+                case.forbidden_snippet,
+                found_line
+                    .as_ref()
+                    .map(|(_, line)| line.as_str())
+                    .unwrap_or("<unavailable>")
+            );
+        }
+    }
+
     /// Verify that `serde_bytes` is in the cargo-machete ignore list.
     /// `serde_bytes` is used via `#[serde(with = "serde_bytes")]` attribute
     /// annotations, which cargo-machete cannot detect as usage — it only looks

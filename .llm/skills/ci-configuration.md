@@ -58,6 +58,22 @@ trap cleanup EXIT
 Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second
 comment segment using ` # ` so ShellCheck parses the directive reliably.
 
+### ShellCheck SC2004 and array indexes
+
+Array indexes in Bash are arithmetic context. Do not prefix index variables with
+`$` inside `[...]` or ShellCheck will flag SC2004.
+
+```bash
+# WRONG
+PHASE_RESULTS[$phase]="FAIL"
+
+# CORRECT
+PHASE_RESULTS[phase]="FAIL"
+```
+
+This pitfall is enforced by
+`tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+
 ### cargo-machete false positives with serde attributes
 
 Dependencies used only via `#[serde(with = "...")]` attributes (e.g.,

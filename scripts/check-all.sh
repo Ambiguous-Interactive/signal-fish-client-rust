@@ -101,7 +101,7 @@ mark_phase_fail() {
     if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
         FAILURES=$((FAILURES + 1))
     fi
-    PHASE_RESULTS[$phase]="FAIL"
+    PHASE_RESULTS[phase]="FAIL"
 }
 
 # ── Helper: require a command or abort ───────────────────────────────
