@@ -8,6 +8,7 @@ Checks:
 3. Stages the auto-generated index file with git add.
 4. Validates that all mkdocs.yml nav references point to existing files in docs/.
 5. Rejects stale release-specific wording for unstable rustdoc removals.
+6. Syncs selected crate-version references to Cargo.toml package version.
 """
 
 import subprocess
@@ -20,6 +21,107 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LLM_DIR = REPO_ROOT / ".llm"
 SKILLS_DIR = LLM_DIR / "skills"
 INDEX_FILE = SKILLS_DIR / "index.md"
+
+
+def read_cargo_package_version() -> str:
+    """Read `[package].version` from Cargo.toml."""
+    cargo_toml = REPO_ROOT / "Cargo.toml"
+    try:
+        content = cargo_toml.read_text(encoding="utf-8")
+    except OSError as e:
+        raise RuntimeError(f"Could not read {cargo_toml}: {e}") from e
+
+    in_package_section = False
+    for line in content.splitlines():
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_package_section = stripped == "[package]"
+            continue
+
+        if not in_package_section:
+            continue
+
+        match = re.match(r'^version\s*=\s*"([^"]+)"\s*$', stripped)
+        if match:
+            return match.group(1)
+
+    raise RuntimeError("Cargo.toml [package].version is missing or invalid.")
+
+
+def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[Path]]:
+    """Sync selected docs/context references to the canonical crate version."""
+    errors = []
+    changed_files = []
+    replacements = {
+        REPO_ROOT / "README.md": [
+            (
+                re.compile(r'(signal-fish-client\s*=\s*")([^"]+)(")'),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+        ],
+        REPO_ROOT / "docs" / "getting-started.md": [
+            (
+                re.compile(r'(signal-fish-client\s*=\s*")([^"]+)(")'),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            ),
+        ],
+        REPO_ROOT / "docs" / "index.md": [
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / ".llm" / "context.md": [
+            (
+                re.compile(r"(- \*\*Version:\*\*\s*)([^\s]+)"),
+                rf"\g<1>{crate_version}",
+            )
+        ],
+        REPO_ROOT / ".llm" / "skills" / "crate-publishing.md": [
+            (
+                re.compile(r'(^version\s*=\s*")([^"]+)(")', flags=re.MULTILINE),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+    }
+
+    for path, path_replacements in replacements.items():
+        if not path.exists():
+            continue
+        try:
+            original = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read {path}: {e}")
+            continue
+
+        updated = original
+        for pattern, replacement in path_replacements:
+            updated = pattern.sub(replacement, updated)
+
+        if updated != original:
+            try:
+                path.write_text(updated, encoding="utf-8")
+            except OSError as e:
+                errors.append(f"  Could not write {path}: {e}")
+                continue
+            changed_files.append(path)
+
+    return errors, changed_files
 
 
 def find_md_files(directory: Path) -> list[Path]:
@@ -494,6 +596,22 @@ def main() -> int:
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
         return 0
 
+    # 1. Sync selected version references from Cargo.toml (blocking on errors)
+    all_errors = []
+    try:
+        crate_version = read_cargo_package_version()
+    except RuntimeError as e:
+        all_errors.append(f"  {e}")
+        crate_version = None
+
+    if crate_version is not None:
+        sync_errors, changed_files = sync_crate_version_references(crate_version)
+        all_errors.extend(sync_errors)
+        for changed in changed_files:
+            git_add(changed)
+            rel = changed.relative_to(REPO_ROOT)
+            print(f"Synced crate version reference in {rel} -> {crate_version}")
+
     # 1. Collect all .md files under .llm/
     all_md = find_md_files(LLM_DIR)
 
@@ -515,7 +633,6 @@ def main() -> int:
     all_md = find_md_files(LLM_DIR)
 
     # 3. Check line counts for all .md files under .llm/
-    all_errors = []
     line_count_errors = check_line_counts(all_md)
     all_errors.extend(line_count_errors)
 

@@ -1,6 +1,6 @@
 [package]
 name = "signal-fish-client"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
@@ -13,13 +13,13 @@ categories = ["game-engines", "network-programming"]
 rust-version = "1.85.0"
 readme = "README.md"
 include = [
-    "src/**/*",
-    "examples/**/*",
-    "tests/**/*",
-    "Cargo.toml",
-    "LICENSE",
-    "README.md",
-    "CHANGELOG.md",
+    "/src/**",
+    "/examples/**",
+    "/tests/**",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
+    "/CHANGELOG.md",
 ]
 
 [features]

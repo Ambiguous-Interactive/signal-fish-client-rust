@@ -32,6 +32,18 @@ fn read_project_file(relative_path: &str) -> String {
     })
 }
 
+/// Reads Cargo.toml and returns package version.
+fn cargo_package_version() -> String {
+    let cargo = read_project_file("Cargo.toml");
+    let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
+    parsed
+        .get("package")
+        .and_then(|v| v.get("version"))
+        .and_then(toml::Value::as_str)
+        .map(std::string::ToString::to_string)
+        .expect("Cargo.toml must define [package].version as a string")
+}
+
 /// Returns true if a file (not directory) exists relative to the project root.
 fn project_file_exists(relative_path: &str) -> bool {
     project_root().join(relative_path).is_file()
@@ -585,6 +597,72 @@ mod ci_workflow_policy {
                  Update the MSRV reference in this file to match Cargo.toml."
             );
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: crate_version_consistency
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod crate_version_consistency {
+    use super::*;
+
+    #[test]
+    fn llm_context_version_matches_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let context = read_project_file(".llm/context.md");
+        let expected_line = format!("- **Version:** {cargo_version}");
+        assert!(
+            context.contains(&expected_line),
+            ".llm/context.md must contain `{expected_line}` so the project context \
+             stays synchronized with Cargo.toml package version."
+        );
+    }
+
+    #[test]
+    fn dependency_snippets_use_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let files = ["README.md", "docs/getting-started.md", "docs/index.md"];
+
+        for path in files {
+            let contents = read_project_file(path);
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("signal-fish-client =") {
+                    continue;
+                }
+
+                if trimmed.contains('{') {
+                    let expected = format!("version = \"{cargo_version}\"");
+                    assert!(
+                        trimmed.contains(&expected),
+                        "{path}:{} has signal-fish-client inline table without canonical \
+                         crate version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                        line_num + 1
+                    );
+                } else {
+                    let expected = format!("signal-fish-client = \"{cargo_version}\"");
+                    assert!(
+                        trimmed.contains(&expected),
+                        "{path}:{} has non-canonical signal-fish-client dependency line.\n\
+                         Line: `{trimmed}`\nExpected `{expected}`.",
+                        line_num + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn crate_publishing_skill_package_snippet_matches_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let contents = read_project_file(".llm/skills/crate-publishing.md");
+        let expected = format!("version = \"{cargo_version}\"");
+        assert!(
+            contents.contains(&expected),
+            ".llm/skills/crate-publishing.md must include `{expected}` in the \
+             Cargo.toml metadata snippet."
+        );
     }
 }
 

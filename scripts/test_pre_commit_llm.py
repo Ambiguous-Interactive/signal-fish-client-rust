@@ -27,6 +27,8 @@ validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
 validate_changelog_example_links = _mod.validate_changelog_example_links
 validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
+read_cargo_package_version = _mod.read_cargo_package_version
+sync_crate_version_references = _mod.sync_crate_version_references
 
 
 # ===================================================================
@@ -251,6 +253,101 @@ some `inline` code
 
 The paragraph."""
         assert extract_first_paragraph(text) == "The paragraph."
+
+
+# ===================================================================
+# Tests for crate version synchronization helpers
+# ===================================================================
+
+
+class TestCrateVersionSync:
+    """Tests for Cargo version parsing and version-reference synchronization."""
+
+    def test_read_cargo_package_version(self, tmp_path, monkeypatch):
+        """The package version is read from Cargo.toml [package]."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        (fake_root / "Cargo.toml").write_text(
+            "[package]\n"
+            'name = "signal-fish-client"\n'
+            'version = "1.2.3"\n'
+            "\n"
+            "[dependencies]\n"
+            'tokio = "1"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        assert read_cargo_package_version() == "1.2.3"
+
+    def test_sync_crate_version_references_updates_target_files(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Known version references are updated to the Cargo.toml version."""
+        fake_root = tmp_path / "repo"
+        (fake_root / ".llm" / "skills").mkdir(parents=True)
+        (fake_root / "docs").mkdir(parents=True)
+
+        (fake_root / "README.md").write_text(
+            'signal-fish-client = "0.1"\n'
+            'signal-fish-client = { version = "0.1", default-features = false }\n',
+            encoding="utf-8",
+        )
+        (fake_root / "docs" / "getting-started.md").write_text(
+            'signal-fish-client = "0.1"\n'
+            'signal-fish-client = { version = "0.1", default-features = false }\n'
+            'signal-fish-client = { version = "0.1", default-features = false, features = ["transport-websocket"] }\n',
+            encoding="utf-8",
+        )
+        (fake_root / "docs" / "index.md").write_text(
+            'signal-fish-client = { version = "*", features = ["transport-websocket"] }\n',
+            encoding="utf-8",
+        )
+        (fake_root / ".llm" / "context.md").write_text(
+            "- **Version:** 0.1.0\n",
+            encoding="utf-8",
+        )
+        (fake_root / ".llm" / "skills" / "crate-publishing.md").write_text(
+            "# Crate Publishing\n\n"
+            "```toml\n"
+            '[package]\nname = "signal-fish-client"\nversion = "0.1.0"\n'
+            "```\n\n"
+            "# Bump version (0.1.0 -> 0.2.0)\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+
+        errors, changed_files = sync_crate_version_references("1.2.3")
+
+        assert errors == []
+        assert {path.relative_to(fake_root).as_posix() for path in changed_files} == {
+            "README.md",
+            "docs/getting-started.md",
+            "docs/index.md",
+            ".llm/context.md",
+            ".llm/skills/crate-publishing.md",
+        }
+
+        assert 'signal-fish-client = "1.2.3"' in (
+            fake_root / "README.md"
+        ).read_text(encoding="utf-8")
+        assert 'version = "1.2.3"' in (
+            fake_root / "docs" / "getting-started.md"
+        ).read_text(encoding="utf-8")
+        assert 'version = "1.2.3"' in (
+            fake_root / "docs" / "index.md"
+        ).read_text(encoding="utf-8")
+        assert "- **Version:** 1.2.3" in (
+            fake_root / ".llm" / "context.md"
+        ).read_text(encoding="utf-8")
+        publishing = (fake_root / ".llm" / "skills" / "crate-publishing.md").read_text(
+            encoding="utf-8"
+        )
+        assert 'version = "1.2.3"' in publishing
+        assert "# Bump version (0.1.0 -> 0.2.0)" in publishing
 
     def test_tilde_fence_is_skipped(self):
         """Tilde fences (~~~) are recognized and their content is skipped."""

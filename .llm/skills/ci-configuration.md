@@ -116,21 +116,8 @@ heading (`###`, `####`) rather than using `**Heading**` on its own line.
 
 ### markdownlint: Heading spacing (MD022)
 
-Markdown headings must be surrounded by blank lines. A common failure pattern
-is writing prose immediately followed by a heading:
-
-```markdown
-Reference text.
-## Section
-```
-
-Use:
-
-```markdown
-Reference text.
-
-## Section
-```
+Markdown headings must be surrounded by blank lines (leave an empty line before
+and after each heading block).
 
 This rule is enforced in CI by markdownlint and by
 `tests/ci_config_tests.rs::markdown_policy_validation`.
@@ -190,38 +177,10 @@ what the code does**. Common pitfalls:
 
 ### Shell scripts: Guard subsequent logic after extraction failures
 
-When a shell script extracts a value (e.g., parsing a version from a file) and
-checks whether extraction succeeded, ensure that **all subsequent logic depending
-on that value** is inside the success branch. A common bug:
-
-```bash
-# BUG: fall-through on extraction failure
-VALUE="$(awk '...' some-file)"
-if [ -z "$VALUE" ]; then
-    echo "Extraction failed"
-    VIOLATIONS=$((VIOLATIONS + 1))
-fi
-# This code runs even when VALUE is empty!
-if [ "$VALUE" != "$OTHER" ]; then
-    echo "Mismatch: '$VALUE' vs '$OTHER'"  # Confusing: '' vs 'expected'
-fi
-```
-
-Fix: use `else` to guard dependent logic, or exit/continue early:
-
-```bash
-# CORRECT: else branch guards dependent logic
-VALUE="$(awk '...' some-file)"
-if [ -z "$VALUE" ]; then
-    echo "Extraction failed"
-    VIOLATIONS=$((VIOLATIONS + 1))
-else
-    # Only runs when VALUE is non-empty
-    if [ "$VALUE" != "$OTHER" ]; then
-        echo "Mismatch: '$VALUE' vs '$OTHER'"
-    fi
-fi
-```
+When a shell script extracts a value (for example from `awk`/`grep`) and
+validates extraction, all dependent comparisons must stay inside the success
+branch (`else`) or return early (`continue`/`exit`). Avoid fall-through that
+produces confusing mismatch logs with empty values.
 
 This pattern is enforced by the regression test
 `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
@@ -295,12 +254,6 @@ Use this pattern for MSRV jobs:
     toolchain: <msrv-from-Cargo.toml>
 ```
 
-Avoid this anti-pattern:
-
-```yaml
-- uses: dtolnay/rust-toolchain@1.85.0
-```
-
 Prevention checks in this repository:
 
 - `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
@@ -309,10 +262,6 @@ Prevention checks in this repository:
   includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
 - `scripts/check-workflows.sh` fails fast on problematic
   `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
-
-Implementation note: semver-like detection should match only refs made of digits
-and dots. Do not classify digit-leading SHAs (hex refs containing letters) as
-semver-like; those are handled by the normal `@stable` requirement checks.
 
 ## Validation Scripts
 
