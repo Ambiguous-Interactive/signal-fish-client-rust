@@ -3,6 +3,9 @@
 </p>
 
 <p align="center">
+  <a href="https://Ambiguous-Interactive.github.io/signal-fish-client-rust/">
+    <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?logo=github" alt="Documentation">
+  </a>
   <a href="https://crates.io/crates/signal-fish-client">
     <img src="https://img.shields.io/crates/v/signal-fish-client.svg" alt="Crates.io">
   </a>
@@ -35,14 +38,14 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 
 ```toml
 [dependencies]
-signal-fish-client = "0.1"
+signal-fish-client = "0.2"
 ```
 
 Without the built-in WebSocket transport (bring your own):
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.1", default-features = false }
+signal-fish-client = { version = "0.2", default-features = false }
 ```
 
 ## Quick Start
@@ -226,3 +229,7 @@ Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2025-2026 Ambiguous Interactive
+
+---
+
+📖 **[Full documentation on GitHub Pages](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/)**

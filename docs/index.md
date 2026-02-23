@@ -89,13 +89,13 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
     [:octicons-arrow-right-24: Getting Started](getting-started.md)
 
-- :material-book-open-variant:{ .lg .middle } **API Reference**
+- :material-book-open-variant:{ .lg .middle } **Client Guide**
 
     ---
 
-    Detailed guides for the Client, Transport trait, Events, Errors, and Protocol types.
+    Learn how to create and use the SignalFishClient for multiplayer signaling.
 
-    [:octicons-arrow-right-24: API Reference](client.md)
+    [:octicons-arrow-right-24: Client Guide](client.md)
 
 - :material-code-tags:{ .lg .middle } **Examples**
 
@@ -105,7 +105,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
     [:octicons-arrow-right-24: Examples](examples.md)
 
-- :material-file-document:{ .lg .middle } **docs.rs**
+- :material-file-document:{ .lg .middle } **API Docs (docs.rs)**
 
     ---
 
@@ -122,7 +122,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Resource | URL |
 |----------|-----|
 | **GitHub Repository** | [Ambiguous-Interactive/signal-fish-client-rust](https://github.com/Ambiguous-Interactive/signal-fish-client-rust) |
-| **Documentation** | [signal-fish-client-rust](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
+| **Documentation** | [GitHub Pages](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
 | **crates.io** | [signal-fish-client](https://crates.io/crates/signal-fish-client) |
 | **docs.rs** | [signal-fish-client](https://docs.rs/signal-fish-client) |
 
