@@ -136,6 +136,17 @@ Three layers of validation catch this bug:
       the nav -- link to it from a docs page instead.
 - [ ] Does `mkdocs build --strict` pass locally?
 
+## Changelog Reference Link Consistency
+
+Keep a Changelog examples must keep version links synchronized.
+
+- `[Unreleased]` should compare from the latest released tag: `.../compare/vX.Y.Z...HEAD`
+- Latest version link (`[X.Y.Z]`) should either:
+  - point to `.../releases/tag/vX.Y.Z`, or
+  - compare previous-to-latest: `.../compare/vPREV...vX.Y.Z`
+
+The pre-commit hook enforces this for `.llm/*.md` files.
+
 ### Error Handling in Validation Functions
 
 Every validation function that reads files or checks the filesystem must

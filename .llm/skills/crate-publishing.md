@@ -174,6 +174,11 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 ```markdown
 ## [Unreleased]
 
+## [0.2.0] — 2024-02-22
+### Changed
+- `SignalFishError::ServerError.error_code` now uses `Option<ErrorCode>`
+- Added migration guidance for error-code handling
+
 ## [0.1.0] — 2024-01-15
 ### Added
 - Initial release
@@ -181,7 +186,8 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 - 26-variant `SignalFishEvent` enum
 - 40-variant `ErrorCode` enum
 
-[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/releases/tag/v0.1.0
 ```
 

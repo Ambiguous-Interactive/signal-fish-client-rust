@@ -368,6 +368,104 @@ def validate_doc_nav_card_consistency() -> list[str]:
     return errors
 
 
+def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
+    """Validate Keep a Changelog-style reference links are internally consistent.
+
+    Rules:
+    - If a markdown file defines an `[Unreleased]: ...` link plus one or more
+      version links (`[X.Y.Z]: ...`), then:
+      1. `[Unreleased]` must compare from the latest linked version to HEAD.
+      2. The latest linked version must point to either:
+         - `/releases/tag/vX.Y.Z`, or
+         - `/compare/vPREV...vX.Y.Z`
+    """
+    errors = []
+    link_ref_re = re.compile(r"^\[([^\]]+)\]:\s*(\S+)\s*$")
+    semver_label_re = re.compile(r"^\d+\.\d+\.\d+$")
+    compare_re = re.compile(r"/compare/v(\d+\.\d+\.\d+)\.\.\.HEAD(?:[#?].*)?$")
+    release_tag_re = re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)(?:[#?].*)?$")
+    release_compare_re = re.compile(
+        r"/compare/v(\d+\.\d+\.\d+)\.\.\.v(\d+\.\d+\.\d+)(?:[#?].*)?$"
+    )
+
+    for path in md_files:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  Could not read {path}: {e}")
+            continue
+
+        refs = {}
+        for line in content.splitlines():
+            match = link_ref_re.match(line.strip())
+            if match:
+                refs[match.group(1)] = match.group(2)
+
+        if "Unreleased" not in refs:
+            continue
+
+        version_labels = [label for label in refs if semver_label_re.match(label)]
+        if not version_labels:
+            continue
+
+        latest = max(
+            version_labels,
+            key=lambda v: tuple(int(part) for part in v.split(".")),
+        )
+
+        unreleased_url = refs["Unreleased"]
+        compare_match = compare_re.search(unreleased_url)
+        try:
+            rel = path.resolve().relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            rel = path
+        if compare_match is None:
+            errors.append(
+                f"  {rel}: [Unreleased] link should use '/compare/v{latest}...HEAD'. "
+                f"Found: {unreleased_url}"
+            )
+        elif compare_match.group(1) != latest:
+            errors.append(
+                f"  {rel}: [Unreleased] compares from v{compare_match.group(1)} "
+                f"but latest linked version is {latest}. "
+                f"Expected compare/v{latest}...HEAD."
+            )
+
+        latest_url = refs.get(latest)
+        if latest_url is None:
+            errors.append(
+                f"  {rel}: missing link reference for latest version [{latest}]."
+            )
+            continue
+
+        release_tag_match = release_tag_re.search(latest_url)
+        release_compare_match = release_compare_re.search(latest_url)
+        if release_tag_match is None and release_compare_match is None:
+            errors.append(
+                f"  {rel}: [{latest}] link should use either "
+                f"'/releases/tag/v{latest}' or '/compare/vPREV...v{latest}'. "
+                f"Found: {latest_url}"
+            )
+        elif (
+            release_tag_match is not None
+            and release_tag_match.group(1) != latest
+        ):
+            errors.append(
+                f"  {rel}: [{latest}] link points to v{release_tag_match.group(1)}; "
+                f"expected v{latest}."
+            )
+        elif (
+            release_compare_match is not None
+            and release_compare_match.group(2) != latest
+        ):
+            errors.append(
+                f"  {rel}: [{latest}] compare link ends at v{release_compare_match.group(2)}; "
+                f"expected v{latest}."
+            )
+
+    return errors
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -434,7 +532,11 @@ def main() -> int:
     nav_card_errors = validate_doc_nav_card_consistency()
     all_errors.extend(nav_card_errors)
 
-    # 8. Report all collected errors together
+    # 8. Validate changelog-style reference links are version-consistent (blocking)
+    changelog_link_errors = validate_changelog_example_links(all_md)
+    all_errors.extend(changelog_link_errors)
+
+    # 9. Report all collected errors together
     if all_errors:
         if line_count_errors:
             print(
@@ -481,6 +583,18 @@ def main() -> int:
             print(
                 "\nUpdate card labels in docs/index.md to match the H1 heading "
                 "of each target page.",
+                file=sys.stderr,
+            )
+        if changelog_link_errors:
+            print(
+                "\nPre-commit hook FAILED: changelog reference links are inconsistent:",
+                file=sys.stderr,
+            )
+            for error in changelog_link_errors:
+                print(error, file=sys.stderr)
+            print(
+                "\nIn changelog examples, [Unreleased] must compare from the latest "
+                "released version and that release link must point to the same tag.",
                 file=sys.stderr,
             )
         return 1

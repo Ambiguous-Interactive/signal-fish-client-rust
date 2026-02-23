@@ -25,6 +25,7 @@ generate_index = _mod.generate_index
 validate_mkdocs_nav = _mod.validate_mkdocs_nav
 validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
+validate_changelog_example_links = _mod.validate_changelog_example_links
 
 
 # ===================================================================
@@ -1177,3 +1178,117 @@ class TestValidateDocNavCardConsistency:
 
         errors = validate_doc_nav_card_consistency()
         assert errors == []
+
+
+# ===================================================================
+# Tests for validate_changelog_example_links
+# ===================================================================
+
+
+class TestValidateChangelogExampleLinks:
+    """Tests for changelog example reference link consistency validation."""
+
+    def test_consistent_unreleased_and_latest_release_links_pass(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """When links are aligned to latest version, no errors are returned."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text(
+            "# Example\n\n"
+            "## [Unreleased]\n\n"
+            "## [0.2.0] - 2024-01-15\n\n"
+            "[Unreleased]: https://github.com/example/project/compare/v0.2.0...HEAD\n"
+            "[0.2.0]: https://github.com/example/project/releases/tag/v0.2.0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_example_links([doc])
+        assert errors == []
+
+    def test_unreleased_compare_from_older_version_is_reported(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Unreleased compare must start from the latest linked version."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text(
+            "# Example\n\n"
+            "[Unreleased]: https://github.com/example/project/compare/v0.1.0...HEAD\n"
+            "[0.1.0]: https://github.com/example/project/releases/tag/v0.1.0\n"
+            "[0.2.0]: https://github.com/example/project/releases/tag/v0.2.0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_example_links([doc])
+        assert len(errors) == 1
+        assert "compares from v0.1.0" in errors[0]
+        assert "latest linked version is 0.2.0" in errors[0]
+
+    def test_latest_release_link_with_wrong_tag_is_reported(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Latest version link must point to its own tag."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text(
+            "# Example\n\n"
+            "[Unreleased]: https://github.com/example/project/compare/v0.2.0...HEAD\n"
+            "[0.2.0]: https://github.com/example/project/releases/tag/v0.1.0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_example_links([doc])
+        assert len(errors) == 1
+        assert "[0.2.0] link points to v0.1.0" in errors[0]
+
+    def test_non_changelog_files_are_ignored(self, tmp_path, monkeypatch):
+        """Files without an Unreleased link are ignored."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text("# Example\n\nNo changelog links here.\n", encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_example_links([doc])
+        assert errors == []
+
+    def test_relative_path_input_does_not_crash(self, tmp_path, monkeypatch):
+        """Validator handles relative path inputs without raising ValueError."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text(
+            "[Unreleased]: https://github.com/example/project/compare/v0.2.0...HEAD\n"
+            "[0.2.0]: https://github.com/example/project/releases/tag/v0.1.0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        with monkeypatch.context() as mp:
+            mp.chdir(fake_root)
+            errors = validate_changelog_example_links([Path(".llm/skill.md")])
+        assert len(errors) == 1
+        assert ".llm/skill.md" in errors[0]
