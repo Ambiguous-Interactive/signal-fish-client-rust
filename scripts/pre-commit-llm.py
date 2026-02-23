@@ -2,13 +2,12 @@
 """
 Pre-commit hook for .llm/ folder enforcement.
 
-Checks:
-1. No .md file under .llm/ exceeds 300 lines.
-2. Auto-generates .llm/skills/index.md from skill file headings and descriptions.
-3. Stages the auto-generated index file with git add.
-4. Validates that all mkdocs.yml nav references point to existing files in docs/.
-5. Rejects stale release-specific wording for unstable rustdoc removals.
-6. Syncs selected crate-version references to Cargo.toml package version.
+Checks include:
+- Sync selected crate-version references to Cargo.toml package version.
+- Enforce .llm markdown line limits.
+- Auto-generate .llm/skills/index.md from skill file headings/descriptions.
+- Validate docs and mkdocs consistency checks.
+- Reject stale release-specific wording for unstable rustdoc removals.
 """
 
 import subprocess
@@ -612,7 +611,7 @@ def main() -> int:
             rel = changed.relative_to(REPO_ROOT)
             print(f"Synced crate version reference in {rel} -> {crate_version}")
 
-    # 1. Collect all .md files under .llm/
+    # 2. Collect all .md files under .llm/
     all_md = find_md_files(LLM_DIR)
 
     # Separate skill files (excluding index.md itself) from other .llm/ files
@@ -621,7 +620,7 @@ def main() -> int:
         if f.name != "index.md"
     ) if SKILLS_DIR.exists() else []
 
-    # 2. Generate the index BEFORE line-count checks
+    # 3. Generate the index BEFORE line-count checks
     #    so that the index can be checked too
     if skill_files:
         index_content = generate_index(skill_files)
@@ -632,11 +631,11 @@ def main() -> int:
     # Refresh the list after generating index
     all_md = find_md_files(LLM_DIR)
 
-    # 3. Check line counts for all .md files under .llm/
+    # 4. Check line counts for all .md files under .llm/
     line_count_errors = check_line_counts(all_md)
     all_errors.extend(line_count_errors)
 
-    # 4. Run devcontainer documentation validation (non-blocking)
+    # 5. Run devcontainer documentation validation (non-blocking)
     validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
     if validate_script.exists():
         result = subprocess.run(
@@ -660,27 +659,27 @@ def main() -> int:
             if result.stdout.strip():
                 print(result.stdout.strip())
 
-    # 5. Validate mkdocs.yml nav references (blocking)
+    # 6. Validate mkdocs.yml nav references (blocking)
     nav_errors = validate_mkdocs_nav()
     all_errors.extend(nav_errors)
 
-    # 6. Validate fenced YAML workflow step indentation in docs (blocking)
+    # 7. Validate fenced YAML workflow step indentation in docs (blocking)
     yaml_step_indentation_errors = validate_yaml_step_indentation(all_md)
     all_errors.extend(yaml_step_indentation_errors)
 
-    # 7. Validate nav card labels match page titles (blocking)
+    # 8. Validate nav card labels match page titles (blocking)
     nav_card_errors = validate_doc_nav_card_consistency()
     all_errors.extend(nav_card_errors)
 
-    # 8. Validate changelog-style reference links are version-consistent (blocking)
+    # 9. Validate changelog-style reference links are version-consistent (blocking)
     changelog_link_errors = validate_changelog_example_links(all_md)
     all_errors.extend(changelog_link_errors)
 
-    # 9. Validate unstable feature wording in .llm markdown (blocking)
+    # 10. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
     all_errors.extend(unstable_wording_errors)
 
-    # 10. Report all collected errors together
+    # 11. Report all collected errors together
     if all_errors:
         if line_count_errors:
             print(

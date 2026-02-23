@@ -9,6 +9,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  - repo: local
+    hooks:
+      - id: pre-commit-llm-pytest
+        name: "pre-commit-llm.py tests (optional)"
+        language: system
+        entry: >-
+          bash -c 'if command -v pytest >/dev/null 2>&1; then pytest -q scripts/test_pre_commit_llm.py; else echo "SKIP: pytest not installed."; fi'
+        pass_filenames: false
+        always_run: true
+
   # ── Markdown linting (optional) ──────────────────────────────────────────
   - repo: local
     hooks:

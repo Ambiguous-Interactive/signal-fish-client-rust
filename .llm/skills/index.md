@@ -20,6 +20,10 @@ Reference for CI/CD tool configuration, common pitfalls, and consistency enforce
 
 Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.
 
+### [Documentation Drift Validation](doc-drift-validation.md)
+
+Reference for preventing documentation drift by validating docs against source-of-truth configuration files.
+
 ### [Error Handling](error-handling.md)
 
 Reference for thiserror patterns, SignalFishError design, and error propagation in this codebase.

@@ -98,6 +98,30 @@ The pre-commit hook validates this shape in `.llm/*.md` fenced YAML blocks and
 fails on malformed snippets, preventing docs examples from drifting into invalid
 workflow structure.
 
+## Numbered Workflow Comment Drift
+
+### The Bug Pattern
+
+When `main()` workflow comments use numbered labels (`# 1.`, `# 2.`, ...),
+adding a new step can leave duplicate or skipped numbers. This is easy to miss
+in review and makes maintenance comments misleading.
+
+### The Fix
+
+Keep numbered workflow comments contiguous and update all subsequent numbers
+after inserting a new step.
+
+### Validation Pattern
+
+Add a regression test that parses the `main()` function source and asserts:
+
+- Numbered workflow comments exist.
+- The sequence starts at `1`.
+- Numbers are contiguous with no duplicates/gaps.
+
+In this repo, `scripts/test_pre_commit_llm.py` enforces this for
+`scripts/pre-commit-llm.py`.
+
 ## MkDocs Nav Validation
 
 ### The Bug Pattern
@@ -234,67 +258,14 @@ renaming a page, update both the page heading **and** the card in
 - [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
       test?
 
-## Documentation Validation: Preventing Drift
+## Documentation Drift Validation
 
-### The Problem
+Detailed guidance for cross-referencing docs against source-of-truth config
+files was split into `doc-drift-validation.md` to keep this skill under the
+pre-commit line limit.
 
-README files and other docs can claim that a config file contains a
-certain key, setting, or hook -- but the config may have changed since
-the docs were last updated. This is **documentation drift**.
+Use that guide for:
 
-### The Fix: Cross-Reference Docs Against Config
-
-The `scripts/validate-devcontainer-docs.sh` script demonstrates the
-pattern:
-
-1. Define the set of keys that matter (e.g., devcontainer lifecycle
-   hooks).
-2. For each key mentioned in the documentation, verify it exists as an
-   actual key in the source-of-truth config file.
-3. Report mismatches as errors.
-
-```bash
-for hook in "${LIFECYCLE_HOOKS[@]}"; do
-    if grep -qw "$hook" "$README"; then
-        if ! grep -qE "^[[:space:]]*\"${hook}\"[[:space:]]*:" "$CONFIG"; then
-            echo "MISMATCH: '$hook' documented but missing from config"
-            errors=$((errors + 1))
-        fi
-    fi
-done
-```
-
-### Existing Validation in the Codebase
-
-| Mechanism | What it catches |
-|-----------|----------------|
-| `scripts/validate-devcontainer-docs.sh` | Devcontainer README referencing hooks not present in `devcontainer.json` |
-| `tests/ci_config_tests.rs` `msrv_consistent_across_key_files` | MSRV value drifting between `Cargo.toml` and docs |
-| `tests/ci_config_tests.rs` `config_existence` | Config files referenced by CI but missing from repo |
-
-### Checklist for New Documentation
-
-When adding docs that reference configuration:
-
-- [ ] Is there a validation script or test that cross-references the
-      doc against the config source of truth?
-- [ ] Does the CI pipeline run that validation?
-- [ ] If the config format is JSONC (comments allowed), does the
-      validation use `grep` rather than a strict JSON parser?
-
-### When to Add a New Validation Script
-
-Add a validation script when:
-
-- A new config file is introduced alongside documentation that
-  describes its contents.
-- A README enumerates settings, keys, or hooks from a config file.
-- Multiple files must stay in sync (e.g., MSRV across `Cargo.toml`,
-  CI workflows, and docs).
-
-Follow the pattern in `validate-devcontainer-docs.sh`:
-
-1. Resolve `REPO_ROOT` from `$SCRIPT_DIR/..`.
-2. Use `grep` for JSONC-safe matching (no JSON parser needed).
-3. Exit with code 1 on any mismatch.
-4. Print a clear message naming both the doc and the config file.
+- `scripts/validate-devcontainer-docs.sh` style checks
+- Checklist for when to add new doc-vs-config validators
+- JSONC-safe matching patterns and failure-message conventions

@@ -234,6 +234,7 @@ reference.
     async-rust-patterns.md
     ci-configuration.md
     crate-publishing.md
+    doc-drift-validation.md
     error-handling.md
     markdown-and-doc-validation.md
     public-api-design.md

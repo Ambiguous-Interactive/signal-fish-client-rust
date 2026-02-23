@@ -349,6 +349,31 @@ class TestCrateVersionSync:
         assert 'version = "1.2.3"' in publishing
         assert "# Bump version (0.1.0 -> 0.2.0)" in publishing
 
+    def test_main_workflow_step_comments_are_contiguous(self):
+        """Numbered workflow comments in main() remain contiguous after edits."""
+        source = _SCRIPT_PATH.read_text(encoding="utf-8")
+        main_match = re.search(
+            r'def main\(\) -> int:\n(?P<body>.*?)(?:\n\nif __name__ == "__main__":)',
+            source,
+            flags=re.DOTALL,
+        )
+        assert main_match is not None, "Could not locate main() in pre-commit script."
+
+        main_body = main_match.group("body")
+        step_numbers = [
+            int(match.group(1))
+            for match in re.finditer(r"^\s*#\s+(\d+)\.\s", main_body, flags=re.MULTILINE)
+        ]
+
+        assert len(step_numbers) >= 10, (
+            "Expected at least 10 numbered workflow comments in main(); "
+            f"found {len(step_numbers)}."
+        )
+        assert step_numbers == list(range(1, len(step_numbers) + 1)), (
+            "Numbered workflow comments in main() must be contiguous and start at 1. "
+            f"Found: {step_numbers}."
+        )
+
     def test_tilde_fence_is_skipped(self):
         """Tilde fences (~~~) are recognized and their content is skipped."""
         text = """\
