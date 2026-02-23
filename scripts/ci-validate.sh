@@ -19,6 +19,7 @@
 #   8. markdownlint on *.md        (optional — skipped if markdownlint not installed)
 #   9. mkdocs nav validation       (all nav-referenced files exist in docs/)
 #  10. workflow guard checks        (delegates to scripts/check-workflows.sh)
+#  11. docs.rs compatibility        (optional — requires nightly toolchain)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -40,7 +41,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=10
+TOTAL_CHECKS=11
 PASSED=0
 SKIPPED=0
 
@@ -317,6 +318,23 @@ if [ -f "$SCRIPT_DIR/check-workflows.sh" ]; then
     fi
 else
     skip "Workflow guard checks" "scripts/check-workflows.sh not found"
+fi
+
+# ── Check 11: docs.rs compatibility ─────────────────────────────────
+section_header 11 "docs.rs compatibility (scripts/check-docsrs.sh)"
+
+if [ ! -f "$SCRIPT_DIR/check-docsrs.sh" ]; then
+    skip "docs.rs compatibility" "scripts/check-docsrs.sh not found"
+elif ! command -v rustup &>/dev/null; then
+    skip "docs.rs compatibility" "rustup is not installed"
+elif ! rustup run nightly cargo --version &>/dev/null; then
+    skip "docs.rs compatibility" "nightly toolchain not installed (install: rustup toolchain install nightly --profile minimal)"
+else
+    if bash "$SCRIPT_DIR/check-docsrs.sh" 2>&1; then
+        pass "docs.rs/nightly rustdoc compatibility check passed"
+    else
+        fail "docs.rs/nightly rustdoc compatibility check failed"
+    fi
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────

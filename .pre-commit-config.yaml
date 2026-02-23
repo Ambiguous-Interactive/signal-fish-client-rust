@@ -20,6 +20,16 @@ repos:
         types: [markdown]
         always_run: true
 
+  # ── Shell script linting (optional) ───────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: shellcheck-optional
+        name: shellcheck (optional)
+        language: system
+        entry: bash -c 'if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh; else echo "SKIP: shellcheck not installed."; fi'
+        pass_filenames: false
+        always_run: true
+
   # ── Rust formatting ───────────────────────────────────────────────────────
   - repo: local
     hooks:

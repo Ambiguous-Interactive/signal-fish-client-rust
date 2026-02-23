@@ -115,6 +115,11 @@ jobs:
           SCCACHE_STARTUP_NOTIFY_TIMEOUT: "60"
           SCCACHE_IDLE_TIMEOUT: "0"
 
+      - name: Verify docs.rs compatibility
+        run: |
+          rustup toolchain install nightly --profile minimal
+          bash scripts/check-docsrs.sh
+
       - name: Publish (dry-run)
         run: cargo publish --dry-run
         env:

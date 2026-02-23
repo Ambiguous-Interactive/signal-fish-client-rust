@@ -1,4 +1,3 @@
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 //! # Signal Fish Client
 //!
 //! Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol.

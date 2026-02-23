@@ -151,6 +151,10 @@ mod script_existence {
             "The check-all script runs the complete local verification suite.",
         ),
         (
+            "scripts/check-docsrs.sh",
+            "The docs.rs check script verifies nightly/docsrs rustdoc compatibility before release.",
+        ),
+        (
             "scripts/check-no-panics.sh",
             "The panic-free policy check script is used by the no-panics workflow.",
         ),
@@ -172,6 +176,143 @@ mod script_existence {
                 "Required script '{path}' is missing. {reason}"
             );
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: docsrs_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod docsrs_policy {
+    use super::*;
+
+    #[test]
+    fn removed_doc_auto_cfg_feature_is_not_used() {
+        let lib_rs = read_project_file("src/lib.rs");
+        let banned_patterns = ["feature(doc_auto_cfg)"];
+
+        let found: Vec<&str> = banned_patterns
+            .iter()
+            .copied()
+            .filter(|pattern| lib_rs.contains(pattern))
+            .collect();
+
+        assert!(
+            found.is_empty(),
+            "src/lib.rs contains removed rustdoc feature gates: {found:?}. \
+             The `doc_auto_cfg` feature is removed from rustdoc; use docs.rs-compatible \
+             configuration without that gate."
+        );
+    }
+
+    #[test]
+    fn doc_auto_cfg_guidance_avoids_release_specific_removal_versions() {
+        let files = [".llm/skills/crate-publishing.md"];
+
+        for path in files {
+            let contents = read_project_file(path);
+            if contents.contains("doc_auto_cfg") {
+                assert!(
+                    !contents.contains("removed in Rust "),
+                    "{path} includes release-specific wording ('removed in Rust ...') \
+                     for `doc_auto_cfg`. Prefer stable wording like 'removed from rustdoc' \
+                     to avoid stale guidance."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cargo_toml_docs_rs_metadata_is_present() {
+        let cargo_content = read_project_file("Cargo.toml");
+        let parsed: toml::Value =
+            toml::from_str(&cargo_content).expect("Cargo.toml must be valid TOML");
+
+        let docs_rs = parsed
+            .get("package")
+            .and_then(|package| package.get("metadata"))
+            .and_then(|metadata| metadata.get("docs"))
+            .and_then(|docs| docs.get("rs"))
+            .expect("Cargo.toml must define [package.metadata.docs.rs]");
+
+        let all_features = docs_rs
+            .get("all-features")
+            .and_then(toml::Value::as_bool)
+            .or_else(|| docs_rs.get("all_features").and_then(toml::Value::as_bool))
+            .expect("[package.metadata.docs.rs] must set all-features = true");
+        assert!(
+            all_features,
+            "[package.metadata.docs.rs] must set all-features = true"
+        );
+
+        let rustdoc_args = docs_rs
+            .get("rustdoc-args")
+            .or_else(|| docs_rs.get("rustdoc_args"))
+            .and_then(toml::Value::as_array)
+            .expect("[package.metadata.docs.rs] must set rustdoc-args");
+
+        let has_docsrs_cfg = rustdoc_args.windows(2).any(|pair| {
+            pair.first().and_then(toml::Value::as_str) == Some("--cfg")
+                && pair.get(1).and_then(toml::Value::as_str) == Some("docsrs")
+        });
+
+        assert!(
+            has_docsrs_cfg,
+            "[package.metadata.docs.rs].rustdoc-args must include [\"--cfg\", \"docsrs\"]"
+        );
+    }
+
+    #[test]
+    fn ci_and_publish_workflows_run_docsrs_check_script() {
+        struct Case {
+            workflow_path: &'static str,
+            required_snippet: &'static str,
+        }
+
+        let cases = [
+            Case {
+                workflow_path: ".github/workflows/ci.yml",
+                required_snippet: "bash scripts/check-docsrs.sh",
+            },
+            Case {
+                workflow_path: ".github/workflows/publish.yml",
+                required_snippet: "bash scripts/check-docsrs.sh",
+            },
+        ];
+
+        for case in cases {
+            let contents = read_project_file(case.workflow_path);
+            assert!(
+                contents.contains(case.required_snippet),
+                "{} must run '{}'. This prevents docs.rs-only nightly breakage from reaching releases.",
+                case.workflow_path,
+                case.required_snippet
+            );
+        }
+    }
+
+    #[test]
+    fn check_all_docsrs_failure_does_not_double_count_phase_4_failures() {
+        let contents = read_project_file("scripts/check-all.sh");
+
+        assert!(
+            contents.contains("mark_phase_fail()"),
+            "scripts/check-all.sh must define mark_phase_fail() so repeated \
+             sub-check failures within the same phase do not inflate the \
+             overall FAILURES count."
+        );
+
+        let docsrs_fail_pos = contents.find("docs.rs simulation: FAIL").expect(
+            "scripts/check-all.sh must report docs.rs simulation failures in the Phase 4 block",
+        );
+        let docsrs_tail = &contents[docsrs_fail_pos..];
+
+        assert!(
+            docsrs_tail.contains("mark_phase_fail 4"),
+            "scripts/check-all.sh must use mark_phase_fail 4 when docs.rs \
+             simulation fails, so Phase 4 remains a single failed phase \
+             in the final summary."
+        );
     }
 }
 
@@ -920,6 +1061,81 @@ mod ci_config_validation {
                 case.directive_line
             );
         }
+    }
+
+    #[test]
+    fn check_all_script_avoids_shellcheck_sc2004_array_index_style() {
+        let path = "scripts/check-all.sh";
+        let contents = read_project_file(path);
+
+        let offenders: Vec<(usize, String)> = contents
+            .lines()
+            .enumerate()
+            .filter_map(|(line_idx, line)| {
+                let has_phase_results_dollar_index =
+                    line.contains("PHASE_RESULTS[$") || line.contains("PHASE_RESULTS[${");
+                let has_phase_names_dollar_index =
+                    line.contains("PHASE_NAMES[$") || line.contains("PHASE_NAMES[${");
+
+                if has_phase_results_dollar_index || has_phase_names_dollar_index {
+                    Some((line_idx + 1, line.trim_end().to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "Found ShellCheck SC2004-prone array index style in {}.\n\
+             Offending lines (use [name] without '$' in array indexes):\n{}",
+            path,
+            offenders
+                .iter()
+                .map(|(line_no, line)| format!("{line_no}: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn install_hooks_hook_script_includes_optional_shellcheck() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        assert!(
+            contents.contains("if command -v shellcheck &>/dev/null; then"),
+            "scripts/install-hooks.sh must include an optional shellcheck block \
+             in the generated pre-commit hook."
+        );
+
+        assert!(
+            contents.contains("shellcheck \"${REPO_ROOT}\"/scripts/*.sh"),
+            "scripts/install-hooks.sh must run shellcheck on scripts/*.sh \
+             (repo-root resolved) in the generated pre-commit hook."
+        );
+    }
+
+    #[test]
+    fn ci_configuration_skill_documents_sc2004_for_reads_and_writes() {
+        let contents = read_project_file(".llm/skills/ci-configuration.md");
+
+        assert!(
+            contents.contains("applies to both reads and writes"),
+            ".llm/skills/ci-configuration.md must state that SC2004 guidance \
+             applies to both reads and writes."
+        );
+
+        assert!(
+            contents.contains("${PHASE_RESULTS[phase]}"),
+            ".llm/skills/ci-configuration.md must include a read example using \
+             $PHASE_RESULTS[phase] syntax (without '$' in the index)."
+        );
+
+        assert!(
+            contents.contains("PHASE_RESULTS[phase]=\"FAIL\""),
+            ".llm/skills/ci-configuration.md must include a write example using \
+             `PHASE_RESULTS[phase]=\"FAIL\"` (without '$' in the index)."
+        );
     }
 
     /// Verify that `serde_bytes` is in the cargo-machete ignore list.
