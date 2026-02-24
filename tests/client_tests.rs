@@ -14,11 +14,15 @@
 
 mod common;
 
+use std::collections::VecDeque;
+
+use async_trait::async_trait;
 use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage,
 };
 use signal_fish_client::{
-    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent,
+    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
+    SignalFishEvent, Transport,
 };
 
 use common::{
@@ -61,6 +65,38 @@ async fn drain_until_authenticated(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
         matches!(ev, SignalFishEvent::Authenticated { .. }),
         "second event should be Authenticated, got {ev:?}"
     );
+}
+
+/// Transport that can script incoming messages but hangs forever in `close()`.
+struct HangingCloseTransport {
+    incoming: VecDeque<Option<Result<String, SignalFishError>>>,
+}
+
+impl HangingCloseTransport {
+    fn new(incoming: Vec<Option<Result<String, SignalFishError>>>) -> Self {
+        Self {
+            incoming: VecDeque::from(incoming),
+        }
+    }
+}
+
+#[async_trait]
+impl Transport for HangingCloseTransport {
+    async fn send(&mut self, _message: String) -> Result<(), SignalFishError> {
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+        if let Some(item) = self.incoming.pop_front() {
+            item
+        } else {
+            std::future::pending().await
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), SignalFishError> {
+        std::future::pending().await
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1309,6 +1345,34 @@ async fn shutdown_closes_transport() {
     assert!(matches!(ev, SignalFishEvent::Disconnected { .. }));
 
     assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn shutdown_timeout_clears_state_even_when_disconnected_event_is_skipped() {
+    let transport = HangingCloseTransport::new(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(room_joined_json())),
+    ]);
+    let config = SignalFishConfig::new("mb_test_integration")
+        .with_shutdown_timeout(std::time::Duration::from_millis(1));
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+    drain_until_authenticated(&mut events).await;
+    let ev = events.recv().await.expect("expected RoomJoined event");
+    assert!(matches!(ev, SignalFishEvent::RoomJoined { .. }));
+
+    assert!(client.is_authenticated());
+    assert!(client.current_player_id().await.is_some());
+    assert!(client.current_room_id().await.is_some());
+    assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
+
+    client.shutdown().await;
+
+    assert!(!client.is_connected());
+    assert!(!client.is_authenticated());
+    assert!(client.current_player_id().await.is_none());
+    assert!(client.current_room_id().await.is_none());
+    assert!(client.current_room_code().await.is_none());
 }
 
 #[tokio::test]

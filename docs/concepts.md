@@ -219,6 +219,8 @@ Under the hood this:
 3. `shutdown()` awaits the background task with a configurable timeout (default
    **1 second**, set via `SignalFishConfig::shutdown_timeout`). If the task does
    not finish in time, it is aborted to prevent detached background work.
+4. On completion, client session state is reset even if the `Disconnected`
+   event was not delivered due to timeout/abort.
 
 ### Drop Fallback
 

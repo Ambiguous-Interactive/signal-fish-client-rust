@@ -238,6 +238,13 @@ impl ClientState {
             room_code: Mutex::new(None),
         }
     }
+
+    async fn clear_session_state(&self) {
+        self.authenticated.store(false, Ordering::Release);
+        *self.player_id.lock().await = None;
+        *self.room_id.lock().await = None;
+        *self.room_code.lock().await = None;
+    }
 }
 
 // ── Client handle ───────────────────────────────────────────────────
@@ -473,6 +480,7 @@ impl SignalFishClient {
         }
 
         self.state.connected.store(false, Ordering::Release);
+        self.state.clear_session_state().await;
     }
 
     // ── State accessors ─────────────────────────────────────────────
@@ -721,7 +729,7 @@ async fn emit_disconnected(
     reason: Option<String>,
 ) {
     state.connected.store(false, Ordering::Release);
-    state.authenticated.store(false, Ordering::Release);
+    state.clear_session_state().await;
     let event = SignalFishEvent::Disconnected { reason };
     if event_tx.send(event).await.is_err() {
         debug!("event channel closed, receiver dropped");
@@ -1095,16 +1103,24 @@ mod tests {
 
     /// Transport that hangs forever in `close()` so shutdown timeout/abort can be tested.
     struct HangingCloseTransport {
+        incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
         close_called: Arc<AtomicBool>,
         dropped: Arc<AtomicBool>,
     }
 
     impl HangingCloseTransport {
         fn new() -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            Self::with_incoming(Vec::new())
+        }
+
+        fn with_incoming(
+            incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
+        ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
             let close_called = Arc::new(AtomicBool::new(false));
             let dropped = Arc::new(AtomicBool::new(false));
             (
                 Self {
+                    incoming: VecDeque::from(incoming),
                     close_called: Arc::clone(&close_called),
                     dropped: Arc::clone(&dropped),
                 },
@@ -1127,7 +1143,11 @@ mod tests {
         }
 
         async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
-            std::future::pending().await
+            if let Some(item) = self.incoming.pop_front() {
+                item
+            } else {
+                std::future::pending().await
+            }
         }
 
         async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
@@ -1634,5 +1654,33 @@ mod tests {
         }
 
         assert!(!client.is_connected());
+    }
+
+    #[tokio::test]
+    async fn shutdown_abort_clears_auth_and_room_state() {
+        let (transport, _close_called, _dropped) = HangingCloseTransport::with_incoming(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(room_joined_json())),
+        ]);
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(1));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // RoomJoined
+
+        assert!(client.is_authenticated());
+        assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
+        assert!(client.current_room_id().await.is_some());
+        assert!(client.current_player_id().await.is_some());
+
+        client.shutdown().await;
+
+        assert!(!client.is_connected());
+        assert!(!client.is_authenticated());
+        assert!(client.current_room_id().await.is_none());
+        assert!(client.current_room_code().await.is_none());
+        assert!(client.current_player_id().await.is_none());
     }
 }

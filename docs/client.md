@@ -403,6 +403,9 @@ Shutdown proceeds in three stages:
    set via [`SignalFishConfig::shutdown_timeout`](#signalfishconfig)).
 3. If the timeout expires, the task is logged as unresponsive and aborted.
    The `Disconnected` event may not be delivered in this case.
+4. Regardless of whether `Disconnected` is delivered, connection/session state
+   is cleared (`is_connected() == false`, `is_authenticated() == false`, and
+   room/player accessors return `None`).
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the
