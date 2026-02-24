@@ -24,11 +24,13 @@ VIOLATIONS=0
 
 TMP_TOOLCHAIN_VIOLATIONS="$(mktemp -t signal-fish-toolchain-violations.XXXXXX)"
 TMP_STEP_NAME_VIOLATIONS="$(mktemp -t signal-fish-step-name-violations.XXXXXX)"
+TMP_ACTION_REF_VIOLATIONS="$(mktemp -t signal-fish-action-ref-violations.XXXXXX)"
 
 # shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
     rm -f "$TMP_STEP_NAME_VIOLATIONS"
+    rm -f "$TMP_ACTION_REF_VIOLATIONS"
 }
 
 trap cleanup EXIT
@@ -91,8 +93,66 @@ else
 fi
 echo ""
 
-# ── Phase 4: rust-toolchain usage guard — catch MSRV misconfiguration ──
-echo -e "${YELLOW}Phase 4: Checking dtolnay/rust-toolchain usage patterns...${NC}"
+# ── Phase 4: action refs policy — enforce version tags over commit hashes ──
+echo -e "${YELLOW}Phase 4: Checking action reference version policy...${NC}"
+
+while IFS= read -r workflow_path; do
+    line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+        if [[ "$trimmed" != "- uses:"* && "$trimmed" != "uses:"* ]]; then
+            continue
+        fi
+
+        reference="$(printf '%s' "$trimmed" | sed -E 's/^-?[[:space:]]*uses:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+
+        # Local and docker actions are out of scope for version-tag policy.
+        if [[ "$reference" == ./* || "$reference" == docker://* ]]; then
+            continue
+        fi
+
+        if [[ "$reference" != *"@"* ]]; then
+            echo "$workflow_path:$line_num: missing @version in uses: $reference" >>"$TMP_ACTION_REF_VIOLATIONS"
+            continue
+        fi
+
+        action_name="${reference%@*}"
+        version_ref="${reference##*@}"
+
+        # rust-toolchain uses channels by design; enforce known channels.
+        if [[ "$action_name" == "dtolnay/rust-toolchain" ]]; then
+            if [[ ! "$version_ref" =~ ^(stable|nightly|beta)$ ]]; then
+                echo "$workflow_path:$line_num: invalid dtolnay/rust-toolchain channel '$version_ref' (expected stable/nightly/beta)" >>"$TMP_ACTION_REF_VIOLATIONS"
+            fi
+            continue
+        fi
+
+        if [[ "$version_ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "$workflow_path:$line_num: hash-pinned action ref is not allowed: $reference" >>"$TMP_ACTION_REF_VIOLATIONS"
+            continue
+        fi
+
+        if [[ ! "$version_ref" =~ ^v[0-9][0-9A-Za-z._-]*$ ]]; then
+            echo "$workflow_path:$line_num: non-tag action ref '$version_ref' (expected v-prefixed version tag)" >>"$TMP_ACTION_REF_VIOLATIONS"
+        fi
+    done <"$workflow_path"
+done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+
+if [ -s "$TMP_ACTION_REF_VIOLATIONS" ]; then
+    echo -e "${RED}Phase 4: FAIL${NC}"
+    echo "Action references must use version tags (v-prefixed), not commit hashes."
+    echo "Allowed exception: dtolnay/rust-toolchain@stable|nightly|beta."
+    echo ""
+    cat "$TMP_ACTION_REF_VIOLATIONS"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    echo -e "${GREEN}Phase 4: PASS${NC}"
+fi
+echo ""
+
+# ── Phase 5: rust-toolchain usage guard — catch MSRV misconfiguration ──
+echo -e "${YELLOW}Phase 5: Checking dtolnay/rust-toolchain usage patterns...${NC}"
 
 if grep -R -n -E "uses:[[:space:]]*['\"]?dtolnay/rust-toolchain@[0-9]+(\.[0-9]+)*(['\"])?([[:space:]]|$|#)" .github/workflows/*.yml >"$TMP_TOOLCHAIN_VIOLATIONS"; then
     echo -e "${RED}Phase 4: FAIL${NC}"
@@ -167,7 +227,7 @@ else
                     echo "$CI_MSRV_BLOCK"
                     VIOLATIONS=$((VIOLATIONS + 1))
                 else
-                    echo -e "${GREEN}Phase 4: PASS${NC}"
+        echo -e "${GREEN}Phase 5: PASS${NC}"
                 fi
             fi
         fi
@@ -175,11 +235,11 @@ else
 fi
 echo ""
 
-# ── Phase 5: step naming policy — improve Actions UI readability ─────
-echo -e "${YELLOW}Phase 5: Checking workflow step naming policy...${NC}"
+# ── Phase 6: step naming policy — improve Actions UI readability ─────
+echo -e "${YELLOW}Phase 6: Checking workflow step naming policy...${NC}"
 
 if rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml >"$TMP_STEP_NAME_VIOLATIONS"; then
-    echo -e "${RED}Phase 5: FAIL${NC}"
+    echo -e "${RED}Phase 6: FAIL${NC}"
     echo "Found workflow steps missing explicit 'name:' fields."
     echo "Action: Convert each '- uses:' or '- run:' step into:"
     echo "  - name: <descriptive step name>"
@@ -190,11 +250,11 @@ if rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml >"$TMP_
 else
     step_name_grep_status=$?
     if [ "$step_name_grep_status" -gt 1 ]; then
-        echo -e "${RED}Phase 5: FAIL${NC}"
+        echo -e "${RED}Phase 6: FAIL${NC}"
         echo "Error: failed while scanning workflows for unnamed steps."
         VIOLATIONS=$((VIOLATIONS + 1))
     else
-        echo -e "${GREEN}Phase 5: PASS${NC}"
+        echo -e "${GREEN}Phase 6: PASS${NC}"
     fi
 fi
 echo ""

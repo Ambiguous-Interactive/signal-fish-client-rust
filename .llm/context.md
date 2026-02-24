@@ -25,6 +25,14 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## CI/CD Action Reference Policy
+
+Use version tags in workflow `uses:` references, not commit hashes.
+
+- Use: `owner/action@vN` or `owner/action@vN.N.N`
+- Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
+- Avoid commit-SHA refs unless a workflow has an explicit unavoidable requirement
+
 ## Changelog Policy
 
 Only add `CHANGELOG.md` entries for user-visible changes.

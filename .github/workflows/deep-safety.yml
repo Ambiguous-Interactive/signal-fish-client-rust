@@ -51,7 +51,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust nightly with Miri
         uses: dtolnay/rust-toolchain@nightly
@@ -62,7 +62,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Run Miri on protocol tests
         run: cargo +nightly miri test --test protocol_tests --all-features
@@ -93,13 +93,13 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
 
@@ -107,7 +107,7 @@ jobs:
         run: cd fuzz && cargo generate-lockfile
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
 
@@ -132,7 +132,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -141,10 +141,10 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants
 
@@ -153,8 +153,8 @@ jobs:
 
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        uses: actions/upload-artifact@v6.0.0
         with:
-          name: mutants-results-${{ github.sha }}-${{ github.run_number }}
+          name: mutants-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: mutants.out/
           retention-days: 30

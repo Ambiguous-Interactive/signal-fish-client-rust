@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -55,7 +55,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
 
@@ -76,10 +76,10 @@ jobs:
     if: github.event_name == 'schedule'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979  # v2
+        uses: EmbarkStudios/cargo-deny-action@v2
 
   # ──────────────────────────────────────────────────────────────
   # SBOM — generate CycloneDX Software Bill of Materials
@@ -93,19 +93,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Generate lockfile
         run: cargo generate-lockfile
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-cyclonedx
 
@@ -113,9 +113,9 @@ jobs:
         run: cargo cyclonedx --format json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        uses: actions/upload-artifact@v6.0.0
         with:
-          name: sbom-cyclonedx-${{ github.sha }}-${{ github.run_number }}
+          name: sbom-cyclonedx-${{ github.run_id }}-${{ github.run_attempt }}
           path: ./**/*.cdx.json
           if-no-files-found: error
           retention-days: 90

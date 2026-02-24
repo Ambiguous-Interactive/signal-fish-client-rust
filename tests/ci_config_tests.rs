@@ -909,20 +909,18 @@ mod workflow_security {
         }
     }
 
-    // Verifies that action `uses:` references are SHA-pinned.
+    // Verifies that action `uses:` references are version tags (v-prefixed)
+    // rather than commit hashes.
     //
-    // A SHA-pinned reference looks like:
-    //   `uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11`
+    // A valid reference looks like:
+    //   `uses: actions/checkout@v6.0.2`
     //
-    // A tag reference like `uses: actions/checkout@v4` is NOT acceptable
-    // because tags are mutable and can be moved to point at different commits.
-    //
-    // We allow `dtolnay/rust-toolchain@<channel>` to be non-SHA in this test.
+    // We allow `dtolnay/rust-toolchain@<channel>` to use channels by design.
     // MSRV policy is validated separately: the `msrv` job must use
     // `dtolnay/rust-toolchain@stable` with explicit `with.toolchain` matching
     // Cargo.toml rust-version.
     #[test]
-    fn action_references_are_sha_pinned() {
+    fn action_references_use_version_tags() {
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
             let contents = read_project_file(workflow_path);
 
@@ -942,11 +940,6 @@ mod workflow_security {
                     .unwrap_or("");
                 let reference = reference.trim_matches('"');
 
-                // Skip dtolnay/rust-toolchain which uses channel names by design.
-                if reference.contains("dtolnay/rust-toolchain") {
-                    continue;
-                }
-
                 // Skip local actions (e.g., `./my-action`) — these don't need pinning.
                 if reference.starts_with("./") {
                     continue;
@@ -963,27 +956,41 @@ mod workflow_security {
                     at_pos.is_some(),
                     "Action reference in '{workflow_path}' line {} has no version: \
                      `{reference}`. All non-local action references must include \
-                     `@<sha>` to be version-pinned.",
+                     `@<version>`.",
                     line_num + 1,
                 );
 
-                // The reference must contain `@` followed by what looks like a
-                // 40-character hex SHA.
                 let at_pos = at_pos.unwrap();
+                let action_name = &reference[..at_pos];
                 let after_at = &reference[at_pos + 1..];
                 // Remove any trailing comments or whitespace.
                 let version_ref = after_at.split_whitespace().next().unwrap_or("");
 
-                let is_sha_pinned =
-                    version_ref.len() >= 40 && version_ref.chars().all(|c| c.is_ascii_hexdigit());
+                if action_name == "dtolnay/rust-toolchain" {
+                    let is_supported_channel = matches!(version_ref, "stable" | "nightly" | "beta");
+                    assert!(
+                        is_supported_channel,
+                        "Action reference in '{workflow_path}' line {} uses unsupported \
+                         dtolnay/rust-toolchain channel `{version_ref}`. Expected one of \
+                         stable/nightly/beta.",
+                        line_num + 1,
+                    );
+                    continue;
+                }
+
+                let is_hash_ref =
+                    version_ref.len() == 40 && version_ref.chars().all(|c| c.is_ascii_hexdigit());
+                let is_v_tag = version_ref.starts_with('v')
+                    && version_ref
+                        .chars()
+                        .nth(1)
+                        .is_some_and(|c| c.is_ascii_digit());
 
                 assert!(
-                    is_sha_pinned,
-                    "Action reference in '{workflow_path}' line {} is not SHA-pinned: \
-                     `{reference}`. Action references must use full commit SHAs \
-                     (40+ hex chars) to prevent supply-chain attacks via tag mutation. \
-                     Add a version comment after the SHA for readability, e.g.: \
-                     `actions/checkout@<sha> # v4`.",
+                    !is_hash_ref && is_v_tag,
+                    "Action reference in '{workflow_path}' line {} violates version-tag policy: \
+                     `{reference}`. Use v-prefixed version tags (e.g., `@v6` or `@v6.0.2`) \
+                     and do not use commit hashes.",
                     line_num + 1,
                 );
             }
@@ -1021,8 +1028,23 @@ mod workflow_security {
         );
 
         assert!(
+            contents.contains("mktemp -t signal-fish-action-ref-violations"),
+            "scripts/check-workflows.sh must track action-ref violations in a temp file."
+        );
+
+        assert!(
             contents.contains("trap cleanup EXIT"),
             "scripts/check-workflows.sh must register trap cleanup for temp file removal."
+        );
+
+        assert!(
+            contents.contains("hash-pinned action ref is not allowed"),
+            "scripts/check-workflows.sh must explicitly reject hash-pinned action refs."
+        );
+
+        assert!(
+            contents.contains("expected v-prefixed version tag"),
+            "scripts/check-workflows.sh must enforce v-prefixed action tags."
         );
 
         assert!(

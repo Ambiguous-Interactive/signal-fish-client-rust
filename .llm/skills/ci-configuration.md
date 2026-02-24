@@ -15,6 +15,10 @@ Reference for CI/CD tool configuration, common pitfalls, and consistency enforce
 
 ## Common Pitfalls
 
+### GitHub Actions refs: tags, not commit hashes
+
+Use `uses: owner/action@vN` (or `@vN.N.N`) and do not use commit-SHA refs. Only `dtolnay/rust-toolchain` may use channels (`@stable`, `@nightly`, `@beta`); policy is enforced by `scripts/check-workflows.sh` and `tests/ci_config_tests.rs`.
+
 ### lychee: TOML vs CLI syntax
 
 The lychee link checker has different syntax for TOML config vs CLI flags.
@@ -51,8 +55,7 @@ For MSRV badges and similar stable references, prefer canonical, long-lived docu
 
 Regression policy:
 
-- Keep `README.md` and `docs/index.md` MSRV links pointed at
-  `doc.rust-lang.org/stable/releases.html`.
+- Keep `README.md` and `docs/index.md` MSRV links pointed at `doc.rust-lang.org/stable/releases.html`.
 - `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
