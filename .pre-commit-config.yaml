@@ -42,6 +42,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── Workflow guard checks ─────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: workflow-guards
+        name: workflow guard checks
+        language: system
+        entry: bash scripts/check-workflows.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Rust formatting ───────────────────────────────────────────────────────
   - repo: local
     hooks:

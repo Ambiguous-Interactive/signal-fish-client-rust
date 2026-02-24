@@ -8,10 +8,12 @@
 #   1. Runs scripts/pre-commit-llm.py (line-limit check + skills index generation)
 #   2. Runs scripts/test_pre_commit_llm.py with pytest if available
 #   3. Runs markdownlint if available (to catch docs formatting drift early)
-#   4. Optionally uses the pre-commit framework if it is installed
+#   4. Runs scripts/check-workflows.sh (workflow guard checks)
+#   5. Optionally uses the pre-commit framework if it is installed
 #
 # Hook behavior:
-#   On every commit : llm-line-limit, markdownlint (optional), cargo-fmt, cargo-clippy, typos (optional)
+#   On every commit : llm-line-limit, markdownlint (optional), workflow guards,
+#                     cargo-fmt, cargo-clippy, typos (optional)
 #   On push only    : cargo-test (too slow for every commit)
 
 set -euo pipefail
@@ -95,6 +97,18 @@ else
     echo "       or: brew install shellcheck"
 fi
 
+# ── Workflow guard checks ───────────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-workflows.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-workflows.sh"; then
+        echo ""
+        echo "Commit aborted: workflow guard checks failed."
+        echo "Fix the workflow issues above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-workflows.sh not found — skipping workflow guard checks."
+fi
+
 # ── Cargo fmt check ───────────────────────────────────────────────────────
 if ! cargo fmt --all -- --check; then
     echo ""
@@ -161,9 +175,10 @@ echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
-echo "  5. cargo fmt --all -- --check"
-echo "  6. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  7. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  5. bash scripts/check-workflows.sh"
+echo "  6. cargo fmt --all -- --check"
+echo "  7. cargo clippy --all-targets --all-features -- -D warnings"
+echo "  8. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"

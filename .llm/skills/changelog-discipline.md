@@ -55,6 +55,7 @@ Before finalizing a user-visible change:
 - Added new `SignalFishEvent` variant
 - Changed default `SignalFishConfig` behavior
 - Fixed bug that changes observable runtime behavior
+- Changed target-specific dependency features in a way that affects supported targets (for example enabling WASM-specific `uuid` features)
 
 ### Usually does not require changelog
 
