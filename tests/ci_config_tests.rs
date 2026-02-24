@@ -61,6 +61,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/security-supply-chain.yml",
     ".github/workflows/semver-checks.yml",
     ".github/workflows/unused-deps.yml",
+    ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
 ];
 
@@ -990,6 +991,27 @@ mod workflow_security {
     }
 
     #[test]
+    fn all_workflow_steps_have_explicit_names() {
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim_start();
+                let is_unnamed_step =
+                    trimmed.starts_with("- uses:") || trimmed.starts_with("- run:");
+                assert!(
+                    !is_unnamed_step,
+                    "Workflow '{workflow_path}' line {} defines a step without an explicit name: \
+                     `{}`. Use `- name: ...` followed by `uses:`/`run:` for readability in the \
+                     Actions UI and logs.",
+                    line_num + 1,
+                    trimmed
+                );
+            }
+        }
+    }
+
+    #[test]
     fn check_workflows_script_enforces_msrv_toolchain_match() {
         let contents = read_project_file("scripts/check-workflows.sh");
 
@@ -1031,6 +1053,11 @@ mod workflow_security {
         assert!(
             contents.contains("[ \"$CI_MSRV_TOOLCHAIN\" != \"$CARGO_MSRV\" ]"),
             "scripts/check-workflows.sh must fail when ci.yml msrv toolchain does not match Cargo.toml rust-version."
+        );
+
+        assert!(
+            contents.contains("^[[:space:]]*-[[:space:]]+(uses|run):"),
+            "scripts/check-workflows.sh must enforce explicit `name:` fields by detecting raw `- uses:` / `- run:` steps."
         );
     }
 
@@ -1138,6 +1165,25 @@ mod panic_policy {
 mod dependency_policy {
     use super::*;
 
+    fn cargo_toml() -> toml::Value {
+        let contents = read_project_file("Cargo.toml");
+        toml::from_str(&contents).expect("Cargo.toml must be valid TOML")
+    }
+
+    fn dependency_features(dependency: &toml::Value) -> Vec<String> {
+        dependency
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn dependabot_monitors_cargo_ecosystem() {
         let contents = read_project_file(".github/dependabot.yml");
@@ -1158,6 +1204,46 @@ mod dependency_policy {
              Dependabot must monitor GitHub Actions to receive automated updates \
              for workflow action versions, including security patches."
         );
+    }
+
+    #[test]
+    fn uuid_dependency_enables_v4_and_serde_features() {
+        let parsed = cargo_toml();
+        let uuid_dep = parsed
+            .get("dependencies")
+            .and_then(|deps| deps.get("uuid"))
+            .expect("Cargo.toml must define [dependencies].uuid");
+
+        let features = dependency_features(uuid_dep);
+        assert!(
+            features.iter().any(|feature| feature == "v4"),
+            "[dependencies].uuid must enable the `v4` feature."
+        );
+        assert!(
+            features.iter().any(|feature| feature == "serde"),
+            "[dependencies].uuid must enable the `serde` feature."
+        );
+    }
+
+    #[test]
+    fn wasm_uuid_dependency_includes_js_v4_and_serde_features() {
+        let parsed = cargo_toml();
+        let uuid_dep = parsed
+            .get("target")
+            .and_then(|target| target.get("cfg(target_arch = \"wasm32\")"))
+            .and_then(|cfg| cfg.get("dependencies"))
+            .and_then(|deps| deps.get("uuid"))
+            .expect(
+                "Cargo.toml must define [target.'cfg(target_arch = \"wasm32\")'.dependencies].uuid",
+            );
+
+        let features = dependency_features(uuid_dep);
+        for required in ["js", "v4", "serde"] {
+            assert!(
+                features.iter().any(|feature| feature == required),
+                "[target.'cfg(target_arch = \"wasm32\")'.dependencies].uuid must enable the `{required}` feature."
+            );
+        }
     }
 }
 

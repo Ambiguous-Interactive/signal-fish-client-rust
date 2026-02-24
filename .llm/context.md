@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.3.0
+- **Version:** 0.3.1
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -270,7 +270,8 @@ A pre-commit hook enforces:
 2. `skills/index.md` is auto-regenerated from skill file headings
 3. `cargo fmt --all -- --check` passes
 4. `cargo clippy --all-targets --all-features -- -D warnings` passes
-5. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
+5. Workflow guard checks pass (`scripts/check-workflows.sh`), including explicit step names (`- name: ...`) in workflow steps and MSRV/toolchain policy validation
+6. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
 
 `cargo test` is part of the mandatory workflow but runs on push, not every
 commit, because it is too slow for a blocking hook. Run it manually before

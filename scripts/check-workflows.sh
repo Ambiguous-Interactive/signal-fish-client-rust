@@ -23,10 +23,12 @@ NC='\033[0m' # No Color
 VIOLATIONS=0
 
 TMP_TOOLCHAIN_VIOLATIONS="$(mktemp -t signal-fish-toolchain-violations.XXXXXX)"
+TMP_STEP_NAME_VIOLATIONS="$(mktemp -t signal-fish-step-name-violations.XXXXXX)"
 
 # shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
+    rm -f "$TMP_STEP_NAME_VIOLATIONS"
 }
 
 trap cleanup EXIT
@@ -169,6 +171,30 @@ else
                 fi
             fi
         fi
+    fi
+fi
+echo ""
+
+# ── Phase 5: step naming policy — improve Actions UI readability ─────
+echo -e "${YELLOW}Phase 5: Checking workflow step naming policy...${NC}"
+
+if rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml >"$TMP_STEP_NAME_VIOLATIONS"; then
+    echo -e "${RED}Phase 5: FAIL${NC}"
+    echo "Found workflow steps missing explicit 'name:' fields."
+    echo "Action: Convert each '- uses:' or '- run:' step into:"
+    echo "  - name: <descriptive step name>"
+    echo "    uses: ...   # or run: ..."
+    echo ""
+    cat "$TMP_STEP_NAME_VIOLATIONS"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    step_name_grep_status=$?
+    if [ "$step_name_grep_status" -gt 1 ]; then
+        echo -e "${RED}Phase 5: FAIL${NC}"
+        echo "Error: failed while scanning workflows for unnamed steps."
+        VIOLATIONS=$((VIOLATIONS + 1))
+    else
+        echo -e "${GREEN}Phase 5: PASS${NC}"
     fi
 fi
 echo ""

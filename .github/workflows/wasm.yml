@@ -1,0 +1,53 @@
+# WebAssembly build check for signal-fish-client
+#
+# Target: wasm32-unknown-unknown
+#   This is the standard Rust target for browser/web WebAssembly. It is used by
+#   wasm-bindgen, wasm-pack, and web-targeting game engines (Bevy, Godot HTML5,
+#   Unity WebGL). The "unknown-unknown" triple means: no vendor, no OS — the
+#   binary runs inside a browser or WASM runtime sandbox, not a traditional OS.
+#   Cross-compiling for this target requires only `rustup target add
+#   wasm32-unknown-unknown`; no special hardware is needed.
+#
+# Feature flags:
+#   `transport-websocket` is excluded because it depends on tokio-tungstenite
+#   over TCP sockets, which are unavailable in the browser sandbox. Consumers
+#   targeting WASM can supply their own transport implementation via the
+#   Transport trait.
+
+name: WASM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  wasm:
+    name: Build (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      - name: Build for WASM target
+        run: cargo build --target wasm32-unknown-unknown --no-default-features
+      - name: Clippy check for WASM target
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings

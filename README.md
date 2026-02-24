@@ -53,14 +53,14 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 
 ```toml
 [dependencies]
-signal-fish-client = "0.3.0"
+signal-fish-client = "0.3.1"
 ```
 
 Without the built-in WebSocket transport (bring your own):
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.3.0", default-features = false }
+signal-fish-client = { version = "0.3.1", default-features = false }
 ```
 
 ## Quick Start
