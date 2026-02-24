@@ -775,6 +775,49 @@ mod crate_version_consistency {
             }
         }
     }
+
+    fn collect_changelog_added_bullets(changelog: &str) -> Vec<String> {
+        let mut in_added_section = false;
+        let mut bullets = Vec::new();
+
+        for line in changelog.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("## ") {
+                in_added_section = false;
+                continue;
+            }
+            if trimmed.starts_with("### ") {
+                in_added_section = trimmed == "### Added";
+                continue;
+            }
+            if in_added_section && trimmed.starts_with("- ") {
+                bullets.push(trimmed.to_string());
+            }
+        }
+
+        bullets
+    }
+
+    #[test]
+    fn changelog_added_sections_include_signalfishconfig_public_api_additions() {
+        let changelog = read_project_file("CHANGELOG.md");
+        let added_bullets = collect_changelog_added_bullets(&changelog);
+
+        let required_api_markers = [
+            "`SignalFishConfig::event_channel_capacity`",
+            "`SignalFishConfig::shutdown_timeout`",
+            "`SignalFishConfig::with_event_channel_capacity(n)`",
+            "`SignalFishConfig::with_shutdown_timeout(d)`",
+        ];
+
+        for marker in required_api_markers {
+            assert!(
+                added_bullets.iter().any(|bullet| bullet.contains(marker)),
+                "CHANGELOG.md must document {marker} under a `### Added` section \
+                 because it is a user-visible public API addition."
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

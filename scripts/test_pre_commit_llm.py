@@ -26,6 +26,7 @@ validate_mkdocs_nav = _mod.validate_mkdocs_nav
 validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
 validate_changelog_example_links = _mod.validate_changelog_example_links
+validate_changelog_added_api_entries = _mod.validate_changelog_added_api_entries
 validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 read_cargo_package_version = _mod.read_cargo_package_version
 sync_crate_version_references = _mod.sync_crate_version_references
@@ -1526,6 +1527,52 @@ class TestValidateChangelogExampleLinks:
             errors = validate_changelog_example_links([Path(".llm/skill.md")])
         assert len(errors) == 1
         assert ".llm/skill.md" in errors[0]
+
+
+class TestValidateChangelogAddedApiEntries:
+    """Tests for required public API changelog Added entries."""
+
+    def test_required_entries_present_passes(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        (fake_root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n"
+            "## [Unreleased]\n\n"
+            "### Added\n\n"
+            "- `SignalFishConfig::event_channel_capacity` field (default `256`).\n"
+            "- `SignalFishConfig::shutdown_timeout` field (default `1 second`).\n"
+            "- `SignalFishConfig::with_event_channel_capacity(n)` builder method.\n"
+            "- `SignalFishConfig::with_shutdown_timeout(d)` builder method.\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        assert validate_changelog_added_api_entries() == []
+
+    def test_missing_entry_is_reported(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        (fake_root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n"
+            "## [Unreleased]\n\n"
+            "### Added\n\n"
+            "- `SignalFishConfig::event_channel_capacity` field (default `256`).\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_added_api_entries()
+        assert len(errors) == 3
+        assert "with_shutdown_timeout" in "\n".join(errors)
+
+    def test_missing_changelog_file_is_reported(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_added_api_entries()
+        assert len(errors) == 1
+        assert "Missing required file" in errors[0]
 
 
 # ===================================================================

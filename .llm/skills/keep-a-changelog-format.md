@@ -22,6 +22,7 @@ Only include sections that have entries.
 - Use one bullet per distinct change.
 - Start bullets with the user-facing outcome, then include technical detail.
 - Use backticks for API/type/variant names.
+- Public API additions (new fields/methods/types) must be listed under `### Added`.
 - Include migration guidance when behavior or API expectations changed.
 - Keep wording specific; avoid vague bullets like "improved things."
 

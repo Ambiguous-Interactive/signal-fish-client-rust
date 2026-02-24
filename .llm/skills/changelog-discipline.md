@@ -37,6 +37,15 @@ Before finalizing a user-visible change:
    `Removed`, `Fixed`, `Security`).
 4. Use concrete, consumer-facing wording (what changed and impact).
 
+## Section Classification Rules
+
+- New public API surface area belongs under `### Added`.
+- Bug fixes and behavioral corrections to existing APIs belong under `### Fixed`
+  or `### Changed` as appropriate.
+- Do not hide API additions inside `### Changed`/`### Fixed`; list each new
+  field/method/type explicitly under `### Added` (including defaults when they
+  affect behavior).
+
 ## Classification Examples
 
 ### Must update changelog

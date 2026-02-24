@@ -581,6 +581,48 @@ def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
     return errors
 
 
+def validate_changelog_added_api_entries() -> list[str]:
+    """Validate required public API additions exist in a changelog Added section."""
+    changelog = REPO_ROOT / "CHANGELOG.md"
+    if not changelog.exists():
+        return [f"  Missing required file: {changelog.relative_to(REPO_ROOT)}"]
+
+    try:
+        lines = changelog.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        return [f"  Could not read {changelog.relative_to(REPO_ROOT)}: {e}"]
+
+    required_markers = [
+        "`SignalFishConfig::event_channel_capacity`",
+        "`SignalFishConfig::shutdown_timeout`",
+        "`SignalFishConfig::with_event_channel_capacity(n)`",
+        "`SignalFishConfig::with_shutdown_timeout(d)`",
+    ]
+
+    in_added_section = False
+    added_bullets = []
+    for line in lines:
+        trimmed = line.strip()
+        if trimmed.startswith("## "):
+            in_added_section = False
+            continue
+        if trimmed.startswith("### "):
+            in_added_section = trimmed == "### Added"
+            continue
+        if in_added_section and trimmed.startswith("- "):
+            added_bullets.append(trimmed)
+
+    errors = []
+    for marker in required_markers:
+        if not any(marker in bullet for bullet in added_bullets):
+            errors.append(
+                "  CHANGELOG.md: missing public API addition under `### Added`: "
+                f"{marker}"
+            )
+
+    return errors
+
+
 def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
     """Reject stale release-specific wording for unstable rustdoc removals."""
     errors = []
@@ -736,7 +778,10 @@ def main() -> int:
     # 10. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
 
-    # 11. Advisory: warn about absolute guarantee language in doc comments
+    # 11. Validate required changelog Added entries for public APIs (blocking)
+    changelog_added_api_errors = validate_changelog_added_api_entries()
+
+    # 12. Advisory: warn about absolute guarantee language in doc comments
     guarantee_warnings = warn_absolute_guarantee_language()
     if guarantee_warnings:
         print(
@@ -754,7 +799,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # 12. Report all collected errors together
+    # 13. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,
@@ -795,6 +840,11 @@ def main() -> int:
             unstable_wording_errors,
             "stale unstable-feature wording detected:",
             "Avoid release-specific claims like 'removed in Rust X.Y'. Prefer wording that stays accurate over time, such as 'removed from rustdoc'.",
+        ),
+        (
+            changelog_added_api_errors,
+            "required changelog public API additions are missing:",
+            "Document required user-visible public APIs under a `### Added` section in CHANGELOG.md.",
         ),
     ]
 
