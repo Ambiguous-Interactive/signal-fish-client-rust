@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- WebAssembly (wasm32-unknown-unknown) build CI: new `wasm.yml` workflow verifies the core library (without `transport-websocket`) compiles for the `wasm32-unknown-unknown` target.
-
 ## [0.3.0] - 2026-02-23
 
 ### Added

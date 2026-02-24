@@ -1,7 +1,18 @@
 # WebAssembly build check for signal-fish-client
 #
-# Verifies the core library (without transport-websocket) compiles for
-# the wasm32-unknown-unknown target.
+# Target: wasm32-unknown-unknown
+#   This is the standard Rust target for browser/web WebAssembly. It is used by
+#   wasm-bindgen, wasm-pack, and web-targeting game engines (Bevy, Godot HTML5,
+#   Unity WebGL). The "unknown-unknown" triple means: no vendor, no OS — the
+#   binary runs inside a browser or WASM runtime sandbox, not a traditional OS.
+#   Cross-compiling for this target requires only `rustup target add
+#   wasm32-unknown-unknown`; no special hardware is needed.
+#
+# Feature flags:
+#   `transport-websocket` is excluded because it depends on tokio-tungstenite
+#   over TCP sockets, which are unavailable in the browser sandbox. Consumers
+#   targeting WASM can supply their own transport implementation via the
+#   Transport trait.
 
 name: WASM
 
