@@ -14,6 +14,13 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## CI/CD Action Reference Policy
+
+Use version tags in workflow `uses:` references, not commit hashes.
+
+- Use: `owner/action@vN` or `owner/action@vN.N.N`
+- Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
+
 ## Skills
 
 Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.

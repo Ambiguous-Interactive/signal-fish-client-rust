@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
 
@@ -54,10 +54,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-semver-checks
 

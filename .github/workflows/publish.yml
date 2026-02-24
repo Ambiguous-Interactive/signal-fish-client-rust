@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Validate release_version format
         if: github.event_name == 'workflow_dispatch'
@@ -57,7 +57,7 @@ jobs:
 
       - name: Configure sccache
         id: sccache
-        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad  # v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.9
         continue-on-error: true
 
       - name: Verify sccache is working
@@ -73,7 +73,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Verify version matches tag (if tag push)
         if: startsWith(github.ref, 'refs/tags/')
@@ -188,7 +188,7 @@ jobs:
           printf '%s\n' "$CHANGELOG_CONTENT" > "$RUNNER_TEMP/release_notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
           name: ${{ steps.get_version.outputs.tag }}

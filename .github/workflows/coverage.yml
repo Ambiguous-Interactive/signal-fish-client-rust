@@ -36,7 +36,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -44,7 +44,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cfdb446e391c69574ebc316dfb7d7849ec12b940  # v2
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
 
@@ -52,7 +52,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5  # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Run tests with coverage instrumentation
         run: cargo llvm-cov --all-features --no-report
@@ -65,18 +65,18 @@ jobs:
 
       - name: Upload HTML coverage report
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        uses: actions/upload-artifact@v6.0.0
         with:
-          name: coverage-html-${{ github.sha }}-${{ github.run_number }}
+          name: coverage-html-${{ github.run_id }}-${{ github.run_attempt }}
           path: coverage-html/
           retention-days: 30
           if-no-files-found: warn
 
       - name: Upload LCOV coverage data
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        uses: actions/upload-artifact@v6.0.0
         with:
-          name: coverage-lcov-${{ github.sha }}-${{ github.run_number }}
+          name: coverage-lcov-${{ github.run_id }}-${{ github.run_attempt }}
           path: lcov.info
           retention-days: 90
           if-no-files-found: warn
