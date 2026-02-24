@@ -49,6 +49,9 @@ tracing = "0.1"
 tokio-tungstenite = { version = "0.28", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-test = "0.4"

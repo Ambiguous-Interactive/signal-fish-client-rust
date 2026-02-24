@@ -61,6 +61,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/security-supply-chain.yml",
     ".github/workflows/semver-checks.yml",
     ".github/workflows/unused-deps.yml",
+    ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
 ];
 
