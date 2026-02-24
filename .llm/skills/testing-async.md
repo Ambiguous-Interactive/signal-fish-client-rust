@@ -145,6 +145,24 @@ let (transport, _, _) = MockTransport::new(vec![
 // Client emits Disconnected { reason: None }
 ```
 
+## Shutdown Timeout State Invariants
+
+When testing shutdown timeout paths (e.g., `transport.close()` hangs and the
+task is aborted), always assert client state accessors are reset even if the
+`Disconnected` event is not observed:
+
+```rust
+client.shutdown().await;
+assert!(!client.is_connected());
+assert!(!client.is_authenticated());
+assert!(client.current_player_id().await.is_none());
+assert!(client.current_room_id().await.is_none());
+assert!(client.current_room_code().await.is_none());
+```
+
+This prevents regressions where aborted tasks skip the normal disconnect event
+path and leave stale authenticated/room/player state visible to callers.
+
 ## Test Organization
 
 ```text

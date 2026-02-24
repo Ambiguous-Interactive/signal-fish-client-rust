@@ -25,6 +25,7 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
 - :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
+- :material-tune-variant: **Configurable** — Tune event channel capacity, shutdown timeout, and more via `SignalFishConfig` builder methods.
 
 ---
 
@@ -72,7 +73,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 !!! tip "Feature flag"
     `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.2.2", features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.3.0", features = ["transport-websocket"] }
     ```
 
 ---

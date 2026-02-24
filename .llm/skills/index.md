@@ -12,6 +12,10 @@ Each skill is a focused, practical guide for a specific topic in this codebase.
 
 Practical reference for tokio, async/await, task spawning, select!, and channels as used in this codebase.
 
+### [Changelog Discipline](changelog-discipline.md)
+
+Reference for deciding when `CHANGELOG.md` must be updated for user-visible changes.
+
 ### [CI Configuration](ci-configuration.md)
 
 Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
@@ -20,6 +24,10 @@ Reference for CI/CD tool configuration, common pitfalls, and consistency enforce
 
 Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.
 
+### [Documentation Accuracy for Behavioral Guarantees](doc-accuracy-guarantees.md)
+
+Reference for writing accurate documentation about behavioral guarantees (e.g., event delivery, error handling, shutd...
+
 ### [Documentation Drift Validation](doc-drift-validation.md)
 
 Reference for preventing documentation drift by validating docs against source-of-truth configuration files.
@@ -27,6 +35,10 @@ Reference for preventing documentation drift by validating docs against source-o
 ### [Error Handling](error-handling.md)
 
 Reference for thiserror patterns, SignalFishError design, and error propagation in this codebase.
+
+### [Keep a Changelog Format](keep-a-changelog-format.md)
+
+Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this crate.
 
 ### [Markdown Parsing and Documentation Validation](markdown-and-doc-validation.md)
 

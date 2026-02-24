@@ -23,6 +23,11 @@ Use these to track the raw connection lifecycle.
 | `Connected` | — | The transport connection was established successfully. |
 | `Disconnected` | `reason: Option<String>` | The transport connection was closed or errored. |
 
+!!! note "Best-effort delivery"
+    `Disconnected` uses a blocking send so it will not be dropped due to channel
+    backpressure, but it may be missed if the event receiver is dropped or if
+    [`shutdown()`](client.md#shutdown) times out and aborts the transport task.
+
 ```rust
 match event {
     SignalFishEvent::Connected => {

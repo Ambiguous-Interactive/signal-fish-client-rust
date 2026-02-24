@@ -48,3 +48,5 @@ logs_*
 *.zip
 
 .claude/
+
+.vscode/settings.json

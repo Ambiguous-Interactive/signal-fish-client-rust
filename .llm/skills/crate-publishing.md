@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -168,7 +168,7 @@ jobs:
 ```shell
 # Bump version (0.1.0 → 0.2.0)
 # 1. Update version in Cargo.toml
-# 2. Update CHANGELOG.md
+# 2. Update CHANGELOG.md (user-visible changes only; exclude internal tooling/test/CI details)
 # 3. Commit: "chore: release 0.2.0"
 # 4. Tag: git tag -s v0.2.0 -m "Release 0.2.0"
 # 5. Push: git push && git push --tags

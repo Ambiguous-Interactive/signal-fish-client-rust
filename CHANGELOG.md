@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-23
+
+### Added
+
+- `SignalFishConfig::event_channel_capacity` field (default `256`) for tuning the bounded event channel size.
+- `SignalFishConfig::shutdown_timeout` field (default `1 second`) for controlling graceful-shutdown wait time.
+- `SignalFishConfig::with_event_channel_capacity(n)` builder method.
+- `SignalFishConfig::with_shutdown_timeout(d)` builder method.
+
+### Changed
+
+- `SignalFishConfig::with_event_channel_capacity` now clamps values below `1` to `1`, so the stored config value matches documented behavior.
+
+### Fixed
+
+- `SignalFishClient::shutdown` now aborts the background transport task if graceful shutdown exceeds `shutdown_timeout`, preventing detached tasks from running indefinitely.
+- `SignalFishClient::shutdown` and disconnect handling now always clear `authenticated`, `player_id`, `room_id`, and `room_code`, preventing stale state when shutdown times out or the transport task is aborted before `Disconnected` is emitted.
+
+## [0.2.2]
+
 ### Added
 
 - `Transport` trait — async, cancel-safe, transport-agnostic abstraction (`send`, `recv`, `close`)

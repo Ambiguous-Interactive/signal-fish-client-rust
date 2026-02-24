@@ -26,9 +26,11 @@ validate_mkdocs_nav = _mod.validate_mkdocs_nav
 validate_yaml_step_indentation = _mod.validate_yaml_step_indentation
 validate_doc_nav_card_consistency = _mod.validate_doc_nav_card_consistency
 validate_changelog_example_links = _mod.validate_changelog_example_links
+validate_changelog_added_api_entries = _mod.validate_changelog_added_api_entries
 validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 read_cargo_package_version = _mod.read_cargo_package_version
 sync_crate_version_references = _mod.sync_crate_version_references
+warn_absolute_guarantee_language = _mod.warn_absolute_guarantee_language
 
 
 # ===================================================================
@@ -305,6 +307,20 @@ class TestCrateVersionSync:
             'signal-fish-client = { version = "*", features = ["transport-websocket"] }\n',
             encoding="utf-8",
         )
+        (fake_root / "docs" / "client.md").write_text(
+            'sdk_version: Some("0.1.0".into()),\n',
+            encoding="utf-8",
+        )
+        (fake_root / "docs" / "protocol.md").write_text(
+            '{\n'
+            '  "type": "Authenticate",\n'
+            '  "data": {\n'
+            '    "sdk_version": "0.1.0",\n'
+            '    "minimum_version": "0.1.0"\n'
+            "  }\n"
+            "}\n",
+            encoding="utf-8",
+        )
         (fake_root / ".llm" / "context.md").write_text(
             "- **Version:** 0.1.0\n",
             encoding="utf-8",
@@ -327,6 +343,8 @@ class TestCrateVersionSync:
             "README.md",
             "docs/getting-started.md",
             "docs/index.md",
+            "docs/client.md",
+            "docs/protocol.md",
             ".llm/context.md",
             ".llm/skills/crate-publishing.md",
         }
@@ -340,6 +358,12 @@ class TestCrateVersionSync:
         assert 'version = "1.2.3"' in (
             fake_root / "docs" / "index.md"
         ).read_text(encoding="utf-8")
+        assert 'sdk_version: Some("1.2.3".into()),' in (
+            fake_root / "docs" / "client.md"
+        ).read_text(encoding="utf-8")
+        protocol = (fake_root / "docs" / "protocol.md").read_text(encoding="utf-8")
+        assert '"sdk_version": "1.2.3"' in protocol
+        assert '"minimum_version": "0.1.0"' in protocol
         assert "- **Version:** 1.2.3" in (
             fake_root / ".llm" / "context.md"
         ).read_text(encoding="utf-8")
@@ -1505,6 +1529,52 @@ class TestValidateChangelogExampleLinks:
         assert ".llm/skill.md" in errors[0]
 
 
+class TestValidateChangelogAddedApiEntries:
+    """Tests for required public API changelog Added entries."""
+
+    def test_required_entries_present_passes(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        (fake_root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n"
+            "## [Unreleased]\n\n"
+            "### Added\n\n"
+            "- `SignalFishConfig::event_channel_capacity` field (default `256`).\n"
+            "- `SignalFishConfig::shutdown_timeout` field (default `1 second`).\n"
+            "- `SignalFishConfig::with_event_channel_capacity(n)` builder method.\n"
+            "- `SignalFishConfig::with_shutdown_timeout(d)` builder method.\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        assert validate_changelog_added_api_entries() == []
+
+    def test_missing_entry_is_reported(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        (fake_root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n"
+            "## [Unreleased]\n\n"
+            "### Added\n\n"
+            "- `SignalFishConfig::event_channel_capacity` field (default `256`).\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_added_api_entries()
+        assert len(errors) == 3
+        assert "with_shutdown_timeout" in "\n".join(errors)
+
+    def test_missing_changelog_file_is_reported(self, tmp_path, monkeypatch):
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        errors = validate_changelog_added_api_entries()
+        assert len(errors) == 1
+        assert "Missing required file" in errors[0]
+
+
 # ===================================================================
 # Tests for validate_unstable_feature_wording
 # ===================================================================
@@ -1549,3 +1619,103 @@ class TestValidateUnstableFeatureWording:
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_unstable_feature_wording([skill])
         assert errors == []
+
+
+# ===================================================================
+# Tests for warn_absolute_guarantee_language
+# ===================================================================
+
+
+class TestWarnAbsoluteGuaranteeLanguage:
+    """Tests for the advisory absolute-guarantee-language scanner."""
+
+    def test_flags_always_with_delivery_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'always' and 'delivered' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// The event is always delivered.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1
+        assert "always" in warnings[0].lower()
+
+    def test_flags_never_with_event_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'never' and 'event' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// This event is never dropped.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1
+        assert "never" in warnings[0].lower()
+
+    def test_ignores_regular_comments(self, tmp_path, monkeypatch):
+        """Non-doc comments (// instead of ///) are not scanned."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "// The event is always delivered.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_ignores_guarantee_without_delivery_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'always' but no delivery term is not flagged."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// This function always returns true.\n"
+            "fn foo() -> bool { true }\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_no_src_dir_returns_empty(self, tmp_path, monkeypatch):
+        """When src/ does not exist, no warnings are produced."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_flags_unconditional_with_emit(self, tmp_path, monkeypatch):
+        """'unconditional' with 'emit' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// Emit is unconditional.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1

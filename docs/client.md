@@ -27,17 +27,40 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Values below 1 are clamped to 1. |
+| `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
+
+### Builder Methods
+
+All builder methods are `#[must_use]` — you must chain or assign the return value.
+
+| Method | Parameter Type | Description |
+|---|---|---|
+| `.with_event_channel_capacity(n)` | `usize` | Set the bounded event channel capacity (default 256). |
+| `.with_shutdown_timeout(d)` | `Duration` | Set the graceful shutdown timeout (default 1 second). |
 
 ### Full Example
+
+```rust
+use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
+use std::time::Duration;
+
+let config = SignalFishConfig::new("mb_app_abc123")
+    .with_event_channel_capacity(512)
+    .with_shutdown_timeout(Duration::from_secs(5));
+```
+
+Or using struct literal syntax with defaults:
 
 ```rust
 use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.1.0".into()),
+    sdk_version: Some("0.3.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
+    ..SignalFishConfig::new("mb_app_abc123")
 };
 ```
 
@@ -376,9 +399,13 @@ client.shutdown().await;
 Shutdown proceeds in three stages:
 
 1. Sends a oneshot signal to the background transport loop.
-2. Awaits the loop task with a **1-second timeout**.
-3. If the timeout expires, the task is logged as unresponsive (and will be
-   aborted when the client handle is dropped).
+2. Awaits the loop task with a configurable timeout (default **1 second**,
+   set via [`SignalFishConfig::shutdown_timeout`](#signalfishconfig)).
+3. If the timeout expires, the task is logged as unresponsive and aborted.
+   The `Disconnected` event may not be delivered in this case.
+4. Regardless of whether `Disconnected` is delivered, connection/session state
+   is cleared (`is_connected() == false`, `is_authenticated() == false`, and
+   room/player accessors return `None`).
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the

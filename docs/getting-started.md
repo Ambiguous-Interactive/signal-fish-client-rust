@@ -29,14 +29,14 @@ cargo add signal-fish-client
 
 ```toml
 [dependencies]
-signal-fish-client = "0.2.2"
+signal-fish-client = "0.3.0"
 ```
 
 #### Without default features (bring your own transport)
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.2.2", default-features = false }
+signal-fish-client = { version = "0.3.0", default-features = false }
 ```
 
 !!! tip
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 !!! note
     `WebSocketTransport` requires the `transport-websocket` feature, which is enabled by default. If you disabled default features you will need to re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.2.2", default-features = false, features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.3.0", default-features = false, features = ["transport-websocket"] }
     ```
 
 ## What Happens Under the Hood
@@ -117,14 +117,19 @@ When you call `SignalFishClient::start`, the SDK:
 
 1. **Spawns a background task** that drives the transport — reading incoming messages and writing outgoing ones.
 2. **Auto-authenticates** by immediately sending an `Authenticate` message with the App ID from your `SignalFishConfig`.
-3. **Emits typed events** on a bounded `tokio::sync::mpsc` channel (capacity **256**). Your application consumes these via the `event_rx` receiver returned from `start`.
+3. **Emits typed events** on a bounded `tokio::sync::mpsc` channel (default capacity **256**, configurable via [`SignalFishConfig::event_channel_capacity`](client.md#signalfishconfig)). Your application consumes these via the `event_rx` receiver returned from `start`.
 
 You interact with the server by calling methods on the `SignalFishClient` handle (e.g., `join_room`, `send_game_data`). These enqueue outgoing messages that the background task sends over the transport.
 
 !!! warning
     If your event-processing loop cannot keep up with the server, events will be
     **dropped** (with a warning logged) to avoid blocking the transport loop. The
-    `Disconnected` event is always delivered. Design your handler to stay responsive.
+    `Disconnected` event uses a blocking send so it will not be dropped due to
+    backpressure, but it may be missed if the receiver is dropped or
+    [`shutdown()`](client.md#shutdown) times out. Design your handler to stay
+    responsive.
+    You can increase the buffer by setting `event_channel_capacity` on your
+    `SignalFishConfig`.
 
 ## Next Steps
 

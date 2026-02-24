@@ -69,7 +69,7 @@ stateDiagram-v2
 | **Connected → Authenticated** | The SDK auto-sends an `Authenticate` message. On success the server replies and `SignalFishEvent::Authenticated` is emitted. |
 | **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)`. The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
 | **InRoom → Authenticated** | Call `client.leave_room()` or `client.leave_spectator()`. The server confirms with `SignalFishEvent::RoomLeft`. |
-| **Any → Disconnected** | Call `client.shutdown().await`, drop the client, or encounter an unrecoverable transport error. `SignalFishEvent::Disconnected` is always the final event. |
+| **Any → Disconnected** | Call `client.shutdown().await`, drop the client, or encounter an unrecoverable transport error. `SignalFishEvent::Disconnected` is the final event (best-effort; see [Events](events.md) for delivery caveats). |
 
 !!! warning "Authentication is automatic"
     You do **not** need to call an authenticate method. `SignalFishClient::start`
@@ -81,7 +81,8 @@ stateDiagram-v2
 ## Event-Driven Architecture
 
 All server responses arrive as `SignalFishEvent` variants on a **bounded
-`mpsc::Receiver<SignalFishEvent>`** (capacity 256). Your application consumes
+`mpsc::Receiver<SignalFishEvent>`** (default capacity 256, configurable via
+`SignalFishConfig::event_channel_capacity`). Your application consumes
 them in an async loop:
 
 ```rust
@@ -116,13 +117,17 @@ generated locally by the transport layer:
 | Event | Origin |
 |-------|--------|
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
-| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Always the last event. |
+| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Last event (best-effort). |
 
 !!! warning "Channel capacity"
-    The event channel has a capacity of **256**. If your consumer falls behind,
+    The event channel has a default capacity of **256** (configurable via
+    `SignalFishConfig::event_channel_capacity`). If your consumer falls behind,
     events are **dropped** (with a warning logged) to avoid blocking the
-    transport loop. The `Disconnected` event is the exception — it is always
-    delivered. Design your event loop to stay responsive to avoid losing events.
+    transport loop. The `Disconnected` event is the exception — it uses a
+    blocking send so it will not be dropped due to backpressure, but it may be
+    missed if the receiver is dropped or shutdown times out (see
+    [Events](events.md)). Design your event loop to stay responsive to avoid
+    losing events.
 
 ---
 
@@ -176,9 +181,9 @@ loop as server messages arrive:
 |-------|------|-------------|
 | `connected` | `AtomicBool` | Transport opens / closes |
 | `authenticated` | `AtomicBool` | `Authenticated` event received |
-| `player_id` | `Mutex<Option<PlayerId>>` | `RoomJoined` event received |
-| `room_id` | `Mutex<Option<RoomId>>` | `RoomJoined` / `RoomLeft` |
-| `room_code` | `Mutex<Option<String>>` | `RoomJoined` / `RoomLeft` |
+| `player_id` | `Mutex<Option<PlayerId>>` | `RoomJoined` / `Reconnected` / `SpectatorJoined` |
+| `room_id` | `Mutex<Option<RoomId>>` | `RoomJoined` / `RoomLeft` / `Reconnected` / `SpectatorJoined` / `SpectatorLeft` |
+| `room_code` | `Mutex<Option<String>>` | `RoomJoined` / `RoomLeft` / `Reconnected` / `SpectatorJoined` / `SpectatorLeft` |
 
 State flows **one direction**: the background task writes, your code reads
 through the accessors. You never set state directly.
@@ -211,9 +216,11 @@ Under the hood this:
 
 1. Sends a signal to the background transport loop via a `oneshot` channel.
 2. The loop calls `transport.close()` and emits `SignalFishEvent::Disconnected`.
-3. `shutdown()` awaits the background task with a **1-second timeout**. If the
-   task does not finish in time, it is abandoned (but still runs to completion
-   in the background).
+3. `shutdown()` awaits the background task with a configurable timeout (default
+   **1 second**, set via `SignalFishConfig::shutdown_timeout`). If the task does
+   not finish in time, it is aborted to prevent detached background work.
+4. On completion, client session state is reset even if the `Disconnected`
+   event was not delivered due to timeout/abort.
 
 ### Drop Fallback
 

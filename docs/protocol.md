@@ -449,12 +449,13 @@ Every message on the wire is a JSON object with two top-level keys:
         "type": "Authenticate",
         "data": {
             "app_id": "mb_app_abc123",
-            "sdk_version": "0.1.0",
-            "platform": null,
-            "game_data_format": null
+            "sdk_version": "0.3.0"
         }
     }
     ```
+
+    Optional fields (`platform`, `game_data_format`) are omitted when `None`
+    thanks to `#[serde(skip_serializing_if = "Option::is_none")]`.
 
 ??? example "Example — `Pong` (unit variant)"
     ```json

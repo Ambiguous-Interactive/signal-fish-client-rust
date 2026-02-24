@@ -28,6 +28,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, warn};
@@ -40,8 +41,11 @@ use crate::protocol::{
 };
 use crate::transport::Transport;
 
-/// Capacity of the bounded event channel.
-const EVENT_CHANNEL_CAPACITY: usize = 256;
+/// Default capacity of the bounded event channel.
+const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Default timeout for the graceful shutdown.
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 // ── Configuration ───────────────────────────────────────────────────
 
@@ -59,6 +63,17 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// assert_eq!(config.app_id, "mb_app_abc123");
 /// assert!(config.sdk_version.is_some());
 /// ```
+///
+/// # Tuning
+///
+/// ```
+/// use signal_fish_client::client::SignalFishConfig;
+/// use std::time::Duration;
+///
+/// let config = SignalFishConfig::new("mb_app_abc123")
+///     .with_event_channel_capacity(512)
+///     .with_shutdown_timeout(Duration::from_secs(5));
+/// ```
 #[derive(Debug, Clone)]
 pub struct SignalFishConfig {
     /// Public App ID that identifies the game application.
@@ -70,6 +85,27 @@ pub struct SignalFishConfig {
     pub platform: Option<String>,
     /// Preferred game data encoding format.
     pub game_data_format: Option<GameDataEncoding>,
+    /// Capacity of the bounded event channel.
+    ///
+    /// When the consumer cannot keep up with incoming server messages, events
+    /// are dropped (with a warning logged) to avoid blocking the transport loop.
+    /// The `Disconnected` event uses a blocking send so it will not be dropped
+    /// due to a full channel, but it may be missed if the receiver is dropped
+    /// or if [`SignalFishClient::shutdown`] times out and aborts the transport task.
+    ///
+    /// Defaults to **256**. Values below 1 are clamped to 1.
+    pub event_channel_capacity: usize,
+    /// Timeout for the graceful shutdown.
+    ///
+    /// When [`SignalFishClient::shutdown`] is called, the background transport
+    /// loop is given this much time to close the transport and emit a final
+    /// `Disconnected` event. If the timeout expires the task is aborted and
+    /// the `Disconnected` event may not be delivered.
+    ///
+    /// Defaults to **1 second**. A zero timeout aborts the transport loop
+    /// immediately without waiting for graceful shutdown, meaning the
+    /// `Disconnected` event will likely not be emitted.
+    pub shutdown_timeout: Duration,
 }
 
 impl SignalFishConfig {
@@ -80,7 +116,28 @@ impl SignalFishConfig {
             sdk_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             platform: None,
             game_data_format: None,
+            event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
+    }
+
+    /// Set the capacity of the bounded event channel.
+    ///
+    /// Defaults to **256**. Values below 1 are clamped to 1.
+    #[must_use]
+    pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
+        self.event_channel_capacity = capacity.max(1);
+        self
+    }
+
+    /// Set the timeout for the graceful shutdown.
+    ///
+    /// Defaults to **1 second**. A zero timeout aborts the transport loop
+    /// immediately without waiting for graceful shutdown.
+    #[must_use]
+    pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = timeout;
+        self
     }
 }
 
@@ -181,6 +238,13 @@ impl ClientState {
             room_code: Mutex::new(None),
         }
     }
+
+    async fn clear_session_state(&self) {
+        self.authenticated.store(false, Ordering::Release);
+        *self.player_id.lock().await = None;
+        *self.room_id.lock().await = None;
+        *self.room_code.lock().await = None;
+    }
 }
 
 // ── Client handle ───────────────────────────────────────────────────
@@ -202,6 +266,8 @@ pub struct SignalFishClient {
     task: Option<tokio::task::JoinHandle<()>>,
     /// Oneshot sender to signal the transport loop to shut down gracefully.
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Timeout for the graceful shutdown.
+    shutdown_timeout: Duration,
 }
 
 impl SignalFishClient {
@@ -225,7 +291,9 @@ impl SignalFishClient {
         config: SignalFishConfig,
     ) -> (Self, mpsc::Receiver<SignalFishEvent>) {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ClientMessage>();
-        let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(EVENT_CHANNEL_CAPACITY);
+        // Clamp capacity to at least 1 (tokio panics on 0).
+        let capacity = config.event_channel_capacity.max(1);
+        let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let state = Arc::new(ClientState::new());
@@ -255,6 +323,7 @@ impl SignalFishClient {
             state,
             task: Some(task),
             shutdown_tx: Some(shutdown_tx),
+            shutdown_timeout: config.shutdown_timeout,
         };
 
         (client, event_rx)
@@ -379,8 +448,11 @@ impl SignalFishClient {
 
     /// Shut down the client, closing the transport and stopping the background task.
     ///
-    /// After calling this method, the event receiver will yield `None` once the
-    /// transport loop exits.
+    /// The transport loop is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
+    /// to close cleanly and emit a [`Disconnected`](SignalFishEvent::Disconnected)
+    /// event. If the timeout expires, the task is aborted and the `Disconnected`
+    /// event may not be delivered. After shutdown completes, the event receiver
+    /// will yield `None`.
     pub async fn shutdown(&mut self) {
         debug!("SignalFishClient: shutdown requested");
 
@@ -389,17 +461,26 @@ impl SignalFishClient {
             let _ = tx.send(());
         }
 
-        // Await the transport loop with a timeout; abort if it doesn't exit.
-        if let Some(task) = self.task.take() {
-            match tokio::time::timeout(std::time::Duration::from_secs(1), task).await {
-                Ok(_) => {}
+        // Await the transport loop with a timeout. If it doesn't exit in time,
+        // abort it so the task cannot detach and run indefinitely.
+        if let Some(mut task) = self.task.take() {
+            match tokio::time::timeout(self.shutdown_timeout, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    warn!("transport loop terminated with join error: {join_err}");
+                }
                 Err(_) => {
-                    warn!("transport loop did not exit within timeout");
+                    warn!("transport loop did not exit within timeout; aborting task");
+                    task.abort();
+                    if let Err(join_err) = task.await {
+                        debug!("transport loop aborted: {join_err}");
+                    }
                 }
             }
         }
 
         self.state.connected.store(false, Ordering::Release);
+        self.state.clear_session_state().await;
     }
 
     // ── State accessors ─────────────────────────────────────────────
@@ -637,15 +718,18 @@ async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishE
 
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
-/// Uses `send().await` (blocking) instead of `try_send` because `Disconnected`
-/// is always the last event on the channel and must never be silently dropped.
+/// Uses `send().await` (blocking) instead of `try_send` so that `Disconnected`
+/// is not dropped due to channel backpressure. However, delivery is not
+/// unconditional: the event will be lost if the receiver has been dropped, or
+/// if [`SignalFishClient::shutdown`] aborts the transport task before this
+/// function completes.
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
     state: &ClientState,
     reason: Option<String>,
 ) {
     state.connected.store(false, Ordering::Release);
-    state.authenticated.store(false, Ordering::Release);
+    state.clear_session_state().await;
     let event = SignalFishEvent::Disconnected { reason };
     if event_tx.send(event).await.is_err() {
         debug!("event channel closed, receiver dropped");
@@ -928,6 +1012,172 @@ mod tests {
         assert!(config.sdk_version.is_some());
         assert!(config.platform.is_none());
         assert!(config.game_data_format.is_none());
+        assert_eq!(config.event_channel_capacity, 256);
+        assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn config_builder_methods() {
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(512)
+            .with_shutdown_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(config.event_channel_capacity, 512);
+        assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn event_channel_capacity_is_clamped_to_one() {
+        let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(0);
+        assert_eq!(config.event_channel_capacity, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_event_channel_capacity_does_not_panic() {
+        let (transport, _sent, _closed) = MockTransport::new(vec![]);
+
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(0)
+            .with_shutdown_timeout(std::time::Duration::from_millis(50));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Should not panic despite capacity 0 — clamped to 1.
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn small_event_channel_capacity_triggers_backpressure() {
+        // Use a capacity of 1 and send multiple messages — events should be dropped.
+        let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
+        incoming.push(Some(Ok(authenticated_json())));
+        let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
+        for _ in 0..20 {
+            incoming.push(Some(Ok(pong_json.clone())));
+        }
+        incoming.push(None);
+
+        let (transport, _sent, _closed) = MockTransport::new(incoming);
+
+        let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(1);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Let the channel fill up and events get dropped.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let mut count = 0;
+        while let Some(_event) = events.recv().await {
+            count += 1;
+        }
+        // With capacity 1, we should receive fewer events than were sent.
+        // At minimum we get Connected (first try_send succeeds) and Disconnected
+        // (delivered via blocking send, not dropped due to backpressure).
+        // Authenticated and Pong events may be dropped when the single-slot
+        // channel is full.
+        assert!(count >= 2, "expected at least 2 events, got {count}");
+        // But fewer than the total sent (2 synthetic + 1 auth + 20 pongs = 23 possible).
+        assert!(
+            count < 23,
+            "expected backpressure to drop some events, but got all {count}"
+        );
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn custom_shutdown_timeout_is_used() {
+        let (transport, _sent, _closed) = MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(100));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+
+        // Shutdown should complete successfully with the custom timeout.
+        client.shutdown().await;
+        assert!(!client.is_connected());
+    }
+
+    /// Transport that hangs forever in `close()` so shutdown timeout/abort can be tested.
+    struct HangingCloseTransport {
+        incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
+        close_called: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl HangingCloseTransport {
+        fn new() -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            Self::with_incoming(Vec::new())
+        }
+
+        fn with_incoming(
+            incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
+        ) -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+            let close_called = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    incoming: VecDeque::from(incoming),
+                    close_called: Arc::clone(&close_called),
+                    dropped: Arc::clone(&dropped),
+                },
+                close_called,
+                dropped,
+            )
+        }
+    }
+
+    impl Drop for HangingCloseTransport {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[async_trait]
+    impl Transport for HangingCloseTransport {
+        async fn send(&mut self, _message: String) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            if let Some(item) = self.incoming.pop_front() {
+                item
+            } else {
+                std::future::pending().await
+            }
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            self.close_called.store(true, Ordering::Release);
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_stuck_transport_task() {
+        let (transport, close_called, dropped) = HangingCloseTransport::new();
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(20));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Drain Connected so the channel remains uncongested.
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+
+        client.shutdown().await;
+
+        assert!(
+            close_called.load(Ordering::Acquire),
+            "transport.close() should have been attempted during graceful shutdown"
+        );
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "timed-out shutdown should abort and drop the transport loop task"
+        );
+        assert!(!client.is_connected());
     }
 
     #[tokio::test]
@@ -1083,9 +1333,9 @@ mod tests {
         // Create a transport with more messages than the event channel capacity.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
-        // Fill more than EVENT_CHANNEL_CAPACITY pong messages.
+        // Fill more than DEFAULT_EVENT_CHANNEL_CAPACITY pong messages.
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
-        for _ in 0..(EVENT_CHANNEL_CAPACITY + 50) {
+        for _ in 0..(DEFAULT_EVENT_CHANNEL_CAPACITY + 50) {
             incoming.push(Some(Ok(pong_json.clone())));
         }
         // End with a clean close.
@@ -1363,5 +1613,74 @@ mod tests {
         assert!(client.current_room_code().await.is_none());
 
         client.shutdown().await;
+    }
+
+    /// Validates the documented best-effort delivery guarantee: when `shutdown()`
+    /// times out and aborts the transport task, the `Disconnected` event may NOT
+    /// be delivered because the transport loop is forcibly cancelled before it can
+    /// emit the event. Both outcomes (event received or not) are acceptable.
+    #[tokio::test]
+    async fn shutdown_abort_may_skip_disconnected_event() {
+        let (transport, _close_called, _dropped) = HangingCloseTransport::new();
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(1));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Drain the initial Connected event so the channel is not congested.
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+
+        // Shutdown will timeout (close() hangs) and abort the transport task.
+        client.shutdown().await;
+
+        // The transport loop was aborted, so `emit_disconnected` may never have
+        // executed. Try to receive with a short timeout — either outcome is valid.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await;
+
+        match result {
+            Ok(Some(SignalFishEvent::Disconnected { .. })) => {
+                // Disconnected was delivered before the abort took effect — acceptable.
+            }
+            Ok(None) => {
+                // Channel closed without a Disconnected event — acceptable.
+            }
+            Err(_) => {
+                // Timed out waiting; no Disconnected event was delivered — acceptable.
+            }
+            Ok(Some(other)) => {
+                panic!("unexpected event after shutdown abort: {other:?}");
+            }
+        }
+
+        assert!(!client.is_connected());
+    }
+
+    #[tokio::test]
+    async fn shutdown_abort_clears_auth_and_room_state() {
+        let (transport, _close_called, _dropped) = HangingCloseTransport::with_incoming(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(room_joined_json())),
+        ]);
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(1));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // RoomJoined
+
+        assert!(client.is_authenticated());
+        assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
+        assert!(client.current_room_id().await.is_some());
+        assert!(client.current_player_id().await.is_some());
+
+        client.shutdown().await;
+
+        assert!(!client.is_connected());
+        assert!(!client.is_authenticated());
+        assert!(client.current_room_id().await.is_none());
+        assert!(client.current_room_code().await.is_none());
+        assert!(client.current_player_id().await.is_none());
     }
 }

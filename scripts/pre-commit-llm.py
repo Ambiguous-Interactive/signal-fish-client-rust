@@ -8,6 +8,7 @@ Checks include:
 - Auto-generate .llm/skills/index.md from skill file headings/descriptions.
 - Validate docs and mkdocs consistency checks.
 - Reject stale release-specific wording for unstable rustdoc removals.
+- Advisory: warn about absolute guarantee language in Rust doc comments.
 """
 
 import subprocess
@@ -82,6 +83,18 @@ def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[P
                 re.compile(
                     r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
                 ),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / "docs" / "client.md": [
+            (
+                re.compile(r'(sdk_version:\s*Some\(")([^"]+)("\.into\(\)\),)'),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / "docs" / "protocol.md": [
+            (
+                re.compile(r'("sdk_version"\s*:\s*")([^"]+)(")'),
                 rf"\g<1>{crate_version}\g<3>",
             )
         ],
@@ -568,6 +581,48 @@ def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
     return errors
 
 
+def validate_changelog_added_api_entries() -> list[str]:
+    """Validate required public API additions exist in a changelog Added section."""
+    changelog = REPO_ROOT / "CHANGELOG.md"
+    if not changelog.exists():
+        return [f"  Missing required file: {changelog.relative_to(REPO_ROOT)}"]
+
+    try:
+        lines = changelog.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        return [f"  Could not read {changelog.relative_to(REPO_ROOT)}: {e}"]
+
+    required_markers = [
+        "`SignalFishConfig::event_channel_capacity`",
+        "`SignalFishConfig::shutdown_timeout`",
+        "`SignalFishConfig::with_event_channel_capacity(n)`",
+        "`SignalFishConfig::with_shutdown_timeout(d)`",
+    ]
+
+    in_added_section = False
+    added_bullets = []
+    for line in lines:
+        trimmed = line.strip()
+        if trimmed.startswith("## "):
+            in_added_section = False
+            continue
+        if trimmed.startswith("### "):
+            in_added_section = trimmed == "### Added"
+            continue
+        if in_added_section and trimmed.startswith("- "):
+            added_bullets.append(trimmed)
+
+    errors = []
+    for marker in required_markers:
+        if not any(marker in bullet for bullet in added_bullets):
+            errors.append(
+                "  CHANGELOG.md: missing public API addition under `### Added`: "
+                f"{marker}"
+            )
+
+    return errors
+
+
 def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
     """Reject stale release-specific wording for unstable rustdoc removals."""
     errors = []
@@ -588,6 +643,46 @@ def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
             )
 
     return errors
+
+
+def warn_absolute_guarantee_language() -> list[str]:
+    """Scan src/**/*.rs doc comments for absolute guarantee language.
+
+    Detects words like "always", "never", "guaranteed", "unconditional" when
+    they appear alongside delivery/event-related terms in doc comments.
+    Returns a list of advisory warning strings (does not cause hook failure).
+    """
+    warnings = []
+    src_dir = REPO_ROOT / "src"
+    if not src_dir.is_dir():
+        return warnings
+
+    guarantee_re = re.compile(
+        r"\b(always|never|guaranteed|unconditional(?:ly)?)\b", re.IGNORECASE
+    )
+    delivery_re = re.compile(
+        r"\b(deliver(?:y|ed|s)?|event|message|dispatch(?:ed|es)?|"
+        r"emit(?:ted|s)?|send|sent|receive[ds]?|notify|notif(?:ied|ication))\b",
+        re.IGNORECASE,
+    )
+
+    for path in sorted(src_dir.rglob("*.rs")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        for line_num, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not (stripped.startswith("///") or stripped.startswith("//!")):
+                continue
+            if guarantee_re.search(stripped) and delivery_re.search(stripped):
+                rel = path.relative_to(REPO_ROOT)
+                warnings.append(
+                    f"  {rel}:{line_num}: {stripped.strip()}"
+                )
+
+    return warnings
 
 
 def main() -> int:
@@ -682,7 +777,29 @@ def main() -> int:
 
     # 10. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
-    # 11. Report all collected errors together
+
+    # 11. Validate required changelog Added entries for public APIs (blocking)
+    changelog_added_api_errors = validate_changelog_added_api_entries()
+
+    # 12. Advisory: warn about absolute guarantee language in doc comments
+    guarantee_warnings = warn_absolute_guarantee_language()
+    if guarantee_warnings:
+        print(
+            "\nWarning: absolute guarantee language in doc comments "
+            "(advisory only — not blocking):",
+            file=sys.stderr,
+        )
+        for w in guarantee_warnings:
+            print(w, file=sys.stderr)
+        print(
+            "\nPlease verify these guarantees are accurate. "
+            "Words like 'always', 'never', 'guaranteed', and "
+            "'unconditional' near delivery/event terms may "
+            "over-promise to callers.",
+            file=sys.stderr,
+        )
+
+    # 13. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,
@@ -723,6 +840,11 @@ def main() -> int:
             unstable_wording_errors,
             "stale unstable-feature wording detected:",
             "Avoid release-specific claims like 'removed in Rust X.Y'. Prefer wording that stays accurate over time, such as 'removed from rustdoc'.",
+        ),
+        (
+            changelog_added_api_errors,
+            "required changelog public API additions are missing:",
+            "Document required user-visible public APIs under a `### Added` section in CHANGELOG.md.",
         ),
     ]
 
