@@ -89,7 +89,9 @@ pub struct SignalFishConfig {
     ///
     /// When the consumer cannot keep up with incoming server messages, events
     /// are dropped (with a warning logged) to avoid blocking the transport loop.
-    /// The `Disconnected` event is always delivered regardless of capacity.
+    /// The `Disconnected` event uses a blocking send so it will not be dropped
+    /// due to a full channel, but it may be missed if the receiver is dropped
+    /// or if [`SignalFishClient::shutdown`] times out and aborts the transport task.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
@@ -97,10 +99,12 @@ pub struct SignalFishConfig {
     ///
     /// When [`SignalFishClient::shutdown`] is called, the background transport
     /// loop is given this much time to close the transport and emit a final
-    /// `Disconnected` event. If the timeout expires the task is aborted.
+    /// `Disconnected` event. If the timeout expires the task is aborted and
+    /// the `Disconnected` event may not be delivered.
     ///
     /// Defaults to **1 second**. A zero timeout aborts the transport loop
-    /// immediately without waiting for graceful shutdown.
+    /// immediately without waiting for graceful shutdown, meaning the
+    /// `Disconnected` event will likely not be emitted.
     pub shutdown_timeout: Duration,
 }
 
@@ -437,8 +441,11 @@ impl SignalFishClient {
 
     /// Shut down the client, closing the transport and stopping the background task.
     ///
-    /// After calling this method, the event receiver will yield `None` once the
-    /// transport loop exits.
+    /// The transport loop is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
+    /// to close cleanly and emit a [`Disconnected`](SignalFishEvent::Disconnected)
+    /// event. If the timeout expires, the task is aborted and the `Disconnected`
+    /// event may not be delivered. After shutdown completes, the event receiver
+    /// will yield `None`.
     pub async fn shutdown(&mut self) {
         debug!("SignalFishClient: shutdown requested");
 
@@ -703,8 +710,11 @@ async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishE
 
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
-/// Uses `send().await` (blocking) instead of `try_send` because `Disconnected`
-/// is always the last event on the channel and must never be silently dropped.
+/// Uses `send().await` (blocking) instead of `try_send` so that `Disconnected`
+/// is not dropped due to channel backpressure. However, delivery is not
+/// unconditional: the event will be lost if the receiver has been dropped, or
+/// if [`SignalFishClient::shutdown`] aborts the transport task before this
+/// function completes.
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
     state: &ClientState,
@@ -1054,8 +1064,9 @@ mod tests {
         }
         // With capacity 1, we should receive fewer events than were sent.
         // At minimum we get Connected (first try_send succeeds) and Disconnected
-        // (always delivered via blocking send().await). Authenticated and Pong
-        // events may be dropped when the single-slot channel is full.
+        // (delivered via blocking send, not dropped due to backpressure).
+        // Authenticated and Pong events may be dropped when the single-slot
+        // channel is full.
         assert!(count >= 2, "expected at least 2 events, got {count}");
         // But fewer than the total sent (2 synthetic + 1 auth + 20 pongs = 23 possible).
         assert!(
@@ -1582,5 +1593,46 @@ mod tests {
         assert!(client.current_room_code().await.is_none());
 
         client.shutdown().await;
+    }
+
+    /// Validates the documented best-effort delivery guarantee: when `shutdown()`
+    /// times out and aborts the transport task, the `Disconnected` event may NOT
+    /// be delivered because the transport loop is forcibly cancelled before it can
+    /// emit the event. Both outcomes (event received or not) are acceptable.
+    #[tokio::test]
+    async fn shutdown_abort_may_skip_disconnected_event() {
+        let (transport, _close_called, _dropped) = HangingCloseTransport::new();
+        let config = SignalFishConfig::new("mb_test")
+            .with_shutdown_timeout(std::time::Duration::from_millis(1));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Drain the initial Connected event so the channel is not congested.
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+
+        // Shutdown will timeout (close() hangs) and abort the transport task.
+        client.shutdown().await;
+
+        // The transport loop was aborted, so `emit_disconnected` may never have
+        // executed. Try to receive with a short timeout — either outcome is valid.
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await;
+
+        match result {
+            Ok(Some(SignalFishEvent::Disconnected { .. })) => {
+                // Disconnected was delivered before the abort took effect — acceptable.
+            }
+            Ok(None) => {
+                // Channel closed without a Disconnected event — acceptable.
+            }
+            Err(_) => {
+                // Timed out waiting; no Disconnected event was delivered — acceptable.
+            }
+            Ok(Some(other)) => {
+                panic!("unexpected event after shutdown abort: {other:?}");
+            }
+        }
+
+        assert!(!client.is_connected());
     }
 }

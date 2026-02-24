@@ -124,7 +124,10 @@ You interact with the server by calling methods on the `SignalFishClient` handle
 !!! warning
     If your event-processing loop cannot keep up with the server, events will be
     **dropped** (with a warning logged) to avoid blocking the transport loop. The
-    `Disconnected` event is always delivered. Design your handler to stay responsive.
+    `Disconnected` event uses a blocking send so it will not be dropped due to
+    backpressure, but it may be missed if the receiver is dropped or
+    [`shutdown()`](client.md#shutdown) times out. Design your handler to stay
+    responsive.
     You can increase the buffer by setting `event_channel_capacity` on your
     `SignalFishConfig`.
 

@@ -69,7 +69,7 @@ stateDiagram-v2
 | **Connected → Authenticated** | The SDK auto-sends an `Authenticate` message. On success the server replies and `SignalFishEvent::Authenticated` is emitted. |
 | **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)`. The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
 | **InRoom → Authenticated** | Call `client.leave_room()` or `client.leave_spectator()`. The server confirms with `SignalFishEvent::RoomLeft`. |
-| **Any → Disconnected** | Call `client.shutdown().await`, drop the client, or encounter an unrecoverable transport error. `SignalFishEvent::Disconnected` is always the final event. |
+| **Any → Disconnected** | Call `client.shutdown().await`, drop the client, or encounter an unrecoverable transport error. `SignalFishEvent::Disconnected` is the final event (best-effort; see [Events](events.md) for delivery caveats). |
 
 !!! warning "Authentication is automatic"
     You do **not** need to call an authenticate method. `SignalFishClient::start`
@@ -117,14 +117,17 @@ generated locally by the transport layer:
 | Event | Origin |
 |-------|--------|
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
-| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Always the last event. |
+| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Last event (best-effort). |
 
 !!! warning "Channel capacity"
     The event channel has a default capacity of **256** (configurable via
     `SignalFishConfig::event_channel_capacity`). If your consumer falls behind,
     events are **dropped** (with a warning logged) to avoid blocking the
-    transport loop. The `Disconnected` event is the exception — it is always
-    delivered. Design your event loop to stay responsive to avoid losing events.
+    transport loop. The `Disconnected` event is the exception — it uses a
+    blocking send so it will not be dropped due to backpressure, but it may be
+    missed if the receiver is dropped or shutdown times out (see
+    [Events](events.md)). Design your event loop to stay responsive to avoid
+    losing events.
 
 ---
 

@@ -402,6 +402,7 @@ Shutdown proceeds in three stages:
 2. Awaits the loop task with a configurable timeout (default **1 second**,
    set via [`SignalFishConfig::shutdown_timeout`](#signalfishconfig)).
 3. If the timeout expires, the task is logged as unresponsive and aborted.
+   The `Disconnected` event may not be delivered in this case.
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the

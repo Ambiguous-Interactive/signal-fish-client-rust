@@ -14,7 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `SignalFishClient::shutdown` now aborts the background transport task if graceful shutdown exceeds `shutdown_timeout`, preventing detached tasks from running indefinitely.
-- Hardened shutdown-related tests around tiny event channel capacities to avoid race-prone behavior under backpressure.
 
 ## [0.2.2]
 

@@ -24,6 +24,10 @@ Reference for CI/CD tool configuration, common pitfalls, and consistency enforce
 
 Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.
 
+### [Documentation Accuracy for Behavioral Guarantees](doc-accuracy-guarantees.md)
+
+Reference for writing accurate documentation about behavioral guarantees (e.g., event delivery, error handling, shutd...
+
 ### [Documentation Drift Validation](doc-drift-validation.md)
 
 Reference for preventing documentation drift by validating docs against source-of-truth configuration files.

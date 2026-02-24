@@ -8,6 +8,7 @@ Checks include:
 - Auto-generate .llm/skills/index.md from skill file headings/descriptions.
 - Validate docs and mkdocs consistency checks.
 - Reject stale release-specific wording for unstable rustdoc removals.
+- Advisory: warn about absolute guarantee language in Rust doc comments.
 """
 
 import subprocess
@@ -602,6 +603,46 @@ def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
     return errors
 
 
+def warn_absolute_guarantee_language() -> list[str]:
+    """Scan src/**/*.rs doc comments for absolute guarantee language.
+
+    Detects words like "always", "never", "guaranteed", "unconditional" when
+    they appear alongside delivery/event-related terms in doc comments.
+    Returns a list of advisory warning strings (does not cause hook failure).
+    """
+    warnings = []
+    src_dir = REPO_ROOT / "src"
+    if not src_dir.is_dir():
+        return warnings
+
+    guarantee_re = re.compile(
+        r"\b(always|never|guaranteed|unconditional(?:ly)?)\b", re.IGNORECASE
+    )
+    delivery_re = re.compile(
+        r"\b(deliver(?:y|ed|s)?|event|message|dispatch(?:ed|es)?|"
+        r"emit(?:ted|s)?|send|sent|receive[ds]?|notify|notif(?:ied|ication))\b",
+        re.IGNORECASE,
+    )
+
+    for path in sorted(src_dir.rglob("*.rs")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        for line_num, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not (stripped.startswith("///") or stripped.startswith("//!")):
+                continue
+            if guarantee_re.search(stripped) and delivery_re.search(stripped):
+                rel = path.relative_to(REPO_ROOT)
+                warnings.append(
+                    f"  {rel}:{line_num}: {stripped.strip()}"
+                )
+
+    return warnings
+
+
 def main() -> int:
     if not LLM_DIR.exists():
         print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
@@ -694,7 +735,26 @@ def main() -> int:
 
     # 10. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
-    # 11. Report all collected errors together
+
+    # 11. Advisory: warn about absolute guarantee language in doc comments
+    guarantee_warnings = warn_absolute_guarantee_language()
+    if guarantee_warnings:
+        print(
+            "\nWarning: absolute guarantee language in doc comments "
+            "(advisory only — not blocking):",
+            file=sys.stderr,
+        )
+        for w in guarantee_warnings:
+            print(w, file=sys.stderr)
+        print(
+            "\nPlease verify these guarantees are accurate. "
+            "Words like 'always', 'never', 'guaranteed', and "
+            "'unconditional' near delivery/event terms may "
+            "over-promise to callers.",
+            file=sys.stderr,
+        )
+
+    # 12. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,

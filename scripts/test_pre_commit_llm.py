@@ -29,6 +29,7 @@ validate_changelog_example_links = _mod.validate_changelog_example_links
 validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 read_cargo_package_version = _mod.read_cargo_package_version
 sync_crate_version_references = _mod.sync_crate_version_references
+warn_absolute_guarantee_language = _mod.warn_absolute_guarantee_language
 
 
 # ===================================================================
@@ -1571,3 +1572,103 @@ class TestValidateUnstableFeatureWording:
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_unstable_feature_wording([skill])
         assert errors == []
+
+
+# ===================================================================
+# Tests for warn_absolute_guarantee_language
+# ===================================================================
+
+
+class TestWarnAbsoluteGuaranteeLanguage:
+    """Tests for the advisory absolute-guarantee-language scanner."""
+
+    def test_flags_always_with_delivery_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'always' and 'delivered' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// The event is always delivered.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1
+        assert "always" in warnings[0].lower()
+
+    def test_flags_never_with_event_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'never' and 'event' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// This event is never dropped.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1
+        assert "never" in warnings[0].lower()
+
+    def test_ignores_regular_comments(self, tmp_path, monkeypatch):
+        """Non-doc comments (// instead of ///) are not scanned."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "// The event is always delivered.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_ignores_guarantee_without_delivery_term(self, tmp_path, monkeypatch):
+        """A doc comment with 'always' but no delivery term is not flagged."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// This function always returns true.\n"
+            "fn foo() -> bool { true }\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_no_src_dir_returns_empty(self, tmp_path, monkeypatch):
+        """When src/ does not exist, no warnings are produced."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert warnings == []
+
+    def test_flags_unconditional_with_emit(self, tmp_path, monkeypatch):
+        """'unconditional' with 'emit' triggers a warning."""
+        fake_root = tmp_path / "repo"
+        src = fake_root / "src"
+        src.mkdir(parents=True)
+        rs = src / "lib.rs"
+        rs.write_text(
+            "/// Emit is unconditional.\n"
+            "fn foo() {}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        warnings = warn_absolute_guarantee_language()
+        assert len(warnings) == 1
