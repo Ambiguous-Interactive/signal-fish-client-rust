@@ -14,6 +14,9 @@
 #      silently drops events.
 #   3. Emscripten FFI modules must have a compile_error!() target guard to
 #      prevent compilation on non-Emscripten targets.
+#   4. In files with a callback SAFETY block comment, every `extern "C" fn`
+#      must have a per-function `// SAFETY:` comment on the line immediately
+#      preceding its declaration.
 #
 # Exit codes:
 #   0 — no violations found
@@ -242,6 +245,77 @@ VIOLATIONS=$((VIOLATIONS + CHECK3_VIOLATIONS))
 
 if [ "$CHECK3_VIOLATIONS" -eq 0 ]; then
     echo -e "${GREEN}  Check 3: PASS — all Emscripten FFI modules have target guards.${NC}"
+fi
+echo ""
+
+# ── Check 4: Callback SAFETY comment consistency ─────────────────────
+# In files that have a SAFETY block comment covering callbacks (containing
+# both "SAFETY" and "callback" within a comment block), every `extern "C" fn`
+# must have a `// SAFETY:` comment on the line immediately preceding it.
+echo -e "${YELLOW}Check 4: Scanning for missing per-function SAFETY comments on extern \"C\" fn callbacks...${NC}"
+
+CHECK4_VIOLATIONS=0
+
+EXTERN_C_FILES=$(grep -rl 'extern "C" fn' src/ 2>/dev/null || true)
+
+if [ -z "$EXTERN_C_FILES" ]; then
+    echo -e "${GREEN}  No extern \"C\" fn declarations found — nothing to check.${NC}"
+else
+    for file in $EXTERN_C_FILES; do
+        # Check if this file has a callback SAFETY block comment.
+        # Look for a comment line containing both "SAFETY" and "callback" (case-sensitive).
+        has_safety_block=false
+        if grep -q '// SAFETY.*callback\|// SAFETY.*Callback' "$file"; then
+            has_safety_block=true
+        fi
+
+        if [ "$has_safety_block" = false ]; then
+            continue
+        fi
+
+        # File has a callback SAFETY block — check each extern "C" fn.
+        mapfile -t file_lines < "$file"
+        total_lines=${#file_lines[@]}
+
+        for ((i = 0; i < total_lines; i++)); do
+            line="${file_lines[$i]}"
+            line="${line//$'\r'/}"
+
+            # Skip lines inside extern "C" { } blocks (FFI declarations, not callback definitions).
+            # We only care about standalone extern "C" fn definitions.
+            if echo "$line" | grep -qE '^\s*extern "C" fn '; then
+                lineno=$((i + 1))
+                # Walk backwards to find the nearest non-blank line.
+                prev_idx=$((i - 1))
+                prev_line=""
+                while [ "$prev_idx" -ge 0 ]; do
+                    candidate="${file_lines[$prev_idx]}"
+                    candidate="${candidate//$'\r'/}"
+                    trimmed="${candidate#"${candidate%%[![:space:]]*}"}"
+                    if [ -n "$trimmed" ]; then
+                        prev_line="$trimmed"
+                        break
+                    fi
+                    prev_idx=$((prev_idx - 1))
+                done
+
+                # Check if the previous non-blank line is a // SAFETY: comment.
+                if ! echo "$prev_line" | grep -qE '^// SAFETY:'; then
+                    fn_name=$(echo "$line" | grep -oE 'fn [A-Za-z_][A-Za-z0-9_]*' | sed 's/fn //')
+                    echo -e "${RED}VIOLATION:${NC} $file:$lineno: extern \"C\" fn '$fn_name' is missing a // SAFETY: comment on the preceding line"
+                    echo "  $line"
+                    echo "  Add: // SAFETY: See the callback SAFETY block comment above for pointer guarantees."
+                    CHECK4_VIOLATIONS=$((CHECK4_VIOLATIONS + 1))
+                fi
+            fi
+        done
+    done
+fi
+
+VIOLATIONS=$((VIOLATIONS + CHECK4_VIOLATIONS))
+
+if [ "$CHECK4_VIOLATIONS" -eq 0 ]; then
+    echo -e "${GREEN}  Check 4: PASS — all extern \"C\" fn callbacks have SAFETY comments.${NC}"
 fi
 echo ""
 

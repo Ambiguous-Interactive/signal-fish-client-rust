@@ -375,13 +375,12 @@ extern "C" fn on_open_callback(
     1 // EM_TRUE
 }
 
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_message_callback(
     _event_type: c_int,
     event: *const EmscriptenWebSocketMessageEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
-    // SAFETY: See the callback SAFETY block comment above for `user_data`
-    // and `event` pointer validity guarantees.
     let state = unsafe { &*(user_data as *const CallbackState) };
     let event = unsafe { &*event };
 

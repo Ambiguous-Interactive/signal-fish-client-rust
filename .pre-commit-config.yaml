@@ -42,6 +42,26 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── FFI safety check ─────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: check-ffi-safety
+        name: FFI safety check
+        language: system
+        entry: bash scripts/check-ffi-safety.sh
+        pass_filenames: false
+        always_run: true
+
+  # ── FFI safety script tests ─────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: test-check-ffi-safety
+        name: FFI safety script tests
+        language: system
+        entry: bash scripts/test_check_ffi_safety.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Workflow guard checks ─────────────────────────────────────────────────
   - repo: local
     hooks:

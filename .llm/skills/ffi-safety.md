@@ -69,15 +69,13 @@ If `is_secure` were declared as `bool` (1 byte + 3 bytes padding on some targets
 
 ### Always Check Return Values
 
-C functions communicate failure through return values. Ignoring them leads to silent failures that manifest as hard-to-debug crashes later.
+C functions communicate failure through return values. Ignoring them leads to silent failures that manifest as crashes later.
 
 ```rust
-// CORRECT: check every registration result
 let result = emscripten_websocket_set_onopen_callback_on_thread(
     socket, user_data, Some(on_open_callback), thread_id,
 );
 if result != EMSCRIPTEN_RESULT_SUCCESS {
-    // Clean up before returning error
     emscripten_websocket_close(socket, 1000, ptr::null());
     drop(Box::from_raw(user_data as *mut State));
     return Err(format!("onopen registration failed: {result}"));
@@ -86,7 +84,7 @@ if result != EMSCRIPTEN_RESULT_SUCCESS {
 
 ### Pattern: Register-and-Rollback
 
-When registering multiple callbacks, collect results and roll back on first failure:
+When registering multiple callbacks, roll back on first failure:
 
 ```rust
 let registrations = [
@@ -95,10 +93,8 @@ let registrations = [
     ("onclose", register_onclose(socket, user_data)),
     ("onerror", register_onerror(socket, user_data)),
 ];
-
 for (name, result) in &registrations {
     if *result != EMSCRIPTEN_RESULT_SUCCESS {
-        // Clean up: close socket, reclaim Box pointer
         unsafe {
             emscripten_websocket_close(socket, 1000, ptr::null());
             drop(Box::from_raw(user_data as *mut State));
@@ -161,58 +157,13 @@ impl Drop for EmscriptenWebSocket {
 
 ### Error Path Cleanup Must Match `Drop`
 
-A common FFI bug: the `Drop` implementation follows the correct cleanup
-sequence (close -> delete -> free), but error paths in other methods skip
-one or more steps. Every error path that cleans up FFI resources **must**
-follow the same sequence as `Drop`.
+Every error path that cleans up FFI resources **must** follow the same sequence as `Drop`. A common bug: `Drop` does close -> delete -> free correctly, but an error path skips `delete`, leaking the socket handle.
 
-```rust,ignore
-// Drop does: close -> delete -> free (correct)
-impl Drop for EmscriptenWebSocket {
-    fn drop(&mut self) {
-        unsafe {
-            emscripten_websocket_close(self.socket, 1000, ptr::null());
-            emscripten_websocket_delete(self.socket);
-            drop(Box::from_raw(self.state_ptr));
-        }
-    }
-}
-
-// BAD: error path skips delete — leaks the socket handle
-fn setup_callbacks(&mut self) -> Result<(), String> {
-    let result = register_onopen(self.socket, self.state_ptr);
-    if result != EMSCRIPTEN_RESULT_SUCCESS {
-        unsafe {
-            emscripten_websocket_close(self.socket, 1000, ptr::null());
-            // BUG: missing emscripten_websocket_delete()
-            drop(Box::from_raw(self.state_ptr));
-        }
-        return Err("onopen failed".into());
-    }
-    Ok(())
-}
-
-// GOOD: error path mirrors Drop exactly
-fn setup_callbacks(&mut self) -> Result<(), String> {
-    let result = register_onopen(self.socket, self.state_ptr);
-    if result != EMSCRIPTEN_RESULT_SUCCESS {
-        unsafe {
-            emscripten_websocket_close(self.socket, 1000, ptr::null());
-            emscripten_websocket_delete(self.socket);
-            drop(Box::from_raw(self.state_ptr));
-        }
-        return Err("onopen failed".into());
-    }
-    Ok(())
-}
-```
-
-**Prevention pattern:** extract the cleanup sequence into a helper so that
-`Drop` and all error paths call the same code:
+**Prevention pattern:** extract cleanup into a shared helper:
 
 ```rust,ignore
 impl EmscriptenWebSocket {
-    /// Performs the full cleanup sequence: close -> delete -> free.
+    /// Full cleanup sequence: close -> delete -> free.
     unsafe fn cleanup(&mut self) {
         emscripten_websocket_close(self.socket, 1000, ptr::null());
         emscripten_websocket_delete(self.socket);
@@ -223,8 +174,7 @@ impl EmscriptenWebSocket {
 
 **Checklist for FFI error paths:**
 
-- [ ] Does every error path that cleans up resources follow the same
-      sequence as `Drop`?
+- [ ] Does every error path follow the same cleanup sequence as `Drop`?
 - [ ] Are all steps present (close, delete/unregister, free)?
 - [ ] Consider extracting cleanup into a shared helper to prevent drift.
 
@@ -246,6 +196,37 @@ unsafe impl Send for EmscriptenWebSocketTransport {}
 - Always include a `// SAFETY:` comment explaining the single-threaded assumption
 - If the containing module is already feature-gated to emscripten-only, the module-level gate is sufficient. Otherwise, gate the impl directly with `#[cfg(target_os = "emscripten")]`
 - Never add `unsafe impl Sync` unless the type is genuinely safe for shared references (rare for FFI wrappers)
+
+## Callback SAFETY Comment Convention
+
+When a file has multiple `extern "C" fn` callbacks sharing common safety invariants (pointer validity, single-threaded execution, etc.), use a shared block comment plus per-function references:
+
+```rust
+// SAFETY (all callbacks): These `extern "C"` functions are registered with
+// Emscripten's WebSocket API. The runtime guarantees that:
+// - `user_data` is the same pointer passed during registration
+// - `event` pointers are valid for the callback duration
+// - Callbacks are invoked on the main thread (single-threaded model)
+
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
+extern "C" fn on_open_callback(...) -> EM_BOOL { ... }
+
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
+extern "C" fn on_message_callback(...) -> EM_BOOL { ... }
+```
+
+### Rules
+
+- Every `extern "C" fn` in a file with a SAFETY block comment MUST have its own `// SAFETY:` comment on the line immediately before the `extern "C" fn` declaration
+- The per-function comment should reference the block comment, not duplicate it
+- Do NOT add redundant inline SAFETY comments inside the function body that duplicate the per-function comment
+- Enforced by `check-ffi-safety.sh` (Check 4)
+
+### Why This Matters
+
+- Consistent per-function comments make safety audits easier at a glance
+- A missing comment on one callback (while others have it) creates doubt about whether the safety analysis was done
+- `check-ffi-safety.sh` enforces this automatically
 
 ## Target-Restricted Features
 
@@ -286,6 +267,7 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] Callback `user_data` lifetime outlives all possible callback invocations
 - [ ] `Drop` impl cleans up resources in the correct order (close -> unregister -> delete -> reclaim)
 - [ ] Target-restricted FFI modules have a `compile_error!()` guard at the file top
+- [ ] Every `extern "C" fn` in files with a shared SAFETY block has a per-function `// SAFETY:` comment
 
 ## Common Mistakes
 
@@ -297,3 +279,4 @@ Use this checklist when adding or reviewing any FFI binding:
 | Wrong cleanup order | Use-after-free in callbacks | Close socket before reclaiming state |
 | Error path skips cleanup step | Resource leak (e.g., missing `delete` between `close` and `free`) | Mirror `Drop` sequence exactly; extract a shared helper |
 | `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |
+| Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |

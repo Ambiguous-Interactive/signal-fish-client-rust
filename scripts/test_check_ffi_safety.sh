@@ -136,6 +136,9 @@ echo "=== Unchecked callback tests ==="
 # -- Should FAIL: Bare emscripten_websocket_set_onopen_callback_on_thread call --
 setup_fake_repo
 cat > "$FAKE_REPO/src/unchecked_callback.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
 fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T) {
     unsafe {
         emscripten_websocket_set_onopen_callback_on_thread(
@@ -153,6 +156,9 @@ assert_exit "Bare emscripten callback call should FAIL" 1
 # -- Should PASS: let result = emscripten_websocket_set_onopen_callback_on_thread --
 setup_fake_repo
 cat > "$FAKE_REPO/src/checked_callback.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
 fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T) {
     unsafe {
         let result = emscripten_websocket_set_onopen_callback_on_thread(
@@ -167,6 +173,125 @@ fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T) {
 RUST
 run_check
 assert_exit "Checked (let result =) emscripten callback should PASS" 0
+
+# -- Should PASS: Tuple pattern — call inside a tuple within an array --
+setup_fake_repo
+cat > "$FAKE_REPO/src/tuple_callback.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T, user_data: *mut c_void) {
+    unsafe {
+        let registrations = [
+            (
+                "onopen",
+                emscripten_websocket_set_onopen_callback_on_thread(
+                    socket,
+                    user_data,
+                    Some(on_open),
+                    0,
+                ),
+            ),
+        ];
+        for (name, result) in &registrations {
+            assert_eq!(*result, EMSCRIPTEN_RESULT_SUCCESS, "{name} failed");
+        }
+    }
+}
+RUST
+run_check
+assert_exit "Tuple pattern (call inside array of tuples) should PASS" 0
+
+# -- Should PASS: Array-of-tuples pattern — multiple registrations like production code --
+setup_fake_repo
+cat > "$FAKE_REPO/src/array_tuples_callback.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+fn register_all_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T, user_data: *mut c_void) {
+    unsafe {
+        let results = [
+            (
+                "onopen",
+                emscripten_websocket_set_onopen_callback_on_thread(
+                    socket,
+                    user_data,
+                    Some(on_open_callback),
+                    0,
+                ),
+            ),
+            (
+                "onmessage",
+                emscripten_websocket_set_onmessage_callback_on_thread(
+                    socket,
+                    user_data,
+                    Some(on_message_callback),
+                    0,
+                ),
+            ),
+            (
+                "onerror",
+                emscripten_websocket_set_onerror_callback_on_thread(
+                    socket,
+                    user_data,
+                    Some(on_error_callback),
+                    0,
+                ),
+            ),
+        ];
+        for (name, result) in &results {
+            if *result != EMSCRIPTEN_RESULT_SUCCESS {
+                panic!("{name} callback registration failed: {result}");
+            }
+        }
+    }
+}
+RUST
+run_check
+assert_exit "Array-of-tuples pattern (multiple registrations) should PASS" 0
+
+# -- Should FAIL: Bare call on its own line even with tuple on a LATER line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/bare_then_tuple.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T, user_data: *mut c_void) {
+    unsafe {
+        emscripten_websocket_set_onopen_callback_on_thread(
+            socket,
+            user_data,
+            Some(on_open),
+            0,
+        );
+        let _unrelated = ("some_tuple", 42);
+    }
+}
+RUST
+run_check
+assert_exit "Bare call with tuple on later line should FAIL" 1
+
+# -- Should PASS: Call preceded by line ending with = (split across lines) --
+setup_fake_repo
+cat > "$FAKE_REPO/src/split_line_assign.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+fn setup_callbacks(socket: EMSCRIPTEN_WEBSOCKET_T, user_data: *mut c_void) {
+    unsafe {
+        let result =
+            emscripten_websocket_set_onopen_callback_on_thread(
+                socket,
+                user_data,
+                Some(on_open),
+                0,
+            );
+        assert_eq!(result, EMSCRIPTEN_RESULT_SUCCESS);
+    }
+}
+RUST
+run_check
+assert_exit "Split-line assignment (= on previous line) should PASS" 0
 
 echo ""
 echo "=== Edge-case tests ==="
@@ -200,6 +325,77 @@ pub enum MyEnum {
 RUST
 run_check
 assert_exit "repr(C) enum (not struct) should PASS" 0
+
+echo ""
+echo "=== Callback SAFETY comment tests ==="
+
+# -- Should FAIL: extern "C" fn with SAFETY block but missing per-function comment --
+setup_fake_repo
+cat > "$FAKE_REPO/src/missing_per_fn_safety.rs" << 'RUST'
+// SAFETY (all callbacks): These extern "C" functions are registered
+// with a C API that guarantees pointer validity.
+
+extern "C" fn on_open_callback(
+    _event_type: i32,
+    _event: *const u8,
+    user_data: *mut u8,
+) -> i32 {
+    1
+}
+RUST
+run_check
+assert_exit "extern C fn with SAFETY block but missing per-function comment should FAIL" 1
+
+# -- Should PASS: extern "C" fn with SAFETY block AND per-function comment --
+setup_fake_repo
+cat > "$FAKE_REPO/src/with_per_fn_safety.rs" << 'RUST'
+// SAFETY (all callbacks): These extern "C" functions are registered
+// with a C API that guarantees pointer validity.
+
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
+extern "C" fn on_open_callback(
+    _event_type: i32,
+    _event: *const u8,
+    user_data: *mut u8,
+) -> i32 {
+    1
+}
+RUST
+run_check
+assert_exit "extern C fn with SAFETY block AND per-function comment should PASS" 0
+
+# -- Should PASS: extern "C" fn WITHOUT any SAFETY block in the file (Check 4 skips) --
+setup_fake_repo
+cat > "$FAKE_REPO/src/no_safety_block.rs" << 'RUST'
+extern "C" fn standalone_callback(
+    _event_type: i32,
+    user_data: *mut u8,
+) -> i32 {
+    1
+}
+RUST
+run_check
+assert_exit "extern C fn without any SAFETY block in file should PASS (Check 4 skips)" 0
+
+# -- Should PASS: Blank line between SAFETY comment and extern "C" fn --
+# Check 4 walks backwards over blank lines, so this should still pass.
+setup_fake_repo
+cat > "$FAKE_REPO/src/blank_line_before_fn.rs" << 'RUST'
+// SAFETY (all callbacks): These extern "C" functions are registered
+// with a C API that guarantees pointer validity.
+
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
+
+extern "C" fn on_open_callback(
+    _event_type: i32,
+    _event: *const u8,
+    user_data: *mut u8,
+) -> i32 {
+    1
+}
+RUST
+run_check
+assert_exit "Blank line between SAFETY comment and extern C fn should PASS" 0
 
 echo ""
 echo "=== Results ==="

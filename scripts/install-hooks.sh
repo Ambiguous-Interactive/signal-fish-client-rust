@@ -97,6 +97,30 @@ else
     echo "       or: brew install shellcheck"
 fi
 
+# ── FFI safety check ──────────────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-ffi-safety.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-ffi-safety.sh"; then
+        echo ""
+        echo "Commit aborted: FFI safety check failed."
+        echo "Fix the FFI safety violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-ffi-safety.sh not found — skipping FFI safety check."
+fi
+
+# ── FFI safety script tests ──────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_ffi_safety.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/test_check_ffi_safety.sh"; then
+        echo ""
+        echo "Commit aborted: FFI safety script tests failed."
+        echo "Fix the test failures above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/test_check_ffi_safety.sh not found — skipping FFI safety script tests."
+fi
+
 # ── Workflow guard checks ───────────────────────────────────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-workflows.sh" ]; then
     if ! bash "${REPO_ROOT}/scripts/check-workflows.sh"; then
@@ -209,10 +233,12 @@ echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
-echo "  5. bash scripts/check-workflows.sh"
-echo "  6. cargo fmt --all -- --check"
-echo "  7. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  8. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  5. bash scripts/check-ffi-safety.sh (FFI safety check)"
+echo "  6. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
+echo "  7. bash scripts/check-workflows.sh"
+echo "  8. cargo fmt --all -- --check"
+echo "  9. cargo clippy --all-targets --all-features -- -D warnings"
+echo " 10. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
