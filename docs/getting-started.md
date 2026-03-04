@@ -24,6 +24,8 @@ cargo add signal-fish-client
 | Feature                | Default | Description                                      |
 |------------------------|---------|--------------------------------------------------|
 | `transport-websocket`  | Yes     | WebSocket transport via `tokio-tungstenite`       |
+| `transport-websocket-emscripten` | No | Emscripten WebSocket transport for `wasm32-unknown-emscripten` |
+| `tokio-runtime` | Yes (via `transport-websocket`) | Tokio runtime integration; disable for WASM targets |
 
 #### With default features (includes WebSocket transport)
 
@@ -41,6 +43,16 @@ signal-fish-client = { version = "0.3.1", default-features = false }
 
 !!! tip
     If you only need the core `Transport` trait to implement a custom backend, disable default features to avoid pulling in `tokio-tungstenite` and `futures-util`.
+
+#### For Emscripten / Godot web exports
+
+```toml
+[dependencies]
+signal-fish-client = { version = "0.3.1", default-features = false, features = ["transport-websocket-emscripten"] }
+```
+
+!!! tip
+    The `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` and `SignalFishPollingClient` — a synchronous, game-loop-driven client that does not require an async runtime. See the [WebAssembly Guide](wasm.md) for complete setup instructions.
 
 ## Minimal Example
 
@@ -136,3 +148,4 @@ You interact with the server by calling methods on the `SignalFishClient` handle
 - [Core Concepts](concepts.md) — rooms, players, relays, and the event model
 - [Client API](client.md) — full reference for `SignalFishClient` methods
 - [Events](events.md) — every `SignalFishEvent` variant explained
+- [WebAssembly Guide](wasm.md) — building for `wasm32-unknown-unknown` and `wasm32-unknown-emscripten`, Godot integration

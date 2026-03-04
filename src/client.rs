@@ -31,14 +31,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
+#[cfg(feature = "tokio-runtime")]
 use tracing::{debug, error, warn};
 
 use crate::error::{Result, SignalFishError};
+#[cfg(feature = "tokio-runtime")]
 use crate::event::SignalFishEvent;
+#[cfg(feature = "tokio-runtime")]
+use crate::protocol::ServerMessage;
 use crate::protocol::{
     ClientMessage, ConnectionInfo, GameDataEncoding, PlayerId, RelayTransport, RoomId,
-    ServerMessage,
 };
+#[cfg(feature = "tokio-runtime")]
 use crate::transport::Transport;
 
 /// Default capacity of the bounded event channel.
@@ -228,6 +232,7 @@ struct ClientState {
     room_code: Mutex<Option<String>>,
 }
 
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 impl ClientState {
     fn new() -> Self {
         Self {
@@ -263,13 +268,17 @@ pub struct SignalFishClient {
     /// Shared state updated by the transport loop.
     state: Arc<ClientState>,
     /// Handle to the background transport loop task.
+    #[cfg(feature = "tokio-runtime")]
     task: Option<tokio::task::JoinHandle<()>>,
     /// Oneshot sender to signal the transport loop to shut down gracefully.
+    #[cfg(feature = "tokio-runtime")]
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// Timeout for the graceful shutdown.
+    #[cfg(feature = "tokio-runtime")]
     shutdown_timeout: Duration,
 }
 
+#[cfg(feature = "tokio-runtime")]
 impl SignalFishClient {
     /// Start the client transport loop and return a handle plus event receiver.
     ///
@@ -329,6 +338,45 @@ impl SignalFishClient {
         (client, event_rx)
     }
 
+    /// Shut down the client, closing the transport and stopping the background task.
+    ///
+    /// The transport loop is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
+    /// to close cleanly and emit a [`Disconnected`](SignalFishEvent::Disconnected)
+    /// event. If the timeout expires, the task is aborted and the `Disconnected`
+    /// event may not be delivered. After shutdown completes, the event receiver
+    /// will yield `None`.
+    pub async fn shutdown(&mut self) {
+        debug!("SignalFishClient: shutdown requested");
+
+        // Signal the transport loop to shut down gracefully.
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+
+        // Await the transport loop with a timeout. If it doesn't exit in time,
+        // abort it so the task cannot detach and run indefinitely.
+        if let Some(mut task) = self.task.take() {
+            match tokio::time::timeout(self.shutdown_timeout, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    warn!("transport loop terminated with join error: {join_err}");
+                }
+                Err(_) => {
+                    warn!("transport loop did not exit within timeout; aborting task");
+                    task.abort();
+                    if let Err(join_err) = task.await {
+                        debug!("transport loop aborted: {join_err}");
+                    }
+                }
+            }
+        }
+
+        self.state.connected.store(false, Ordering::Release);
+        self.state.clear_session_state().await;
+    }
+}
+
+impl SignalFishClient {
     // ── Public API methods ──────────────────────────────────────────
 
     /// Join or create a room with the given parameters.
@@ -446,43 +494,6 @@ impl SignalFishClient {
         self.send(ClientMessage::Ping)
     }
 
-    /// Shut down the client, closing the transport and stopping the background task.
-    ///
-    /// The transport loop is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
-    /// to close cleanly and emit a [`Disconnected`](SignalFishEvent::Disconnected)
-    /// event. If the timeout expires, the task is aborted and the `Disconnected`
-    /// event may not be delivered. After shutdown completes, the event receiver
-    /// will yield `None`.
-    pub async fn shutdown(&mut self) {
-        debug!("SignalFishClient: shutdown requested");
-
-        // Signal the transport loop to shut down gracefully.
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
-
-        // Await the transport loop with a timeout. If it doesn't exit in time,
-        // abort it so the task cannot detach and run indefinitely.
-        if let Some(mut task) = self.task.take() {
-            match tokio::time::timeout(self.shutdown_timeout, &mut task).await {
-                Ok(Ok(())) => {}
-                Ok(Err(join_err)) => {
-                    warn!("transport loop terminated with join error: {join_err}");
-                }
-                Err(_) => {
-                    warn!("transport loop did not exit within timeout; aborting task");
-                    task.abort();
-                    if let Err(join_err) = task.await {
-                        debug!("transport loop aborted: {join_err}");
-                    }
-                }
-            }
-        }
-
-        self.state.connected.store(false, Ordering::Release);
-        self.state.clear_session_state().await;
-    }
-
     // ── State accessors ─────────────────────────────────────────────
 
     /// Returns `true` if the transport is believed to be connected.
@@ -525,14 +536,16 @@ impl SignalFishClient {
 
 impl std::fmt::Debug for SignalFishClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SignalFishClient")
-            .field("connected", &self.is_connected())
-            .field("authenticated", &self.is_authenticated())
-            .field("has_task", &self.task.is_some())
-            .finish()
+        let mut dbg = f.debug_struct("SignalFishClient");
+        dbg.field("connected", &self.is_connected())
+            .field("authenticated", &self.is_authenticated());
+        #[cfg(feature = "tokio-runtime")]
+        dbg.field("has_task", &self.task.is_some());
+        dbg.finish()
     }
 }
 
+#[cfg(feature = "tokio-runtime")]
 impl Drop for SignalFishClient {
     fn drop(&mut self) {
         // `Drop` is synchronous so we cannot await a graceful shutdown.
@@ -555,6 +568,7 @@ impl Drop for SignalFishClient {
 /// - The command channel closes (client handle dropped or shutdown called)
 /// - The transport returns `None` (server closed connection)
 /// - A transport error occurs
+#[cfg(feature = "tokio-runtime")]
 async fn transport_loop(
     mut transport: impl Transport,
     mut cmd_rx: mpsc::UnboundedReceiver<ClientMessage>,
@@ -652,6 +666,7 @@ async fn transport_loop(
 }
 
 /// Update shared [`ClientState`] based on a received [`ServerMessage`].
+#[cfg(feature = "tokio-runtime")]
 async fn update_state(state: &ClientState, msg: &ServerMessage) {
     match msg {
         ServerMessage::Authenticated { .. } => {
@@ -701,6 +716,7 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
 
 /// Emit an event to the event channel. If the channel is full, log a warning
 /// and drop the event to avoid blocking the transport loop.
+#[cfg(feature = "tokio-runtime")]
 async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishEvent) {
     match event_tx.try_send(event) {
         Ok(()) => {}
@@ -723,6 +739,7 @@ async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishE
 /// unconditional: the event will be lost if the receiver has been dropped, or
 /// if [`SignalFishClient::shutdown`] aborts the transport task before this
 /// function completes.
+#[cfg(feature = "tokio-runtime")]
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
     state: &ClientState,
@@ -738,7 +755,7 @@ async fn emit_disconnected(
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio-runtime"))]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -1,6 +1,6 @@
 [package]
 name = "signal-fish-client"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
@@ -24,11 +24,17 @@ include = [
 
 [features]
 default = ["transport-websocket"]
-transport-websocket = ["dep:tokio-tungstenite", "dep:futures-util"]
+transport-websocket = [
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "tokio-runtime",
+]
+transport-websocket-emscripten = []
+tokio-runtime = ["tokio/rt", "tokio/time"]
 
 [dependencies]
 # Async
-tokio = { version = "1", features = ["sync", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["sync", "macros"] }
 async-trait = "0.1"
 
 # Serialization
@@ -66,6 +72,7 @@ required-features = ["transport-websocket"]
 
 [[example]]
 name = "custom_transport"
+required-features = ["tokio-runtime"]
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]

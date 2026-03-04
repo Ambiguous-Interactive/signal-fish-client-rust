@@ -7,6 +7,7 @@
 //! | Feature                | Transport              |
 //! |------------------------|------------------------|
 //! | `transport-websocket`  | [`WebSocketTransport`] |
+//! | `transport-websocket-emscripten` | [`EmscriptenWebSocketTransport`] |
 //!
 //! # Example
 //!
@@ -31,3 +32,9 @@ pub mod websocket;
 
 #[cfg(feature = "transport-websocket")]
 pub use websocket::WebSocketTransport;
+
+#[cfg(feature = "transport-websocket-emscripten")]
+pub mod emscripten_websocket;
+
+#[cfg(feature = "transport-websocket-emscripten")]
+pub use emscripten_websocket::EmscriptenWebSocketTransport;

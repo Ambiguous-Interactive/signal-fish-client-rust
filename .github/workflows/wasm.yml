@@ -1,4 +1,4 @@
-# WebAssembly build check for signal-fish-client
+# WebAssembly build checks for signal-fish-client
 #
 # Target: wasm32-unknown-unknown
 #   This is the standard Rust target for browser/web WebAssembly. It is used by
@@ -8,11 +8,24 @@
 #   Cross-compiling for this target requires only `rustup target add
 #   wasm32-unknown-unknown`; no special hardware is needed.
 #
+# Target: wasm32-unknown-emscripten
+#   Used by Godot 4.5 web exports via gdext (godot-rust). Unlike
+#   wasm32-unknown-unknown, this target compiles against the Emscripten C
+#   runtime, giving access to Emscripten's C WebSocket API for browser
+#   networking. Because wasm32-unknown-emscripten is a Rust tier 3 target,
+#   building requires:
+#     - Nightly toolchain (tier 3 targets are not available on stable)
+#     - `-Zbuild-std` flag (std must be built from source for this target)
+#     - `rust-src` component (provides the std source code for -Zbuild-std)
+#     - Emscripten SDK (provides the sysroot and system libraries)
+#
 # Feature flags:
 #   `transport-websocket` is excluded because it depends on tokio-tungstenite
 #   over TCP sockets, which are unavailable in the browser sandbox. Consumers
 #   targeting WASM can supply their own transport implementation via the
-#   Transport trait.
+#   Transport trait. The `transport-websocket-emscripten` feature provides a
+#   browser WebSocket transport using Emscripten's C API for the emscripten
+#   target.
 
 name: WASM
 
@@ -51,3 +64,39 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --no-default-features
       - name: Clippy check for WASM target
         run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings
+
+  emscripten:
+    name: Build (wasm32-unknown-emscripten)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+      - name: Install Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - name: Build (no default features)
+        run: >-
+          cargo +nightly build -Zbuild-std
+          --target wasm32-unknown-emscripten
+          --no-default-features
+      - name: Build (emscripten transport)
+        run: >-
+          cargo +nightly build -Zbuild-std
+          --target wasm32-unknown-emscripten
+          --no-default-features
+          --features transport-websocket-emscripten
+      - name: Clippy (emscripten transport)
+        run: >-
+          cargo +nightly clippy -Zbuild-std
+          --target wasm32-unknown-emscripten
+          --no-default-features
+          --features transport-websocket-emscripten
+          -- -D warnings

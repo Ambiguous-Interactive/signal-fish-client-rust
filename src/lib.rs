@@ -72,3 +72,12 @@ pub use transport::Transport;
 
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
+
+#[cfg(feature = "transport-websocket-emscripten")]
+pub mod polling_client;
+
+#[cfg(feature = "transport-websocket-emscripten")]
+pub use polling_client::SignalFishPollingClient;
+
+#[cfg(feature = "transport-websocket-emscripten")]
+pub use transports::EmscriptenWebSocketTransport;
