@@ -76,6 +76,11 @@ of `trimmed=$(echo "$code" | sed 's/^[[:space:]]*//')`. For complex
 multi-stage pipelines or multi-expression `sed` commands, SC2001 does not
 fire. Using `printf '%s' "$var" | sed ...` also avoids the warning.
 
+### Intra-doc links to target-gated types
+
+Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts.
+Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
+
 ### cargo-machete false positives with serde attributes
 
 Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete. Add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
@@ -284,6 +289,7 @@ Start with the first command in the matching row to localize failures quickly.
 | CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
 | Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
+| Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
 
 ### `scripts/ci-validate.sh`
 

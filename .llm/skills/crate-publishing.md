@@ -70,6 +70,13 @@ bash scripts/check-docsrs.sh
 cargo doc --all-features 2>&1 | grep "warning\|error"
 ```
 
+### Intra-doc links and target-gated types
+
+Types behind `#[cfg(target_os = "emscripten")]` or similar target restrictions
+are never in scope when building docs on a different host. Do **not** use
+intra-doc link syntax (`[`TypeName`]`) for these types — use plain backtick
+formatting (`\`TypeName\``) instead. See the *ci-configuration* skill for details.
+
 ## cargo-deny Configuration (deny.toml)
 
 `deny.toml` at crate root enforces license, security, and duplicate dependency policies:

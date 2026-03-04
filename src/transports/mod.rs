@@ -7,7 +7,7 @@
 //! | Feature                | Transport              |
 //! |------------------------|------------------------|
 //! | `transport-websocket`  | [`WebSocketTransport`] |
-//! | `transport-websocket-emscripten` | [`EmscriptenWebSocketTransport`] |
+//! | `transport-websocket-emscripten` | `EmscriptenWebSocketTransport` |
 //!
 //! # Example
 //!

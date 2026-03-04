@@ -327,6 +327,88 @@ mod docsrs_policy {
              failed phase in the final summary."
         );
     }
+
+    #[test]
+    fn transports_mod_does_not_use_intradoc_link_for_emscripten_transport() {
+        let contents = read_project_file("src/transports/mod.rs");
+        let forbidden = "[`EmscriptenWebSocketTransport`]";
+
+        for (i, line) in contents.lines().enumerate() {
+            assert!(
+                !line.contains(forbidden),
+                "src/transports/mod.rs line {} contains an intra-doc link to \
+                 EmscriptenWebSocketTransport: {line:?}. \
+                 This type is target-gated (only available on target_os = \"emscripten\"), \
+                 so it can never resolve on non-emscripten hosts. Use plain backtick \
+                 formatting (`EmscriptenWebSocketTransport`) instead of intra-doc link \
+                 syntax ([`EmscriptenWebSocketTransport`]).",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn no_source_file_uses_intradoc_link_for_target_gated_emscripten_type() {
+        // EmscriptenWebSocketTransport is gated on target_os = "emscripten",
+        // so intra-doc links to it will fail on any other host. Scan all Rust
+        // source files to prevent this regression anywhere in the crate.
+        //
+        // Files inside the emscripten_websocket module are excluded because
+        // they are themselves target-gated — rustdoc only processes them on
+        // emscripten where the type IS in scope, so their intra-doc links
+        // are valid.
+        //
+        // If new target-gated types are introduced, add their names here.
+        //
+        // The pattern omits the trailing `]` to also catch method-level
+        // links like [`EmscriptenWebSocketTransport::connect`].
+        let forbidden = "[`EmscriptenWebSocketTransport";
+        let src_dir = project_root().join("src");
+        let mut violations = Vec::new();
+
+        fn visit_rs_files(dir: &std::path::Path, forbidden: &str, violations: &mut Vec<String>) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, forbidden, violations);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    // Skip files inside the emscripten_websocket module: they
+                    // are compiled only on target_os = "emscripten" where the
+                    // type is in scope, so intra-doc links there are correct.
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("emscripten_websocket"))
+                    {
+                        continue;
+                    }
+                    let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                        panic!("Failed to read '{}': {e}", path.display());
+                    });
+                    for (i, line) in contents.lines().enumerate() {
+                        if line.contains(forbidden) {
+                            violations.push(format!("{}:{}: {line}", path.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        visit_rs_files(&src_dir, forbidden, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Found intra-doc links to EmscriptenWebSocketTransport (or its methods) \
+             in source files. This type is target-gated (target_os = \"emscripten\") \
+             and cannot resolve on other hosts, causing rustdoc failures with \
+             -D warnings. Use plain backtick formatting instead.\nViolations:\n{}",
+            violations.join("\n")
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
