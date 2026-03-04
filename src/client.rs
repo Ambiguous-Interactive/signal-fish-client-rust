@@ -30,6 +30,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+// tokio/sync is always available (not gated on `tokio-runtime`) because
+// `SignalFishClient` uses `mpsc` and `ClientState` uses `Mutex` unconditionally.
+// These types have no reachable usage path without `tokio-runtime` (the only
+// constructor, `SignalFishClient::start`, is feature-gated), so they are
+// effectively dead code in that configuration — suppressed by
+// `#[cfg_attr(..., allow(dead_code))]` on the struct. If a future refactoring
+// needs a different sync primitive for the no-runtime path, this import and
+// the struct fields would need feature-gating.
 use tokio::sync::{mpsc, Mutex};
 #[cfg(feature = "tokio-runtime")]
 use tracing::{debug, error, warn};

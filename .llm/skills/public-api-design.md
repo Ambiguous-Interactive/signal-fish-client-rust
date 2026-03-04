@@ -122,6 +122,25 @@ impl WebSocketState {
 - [ ] Are there helper functions only called from the gated constructor? Gate or annotate those too.
 - [ ] Run `cargo clippy --all-targets` **without** the feature to confirm zero warnings.
 
+### Documenting Ungated Import Coupling
+
+When a struct uses types from a dependency that is always available (e.g.,
+`tokio::sync::Mutex`) but the struct's constructor is feature-gated, the import
+creates a coupling that prevents future refactoring. **Document this coupling
+with a comment above the import** explaining:
+
+1. Why the import is not feature-gated
+2. That the types are dead code without the feature (suppressed by `cfg_attr`)
+3. What would need to change if the coupling needs to be broken
+
+```rust
+// tokio/sync is always available (not gated on `tokio-runtime`) because the
+// struct uses `mpsc` and `Mutex` unconditionally. Without `tokio-runtime`,
+// these types are dead code — suppressed by cfg_attr. If a future refactoring
+// needs a different sync primitive, this import and struct fields need gating.
+use tokio::sync::{mpsc, Mutex};
+```
+
 ### docs.rs Configuration
 
 ```toml

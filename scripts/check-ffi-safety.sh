@@ -17,6 +17,9 @@
 #   4. In files with a callback SAFETY block comment, every `extern "C" fn`
 #      must have a per-function `// SAFETY:` comment on the line immediately
 #      preceding its declaration.
+#   5. Any `fn close()` method that calls `emscripten_websocket_close` must also
+#      call `emscripten_websocket_delete` in that same method (not just in Drop)
+#      to prevent late callback delivery between close() returning and Drop.
 #
 # Exit codes:
 #   0 — no violations found
@@ -316,6 +319,77 @@ VIOLATIONS=$((VIOLATIONS + CHECK4_VIOLATIONS))
 
 if [ "$CHECK4_VIOLATIONS" -eq 0 ]; then
     echo -e "${GREEN}  Check 4: PASS — all extern \"C\" fn callbacks have SAFETY comments.${NC}"
+fi
+echo ""
+
+# ── Check 5: close() must also call delete to unregister callbacks ────
+# If a file calls emscripten_websocket_close inside a Transport trait impl
+# close() method, it must also call emscripten_websocket_delete in that same
+# method. Without this, callbacks remain registered between close() and Drop,
+# creating a window for late callback delivery.
+echo -e "${YELLOW}Check 5: Scanning for close() methods that close but do not delete...${NC}"
+
+CHECK5_VIOLATIONS=0
+
+CLOSE_FILES=$(grep -rl 'emscripten_websocket_close' src/ 2>/dev/null || true)
+
+if [ -z "$CLOSE_FILES" ]; then
+    echo -e "${GREEN}  No files with emscripten_websocket_close found — nothing to check.${NC}"
+else
+    for file in $CLOSE_FILES; do
+        # Find all fn close() method bodies and check if they contain both
+        # emscripten_websocket_close AND emscripten_websocket_delete.
+        # Use awk to extract close() method bodies.
+        in_close_fn=false
+        brace_depth=0
+        has_ws_close=false
+        has_ws_delete=false
+        close_start_line=0
+
+        lineno=0
+        while IFS= read -r line; do
+            line="${line//$'\r'/}"
+            lineno=$((lineno + 1))
+
+            # Detect `async fn close` or `fn close` method signature
+            if echo "$line" | grep -qE '(async\s+)?fn\s+close\s*\('; then
+                in_close_fn=true
+                brace_depth=0
+                has_ws_close=false
+                has_ws_delete=false
+                close_start_line=$lineno
+            fi
+
+            if [ "$in_close_fn" = true ]; then
+                opens=$(echo "$line" | tr -cd '{' | wc -c)
+                closes=$(echo "$line" | tr -cd '}' | wc -c)
+                brace_depth=$((brace_depth + opens - closes))
+
+                if echo "$line" | grep -qv '^\s*//' && echo "$line" | grep -q 'emscripten_websocket_close'; then
+                    has_ws_close=true
+                fi
+                if echo "$line" | grep -qv '^\s*//' && echo "$line" | grep -q 'emscripten_websocket_delete'; then
+                    has_ws_delete=true
+                fi
+
+                if [ "$brace_depth" -le 0 ] && [ "$close_start_line" -ne "$lineno" ]; then
+                    if [ "$has_ws_close" = true ] && [ "$has_ws_delete" = false ]; then
+                        echo -e "${RED}VIOLATION:${NC} $file:$close_start_line: close() calls emscripten_websocket_close but NOT emscripten_websocket_delete"
+                        echo "  close() must also call emscripten_websocket_delete to unregister callbacks."
+                        echo "  Without this, callbacks can fire between close() returning and Drop running."
+                        CHECK5_VIOLATIONS=$((CHECK5_VIOLATIONS + 1))
+                    fi
+                    in_close_fn=false
+                fi
+            fi
+        done < "$file"
+    done
+fi
+
+VIOLATIONS=$((VIOLATIONS + CHECK5_VIOLATIONS))
+
+if [ "$CHECK5_VIOLATIONS" -eq 0 ]; then
+    echo -e "${GREEN}  Check 5: PASS — all close() methods that close also delete/unregister.${NC}"
 fi
 echo ""
 

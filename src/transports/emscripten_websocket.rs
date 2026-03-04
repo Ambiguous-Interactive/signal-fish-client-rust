@@ -214,6 +214,9 @@ pub struct EmscriptenWebSocketTransport {
     /// Raw pointer to the `CallbackState`. Owned by this struct; reclaimed in `Drop`.
     callback_state: *mut CallbackState,
     closed: bool,
+    /// Tracks whether `emscripten_websocket_delete` has been called, so `Drop`
+    /// does not double-delete the socket handle.
+    deleted: bool,
 }
 
 // SAFETY: On wasm32-unknown-emscripten, everything is single-threaded.
@@ -347,6 +350,7 @@ impl EmscriptenWebSocketTransport {
             incoming_rx: rx,
             callback_state: state_ptr,
             closed: false,
+            deleted: false,
         })
     }
 }
@@ -502,11 +506,29 @@ impl Transport for EmscriptenWebSocketTransport {
         }
         self.closed = true;
         // SAFETY: `self.socket` is a valid handle; `self.closed` prevents double-close.
-        // Callbacks may fire synchronously but `callback_state` is still valid.
+        // `emscripten_websocket_close` initiates the WebSocket close handshake. On the
+        // single-threaded Emscripten model, the onclose callback may fire synchronously
+        // during this call — `callback_state` is still valid at this point since we do
+        // not free it until `Drop`.
         let result = unsafe { emscripten_websocket_close(self.socket, 1000, std::ptr::null()) };
         if result != EMSCRIPTEN_RESULT_SUCCESS {
             tracing::warn!("emscripten_websocket_close returned {result}");
         }
+        // SAFETY: `emscripten_websocket_delete` unregisters ALL callbacks from the
+        // socket handle. After this call returns, no further callback invocations can
+        // occur, so no code path will dereference `callback_state` again. Without this
+        // call, callbacks could still fire between `close()` returning and `Drop`
+        // running if a JavaScript event loop tick occurs in that window.
+        // `callback_state` is NOT freed here — it is reclaimed in `Drop` via
+        // `Box::from_raw`. This separation ensures the pointer remains valid for any
+        // synchronous callbacks that fire during the `close` call above.
+        unsafe {
+            let delete_result = emscripten_websocket_delete(self.socket);
+            if delete_result != EMSCRIPTEN_RESULT_SUCCESS {
+                tracing::warn!("emscripten_websocket_delete returned {delete_result}");
+            }
+        }
+        self.deleted = true;
         Ok(())
     }
 }
@@ -515,23 +537,37 @@ impl Transport for EmscriptenWebSocketTransport {
 
 impl Drop for EmscriptenWebSocketTransport {
     fn drop(&mut self) {
-        // SAFETY: On wasm32-unknown-emscripten, the execution model is single-threaded.
-        // The close/delete/reclaim sequence is safe because:
-        // 1. `emscripten_websocket_close` initiates closure — if the close callback fires
-        //    synchronously within this call, `callback_state` is still valid.
-        // 2. `emscripten_websocket_delete` unregisters all callbacks, preventing any
-        //    further access to `callback_state` from the Emscripten event loop.
-        // 3. Only then do we reclaim the `CallbackState` via `Box::from_raw`.
+        // Two code paths depending on whether `close()` was previously called:
+        //
+        // If `close()` was called, both `emscripten_websocket_close` and
+        // `emscripten_websocket_delete` have already run — all callbacks are
+        // unregistered. We skip straight to reclaiming `callback_state`.
+        //
+        // If `close()` was NOT called (e.g., the transport is dropped without
+        // explicit shutdown), we run the full close/delete/reclaim sequence.
         if !self.closed {
+            // SAFETY: `self.socket` is a valid handle. `emscripten_websocket_close`
+            // initiates closure — if the onclose callback fires synchronously,
+            // `callback_state` is still valid since we have not freed it yet.
             unsafe {
                 emscripten_websocket_close(self.socket, 1000, std::ptr::null());
             }
         }
-        unsafe {
-            let result = emscripten_websocket_delete(self.socket);
-            if result != EMSCRIPTEN_RESULT_SUCCESS {
-                tracing::warn!("emscripten_websocket_delete returned {result}");
+        if !self.deleted {
+            // SAFETY: `emscripten_websocket_delete` unregisters all callbacks,
+            // preventing any further access to `callback_state` from the
+            // Emscripten event loop.
+            unsafe {
+                let result = emscripten_websocket_delete(self.socket);
+                if result != EMSCRIPTEN_RESULT_SUCCESS {
+                    tracing::warn!("emscripten_websocket_delete returned {result}");
+                }
             }
+        }
+        // SAFETY: `callback_state` was created by `Box::into_raw` in `connect()`.
+        // All callbacks have been unregistered (either in `close()` or above),
+        // so no code path can dereference this pointer after this point.
+        unsafe {
             drop(Box::from_raw(self.callback_state));
         }
     }

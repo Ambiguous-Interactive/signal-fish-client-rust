@@ -136,47 +136,49 @@ unsafe {
 
 Clean up resources in an order that prevents use-after-free:
 
-```rust
-impl Drop for EmscriptenWebSocket {
-    fn drop(&mut self) {
-        unsafe {
-            // 1. Close the socket (callback may fire synchronously here;
-            //    state pointer is still valid at this point).
-            emscripten_websocket_close(self.socket, 1000, ptr::null());
+1. **Close** the handle (may trigger synchronous callbacks — state pointer must still be valid)
+2. **Delete/unregister** callbacks (prevents any further callback access to state)
+3. **Reclaim** the state pointer via `Box::from_raw` (safe — no callbacks can fire)
 
-            // 2. Delete the socket handle — this implicitly unregisters
-            //    all callbacks, preventing further access to the state pointer.
-            emscripten_websocket_delete(self.socket);
+### `close()` Must Also Unregister Callbacks
 
-            // 3. Reclaim the state pointer (safe now — no callbacks can fire)
-            drop(Box::from_raw(self.state_ptr));
-        }
-    }
-}
-```
+A `close()` method that only closes the handle but does **not** unregister callbacks creates a window where callbacks can still fire between `close()` returning and `Drop` running. On the single-threaded Emscripten model this only matters if a JavaScript event loop tick occurs in that window, but the safe pattern is to **always unregister callbacks in `close()`**.
 
-### Error Path Cleanup Must Match `Drop`
-
-Every error path that cleans up FFI resources **must** follow the same sequence as `Drop`. A common bug: `Drop` does close -> delete -> free correctly, but an error path skips `delete`, leaking the socket handle.
-
-**Prevention pattern:** extract cleanup into a shared helper:
+Use a `deleted: bool` flag to prevent double-unregistration in `Drop`:
 
 ```rust,ignore
-impl EmscriptenWebSocket {
-    /// Full cleanup sequence: close -> delete -> free.
-    unsafe fn cleanup(&mut self) {
-        emscripten_websocket_close(self.socket, 1000, ptr::null());
-        emscripten_websocket_delete(self.socket);
-        drop(Box::from_raw(self.state_ptr));
+async fn close(&mut self) -> Result<(), Error> {
+    if self.closed { return Ok(()); }
+    self.closed = true;
+    emscripten_websocket_close(self.socket, 1000, ptr::null());
+    emscripten_websocket_delete(self.socket); // unregister callbacks NOW
+    self.deleted = true;
+    Ok(())
+}
+
+impl Drop for Transport {
+    fn drop(&mut self) {
+        if !self.closed {
+            emscripten_websocket_close(self.socket, 1000, ptr::null());
+        }
+        if !self.deleted {
+            emscripten_websocket_delete(self.socket);
+        }
+        drop(Box::from_raw(self.state_ptr)); // always reclaim
     }
 }
 ```
 
-**Checklist for FFI error paths:**
+### Error Path Cleanup Must Match `close()` + `Drop`
 
-- [ ] Does every error path follow the same cleanup sequence as `Drop`?
-- [ ] Are all steps present (close, delete/unregister, free)?
-- [ ] Consider extracting cleanup into a shared helper to prevent drift.
+Every error path that cleans up FFI resources **must** follow the same sequence as `close()` + `Drop`. A common bug: `Drop` does close -> delete -> free correctly, but an error path or `close()` skips `delete`, leaving callbacks registered.
+
+**Checklist for FFI cleanup paths:**
+
+- [ ] Does `close()` both close the handle AND unregister callbacks?
+- [ ] Does `Drop` skip steps already performed by `close()` (using boolean flags)?
+- [ ] Does `Drop` always reclaim heap-allocated state (`Box::from_raw`) as the final step?
+- [ ] Does every constructor error path follow the same close -> delete -> free sequence?
 
 ## Single-Threaded Safety
 
@@ -262,10 +264,12 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] All `#[repr(C)]` struct fields match the C header types exactly (`EM_BOOL` = `c_int`, not `bool`)
 - [ ] Field order matches the C header exactly
 - [ ] All return values from FFI functions are checked
-- [ ] Error paths follow the **same cleanup sequence** as `Drop` (see "Error Path Cleanup Must Match `Drop`")
+- [ ] Error paths follow the **same cleanup sequence** as `close()` + `Drop`
 - [ ] Raw pointer lifetimes are documented with `// SAFETY:` comments
 - [ ] Callback `user_data` lifetime outlives all possible callback invocations
-- [ ] `Drop` impl cleans up resources in the correct order (close -> unregister -> delete -> reclaim)
+- [ ] `close()` both closes the handle AND unregisters callbacks (no window for late callbacks)
+- [ ] `Drop` skips steps already done by `close()` using boolean flags (`closed`, `deleted`)
+- [ ] `Drop` always reclaims heap state (`Box::from_raw`) as the final step
 - [ ] Target-restricted FFI modules have a `compile_error!()` guard at the file top
 - [ ] Every `extern "C" fn` in files with a shared SAFETY block has a per-function `// SAFETY:` comment
 
@@ -277,6 +281,7 @@ Use this checklist when adding or reviewing any FFI binding:
 | Missing return value check | Silent callback registration failure | Check every FFI return value |
 | Double `Box::from_raw` | Double-free crash or UB | Track ownership, reclaim exactly once |
 | Wrong cleanup order | Use-after-free in callbacks | Close socket before reclaiming state |
-| Error path skips cleanup step | Resource leak (e.g., missing `delete` between `close` and `free`) | Mirror `Drop` sequence exactly; extract a shared helper |
+| Error path skips cleanup step | Resource leak (e.g., missing `delete` between `close` and `free`) | Mirror `close()` + `Drop` sequence exactly |
+| `close()` skips callback unregistration | Late callbacks fire between `close()` and `Drop` | Call `delete`/unregister in `close()`, use `deleted` flag to prevent double-delete in `Drop` |
 | `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |
 | Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |

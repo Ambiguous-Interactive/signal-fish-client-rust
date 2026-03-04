@@ -398,6 +398,66 @@ run_check
 assert_exit "Blank line between SAFETY comment and extern C fn should PASS" 0
 
 echo ""
+echo "=== close()-must-also-delete tests ==="
+
+# -- Should FAIL: close() calls emscripten_websocket_close but NOT emscripten_websocket_delete --
+setup_fake_repo
+cat > "$FAKE_REPO/src/close_without_delete.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+struct Transport {
+    socket: i32,
+    closed: bool,
+}
+
+impl Transport {
+    async fn close(&mut self) -> Result<(), ()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        unsafe {
+            emscripten_websocket_close(self.socket, 1000, std::ptr::null());
+        }
+        Ok(())
+    }
+}
+RUST
+run_check
+assert_exit "close() with emscripten_websocket_close but no delete should FAIL" 1
+
+# -- Should PASS: close() calls both emscripten_websocket_close AND emscripten_websocket_delete --
+setup_fake_repo
+cat > "$FAKE_REPO/src/close_with_delete.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+struct Transport {
+    socket: i32,
+    closed: bool,
+    deleted: bool,
+}
+
+impl Transport {
+    async fn close(&mut self) -> Result<(), ()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        unsafe {
+            emscripten_websocket_close(self.socket, 1000, std::ptr::null());
+            emscripten_websocket_delete(self.socket);
+        }
+        self.deleted = true;
+        Ok(())
+    }
+}
+RUST
+run_check
+assert_exit "close() with both emscripten_websocket_close and delete should PASS" 0
+
+echo ""
 echo "=== Results ==="
 echo "Tests run:    $TESTS_RUN"
 echo "Tests passed: $TESTS_PASSED"
