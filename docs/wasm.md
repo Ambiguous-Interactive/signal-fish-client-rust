@@ -286,7 +286,7 @@ They return `Err(SignalFishError::NotConnected)` if the transport has closed.
 | `join_as_spectator(game, room, name)` | `fn join_as_spectator(&mut self, game_name: String, room_code: String, spectator_name: String) -> Result<()>` | Join a room as a spectator. |
 | `leave_spectator()` | `fn leave_spectator(&mut self) -> Result<()>` | Leave spectator mode. |
 | `ping()` | `fn ping(&mut self) -> Result<()>` | Send a heartbeat ping. |
-| `close()` | `fn close(&mut self)` | Close the transport and mark as disconnected. |
+| `close()` | `fn close(&mut self)` | Close the transport via a single noop-waker poll; see [close lifecycle](client.md#close). |
 
 #### State accessors
 

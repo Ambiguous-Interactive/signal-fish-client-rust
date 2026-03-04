@@ -561,7 +561,11 @@ fn close(&mut self)
 client.close();
 ```
 
-Calls `transport.close()` via a noop-waker poll and clears session state.
+Calls `transport.close()` via a single noop-waker poll and clears session
+state. If the transport's `close()` future returns `Pending`, the result is
+silently discarded — only transports whose `close()` resolves to `Ready`
+immediately are guaranteed a clean shutdown. The primary transport
+(`EmscriptenWebSocketTransport`) always completes `close()` synchronously.
 After calling `close()`, `is_connected()` returns `false` and all command
 methods return `Err(SignalFishError::NotConnected)`.
 

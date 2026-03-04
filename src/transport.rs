@@ -90,6 +90,13 @@ pub trait Transport: Send + 'static {
     /// After calling this method, subsequent calls to [`send`](Transport::send) and
     /// [`recv`](Transport::recv) may return errors or `None`.
     ///
+    /// # Polling-Client Contract
+    ///
+    /// When used with `SignalFishPollingClient`, `close()` is polled exactly
+    /// once with a noop waker. Transports whose `close()` may return `Pending`
+    /// will not complete their shutdown sequence. If your transport targets the
+    /// polling client, ensure `close()` resolves to `Ready` immediately.
+    ///
     /// # Errors
     ///
     /// Returns an error if the graceful shutdown fails. Implementations should

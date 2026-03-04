@@ -61,18 +61,11 @@ directive reliably.
 
 ### ShellCheck SC2004 and array indexes
 
-Array indexes in Bash are arithmetic context. Do not prefix index variables with
-`$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes:
-`${PHASE_RESULTS[phase]}` not `${PHASE_RESULTS[$phase]}`, and
-`PHASE_RESULTS[phase]="FAIL"` not `PHASE_RESULTS[$phase]="FAIL"`. Enforced by
-`ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+Array indexes in Bash are arithmetic context. Do not prefix index variables with `$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes: `${PHASE_RESULTS[phase]}` not `${PHASE_RESULTS[$phase]}`, and `PHASE_RESULTS[phase]="FAIL"` not `PHASE_RESULTS[$phase]="FAIL"`. Enforced by `ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
 
 ### SC2001 — prefer parameter expansion over `echo | sed`
 
-`echo "$var" | sed 's/pat/rep/'` triggers SC2001 when expressible with
-parameter expansion (e.g., `trimmed="${code#"${code%%[![:space:]]*}"}"` instead
-of `echo "$code" | sed 's/^[[:space:]]*//'`). Multi-stage `sed` pipelines and
-`printf '%s' "$var" | sed ...` do not trigger the warning.
+`echo "$var" | sed 's/pat/rep/'` triggers SC2001 when expressible with parameter expansion (e.g., `trimmed="${code#"${code%%[![:space:]]*}"}"` instead of `echo "$code" | sed 's/^[[:space:]]*//'`). Multi-stage `sed` pipelines and `printf '%s' "$var" | sed ...` do not trigger the warning.
 
 ### Intra-doc links to target-gated types
 
@@ -164,10 +157,7 @@ modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
 
 ### Shell scripts: Guard subsequent logic after extraction failures
 
-When a shell script extracts a value (e.g., from `awk`/`grep`) and validates
-extraction, all dependent comparisons must stay inside the success branch or
-return early (`continue`/`exit`). Enforced by
-`ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+When a shell script extracts a value (e.g., from `awk`/`grep`) and validates extraction, all dependent comparisons must stay inside the success branch or return early (`continue`/`exit`). Enforced by `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 
@@ -182,12 +172,7 @@ cd "$REPO_ROOT"
 
 ### Shell scripts: CRLF line endings break Bash parsing
 
-Bash `read -r` strips `\n` but preserves `\r` from Windows CRLF files. Always
-strip `\r` when reading files line-by-line: `line="${line//$'\r'/}"`. Also add
-`| tr -d '\r'` to `awk`/`sed` pipelines processing file content.
-
-Include a `.gitattributes` with `* text=auto eol=lf` in the repo root to
-prevent CRLF issues in CI and cross-platform development.
+Bash `read -r` strips `\n` but preserves `\r` from Windows CRLF files. Always strip `\r` when reading files line-by-line: `line="${line//$'\r'/}"`. Also add `| tr -d '\r'` to `awk`/`sed` pipelines processing file content. Include a `.gitattributes` with `* text=auto eol=lf` in the repo root to prevent CRLF issues in CI and cross-platform development.
 
 ### MSRV drift
 
@@ -250,10 +235,7 @@ and `scripts/check-workflows.sh`.
 
 ### Documentation drift on quantitative claims
 
-Scripts like `check-all.sh` define phase counts and `--quick` boundaries
-referenced in this file. Update docs in the same commit as script changes.
-Enforced by `ci_config_tests.rs::check_all_documentation_accuracy` tests
-(total phase count, quick phase count, PHASE_NAMES vs TOTAL_PHASES).
+Scripts like `check-all.sh` define phase counts and `--quick` boundaries referenced in this file. Update docs in the same commit as script changes. Enforced by `ci_config_tests.rs::check_all_documentation_accuracy` tests (total phase count, quick phase count, PHASE_NAMES vs TOTAL_PHASES).
 
 ### Path-based exclusions in tests: check full path components
 
@@ -271,6 +253,26 @@ if path.components().any(|c| {
     continue;
 }
 ```
+
+### Action version pinning: major-only vs patch-level
+
+Major-version tags like `@v2` are mutable — the tag can be moved to point
+at any new commit in the v2.x.y line. This is a supply-chain risk. Prefer
+patch-level pinning (e.g., `@v2.8.2`) which points to an immutable release.
+
+Exceptions:
+
+- `dtolnay/rust-toolchain` — uses channels (`@stable`, `@nightly`, `@beta`)
+  by design
+- `mymindstorm/setup-emsdk` — only publishes major-version tags; no
+  patch releases available
+
+`scripts/check-workflows.sh` Phase 7 emits informational warnings for
+major-only pins. These are non-blocking but should be addressed when
+updating workflow action versions.
+
+The `ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`
+test verifies this check is present.
 
 ## Validation Scripts
 

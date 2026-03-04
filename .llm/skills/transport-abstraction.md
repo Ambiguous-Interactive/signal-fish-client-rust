@@ -178,6 +178,21 @@ impl Transport for MyTransport {
 - `close` should be idempotent — calling it twice must not panic
 - Do not buffer messages inside the transport; the client layer handles ordering
 
+## close() and the Polling Client
+
+`SignalFishPollingClient::close()` polls the transport's `close()` future
+exactly once with a noop waker and discards the `Poll` result. If `close()`
+returns `Pending`, the shutdown is silently incomplete. Only transports whose
+`close()` resolves to `Ready` immediately are guaranteed a clean shutdown
+via the polling client.
+
+The `EmscriptenWebSocketTransport` always returns `Ready(Ok(()))` from
+`close()`, so this is safe for the primary use case. Custom transports
+targeting the polling client must ensure `close()` completes synchronously.
+
+Document this contract in the `close()` method's doc comment and in
+`docs/client.md` whenever the polling client's close behavior is described.
+
 ## `std::future::pending()` in Transport Implementations
 
 ### When to use

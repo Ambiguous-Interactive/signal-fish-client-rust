@@ -25,12 +25,14 @@ VIOLATIONS=0
 TMP_TOOLCHAIN_VIOLATIONS="$(mktemp -t signal-fish-toolchain-violations.XXXXXX)"
 TMP_STEP_NAME_VIOLATIONS="$(mktemp -t signal-fish-step-name-violations.XXXXXX)"
 TMP_ACTION_REF_VIOLATIONS="$(mktemp -t signal-fish-action-ref-violations.XXXXXX)"
+TMP_MAJOR_ONLY_VIOLATIONS="$(mktemp -t signal-fish-major-only-violations.XXXXXX)"
 
 # shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
     rm -f "$TMP_STEP_NAME_VIOLATIONS"
     rm -f "$TMP_ACTION_REF_VIOLATIONS"
+    rm -f "$TMP_MAJOR_ONLY_VIOLATIONS"
 }
 
 trap cleanup EXIT
@@ -258,6 +260,68 @@ else
     else
         echo -e "${GREEN}Phase 6: PASS${NC}"
     fi
+fi
+echo ""
+
+# ── Phase 7: major-only version tags — informational warning ─────────
+echo -e "${YELLOW}Phase 7: Checking for major-only version tags (informational)...${NC}"
+
+# Actions exempt from major-only tag warnings (easy to extend).
+MAJOR_ONLY_EXCEPTIONS=(
+    "dtolnay/rust-toolchain"
+    "mymindstorm/setup-emsdk"
+)
+
+while IFS= read -r workflow_path; do
+    workflow_path="${workflow_path//$'\r'/}"
+    line_num=0
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        line_num=$((line_num + 1))
+        trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+        if [[ "$trimmed" != "- uses:"* && "$trimmed" != "uses:"* ]]; then
+            continue
+        fi
+
+        reference="$(printf '%s' "$trimmed" | sed -E 's/^-?[[:space:]]*uses:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+
+        # Skip local and docker actions.
+        if [[ "$reference" == ./* || "$reference" == docker://* ]]; then
+            continue
+        fi
+
+        if [[ "$reference" != *"@"* ]]; then
+            continue
+        fi
+
+        action_name="${reference%@*}"
+        version_ref="${reference##*@}"
+
+        # Skip exceptions.
+        skip=false
+        for exception in "${MAJOR_ONLY_EXCEPTIONS[@]}"; do
+            if [[ "$action_name" == "$exception" ]]; then
+                skip=true
+                break
+            fi
+        done
+        if $skip; then
+            continue
+        fi
+
+        # Flag major-only version tags (e.g. v2, v14 — no dots).
+        if [[ "$version_ref" =~ ^v[0-9]+$ ]]; then
+            echo "  $workflow_path:$line_num: $reference (consider pinning to a specific patch version)" >>"$TMP_MAJOR_ONLY_VIOLATIONS"
+        fi
+    done <"$workflow_path"
+done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+
+if [ -s "$TMP_MAJOR_ONLY_VIOLATIONS" ]; then
+    echo -e "${YELLOW}WARNING: The following actions use major-version-only tags, which are mutable:${NC}"
+    cat "$TMP_MAJOR_ONLY_VIOLATIONS"
+    echo -e "${YELLOW}Phase 7: WARNING (informational — not blocking)${NC}"
+else
+    echo -e "${GREEN}Phase 7: PASS${NC}"
 fi
 echo ""
 

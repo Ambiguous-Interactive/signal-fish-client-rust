@@ -1313,6 +1313,47 @@ mod workflow_security {
              before the else branch, causing fall-through on empty CARGO_MSRV."
         );
     }
+
+    /// Verify that scripts/check-workflows.sh contains Phase 7, which warns
+    /// about major-only version tags (e.g. `@v2` instead of `@v2.8.2`).
+    /// Major-only tags are mutable floating references that can silently
+    /// pick up breaking changes; Phase 7 flags them as an informational
+    /// warning so maintainers are aware.
+    #[test]
+    fn check_workflows_script_detects_major_only_version_tags() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        assert!(
+            contents.contains("signal-fish-major-only-violations"),
+            "scripts/check-workflows.sh must create a temp file for major-only \
+             version tag violations (signal-fish-major-only-violations)."
+        );
+
+        assert!(
+            contents.contains("MAJOR_ONLY_EXCEPTIONS"),
+            "scripts/check-workflows.sh must declare a MAJOR_ONLY_EXCEPTIONS \
+             list so that specific actions can be exempt from the major-only \
+             version tag warning."
+        );
+
+        assert!(
+            contents.contains("mymindstorm/setup-emsdk"),
+            "scripts/check-workflows.sh must include mymindstorm/setup-emsdk \
+             in the MAJOR_ONLY_EXCEPTIONS list as a known exception."
+        );
+
+        assert!(
+            contents.contains("^v[0-9]+$"),
+            "scripts/check-workflows.sh must use the regex pattern ^v[0-9]+$ \
+             to detect major-only version tags (e.g. @v2, @v14)."
+        );
+
+        assert!(
+            contents.contains("informational"),
+            "scripts/check-workflows.sh Phase 7 must be marked as informational \
+             to confirm it is a non-blocking warning rather than a hard failure."
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

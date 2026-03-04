@@ -373,6 +373,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
     // ── Close ───────────────────────────────────────────────────────
 
     /// Close the transport and mark the client as disconnected.
+    ///
+    /// Calls `transport.close()` via a single noop-waker poll. If the
+    /// transport's `close()` future returns `Pending`, it is silently
+    /// discarded — only transports whose `close()` resolves to `Ready`
+    /// immediately are guaranteed a clean shutdown. This is by design:
+    /// the primary transport (`EmscriptenWebSocketTransport`) always
+    /// completes `close()` synchronously.
     pub fn close(&mut self) {
         if !self.state.connected {
             return;
@@ -870,6 +877,27 @@ mod tests {
 
         async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
             Ok(())
+        }
+    }
+
+    /// A transport whose `close()` always returns `Pending` (never completes).
+    /// `send()` and `recv()` behave normally (Ready).
+    struct PendingCloseTransport;
+
+    #[async_trait]
+    impl Transport for PendingCloseTransport {
+        async fn send(&mut self, _message: String) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            // Never completes — recv hangs so tests focus on close behavior.
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            // Never completes — simulates a transport stuck on close.
+            std::future::pending().await
         }
     }
 
@@ -1879,5 +1907,33 @@ mod tests {
             v["type"] == "Ping"
         });
         assert!(ping_sent, "expected Ping to be sent");
+    }
+
+    // ── G. Pending Close Regression ──────────────────────────────
+
+    #[test]
+    fn close_handles_pending_transport_gracefully() {
+        let transport = PendingCloseTransport;
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        // Sanity: client starts connected.
+        assert!(client.is_connected(), "client should start connected");
+
+        // Close the client. The transport's close() returns Pending,
+        // but the client should still mark itself as disconnected.
+        client.close();
+
+        // 1. Client must be disconnected even though transport.close() was Pending.
+        assert!(
+            !client.is_connected(),
+            "client should be disconnected after close(), even when transport returns Pending"
+        );
+
+        // 2. Command methods must return NotConnected.
+        let join_result = client.join_room(JoinRoomParams::new("game", "Player"));
+        assert!(
+            matches!(join_result, Err(SignalFishError::NotConnected)),
+            "expected NotConnected after close(), got: {join_result:?}"
+        );
     }
 }

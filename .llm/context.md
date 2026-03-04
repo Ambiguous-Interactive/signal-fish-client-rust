@@ -29,8 +29,10 @@ Run this before every commit. All three steps must pass with zero warnings.
 
 Use version tags in workflow `uses:` references, not commit hashes.
 
-- Use: `owner/action@vN` or `owner/action@vN.N.N`
+- Prefer: `owner/action@vN.N.N` (patch-level pin — immutable tag)
+- Acceptable: `owner/action@vN` (major-only pin — mutable, flagged by Phase 7 warning)
 - Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
+- Exception: `mymindstorm/setup-emsdk@vN` (no patch releases available)
 - Avoid commit-SHA refs unless a workflow has an explicit unavoidable requirement
 
 ## Changelog Policy
