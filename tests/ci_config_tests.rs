@@ -2847,3 +2847,311 @@ mod snippet_extraction_policy {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: emscripten_target_guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod emscripten_target_guard {
+    use super::*;
+
+    /// The `transport-websocket-emscripten` feature compiles FFI bindings that
+    /// only link on `wasm32-unknown-emscripten`. A `compile_error!()` guard
+    /// must be present so developers get a clear diagnostic instead of cryptic
+    /// linker failures when the feature is accidentally enabled on another target.
+    #[test]
+    fn emscripten_websocket_has_compile_error_target_guard() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        assert!(
+            contents.contains(r#"#[cfg(not(target_os = "emscripten"))]"#),
+            "src/transports/emscripten_websocket.rs must contain a \
+             `#[cfg(not(target_os = \"emscripten\"))]` guard to prevent \
+             compilation on non-Emscripten targets."
+        );
+
+        assert!(
+            contents.contains("compile_error!"),
+            "src/transports/emscripten_websocket.rs must contain a \
+             `compile_error!()` that fires when compiled on a \
+             non-Emscripten target."
+        );
+    }
+
+    /// The module declaration in `mod.rs` must gate the emscripten module
+    /// on BOTH the feature AND `target_os = "emscripten"`. This dual gate
+    /// ensures `--all-features` works on non-Emscripten hosts (features must
+    /// be additive per Cargo convention). The `compile_error!()` inside the
+    /// file serves as defense-in-depth.
+    #[test]
+    fn emscripten_module_gated_on_feature_and_target() {
+        let mod_rs = read_project_file("src/transports/mod.rs");
+
+        assert!(
+            mod_rs.contains(
+                r#"#[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]"#
+            ),
+            "src/transports/mod.rs must gate the emscripten_websocket module \
+             on both the feature and target_os = \"emscripten\" so that \
+             --all-features works on non-Emscripten hosts."
+        );
+
+        let lib_rs = read_project_file("src/lib.rs");
+
+        assert!(
+            lib_rs.contains(
+                r#"#[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]"#
+            ),
+            "src/lib.rs must gate the EmscriptenWebSocketTransport re-export \
+             on both the feature and target_os = \"emscripten\"."
+        );
+    }
+
+    /// Cargo.toml must document the target restriction for the
+    /// `transport-websocket-emscripten` feature so developers see the
+    /// constraint before enabling it.
+    #[test]
+    fn cargo_toml_documents_emscripten_target_restriction() {
+        let contents = read_project_file("Cargo.toml");
+
+        // Find the line defining transport-websocket-emscripten and check
+        // that there is a comment nearby mentioning the target restriction.
+        let feature_line_idx = contents
+            .lines()
+            .position(|line| line.starts_with("transport-websocket-emscripten"))
+            .expect("Cargo.toml must define the transport-websocket-emscripten feature");
+
+        // Check the preceding line(s) for a target restriction comment.
+        let lines: Vec<&str> = contents.lines().collect();
+        let has_target_comment = (feature_line_idx.saturating_sub(3)..feature_line_idx).any(|i| {
+            let line = lines[i].to_lowercase();
+            line.contains("emscripten") || line.contains("target")
+        });
+
+        assert!(
+            has_target_comment,
+            "Cargo.toml must have a comment near the transport-websocket-emscripten \
+             feature definition documenting the target restriction."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: check_all_documentation_accuracy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod check_all_documentation_accuracy {
+    use super::*;
+
+    /// Extract the TOTAL_PHASES value from check-all.sh.
+    fn script_total_phases() -> u32 {
+        let contents = read_project_file("scripts/check-all.sh");
+        contents
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("TOTAL_PHASES=")
+                    .and_then(|v| v.parse::<u32>().ok())
+            })
+            .expect("scripts/check-all.sh must define TOTAL_PHASES=<number>")
+    }
+
+    /// Extract the quick-mode phase count from check-all.sh.
+    fn script_quick_phases() -> u32 {
+        let contents = read_project_file("scripts/check-all.sh");
+        let mut in_quick_block = false;
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("QUICK") && trimmed.contains("true") && trimmed.contains("then") {
+                in_quick_block = true;
+                continue;
+            }
+            if in_quick_block {
+                if let Some(val) = trimmed.strip_prefix("TOTAL_PHASES=") {
+                    return val
+                        .parse::<u32>()
+                        .expect("Quick-mode TOTAL_PHASES must be a number");
+                }
+                if trimmed == "fi" {
+                    break;
+                }
+            }
+        }
+        panic!("scripts/check-all.sh must set TOTAL_PHASES inside the --quick conditional");
+    }
+
+    /// `.llm/skills/ci-configuration.md` must reference the correct total
+    /// phase count from `scripts/check-all.sh`. This prevents documentation
+    /// drift when phases are added or removed.
+    #[test]
+    fn ci_configuration_md_references_correct_total_phase_count() {
+        let total = script_total_phases();
+        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let expected_fragment = format!("{total}-phase");
+
+        assert!(
+            doc.contains(&expected_fragment),
+            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+             to match the TOTAL_PHASES={total} in scripts/check-all.sh. \
+             Found TOTAL_PHASES={total} in the script but the documentation \
+             does not contain '{expected_fragment}'."
+        );
+    }
+
+    /// `.llm/skills/ci-configuration.md` must reference the correct
+    /// `--quick` phase range. If the script runs phases 1-N in quick mode,
+    /// the docs must say "phases 1-N".
+    #[test]
+    fn ci_configuration_md_references_correct_quick_phase_count() {
+        let quick_phases = script_quick_phases();
+        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let expected_fragment = format!("phases 1-{quick_phases}");
+
+        assert!(
+            doc.contains(&expected_fragment),
+            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+             to match the --quick TOTAL_PHASES={quick_phases} in scripts/check-all.sh. \
+             The documentation is stale."
+        );
+    }
+
+    /// The check-all.sh header comment must list the correct number of phases.
+    /// This prevents the script's own documentation from drifting.
+    #[test]
+    fn check_all_header_matches_total_phases() {
+        let total = script_total_phases();
+        let contents = read_project_file("scripts/check-all.sh");
+
+        // Count PHASE_NAMES assignments in the script.
+        let phase_name_count = contents
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("PHASE_NAMES[")
+            })
+            .count() as u32;
+
+        assert_eq!(
+            phase_name_count, total,
+            "scripts/check-all.sh defines {phase_name_count} PHASE_NAMES entries \
+             but TOTAL_PHASES={total}. These must match."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: ffi_safety_documentation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod ffi_safety_documentation {
+    use super::*;
+
+    /// Every `unsafe {` block in the Emscripten WebSocket transport must have
+    /// a SAFETY comment within the preceding 15 lines. This ensures that all
+    /// unsafe code has documented safety justification.
+    #[test]
+    fn emscripten_websocket_unsafe_blocks_have_safety_comments() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+        let lines: Vec<&str> = contents.lines().collect();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            // Match lines that open an unsafe block (not `unsafe impl`).
+            if (trimmed.starts_with("unsafe {")
+                || trimmed.contains("= unsafe {")
+                || (trimmed.starts_with("let ") && trimmed.contains("unsafe {")))
+                && !trimmed.contains("unsafe impl")
+            {
+                // Look backwards up to 15 lines for a SAFETY comment.
+                let start = i.saturating_sub(15);
+                let has_safety = lines[start..i].iter().any(|prev| prev.contains("SAFETY"));
+
+                if !has_safety {
+                    violations.push(format!("  line {}: `{}`", i + 1, trimmed));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "All `unsafe` blocks in emscripten_websocket.rs must have a \
+             SAFETY comment within the preceding 15 lines.\n\
+             Violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// The `connect()` error path and the `Drop` implementation must both
+    /// follow the same cleanup sequence: close → delete → drop. This test
+    /// verifies the ordering by checking that both code paths contain the
+    /// three operations in the correct order.
+    #[test]
+    fn error_path_cleanup_matches_drop_cleanup_order() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        // Find the connect() error path (inside the `for (name, result)` loop).
+        let error_block = contents
+            .find("if result != EMSCRIPTEN_RESULT_SUCCESS {")
+            .and_then(|start| {
+                contents[start..]
+                    .find("return Err(")
+                    .map(|end| &contents[start..start + end + 30])
+            })
+            .expect("connect() must have an error path checking EMSCRIPTEN_RESULT_SUCCESS");
+
+        assert!(
+            error_block.contains("emscripten_websocket_close"),
+            "connect() error path must call emscripten_websocket_close"
+        );
+        assert!(
+            error_block.contains("emscripten_websocket_delete"),
+            "connect() error path must call emscripten_websocket_delete"
+        );
+        assert!(
+            error_block.contains("Box::from_raw"),
+            "connect() error path must reclaim state_ptr via Box::from_raw"
+        );
+
+        // Verify ordering: close before delete before from_raw.
+        let close_pos = error_block.find("emscripten_websocket_close").unwrap();
+        let delete_pos = error_block.find("emscripten_websocket_delete").unwrap();
+        let from_raw_pos = error_block.find("Box::from_raw").unwrap();
+
+        assert!(
+            close_pos < delete_pos,
+            "connect() error path must call close BEFORE delete"
+        );
+        assert!(
+            delete_pos < from_raw_pos,
+            "connect() error path must call delete BEFORE Box::from_raw"
+        );
+
+        // Verify Drop follows the same order.
+        let drop_block = contents
+            .find("impl Drop for EmscriptenWebSocketTransport")
+            .map(|start| &contents[start..])
+            .expect("EmscriptenWebSocketTransport must implement Drop");
+
+        let drop_close = drop_block
+            .find("emscripten_websocket_close")
+            .expect("Drop must call emscripten_websocket_close");
+        let drop_delete = drop_block
+            .find("emscripten_websocket_delete")
+            .expect("Drop must call emscripten_websocket_delete");
+        let drop_from_raw = drop_block
+            .find("Box::from_raw")
+            .expect("Drop must reclaim state via Box::from_raw");
+
+        assert!(
+            drop_close < drop_delete,
+            "Drop must call close BEFORE delete"
+        );
+        assert!(
+            drop_delete < drop_from_raw,
+            "Drop must call delete BEFORE Box::from_raw"
+        );
+    }
+}

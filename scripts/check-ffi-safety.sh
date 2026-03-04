@@ -12,6 +12,8 @@
 #   2. FFI callback-registration functions (`emscripten_websocket_set_*`)
 #      must have their return values checked. Ignoring a failed registration
 #      silently drops events.
+#   3. Emscripten FFI modules must have a compile_error!() target guard to
+#      prevent compilation on non-Emscripten targets.
 #
 # Exit codes:
 #   0 — no violations found
@@ -206,6 +208,40 @@ VIOLATIONS=$((VIOLATIONS + CHECK2_VIOLATIONS))
 
 if [ "$CHECK2_VIOLATIONS" -eq 0 ]; then
     echo -e "${GREEN}  Check 2: PASS — all FFI return values are checked.${NC}"
+fi
+echo ""
+
+# ── Check 3: Target guard for Emscripten FFI modules ─────────────────
+# Files that declare or call Emscripten-specific FFI functions must contain
+# a compile_error!() guard to prevent compilation on non-Emscripten targets.
+echo -e "${YELLOW}Check 3: Scanning for missing target guards in Emscripten FFI modules...${NC}"
+
+CHECK3_VIOLATIONS=0
+
+EMSCRIPTEN_FFI_FILES=$(grep -rl 'emscripten_websocket_new\|emscripten_websocket_set_' src/ 2>/dev/null || true)
+
+if [ -z "$EMSCRIPTEN_FFI_FILES" ]; then
+    echo -e "${GREEN}  No Emscripten FFI files found — nothing to check.${NC}"
+else
+    for file in $EMSCRIPTEN_FFI_FILES; do
+        if ! grep -q 'compile_error!' "$file"; then
+            echo -e "${RED}VIOLATION:${NC} $file: Emscripten FFI module missing compile_error!() target guard"
+            echo "  Files using Emscripten C API must include:"
+            echo "    #[cfg(not(target_os = \"emscripten\"))]"
+            echo "    compile_error!(\"...\");"
+            CHECK3_VIOLATIONS=$((CHECK3_VIOLATIONS + 1))
+        elif ! grep -q 'cfg(not(target_os = "emscripten"))' "$file"; then
+            echo -e "${RED}VIOLATION:${NC} $file: compile_error!() found but missing #[cfg(not(target_os = \"emscripten\"))] guard"
+            echo "  The compile_error!() must be gated on non-Emscripten targets."
+            CHECK3_VIOLATIONS=$((CHECK3_VIOLATIONS + 1))
+        fi
+    done
+fi
+
+VIOLATIONS=$((VIOLATIONS + CHECK3_VIOLATIONS))
+
+if [ "$CHECK3_VIOLATIONS" -eq 0 ]; then
+    echo -e "${GREEN}  Check 3: PASS — all Emscripten FFI modules have target guards.${NC}"
 fi
 echo ""
 

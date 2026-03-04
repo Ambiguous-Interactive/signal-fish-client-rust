@@ -43,6 +43,16 @@
 //! transport.close().await?;
 //! ```
 
+// Compile-time guard: this module requires the wasm32-unknown-emscripten target.
+// The FFI functions (emscripten_websocket_new, etc.) are only available in
+// Emscripten's C runtime. Compiling on any other target will produce linker errors.
+#[cfg(not(target_os = "emscripten"))]
+compile_error!(
+    "The `transport-websocket-emscripten` feature requires the `wasm32-unknown-emscripten` target. \
+     This module uses Emscripten's C WebSocket API which is unavailable on other targets. \
+     Remove this feature or compile with `--target wasm32-unknown-emscripten`."
+);
+
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::mpsc as std_mpsc;
 
@@ -239,9 +249,13 @@ impl EmscriptenWebSocketTransport {
             create_on_main_thread: 1,
         };
 
+        // SAFETY: `attrs` contains a valid NUL-terminated URL pointer and a null
+        // protocols pointer. The Emscripten runtime owns the returned socket handle.
         let socket = unsafe { emscripten_websocket_new(&attrs) };
         if socket <= 0 {
             // Reclaim the leaked state before returning.
+            // SAFETY: `state_ptr` was created by `Box::into_raw` above and has not
+            // been aliased — the socket creation failed before any callbacks were registered.
             unsafe { drop(Box::from_raw(state_ptr)) };
             return Err(SignalFishError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
@@ -250,7 +264,32 @@ impl EmscriptenWebSocketTransport {
         }
 
         // Register callbacks (all fire on the calling thread = main thread).
+        //
+        // SAFETY — Cleanup on partial registration failure:
+        // All four registration calls are eagerly evaluated into the `results`
+        // array before any result is checked. When the loop detects a failure,
+        // earlier callbacks may already be registered and hold `user_data`.
+        // The cleanup sequence (close → delete → drop) is safe because:
+        //
+        // 1. `emscripten_websocket_close` may synchronously fire the close callback
+        //    on the main thread. At this point, `state_ptr` is still valid — we have
+        //    not yet freed it. The callback accesses `state_ptr` as a shared reference
+        //    (`&*`) and returns before `close` returns.
+        //
+        // 2. `emscripten_websocket_delete` unregisters ALL callbacks from the socket
+        //    handle. After this call returns, no further callback invocations can occur,
+        //    so no code path will dereference `state_ptr` again.
+        //
+        // 3. Only then do we reclaim `state_ptr` via `Box::from_raw`, which is now
+        //    the sole owner with no outstanding references.
+        //
+        // This relies on the single-threaded execution model of wasm32-unknown-emscripten:
+        // all callback invocations are synchronous on the main thread, so there is no
+        // window for a concurrent callback to race between steps 2 and 3.
         let user_data = state_ptr.cast::<c_void>();
+        // SAFETY: See the detailed safety argument above regarding cleanup order.
+        // `state_ptr` is valid, `socket` is a live handle, and all callback
+        // function pointers match the Emscripten-expected signatures.
         unsafe {
             let results = [
                 (
@@ -313,7 +352,19 @@ impl EmscriptenWebSocketTransport {
 }
 
 // ── C Callback Implementations ──────────────────────────────────────────────
+//
+// SAFETY (all callbacks): These `extern "C"` functions are registered with
+// Emscripten's WebSocket API via `emscripten_websocket_set_on*_callback_on_thread`.
+// The Emscripten runtime guarantees that:
+// - `user_data` is the same pointer we passed during registration (a valid
+//   `*mut CallbackState` created via `Box::into_raw`).
+// - `event` pointers are valid for the duration of the callback invocation.
+// - Callbacks are invoked synchronously on the main thread (single-threaded
+//   wasm32-unknown-emscripten execution model), so no data races are possible.
+// The `CallbackState` remains live until `emscripten_websocket_delete` unregisters
+// all callbacks, after which we reclaim it via `Box::from_raw` in `Drop`.
 
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_open_callback(
     _event_type: c_int,
     _event: *const EmscriptenWebSocketOpenEvent,
@@ -329,6 +380,8 @@ extern "C" fn on_message_callback(
     event: *const EmscriptenWebSocketMessageEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
+    // SAFETY: See the callback SAFETY block comment above for `user_data`
+    // and `event` pointer validity guarantees.
     let state = unsafe { &*(user_data as *const CallbackState) };
     let event = unsafe { &*event };
 
@@ -340,6 +393,9 @@ extern "C" fn on_message_callback(
         } else {
             0
         };
+        // SAFETY: Emscripten guarantees `event.data` points to `event.num_bytes`
+        // valid bytes for the duration of this callback. `len` excludes the NUL
+        // terminator so the slice covers only the payload bytes.
         let bytes = unsafe { std::slice::from_raw_parts(event.data, len) };
         match std::str::from_utf8(bytes) {
             Ok(s) => {
@@ -360,6 +416,7 @@ extern "C" fn on_message_callback(
     1 // EM_TRUE
 }
 
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_error_callback(
     _event_type: c_int,
     _event: *const EmscriptenWebSocketErrorEvent,
@@ -372,6 +429,7 @@ extern "C" fn on_error_callback(
     1 // EM_TRUE
 }
 
+// SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_close_callback(
     _event_type: c_int,
     event: *const EmscriptenWebSocketCloseEvent,
@@ -396,6 +454,8 @@ impl Transport for EmscriptenWebSocketTransport {
         }
         let c_msg = std::ffi::CString::new(message)
             .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
+        // SAFETY: `c_msg` is a valid NUL-terminated CString; `self.socket` is a
+        // valid handle obtained from `emscripten_websocket_new`.
         let result = unsafe { emscripten_websocket_send_utf8_text(self.socket, c_msg.as_ptr()) };
         if result != EMSCRIPTEN_RESULT_SUCCESS {
             return Err(SignalFishError::TransportSend(format!(
@@ -442,6 +502,8 @@ impl Transport for EmscriptenWebSocketTransport {
             return Ok(());
         }
         self.closed = true;
+        // SAFETY: `self.socket` is a valid handle; `self.closed` prevents double-close.
+        // Callbacks may fire synchronously but `callback_state` is still valid.
         let result = unsafe { emscripten_websocket_close(self.socket, 1000, std::ptr::null()) };
         if result != EMSCRIPTEN_RESULT_SUCCESS {
             tracing::warn!("emscripten_websocket_close returned {result}");

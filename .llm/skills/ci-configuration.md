@@ -62,23 +62,10 @@ directive reliably.
 ### ShellCheck SC2004 and array indexes
 
 Array indexes in Bash are arithmetic context. Do not prefix index variables with
-`$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes.
-
-```bash
-# WRONG
-if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
-    :
-fi
-PHASE_RESULTS[$phase]="FAIL"
-
-# CORRECT
-if [ "${PHASE_RESULTS[phase]}" != "FAIL" ]; then
-    :
-fi
-PHASE_RESULTS[phase]="FAIL"
-```
-
-This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+`$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes:
+`${PHASE_RESULTS[phase]}` not `${PHASE_RESULTS[$phase]}`, and
+`PHASE_RESULTS[phase]="FAIL"` not `PHASE_RESULTS[$phase]="FAIL"`. Enforced by
+`ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
 
 ### SC2001 — prefer parameter expansion over `echo | sed`
 
@@ -271,6 +258,20 @@ Prevention checks in this repository:
 - `scripts/check-workflows.sh` fails fast on problematic
   `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
 
+### Documentation drift on quantitative claims
+
+Scripts like `check-all.sh` define phase counts and `--quick` boundaries
+referenced in this file. Update docs in the same commit as script changes.
+
+Prevention checks:
+
+- `ci_config_tests.rs::check_all_documentation_accuracy::ci_configuration_md_references_correct_total_phase_count`
+  extracts `TOTAL_PHASES=` from the script and verifies the docs match.
+- `ci_config_tests.rs::check_all_documentation_accuracy::ci_configuration_md_references_correct_quick_phase_count`
+  does the same for `--quick` mode.
+- `ci_config_tests.rs::check_all_documentation_accuracy::check_all_header_matches_total_phases`
+  verifies the PHASE_NAMES count matches TOTAL_PHASES.
+
 ## Validation Scripts
 
 ### Failure triage checklist
@@ -286,15 +287,8 @@ Start with the first command in the matching row to localize failures quickly.
 
 ### `scripts/ci-validate.sh`
 
-Lightweight local CI validation covering the most common failure points:
-
-1. `cargo fmt --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test --all-features`
-4. `typos --config .typos.toml` (optional)
-5. `.lychee.toml` TOML syntax validation
-6. `.markdownlint.json` JSON syntax validation
+Lightweight local CI validation: fmt check, clippy, test, typos, TOML/JSON syntax validation.
 
 ### `scripts/check-all.sh`
 
-Full 17-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-3 only).
+Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4: fmt, FFI safety, clippy, test).

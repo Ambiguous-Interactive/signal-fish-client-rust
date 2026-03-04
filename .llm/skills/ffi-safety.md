@@ -247,6 +247,33 @@ unsafe impl Send for EmscriptenWebSocketTransport {}
 - If the containing module is already feature-gated to emscripten-only, the module-level gate is sufficient. Otherwise, gate the impl directly with `#[cfg(target_os = "emscripten")]`
 - Never add `unsafe impl Sync` unless the type is genuinely safe for shared references (rare for FFI wrappers)
 
+## Target-Restricted Features
+
+### compile_error!() Guard for FFI Modules
+
+Feature-gated modules that use FFI bindings available only on a specific target
+must include a `compile_error!()` guard at the top of the file. Without this
+guard, enabling the feature on the wrong target produces cryptic linker errors
+instead of a clear diagnostic.
+
+```rust
+// At the top of the file (after module docs, before `use` statements):
+#[cfg(not(target_os = "emscripten"))]
+compile_error!(
+    "The `transport-websocket-emscripten` feature requires the \
+     `wasm32-unknown-emscripten` target."
+);
+```
+
+### Rules
+
+- Every FFI module that links against target-specific C libraries must have a
+  `compile_error!()` guard
+- The guard goes at the top of the `.rs` file, not in `mod.rs` -- this produces
+  a clearer error message pointing at the FFI code
+- Document the restriction in `Cargo.toml` with a comment above the feature
+- Add a test in `ci_config_tests.rs` to prevent accidental removal of the guard
+
 ## Checklist for New FFI Bindings
 
 Use this checklist when adding or reviewing any FFI binding:
@@ -258,6 +285,7 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] Raw pointer lifetimes are documented with `// SAFETY:` comments
 - [ ] Callback `user_data` lifetime outlives all possible callback invocations
 - [ ] `Drop` impl cleans up resources in the correct order (close -> unregister -> delete -> reclaim)
+- [ ] Target-restricted FFI modules have a `compile_error!()` guard at the file top
 
 ## Common Mistakes
 

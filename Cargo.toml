@@ -29,6 +29,7 @@ transport-websocket = [
     "dep:futures-util",
     "tokio-runtime",
 ]
+# Requires --target wasm32-unknown-emscripten; compile_error!() fires on other targets.
 transport-websocket-emscripten = ["polling-client"]
 polling-client = []
 tokio-runtime = ["tokio/rt", "tokio/time"]
