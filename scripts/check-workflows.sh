@@ -97,8 +97,10 @@ echo ""
 echo -e "${YELLOW}Phase 4: Checking action reference version policy...${NC}"
 
 while IFS= read -r workflow_path; do
+    workflow_path="${workflow_path//$'\r'/}"
     line_num=0
     while IFS= read -r line; do
+        line="${line//$'\r'/}"
         line_num=$((line_num + 1))
         trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
         if [[ "$trimmed" != "- uses:"* && "$trimmed" != "uses:"* ]]; then
@@ -155,7 +157,7 @@ echo ""
 echo -e "${YELLOW}Phase 5: Checking dtolnay/rust-toolchain usage patterns...${NC}"
 
 if grep -R -n -E "uses:[[:space:]]*['\"]?dtolnay/rust-toolchain@[0-9]+(\.[0-9]+)*(['\"])?([[:space:]]|$|#)" .github/workflows/*.yml >"$TMP_TOOLCHAIN_VIOLATIONS"; then
-    echo -e "${RED}Phase 4: FAIL${NC}"
+    echo -e "${RED}Phase 5: FAIL${NC}"
     echo "Found semver-like dtolnay/rust-toolchain refs (digits and dots only, e.g. @1.85.0) in workflow files:"
     cat "$TMP_TOOLCHAIN_VIOLATIONS"
     echo ""
@@ -167,15 +169,15 @@ else
     grep_status=$?
 
     if [ "$grep_status" -gt 1 ]; then
-        echo -e "${RED}Phase 4: FAIL${NC}"
+        echo -e "${RED}Phase 5: FAIL${NC}"
         echo "Error: grep execution failed while scanning workflow files for semver-like (digits/dots only) dtolnay refs."
         echo "Action: Verify .github/workflows/*.yml files are readable and retry."
         VIOLATIONS=$((VIOLATIONS + 1))
     else
-        CARGO_MSRV="$(awk -F'"' '/^rust-version[[:space:]]*=[[:space:]]*"/ {print $2; exit}' Cargo.toml)"
+        CARGO_MSRV="$(awk -F'"' '/^rust-version[[:space:]]*=[[:space:]]*"/ {print $2; exit}' Cargo.toml | tr -d '\r')"
 
         if [ -z "$CARGO_MSRV" ]; then
-            echo -e "${RED}Phase 4: FAIL${NC}"
+            echo -e "${RED}Phase 5: FAIL${NC}"
             echo "Could not read rust-version from Cargo.toml."
             echo "Action: Add a quoted rust-version (e.g., rust-version = \"1.85.0\") to Cargo.toml."
             VIOLATIONS=$((VIOLATIONS + 1))
@@ -183,15 +185,15 @@ else
             CI_MSRV_BLOCK="$(awk '
                 /^  msrv:/ {in_msrv=1}
                 in_msrv && /^  [a-zA-Z0-9-]+:/ && $0 !~ /^  msrv:/ {exit}
-                in_msrv {print}
+                in_msrv {gsub(/\r/, ""); print}
             ' .github/workflows/ci.yml)"
 
             if [ -z "$CI_MSRV_BLOCK" ]; then
-                echo -e "${RED}Phase 4: FAIL${NC}"
+                echo -e "${RED}Phase 5: FAIL${NC}"
                 echo "Action: Add an 'msrv' job to .github/workflows/ci.yml with explicit rust-toolchain setup."
                 VIOLATIONS=$((VIOLATIONS + 1))
             elif [[ "$CI_MSRV_BLOCK" != *"uses: dtolnay/rust-toolchain@stable"* ]]; then
-                echo -e "${RED}Phase 4: FAIL${NC}"
+                echo -e "${RED}Phase 5: FAIL${NC}"
                 echo "MSRV job exists but does not use 'dtolnay/rust-toolchain@stable' in .github/workflows/ci.yml."
                 echo "Action: In the msrv job, use:"
                 echo "  - uses: dtolnay/rust-toolchain@stable"
@@ -202,14 +204,14 @@ else
                 echo "$CI_MSRV_BLOCK"
                 VIOLATIONS=$((VIOLATIONS + 1))
             else
-                CI_MSRV_TOOLCHAIN="$(printf '%s\n' "$CI_MSRV_BLOCK" | awk '/toolchain:[[:space:]]*/ {sub(/.*toolchain:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); print; exit}')"
+                CI_MSRV_TOOLCHAIN="$(printf '%s\n' "$CI_MSRV_BLOCK" | awk '/toolchain:[[:space:]]*/ {sub(/.*toolchain:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); gsub(/\r/, ""); print; exit}')"
                 CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\"}"
                 CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\"}"
                 CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN%\'}"
                 CI_MSRV_TOOLCHAIN="${CI_MSRV_TOOLCHAIN#\'}"
 
                 if [ -z "$CI_MSRV_TOOLCHAIN" ]; then
-                    echo -e "${RED}Phase 4: FAIL${NC}"
+                    echo -e "${RED}Phase 5: FAIL${NC}"
                     echo "MSRV job exists but does not set an explicit 'with.toolchain' value in .github/workflows/ci.yml."
                     echo "Action: In the msrv job, set:"
                     echo "  with:"
@@ -219,7 +221,7 @@ else
                     echo "$CI_MSRV_BLOCK"
                     VIOLATIONS=$((VIOLATIONS + 1))
                 elif [ "$CI_MSRV_TOOLCHAIN" != "$CARGO_MSRV" ]; then
-                    echo -e "${RED}Phase 4: FAIL${NC}"
+                    echo -e "${RED}Phase 5: FAIL${NC}"
                     echo "MSRV mismatch: Cargo.toml rust-version is '$CARGO_MSRV' but ci.yml msrv toolchain is '$CI_MSRV_TOOLCHAIN'."
                     echo "Action: Update .github/workflows/ci.yml msrv toolchain to match Cargo.toml rust-version."
                     echo ""
@@ -227,7 +229,7 @@ else
                     echo "$CI_MSRV_BLOCK"
                     VIOLATIONS=$((VIOLATIONS + 1))
                 else
-        echo -e "${GREEN}Phase 5: PASS${NC}"
+                    echo -e "${GREEN}Phase 5: PASS${NC}"
                 fi
             fi
         fi

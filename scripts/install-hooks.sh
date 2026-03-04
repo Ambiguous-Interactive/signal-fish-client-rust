@@ -146,7 +146,7 @@ HOOK_SCRIPT
 
 chmod +x "${HOOK_FILE}"
 
-# Fallback: write a minimal shell hook for pre-push (runs cargo test)
+# Fallback: write a minimal shell hook for pre-push (runs cargo test + CI scripts)
 cat > "${PUSH_HOOK_FILE}" << 'PUSH_SCRIPT'
 #!/usr/bin/env bash
 # Auto-generated pre-push hook — managed by scripts/install-hooks.sh
@@ -154,12 +154,38 @@ cat > "${PUSH_HOOK_FILE}" << 'PUSH_SCRIPT'
 
 set -euo pipefail
 
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
 # ── Cargo test ────────────────────────────────────────────────────────────
 if ! cargo test --all-features; then
     echo ""
     echo "Push aborted: cargo test failed."
     echo "Fix the failing tests above, then re-push."
     exit 1
+fi
+
+# ── Panic-free policy check ──────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-no-panics.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-no-panics.sh"; then
+        echo ""
+        echo "Push aborted: panic-free policy check failed."
+        echo "Fix the violations above, then re-push."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-no-panics.sh not found — skipping panic-free policy check."
+fi
+
+# ── Markdown snippet compilation check ───────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/extract-rust-snippets.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/extract-rust-snippets.sh"; then
+        echo ""
+        echo "Push aborted: markdown snippet compilation check failed."
+        echo "Fix the snippet issues above, then re-push."
+        exit 1
+    fi
+else
+    echo "Note: scripts/extract-rust-snippets.sh not found — skipping snippet check."
 fi
 
 echo "All pre-push checks passed."
@@ -182,6 +208,8 @@ echo "  8. typos --config .typos.toml  (spell check — optional, skipped if not
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo test --all-features"
+echo "  2. bash scripts/check-no-panics.sh (panic-free policy)"
+echo "  3. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
 echo ""
 echo "Tip: Install the pre-commit framework for richer hook management:"
 echo "  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push"

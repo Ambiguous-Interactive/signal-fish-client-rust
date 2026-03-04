@@ -305,7 +305,7 @@ mod docsrs_policy {
     }
 
     #[test]
-    fn check_all_docsrs_failure_does_not_double_count_phase_4_failures() {
+    fn check_all_docsrs_failure_does_not_double_count_phase_failures() {
         let contents = read_project_file("scripts/check-all.sh");
 
         assert!(
@@ -316,15 +316,15 @@ mod docsrs_policy {
         );
 
         let docsrs_fail_pos = contents.find("docs.rs simulation: FAIL").expect(
-            "scripts/check-all.sh must report docs.rs simulation failures in the Phase 4 block",
+            "scripts/check-all.sh must report docs.rs simulation failures in the cargo doc phase block",
         );
         let docsrs_tail = &contents[docsrs_fail_pos..];
 
         assert!(
-            docsrs_tail.contains("mark_phase_fail 4"),
-            "scripts/check-all.sh must use mark_phase_fail 4 when docs.rs \
-             simulation fails, so Phase 4 remains a single failed phase \
-             in the final summary."
+            docsrs_tail.contains("mark_phase_fail 5"),
+            "scripts/check-all.sh must use mark_phase_fail 5 when docs.rs \
+             simulation fails, so the cargo doc phase remains a single \
+             failed phase in the final summary."
         );
     }
 }
@@ -1509,6 +1509,75 @@ mod ci_config_validation {
         );
     }
 
+    /// Verify that the pre-push hook in `install-hooks.sh` runs the
+    /// panic-free policy check and the markdown snippet compilation check.
+    /// These are CI-critical scripts that should be caught before push.
+    #[test]
+    fn install_hooks_pre_push_runs_ci_scripts() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        assert!(
+            contents.contains("scripts/check-no-panics.sh"),
+            "scripts/install-hooks.sh pre-push hook must run \
+             scripts/check-no-panics.sh to catch panic-free policy \
+             violations before push."
+        );
+
+        assert!(
+            contents.contains("scripts/extract-rust-snippets.sh"),
+            "scripts/install-hooks.sh pre-push hook must run \
+             scripts/extract-rust-snippets.sh to catch markdown snippet \
+             compilation failures before push."
+        );
+    }
+
+    /// Verify that `.pre-commit-config.yaml` includes push-stage hooks
+    /// for the panic-free policy check and markdown snippet compilation.
+    #[test]
+    fn pre_commit_config_has_push_stage_ci_script_hooks() {
+        let contents = read_project_file(".pre-commit-config.yaml");
+
+        assert!(
+            contents.contains("id: check-no-panics"),
+            ".pre-commit-config.yaml must define a 'check-no-panics' hook \
+             to run the panic-free policy check on push."
+        );
+
+        assert!(
+            contents.contains("id: extract-rust-snippets"),
+            ".pre-commit-config.yaml must define an 'extract-rust-snippets' \
+             hook to run the markdown snippet compilation check on push."
+        );
+
+        // Both hooks must be push-only (too slow for every commit).
+        // Verify by checking the hook blocks contain `stages: [push]`.
+        let panics_block_start = contents
+            .find("id: check-no-panics")
+            .expect("check-no-panics hook must exist");
+        let panics_block_end = contents[panics_block_start..]
+            .find("\n  - repo:")
+            .map(|offset| panics_block_start + offset)
+            .unwrap_or(contents.len());
+        let panics_block = &contents[panics_block_start..panics_block_end];
+        assert!(
+            panics_block.contains("stages: [push]"),
+            "check-no-panics hook must be push-only (stages: [push])."
+        );
+
+        let snippets_block_start = contents
+            .find("id: extract-rust-snippets")
+            .expect("extract-rust-snippets hook must exist");
+        let snippets_block_end = contents[snippets_block_start..]
+            .find("\n  - repo:")
+            .map(|offset| snippets_block_start + offset)
+            .unwrap_or(contents.len());
+        let snippets_block = &contents[snippets_block_start..snippets_block_end];
+        assert!(
+            snippets_block.contains("stages: [push]"),
+            "extract-rust-snippets hook must be push-only (stages: [push])."
+        );
+    }
+
     #[test]
     fn ci_configuration_skill_documents_sc2004_for_reads_and_writes() {
         let contents = read_project_file(".llm/skills/ci-configuration.md");
@@ -2342,5 +2411,389 @@ mod llm_context_urls_validation {
             ".llm/context.md does not contain the Cargo.toml documentation URL: {documentation}\n\
              Both homepage and documentation URLs from Cargo.toml must appear in context.md."
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: ffi_safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod ffi_safety {
+
+    /// Verify that `#[repr(C)]` structs across the entire `src/` tree do not
+    /// use bare `bool` fields.
+    ///
+    /// Rust `bool` is 1 byte, but C's boolean-like types (e.g., `EM_BOOL`,
+    /// which is `int`) are typically 4 bytes. Using `bool` in a `#[repr(C)]`
+    /// struct causes an ABI mismatch: the C side writes 4 bytes, but Rust
+    /// only reads 1, leaving subsequent fields misaligned. This has caused
+    /// real production bugs where `is_text` was always read as `0` (binary).
+    ///
+    /// The correct type is `c_int` or a type alias like `EM_BOOL`.
+    #[test]
+    fn ffi_repr_c_structs_do_not_use_bare_bool() {
+        // Scan all .rs files under src/ to prevent this class of bug anywhere.
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut all_sources: Vec<(String, String)> = Vec::new();
+        fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_rs_files(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            out.push((path.display().to_string(), content));
+                        }
+                    }
+                }
+            }
+        }
+        collect_rs_files(&src_dir, &mut all_sources);
+        assert!(
+            !all_sources.is_empty(),
+            "Expected to find .rs files under src/"
+        );
+
+        let mut all_violations: Vec<String> = Vec::new();
+
+        for (file_path, source) in &all_sources {
+            let mut in_repr_c = false;
+            let mut in_struct = false;
+            let mut struct_name = String::new();
+            let mut brace_depth: i32 = 0;
+
+            for (lineno, line) in source.lines().enumerate() {
+                let trimmed = line.trim();
+
+                // Detect #[repr(C)] annotation.
+                if trimmed == "#[repr(C)]" {
+                    in_repr_c = true;
+                    continue;
+                }
+
+                // Detect struct opening after #[repr(C)].
+                if in_repr_c {
+                    if trimmed.starts_with("struct ") || trimmed.starts_with("pub struct ") {
+                        in_struct = true;
+                        struct_name = trimmed
+                            .split_whitespace()
+                            .find(|w| *w != "struct" && *w != "pub")
+                            .unwrap_or("unknown")
+                            .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .to_string();
+                        brace_depth = line.chars().filter(|&c| c == '{').count() as i32
+                            - line.chars().filter(|&c| c == '}').count() as i32;
+                        in_repr_c = false;
+                        continue;
+                    }
+                    if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("///")
+                    {
+                        continue;
+                    }
+                    in_repr_c = false;
+                }
+
+                // Inside a #[repr(C)] struct body — check for bare bool fields.
+                if in_struct {
+                    brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+                    brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+
+                    if !trimmed.starts_with("//") {
+                        let field_parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+                        if field_parts.len() == 2 {
+                            let type_part = field_parts[1].trim().trim_end_matches(',').trim();
+                            if type_part == "bool" {
+                                all_violations.push(format!(
+                                    "  {file_path}:{}: field in struct '{}' uses bare 'bool'\n    {trimmed}",
+                                    lineno + 1,
+                                    struct_name,
+                                ));
+                            }
+                        }
+                    }
+
+                    if brace_depth <= 0 {
+                        in_struct = false;
+                        struct_name.clear();
+                        brace_depth = 0;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            all_violations.is_empty(),
+            "#[repr(C)] structs must not use bare 'bool' fields in FFI code.\n\
+             Rust bool is 1 byte, but C uses int (4 bytes) for EM_BOOL.\n\
+             Use c_int or EM_BOOL instead.\n\n\
+             Violations found:\n{}",
+            all_violations.join("\n")
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: panic_script_cfg_handling
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod panic_script_cfg_handling {
+    use super::*;
+
+    /// The grep pattern used by `check-no-panics.sh` to detect `#[cfg(..test..)]`
+    /// module boundaries. This must match both simple `#[cfg(test)]` and compound
+    /// forms like `#[cfg(all(test, feature = "tokio-runtime"))]`.
+    ///
+    /// Regression: The original script only matched `#[cfg(test)]` exactly,
+    /// missing compound cfg attributes. This caused false violations for code
+    /// inside `#[cfg(all(test, ...))]` modules (e.g., `src/client.rs`).
+    #[test]
+    fn check_no_panics_script_uses_compound_cfg_test_pattern() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+
+        // The script must use a grep pattern that matches `test` as a word
+        // boundary inside any `#[cfg(...)]` attribute, not just exact
+        // `#[cfg(test)]`. The current pattern is:
+        //   grep -n '#\[cfg(.*\btest\b' "$file"
+        assert!(
+            contents.contains(r"#\[cfg(.*\btest\b"),
+            "scripts/check-no-panics.sh must use a grep pattern that matches \
+             compound cfg attributes containing `test` (e.g., \
+             `#[cfg(all(test, feature = \"...\"))]`). \
+             Expected pattern: `#\\[cfg(.*\\btest\\b`"
+        );
+    }
+
+    /// Verify that the compound cfg pattern in `check-no-panics.sh` would match
+    /// all real-world cfg(test) variants found in this project's source code.
+    ///
+    /// This is a data-driven test: it collects every `#[cfg(..test..)]` line
+    /// from `src/` and verifies the script's grep pattern would match each one.
+    #[test]
+    fn check_no_panics_pattern_matches_all_src_cfg_test_attributes() {
+        let src_dir = project_root().join("src");
+        let mut cfg_test_lines: Vec<(String, String)> = Vec::new();
+
+        fn collect_cfg_test_lines(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            out: &mut Vec<(String, String)>,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_cfg_test_lines(&path, root, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let relative = path
+                                .strip_prefix(root)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            for line in content.lines() {
+                                let trimmed = line.trim();
+                                if trimmed.starts_with("#[cfg(") && trimmed.contains("test") {
+                                    out.push((relative.clone(), trimmed.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        collect_cfg_test_lines(&src_dir, &project_root(), &mut cfg_test_lines);
+
+        assert!(
+            !cfg_test_lines.is_empty(),
+            "Expected to find at least one #[cfg(..test..)] attribute in src/. \
+             If all test modules have been removed, this test should be updated."
+        );
+
+        // The script's grep pattern is: #\[cfg(.*\btest\b
+        // This translates to: the line must contain `#[cfg(` followed (possibly
+        // with intervening characters) by the word `test` as a whole word.
+        // We check this without a regex dependency by verifying:
+        //   1. The line contains `#[cfg(`
+        //   2. After `#[cfg(`, the word `test` appears as a standalone identifier
+        //      (not part of a larger word like `testing`).
+        fn matches_cfg_test_pattern(line: &str) -> bool {
+            let Some(cfg_pos) = line.find("#[cfg(") else {
+                return false;
+            };
+            let after_cfg = &line[cfg_pos + 6..]; // skip past "#[cfg("
+                                                  // Check that `test` appears and is bounded by non-word characters.
+            let mut search = after_cfg;
+            while let Some(test_pos) = search.find("test") {
+                let before_ok = test_pos == 0
+                    || (!search.as_bytes()[test_pos - 1].is_ascii_alphanumeric()
+                        && search.as_bytes()[test_pos - 1] != b'_');
+                let after_pos = test_pos + 4;
+                let after_ok = after_pos >= search.len()
+                    || (!search.as_bytes()[after_pos].is_ascii_alphanumeric()
+                        && search.as_bytes()[after_pos] != b'_');
+                if before_ok && after_ok {
+                    return true;
+                }
+                search = &search[test_pos + 4..];
+            }
+            false
+        }
+
+        let mut unmatched: Vec<String> = Vec::new();
+        for (file, line) in &cfg_test_lines {
+            if !matches_cfg_test_pattern(line) {
+                unmatched.push(format!("  {file}: {line}"));
+            }
+        }
+
+        assert!(
+            unmatched.is_empty(),
+            "The grep pattern in check-no-panics.sh (`#\\[cfg(.*\\btest\\b`) \
+             does not match the following cfg(test) attributes found in src/:\n{}\n\
+             Update the script's pattern to handle these variants.",
+            unmatched.join("\n")
+        );
+    }
+
+    /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
+    ///
+    /// The grep pattern in `check-no-panics.sh` (`#\[cfg(.*\btest\b`) would
+    /// match `#[cfg(not(test))]`, incorrectly treating the code below it as
+    /// "inside a test module" when it is actually production code. As long as
+    /// no source file uses this attribute, the false positive cannot occur.
+    #[test]
+    fn no_src_file_uses_cfg_not_test() {
+        let src_dir = project_root().join("src");
+        let mut violations: Vec<(String, usize, String)> = Vec::new();
+
+        fn scan_for_cfg_not_test(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            out: &mut Vec<(String, usize, String)>,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        scan_for_cfg_not_test(&path, root, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let relative = path
+                                .strip_prefix(root)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            for (i, line) in content.lines().enumerate() {
+                                let trimmed = line.trim();
+                                if trimmed.contains("#[cfg(not(test))]") {
+                                    out.push((relative.clone(), i + 1, trimmed.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        scan_for_cfg_not_test(&src_dir, &project_root(), &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
+             positive in check-no-panics.sh (the grep pattern `#\\[cfg(.*\\btest\\b` \
+             matches it and incorrectly treats the code as inside a test module). \
+             Use a different gating mechanism or update check-no-panics.sh to \
+             exclude `not(test)` before adding this attribute.\n\
+             Violations:\n{}",
+            violations
+                .iter()
+                .map(|(f, line, text)| format!("  {f}:{line}: {text}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Verify that the script explicitly documents the compound cfg handling
+    /// in its inline comments. This prevents future maintainers from
+    /// simplifying the pattern back to exact `#[cfg(test)]` matching.
+    #[test]
+    fn check_no_panics_script_documents_compound_cfg_handling() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+
+        assert!(
+            contents.contains("cfg(all(test,"),
+            "scripts/check-no-panics.sh must mention `cfg(all(test,` in a comment \
+             to document that compound cfg attributes are supported."
+        );
+
+        assert!(
+            contents.contains("#[cfg(..test..)]") || contents.contains("cfg(..test..)"),
+            "scripts/check-no-panics.sh must reference the general pattern \
+             `cfg(..test..)` to indicate it handles any cfg containing `test`."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: snippet_extraction_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod snippet_extraction_policy {
+    use super::*;
+
+    /// Verify that `extract-rust-snippets.sh` explicitly handles `rust,ignore`
+    /// code blocks by skipping them during compilation checks.
+    ///
+    /// Regression: The original script extracted `rust,ignore` blocks and
+    /// tried to compile them, causing CI failures for code that is
+    /// intentionally marked as not compilable (e.g., platform-specific or
+    /// external-crate snippets).
+    #[test]
+    fn extract_snippets_script_skips_rust_ignore_blocks() {
+        let contents = read_project_file("scripts/extract-rust-snippets.sh");
+
+        // The script must recognize `rust,ignore` as a language tag.
+        assert!(
+            contents.contains("rust,ignore"),
+            "scripts/extract-rust-snippets.sh must handle the `rust,ignore` \
+             language tag to skip blocks that are intentionally not compilable."
+        );
+
+        // The script must have explicit skip logic for rust,ignore blocks.
+        // It should set the block_lang to "rust,ignore" and then skip when
+        // closing the block.
+        assert!(
+            contents.contains(r#"block_lang = "rust,ignore""#)
+                || contents.contains(r#"block_lang="rust,ignore""#),
+            "scripts/extract-rust-snippets.sh must track `rust,ignore` blocks \
+             via block_lang so they can be skipped at the end of the block."
+        );
+
+        // The script must increment the SKIPPED counter for rust,ignore blocks.
+        assert!(
+            contents.contains(r#"if [ "$block_lang" = "rust,ignore" ]"#),
+            "scripts/extract-rust-snippets.sh must check block_lang = \"rust,ignore\" \
+             and skip compilation for those blocks."
+        );
+    }
+
+    /// Verify that the case statement in `extract-rust-snippets.sh` lists
+    /// all supported language tags. The script must process `rust` and
+    /// `rust,no_run` while skipping `rust,ignore`.
+    #[test]
+    fn extract_snippets_script_case_statement_covers_all_rust_tags() {
+        let contents = read_project_file("scripts/extract-rust-snippets.sh");
+
+        // Each recognized Rust code block tag must appear individually
+        // somewhere in the script's case statement or handling logic.
+        for tag in ["rust", "rust,no_run", "rust,ignore"] {
+            assert!(
+                contents.contains(tag),
+                "scripts/extract-rust-snippets.sh must recognize the `{tag}` \
+                 language tag to properly handle all Rust code block annotations."
+            );
+        }
     }
 }

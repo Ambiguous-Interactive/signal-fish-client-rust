@@ -29,7 +29,8 @@ transport-websocket = [
     "dep:futures-util",
     "tokio-runtime",
 ]
-transport-websocket-emscripten = []
+transport-websocket-emscripten = ["polling-client"]
+polling-client = []
 tokio-runtime = ["tokio/rt", "tokio/time"]
 
 [dependencies]

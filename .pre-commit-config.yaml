@@ -84,3 +84,25 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+
+  # ── Panic-free policy (push only — runs clippy internally) ──────────────
+  - repo: local
+    hooks:
+      - id: check-no-panics
+        name: panic-free policy check
+        language: system
+        entry: bash scripts/check-no-panics.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # ── Markdown snippet compilation (push only — slow) ─────────────────────
+  - repo: local
+    hooks:
+      - id: extract-rust-snippets
+        name: markdown snippet compilation check
+        language: system
+        entry: bash scripts/extract-rust-snippets.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]

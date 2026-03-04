@@ -64,15 +64,25 @@ for dir in src examples; do
 
         # Filter out matches inside #[cfg(test)] modules.
         while IFS= read -r line; do
+            line="${line//$'\r'/}"
             file=$(echo "$line" | cut -d: -f1)
             lineno=$(echo "$line" | cut -d: -f2)
 
-            # Find the last #[cfg(test)] line number in the file.
-            cfg_test_line=$(grep -n '#\[cfg(test)\]' "$file" 2>/dev/null \
+            # Find the last #[cfg(...test...)] line number in the file.
+            # This matches both simple `#[cfg(test)]` and compound forms
+            # like `#[cfg(all(test, feature = "..."))]`.
+            #
+            # LIMITATION: This pattern also matches `#[cfg(not(test))]`,
+            # which would incorrectly treat the code below it as "inside a
+            # test module" when it is actually the opposite. A safety-net
+            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling)
+            # verifies that no src/ file uses `#[cfg(not(test))]`, so this
+            # false positive cannot occur in practice.
+            cfg_test_line=$(grep -n '#\[cfg(.*\btest\b' "$file" 2>/dev/null \
                 | tail -1 | cut -d: -f1 || true)
 
             if [ -n "$cfg_test_line" ] && [ "$lineno" -gt "$cfg_test_line" ]; then
-                # Inside a #[cfg(test)] module — allowed.
+                # Inside a #[cfg(..test..)] module — allowed.
                 continue
             fi
 
@@ -99,6 +109,7 @@ if [ -d "tests" ]; then
     # Recursively find all .rs files under tests/ (covers tests/common/,
     # tests/helpers/, or any future subdirectories).
     while IFS= read -r test_file; do
+        test_file="${test_file//$'\r'/}"
         # Check if the file has any panic-prone patterns at all.
         has_patterns=false
         for pattern in "${PATTERNS[@]}"; do

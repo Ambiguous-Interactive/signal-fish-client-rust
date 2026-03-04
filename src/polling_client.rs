@@ -868,7 +868,7 @@ mod tests {
         }
     }
 
-    // ── A. Command Queueing Tests ──────────────────────────────────
+    // ── A. Command Queuing Tests ──────────────────────────────────
 
     #[test]
     fn leave_room_queues_command() {

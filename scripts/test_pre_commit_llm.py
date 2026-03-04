@@ -1445,7 +1445,7 @@ class TestValidateChangelogExampleLinks:
 
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_changelog_example_links([doc])
-        assert errors == []
+        assert errors == [], f"Expected no errors but got: {errors}"
 
     def test_unreleased_compare_from_older_version_is_reported(
         self,
@@ -1468,9 +1468,15 @@ class TestValidateChangelogExampleLinks:
 
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_changelog_example_links([doc])
-        assert len(errors) == 1
-        assert "compares from v0.1.0" in errors[0]
-        assert "latest linked version is 0.2.0" in errors[0]
+        assert len(errors) == 1, (
+            f"Expected exactly 1 error but got {len(errors)}: {errors}"
+        )
+        assert "compares from v0.1.0" in errors[0], (
+            f"Expected 'compares from v0.1.0' in error but got: {errors[0]!r}"
+        )
+        assert "latest linked version is 0.2.0" in errors[0], (
+            f"Expected 'latest linked version is 0.2.0' in error but got: {errors[0]!r}"
+        )
 
     def test_latest_release_link_with_wrong_tag_is_reported(
         self,
@@ -1492,8 +1498,12 @@ class TestValidateChangelogExampleLinks:
 
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_changelog_example_links([doc])
-        assert len(errors) == 1
-        assert "[0.2.0] link points to v0.1.0" in errors[0]
+        assert len(errors) == 1, (
+            f"Expected exactly 1 error but got {len(errors)}: {errors}"
+        )
+        assert "[0.2.0] link points to v0.1.0" in errors[0], (
+            f"Expected '[0.2.0] link points to v0.1.0' in error but got: {errors[0]!r}"
+        )
 
     def test_non_changelog_files_are_ignored(self, tmp_path, monkeypatch):
         """Files without an Unreleased link are ignored."""
@@ -1506,7 +1516,7 @@ class TestValidateChangelogExampleLinks:
 
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         errors = validate_changelog_example_links([doc])
-        assert errors == []
+        assert errors == [], f"Expected no errors but got: {errors}"
 
     def test_relative_path_input_does_not_crash(self, tmp_path, monkeypatch):
         """Validator handles relative path inputs without raising ValueError."""
@@ -1525,8 +1535,60 @@ class TestValidateChangelogExampleLinks:
         with monkeypatch.context() as mp:
             mp.chdir(fake_root)
             errors = validate_changelog_example_links([Path(".llm/skill.md")])
-        assert len(errors) == 1
-        assert ".llm/skill.md" in errors[0]
+        assert len(errors) == 1, (
+            f"Expected exactly 1 error but got {len(errors)}: {errors}"
+        )
+        # Use str(Path(...)) so the expected string uses the OS-native separator
+        # (forward slash on POSIX, backslash on Windows).
+        expected_path = str(Path(".llm/skill.md"))
+        assert expected_path in errors[0], (
+            f"Expected error to contain {expected_path!r} but got: {errors[0]!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "input_path_str",
+        [
+            ".llm/skill.md",
+            str(Path(".llm/skill.md")),
+            str(Path(".llm") / "skill.md"),
+        ],
+        ids=["forward-slash", "os-native", "path-join"],
+    )
+    def test_cross_platform_path_inputs(
+        self,
+        tmp_path,
+        monkeypatch,
+        input_path_str,
+    ):
+        """Validator produces correct output regardless of path separator in input."""
+        fake_root = tmp_path / "repo"
+        fake_root.mkdir()
+        llm_dir = fake_root / ".llm"
+        llm_dir.mkdir()
+        doc = llm_dir / "skill.md"
+        doc.write_text(
+            "[Unreleased]: https://github.com/example/project/compare/v0.2.0...HEAD\n"
+            "[0.2.0]: https://github.com/example/project/releases/tag/v0.1.0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
+        with monkeypatch.context() as mp:
+            mp.chdir(fake_root)
+            errors = validate_changelog_example_links([Path(input_path_str)])
+        assert len(errors) == 1, (
+            f"Expected exactly 1 error for input {input_path_str!r} "
+            f"but got {len(errors)}: {errors}"
+        )
+        # The error message must contain the filename regardless of separator style.
+        assert "skill.md" in errors[0], (
+            f"Expected error to mention 'skill.md' but got: {errors[0]!r}"
+        )
+        # Also verify the OS-native relative path appears in the error.
+        expected_path = str(Path(".llm/skill.md"))
+        assert expected_path in errors[0], (
+            f"Expected error to contain {expected_path!r} but got: {errors[0]!r}"
+        )
 
 
 class TestValidateChangelogAddedApiEntries:

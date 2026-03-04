@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.3.1
+- **Version:** 0.4.0
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -165,6 +165,9 @@ transport is closed.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
+| `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
+| `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
+| `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
 
 ## Dependencies
 
@@ -256,6 +259,7 @@ reference.
     ci-configuration.md
     crate-publishing.md
     doc-drift-validation.md
+    ffi-safety.md
     error-handling.md
     keep-a-changelog-format.md
     markdown-and-doc-validation.md

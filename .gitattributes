@@ -1,0 +1,14 @@
+# Enforce LF line endings for all text files checked into the repository.
+# This prevents CRLF issues on Windows and in CI environments.
+* text=auto eol=lf
+
+# Explicitly mark file types that must always use LF endings.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.lock text eol=lf
+*.py text eol=lf

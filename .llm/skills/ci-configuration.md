@@ -60,19 +60,10 @@ Regression policy:
 
 ### ShellCheck SC2317 and trap handlers
 
-Functions used as `trap` handlers (`trap cleanup EXIT`) appear unreachable to
-ShellCheck because they are called indirectly by the shell, not by any visible
-call site. Suppress with a comment explaining why:
-
-```bash
-# shellcheck disable=SC2317  # called indirectly via trap
-cleanup() {
-    rm -rf "$TMPDIR"
-}
-trap cleanup EXIT
-```
-
-Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second comment segment using ` # ` so ShellCheck parses the directive reliably.
+Functions used as `trap` handlers appear unreachable to ShellCheck. Suppress
+with `# shellcheck disable=SC2317  # called indirectly via trap`. Keep
+rationale in a second `#` segment (no em-dashes) so ShellCheck parses the
+directive reliably.
 
 ### ShellCheck SC2004 and array indexes
 
@@ -97,16 +88,11 @@ This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::che
 
 ### cargo-machete false positives with serde attributes
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete's static analysis because no `use` or `extern crate` statement references them. Add such crates to the ignore list in `Cargo.toml`:
-
-```toml
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
-```
+Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete. Add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
 
 ### semver-checks on new crates
 
-`cargo semver-checks` compares the current API against the base branch. When the base branch does not contain the crate at all (e.g., the initial PR for a new package), the tool will fail because there is no baseline to diff against. The CI workflow must check for package existence on the base branch before running semver-checks.
+`cargo semver-checks` fails when the base branch does not contain the crate (no baseline to diff). The CI workflow must check for package existence before running semver-checks.
 
 ### markdownlint: Emphasis conventions
 
@@ -159,7 +145,10 @@ rather than reformatting all existing content:
 
 Review new rules individually and enable only those that add genuine value.
 
-### typos: False positives on variable names
+### typos: US English locale and false positives
+
+The project uses `locale = "en-us"` in `.typos.toml`. Use American English
+spellings in code, comments, and docs (e.g., "queuing" not "queueing").
 
 The `typos` spell checker may flag variable names as misspellings. Use
 `[default.extend-identifiers]` for identifier-level suppressions:
@@ -182,14 +171,17 @@ Keep comments in CI shell scripts behaviorally exact:
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
 - Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
 
+### check-no-panics.sh: Compound cfg(test) attributes
+
+`check-no-panics.sh` uses `#\[cfg(.*\btest\b` to match both `#[cfg(test)]`
+and compound forms like `#[cfg(all(test, feature = "..."))]`. When adding test
+modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
+
 ### Shell scripts: Guard subsequent logic after extraction failures
 
-When a shell script extracts a value (for example from `awk`/`grep`) and
-validates extraction, all dependent comparisons must stay inside the success
-branch (`else`) or return early (`continue`/`exit`). Avoid fall-through that
-produces confusing mismatch logs with empty values.
-
-This pattern is enforced by the regression test
+When a shell script extracts a value (e.g., from `awk`/`grep`) and validates
+extraction, all dependent comparisons must stay inside the success branch or
+return early (`continue`/`exit`). Enforced by
 `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
@@ -203,8 +195,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 ```
 
-This matches the pattern used in `scripts/extract-rust-snippets.sh` and
-`scripts/check-no-panics.sh`.
+### Shell scripts: CRLF line endings break Bash parsing
+
+Bash `read -r` strips `\n` but preserves `\r` from Windows CRLF files. Always
+strip `\r` when reading files line-by-line: `line="${line//$'\r'/}"`. Also add
+`| tr -d '\r'` to `awk`/`sed` pipelines processing file content.
+
+Include a `.gitattributes` with `* text=auto eol=lf` in the repo root to
+prevent CRLF issues in CI and cross-platform development.
 
 ### MSRV drift
 

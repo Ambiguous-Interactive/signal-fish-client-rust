@@ -207,3 +207,10 @@ cargo test --test client_tests --all-features
   to process queued commands — see the pattern in `client_tests.rs`
 - `std::future::pending()` in `MockTransport::recv` keeps the loop alive
   without busy-polling until `shutdown()` is called
+
+## Cross-Platform Path Assertions
+
+When testing functions that produce file paths in error messages or output,
+never hardcode forward slashes (`/`) in assertions. Windows uses `\` as the
+path separator. Use `std::path::Path` to build expected paths so assertions
+work on both platforms.

@@ -113,7 +113,7 @@ Enable the `transport-websocket-emscripten` feature to access
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.3.1", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
 ### Building
@@ -215,7 +215,7 @@ the client by calling `poll()` once per frame from the game loop.
 
 ### Construction
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     EmscriptenWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
 };
@@ -234,7 +234,7 @@ Call `poll()` once per frame. It flushes all queued outgoing commands, drains
 all buffered incoming messages from the transport, and returns a `Vec` of
 events that occurred during this poll cycle:
 
-```rust
+```rust,ignore
 // In your game loop / _process(delta):
 for event in client.poll() {
     match event {
@@ -326,13 +326,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.3.1", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
 ### GDExtension Node
 
-```rust
+```rust,ignore
 use godot::prelude::*;
 use signal_fish_client::{
     EmscriptenWebSocketTransport, JoinRoomParams, SignalFishConfig,
@@ -488,7 +488,8 @@ for the full workflow. Key steps:
 | Feature | Default | Description | `wasm32-unknown-unknown` | `wasm32-unknown-emscripten` |
 |---------|---------|-------------|:------------------------:|:---------------------------:|
 | `transport-websocket` | Yes | WebSocket transport via `tokio-tungstenite` (TCP sockets) | No | No |
-| `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport` + `SignalFishPollingClient` | No | Yes |
+| `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
+| `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
 ### Which flags for which target

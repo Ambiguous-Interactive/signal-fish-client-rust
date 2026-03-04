@@ -402,13 +402,13 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.3.1", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
 ### Source
 
-```rust
+```rust,ignore
 use godot::prelude::*;
 use signal_fish_client::{
     EmscriptenWebSocketTransport, JoinRoomParams,
@@ -482,7 +482,7 @@ impl INode for SignalFishNode {
 
 #### 1. Define the GDExtension node
 
-```rust
+```rust,ignore
 #[derive(GodotClass)]
 #[class(base=Node)]
 struct SignalFishNode {
@@ -497,7 +497,7 @@ established in `ready()`, not at construction time. The generic parameter
 
 #### 2. Connect in `ready()`
 
-```rust
+```rust,ignore
 fn ready(&mut self) {
     let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
         .expect("WebSocket creation failed");
@@ -512,7 +512,7 @@ automatically.
 
 #### 3. Poll in `process()`
 
-```rust
+```rust,ignore
 fn process(&mut self, _delta: f64) {
     let Some(client) = &mut self.client else { return };
     for event in client.poll() {

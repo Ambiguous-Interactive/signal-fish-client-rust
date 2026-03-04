@@ -58,6 +58,20 @@ for line in text.splitlines():
 | `scripts/pre-commit-llm.py` | Skill file paragraphs and titles for index generation | `extract_first_paragraph` and `extract_title` track `fence_char` |
 | `scripts/extract-rust-snippets.sh` | Markdown files for ```` ```rust ```` blocks | Tracks `in_rust_block` flag, extracts only Rust fences |
 
+### Using `rust,ignore` for Non-Compilable Snippets
+
+Markdown code blocks that reference external crates not in the snippet
+project's dependencies, or that use feature-gated types unavailable during
+extraction, should use ```` ```rust,ignore ```` instead of ```` ```rust ````.
+The `extract-rust-snippets.sh` script recognizes `rust,ignore` and skips
+those blocks during compilation checks.
+
+Use `rust,ignore` when a snippet:
+
+- Depends on crates outside the project's dependency tree
+- Uses platform-specific or feature-gated APIs not available in the snippet harness
+- Is intentionally pseudo-code or illustrative rather than compilable
+
 ### Testing the Parser
 
 `scripts/test_pre_commit_llm.py` contains pytest regression tests for
@@ -261,6 +275,15 @@ renaming a page, update both the page heading **and** the card in
 - [ ] If the target page's H1 changed, is the card label updated too?
 - [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
       test?
+
+## Common Markdownlint Pitfalls
+
+- **MD032** (blank lines around lists): Add a blank line before and after every
+  list block, including after introductory paragraphs ending with a colon.
+- **MD040** (code fence language): Always add a language specifier to fenced code
+  blocks (e.g., ` ```rust `, ` ```toml `, ` ```text `).
+- **MD026** (trailing punctuation in headings): Do not end headings with `.`,
+  `:`, `;`, or `!`.
 
 ## Documentation Drift Validation
 

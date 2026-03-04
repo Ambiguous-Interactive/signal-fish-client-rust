@@ -179,7 +179,7 @@ A `Transport` implementation that uses Emscripten's built-in WebSocket C API
 via raw FFI. Available behind the **`transport-websocket-emscripten`** feature
 flag.
 
-```rust
+```rust,ignore
 use signal_fish_client::EmscriptenWebSocketTransport;
 ```
 
@@ -197,7 +197,7 @@ target — used by Godot 4.5 web exports via gdext (godot-rust).
 
 Create a new WebSocket connection:
 
-```rust
+```rust,ignore
 let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
 ```
 

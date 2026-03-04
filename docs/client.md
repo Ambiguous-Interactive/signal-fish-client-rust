@@ -60,7 +60,7 @@ use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.3.1".into()),
+    sdk_version: Some("0.4.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")
@@ -420,12 +420,13 @@ Shutdown proceeds in three stages:
 ## `SignalFishPollingClient`
 
 Synchronous, polling-based client for environments without an async runtime.
-Created for WebAssembly targets (specifically `wasm32-unknown-emscripten` and
-Godot 4.5 web exports via gdext), but usable in any single-threaded context.
+Originally created for WebAssembly targets (specifically
+`wasm32-unknown-emscripten` and Godot 4.5 web exports via gdext), but usable
+in any single-threaded context with any `Transport` implementation.
 
 !!! note "Feature gate"
-    `SignalFishPollingClient` requires the `transport-websocket-emscripten`
-    feature.
+    `SignalFishPollingClient` requires the `polling-client` feature.
+    This feature is automatically enabled by `transport-websocket-emscripten`.
 
 Unlike `SignalFishClient`, the polling client does **not** spawn background
 tasks. Instead, the caller drives the protocol by calling
@@ -444,7 +445,7 @@ Create a new polling client with a connected transport and config.
 fn new(transport: impl Transport, config: SignalFishConfig) -> Self
 ```
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     EmscriptenWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
 };
@@ -472,7 +473,7 @@ generated this frame.
 fn poll(&mut self) -> Vec<SignalFishEvent>
 ```
 
-```rust
+```rust,ignore
 // In your game loop (_process in Godot, Update in Unity, etc.)
 let events = client.poll();
 for event in events {
@@ -556,7 +557,7 @@ Gracefully shut down the transport.
 fn close(&mut self)
 ```
 
-```rust
+```rust,ignore
 client.close();
 ```
 

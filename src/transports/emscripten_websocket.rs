@@ -67,7 +67,7 @@ const EMSCRIPTEN_RESULT_SUCCESS: c_int = 0;
 struct EmscriptenWebSocketCreateAttributes {
     url: *const c_char,
     protocols: *const c_char,
-    create_on_main_thread: bool,
+    create_on_main_thread: EM_BOOL,
 }
 
 #[repr(C)]
@@ -80,7 +80,7 @@ struct EmscriptenWebSocketMessageEvent {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     data: *const u8,
     num_bytes: u32,
-    is_text: bool,
+    is_text: EM_BOOL,
 }
 
 #[repr(C)]
@@ -91,7 +91,7 @@ struct EmscriptenWebSocketErrorEvent {
 #[repr(C)]
 struct EmscriptenWebSocketCloseEvent {
     socket: EMSCRIPTEN_WEBSOCKET_T,
-    was_clean: bool,
+    was_clean: EM_BOOL,
     code: u16,
     reason: [u8; 512],
 }
@@ -236,7 +236,7 @@ impl EmscriptenWebSocketTransport {
         let attrs = EmscriptenWebSocketCreateAttributes {
             url: c_url.as_ptr(),
             protocols: std::ptr::null(),
-            create_on_main_thread: true,
+            create_on_main_thread: 1,
         };
 
         let socket = unsafe { emscripten_websocket_new(&attrs) };
@@ -250,31 +250,56 @@ impl EmscriptenWebSocketTransport {
         }
 
         // Register callbacks (all fire on the calling thread = main thread).
+        let user_data = state_ptr.cast::<c_void>();
         unsafe {
-            emscripten_websocket_set_onopen_callback_on_thread(
-                socket,
-                state_ptr.cast(),
-                Some(on_open_callback),
-                0,
-            );
-            emscripten_websocket_set_onmessage_callback_on_thread(
-                socket,
-                state_ptr.cast(),
-                Some(on_message_callback),
-                0,
-            );
-            emscripten_websocket_set_onerror_callback_on_thread(
-                socket,
-                state_ptr.cast(),
-                Some(on_error_callback),
-                0,
-            );
-            emscripten_websocket_set_onclose_callback_on_thread(
-                socket,
-                state_ptr.cast(),
-                Some(on_close_callback),
-                0,
-            );
+            let results = [
+                (
+                    "onopen",
+                    emscripten_websocket_set_onopen_callback_on_thread(
+                        socket,
+                        user_data,
+                        Some(on_open_callback),
+                        0,
+                    ),
+                ),
+                (
+                    "onmessage",
+                    emscripten_websocket_set_onmessage_callback_on_thread(
+                        socket,
+                        user_data,
+                        Some(on_message_callback),
+                        0,
+                    ),
+                ),
+                (
+                    "onerror",
+                    emscripten_websocket_set_onerror_callback_on_thread(
+                        socket,
+                        user_data,
+                        Some(on_error_callback),
+                        0,
+                    ),
+                ),
+                (
+                    "onclose",
+                    emscripten_websocket_set_onclose_callback_on_thread(
+                        socket,
+                        user_data,
+                        Some(on_close_callback),
+                        0,
+                    ),
+                ),
+            ];
+
+            for (name, result) in results {
+                if result != EMSCRIPTEN_RESULT_SUCCESS {
+                    emscripten_websocket_delete(socket);
+                    drop(Box::from_raw(state_ptr));
+                    return Err(SignalFishError::Io(std::io::Error::other(format!(
+                        "emscripten_websocket_set_{name}_callback_on_thread failed: {result}"
+                    ))));
+                }
+            }
         }
 
         Ok(Self {
@@ -306,7 +331,7 @@ extern "C" fn on_message_callback(
     let state = unsafe { &*(user_data as *const CallbackState) };
     let event = unsafe { &*event };
 
-    if event.is_text {
+    if event.is_text != 0 {
         // Text message — create String from UTF-8 bytes.
         // num_bytes includes the NUL terminator for text messages.
         let len = if event.num_bytes > 0 {
@@ -355,7 +380,7 @@ extern "C" fn on_close_callback(
     let event = unsafe { &*event };
     let _ = state.tx.send(IncomingEvent::Close {
         code: event.code,
-        was_clean: event.was_clean,
+        was_clean: event.was_clean != 0,
     });
     1 // EM_TRUE
 }
@@ -441,7 +466,10 @@ impl Drop for EmscriptenWebSocketTransport {
             }
         }
         unsafe {
-            emscripten_websocket_delete(self.socket);
+            let result = emscripten_websocket_delete(self.socket);
+            if result != EMSCRIPTEN_RESULT_SUCCESS {
+                tracing::warn!("emscripten_websocket_delete returned {result}");
+            }
             drop(Box::from_raw(self.callback_state));
         }
     }

@@ -36,6 +36,10 @@ Reference for preventing documentation drift by validating docs against source-o
 
 Reference for thiserror patterns, SignalFishError design, and error propagation in this codebase.
 
+### [FFI Safety](ffi-safety.md)
+
+Reference for writing correct and safe FFI bindings, with emphasis on C type mapping, struct layout, pointer lifecycl...
+
 ### [Keep a Changelog Format](keep-a-changelog-format.md)
 
 Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this crate.
