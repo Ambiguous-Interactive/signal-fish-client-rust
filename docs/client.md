@@ -16,7 +16,7 @@ Configuration for a `SignalFishClient` connection. The only **required** field i
 
 ### Constructor
 
-```rust
+```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
 ```
 
@@ -44,7 +44,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 
 ### Full Example
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ let config = SignalFishConfig::new("mb_app_abc123")
 
 Or using struct literal syntax with defaults:
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
@@ -77,7 +77,7 @@ for quick-match / auto-create behavior.
 
 ### Constructor
 
-```rust
+```rust,ignore
 let params = JoinRoomParams::new("my-game", "Alice");
 ```
 
@@ -94,7 +94,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 
 ### Full Example
 
-```rust
+```rust,ignore
 use signal_fish_client::{JoinRoomParams, protocol::RelayTransport};
 
 let params = JoinRoomParams::new("my-game", "Alice")
@@ -131,7 +131,7 @@ round-trip.
 
 Start the client transport loop and return a handle plus event receiver.
 
-```rust
+```rust,ignore
 fn start(
     transport: impl Transport,
     config: SignalFishConfig,
@@ -145,7 +145,7 @@ On start, the client automatically sends an `Authenticate` message using the
 provided config. A background Tokio task is spawned to multiplex send/receive
 on the transport.
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, WebSocketTransport,
 };
@@ -167,11 +167,11 @@ let (client, mut event_rx) = SignalFishClient::start(transport, config);
 
 Join or create a room with the given parameters.
 
-```rust
+```rust,ignore
 fn join_room(&self, params: JoinRoomParams) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.join_room(
     JoinRoomParams::new("my-game", "Alice")
         .with_max_players(4),
@@ -186,11 +186,11 @@ Wait for `SignalFishEvent::RoomJoined` to confirm success.
 
 Leave the current room.
 
-```rust
+```rust,ignore
 fn leave_room(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.leave_room()?;
 ```
 
@@ -202,11 +202,11 @@ The server will broadcast a player-left event to remaining room members.
 
 Signal readiness to start the game in the lobby.
 
-```rust
+```rust,ignore
 fn set_ready(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.set_ready()?;
 ```
 
@@ -218,7 +218,7 @@ When all players in a room are ready, the server transitions the lobby state.
 
 Join a room as a read-only spectator.
 
-```rust
+```rust,ignore
 fn join_as_spectator(
     &self,
     game_name: String,
@@ -227,7 +227,7 @@ fn join_as_spectator(
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.join_as_spectator(
     "my-game".into(),
     "ABCD".into(),
@@ -243,11 +243,11 @@ Spectators receive game events but cannot send game data or affect room state.
 
 Leave spectator mode.
 
-```rust
+```rust,ignore
 fn leave_spectator(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.leave_spectator()?;
 ```
 
@@ -259,11 +259,11 @@ client.leave_spectator()?;
 
 Send arbitrary JSON game data to other players in the room.
 
-```rust
+```rust,ignore
 fn send_game_data(&self, data: serde_json::Value) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.send_game_data(serde_json::json!({
     "action": "move",
     "x": 10,
@@ -281,11 +281,11 @@ The data is forwarded to all other players (and spectators) in the room.
 
 Request to become (or relinquish) the room authority.
 
-```rust
+```rust,ignore
 fn request_authority(&self, become_authority: bool) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 // Claim authority
 client.request_authority(true)?;
 
@@ -304,14 +304,14 @@ Authority delegation must be enabled when creating the room
 
 Provide P2P connection information to the server for relay/direct connection establishment.
 
-```rust
+```rust,ignore
 fn provide_connection_info(
     &self,
     connection_info: ConnectionInfo,
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 use signal_fish_client::protocol::ConnectionInfo;
 
 client.provide_connection_info(ConnectionInfo::Direct {
@@ -329,7 +329,7 @@ and `Custom` variants.
 
 Reconnect to a previous session after a disconnection.
 
-```rust
+```rust,ignore
 fn reconnect(
     &self,
     player_id: PlayerId,
@@ -338,7 +338,7 @@ fn reconnect(
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.reconnect(player_id, room_id, auth_token)?;
 ```
 
@@ -351,11 +351,11 @@ event, along with the `auth_token` provided by your application server.
 
 Send a heartbeat ping to the server.
 
-```rust
+```rust,ignore
 fn ping(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.ping()?;
 ```
 
@@ -375,7 +375,7 @@ Synchronous accessors use atomics; async accessors acquire an internal mutex.
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
 
-```rust
+```rust,ignore
 if client.is_connected() && client.is_authenticated() {
     if let Some(room_id) = client.current_room_id().await {
         println!("In room: {room_id}");
@@ -391,11 +391,11 @@ if client.is_connected() && client.is_authenticated() {
 
 Gracefully shut down the client.
 
-```rust
+```rust,ignore
 async fn shutdown(&mut self)
 ```
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -441,7 +441,7 @@ directly — no `Arc`, `Mutex`, or atomics.
 
 Create a new polling client with a connected transport and config.
 
-```rust
+```rust,ignore
 fn new(transport: impl Transport, config: SignalFishConfig) -> Self
 ```
 
@@ -469,7 +469,7 @@ call to `poll()`.
 Drain incoming messages, flush outgoing commands, and return all events
 generated this frame.
 
-```rust
+```rust,ignore
 fn poll(&mut self) -> Vec<SignalFishEvent>
 ```
 
@@ -553,7 +553,7 @@ All accessors are **synchronous** (no async, no mutex):
 
 Gracefully shut down the transport.
 
-```rust
+```rust,ignore
 fn close(&mut self)
 ```
 

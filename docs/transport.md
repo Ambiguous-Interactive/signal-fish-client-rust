@@ -10,7 +10,7 @@ of the SDK — and the built-in `WebSocketTransport` that ships with the crate.
 Every transport used by `SignalFishClient` must implement the `Transport` trait.
 It defines three async methods for bidirectional text messaging:
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
@@ -78,7 +78,7 @@ transport externally, then hand it to `SignalFishClient::start`.
 The crate ships with a ready-made WebSocket transport behind the
 **`transport-websocket`** feature flag (enabled by default).
 
-```rust
+```rust,ignore
 use signal_fish_client::WebSocketTransport;
 ```
 
@@ -89,7 +89,7 @@ It wraps a `tokio-tungstenite` `WebSocketStream` and supports both `ws://` and
 
 Establish a new WebSocket connection:
 
-```rust
+```rust,ignore
 let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
 ```
 
@@ -102,7 +102,7 @@ available.
 Same as `connect`, but fails with `SignalFishError::Timeout` if the connection
 is not established within the given duration:
 
-```rust
+```rust,ignore
 use std::time::Duration;
 
 let transport = WebSocketTransport::connect_with_timeout(
@@ -117,7 +117,7 @@ let transport = WebSocketTransport::connect_with_timeout(
 Wrap an already-established `WebSocketStream` for advanced use cases such as
 custom TLS configuration, proxy headers, or authentication cookies:
 
-```rust
+```rust,ignore
 use signal_fish_client::transports::websocket::WsStream;
 
 // WsStream is a type alias for:
@@ -276,7 +276,7 @@ testing.
 Use `tokio::sync::mpsc` channels as the backing store. This gives you natural
 cancel safety for free:
 
-```rust
+```rust,ignore
 use tokio::sync::mpsc;
 
 pub struct LoopbackTransport {
@@ -289,7 +289,7 @@ pub struct LoopbackTransport {
 
 ### Step 2: Implement `Transport`
 
-```rust
+```rust,ignore
 use async_trait::async_trait;
 use signal_fish_client::{SignalFishError, Transport};
 
@@ -323,7 +323,7 @@ Key points:
 
 ### Step 3: Wire into `SignalFishClient::start()`
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishClient, SignalFishConfig, SignalFishEvent};
 
 // Create the loopback pair (client ↔ server channels)

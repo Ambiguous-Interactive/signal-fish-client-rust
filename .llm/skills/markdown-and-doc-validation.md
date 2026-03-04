@@ -66,11 +66,17 @@ extraction, should use ```` ```rust,ignore ```` instead of ```` ```rust ````.
 The `extract-rust-snippets.sh` script recognizes `rust,ignore` and skips
 those blocks during compilation checks.
 
+**Decision rule:** only use plain `` ```rust `` for complete,
+self-contained, compilable programs. Everything else gets
+`` ```rust,ignore ``. When in doubt, use `rust,ignore`.
+
 Use `rust,ignore` when a snippet:
 
 - Depends on crates outside the project's dependency tree
 - Uses platform-specific or feature-gated APIs not available in the snippet harness
 - Is intentionally pseudo-code or illustrative rather than compilable
+- Contains bare signatures without a body, or references undefined variables/types
+- Imports platform-specific modules (e.g., `std::os::raw`) that may not compile on all targets
 
 ### Testing the Parser
 
@@ -218,14 +224,10 @@ def validate_something() -> list[str]:
 
 *Checklist for validation functions:*
 
-- [ ] Is every `read_text()` / `read_to_string()` wrapped in error
-      handling?
-- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped in error
-      handling for non-critical paths?
-- [ ] Do error messages follow the same format as existing validators
-      (indented with two spaces, descriptive)?
-- [ ] Does the function continue checking remaining items after a
-      single I/O error (rather than aborting entirely)?
+- [ ] Is every `read_text()` / `read_to_string()` wrapped in error handling?
+- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped too?
+- [ ] Do error messages match the existing format (two-space indent, descriptive)?
+- [ ] Does the function continue after a single I/O error (not abort entirely)?
 
 ### Comment Accuracy in Comparison Logic
 

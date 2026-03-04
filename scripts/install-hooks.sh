@@ -156,6 +156,14 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# ── Cargo clippy (no-default-features) ────────────────────────────────────
+if ! cargo clippy --all-targets --no-default-features -- -D warnings; then
+    echo ""
+    echo "Push aborted: cargo clippy (no-default-features) reported warnings or errors."
+    echo "Fix the issues above, then re-push."
+    exit 1
+fi
+
 # ── Cargo test ────────────────────────────────────────────────────────────
 if ! cargo test --all-features; then
     echo ""
@@ -207,9 +215,10 @@ echo "  7. cargo clippy --all-targets --all-features -- -D warnings"
 echo "  8. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
-echo "  1. cargo test --all-features"
-echo "  2. bash scripts/check-no-panics.sh (panic-free policy)"
-echo "  3. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
+echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
+echo "  2. cargo test --all-features"
+echo "  3. bash scripts/check-no-panics.sh (panic-free policy)"
+echo "  4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
 echo ""
 echo "Tip: Install the pre-commit framework for richer hook management:"
 echo "  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push"

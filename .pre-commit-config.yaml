@@ -74,6 +74,17 @@ repos:
         types: [rust]
         always_run: true
 
+  # ── Rust linting (no-default-features, push only) ───────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-clippy-no-default-features
+        name: cargo clippy (all targets, no default features)
+        language: system
+        entry: cargo clippy --all-targets --no-default-features -- -D warnings
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
   # ── Rust tests (push only — too slow for every commit) ───────────────────
   - repo: local
     hooks:

@@ -155,7 +155,8 @@ else
 
             lineno=$(echo "$match_line" | cut -d: -f1)
             code=$(echo "$match_line" | cut -d: -f2-)
-            trimmed=$(echo "$code" | sed 's/^[[:space:]]*//')
+            # Strip leading whitespace (pure bash, avoids SC2001)
+            trimmed="${code#"${code%%[![:space:]]*}"}"
 
             # Skip lines where the call is clearly inside an expression:
             #   - Line contains `let ... =` before the call
@@ -174,7 +175,8 @@ else
                 idx=$((lineno - 2)) # 0-indexed, minus one more for previous line
                 while [ "$idx" -ge 0 ]; do
                     prev_line="${file_lines[$idx]}"
-                    prev_trimmed=$(echo "$prev_line" | sed 's/^[[:space:]]*//')
+                    # Strip leading whitespace (pure bash, avoids SC2001)
+                    prev_trimmed="${prev_line#"${prev_line%%[![:space:]]*}"}"
                     # Skip blank lines and comment-only lines
                     if [ -z "$prev_trimmed" ] || echo "$prev_trimmed" | grep -qE '^\s*//'; then
                         idx=$((idx - 1))

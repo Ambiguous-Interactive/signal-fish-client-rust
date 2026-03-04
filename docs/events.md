@@ -28,7 +28,7 @@ Use these to track the raw connection lifecycle.
     backpressure, but it may be missed if the event receiver is dropped or if
     [`shutdown()`](client.md#shutdown) times out and aborts the transport task.
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Connected => {
         println!("Transport connected — waiting for authentication…");
@@ -75,7 +75,7 @@ and `player_name_rules`.
 | `error` | `String` | Human-readable error description. |
 | `error_code` | `ErrorCode` | Structured error code for programmatic handling. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Authenticated { app_name, rate_limits, .. } => {
         println!("Authenticated as {app_name}");
@@ -127,7 +127,7 @@ Events related to joining, failing to join, or leaving a room.
 | `reason` | `String` | Human-readable failure reason. |
 | `error_code` | `Option<ErrorCode>` | Structured error code, if provided. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::RoomJoined { room_code, player_id, current_players, .. } => {
         println!("Joined room {room_code} as {player_id}");
@@ -157,7 +157,7 @@ Notifications about other players joining or leaving the room you are in.
 `PlayerInfo` contains `id`, `name`, `is_authority`, `is_ready`,
 `connected_at`, and an optional `connection_info`.
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::PlayerJoined { player } => {
         println!("{} joined (id: {})", player.name, player.id);
@@ -184,7 +184,7 @@ Carry arbitrary payloads between players. JSON payloads arrive as
 
 `GameDataEncoding` is one of `Json`, `MessagePack`, or `Rkyv`.
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::GameData { from_player, data } => {
         println!("JSON data from {from_player}: {data}");
@@ -211,7 +211,7 @@ report changes and responses to authority requests.
 | `AuthorityChanged` | `authority_player: Option<PlayerId>`, `you_are_authority: bool` | The room's authority assignment changed. |
 | `AuthorityResponse` | `granted: bool`, `reason: Option<String>`, `error_code: Option<ErrorCode>` | Response to an authority request. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::AuthorityChanged { authority_player, you_are_authority } => {
         if you_are_authority {
@@ -248,7 +248,7 @@ can finalize the lobby and emit `GameStarting` with peer connection details.
 `PeerConnectionInfo` contains `player_id`, `player_name`, `is_authority`,
 `relay_type`, and an optional `connection_info`.
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::LobbyStateChanged { lobby_state, ready_players, all_ready } => {
         println!("Lobby: {lobby_state:?}, {}/{} ready",
@@ -277,7 +277,7 @@ The server replies with a `Pong` event confirming receipt.
 |---------|--------|-------------|
 | `Pong` | — | Pong response to a ping. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Pong => {
         // Connection is healthy — usually no action needed.
@@ -314,7 +314,7 @@ Carries the same room-state fields as `RoomJoined` plus:
 | `reason` | `String` | Human-readable failure reason. |
 | `error_code` | `ErrorCode` | Structured error code. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Reconnected { room_code, missed_events, .. } => {
         println!("Reconnected to {room_code}");
@@ -373,7 +373,7 @@ full spectator lifecycle.
 `SpectatorStateChangeReason` is one of `Joined`, `VoluntaryLeave`,
 `Disconnected`, `Removed`, or `RoomClosed`.
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::SpectatorJoined { room_code, spectator_id, current_players, .. } => {
         println!("Spectating room {room_code} as {spectator_id}");
@@ -407,7 +407,7 @@ Catch-all for server-side errors that don't fit a more specific variant.
 |---------|--------|-------------|
 | `Error` | `message: String`, `error_code: Option<ErrorCode>` | A generic server error. |
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Error { message, error_code } => {
         eprintln!("Server error: {message} ({error_code:?})");

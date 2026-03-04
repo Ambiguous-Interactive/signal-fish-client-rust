@@ -46,17 +46,11 @@ Always validate `.lychee.toml` with a TOML parser before committing. The `script
 
 ### lychee: Avoid flaky external docs for badges
 
-Some external docs/blog hosts intermittently return `503` in CI even when links are valid. This creates nondeterministic failures in link-check jobs.
-
-For MSRV badges and similar stable references, prefer canonical, long-lived documentation pages over blog posts:
-
-- Prefer: `https://doc.rust-lang.org/stable/releases.html#...`
-- Avoid in badges: `https://blog.rust-lang.org/...`
-
-Regression policy:
-
-- Keep `README.md` and `docs/index.md` MSRV links pointed at `doc.rust-lang.org/stable/releases.html`.
-- `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+Some external docs/blog hosts intermittently return `503` in CI. For MSRV
+badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
+`https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
+links pointed at `doc.rust-lang.org/stable/releases.html`.
+`tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -85,6 +79,15 @@ PHASE_RESULTS[phase]="FAIL"
 ```
 
 This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+
+### SC2001 — prefer parameter expansion over `echo | sed`
+
+`echo "$var" | sed 's/pattern/replacement/'` triggers SC2001 when the
+substitution can be expressed with bash parameter expansion. For leading
+whitespace trimming use `trimmed="${code#"${code%%[![:space:]]*}"}"` instead
+of `trimmed=$(echo "$code" | sed 's/^[[:space:]]*//')`. For complex
+multi-stage pipelines or multi-expression `sed` commands, SC2001 does not
+fire. Using `printf '%s' "$var" | sed ...` also avoids the warning.
 
 ### cargo-machete false positives with serde attributes
 
@@ -294,5 +297,4 @@ Lightweight local CI validation covering the most common failure points:
 
 ### `scripts/check-all.sh`
 
-Full 17-phase CI parity script. Use `--quick` for the mandatory baseline
-(phases 1-3 only).
+Full 17-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-3 only).

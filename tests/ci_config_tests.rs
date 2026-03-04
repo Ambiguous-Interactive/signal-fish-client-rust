@@ -567,6 +567,23 @@ mod ci_workflow_policy {
         }
     }
 
+    /// Verify that the CI clippy job tests all feature combinations:
+    /// default, `--all-features`, and `--no-default-features`.
+    ///
+    /// Regression: Without `--no-default-features`, dead_code warnings from
+    /// items only used behind feature gates go undetected until a user builds
+    /// the crate with a minimal feature set.
+    #[test]
+    fn ci_clippy_covers_no_default_features() {
+        let contents = ci_contents();
+        assert!(
+            contents.contains("--no-default-features"),
+            "ci.yml clippy job must include a '--no-default-features' matrix entry. \
+             Without this check, dead_code and other warnings that only appear \
+             when optional features are disabled will not be caught in CI."
+        );
+    }
+
     /// Verify that key documentation and config files reference the same MSRV
     /// as Cargo.toml. Prevents drift where Cargo.toml is bumped but docs or
     /// scripts are left with the old version.
@@ -1629,6 +1646,39 @@ mod ci_config_validation {
             "Cargo.toml [package.metadata.cargo-machete] ignored list must include \
              'serde_bytes'. This crate is used via #[serde(with = \"serde_bytes\")] \
              attribute annotations which cargo-machete cannot detect as usage."
+        );
+    }
+
+    /// Verify that `scripts/extract-rust-snippets.sh` is executed in a CI
+    /// workflow. The script validates that Rust code blocks embedded in
+    /// markdown files actually compile, catching stale or broken examples.
+    ///
+    /// The script is expected in the examples-validation workflow (which
+    /// covers doc tests, example programs, and markdown snippet compilation).
+    #[test]
+    fn ci_runs_extract_rust_snippets_script() {
+        let contents = read_project_file(".github/workflows/examples-validation.yml");
+        assert!(
+            contents.contains("bash scripts/extract-rust-snippets.sh"),
+            ".github/workflows/examples-validation.yml must run \
+             'bash scripts/extract-rust-snippets.sh'. This script validates \
+             that Rust code blocks in markdown files compile, preventing \
+             stale or broken documentation examples from reaching main."
+        );
+    }
+
+    /// Verify that the pre-push hook in `.pre-commit-config.yaml` includes
+    /// a `cargo clippy --no-default-features` check to catch dead_code
+    /// warnings and other issues that only surface when optional features
+    /// are disabled.
+    #[test]
+    fn pre_commit_config_has_no_default_features_clippy_hook() {
+        let contents = read_project_file(".pre-commit-config.yaml");
+        assert!(
+            contents.contains("cargo clippy --all-targets --no-default-features -- -D warnings"),
+            ".pre-commit-config.yaml must define a cargo clippy hook with \
+             --no-default-features to catch dead_code warnings and other \
+             issues that only surface when optional features are disabled."
         );
     }
 }

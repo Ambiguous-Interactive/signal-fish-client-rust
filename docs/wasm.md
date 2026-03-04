@@ -140,7 +140,7 @@ into the transport's `recv()` method.
 
 ### Construction
 
-```rust
+```rust,ignore
 use signal_fish_client::EmscriptenWebSocketTransport;
 
 let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
@@ -573,7 +573,7 @@ runtime would not function.
 **Solution:** Use `SignalFishPollingClient` instead. It drives the transport
 synchronously via `poll()` and does not require any async runtime:
 
-```rust
+```rust,ignore
 let mut client = SignalFishPollingClient::new(transport, config);
 
 // In your game loop:

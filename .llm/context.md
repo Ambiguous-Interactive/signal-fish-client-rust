@@ -54,7 +54,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 
 ### Transport Trait
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
@@ -112,7 +112,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
 Required second argument to `SignalFishClient::start`. Only `app_id` is required.
 
-```rust
+```rust,ignore
 pub struct SignalFishConfig {
     pub app_id: String,
     pub sdk_version: Option<String>,          // defaults to crate version
@@ -131,7 +131,7 @@ let config = SignalFishConfig::new("mb_app_abc123")
 
 Builder for `client.join_room(...)`.
 
-```rust
+```rust,ignore
 let params = JoinRoomParams::new("my-game", "Alice")
     .with_room_code("ABC123")   // omit for quick-match
     .with_max_players(4)
@@ -143,7 +143,7 @@ client.join_room(params)?;
 
 All methods except `shutdown` are synchronous (they queue a message, no round-trip):
 
-```rust
+```rust,ignore
 client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
 client.send_game_data(data: serde_json::Value) -> Result<()>

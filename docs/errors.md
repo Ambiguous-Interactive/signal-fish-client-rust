@@ -15,7 +15,7 @@ The Signal Fish Client SDK uses two complementary error systems:
 All fallible client methods return `Result<T>`, which is an alias for
 `std::result::Result<T, SignalFishError>`.
 
-```rust
+```rust,ignore
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
@@ -36,7 +36,7 @@ variants**:
 
 ### Handling errors from client methods
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, JoinRoomParams,
 };
@@ -79,7 +79,7 @@ structured error codes returned by the Signal Fish server. It derives `Debug`,
 - Provides a `description()` method returning a human-readable
   `&'static str`.
 
-```rust
+```rust,ignore
 use signal_fish_client::ErrorCode;
 
 let code = ErrorCode::RoomNotFound;
@@ -176,7 +176,7 @@ println!("{}", code.description());
 The `Error` event is emitted when the server sends a generic error message.
 It may include an `ErrorCode` for programmatic handling.
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishEvent, ErrorCode};
 
 match event {
@@ -196,7 +196,7 @@ match event {
 Authentication errors always include an `ErrorCode`. React to specific codes to
 guide the user:
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishEvent, ErrorCode};
 
 match event {
@@ -224,7 +224,7 @@ match event {
 
 When the server reports rate limiting, back off before retrying:
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishEvent, ErrorCode};
 use std::time::Duration;
 
@@ -253,7 +253,7 @@ Transport errors are returned by client methods via `SignalFishError`, while
 server errors arrive asynchronously as `SignalFishEvent` variants. Handle both
 layers for robust error recovery:
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     SignalFishClient, SignalFishError, SignalFishEvent, ErrorCode,
 };

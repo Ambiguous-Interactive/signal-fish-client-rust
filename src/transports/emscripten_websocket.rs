@@ -293,6 +293,7 @@ impl EmscriptenWebSocketTransport {
 
             for (name, result) in results {
                 if result != EMSCRIPTEN_RESULT_SUCCESS {
+                    emscripten_websocket_close(socket, 1000, std::ptr::null());
                     emscripten_websocket_delete(socket);
                     drop(Box::from_raw(state_ptr));
                     return Err(SignalFishError::Io(std::io::Error::other(format!(

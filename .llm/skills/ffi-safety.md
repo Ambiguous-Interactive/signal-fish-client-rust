@@ -159,6 +159,75 @@ impl Drop for EmscriptenWebSocket {
 }
 ```
 
+### Error Path Cleanup Must Match `Drop`
+
+A common FFI bug: the `Drop` implementation follows the correct cleanup
+sequence (close -> delete -> free), but error paths in other methods skip
+one or more steps. Every error path that cleans up FFI resources **must**
+follow the same sequence as `Drop`.
+
+```rust,ignore
+// Drop does: close -> delete -> free (correct)
+impl Drop for EmscriptenWebSocket {
+    fn drop(&mut self) {
+        unsafe {
+            emscripten_websocket_close(self.socket, 1000, ptr::null());
+            emscripten_websocket_delete(self.socket);
+            drop(Box::from_raw(self.state_ptr));
+        }
+    }
+}
+
+// BAD: error path skips delete — leaks the socket handle
+fn setup_callbacks(&mut self) -> Result<(), String> {
+    let result = register_onopen(self.socket, self.state_ptr);
+    if result != EMSCRIPTEN_RESULT_SUCCESS {
+        unsafe {
+            emscripten_websocket_close(self.socket, 1000, ptr::null());
+            // BUG: missing emscripten_websocket_delete()
+            drop(Box::from_raw(self.state_ptr));
+        }
+        return Err("onopen failed".into());
+    }
+    Ok(())
+}
+
+// GOOD: error path mirrors Drop exactly
+fn setup_callbacks(&mut self) -> Result<(), String> {
+    let result = register_onopen(self.socket, self.state_ptr);
+    if result != EMSCRIPTEN_RESULT_SUCCESS {
+        unsafe {
+            emscripten_websocket_close(self.socket, 1000, ptr::null());
+            emscripten_websocket_delete(self.socket);
+            drop(Box::from_raw(self.state_ptr));
+        }
+        return Err("onopen failed".into());
+    }
+    Ok(())
+}
+```
+
+**Prevention pattern:** extract the cleanup sequence into a helper so that
+`Drop` and all error paths call the same code:
+
+```rust,ignore
+impl EmscriptenWebSocket {
+    /// Performs the full cleanup sequence: close -> delete -> free.
+    unsafe fn cleanup(&mut self) {
+        emscripten_websocket_close(self.socket, 1000, ptr::null());
+        emscripten_websocket_delete(self.socket);
+        drop(Box::from_raw(self.state_ptr));
+    }
+}
+```
+
+**Checklist for FFI error paths:**
+
+- [ ] Does every error path that cleans up resources follow the same
+      sequence as `Drop`?
+- [ ] Are all steps present (close, delete/unregister, free)?
+- [ ] Consider extracting cleanup into a shared helper to prevent drift.
+
 ## Single-Threaded Safety
 
 ### `unsafe impl Send` on wasm32-unknown-emscripten
@@ -185,7 +254,7 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] All `#[repr(C)]` struct fields match the C header types exactly (`EM_BOOL` = `c_int`, not `bool`)
 - [ ] Field order matches the C header exactly
 - [ ] All return values from FFI functions are checked
-- [ ] Error paths clean up all resources (sockets, `Box` pointers, channels)
+- [ ] Error paths follow the **same cleanup sequence** as `Drop` (see "Error Path Cleanup Must Match `Drop`")
 - [ ] Raw pointer lifetimes are documented with `// SAFETY:` comments
 - [ ] Callback `user_data` lifetime outlives all possible callback invocations
 - [ ] `Drop` impl cleans up resources in the correct order (close -> unregister -> delete -> reclaim)
@@ -198,4 +267,5 @@ Use this checklist when adding or reviewing any FFI binding:
 | Missing return value check | Silent callback registration failure | Check every FFI return value |
 | Double `Box::from_raw` | Double-free crash or UB | Track ownership, reclaim exactly once |
 | Wrong cleanup order | Use-after-free in callbacks | Close socket before reclaiming state |
+| Error path skips cleanup step | Resource leak (e.g., missing `delete` between `close` and `free`) | Mirror `Drop` sequence exactly; extract a shared helper |
 | `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |

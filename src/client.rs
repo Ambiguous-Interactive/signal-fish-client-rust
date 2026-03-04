@@ -262,6 +262,7 @@ impl ClientState {
 /// All public methods serialize a [`ClientMessage`] and send it to the
 /// transport loop over an unbounded channel. They return immediately once the
 /// message is queued (no round-trip await).
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub struct SignalFishClient {
     /// Sender half of the command channel to the transport loop.
     cmd_tx: mpsc::UnboundedSender<ClientMessage>,
@@ -376,6 +377,7 @@ impl SignalFishClient {
     }
 }
 
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 impl SignalFishClient {
     // ── Public API methods ──────────────────────────────────────────
 
@@ -534,6 +536,7 @@ impl SignalFishClient {
     }
 }
 
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 impl std::fmt::Debug for SignalFishClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("SignalFishClient");

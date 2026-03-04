@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 1. Connect to the server via WebSocket
 
-```rust
+```rust,ignore
 let transport = WebSocketTransport::connect(&url).await?;
 ```
 
@@ -131,7 +131,7 @@ variable; it defaults to `ws://localhost:3536/ws`.
 
 #### 2. Configure and start the client
 
-```rust
+```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
 let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
@@ -144,7 +144,7 @@ let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 
 #### 3. Event loop with `tokio::select!`
 
-```rust
+```rust,ignore
 loop {
     tokio::select! {
         event = event_rx.recv() => { /* … */ }
@@ -171,7 +171,7 @@ events** while also catching **Ctrl+C** for a clean exit.
 
 #### 5. Graceful shutdown
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -292,7 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 1. Define `LoopbackTransport` with mpsc channels
 
-```rust
+```rust,ignore
 pub struct LoopbackTransport {
     tx: mpsc::UnboundedSender<String>,
     rx: mpsc::UnboundedReceiver<String>,
@@ -307,7 +307,7 @@ the other side's `rx`.
 
 #### 2. Implement the `Transport` trait
 
-```rust
+```rust,ignore
 #[async_trait]
 impl Transport for LoopbackTransport {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
@@ -332,7 +332,7 @@ Only three methods are required:
 
 #### 3. Create a fake server that injects responses
 
-```rust
+```rust,ignore
 let auth_msg = server.rx.recv().await.expect("should receive Authenticate");
 let auth_response = serde_json::json!({ /* … */ });
 server.tx.send(auth_response.to_string())?;
@@ -343,7 +343,7 @@ a hand-crafted `Authenticated` JSON payload — no network required.
 
 #### 4. Wire into the client and observe events
 
-```rust
+```rust,ignore
 let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
 

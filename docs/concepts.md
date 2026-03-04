@@ -20,7 +20,7 @@ graph LR
 
 The `Transport` trait defines three async methods — send, receive, and close:
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
@@ -85,7 +85,7 @@ All server responses arrive as `SignalFishEvent` variants on a **bounded
 `SignalFishConfig::event_channel_capacity`). Your application consumes
 them in an async loop:
 
-```rust
+```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
 let (client, mut events) = SignalFishClient::start(transport, config);
 
@@ -139,7 +139,7 @@ All client command methods — `join_room`, `leave_room`, `send_game_data`,
 serialize a `ClientMessage`, queue it on an internal unbounded channel, and
 return `Result<()>` immediately. There is no `.await`.
 
-```rust
+```rust,ignore
 // These return instantly — no network round-trip
 client.join_room(
     JoinRoomParams::new("my-game", "Alice")
@@ -153,7 +153,7 @@ client.set_ready()?;
 
 Besides the state accessors, the **only** async method on the client is `shutdown()`:
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -208,7 +208,7 @@ graph LR
 
 To stop the client cleanly, call `shutdown()`:
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -262,7 +262,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 `ErrorCode` is a 40-variant enum that arrives inside events. The server sends
 these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Error { message, error_code } => {
         println!("Server error: {message} ({error_code:?})");

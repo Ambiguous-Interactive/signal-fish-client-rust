@@ -82,6 +82,46 @@ pub mod websocket;
 async fn test_websocket_transport() { /* ... */ }
 ```
 
+### Preventing Dead Code Warnings with Feature-Gated Constructors
+
+When a `#[cfg(feature = "X")]` gate is applied to a constructor but **not**
+to the struct definition or its `impl` blocks, `dead_code` warnings appear
+when the feature is disabled — the struct and its fields exist but nothing
+constructs them.
+
+**The fix:** apply `#[cfg_attr(not(feature = "X"), allow(dead_code))]` to
+every item that is only reachable through the gated constructor.
+
+```rust,ignore
+// The constructor is only compiled with the feature enabled:
+#[cfg(feature = "transport-websocket")]
+impl WebSocketState {
+    pub fn new(url: &str) -> Self { /* ... */ }
+}
+
+// The struct and its fields must suppress dead_code when the feature
+// is off, because no constructor exists to create them:
+#[cfg_attr(not(feature = "transport-websocket"), allow(dead_code))]
+pub(crate) struct WebSocketState {
+    url: String,
+    connected: bool,
+}
+
+// Any inherent impl block used only through the gated constructor
+// also needs the attribute:
+#[cfg_attr(not(feature = "transport-websocket"), allow(dead_code))]
+impl WebSocketState {
+    fn internal_helper(&self) { /* ... */ }
+}
+```
+
+**Checklist when adding `#[cfg(feature = "...")]` to a constructor:**
+
+- [ ] Is the struct itself gated? If not, add `#[cfg_attr(not(feature = "..."), allow(dead_code))]` to the struct.
+- [ ] Are there non-gated `impl` blocks for the struct? Add the same `cfg_attr` to each one.
+- [ ] Are there helper functions only called from the gated constructor? Gate or annotate those too.
+- [ ] Run `cargo clippy --all-targets` **without** the feature to confirm zero warnings.
+
 ### docs.rs Configuration
 
 ```toml
