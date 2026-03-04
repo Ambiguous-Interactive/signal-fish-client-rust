@@ -822,8 +822,9 @@ mod tests {
                 // `Some(result)` delivers the scripted message or error.
                 item
             } else {
-                // All scripted messages have been delivered — hang forever
-                // so the transport loop stays alive until shutdown.
+                // All scripted messages have been delivered — pending()
+                // never completes, keeping the transport loop alive
+                // until shutdown aborts it.
                 std::future::pending().await
             }
         }
@@ -1174,12 +1175,16 @@ mod tests {
             if let Some(item) = self.incoming.pop_front() {
                 item
             } else {
+                // No scripted messages — pending() never completes,
+                // keeping the task alive until shutdown aborts it.
                 std::future::pending().await
             }
         }
 
         async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
             self.close_called.store(true, Ordering::Release);
+            // Simulate a close() that never completes, so the
+            // shutdown timeout/abort path can be exercised.
             std::future::pending().await
         }
     }

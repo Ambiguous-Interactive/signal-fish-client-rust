@@ -69,12 +69,10 @@ Array indexes in Bash are arithmetic context. Do not prefix index variables with
 
 ### SC2001 — prefer parameter expansion over `echo | sed`
 
-`echo "$var" | sed 's/pattern/replacement/'` triggers SC2001 when the
-substitution can be expressed with bash parameter expansion. For leading
-whitespace trimming use `trimmed="${code#"${code%%[![:space:]]*}"}"` instead
-of `trimmed=$(echo "$code" | sed 's/^[[:space:]]*//')`. For complex
-multi-stage pipelines or multi-expression `sed` commands, SC2001 does not
-fire. Using `printf '%s' "$var" | sed ...` also avoids the warning.
+`echo "$var" | sed 's/pat/rep/'` triggers SC2001 when expressible with
+parameter expansion (e.g., `trimmed="${code#"${code%%[![:space:]]*}"}"` instead
+of `echo "$code" | sed 's/^[[:space:]]*//'`). Multi-stage `sed` pipelines and
+`printf '%s' "$var" | sed ...` do not trigger the warning.
 
 ### Intra-doc links to target-gated types
 
@@ -146,16 +144,8 @@ The project uses `locale = "en-us"` in `.typos.toml`. Use American English
 spellings in code, comments, and docs (e.g., "queuing" not "queueing").
 
 The `typos` spell checker may flag variable names as misspellings. Use
-`[default.extend-identifiers]` for identifier-level suppressions:
-
-```toml
-[default.extend-identifiers]
-# Variable name in test destructuring (player_name abbreviation)
-pn = "pn"
-```
-
-Use `[default.extend-words]` for word-level suppressions (affects all
-contexts, not just identifiers).
+`[default.extend-identifiers]` for identifier-level suppressions (e.g.,
+`pn = "pn"`) and `[default.extend-words]` for word-level suppressions.
 
 ### Shell scripts: Comments must match behavior
 
@@ -254,28 +244,33 @@ Use this pattern for MSRV jobs:
     toolchain: <msrv-from-Cargo.toml>
 ```
 
-Prevention checks in this repository:
-
-- `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
-  validates the extracted `msrv` job block, not generic substring matches.
-- `tests/ci_config_tests.rs::ci_workflow_policy::msrv_toolchain_step_regressions_are_caught`
-  includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
-- `scripts/check-workflows.sh` fails fast on problematic
-  `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
+Enforced by `ci_config_tests.rs::ci_workflow_policy` tests
+(`ci_msrv_matches_cargo_toml`, `msrv_toolchain_step_regressions_are_caught`)
+and `scripts/check-workflows.sh`.
 
 ### Documentation drift on quantitative claims
 
 Scripts like `check-all.sh` define phase counts and `--quick` boundaries
 referenced in this file. Update docs in the same commit as script changes.
+Enforced by `ci_config_tests.rs::check_all_documentation_accuracy` tests
+(total phase count, quick phase count, PHASE_NAMES vs TOTAL_PHASES).
 
-Prevention checks:
+### Path-based exclusions in tests: check full path components
 
-- `ci_config_tests.rs::check_all_documentation_accuracy::ci_configuration_md_references_correct_total_phase_count`
-  extracts `TOTAL_PHASES=` from the script and verifies the docs match.
-- `ci_config_tests.rs::check_all_documentation_accuracy::ci_configuration_md_references_correct_quick_phase_count`
-  does the same for `--quick` mode.
-- `ci_config_tests.rs::check_all_documentation_accuracy::check_all_header_matches_total_phases`
-  verifies the PHASE_NAMES count matches TOTAL_PHASES.
+When test code skips files by module name (e.g., excluding `emscripten_websocket`),
+match against **all path components**, not just the filename. Filename-only matching
+(`path.file_name().starts_with(...)`) breaks when a flat module file is refactored
+into a directory module. Use `path.components().any(|c| ...)` instead:
+
+```rust
+if path.components().any(|c| {
+    c.as_os_str().to_str().is_some_and(|s| {
+        s == "emscripten_websocket" || s == "emscripten_websocket.rs"
+    })
+}) {
+    continue;
+}
+```
 
 ## Validation Scripts
 

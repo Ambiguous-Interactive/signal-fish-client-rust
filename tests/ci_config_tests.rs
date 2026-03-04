@@ -379,11 +379,19 @@ mod docsrs_policy {
                     // Skip files inside the emscripten_websocket module: they
                     // are compiled only on target_os = "emscripten" where the
                     // type is in scope, so intra-doc links there are correct.
-                    if path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with("emscripten_websocket"))
-                    {
+                    //
+                    // We check ALL path components, not just the final filename,
+                    // so that files inside a potential `emscripten_websocket/`
+                    // directory (e.g., `emscripten_websocket/connection.rs`) are
+                    // also excluded. We match the exact stem "emscripten_websocket"
+                    // (directory component or `.rs` file) rather than a prefix to
+                    // avoid false-positive exclusions on unrelated files that
+                    // happen to share the prefix.
+                    if path.components().any(|c| {
+                        c.as_os_str().to_str().is_some_and(|s| {
+                            s == "emscripten_websocket" || s == "emscripten_websocket.rs"
+                        })
+                    }) {
                         continue;
                     }
                     let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -407,6 +415,77 @@ mod docsrs_policy {
              and cannot resolve on other hosts, causing rustdoc failures with \
              -D warnings. Use plain backtick formatting instead.\nViolations:\n{}",
             violations.join("\n")
+        );
+    }
+
+    /// Regression test: verify that the emscripten_websocket exclusion logic
+    /// in `no_source_file_uses_intradoc_link_for_target_gated_emscripten_type`
+    /// checks path *components*, not just the final filename. This ensures
+    /// files inside a potential `emscripten_websocket/` directory (e.g.,
+    /// `emscripten_websocket/connection.rs`) are also correctly excluded.
+    #[test]
+    fn emscripten_exclusion_uses_component_based_path_matching() {
+        /// Checks whether a path should be excluded from the intra-doc link
+        /// scan. This duplicates the component-checking logic used in the
+        /// production test above, allowing us to unit-test it in isolation.
+        fn is_excluded_emscripten_path(path: &std::path::Path) -> bool {
+            path.components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs")
+            })
+        }
+
+        // Current single-file layout — must be excluded.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket.rs"
+            )),
+            "emscripten_websocket.rs (current layout) must be excluded"
+        );
+
+        // Potential future directory layout — must also be excluded.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket/connection.rs"
+            )),
+            "emscripten_websocket/connection.rs (future directory layout) must be excluded"
+        );
+
+        // Deeply nested file inside the emscripten_websocket directory.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket/sub/helper.rs"
+            )),
+            "emscripten_websocket/sub/helper.rs must be excluded"
+        );
+
+        // Unrelated transport — must NOT be excluded.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/transports/websocket.rs")),
+            "websocket.rs must NOT be excluded"
+        );
+
+        // Unrelated source file — must NOT be excluded.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/client.rs")),
+            "client.rs must NOT be excluded"
+        );
+
+        // File whose name contains "emscripten" but not as a component prefix.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/transports/not_emscripten.rs")),
+            "not_emscripten.rs must NOT be excluded (emscripten_websocket prefix required)"
+        );
+
+        // File that SHARES the emscripten_websocket prefix but is a different
+        // module — must NOT be excluded. This ensures exact-stem matching, not
+        // prefix matching.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket_notes.rs"
+            )),
+            "emscripten_websocket_notes.rs must NOT be excluded (different module)"
         );
     }
 }
@@ -3234,6 +3313,146 @@ mod ffi_safety_documentation {
         assert!(
             drop_delete < drop_from_raw,
             "Drop must call delete BEFORE Box::from_raw"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: pending_future_documentation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod pending_future_documentation {
+    use super::*;
+
+    /// Scan all `.rs` files for uses of `std::future::pending()` and verify
+    /// that each usage has an explanatory comment within 5 lines above.
+    ///
+    /// `std::future::pending()` creates a future that never completes and
+    /// never registers a waker. It is a dangerous pattern that can silently
+    /// hang tasks if used incorrectly. Every usage must be accompanied by
+    /// a nearby comment explaining why it is safe in context.
+    ///
+    /// The comment must contain at least one of these keywords/phrases:
+    /// "never wake", "noop waker", "pending", "polling", "never completes".
+    ///
+    /// Lines inside doc comments (`///` or `//!`) that merely *mention*
+    /// `std::future::pending()` (e.g., in module-level documentation) are
+    /// not flagged — only actual `.await` call sites are checked.
+    #[test]
+    fn all_std_future_pending_usages_have_explanatory_comments() {
+        let root = project_root();
+        let mut violations: Vec<String> = Vec::new();
+
+        fn visit_rs_files(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            violations: &mut Vec<String>,
+        ) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, root, violations);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    check_file(&path, root, violations);
+                }
+            }
+        }
+
+        fn check_file(
+            path: &std::path::Path,
+            root: &std::path::Path,
+            violations: &mut Vec<String>,
+        ) {
+            let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", path.display());
+            });
+            let lines: Vec<&str> = contents.lines().collect();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+
+            let required_keywords = [
+                "never wake",
+                "noop waker",
+                "pending",
+                "polling",
+                "never completes",
+            ];
+
+            // Build the search needle by concatenation so this test file
+            // does not self-match when scanned.
+            let needle = format!("std::future::{}().await", "pending");
+
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+
+                // Only check actual `.await` call sites. This filters out:
+                // - doc comments that merely discuss the pattern
+                // - string literals that mention the function name
+                // - comments referencing the function
+                if !trimmed.contains(&needle) {
+                    continue;
+                }
+
+                // Skip doc comments (/// and //!) — these describe the
+                // pattern but are not actual usages.
+                if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                    continue;
+                }
+
+                // Skip comment lines that merely reference the call site.
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+
+                // Look at up to 5 lines above for a comment containing
+                // at least one required keyword.
+                let window_start = i.saturating_sub(5);
+                let has_keyword = lines[window_start..i].iter().any(|prev_line| {
+                    let prev_trimmed = prev_line.trim();
+                    // Only consider comment lines.
+                    if !prev_trimmed.starts_with("//") {
+                        return false;
+                    }
+                    let lower = prev_trimmed.to_lowercase();
+                    required_keywords.iter().any(|kw| lower.contains(kw))
+                });
+
+                if !has_keyword {
+                    violations.push(format!(
+                        "{}:{}: `{needle}` usage lacks an explanatory comment \
+                         within 5 lines above. Add a comment containing one \
+                         of: {required_keywords:?}",
+                        relative,
+                        i + 1,
+                    ));
+                }
+            }
+        }
+
+        // Scan both src/ and tests/ directories.
+        let src_dir = root.join("src");
+        let tests_dir = root.join("tests");
+        visit_rs_files(&src_dir, &root, &mut violations);
+        if tests_dir.is_dir() {
+            visit_rs_files(&tests_dir, &root, &mut violations);
+        }
+
+        let needle_display = format!("std::future::{}().await", "pending");
+        let joined = violations.join("\n");
+        assert!(
+            violations.is_empty(),
+            "Found undocumented `{needle_display}` call sites. This pattern \
+             creates a future that never completes and never registers a \
+             waker, which can silently hang tasks. Every usage must have an \
+             explanatory comment within 5 lines above.\n\nViolations:\n\
+             {joined}"
         );
     }
 }

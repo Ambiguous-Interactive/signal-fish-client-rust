@@ -62,6 +62,26 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── Target-gated doc-link check ────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: check-target-gated-doc-links
+        name: target-gated doc-link check
+        language: system
+        entry: bash scripts/check-target-gated-doc-links.sh
+        pass_filenames: false
+        always_run: true
+
+  # ── Target-gated doc-link script tests ─────────────────────────────────
+  - repo: local
+    hooks:
+      - id: test-check-target-gated-doc-links
+        name: target-gated doc-link script tests
+        language: system
+        entry: bash scripts/test_check_target_gated_doc_links.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Workflow guard checks ─────────────────────────────────────────────────
   - repo: local
     hooks:

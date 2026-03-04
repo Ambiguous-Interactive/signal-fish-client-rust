@@ -91,11 +91,14 @@ impl Transport for HangingCloseTransport {
         if let Some(item) = self.incoming.pop_front() {
             item
         } else {
+            // No more scripted messages — pending() never completes,
+            // keeping the task alive until shutdown aborts it.
             std::future::pending().await
         }
     }
 
     async fn close(&mut self) -> Result<(), SignalFishError> {
+        // Simulate a transport that never completes close().
         std::future::pending().await
     }
 }

@@ -507,6 +507,8 @@ mod tests {
             if let Some(item) = self.incoming.pop_front() {
                 item
             } else {
+                // No scripted messages remain — pending() never completes,
+                // keeping the polling loop alive until shutdown.
                 std::future::pending().await
             }
         }
@@ -836,6 +838,7 @@ mod tests {
         }
 
         async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            // Never completes — recv hangs so tests focus on send errors.
             std::future::pending().await
         }
 
@@ -856,10 +859,12 @@ mod tests {
     #[async_trait]
     impl Transport for PendingOnSendTransport {
         async fn send(&mut self, _message: String) -> std::result::Result<(), SignalFishError> {
+            // Never completes — simulates a transport stuck on send.
             std::future::pending().await
         }
 
         async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            // Never completes — recv hangs alongside pending send.
             std::future::pending().await
         }
 

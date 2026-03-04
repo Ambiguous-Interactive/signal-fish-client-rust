@@ -28,6 +28,33 @@
 //! async runtime, because `recv()` uses [`std::future::pending()`] when no
 //! messages are buffered (it will never wake).
 //!
+//! # `recv()` caller contract
+//!
+//! The `recv()` method uses [`std::future::pending()`] when the internal
+//! channel is empty. This means the returned future will **never wake** --
+//! it permanently suspends without registering any waker. This is
+//! intentional and correct under the noop-waker polling model used by
+//! [`SignalFishPollingClient`](crate::SignalFishPollingClient):
+//!
+//! - **Callers must create a new future on every call.** Each invocation
+//!   of `recv()` must produce a fresh future that is polled exactly once.
+//!   Never store and re-poll a future returned by `recv()` -- doing so
+//!   will hang forever because the pending future has no waker to trigger
+//!   progress.
+//!
+//! - **`std::future::pending().await` intentionally never wakes.** When
+//!   no messages are buffered, the transport signals "nothing yet" by
+//!   returning `Poll::Pending` via `std::future::pending()`. The polling
+//!   client discards this result and retries on the next tick, which
+//!   creates a new future that can observe newly arrived messages.
+//!
+//! - **Only compatible with `SignalFishPollingClient`.** Standard async
+//!   runtimes (Tokio, async-std, etc.) expect futures to register a
+//!   waker so they can be re-polled when progress is possible. Since
+//!   `pending()` never registers a waker, using this transport with
+//!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
+//!   any real executor will cause `recv()` to hang indefinitely.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -488,8 +515,14 @@ impl Transport for EmscriptenWebSocketTransport {
                     return None;
                 }
                 Err(std_mpsc::TryRecvError::Empty) => {
-                    // No messages buffered — return Pending.
-                    // The polling client will call recv() again next frame.
+                    // No messages buffered — yield `Poll::Pending` via
+                    // `std::future::pending()`, which never registers a
+                    // waker and therefore never wakes. This is safe because
+                    // `SignalFishPollingClient` uses a noop waker and
+                    // creates a brand-new `recv()` future on every poll
+                    // tick — it never re-polls this suspended future.
+                    // See the module-level "recv() caller contract" section
+                    // for the full rationale.
                     std::future::pending().await
                 }
                 Err(std_mpsc::TryRecvError::Disconnected) => {

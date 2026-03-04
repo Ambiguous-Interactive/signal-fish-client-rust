@@ -121,6 +121,30 @@ else
     echo "Note: scripts/test_check_ffi_safety.sh not found — skipping FFI safety script tests."
 fi
 
+# ── Target-gated doc-link check ─────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-target-gated-doc-links.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-target-gated-doc-links.sh"; then
+        echo ""
+        echo "Commit aborted: target-gated doc-link check failed."
+        echo "Fix the doc-link violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-target-gated-doc-links.sh not found — skipping target-gated doc-link check."
+fi
+
+# ── Target-gated doc-link script tests ──────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_target_gated_doc_links.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/test_check_target_gated_doc_links.sh"; then
+        echo ""
+        echo "Commit aborted: target-gated doc-link script tests failed."
+        echo "Fix the test failures above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/test_check_target_gated_doc_links.sh not found — skipping target-gated doc-link script tests."
+fi
+
 # ── Workflow guard checks ───────────────────────────────────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-workflows.sh" ]; then
     if ! bash "${REPO_ROOT}/scripts/check-workflows.sh"; then
@@ -235,10 +259,12 @@ echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
 echo "  5. bash scripts/check-ffi-safety.sh (FFI safety check)"
 echo "  6. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
-echo "  7. bash scripts/check-workflows.sh"
-echo "  8. cargo fmt --all -- --check"
-echo "  9. cargo clippy --all-targets --all-features -- -D warnings"
-echo " 10. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  7. bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
+echo "  8. bash scripts/test_check_target_gated_doc_links.sh (target-gated doc-link script tests)"
+echo "  9. bash scripts/check-workflows.sh"
+echo " 10. cargo fmt --all -- --check"
+echo " 11. cargo clippy --all-targets --all-features -- -D warnings"
+echo " 12. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
