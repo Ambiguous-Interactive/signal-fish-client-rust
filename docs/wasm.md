@@ -205,6 +205,25 @@ satisfied because there are no other threads.
     when no messages are buffered — a real async runtime would hang forever
     waiting for a waker that never fires.
 
+### Connection timing
+
+!!! info "Connection timing — `Connected` vs. WebSocket `onopen`"
+    `SignalFishPollingClient` emits [`SignalFishEvent::Connected`] on the
+    **first call to `poll()`**, not when the browser's WebSocket `onopen`
+    callback fires. Because `EmscriptenWebSocketTransport::connect()` returns
+    synchronously before the handshake completes, there is a window where
+    `Connected` has been delivered but the WebSocket is not yet open.
+
+    Messages sent during this window are **buffered by the browser** and
+    delivered once the connection opens — no data is lost. However, callers
+    should not interpret `Connected` as proof that the transport handshake is
+    complete.
+
+    This differs from the async `SignalFishClient`, where the transport is
+    passed to `start()` already connected (e.g., via
+    `WebSocketTransport::connect(url).await`), so `Connected` genuinely
+    reflects a completed handshake.
+
 ---
 
 ## `SignalFishPollingClient`

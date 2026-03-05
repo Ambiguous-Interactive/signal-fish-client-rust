@@ -45,7 +45,20 @@ use crate::protocol::{
 #[derive(Debug, Clone)]
 pub enum SignalFishEvent {
     // ── Synthetic events ────────────────────────────────────────────
-    /// The transport connection was established successfully.
+    /// The client has started and will begin communicating with the server.
+    ///
+    /// This is a **synthetic event** — it is not triggered by a server message.
+    ///
+    /// - **`SignalFishClient`** (async): emitted at the start of the transport
+    ///   loop, after the transport has already been connected via
+    ///   `.connect().await`.
+    /// - **`SignalFishPollingClient`**: emitted on the **first call to
+    ///   [`poll()`](crate::SignalFishPollingClient::poll)**. For transports
+    ///   whose connection handshake completes asynchronously (e.g.,
+    ///   `EmscriptenWebSocketTransport`),
+    ///   the handshake may still be in progress when this event fires. Messages
+    ///   sent before the handshake finishes are buffered by the browser and
+    ///   delivered once the connection opens.
     Connected,
 
     /// The transport connection was closed.

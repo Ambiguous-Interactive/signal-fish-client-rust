@@ -233,8 +233,12 @@ strings to match server expectations.
 2. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
 3. Client may then call `join_room`, etc.
 4. The transport loop emits a synthetic `SignalFishEvent::Connected` at startup
-   and `SignalFishEvent::Disconnected` when the transport closes (best-effort;
-   delivery may be missed if the receiver is dropped or shutdown times out).
+   (`SignalFishClient`: at the start of the transport loop, after the transport
+   is already connected; `SignalFishPollingClient`: on the first call to
+   `poll()`, which may precede the transport's connection handshake completing).
+   `SignalFishEvent::Disconnected` is emitted when the transport closes
+   (best-effort; delivery may be missed if the receiver is dropped or shutdown
+   times out).
 
 ## Protocol Overview
 

@@ -36,6 +36,10 @@ Reference for preventing documentation drift by validating docs against source-o
 
 Reference for thiserror patterns, SignalFishError design, and error propagation in this codebase.
 
+### [Event Lifecycle Timing](event-lifecycle-timing.md)
+
+Reference for understanding and correctly documenting the timing semantics of synthetic events (`Connected`, `Disconn...
+
 ### [FFI Safety](ffi-safety.md)
 
 Reference for writing correct and safe FFI bindings, with emphasis on C type mapping, struct layout, pointer lifecycl...

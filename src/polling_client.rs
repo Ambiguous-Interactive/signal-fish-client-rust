@@ -29,6 +29,11 @@ struct PollingClientState {
 impl PollingClientState {
     fn new() -> Self {
         Self {
+            // Set true at construction: the transport was handed to us
+            // ready-to-use and poll() will emit a synthetic Connected
+            // event on its first call. For transports with asynchronous
+            // handshakes (e.g., EmscriptenWebSocketTransport), this flag
+            // means "client is active," not "handshake complete."
             connected: true,
             authenticated: false,
             player_id: None,
@@ -102,9 +107,13 @@ pub struct SignalFishPollingClient<T: Transport> {
 impl<T: Transport> SignalFishPollingClient<T> {
     /// Create a new polling client with the given transport and configuration.
     ///
-    /// Immediately queues an [`Authenticate`](ClientMessage::Authenticate) message
-    /// and a synthetic [`Connected`](SignalFishEvent::Connected) event, which will
-    /// be delivered on the first call to [`poll()`](Self::poll).
+    /// Immediately queues an [`Authenticate`](ClientMessage::Authenticate) message.
+    /// A synthetic [`Connected`](SignalFishEvent::Connected) event will be emitted
+    /// on the first call to [`poll()`](Self::poll).
+    ///
+    /// **Note:** `Connected` is emitted when `poll()` is first called, not when
+    /// the transport's connection handshake completes. See
+    /// [`poll()`](Self::poll#connection-timing) for details.
     #[must_use]
     pub fn new(transport: T, config: SignalFishConfig) -> Self {
         let auth_msg = ClientMessage::Authenticate {
@@ -134,6 +143,24 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// during this poll cycle.
     ///
     /// Call this method once per frame from your game loop.
+    ///
+    /// # Connection timing
+    ///
+    /// On the very first call, `poll()` emits a synthetic
+    /// [`SignalFishEvent::Connected`] event. This event indicates that the
+    /// client has started processing — it does **not** guarantee that the
+    /// underlying transport's connection handshake is complete.
+    ///
+    /// For transports whose handshake completes asynchronously (e.g.,
+    /// `EmscriptenWebSocketTransport`
+    /// on `wasm32-unknown-emscripten`), the WebSocket `onopen` callback may
+    /// fire after `Connected` has already been returned. Messages sent in the
+    /// interim are buffered by the browser and delivered once the connection
+    /// opens.
+    ///
+    /// This differs from [`SignalFishClient::start()`](crate::SignalFishClient::start),
+    /// where the transport is already connected (via `.connect().await`) before
+    /// the first event is emitted.
     pub fn poll(&mut self) -> Vec<SignalFishEvent> {
         let mut events = Vec::new();
 
@@ -699,6 +726,38 @@ mod tests {
         assert!(disconnected, "expected Disconnected event, got: {events:?}");
         assert!(!client.is_connected());
         assert!(!client.is_authenticated());
+    }
+
+    #[test]
+    fn connected_is_always_first_event_even_with_immediate_messages() {
+        // Verifies that the synthetic Connected event is always the first event
+        // in the first poll() result, even when the transport has messages
+        // already buffered. This is important because Connected is emitted
+        // before the recv drain loop, and callers may rely on this ordering.
+        let authenticated_json = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
+
+        let transport =
+            MockTransport::new().with_incoming(vec![Some(Ok(authenticated_json.to_string()))]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        let events = client.poll();
+
+        assert!(
+            events.len() >= 2,
+            "expected at least 2 events, got: {events:?}"
+        );
+        assert!(
+            matches!(events[0], SignalFishEvent::Connected),
+            "first event must always be Connected, got: {:?}",
+            events[0]
+        );
+        // Connected must come before any server-derived events.
+        for (i, event) in events.iter().enumerate().skip(1) {
+            assert!(
+                !matches!(event, SignalFishEvent::Connected),
+                "Connected must only appear once and at index 0, but found at index {i}"
+            );
+        }
     }
 
     #[test]

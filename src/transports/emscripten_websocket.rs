@@ -550,7 +550,11 @@ impl Transport for EmscriptenWebSocketTransport {
             match self.incoming_rx.try_recv() {
                 Ok(IncomingEvent::Message(text)) => return Some(Ok(text)),
                 Ok(IncomingEvent::Open) => {
-                    tracing::debug!("WebSocket connection opened");
+                    tracing::info!(
+                        "WebSocket connection opened (onopen callback received). \
+                         SignalFishPollingClient emits Connected on first poll(), \
+                         which may precede this event."
+                    );
                     continue;
                 }
                 Ok(IncomingEvent::Error(e)) => {
