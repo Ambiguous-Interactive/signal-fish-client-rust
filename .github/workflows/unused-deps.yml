@@ -57,9 +57,9 @@ jobs:
         uses: Swatinem/rust-cache@v2.8.2
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@v2.44.4
+        uses: taiki-e/install-action@v2.68.18
         with:
-          tool: cargo-machete
+          tool: cargo-machete@0.9.1
 
       - name: Run cargo machete
         run: cargo machete
@@ -91,9 +91,9 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@v2.44.4
+        uses: taiki-e/install-action@v2.68.18
         with:
-          tool: cargo-udeps
+          tool: cargo-udeps@0.1.60
 
       - name: Run cargo udeps
         run: cargo +nightly udeps --all-targets --all-features

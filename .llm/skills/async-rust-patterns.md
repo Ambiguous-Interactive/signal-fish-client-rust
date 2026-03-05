@@ -211,6 +211,11 @@ Use `std::sync::atomic::AtomicBool` for simple boolean flags (used for
   lost. `Transport::recv` must be cancel-safe.
 - **JoinHandle drops**: dropping a `JoinHandle` does NOT cancel the task.
   `SignalFishClient::drop` calls `task.abort()` explicitly.
+- **Uninhabited future outputs (`Infallible`)**: when awaiting a future with
+  an uninhabited output type (e.g., `std::convert::Infallible`), use
+  `match future.await {}` instead of `future.await`. Nightly Rust can change
+  the inferred output type (e.g., from `()` to `Infallible`), and the
+  exhaustive empty match works for any uninhabited type.
 
 ```rust
 // Graceful shutdown pattern used in SignalFishClient

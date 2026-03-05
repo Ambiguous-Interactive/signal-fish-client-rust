@@ -57,9 +57,9 @@ jobs:
         uses: Swatinem/rust-cache@v2.8.2
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@v2.44.4
+        uses: taiki-e/install-action@v2.68.18
         with:
-          tool: cargo-semver-checks
+          tool: cargo-semver-checks@0.46.0
 
       - name: Generate lockfile
         run: cargo generate-lockfile

@@ -31,15 +31,15 @@ accept = ["2xx", "429"]
 accept = ["200..=299", "429"]
 ```
 
-The `header` field must be a TOML **map**, not an array:
+The `header` field must be a TOML **array** of `"Name: value"` strings, not a map:
 
 ```toml
-# WRONG — array syntax
-header = ["Accept: text/html"]
-
-# CORRECT — map syntax
+# WRONG — map syntax (lychee v0.18+ rejects with "invalid type: map, expected a sequence")
 [header]
 Accept = "text/html"
+
+# CORRECT — array of strings
+header = ["Accept: text/html"]
 ```
 
 Always validate `.lychee.toml` with a TOML parser before committing. The `scripts/ci-validate.sh` script includes automated TOML validation.
@@ -78,7 +78,7 @@ Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_byt
 
 ### semver-checks on new crates
 
-`cargo semver-checks` fails when the base branch does not contain the crate (no baseline to diff). The CI workflow must check for package existence before running semver-checks.
+`cargo semver-checks` fails when the base branch lacks the crate. The CI workflow must check for package existence before running semver-checks.
 
 ### markdownlint: Emphasis conventions
 
@@ -155,24 +155,18 @@ Keep comments in CI shell scripts behaviorally exact:
 and compound forms like `#[cfg(all(test, feature = "..."))]`. When adding test
 modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
 
-### Shell scripts: Guard subsequent logic after extraction failures
+### Shell scripts: Guard logic after extraction failures
 
-When a shell script extracts a value (e.g., from `awk`/`grep`) and validates extraction, all dependent comparisons must stay inside the success branch or return early (`continue`/`exit`). Enforced by `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+When a script extracts a value (e.g., from `awk`/`grep`), all dependent comparisons must stay inside the success branch or return early (`continue`/`exit`). Enforced by `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 
-Scripts that use relative paths (e.g., `src`, `tests`) will silently fail if
-invoked from the wrong directory. Always resolve the repo root:
-
-```bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
-```
+Scripts using relative paths silently fail if invoked from the wrong
+directory. Resolve with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"` and `cd "$REPO_ROOT"`.
 
 ### Shell scripts: CRLF line endings break Bash parsing
 
-Bash `read -r` strips `\n` but preserves `\r` from Windows CRLF files. Always strip `\r` when reading files line-by-line: `line="${line//$'\r'/}"`. Also add `| tr -d '\r'` to `awk`/`sed` pipelines processing file content. Include a `.gitattributes` with `* text=auto eol=lf` in the repo root to prevent CRLF issues in CI and cross-platform development.
+Bash `read -r` preserves `\r` from CRLF files. Strip it: `line="${line//$'\r'/}"` and add `| tr -d '\r'` to `awk`/`sed` pipelines. Use `.gitattributes` with `* text=auto eol=lf`.
 
 ### MSRV drift
 
@@ -241,18 +235,8 @@ Scripts like `check-all.sh` define phase counts and `--quick` boundaries referen
 
 When test code skips files by module name (e.g., excluding `emscripten_websocket`),
 match against **all path components**, not just the filename. Filename-only matching
-(`path.file_name().starts_with(...)`) breaks when a flat module file is refactored
-into a directory module. Use `path.components().any(|c| ...)` instead:
-
-```rust
-if path.components().any(|c| {
-    c.as_os_str().to_str().is_some_and(|s| {
-        s == "emscripten_websocket" || s == "emscripten_websocket.rs"
-    })
-}) {
-    continue;
-}
-```
+breaks when a flat module is refactored into a directory module. Use
+`path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs"))` instead of `path.file_name().starts_with(...)`.
 
 ### Action version pinning: major-only vs patch-level
 
@@ -266,6 +250,20 @@ patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with
 
 Phase 7 emits non-blocking warnings for major-only pins. Verified by
 `ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.
+
+### Action version consistency across workflow files
+
+All uses of the same action across workflow `.yml` files must use the same
+version tag (e.g., `actions/checkout@v6.0.2` everywhere, not `@v6.0.1` in
+one file). `dtolnay/rust-toolchain` is excluded (uses channel refs).
+Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
+
+### taiki-e/install-action: pin tool versions
+
+Always include a version pin in the `tool:` parameter: `cargo-audit@0.22.1`,
+not bare `cargo-audit`. Unpinned tools break CI when upstream ships breaking
+changes. Enforced by
+`ci_config_tests.rs::workflow_security::install_action_tools_have_version_pins`.
 
 ### Documentation accuracy for WASM target capabilities
 

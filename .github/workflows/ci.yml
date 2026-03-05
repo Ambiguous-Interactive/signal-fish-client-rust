@@ -159,7 +159,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2.0.11
+        uses: EmbarkStudios/cargo-deny-action@v2.0.15
 
   # ──────────────────────────────────────────────────────────────
   # Publish dry-run — verify crate packages correctly

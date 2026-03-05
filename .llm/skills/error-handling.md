@@ -174,6 +174,24 @@ if let Err(e) = optional_operation().await {
 }
 ```
 
+### Never use panic!() in src/
+
+`panic!()`, `unwrap()`, `expect()`, and `unreachable!()` are forbidden in
+`src/` (non-test) code. Use `tracing::error!()` to log the condition, then
+return an appropriate `SignalFishError` variant:
+
+```rust
+// WRONG — panics in production code
+panic!("unexpected state: {state:?}");
+
+// CORRECT — log and return an error
+tracing::error!(?state, "unexpected state");
+return Err(SignalFishError::TransportClosed);
+```
+
+Enforced by `scripts/check-no-panics.sh` and CI. The `#[cfg(test)]` escape
+hatch applies only inside test modules.
+
 ## Server Errors as Events
 
 Server-level errors arrive as events, not `SignalFishError`:

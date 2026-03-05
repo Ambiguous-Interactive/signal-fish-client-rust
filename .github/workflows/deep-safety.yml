@@ -99,9 +99,9 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.44.4
+        uses: taiki-e/install-action@v2.68.18
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.1
 
       - name: Generate lockfile
         run: cd fuzz && cargo generate-lockfile
@@ -144,9 +144,9 @@ jobs:
         uses: Swatinem/rust-cache@v2.8.2
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.44.4
+        uses: taiki-e/install-action@v2.68.18
         with:
-          tool: cargo-mutants
+          tool: cargo-mutants@26.2.0
 
       - name: Run mutation tests
         run: cargo mutants --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs

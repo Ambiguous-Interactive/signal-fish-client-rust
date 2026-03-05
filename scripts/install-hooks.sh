@@ -97,6 +97,26 @@ else
     echo "       or: brew install shellcheck"
 fi
 
+# ── TOML config validation ────────────────────────────────────────────────
+TOML_FAIL=0
+for toml_file in "${REPO_ROOT}"/*.toml "${REPO_ROOT}"/.*.toml; do
+    [ -f "$toml_file" ] || continue
+    if command -v python3 &>/dev/null; then
+        if ! python3 -c "import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))" "$toml_file" 2>/dev/null; then
+            if ! python3 -c "import toml, sys; toml.load(sys.argv[1])" "$toml_file" 2>/dev/null; then
+                echo "TOML parse error: $toml_file"
+                TOML_FAIL=1
+            fi
+        fi
+    fi
+done
+if [ "$TOML_FAIL" -ne 0 ]; then
+    echo ""
+    echo "Commit aborted: one or more TOML config files failed to parse."
+    echo "Fix the TOML syntax errors above, then re-stage and commit."
+    exit 1
+fi
+
 # ── FFI safety check ──────────────────────────────────────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-ffi-safety.sh" ]; then
     if ! bash "${REPO_ROOT}/scripts/check-ffi-safety.sh"; then
@@ -257,14 +277,15 @@ echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
-echo "  5. bash scripts/check-ffi-safety.sh (FFI safety check)"
-echo "  6. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
-echo "  7. bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
-echo "  8. bash scripts/test_check_target_gated_doc_links.sh (target-gated doc-link script tests)"
-echo "  9. bash scripts/check-workflows.sh"
-echo " 10. cargo fmt --all -- --check"
-echo " 11. cargo clippy --all-targets --all-features -- -D warnings"
-echo " 12. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  5. TOML config validation     (optional, requires python3)"
+echo "  6. bash scripts/check-ffi-safety.sh (FFI safety check)"
+echo "  7. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
+echo "  8. bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
+echo "  9. bash scripts/test_check_target_gated_doc_links.sh (target-gated doc-link script tests)"
+echo " 10. bash scripts/check-workflows.sh"
+echo " 11. cargo fmt --all -- --check"
+echo " 12. cargo clippy --all-targets --all-features -- -D warnings"
+echo " 13. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"

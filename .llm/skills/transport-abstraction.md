@@ -250,7 +250,9 @@ impl Future for NoopWakerPending {
         {
             let noop = std::task::Waker::noop();
             if !_cx.waker().will_wake(&noop) {
-                panic!("transport polled with real waker; use SignalFishPollingClient");
+                tracing::error!(
+                    "transport polled with real waker; use SignalFishPollingClient"
+                );
             }
         }
         Poll::Pending
@@ -260,3 +262,21 @@ impl Future for NoopWakerPending {
 
 This replaces `std::future::pending().await` and makes misuse immediately
 visible during development.
+
+### Awaiting futures with uninhabited output types
+
+`NoopWakerPending` has `Output = Infallible` (an uninhabited type). Nightly
+Rust may change how `()` vs `Infallible` interacts with `.await`. Use the
+`match expr.await {}` pattern to handle any uninhabited output without
+binding the result:
+
+```rust
+// WRONG — breaks if nightly changes the inferred type
+NoopWakerPending.await
+
+// CORRECT — works for any uninhabited type (Infallible, !, etc.)
+match NoopWakerPending.await {}
+```
+
+The `match {}` with no arms is exhaustive for uninhabited types and the
+expression diverges (has type `!`), so it works in any position.

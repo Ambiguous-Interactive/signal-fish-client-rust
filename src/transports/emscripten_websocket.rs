@@ -56,9 +56,9 @@
 //!   any real executor will cause `recv()` to hang indefinitely.
 //!
 //! - **Debug-build misuse detection.** In `cfg(debug_assertions)` builds,
-//!   `recv()` will panic if it detects a non-noop waker, which indicates
-//!   the transport is being driven by a real async runtime instead of
-//!   `SignalFishPollingClient`. This makes misuse immediately visible
+//!   `recv()` will emit a `tracing::error!` if it detects a non-noop waker,
+//!   which indicates the transport is being driven by a real async runtime
+//!   instead of `SignalFishPollingClient`. This makes misuse visible
 //!   during development rather than manifesting as a silent hang.
 //!
 //! # Example
@@ -486,8 +486,8 @@ extern "C" fn on_close_callback(
 /// but in debug builds detects misuse with a real async runtime by checking
 /// whether the provided waker is a noop waker.
 ///
-/// If a real waker is detected (one that is not the noop waker), this panics
-/// with a diagnostic message to help users identify that they are incorrectly
+/// If a real waker is detected (one that is not the noop waker), this emits a
+/// `tracing::error!` diagnostic to help users identify that they are incorrectly
 /// using `EmscriptenWebSocketTransport` with `SignalFishClient::start()` or
 /// another real async executor instead of `SignalFishPollingClient`.
 struct NoopWakerPending;
@@ -507,7 +507,7 @@ impl std::future::Future for NoopWakerPending {
             // the two wakers — a real runtime's waker will not match.
             let noop = std::task::Waker::noop();
             if !_cx.waker().will_wake(&noop) {
-                panic!(
+                tracing::error!(
                     "EmscriptenWebSocketTransport::recv() is being polled with a real async \
                      runtime waker. This transport is designed exclusively for use with \
                      SignalFishPollingClient (noop-waker polling). Using it with \
@@ -565,10 +565,10 @@ impl Transport for EmscriptenWebSocketTransport {
                     // No messages buffered — yield `Poll::Pending` via
                     // `NoopWakerPending`, which never registers a waker
                     // and therefore never wakes. In debug builds, it
-                    // panics if a real (non-noop) waker is detected.
+                    // logs an error if a real (non-noop) waker is detected.
                     // See the module-level "recv() caller contract" section
                     // for the full rationale.
-                    NoopWakerPending.await
+                    match NoopWakerPending.await {}
                 }
                 Err(std_mpsc::TryRecvError::Disconnected) => {
                     self.closed = true;

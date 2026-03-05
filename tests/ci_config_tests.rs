@@ -1555,10 +1555,12 @@ mod ci_config_validation {
     }
 
     /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
-    /// field is an inline table (map), not an array. An array-typed `header`
-    /// was a real failure in CI — lychee silently ignores malformed headers.
+    /// field is an array of strings. Lychee v0.18+ expects headers as a
+    /// sequence of `"Name: value"` strings, not an inline table (map).
+    /// A map-typed `header` was a real CI failure — lychee rejects it with
+    /// "invalid type: map, expected a sequence".
     #[test]
-    fn lychee_config_header_is_a_map() {
+    fn lychee_config_header_is_an_array() {
         let contents = read_project_file(".lychee.toml");
         let parsed: toml::Value =
             toml::from_str(&contents).expect(".lychee.toml must be valid TOML");
@@ -1568,13 +1570,31 @@ mod ci_config_validation {
              for link checking requests.",
         );
 
+        let arr = header.as_array().unwrap_or_else(|| {
+            panic!(
+                ".lychee.toml 'header' field must be an array of strings, \
+                 e.g.: header = [\"user-agent: ...\"].\n\
+                 lychee v0.18+ rejects map syntax. Found type: {}",
+                header.type_str()
+            )
+        });
+
         assert!(
-            header.is_table(),
-            ".lychee.toml 'header' field must be an inline table (map), \
-             not an array. lychee expects headers as key-value pairs, e.g.: \
-             header = {{ user-agent = \"...\" }}. Found type: {}",
-            header.type_str()
+            !arr.is_empty(),
+            ".lychee.toml 'header' array must not be empty — \
+             at least a user-agent header is required."
         );
+
+        for (i, entry) in arr.iter().enumerate() {
+            let s = entry.as_str().unwrap_or_else(|| {
+                panic!(".lychee.toml header[{i}] must be a string, found: {entry}")
+            });
+            assert!(
+                s.contains(':'),
+                ".lychee.toml header[{i}] = {s:?} does not contain ':' — \
+                 headers must be in \"Name: value\" format."
+            );
+        }
     }
 
     #[test]
@@ -1881,6 +1901,248 @@ mod ci_config_validation {
             ".pre-commit-config.yaml must define a cargo clippy hook with \
              --no-default-features to catch dead_code warnings and other \
              issues that only surface when optional features are disabled."
+        );
+    }
+
+    /// Collect all workflow YAML files under `.github/workflows/`.
+    fn all_workflow_files() -> Vec<(String, String)> {
+        let workflows_dir = project_root().join(".github/workflows");
+        let mut results = Vec::new();
+        if workflows_dir.is_dir() {
+            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                    let relative = format!(
+                        ".github/workflows/{}",
+                        path.file_name().unwrap().to_string_lossy()
+                    );
+                    let contents = read_project_file(&relative);
+                    results.push((relative, contents));
+                }
+            }
+        }
+        results
+    }
+
+    /// Extract all `uses: owner/repo@version` references from workflow YAML,
+    /// returning `(action_name, version_ref, file_path, line_number)` tuples.
+    fn extract_action_references(
+        workflow_path: &str,
+        contents: &str,
+    ) -> Vec<(String, String, String, usize)> {
+        let mut refs = Vec::new();
+        for (line_num, line) in contents.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // Only check `uses:` lines.
+            let uses_value = if let Some(rest) = trimmed.strip_prefix("- uses:") {
+                rest.trim()
+            } else if let Some(rest) = trimmed.strip_prefix("uses:") {
+                rest.trim()
+            } else {
+                continue;
+            };
+            let uses_value = uses_value.trim_matches('"');
+
+            // Skip local and docker actions.
+            if uses_value.starts_with("./") || uses_value.starts_with("docker://") {
+                continue;
+            }
+
+            if let Some(at_pos) = uses_value.find('@') {
+                let action_name = &uses_value[..at_pos];
+                let version_ref = uses_value[at_pos + 1..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                refs.push((
+                    action_name.to_string(),
+                    version_ref.to_string(),
+                    workflow_path.to_string(),
+                    line_num + 1,
+                ));
+            }
+        }
+        refs
+    }
+
+    /// All uses of the same GitHub Action across all workflow files should use
+    /// the same version tag. For example, if `actions/checkout@v6.0.2` appears
+    /// in ci.yml, every other workflow must also use `@v6.0.2` and not an older
+    /// or newer version. This prevents silent behavioral differences between
+    /// workflows caused by version skew.
+    ///
+    /// `dtolnay/rust-toolchain` is excluded because it intentionally uses
+    /// different channel refs (stable, nightly, beta) in different workflows.
+    #[test]
+    fn all_action_versions_are_consistent_across_workflows() {
+        let workflows = all_workflow_files();
+        assert!(
+            !workflows.is_empty(),
+            "No workflow files found under .github/workflows/. \
+             Expected at least one .yml file."
+        );
+
+        // Collect all action references across all workflows.
+        let mut action_versions: std::collections::HashMap<String, Vec<(String, String, usize)>> =
+            std::collections::HashMap::new();
+
+        for (path, contents) in &workflows {
+            for (action_name, version_ref, file_path, line_num) in
+                extract_action_references(path, contents)
+            {
+                action_versions.entry(action_name).or_default().push((
+                    version_ref,
+                    file_path,
+                    line_num,
+                ));
+            }
+        }
+
+        let mut inconsistencies = Vec::new();
+
+        for (action_name, usages) in &action_versions {
+            // Skip dtolnay/rust-toolchain — it uses channels, not versions.
+            if action_name == "dtolnay/rust-toolchain" {
+                continue;
+            }
+
+            let first_version = &usages[0].0;
+            for (version, file, line) in usages.iter().skip(1) {
+                if version != first_version {
+                    inconsistencies.push(format!(
+                        "  {action_name}: '{first_version}' (in {}, line {}) vs \
+                         '{version}' (in {file}, line {line})",
+                        usages[0].1, usages[0].2
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            inconsistencies.is_empty(),
+            "Action version inconsistencies found across workflow files.\n\
+             All uses of the same GitHub Action must use the same version tag \
+             to prevent silent behavioral differences between workflows.\n\
+             Fix by updating all references to use a single version:\n{}",
+            inconsistencies.join("\n")
+        );
+    }
+
+    /// When `taiki-e/install-action` is used with a `tool:` parameter, the
+    /// tool should include an explicit version pin (e.g., `cargo-audit@0.22.1`
+    /// not just `cargo-audit`). Without a version pin, CI silently installs
+    /// whatever the latest version is, which can break when tools release
+    /// breaking changes (e.g., cargo-audit adding CVSS 4.0 support that
+    /// requires a newer advisory database format, or cargo-semver-checks
+    /// requiring a newer rustdoc JSON format).
+    #[test]
+    fn install_action_tools_have_version_pins() {
+        let workflows = all_workflow_files();
+
+        let mut unpinned = Vec::new();
+
+        for (path, contents) in &workflows {
+            let lines: Vec<&str> = contents.lines().collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+
+                // Detect `uses: taiki-e/install-action@...`
+                let is_install_action =
+                    trimmed.contains("uses:") && trimmed.contains("taiki-e/install-action@");
+
+                if !is_install_action {
+                    continue;
+                }
+
+                // Look ahead for a `tool:` line within the next few lines
+                // (typically in a `with:` block immediately after).
+                let lookahead_end = std::cmp::min(i + 5, lines.len());
+                for (offset, lookahead_line) in lines[i + 1..lookahead_end].iter().enumerate() {
+                    let tool_trimmed = lookahead_line.trim();
+                    let line_num = i + 1 + offset + 1; // 1-based line number
+
+                    if let Some(tool_value) = tool_trimmed.strip_prefix("tool:") {
+                        let tool_value = tool_value.trim().trim_matches('"').trim_matches('\'');
+
+                        // Check each comma-separated tool for version pin.
+                        for tool in tool_value.split(',') {
+                            let tool = tool.trim();
+                            if tool.is_empty() {
+                                continue;
+                            }
+
+                            if !tool.contains('@') {
+                                unpinned.push(format!(
+                                    "  {path}:{line_num}: tool '{tool}' has no version pin. \
+                                     Use '{tool}@<version>' to prevent CI breakage \
+                                     from upstream tool releases.",
+                                ));
+                            }
+                        }
+                        break;
+                    }
+
+                    // Stop looking if we hit a step boundary or unrelated key.
+                    if tool_trimmed.starts_with("- name:")
+                        || tool_trimmed.starts_with("- uses:")
+                        || tool_trimmed.starts_with("- run:")
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            unpinned.is_empty(),
+            "Found taiki-e/install-action tool references without version pins.\n\
+             Unpinned tools can break CI when upstream releases include breaking \
+             changes (e.g., new CVSS format support, new rustdoc JSON version).\n\
+             Add explicit version pins to each tool:\n{}",
+            unpinned.join("\n")
+        );
+    }
+
+    /// All `.toml` config files in the repo root (including hidden files like
+    /// `.lychee.toml` and `.typos.toml`) must parse successfully as valid TOML.
+    /// This catches format errors early — for example, a previous CI failure was
+    /// caused by `.lychee.toml` using map syntax for `header` instead of array
+    /// syntax, which only failed at lychee runtime.
+    #[test]
+    fn all_root_toml_files_parse_successfully() {
+        let root = project_root();
+        let mut failures = Vec::new();
+
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let entry = entry.unwrap();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            if !file_name.ends_with(".toml") {
+                continue;
+            }
+            if !entry.file_type().unwrap().is_file() {
+                continue;
+            }
+
+            let contents = std::fs::read_to_string(entry.path()).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", entry.path().display());
+            });
+
+            if let Err(e) = toml::from_str::<toml::Value>(&contents) {
+                failures.push(format!("  {file_name}: {e}"));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Found TOML files in the repo root that fail to parse.\n\
+             All .toml config files must be valid TOML to prevent CI \
+             runtime failures from config format errors.\n\
+             Parse errors:\n{}",
+            failures.join("\n")
         );
     }
 }
