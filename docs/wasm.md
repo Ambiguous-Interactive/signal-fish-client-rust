@@ -10,7 +10,7 @@ compilation, transport selection, game-loop integration, and Godot gdext usage.
 
 | Target | Runtime | Transport | Client | Use Case |
 |--------|---------|-----------|--------|----------|
-| `wasm32-unknown-unknown` | Browser sandbox / wasm-pack | Bring your own | `SignalFishClient` (with your own async runtime) | Generic browser apps, Bevy, wasm-bindgen projects |
+| `wasm32-unknown-unknown` | Browser sandbox / wasm-pack | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) | Generic browser apps, Bevy, wasm-bindgen projects |
 | `wasm32-unknown-emscripten` | Emscripten C runtime | `EmscriptenWebSocketTransport` (built-in) | `SignalFishPollingClient` | Godot 4.5 web exports via gdext (godot-rust) |
 
 The two targets differ in what the compiled WASM module can access at runtime.

@@ -229,3 +229,34 @@ because `tokio::select!` drops and recreates the `recv` future each iteration.
 Any use of `std::future::pending().await` **must** include a comment explaining:
 (1) the future never wakes (no waker registered), (2) callers must create a
 new future per call, and (3) which runtime/polling model makes this safe.
+
+### Debug-build misuse detection for polling-only transports
+
+Transports designed exclusively for noop-waker polling (like
+`EmscriptenWebSocketTransport`) should include a `cfg(debug_assertions)`
+guard that detects when a real async runtime waker is provided. This
+prevents silent hangs that are extremely difficult to diagnose.
+
+Pattern: Create a `NoopWakerPending` future that checks
+`cx.waker().will_wake(&Waker::noop())` in debug builds:
+
+```rust
+struct NoopWakerPending;
+
+impl Future for NoopWakerPending {
+    type Output = std::convert::Infallible;
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(debug_assertions)]
+        {
+            let noop = std::task::Waker::noop();
+            if !_cx.waker().will_wake(&noop) {
+                panic!("transport polled with real waker; use SignalFishPollingClient");
+            }
+        }
+        Poll::Pending
+    }
+}
+```
+
+This replaces `std::future::pending().await` and makes misuse immediately
+visible during development.

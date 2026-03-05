@@ -55,6 +55,12 @@
 //!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
 //!   any real executor will cause `recv()` to hang indefinitely.
 //!
+//! - **Debug-build misuse detection.** In `cfg(debug_assertions)` builds,
+//!   `recv()` will panic if it detects a non-noop waker, which indicates
+//!   the transport is being driven by a real async runtime instead of
+//!   `SignalFishPollingClient`. This makes misuse immediately visible
+//!   during development rather than manifesting as a silent hang.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -474,6 +480,47 @@ extern "C" fn on_close_callback(
     1 // EM_TRUE
 }
 
+// ── Debug-Only Misuse Detection ─────────────────────────────────────────────
+
+/// A future that yields `Poll::Pending` exactly once, like `std::future::pending()`,
+/// but in debug builds detects misuse with a real async runtime by checking
+/// whether the provided waker is a noop waker.
+///
+/// If a real waker is detected (one that is not the noop waker), this panics
+/// with a diagnostic message to help users identify that they are incorrectly
+/// using `EmscriptenWebSocketTransport` with `SignalFishClient::start()` or
+/// another real async executor instead of `SignalFishPollingClient`.
+struct NoopWakerPending;
+
+impl std::future::Future for NoopWakerPending {
+    type Output = std::convert::Infallible;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        #[cfg(debug_assertions)]
+        {
+            // Detect non-noop wakers via `Waker::will_wake`.
+            // `Waker::noop()` returns a waker whose `wake()` is a no-op.
+            // `will_wake` compares both the data pointer and vtable of
+            // the two wakers — a real runtime's waker will not match.
+            let noop = std::task::Waker::noop();
+            if !_cx.waker().will_wake(&noop) {
+                panic!(
+                    "EmscriptenWebSocketTransport::recv() is being polled with a real async \
+                     runtime waker. This transport is designed exclusively for use with \
+                     SignalFishPollingClient (noop-waker polling). Using it with \
+                     SignalFishClient::start() or any real async executor (Tokio, async-std, etc.) \
+                     will cause recv() to hang indefinitely. \
+                     See: https://docs.rs/signal-fish-client/latest/signal_fish_client/struct.SignalFishPollingClient.html"
+                );
+            }
+        }
+        std::task::Poll::Pending
+    }
+}
+
 // ── Transport Trait Implementation ──────────────────────────────────────────
 
 #[async_trait]
@@ -516,14 +563,12 @@ impl Transport for EmscriptenWebSocketTransport {
                 }
                 Err(std_mpsc::TryRecvError::Empty) => {
                     // No messages buffered — yield `Poll::Pending` via
-                    // `std::future::pending()`, which never registers a
-                    // waker and therefore never wakes. This is safe because
-                    // `SignalFishPollingClient` uses a noop waker and
-                    // creates a brand-new `recv()` future on every poll
-                    // tick — it never re-polls this suspended future.
+                    // `NoopWakerPending`, which never registers a waker
+                    // and therefore never wakes. In debug builds, it
+                    // panics if a real (non-noop) waker is detected.
                     // See the module-level "recv() caller contract" section
                     // for the full rationale.
-                    std::future::pending().await
+                    NoopWakerPending.await
                 }
                 Err(std_mpsc::TryRecvError::Disconnected) => {
                     self.closed = true;

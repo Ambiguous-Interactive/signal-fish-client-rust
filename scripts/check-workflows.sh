@@ -270,6 +270,7 @@ echo -e "${YELLOW}Phase 7: Checking for major-only version tags (informational).
 MAJOR_ONLY_EXCEPTIONS=(
     "dtolnay/rust-toolchain"
     "mymindstorm/setup-emsdk"
+    "taiki-e/install-action"
 )
 
 while IFS= read -r workflow_path; do

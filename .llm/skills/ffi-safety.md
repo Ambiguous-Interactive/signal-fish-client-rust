@@ -230,6 +230,19 @@ extern "C" fn on_message_callback(...) -> EM_BOOL { ... }
 - A missing comment on one callback (while others have it) creates doubt about whether the safety analysis was done
 - `check-ffi-safety.sh` enforces this automatically
 
+## Debug Assertions for FFI Transport Misuse
+
+FFI-backed transports on WASM/Emscripten targets (like `EmscriptenWebSocketTransport`)
+are designed for noop-waker polling only. When accidentally used with a real async
+runtime, the result is a silent hang that is extremely difficult to diagnose --
+especially in Godot/Emscripten debugging scenarios where standard debugger support
+is limited.
+
+Add `cfg(debug_assertions)` guards that detect misuse at runtime. For example,
+check whether the waker provided to `poll()` is a noop waker; if not, panic with
+a clear message directing the developer to use `SignalFishPollingClient` instead.
+See the `transport-abstraction` skill for the `NoopWakerPending` pattern.
+
 ## Target-Restricted Features
 
 ### compile_error!() Guard for FFI Modules

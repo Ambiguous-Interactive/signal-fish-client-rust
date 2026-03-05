@@ -44,7 +44,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.44.4
         with:
           tool: cargo-llvm-cov
 
@@ -52,7 +52,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
 
       - name: Run tests with coverage instrumentation
         run: cargo llvm-cov --all-features --no-report

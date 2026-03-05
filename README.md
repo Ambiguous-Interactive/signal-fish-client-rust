@@ -200,7 +200,7 @@ The SDK supports two WASM targets:
 
 | Target | Use Case | Transport | Client |
 | --- | --- | --- | --- |
-| `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishClient` (with async runtime) |
+| `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
 | `wasm32-unknown-emscripten` | Godot 4.5 web exports (gdext) | `EmscriptenWebSocketTransport` | `SignalFishPollingClient` |
 
 ### Emscripten Quick Start

@@ -256,23 +256,23 @@ if path.components().any(|c| {
 
 ### Action version pinning: major-only vs patch-level
 
-Major-version tags like `@v2` are mutable — the tag can be moved to point
-at any new commit in the v2.x.y line. This is a supply-chain risk. Prefer
-patch-level pinning (e.g., `@v2.8.2`) which points to an immutable release.
-
-Exceptions:
+Major-version tags like `@v2` are mutable (supply-chain risk). Prefer
+patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with
+`scripts/check-workflows.sh` Phase 7 `MAJOR_ONLY_EXCEPTIONS` array):
 
 - `dtolnay/rust-toolchain` — uses channels (`@stable`, `@nightly`, `@beta`)
-  by design
-- `mymindstorm/setup-emsdk` — only publishes major-version tags; no
-  patch releases available
+- `mymindstorm/setup-emsdk` — only publishes major-version tags
+- `taiki-e/install-action` — releases near-daily; patch pins go stale fast
 
-`scripts/check-workflows.sh` Phase 7 emits informational warnings for
-major-only pins. These are non-blocking but should be addressed when
-updating workflow action versions.
+Phase 7 emits non-blocking warnings for major-only pins. Verified by
+`ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.
 
-The `ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`
-test verifies this check is present.
+### Documentation accuracy for WASM target capabilities
+
+`SignalFishClient::start()` requires `tokio::spawn` — unavailable on any WASM
+target. The correct client for all WASM targets is `SignalFishPollingClient`
+(requires `polling-client` feature). Cross-reference capability claims in tables
+against `docs/wasm.md` "What you do not get" sections to avoid contradictions.
 
 ## Validation Scripts
 

@@ -8,7 +8,7 @@
 #
 # Checks:
 #   1. No .rs file under src/ (excluding the emscripten_websocket module) may
-#      contain [`EmscriptenWebSocketTransport (intra-doc link syntax).
+#      contain [`EmscriptenWebSocketTransport`] (intra-doc link syntax).
 #
 # The pattern omits the trailing `]` to also catch method-level links like
 # [`EmscriptenWebSocketTransport::connect`].

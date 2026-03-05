@@ -69,7 +69,7 @@ jobs:
         with:
           components: clippy
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
       - name: Run Clippy
         run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
 
@@ -97,7 +97,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
       - name: Run tests
         run: cargo test ${{ matrix.flags }}
 
@@ -117,7 +117,7 @@ jobs:
         with:
           toolchain: 1.85.0
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
       - name: Generate lockfile
         run: cargo generate-lockfile
       - name: Build with MSRV
@@ -139,7 +139,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
       - name: Build documentation
         run: cargo doc --all-features --no-deps
       - name: Install nightly toolchain
@@ -159,7 +159,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@v2.0.11
 
   # ──────────────────────────────────────────────────────────────
   # Publish dry-run — verify crate packages correctly
@@ -176,6 +176,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.8.2
       - name: Run publish dry-run
         run: cargo publish --dry-run
