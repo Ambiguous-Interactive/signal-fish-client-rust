@@ -31,18 +31,19 @@ accept = ["2xx", "429"]
 accept = ["200..=299", "429"]
 ```
 
-The `header` field must be a TOML **array** of `"Name: value"` strings, not a map:
+The `header` field must be a TOML **array** of `"key=value"` strings (using `=`, not `:`), not a map:
 
 ```toml
 # WRONG — map syntax (lychee v0.18+ rejects with "invalid type: map, expected a sequence")
 [header]
 Accept = "text/html"
 
-# CORRECT — array of strings
+# WRONG — colon syntax (lychee v0.18+ requires key=value)
 header = ["Accept: text/html"]
-```
 
-Always validate `.lychee.toml` with a TOML parser before committing. The `scripts/ci-validate.sh` script includes automated TOML validation.
+# CORRECT — array of key=value strings
+header = ["Accept=text/html"]
+```
 
 ### lychee: Avoid flaky external docs for badges
 
@@ -161,12 +162,11 @@ When a script extracts a value (e.g., from `awk`/`grep`), all dependent comparis
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 
-Scripts using relative paths silently fail if invoked from the wrong
-directory. Resolve with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"` and `cd "$REPO_ROOT"`.
+Scripts using relative paths silently fail if invoked from the wrong directory. Resolve with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"` and `cd "$REPO_ROOT"`.
 
 ### Shell scripts: CRLF line endings break Bash parsing
 
-Bash `read -r` preserves `\r` from CRLF files. Strip it: `line="${line//$'\r'/}"` and add `| tr -d '\r'` to `awk`/`sed` pipelines. Use `.gitattributes` with `* text=auto eol=lf`.
+Bash `read -r` preserves `\r` from CRLF files. Strip with `line="${line//$'\r'/}"` and `| tr -d '\r'` in pipelines. Use `.gitattributes` with `* text=auto eol=lf`.
 
 ### MSRV drift
 
@@ -240,9 +240,7 @@ breaks when a flat module is refactored into a directory module. Use
 
 ### Action version pinning: major-only vs patch-level
 
-Major-version tags like `@v2` are mutable (supply-chain risk). Prefer
-patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with
-`scripts/check-workflows.sh` Phase 7 `MAJOR_ONLY_EXCEPTIONS` array):
+Major-version tags like `@v2` are mutable (supply-chain risk). Prefer patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with `scripts/check-workflows.sh` Phase 7 `MAJOR_ONLY_EXCEPTIONS` array):
 
 - `dtolnay/rust-toolchain` — uses channels (`@stable`, `@nightly`, `@beta`)
 - `mymindstorm/setup-emsdk` — only publishes major-version tags
@@ -272,11 +270,13 @@ target. The correct client for all WASM targets is `SignalFishPollingClient`
 (requires `polling-client` feature). Cross-reference capability claims in tables
 against `docs/wasm.md` "What you do not get" sections to avoid contradictions.
 
+### Nightly clippy may flag different issues than stable
+
+The emscripten WASM target requires nightly, which may introduce lints (e.g., `needless_borrow`) not flagged by stable. Fix code for both when possible; otherwise use `#[allow(clippy::lint_name)]` with a comment.
+
 ## Validation Scripts
 
 ### Failure triage checklist
-
-Start with the first command in the matching row to localize failures quickly.
 
 | Symptom in CI | First command/script to run |
 |---|---|
@@ -286,10 +286,14 @@ Start with the first command in the matching row to localize failures quickly.
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 | Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
 
+### `scripts/validate.sh`
+
+Pre-flight script: cargo fmt/clippy/test plus `.lychee.toml` format validation and markdownlint (if installed).
+
 ### `scripts/ci-validate.sh`
 
 Lightweight local CI validation: fmt check, clippy, test, typos, TOML/JSON syntax validation.
 
 ### `scripts/check-all.sh`
 
-Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4: fmt, FFI safety, clippy, test).
+Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4).

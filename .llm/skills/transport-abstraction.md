@@ -238,7 +238,7 @@ guard that detects when a real async runtime waker is provided. This
 prevents silent hangs that are extremely difficult to diagnose.
 
 Pattern: Create a `NoopWakerPending` future that checks
-`cx.waker().will_wake(&Waker::noop())` in debug builds:
+`cx.waker().will_wake(Waker::noop())` in debug builds:
 
 ```rust
 struct NoopWakerPending;
@@ -249,7 +249,7 @@ impl Future for NoopWakerPending {
         #[cfg(debug_assertions)]
         {
             let noop = std::task::Waker::noop();
-            if !_cx.waker().will_wake(&noop) {
+            if !_cx.waker().will_wake(noop) {
                 tracing::error!(
                     "transport polled with real waker; use SignalFishPollingClient"
                 );

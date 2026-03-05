@@ -1573,7 +1573,7 @@ mod ci_config_validation {
         let arr = header.as_array().unwrap_or_else(|| {
             panic!(
                 ".lychee.toml 'header' field must be an array of strings, \
-                 e.g.: header = [\"user-agent: ...\"].\n\
+                 e.g.: header = [\"user-agent=...\"].\n\
                  lychee v0.18+ rejects map syntax. Found type: {}",
                 header.type_str()
             )
@@ -1590,9 +1590,9 @@ mod ci_config_validation {
                 panic!(".lychee.toml header[{i}] must be a string, found: {entry}")
             });
             assert!(
-                s.contains(':'),
-                ".lychee.toml header[{i}] = {s:?} does not contain ':' — \
-                 headers must be in \"Name: value\" format."
+                s.contains('='),
+                ".lychee.toml header[{i}] = {s:?} does not contain '=' — \
+                 lychee v0.18+ requires headers in \"key=value\" format."
             );
         }
     }

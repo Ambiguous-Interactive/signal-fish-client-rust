@@ -68,15 +68,10 @@ those blocks during compilation checks.
 
 **Decision rule:** only use plain `` ```rust `` for complete,
 self-contained, compilable programs. Everything else gets
-`` ```rust,ignore ``. When in doubt, use `rust,ignore`.
-
-Use `rust,ignore` when a snippet:
-
-- Depends on crates outside the project's dependency tree
-- Uses platform-specific or feature-gated APIs not available in the snippet harness
-- Is intentionally pseudo-code or illustrative rather than compilable
-- Contains bare signatures without a body, or references undefined variables/types
-- Imports platform-specific modules (e.g., `std::os::raw`) that may not compile on all targets
+`` ```rust,ignore ``. When in doubt, use `rust,ignore`. Use `rust,ignore`
+when a snippet depends on external crates, uses platform-specific or
+feature-gated APIs, is pseudo-code/illustrative, contains bare signatures
+without a body, or imports platform-specific modules.
 
 ### Testing the Parser
 
@@ -277,6 +272,11 @@ renaming a page, update both the page heading **and** the card in
 - [ ] If the target page's H1 changed, is the card label updated too?
 - [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
       test?
+
+## Lychee Link Checker: Header Format
+
+In `.lychee.toml`, headers use `key=value` (equals), **not** `key: value`
+(colon). lychee v0.18+ rejects colon syntax with `Header value must be of the form key=value`.
 
 ## Common Markdownlint Pitfalls
 
