@@ -20,11 +20,9 @@
 #   5. Any `fn close()` method that calls `emscripten_websocket_close` must also
 #      call `emscripten_websocket_delete` in that same method (not just in Drop)
 #      to prevent late callback delivery between close() returning and Drop.
-#   6. Std library method calls with incorrect argument passing behind cfg guards.
-#      Specifically, `.will_wake(` must be called with a reference (`&`), not an
-#      owned value. `Waker::will_wake` takes `&Waker`, and passing by value is a
-#      type error hidden when the code is behind `#[cfg(debug_assertions)]` or
-#      target-gated `compile_error!()` guards that prevent normal compilation.
+#   6. (Retired) Previously enforced explicit `&` in `.will_wake()` calls.
+#      Retired because nightly clippy flags the explicit `&` as `needless_borrow`
+#      and the emscripten CI job now runs clippy on the actual target.
 #
 # Exit codes:
 #   0 — no violations found
@@ -398,77 +396,16 @@ if [ "$CHECK5_VIOLATIONS" -eq 0 ]; then
 fi
 echo ""
 
-# ── Check 6: std API calls with incorrect argument passing ────────────
-# Scan for known std library methods that take references but might be
-# accidentally called with owned values in cfg-guarded code that normal
-# CI never compiles. Currently checks:
-#   - .will_wake( — Waker::will_wake takes &Waker, not Waker by value.
-echo -e "${YELLOW}Check 6: Scanning for std API calls with incorrect argument passing (e.g., .will_wake without &)...${NC}"
-
-CHECK6_VIOLATIONS=0
-
-WILL_WAKE_FILES=$(grep -rln '\.will_wake(' src/ 2>/dev/null || true)
-
-if [ -z "$WILL_WAKE_FILES" ]; then
-    echo -e "${GREEN}  No .will_wake() calls found — nothing to check.${NC}"
-else
-    for file in $WILL_WAKE_FILES; do
-        # Find lines with .will_wake( and check if the argument starts with &
-        while IFS= read -r match_line; do
-            match_line="${match_line//$'\r'/}"
-            [ -z "$match_line" ] && continue
-
-            lineno=$(echo "$match_line" | cut -d: -f1)
-            code=$(echo "$match_line" | cut -d: -f2-)
-
-            # Skip comment lines
-            trimmed="${code#"${code%%[![:space:]]*}"}"
-            if echo "$trimmed" | grep -qE '^\s*//'; then
-                continue
-            fi
-
-            # Extract the argument inside .will_wake(...)
-            # Check if the first non-whitespace character after .will_wake( is &
-            if echo "$code" | grep -qE '\.will_wake\(\s*&'; then
-                # Argument starts with & — correct usage
-                continue
-            fi
-
-            # Handle multi-line case: .will_wake(\n    &noop\n)
-            # If the argument is not on the same line (line ends with just the
-            # opening paren or whitespace after it), peek at the next non-blank
-            # line to see if it starts with &.
-            if echo "$code" | grep -qE '\.will_wake\(\s*$'; then
-                # Read ahead to find the next non-blank line
-                mapfile -t peek_lines < <(tail -n +"$((lineno + 1))" "$file")
-                found_ref=false
-                for peek_line in "${peek_lines[@]}"; do
-                    peek_trimmed="${peek_line#"${peek_line%%[![:space:]]*}"}"
-                    [ -z "$peek_trimmed" ] && continue
-                    if echo "$peek_trimmed" | grep -qE '^\s*&'; then
-                        found_ref=true
-                    fi
-                    break
-                done
-                if [ "$found_ref" = true ]; then
-                    continue
-                fi
-            fi
-
-            echo -e "${RED}VIOLATION:${NC} $file:$lineno: .will_wake() called without a reference argument"
-            echo "  $code"
-            echo "  Waker::will_wake takes &Waker, not Waker by value."
-            echo "  Change .will_wake(x) to .will_wake(&x)."
-            CHECK6_VIOLATIONS=$((CHECK6_VIOLATIONS + 1))
-        done < <(grep -n '\.will_wake(' "$file")
-    done
-fi
-
-VIOLATIONS=$((VIOLATIONS + CHECK6_VIOLATIONS))
-
-if [ "$CHECK6_VIOLATIONS" -eq 0 ]; then
-    echo -e "${GREEN}  Check 6: PASS — all .will_wake() calls pass references.${NC}"
-fi
+# ── Check 6: (retired) ────────────────────────────────────────────────
+# Previously scanned for .will_wake() calls missing an explicit &
+# reference argument. This check is retired because:
+#   1. Nightly clippy (used by the emscripten CI job) flags the explicit &
+#      as `needless_borrow` — the compiler auto-refs owned Waker values.
+#   2. The emscripten CI job now runs `cargo clippy` on the actual target,
+#      so type errors in cfg-guarded code are caught by the compiler.
+#   3. Both `.will_wake(noop)` and `.will_wake(&noop)` are valid Rust;
+#      the former is preferred by clippy to avoid needless borrows.
+echo -e "${GREEN}  Check 6: SKIP — retired (.will_wake ref check now handled by clippy).${NC}"
 echo ""
 
 # ── Result ────────────────────────────────────────────────────────────

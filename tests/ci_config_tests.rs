@@ -3045,6 +3045,39 @@ mod ffi_safety {
             all_violations.join("\n")
         );
     }
+
+    /// Check 6 in `check-ffi-safety.sh` (will_wake ref enforcement) must remain
+    /// retired. Nightly clippy flags explicit `&` as `needless_borrow`, and the
+    /// emscripten CI job now runs clippy on the actual target — catching type
+    /// errors directly. Reintroducing the check would conflict with clippy.
+    #[test]
+    fn ffi_safety_check6_will_wake_ref_enforcement_is_retired() {
+        let contents = super::read_project_file("scripts/check-ffi-safety.sh");
+
+        assert!(
+            contents.contains("Check 6: SKIP") || contents.contains("Check 6: retired"),
+            "scripts/check-ffi-safety.sh Check 6 (will_wake ref enforcement) must \
+             remain retired. Nightly clippy flags `.will_wake(&noop)` as \
+             `needless_borrow`. The emscripten CI job catches type errors via \
+             `cargo +nightly clippy` on the actual target."
+        );
+
+        // The script must NOT contain an active grep for .will_wake( that would
+        // flag missing &. Look for the old violation pattern.
+        let has_active_check = contents.lines().any(|line: &str| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('#')
+                && !trimmed.starts_with("echo")
+                && trimmed.contains(".will_wake(")
+                && trimmed.contains("VIOLATION")
+        });
+        assert!(
+            !has_active_check,
+            "scripts/check-ffi-safety.sh must not contain active VIOLATION logic \
+             for .will_wake() calls. Check 6 is retired — this enforcement is now \
+             handled by nightly clippy in the emscripten CI job."
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3396,6 +3429,23 @@ mod emscripten_target_guard {
             has_target_comment,
             "Cargo.toml must have a comment near the transport-websocket-emscripten \
              feature definition documenting the target restriction."
+        );
+    }
+
+    /// The `wasm.yml` workflow must run `cargo +nightly clippy` for the
+    /// emscripten target. This catches nightly-only lint issues (like
+    /// `needless_borrow`) in target-gated code that stable clippy never sees.
+    /// Without this step, lint regressions can only be caught by the local
+    /// FFI safety script, which may conflict with evolving clippy lints.
+    #[test]
+    fn wasm_emscripten_job_runs_nightly_clippy() {
+        let contents = read_project_file(".github/workflows/wasm.yml");
+
+        assert!(
+            contents.contains("cargo +nightly clippy"),
+            ".github/workflows/wasm.yml must run `cargo +nightly clippy` for \
+             the emscripten target. This catches nightly-only lints in \
+             target-gated code that stable clippy never compiles."
         );
     }
 }

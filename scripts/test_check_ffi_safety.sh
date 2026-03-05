@@ -458,9 +458,11 @@ run_check
 assert_exit "close() with both emscripten_websocket_close and delete should PASS" 0
 
 echo ""
-echo "=== will_wake() reference argument tests ==="
+echo "=== will_wake() reference argument tests (Check 6 retired) ==="
+echo "  Check 6 is retired — .will_wake ref enforcement is now handled by clippy."
+echo "  All will_wake test cases should PASS since Check 6 is a no-op."
 
-# -- Should FAIL: .will_wake(noop) without & --
+# -- Should PASS: .will_wake(noop) without & (retired check) --
 setup_fake_repo
 cat > "$FAKE_REPO/src/will_wake_no_ref.rs" << 'RUST'
 fn poll_something(cx: &mut Context<'_>, old_waker: &Waker) {
@@ -470,7 +472,7 @@ fn poll_something(cx: &mut Context<'_>, old_waker: &Waker) {
 }
 RUST
 run_check
-assert_exit ".will_wake(noop) without & should FAIL" 1
+assert_exit ".will_wake(noop) without & should PASS (check retired)" 0
 
 # -- Should PASS: .will_wake(&noop) with & --
 setup_fake_repo
@@ -521,7 +523,7 @@ RUST
 run_check
 assert_exit "Multi-line .will_wake( with & on next line should PASS" 0
 
-# -- Should FAIL: Multi-line .will_wake( WITHOUT & on next line --
+# -- Should PASS: Multi-line .will_wake( WITHOUT & on next line (retired check) --
 setup_fake_repo
 cat > "$FAKE_REPO/src/will_wake_multiline_no_ref.rs" << 'RUST'
 fn poll_something(cx: &mut Context<'_>) {
@@ -534,7 +536,7 @@ fn poll_something(cx: &mut Context<'_>) {
 }
 RUST
 run_check
-assert_exit "Multi-line .will_wake( WITHOUT & on next line should FAIL" 1
+assert_exit "Multi-line .will_wake( WITHOUT & on next line should PASS (check retired)" 0
 
 echo ""
 echo "=== Results ==="

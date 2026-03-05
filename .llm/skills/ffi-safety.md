@@ -229,10 +229,10 @@ can hide indefinitely.
 
 1. **Always verify argument types for std API calls in cfg-guarded blocks.** The compiler
    won't catch errors in code that's never compiled for CI targets.
-2. **Common pitfall: `Waker::will_wake` takes `&Waker`, not `Waker`.** Writing
-   `.will_wake(noop)` instead of `.will_wake(&noop)` is a type error that CI never
-   catches because the code is behind cfg guards that exclude it from CI-targeted
-   compilations.
+2. **`Waker::will_wake` takes `&Waker`.** The compiler auto-refs owned `Waker`
+   values, so `.will_wake(noop)` is idiomatic. Do **not** write `.will_wake(&noop)`
+   — nightly clippy flags the explicit `&` as `needless_borrow`. The emscripten CI
+   job now runs clippy on the actual target, catching type errors directly.
 3. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
    patterns that are prone to this class of bug.
 
@@ -292,4 +292,4 @@ Use this checklist when adding or reviewing any FFI binding:
 | `close()` skips callback unregistration | Late callbacks fire between `close()` and `Drop` | Call `delete`/unregister in `close()`, use `deleted` flag to prevent double-delete in `Drop` |
 | `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |
 | Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |
-| `.will_wake(waker)` instead of `.will_wake(&waker)` | Compile error on affected target (hidden behind cfg guard) | Always pass `&Waker` to `will_wake`; enforced by Check 6 in `check-ffi-safety.sh` |
+| `.will_wake(&waker)` with explicit `&` | Nightly clippy `needless_borrow` warning | Omit the `&` — write `.will_wake(waker)`; the compiler auto-refs. Caught by emscripten CI clippy job |
