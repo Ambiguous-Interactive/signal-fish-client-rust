@@ -84,25 +84,7 @@ if result != EMSCRIPTEN_RESULT_SUCCESS {
 
 ### Pattern: Register-and-Rollback
 
-When registering multiple callbacks, roll back on first failure:
-
-```rust
-let registrations = [
-    ("onopen", register_onopen(socket, user_data)),
-    ("onmessage", register_onmessage(socket, user_data)),
-    ("onclose", register_onclose(socket, user_data)),
-    ("onerror", register_onerror(socket, user_data)),
-];
-for (name, result) in &registrations {
-    if *result != EMSCRIPTEN_RESULT_SUCCESS {
-        unsafe {
-            emscripten_websocket_close(socket, 1000, ptr::null());
-            drop(Box::from_raw(user_data as *mut State));
-        }
-        return Err(format!("{name} callback registration failed: {result}"));
-    }
-}
-```
+When registering multiple callbacks, iterate over results and roll back (close socket, free state via `Box::from_raw`) on first failure. See the codebase for concrete examples.
 
 ## Raw Pointer Lifecycle
 
@@ -224,12 +206,6 @@ extern "C" fn on_message_callback(...) -> EM_BOOL { ... }
 - Do NOT add redundant inline SAFETY comments inside the function body that duplicate the per-function comment
 - Enforced by `check-ffi-safety.sh` (Check 4)
 
-### Why This Matters
-
-- Consistent per-function comments make safety audits easier at a glance
-- A missing comment on one callback (while others have it) creates doubt about whether the safety analysis was done
-- `check-ffi-safety.sh` enforces this automatically
-
 ## Debug Assertions for FFI Transport Misuse
 
 FFI-backed transports on WASM/Emscripten targets (like `EmscriptenWebSocketTransport`)
@@ -242,6 +218,23 @@ Add `cfg(debug_assertions)` guards that detect misuse at runtime. For example,
 check whether the waker provided to `poll()` is a noop waker; if not, panic with
 a clear message directing the developer to use `SignalFishPollingClient` instead.
 See the `transport-abstraction` skill for the `NoopWakerPending` pattern.
+
+## Std API Calls in `cfg`-Guarded Code
+
+Code behind `#[cfg(debug_assertions)]` or target-specific `compile_error!()` guards may
+not be compiled in normal CI. This creates a blind spot where type errors and API misuse
+can hide indefinitely.
+
+### Rules
+
+1. **Always verify argument types for std API calls in cfg-guarded blocks.** The compiler
+   won't catch errors in code that's never compiled for CI targets.
+2. **Common pitfall: `Waker::will_wake` takes `&Waker`, not `Waker`.** Writing
+   `.will_wake(noop)` instead of `.will_wake(&noop)` is a type error that CI never
+   catches because the code is behind cfg guards that exclude it from CI-targeted
+   compilations.
+3. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
+   patterns that are prone to this class of bug.
 
 ## Target-Restricted Features
 
@@ -285,6 +278,7 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] `Drop` always reclaims heap state (`Box::from_raw`) as the final step
 - [ ] Target-restricted FFI modules have a `compile_error!()` guard at the file top
 - [ ] Every `extern "C" fn` in files with a shared SAFETY block has a per-function `// SAFETY:` comment
+- [ ] All std library API calls in `#[cfg(...)]` blocks use correct argument types (especially reference vs. owned)
 
 ## Common Mistakes
 
@@ -298,3 +292,4 @@ Use this checklist when adding or reviewing any FFI binding:
 | `close()` skips callback unregistration | Late callbacks fire between `close()` and `Drop` | Call `delete`/unregister in `close()`, use `deleted` flag to prevent double-delete in `Drop` |
 | `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |
 | Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |
+| `.will_wake(waker)` instead of `.will_wake(&waker)` | Compile error on affected target (hidden behind cfg guard) | Always pass `&Waker` to `will_wake`; enforced by Check 6 in `check-ffi-safety.sh` |

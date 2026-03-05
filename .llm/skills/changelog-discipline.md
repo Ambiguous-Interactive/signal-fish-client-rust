@@ -45,6 +45,7 @@ Before finalizing a user-visible change:
 - Do not hide API additions inside `### Changed`/`### Fixed`; list each new
   field/method/type explicitly under `### Added` (including defaults when they
   affect behavior).
+- `### Changed` is only for features that existed in a prior release. If a feature was added in the same version, its behavior descriptions belong under `### Added`, not `### Changed`.
 
 ## Classification Examples
 

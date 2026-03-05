@@ -509,7 +509,7 @@ impl std::future::Future for NoopWakerPending {
             // `will_wake` compares both the data pointer and vtable of
             // the two wakers — a real runtime's waker will not match.
             let noop = std::task::Waker::noop();
-            if !_cx.waker().will_wake(noop) {
+            if !_cx.waker().will_wake(&noop) {
                 tracing::error!(
                     "EmscriptenWebSocketTransport::recv() is being polled with a real async \
                      runtime waker. This transport is designed exclusively for use with \

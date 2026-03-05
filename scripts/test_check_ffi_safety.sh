@@ -458,6 +458,85 @@ run_check
 assert_exit "close() with both emscripten_websocket_close and delete should PASS" 0
 
 echo ""
+echo "=== will_wake() reference argument tests ==="
+
+# -- Should FAIL: .will_wake(noop) without & --
+setup_fake_repo
+cat > "$FAKE_REPO/src/will_wake_no_ref.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>, old_waker: &Waker) {
+    if !old_waker.will_wake(noop) {
+        // re-register
+    }
+}
+RUST
+run_check
+assert_exit ".will_wake(noop) without & should FAIL" 1
+
+# -- Should PASS: .will_wake(&noop) with & --
+setup_fake_repo
+cat > "$FAKE_REPO/src/will_wake_with_ref.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>, old_waker: &Waker) {
+    if !old_waker.will_wake(&noop) {
+        // re-register
+    }
+}
+RUST
+run_check
+assert_exit ".will_wake(&noop) with & should PASS" 0
+
+# -- Should PASS: .will_wake( inside a comment --
+setup_fake_repo
+cat > "$FAKE_REPO/src/will_wake_in_comment.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>) {
+    // Previously used .will_wake(old) here but removed it
+    let _ = cx.waker();
+}
+RUST
+run_check
+assert_exit ".will_wake( inside a comment should PASS" 0
+
+# -- Should PASS: No .will_wake() calls at all --
+setup_fake_repo
+cat > "$FAKE_REPO/src/no_will_wake.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>) {
+    let waker = cx.waker().clone();
+    // no will_wake usage
+}
+RUST
+run_check
+assert_exit "No .will_wake() calls at all should PASS" 0
+
+# -- Should PASS: Multi-line .will_wake( with & on next line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/will_wake_multiline_ref.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>) {
+    let noop = std::task::Waker::noop();
+    if !_cx.waker().will_wake(
+        &noop
+    ) {
+        // re-register
+    }
+}
+RUST
+run_check
+assert_exit "Multi-line .will_wake( with & on next line should PASS" 0
+
+# -- Should FAIL: Multi-line .will_wake( WITHOUT & on next line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/will_wake_multiline_no_ref.rs" << 'RUST'
+fn poll_something(cx: &mut Context<'_>) {
+    let noop = std::task::Waker::noop();
+    if !_cx.waker().will_wake(
+        noop
+    ) {
+        // re-register
+    }
+}
+RUST
+run_check
+assert_exit "Multi-line .will_wake( WITHOUT & on next line should FAIL" 1
+
+echo ""
 echo "=== Results ==="
 echo "Tests run:    $TESTS_RUN"
 echo "Tests passed: $TESTS_PASSED"
