@@ -20,7 +20,7 @@ Use these to track the raw connection lifecycle.
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
-| `Connected` | — | The client has started and will begin communicating. Synthetic — see [Connection timing](wasm.md#connection-timing) for `SignalFishPollingClient` caveats. |
+| `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>` | The transport connection was closed or errored. |
 
 !!! note "Best-effort delivery"

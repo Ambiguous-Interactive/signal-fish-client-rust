@@ -29,11 +29,8 @@ struct PollingClientState {
 impl PollingClientState {
     fn new() -> Self {
         Self {
-            // Set true at construction: the transport was handed to us
-            // ready-to-use and poll() will emit a synthetic Connected
-            // event on its first call. For transports with asynchronous
-            // handshakes (e.g., EmscriptenWebSocketTransport), this flag
-            // means "client is active," not "handshake complete."
+            // Tracks whether the client is active (not disconnected).
+            // Set true at construction; set false by handle_disconnect().
             connected: true,
             authenticated: false,
             player_id: None,
@@ -109,11 +106,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// Immediately queues an [`Authenticate`](ClientMessage::Authenticate) message.
     /// A synthetic [`Connected`](SignalFishEvent::Connected) event will be emitted
-    /// on the first call to [`poll()`](Self::poll).
-    ///
-    /// **Note:** `Connected` is emitted when `poll()` is first called, not when
-    /// the transport's connection handshake completes. See
-    /// [`poll()`](Self::poll#connection-timing) for details.
+    /// once [`poll()`](Self::poll) observes that the transport is ready (see
+    /// [`Transport::is_ready()`](crate::Transport::is_ready)).
     #[must_use]
     pub fn new(transport: T, config: SignalFishConfig) -> Self {
         let auth_msg = ClientMessage::Authenticate {
@@ -146,32 +140,28 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Connection timing
     ///
-    /// On the very first call, `poll()` emits a synthetic
-    /// [`SignalFishEvent::Connected`] event. This event indicates that the
-    /// client has started processing — it does **not** guarantee that the
-    /// underlying transport's connection handshake is complete.
+    /// The first time `poll()` observes that
+    /// [`Transport::is_ready()`](crate::Transport::is_ready) returns `true`,
+    /// it emits a synthetic [`SignalFishEvent::Connected`] event at position 0
+    /// in the returned `Vec`.
     ///
-    /// For transports whose handshake completes asynchronously (e.g.,
-    /// `EmscriptenWebSocketTransport`
-    /// on `wasm32-unknown-emscripten`), the WebSocket `onopen` callback may
-    /// fire after `Connected` has already been returned. Messages sent in the
-    /// interim are buffered by the browser and delivered once the connection
-    /// opens.
+    /// For transports that are already connected at construction time (e.g.,
+    /// [`WebSocketTransport`](crate::WebSocketTransport)), `Connected` is
+    /// emitted on the very first call to `poll()`. For transports with
+    /// asynchronous handshakes (e.g., `EmscriptenWebSocketTransport`),
+    /// `Connected` is deferred until the transport's connection handshake
+    /// completes (i.e., the browser's `onopen` callback fires).
     ///
-    /// This differs from [`SignalFishClient::start()`](crate::SignalFishClient::start),
-    /// where the transport is already connected (via `.connect().await`) before
-    /// the first event is emitted.
+    /// Commands queued before `Connected` (including the automatic
+    /// [`Authenticate`](crate::protocol::ClientMessage::Authenticate) message)
+    /// are flushed on every `poll()` call regardless of readiness. For
+    /// `EmscriptenWebSocketTransport`, these are buffered by the browser
+    /// and delivered once the connection opens.
     pub fn poll(&mut self) -> Vec<SignalFishEvent> {
         let mut events = Vec::new();
 
         if !self.state.connected {
             return events;
-        }
-
-        // Emit Connected on the very first poll.
-        if !self.started {
-            self.started = true;
-            events.push(SignalFishEvent::Connected);
         }
 
         // Create a noop waker to poll transport futures synchronously.
@@ -248,6 +238,17 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     break;
                 }
             }
+        }
+
+        // Emit Connected once the transport signals readiness.
+        // This is placed after the recv drain so that transports with
+        // asynchronous handshakes (e.g., EmscriptenWebSocketTransport)
+        // have a chance to process their connection-open event before
+        // we check is_ready(). Connected is inserted at position 0 to
+        // guarantee it is always the first event in the batch.
+        if !self.started && self.transport.is_ready() {
+            self.started = true;
+            events.insert(0, SignalFishEvent::Connected);
         }
 
         events
@@ -553,6 +554,68 @@ mod tests {
         }
     }
 
+    /// A mock transport that can simulate an asynchronous connection handshake.
+    /// `is_ready()` returns `self.ready`, which starts as `false`.
+    struct NotReadyTransport {
+        ready: bool,
+        incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
+        sent: Vec<String>,
+        /// When true, `recv()` sets `ready = true` before returning,
+        /// simulating a transport that becomes ready during the recv drain.
+        ready_after_recv: bool,
+    }
+
+    impl NotReadyTransport {
+        fn new() -> Self {
+            Self {
+                ready: false,
+                incoming: VecDeque::new(),
+                sent: Vec::new(),
+                ready_after_recv: false,
+            }
+        }
+
+        fn with_incoming_and_ready_after_recv(
+            msgs: Vec<Option<std::result::Result<String, SignalFishError>>>,
+        ) -> Self {
+            Self {
+                ready: false,
+                incoming: msgs.into(),
+                sent: Vec::new(),
+                ready_after_recv: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transport for NotReadyTransport {
+        async fn send(&mut self, message: String) -> std::result::Result<(), SignalFishError> {
+            self.sent.push(message);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            if let Some(item) = self.incoming.pop_front() {
+                if self.ready_after_recv {
+                    self.ready = true;
+                }
+                item
+            } else {
+                // No scripted messages remain — pending() never completes,
+                // keeping the polling loop alive until shutdown.
+                std::future::pending().await
+            }
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+
+        fn is_ready(&self) -> bool {
+            self.ready
+        }
+    }
+
     fn default_config() -> SignalFishConfig {
         SignalFishConfig::new("test_app_id")
     }
@@ -758,6 +821,72 @@ mod tests {
                 "Connected must only appear once and at index 0, but found at index {i}"
             );
         }
+    }
+
+    #[test]
+    fn poll_defers_connected_when_transport_not_ready() {
+        // A transport that reports not-ready should cause poll() to
+        // defer the Connected event until is_ready() returns true.
+        let transport = NotReadyTransport::new();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        // First poll: transport is not ready, so no Connected.
+        let events = client.poll();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, SignalFishEvent::Connected)),
+            "Connected should not be emitted when transport is not ready, got: {events:?}"
+        );
+
+        // Mark transport as ready.
+        client.transport.ready = true;
+
+        // Next poll: transport is now ready, Connected should appear.
+        let events = client.poll();
+        assert!(
+            matches!(events.first(), Some(SignalFishEvent::Connected)),
+            "Connected should be emitted once transport becomes ready, got: {events:?}"
+        );
+
+        // Subsequent poll: no duplicate Connected.
+        let events = client.poll();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, SignalFishEvent::Connected)),
+            "Connected should not be re-emitted, got: {events:?}"
+        );
+    }
+
+    #[test]
+    fn poll_emits_connected_at_position_zero_after_recv() {
+        // When the transport becomes ready during the recv drain (simulated
+        // by a transport that becomes ready after recv is called), Connected
+        // should still be at position 0, before any server messages.
+        let authenticated_json = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
+
+        let transport = NotReadyTransport::with_incoming_and_ready_after_recv(vec![Some(Ok(
+            authenticated_json.to_string(),
+        ))]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        let events = client.poll();
+
+        assert!(
+            events.len() >= 2,
+            "expected at least 2 events, got: {events:?}"
+        );
+        assert!(
+            matches!(events[0], SignalFishEvent::Connected),
+            "Connected should be at index 0, got: {:?}",
+            events[0]
+        );
+        assert!(
+            matches!(events[1], SignalFishEvent::Authenticated { .. }),
+            "Authenticated should follow Connected, got: {:?}",
+            events[1]
+        );
     }
 
     #[test]

@@ -178,6 +178,13 @@ impl Transport for MyTransport {
 - `close` should be idempotent — calling it twice must not panic
 - Do not buffer messages inside the transport; the client layer handles ordering
 
+## `is_ready()` — Connection Readiness
+
+Default returns `true` (correct for transports connected at construction).
+Override to return `false` until the handshake completes for async-handshake
+transports. `SignalFishPollingClient` defers `Connected` until `is_ready()`
+returns `true`. Contract: cheap, non-blocking, monotonic (once true, stays true).
+
 ## close() and the Polling Client
 
 `SignalFishPollingClient::close()` polls the transport's `close()` future

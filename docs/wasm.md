@@ -208,20 +208,20 @@ satisfied because there are no other threads.
 ### Connection timing
 
 !!! info "Connection timing — `Connected` vs. WebSocket `onopen`"
-    `SignalFishPollingClient` emits [`SignalFishEvent::Connected`] on the
-    **first call to `poll()`**, not when the browser's WebSocket `onopen`
-    callback fires. Because `EmscriptenWebSocketTransport::connect()` returns
-    synchronously before the handshake completes, there is a window where
-    `Connected` has been delivered but the WebSocket is not yet open.
+    `SignalFishPollingClient` emits [`SignalFishEvent::Connected`] once the
+    transport's [`is_ready()`](../src/transport.rs) method returns `true`.
+    For `EmscriptenWebSocketTransport`, this happens after the browser's
+    WebSocket `onopen` callback fires — meaning `Connected` genuinely
+    reflects a completed handshake.
 
-    Messages sent during this window are **buffered by the browser** and
-    delivered once the connection opens — no data is lost. However, callers
-    should not interpret `Connected` as proof that the transport handshake is
-    complete.
+    Commands queued before `Connected` (including the automatic `Authenticate`
+    message) are flushed on every `poll()` call. For
+    `EmscriptenWebSocketTransport`, the browser buffers these messages and
+    delivers them once the connection opens — no data is lost.
 
-    This differs from the async `SignalFishClient`, where the transport is
+    This aligns with the async `SignalFishClient`, where the transport is
     passed to `start()` already connected (e.g., via
-    `WebSocketTransport::connect(url).await`), so `Connected` genuinely
+    `WebSocketTransport::connect(url).await`), so `Connected` also
     reflects a completed handshake.
 
 ---

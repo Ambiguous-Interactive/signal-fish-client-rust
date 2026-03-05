@@ -247,6 +247,8 @@ pub struct EmscriptenWebSocketTransport {
     /// Raw pointer to the `CallbackState`. Owned by this struct; reclaimed in `Drop`.
     callback_state: *mut CallbackState,
     closed: bool,
+    /// Whether the browser's `onopen` callback has fired.
+    opened: bool,
     /// Tracks whether `emscripten_websocket_delete` has been called, so `Drop`
     /// does not double-delete the socket handle.
     deleted: bool,
@@ -383,6 +385,7 @@ impl EmscriptenWebSocketTransport {
             incoming_rx: rx,
             callback_state: state_ptr,
             closed: false,
+            opened: false,
             deleted: false,
         })
     }
@@ -550,11 +553,8 @@ impl Transport for EmscriptenWebSocketTransport {
             match self.incoming_rx.try_recv() {
                 Ok(IncomingEvent::Message(text)) => return Some(Ok(text)),
                 Ok(IncomingEvent::Open) => {
-                    tracing::info!(
-                        "WebSocket connection opened (onopen callback received). \
-                         SignalFishPollingClient emits Connected on first poll(), \
-                         which may precede this event."
-                    );
+                    self.opened = true;
+                    tracing::info!("WebSocket connection opened (onopen callback received)");
                     continue;
                 }
                 Ok(IncomingEvent::Error(e)) => {
@@ -612,6 +612,10 @@ impl Transport for EmscriptenWebSocketTransport {
         }
         self.deleted = true;
         Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.opened
     }
 }
 

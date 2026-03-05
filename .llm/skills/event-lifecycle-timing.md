@@ -23,20 +23,23 @@ which can mislead callers if not documented clearly.
 
 ### `SignalFishPollingClient` (synchronous, noop-waker)
 
-- `Connected` is emitted on the **first call to `poll()`**, unconditionally.
-- For transports whose connection handshake is asynchronous (e.g.,
-  `EmscriptenWebSocketTransport`), the WebSocket may not yet be open when
-  `Connected` fires.
-- Messages sent before the handshake completes are buffered by the browser
-  (Emscripten case) and delivered when the connection opens.
-- `IncomingEvent::Open` from the Emscripten transport is consumed internally
-  by `recv()` and not surfaced to the polling client.
+- `Connected` is emitted once `Transport::is_ready()` returns `true` during
+  a `poll()` cycle. The check happens after the recv drain loop, so transports
+  that process their open event during recv (e.g., `EmscriptenWebSocketTransport`)
+  will trigger `Connected` in the same poll cycle.
+- For transports that are already connected at construction time (default
+  `is_ready() = true`), `Connected` fires on the first `poll()` call.
+- For `EmscriptenWebSocketTransport`, `Connected` is deferred until the
+  browser's `onopen` callback fires, which sets `opened = true` and makes
+  `is_ready()` return `true`.
+- `IncomingEvent::Open` from the Emscripten transport is consumed by `recv()`
+  and sets the `opened` flag rather than being surfaced to the caller.
 
 ## Rules
 
-1. **Never claim `Connected` guarantees the transport is open** — for the
-   polling client, it only means the client has started processing. Qualify
-   the timing in doc comments.
+1. **`Connected` is tied to `Transport::is_ready()`** — for the polling
+   client, `Connected` fires only after the transport confirms readiness.
+   Document any transport whose `is_ready()` has non-trivial behavior.
 
 2. **Document transport-specific behavior** — if a transport's `connect()`
    returns before the handshake is complete, document what happens to messages

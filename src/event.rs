@@ -52,13 +52,13 @@ pub enum SignalFishEvent {
     /// - **`SignalFishClient`** (async): emitted at the start of the transport
     ///   loop, after the transport has already been connected via
     ///   `.connect().await`.
-    /// - **`SignalFishPollingClient`**: emitted on the **first call to
-    ///   [`poll()`](crate::SignalFishPollingClient::poll)**. For transports
-    ///   whose connection handshake completes asynchronously (e.g.,
-    ///   `EmscriptenWebSocketTransport`),
-    ///   the handshake may still be in progress when this event fires. Messages
-    ///   sent before the handshake finishes are buffered by the browser and
-    ///   delivered once the connection opens.
+    /// - **`SignalFishPollingClient`**: emitted once
+    ///   [`Transport::is_ready()`](crate::Transport::is_ready) returns `true`
+    ///   during a [`poll()`](crate::SignalFishPollingClient::poll) cycle. For
+    ///   transports that are already connected at construction time, this is
+    ///   the first `poll()` call. For transports with asynchronous handshakes
+    ///   (e.g., `EmscriptenWebSocketTransport`), `Connected` is deferred
+    ///   until the handshake completes.
     Connected,
 
     /// The transport connection was closed.
