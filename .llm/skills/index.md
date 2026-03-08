@@ -50,7 +50,7 @@ Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this
 
 ### [Markdown Parsing and Documentation Validation](markdown-and-doc-validation.md)
 
-Reference for correctly parsing markdown content in scripts and preventing documentation drift against source-of-trut...
+Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs rend...
 
 ### [Public API Design](public-api-design.md)
 

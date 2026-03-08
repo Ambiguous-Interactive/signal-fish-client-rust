@@ -292,6 +292,18 @@ else
     echo "Note: scripts/extract-rust-snippets.sh not found — skipping snippet check."
 fi
 
+# ── Docs rendering check (optional — requires mkdocs) ───────────────────
+if [ -f "${REPO_ROOT}/scripts/pre-commit-docs.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/pre-commit-docs.sh"; then
+        echo ""
+        echo "Push aborted: docs rendering check failed."
+        echo "Fix the rendering issues above, then re-push."
+        exit 1
+    fi
+else
+    echo "Note: scripts/pre-commit-docs.sh not found — skipping docs rendering check."
+fi
+
 echo "All pre-push checks passed."
 PUSH_SCRIPT
 
@@ -320,6 +332,7 @@ echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
 echo "  2. cargo test --all-features"
 echo "  3. bash scripts/check-no-panics.sh (panic-free policy)"
 echo "  4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
+echo "  5. bash scripts/pre-commit-docs.sh (docs rendering — optional, skipped if mkdocs not installed)"
 echo ""
 echo "Tip: Install the pre-commit framework for richer hook management:"
 echo "  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push"

@@ -1,6 +1,6 @@
 # Markdown Parsing and Documentation Validation
 
-Reference for correctly parsing markdown content in scripts and preventing documentation drift against source-of-truth config files.
+Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs rendering issues.
 
 ## Markdown Parsing: Fenced Code Blocks
 
@@ -76,19 +76,9 @@ without a body, or imports platform-specific modules.
 ### Testing the Parser
 
 `scripts/test_pre_commit_llm.py` contains pytest regression tests for
-the code-fence parsing fix. Key test cases:
-
-- `test_code_fence_contents_never_leak_into_result` -- the original
-  regression test ensuring fence content is never returned as paragraph
-  text.
-- `test_code_fence_with_language_specifier` -- verifies language-tagged
-  fences (`` ```rust ``, `` ```toml ``) are recognized.
-- `test_heading_inside_code_fence_is_ignored` -- headings inside a fence
-  are not treated as real headings.
-- `test_paragraph_immediately_followed_by_code_fence` -- paragraph ends
-  cleanly when a fence opens without a blank line separator.
-
-Run the tests:
+the code-fence parsing fix. Key tests: fence contents never leak into
+results, language-tagged fences are recognized, headings inside fences
+are ignored, and paragraphs followed by fences end cleanly.
 
 ```shell
 pytest scripts/test_pre_commit_llm.py -v
@@ -100,8 +90,84 @@ pytest scripts/test_pre_commit_llm.py -v
 - [ ] Does it handle both `` ``` `` and `~~~` fences, closing only
       when the same fence character type is encountered?
 - [ ] Are all lines inside a fence unconditionally skipped?
-- [ ] Is there a test that places misleading content inside a fence and
-      asserts it never appears in the output?
+- [ ] Is there a test with misleading content inside a fence?
+
+## MkDocs Rendering: Code Fence Languages and Mermaid
+
+### Rustdoc Code-Fence Annotations
+
+Rustdoc annotations like `rust,ignore`, `rust,no_run`, and
+`rust,compile_fail` are valid in source markdown for the snippet
+extraction pipeline (see above). However, Pygments (used by
+`pymdownx.highlight`) does not recognize these compound language
+tags and falls back to plain-text rendering, which can also corrupt
+everything after the block.
+
+**The build-time hook** at `hooks/rustdoc_codeblocks.py` fixes this
+automatically. It strips the `,<annotation>` suffix so Pygments
+receives plain `rust`. Source files are **not** modified; the
+transformation is applied only during `mkdocs build`.
+
+The hook is registered in `mkdocs.yml` under `hooks:`.
+
+**Authors do not need to avoid `rust,ignore`** -- the hook handles it.
+But understanding the system prevents confusion when rendered output
+shows plain `rust` highlighting for a `rust,ignore` block.
+
+### Code Fence Language Compatibility
+
+| Language tag | Pygments | Rustdoc | Notes |
+|-------------|----------|---------|-------|
+| `rust` | OK | OK | Use for compilable snippets |
+| `rust,ignore` | Broken (fixed by hook) | OK | Non-compilable snippets |
+| `rust,no_run` | Broken (fixed by hook) | OK | Compiles but not executed |
+| `rust,compile_fail` | Broken (fixed by hook) | OK | Expected compilation failure |
+| `rust,edition20XX` | Broken (fixed by hook) | OK | Edition-specific snippet |
+| `python`, `shell`, `toml`, `json`, `yaml`, `text` | OK | N/A | Standard Pygments lexers |
+| `mermaid` | N/A | N/A | Handled by `custom_fences` (see below) |
+
+### Mermaid Diagram Best Practices
+
+Mermaid diagrams render via `pymdownx.superfences` `custom_fences`
+configuration in `mkdocs.yml`. The required config:
+
+```yaml
+- pymdownx.superfences:
+    custom_fences:
+      - name: mermaid
+        class: mermaid
+        format: !!python/name:pymdownx.superfences.fence_code_format
+```
+
+**Authoring guidelines:**
+
+- Use ```` ```mermaid ```` as the fence language (lowercase, no quotes).
+- Supported diagram types: `graph`, `stateDiagram-v2`, `sequenceDiagram`,
+  `flowchart`, `classDiagram`, `erDiagram`, `gantt`, `pie`, `gitgraph`.
+- Keep diagrams simple -- complex diagrams with many nodes render poorly
+  on mobile. Prefer `graph LR` (left-to-right) for linear flows.
+- Quote node labels containing special characters:
+  `A["Transport (trait)"]` not `A[Transport (trait)]`.
+- Do **not** add a blank line between the opening fence and the first
+  diagram directive (`graph LR`, `sequenceDiagram`, etc.).
+- Test rendering locally with `mkdocs serve` before committing.
+
+### Testing Docs Rendering Locally
+
+```shell
+# Full strict build (matches CI)
+mkdocs build --strict
+
+# Live preview with hot-reload
+mkdocs serve
+```
+
+CI runs `mkdocs build --strict` in `.github/workflows/docs-deploy.yml`.
+Any Pygments warning or broken reference fails the build. The deploy
+workflow also performs a post-build verification that greps rendered HTML
+for unresolved rustdoc annotation class names (e.g., `language-rust,ignore`)
+and fails the build if any survive the hook. Always run `mkdocs build
+--strict` locally before pushing docs changes.
 
 ## YAML Workflow Snippet Shape Validation
 
@@ -115,26 +181,10 @@ workflow structure.
 
 ## Numbered Workflow Comment Drift
 
-### The Bug Pattern
-
 When `main()` workflow comments use numbered labels (`# 1.`, `# 2.`, ...),
-adding a new step can leave duplicate or skipped numbers. This is easy to miss
-in review and makes maintenance comments misleading.
-
-### The Fix
-
-Keep numbered workflow comments contiguous and update all subsequent numbers
-after inserting a new step.
-
-### Validation Pattern
-
-Add a regression test that parses the `main()` function source and asserts:
-
-- Numbered workflow comments exist.
-- The sequence starts at `1`.
-- Numbers are contiguous with no duplicates/gaps.
-
-In this repo, `scripts/test_pre_commit_llm.py` enforces this for
+adding a new step can leave duplicate or skipped numbers. Keep numbered
+comments contiguous and update all subsequent numbers after inserting a
+new step. `scripts/test_pre_commit_llm.py` enforces this for
 `scripts/pre-commit-llm.py`.
 
 ## MkDocs Nav Validation
@@ -178,100 +228,38 @@ Three layers of validation catch this bug:
 ## Changelog Reference Link Consistency
 
 Keep a Changelog examples must keep version links synchronized.
-
-Scope reminder: changelog entries are for user-visible behavior/API changes only.
-Do not add internal-only implementation items (CI/scripts/tests/refactors with no
-consumer impact).
+Scope reminder: changelog entries are for user-visible behavior/API changes
+only -- not internal CI/scripts/tests/refactors with no consumer impact.
 
 - `[Unreleased]` should compare from the latest released tag: `.../compare/vX.Y.Z...HEAD`
-- Latest version link (`[X.Y.Z]`) should either:
-  - point to `.../releases/tag/vX.Y.Z`, or
-  - compare previous-to-latest: `.../compare/vPREV...vX.Y.Z`
+- Latest version link (`[X.Y.Z]`) should point to `.../releases/tag/vX.Y.Z`
+  or compare previous-to-latest: `.../compare/vPREV...vX.Y.Z`
 
 The pre-commit hook enforces this for `.llm/*.md` files.
 
 ### Error Handling in Validation Functions
 
-Every validation function that reads files or checks the filesystem must
-handle `OSError` (Python) or propagate errors cleanly (Rust). Unhandled
-I/O errors crash the entire validation pipeline rather than producing a
-clear, actionable failure message.
-
-*Pattern (Python):*
-
-```python
-def validate_something() -> list[str]:
-    errors = []
-    try:
-        content = path.read_text(encoding="utf-8")
-    except OSError as e:
-        errors.append(f"  Could not read {path}: {e}")
-        return errors
-    # ... parse content ...
-    for item in items:
-        try:
-            exists = item_path.is_file()
-        except OSError as e:
-            errors.append(f"  Could not check {item_path}: {e}")
-            continue
-    return errors
-```
-
-*Checklist for validation functions:*
-
-- [ ] Is every `read_text()` / `read_to_string()` wrapped in error handling?
-- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped too?
-- [ ] Do error messages match the existing format (two-space indent, descriptive)?
-- [ ] Does the function continue after a single I/O error (not abort entirely)?
+Every validation function must handle `OSError` (Python) or propagate
+errors cleanly (Rust). Wrap `read_text()`, `is_file()`, and `is_dir()`
+calls. Continue after a single I/O error (do not abort entirely). Use
+two-space-indent, descriptive error messages matching the existing format.
 
 ### Comment Accuracy in Comparison Logic
 
 When validation code builds a collection for comparison (e.g., a
-`HashSet` of nav references), the comment must accurately describe
-what the collection contains and how comparisons work. Misleading
-comments about "basenames" vs "full paths" can hide subtle bugs.
-
-*Checklist for comparison logic comments:*
-
-- [ ] Does the comment accurately describe what is collected (full
-      paths, basenames, normalized forms)?
-- [ ] Does the comment explain the comparison semantics (exact match,
-      contains, prefix)?
-- [ ] If the comparison scope is limited (e.g., top-level files only),
-      is that limitation clearly stated?
+`HashSet` of nav references), ensure comments accurately describe what is
+collected (full paths, basenames, normalized forms), the comparison
+semantics (exact match, contains, prefix), and any scope limitations.
 
 ## Navigation Card Label Consistency
 
-### The Bug Pattern
-
 Navigation cards in `docs/index.md` use the pattern
-`[:octicons-arrow-right-24: LABEL](FILENAME)`. When a page's H1 heading
-is updated but the card label is not, the two drift apart — confusing
-users who see one title on the landing page and a different title on the
-actual page.
+`[:octicons-arrow-right-24: LABEL](FILENAME)`. Always use the target
+page's H1 heading as the card label. When renaming a page, update both
+the page heading **and** the card in `docs/index.md`.
 
-### The Fix
-
-Always use the target page's H1 heading as the card label. When
-renaming a page, update both the page heading **and** the card in
-`docs/index.md`.
-
-### Validation Layers
-
-1. **Rust test** (`tests/ci_config_tests.rs` `docs_nav_card_consistency`):
-   Extracts card links from `docs/index.md`, reads each target file's
-   H1, and asserts they match. Runs on every `cargo test`.
-
-2. **Pre-commit hook** (`scripts/pre-commit-llm.py`
-   `validate_doc_nav_card_consistency`): Same check at commit time.
-   Blocks commits with mismatched labels.
-
-### Checklist for Adding or Editing Nav Cards
-
-- [ ] Does the card label exactly match the H1 of the target page?
-- [ ] If the target page's H1 changed, is the card label updated too?
-- [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
-      test?
+Validated by `tests/ci_config_tests.rs` `docs_nav_card_consistency` and
+`scripts/pre-commit-llm.py` `validate_doc_nav_card_consistency`.
 
 ## Lychee Link Checker: Header Format
 

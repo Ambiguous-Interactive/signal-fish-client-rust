@@ -157,3 +157,14 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+
+  # ── Docs rendering check (push only — requires mkdocs, optional) ──────
+  - repo: local
+    hooks:
+      - id: check-docs-rendering
+        name: docs rendering check (optional)
+        language: system
+        entry: bash scripts/pre-commit-docs.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]

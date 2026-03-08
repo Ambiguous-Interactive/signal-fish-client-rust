@@ -2,7 +2,7 @@
 #
 # Runs on every push to main and on all pull requests that touch
 # markdown files, documentation config, or this workflow itself.
-# Jobs: markdownlint, link-check, spell-check
+# Jobs: markdownlint, link-check, spell-check, rendering-check
 #
 # Cancel in-progress runs on the same branch to save resources.
 
@@ -19,6 +19,9 @@ on:
       - ".lychee.toml"
       - ".typos.toml"
       - "mkdocs.yml"
+      - "hooks/**"
+      - "requirements-docs.txt"
+      - "scripts/check-docs-rendering.sh"
       - ".github/workflows/docs-validation.yml"
   pull_request:
     paths:
@@ -29,6 +32,9 @@ on:
       - ".lychee.toml"
       - ".typos.toml"
       - "mkdocs.yml"
+      - "hooks/**"
+      - "requirements-docs.txt"
+      - "scripts/check-docs-rendering.sh"
       - ".github/workflows/docs-validation.yml"
 
 permissions:
@@ -92,3 +98,35 @@ jobs:
         uses: crate-ci/typos@v1.31.1
         with:
           config: .typos.toml
+
+  # ──────────────────────────────────────────────────────────────
+  # Rendering check — verify MkDocs builds cleanly and code blocks
+  # render with proper syntax highlighting (no raw fence leakage,
+  # no unresolved rustdoc annotations like rust,ignore).
+  # ──────────────────────────────────────────────────────────────
+  rendering-check:
+    name: Rendering Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v5.0.3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-docs.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install MkDocs dependencies
+        run: pip install -r requirements-docs.txt
+
+      - name: Run docs rendering check
+        run: bash scripts/check-docs-rendering.sh

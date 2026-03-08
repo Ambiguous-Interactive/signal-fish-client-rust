@@ -42,6 +42,15 @@ jobs:
       - name: Build MkDocs site
         run: mkdocs build --strict
 
+      - name: Verify no unresolved rustdoc annotations in rendered HTML
+        run: |
+          if grep -r -l -E 'class="[^"]*language-(rust,ignore|rust,no_run|rust,compile_fail|rust,edition20[0-9]{2})[^"]*"' site/ 2>/dev/null; then
+            echo "ERROR: Found unresolved rustdoc code-fence annotations in rendered HTML."
+            echo "The hooks/rustdoc_codeblocks.py hook should normalise these at build time."
+            exit 1
+          fi
+          echo "No unresolved rustdoc annotations found — rendering OK."
+
       - name: Setup Pages
         uses: actions/configure-pages@v5.0.0
 
