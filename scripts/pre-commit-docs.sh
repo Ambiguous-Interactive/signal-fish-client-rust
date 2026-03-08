@@ -29,9 +29,17 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 # ── Preflight: verify mkdocs is available ────────────────────────────
-if ! command -v mkdocs &>/dev/null; then
+# Honor the MKDOCS env var and fallback path, matching check-docs-rendering.sh.
+if [ -n "${MKDOCS:-}" ] && [ -x "$MKDOCS" ]; then
+    : # MKDOCS env var points to a valid executable — proceed
+elif command -v mkdocs &>/dev/null; then
+    : # mkdocs found in PATH — proceed
+elif [ -x "/tmp/docs-venv/bin/mkdocs" ]; then
+    : # mkdocs found at CI fallback path — proceed
+else
     echo -e "${YELLOW}SKIP: mkdocs is not installed — skipping docs rendering check.${NC}"
     echo "  Install: pip install -r requirements-docs.txt"
+    echo "  Or set:  MKDOCS=/path/to/mkdocs"
     exit 0
 fi
 

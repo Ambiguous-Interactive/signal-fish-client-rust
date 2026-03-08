@@ -4,7 +4,7 @@
 # Catches rendering issues that silently break the published site:
 #   - Pygments-incompatible code fence language tags (e.g., rust,ignore)
 #   - Mermaid diagrams that render as plain text
-#   - Code blocks mis-classified as "language-text" that contain Rust code
+#   - Code blocks misclassified as "language-text" that contain Rust code
 #   - Broken code fences that leak as raw markdown
 #   - Unclosed or malformed code fences in source
 #   - Missing MkDocs configuration (hooks, extensions, custom fences)
@@ -98,7 +98,7 @@ if [ ! -f "$MKDOCS_YML" ]; then
     fail "mkdocs.yml not found at $MKDOCS_YML"
 else
     # 1a. Check for rustdoc_codeblocks hook
-    if grep -qE '^\s*-\s+hooks/rustdoc_codeblocks\.py' "$MKDOCS_YML"; then
+    if grep -qE '^[[:space:]]*-[[:space:]]+hooks/rustdoc_codeblocks\.py' "$MKDOCS_YML"; then
         pass "rustdoc_codeblocks hook is configured"
     else
         fail "rustdoc_codeblocks hook is NOT configured in mkdocs.yml"
@@ -106,7 +106,7 @@ else
     fi
 
     # 1b. Check for pymdownx.superfences extension
-    if grep -qE '^\s*-\s+pymdownx\.superfences' "$MKDOCS_YML"; then
+    if grep -qE '^[[:space:]]*-[[:space:]]+pymdownx\.superfences' "$MKDOCS_YML"; then
         pass "pymdownx.superfences extension is enabled"
     else
         fail "pymdownx.superfences extension is NOT enabled in mkdocs.yml"
@@ -116,10 +116,10 @@ else
     # 1c. Check for mermaid custom_fences configuration
     MERMAID_NAME=false
     MERMAID_CLASS=false
-    if grep -qE '^\s*-\s*name:\s*mermaid' "$MKDOCS_YML"; then
+    if grep -qE '^[[:space:]]*-[[:space:]]*name:[[:space:]]*mermaid' "$MKDOCS_YML"; then
         MERMAID_NAME=true
     fi
-    if grep -qE '^\s*class:\s*mermaid' "$MKDOCS_YML"; then
+    if grep -qE '^[[:space:]]*class:[[:space:]]*mermaid' "$MKDOCS_YML"; then
         MERMAID_CLASS=true
     fi
     if [ "$MERMAID_NAME" = true ] && [ "$MERMAID_CLASS" = true ]; then
@@ -130,7 +130,7 @@ else
     fi
 
     # 1d. Check for pymdownx.highlight (needed for Pygments code highlighting)
-    if grep -qE '^\s*-\s+pymdownx\.highlight' "$MKDOCS_YML"; then
+    if grep -qE '^[[:space:]]*-[[:space:]]+pymdownx\.highlight' "$MKDOCS_YML"; then
         pass "pymdownx.highlight extension is enabled"
     else
         warn "pymdownx.highlight extension not found — code blocks may not be highlighted"
@@ -168,7 +168,7 @@ else
             rel_path="${md_file#"$REPO_ROOT"/}"
             # Count opening and closing fences (lines starting with ```)
             # A file should have an even number of fence lines.
-            fence_count=$(grep -cE '^\s*```' "$md_file" || true)
+            fence_count=$(grep -cE '^[[:space:]]*```' "$md_file" || true)
             if [ $((fence_count % 2)) -ne 0 ]; then
                 fail "Unclosed code fence in $rel_path (odd number of fence markers: $fence_count)"
                 UNCLOSED_FOUND=true
@@ -183,12 +183,12 @@ else
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
             # Extract line numbers of mermaid open fences
-            mapfile -t MERMAID_OPENS < <(grep -nE '^\s*```\s*mermaid\s*$' "$md_file" | cut -d: -f1)
+            mapfile -t MERMAID_OPENS < <(grep -nE '^[[:space:]]*```[[:space:]]*mermaid[[:space:]]*$' "$md_file" | cut -d: -f1)
             for line_no in "${MERMAID_OPENS[@]}"; do
                 [ -z "$line_no" ] && continue
                 # Find the next closing fence after this line
                 tail_content=$(tail -n +"$((line_no + 1))" "$md_file")
-                close_line=$(echo "$tail_content" | grep -nE '^\s*```\s*$' | head -1 | cut -d: -f1)
+                close_line=$(echo "$tail_content" | grep -nE '^[[:space:]]*```[[:space:]]*$' | head -1 | cut -d: -f1)
                 if [ -z "$close_line" ]; then
                     fail "Unclosed mermaid block at $rel_path:$line_no"
                     MERMAID_ISSUES=true
@@ -214,7 +214,7 @@ else
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
             # Extract language tags from code fences (```lang)
-            mapfile -t LANG_TAGS < <(grep -oP '^\s*```\s*\K[a-zA-Z0-9_,.-]+' "$md_file" 2>/dev/null | sort -u)
+            mapfile -t LANG_TAGS < <(sed -nE 's/^[[:space:]]*```[[:space:]]*([a-zA-Z0-9_,.-]+).*/\1/p' "$md_file" 2>/dev/null | sort -u)
             for tag in "${LANG_TAGS[@]}"; do
                 [ -z "$tag" ] && continue
                 # Skip mermaid — handled by custom_fences
@@ -296,10 +296,10 @@ else
             # Only flag rustdoc annotations that appear inside class="language-..."
             # attributes (i.e., unprocessed code blocks). Prose mentions in <p>,
             # <li>, or <code> tags are intentional and should not be flagged.
-            matches=$(grep -cP "$RUSTDOC_CLASS_PATTERN" "$html_file" || true)
+            matches=$(grep -cE "$RUSTDOC_CLASS_PATTERN" "$html_file" || true)
             if [ "$matches" -gt 0 ]; then
                 fail "Found $matches leftover rustdoc annotation(s) in $rel_path"
-                grep -nP "$RUSTDOC_CLASS_PATTERN" "$html_file" | head -5 | while IFS= read -r line; do
+                grep -nE "$RUSTDOC_CLASS_PATTERN" "$html_file" | head -5 | while IFS= read -r line; do
                     echo "      $line"
                 done
                 RUSTDOC_LEFTOVERS=true
@@ -314,19 +314,19 @@ else
         #     We look for mermaid diagram start keywords appearing inside generic
         #     code blocks or <p> tags instead of mermaid containers.
         MERMAID_PLAINTEXT=false
-        MERMAID_KEYWORDS='(graph\s+(TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie\s+title|flowchart\s+(TD|TB|BT|RL|LR)|gitGraph)'
+        MERMAID_KEYWORDS='(graph[[:space:]]+(TD|TB|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie[[:space:]]+title|flowchart[[:space:]]+(TD|TB|BT|RL|LR)|gitGraph)'
         for html_file in "${HTML_FILES[@]}"; do
             rel_path="${html_file#"$REPO_ROOT"/}"
             # Find mermaid keywords that appear in the file
-            keyword_matches=$(grep -cP "$MERMAID_KEYWORDS" "$html_file" || true)
+            keyword_matches=$(grep -cE "$MERMAID_KEYWORDS" "$html_file" || true)
             if [ "$keyword_matches" -gt 0 ]; then
                 # Check if keywords appear inside language-text or <p> tags
                 # which would indicate they were NOT rendered as diagrams.
                 # Exclude matches inside <code> inline elements within <p>
                 # tags, since those are prose explanations of mermaid syntax.
-                really_bad=$(grep -P "$MERMAID_KEYWORDS" "$html_file" \
-                    | grep -P '(class="language-text"|<p>)' \
-                    | grep -vP '<code>[^<]*'"$MERMAID_KEYWORDS" || true)
+                really_bad=$(grep -E "$MERMAID_KEYWORDS" "$html_file" \
+                    | grep -E '(class="language-text"|<p>)' \
+                    | grep -vE '<code>[^<]*'"$MERMAID_KEYWORDS" || true)
                 if [ -n "$really_bad" ]; then
                     fail "Mermaid diagram keyword rendered as plain text in $rel_path"
                     echo "$really_bad" | head -3 | while IFS= read -r line; do
@@ -341,7 +341,7 @@ else
             pass "No mermaid diagrams rendered as plain text"
         fi
 
-        # 4c. Check for Rust code mis-classified as language-text
+        # 4c. Check for Rust code misclassified as language-text
         #     If a code block has class="language-text" but contains Rust keywords,
         #     the hook likely failed to transform the language tag.
         #     We extract only the content within each language-text block (up to
@@ -353,14 +353,14 @@ else
         # derive macros, async_trait, use-with-semicolon, let mut bindings.
         # These are things that appear in actual Rust source code, not in
         # compiler error messages or CLI output.
-        RUST_STRONG='(pub\s+(fn|struct|enum|trait|mod)\s|#\[derive|#\[async_trait|async\s+fn\s+\w+|impl\s+\w+\s+for\s|impl<|fn\s+\w+\s*\(|let\s+mut\s+\w+\s*=|tokio::(main|spawn|select))'
+        RUST_STRONG='(pub[[:space:]]+(fn|struct|enum|trait|mod)[[:space:]]|#\[derive|#\[async_trait|async[[:space:]]+fn[[:space:]]+[[:alnum:]_]+|impl[[:space:]]+[[:alnum:]_]+[[:space:]]+for[[:space:]]|impl<|fn[[:space:]]+[[:alnum:]_]+[[:space:]]*\(|let[[:space:]]+mut[[:space:]]+[[:alnum:]_]+[[:space:]]*=|tokio::(main|spawn|select))'
         for html_file in "${HTML_FILES[@]}"; do
             rel_path="${html_file#"$REPO_ROOT"/}"
-            if grep -qP 'class="language-text' "$html_file"; then
+            if grep -q 'class="language-text' "$html_file"; then
                 # Extract content within each language-text block
                 # (from class="language-text" up to the next </pre>)
                 block_content=$(sed -n '/class="language-text/,/<\/pre>/p' "$html_file")
-                rust_hits=$(echo "$block_content" | grep -cP "$RUST_STRONG" || true)
+                rust_hits=$(echo "$block_content" | grep -cE "$RUST_STRONG" || true)
                 if [ "$rust_hits" -ge 2 ]; then
                     fail "Code block classified as language-text appears to contain Rust code in $rel_path ($rust_hits Rust indicators found)"
                     info "This usually means the rustdoc_codeblocks hook failed to transform a fence tag"
@@ -369,7 +369,7 @@ else
             fi
         done
         if [ "$MISCLASSIFIED" = false ]; then
-            pass "No Rust code blocks mis-classified as language-text"
+            pass "No Rust code blocks misclassified as language-text"
         fi
 
         # 4d. Check for broken code fences showing as raw markdown
@@ -378,10 +378,10 @@ else
         BROKEN_FENCES=false
         for html_file in "${HTML_FILES[@]}"; do
             rel_path="${html_file#"$REPO_ROOT"/}"
-            matches=$(grep -cP '<p>\s*```' "$html_file" || true)
+            matches=$(grep -cE '<p>[[:space:]]*```' "$html_file" || true)
             if [ "$matches" -gt 0 ]; then
                 fail "Broken code fence(s) in $rel_path — triple backticks rendered as <p> content"
-                grep -nP '<p>\s*```' "$html_file" | head -5 | while IFS= read -r line; do
+                grep -nE '<p>[[:space:]]*```' "$html_file" | head -5 | while IFS= read -r line; do
                     echo "      $line"
                 done
                 BROKEN_FENCES=true
@@ -396,7 +396,7 @@ else
         HTML_ERRORS=false
         for html_file in "${HTML_FILES[@]}"; do
             rel_path="${html_file#"$REPO_ROOT"/}"
-            if grep -qiP 'class="(admonition\s+)?error".*(?:could not|failed to|unable to)' "$html_file"; then
+            if grep -qiE 'class="(admonition[[:space:]]+)?error".*(could not|failed to|unable to)' "$html_file"; then
                 warn "Possible rendering error message detected in $rel_path"
                 HTML_ERRORS=true
             fi

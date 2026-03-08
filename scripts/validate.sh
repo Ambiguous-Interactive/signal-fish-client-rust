@@ -94,7 +94,7 @@ if [ -f "$LYCHEE_TOML" ]; then
 
     # Verify header field uses = assignment (not : assignment at top level)
     # This catches lines like "header: [...]" instead of "header = [...]"
-    if grep -qE '^[a-z_]+\s*:' "$LYCHEE_TOML"; then
+    if grep -qE '^[a-z_]+[[:space:]]*:' "$LYCHEE_TOML"; then
         fail ".lychee.toml has YAML-style 'key: value' lines — TOML requires 'key = value'"
     else
         pass ".lychee.toml uses correct TOML key=value format"
@@ -102,7 +102,7 @@ if [ -f "$LYCHEE_TOML" ]; then
 
     # Verify header entries inside the array use key=value (not key: value)
     # lychee v0.18+ rejects "key: value" and requires "key=value"
-    if grep -E '^header\s*=' "$LYCHEE_TOML" | grep -qP '"[^"]*[^=]*:\s'; then
+    if grep -E '^header[[:space:]]*=' "$LYCHEE_TOML" | grep -qE '"[^"]*[^=]*:[[:space:]]'; then
         fail ".lychee.toml header entries use 'key: value' — lychee requires 'key=value' (equals, not colon)"
     else
         pass ".lychee.toml header entries use correct key=value format"

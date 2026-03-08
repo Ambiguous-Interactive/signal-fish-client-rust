@@ -3,7 +3,7 @@
 Rustdoc uses ``rust,ignore``, ``rust,no_run``, ``rust,compile_fail``, and
 ``rust,edition20XX`` as code-fence language tags.  These are meaningful to
 ``rustdoc`` and to the project's ``extract-rust-snippets.sh`` validator, but
-Pygments (used by pymdownx.highlight) does not recognise them and falls back
+Pygments (used by pymdownx.highlight) does not recognize them and falls back
 to plain-text rendering — which also breaks the fence parser and corrupts
 everything after the block.
 

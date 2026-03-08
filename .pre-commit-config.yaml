@@ -82,6 +82,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── Shell portability script tests ──────────────────────────────────
+  - repo: local
+    hooks:
+      - id: test-shell-portability
+        name: shell portability tests
+        language: system
+        entry: bash scripts/test_shell_portability.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Workflow guard checks ─────────────────────────────────────────────────
   - repo: local
     hooks:
@@ -157,6 +167,17 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+
+  # ── Spell check (typos — optional, matches CI) ───────────────────────
+  - repo: local
+    hooks:
+      - id: typos-optional
+        name: typos spell check (optional)
+        language: system
+        entry: >-
+          bash -c 'if command -v typos >/dev/null 2>&1; then typos --config .typos.toml; else echo "SKIP: typos not installed (install: cargo install typos-cli)."; fi'
+        pass_filenames: false
+        always_run: true
 
   # ── Docs rendering check (push only — requires mkdocs, optional) ──────
   - repo: local

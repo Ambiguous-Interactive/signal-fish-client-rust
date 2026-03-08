@@ -266,6 +266,10 @@ Validated by `tests/ci_config_tests.rs` `docs_nav_card_consistency` and
 In `.lychee.toml`, headers use `key=value` (equals), **not** `key: value`
 (colon). lychee v0.18+ rejects colon syntax with `Header value must be of the form key=value`.
 
+### Shell Script Portability in Documentation Scripts
+
+Scripts that validate documentation (e.g., `check-docs-rendering.sh`, `validate-docs.sh`) must use portable regex. See the "Portable regex" section in `ci-configuration.md` for the full rules. The `test_shell_portability.sh` script and `ci_config_tests.rs` Rust tests enforce this.
+
 ## Common Markdownlint Pitfalls
 
 - **MD032** (blank lines around lists): Add a blank line before and after every
