@@ -15,10 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `polling-client` feature flag with `SignalFishPollingClient` — a synchronous, polling-based client for environments without an async runtime (e.g., game loops, single-threaded WASM).
 - `tokio-runtime` feature flag for explicit opt-in to the Tokio runtime (`tokio/rt`, `tokio/time`), automatically enabled by `transport-websocket`.
 
-### Changed
-
-- The `tokio-runtime` feature, previously implicit, is now an explicit feature flag. `transport-websocket` enables it automatically, preserving backward compatibility.
-
 ## [0.3.1] - 2026-02-23
 
 ### Fixed

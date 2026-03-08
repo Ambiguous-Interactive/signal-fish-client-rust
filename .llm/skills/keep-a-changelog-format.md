@@ -45,6 +45,16 @@ Bad (feature is new in this version — its behavior belongs under Added, not Ch
 - `new-feature` now automatically enables `other-thing`.
 ```
 
+Bad (same feature described in two sections — consolidate under Added):
+
+```markdown
+### Added
+- `tokio-runtime` feature flag for Tokio runtime opt-in.
+
+### Changed
+- The `tokio-runtime` feature, previously implicit, is now explicit.
+```
+
 Weak:
 
 - Updated client internals.

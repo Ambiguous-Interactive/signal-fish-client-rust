@@ -55,10 +55,7 @@ links pointed at `doc.rust-lang.org/stable/releases.html`.
 
 ### ShellCheck SC2317 and trap handlers
 
-Functions used as `trap` handlers appear unreachable to ShellCheck. Suppress
-with `# shellcheck disable=SC2317  # called indirectly via trap`. Keep
-rationale in a second `#` segment (no em-dashes) so ShellCheck parses the
-directive reliably.
+Functions used as `trap` handlers appear unreachable to ShellCheck. Suppress with `# shellcheck disable=SC2317  # called indirectly via trap`. Keep rationale in a second `#` segment (no em-dashes) so ShellCheck parses the directive.
 
 ### ShellCheck SC2004 and array indexes
 
@@ -159,6 +156,10 @@ modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
 ### Shell scripts: Guard logic after extraction failures
 
 When a script extracts a value (e.g., from `awk`/`grep`), all dependent comparisons must stay inside the success branch or return early (`continue`/`exit`). Enforced by `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+
+### Shell scripts: Distinguish "no tool" from "validation failure"
+
+When validating files with optional tools, never conflate "tool unavailable" with "file invalid." Use distinct exit codes (exit 0 = valid, exit 2 = no parser, exit 1 = invalid) and check them with `if/elif/else` branches. Do not use nested `if !` patterns that short-circuit when an import fails. Reference: `scripts/ci-validate.sh` (Check 5) and `scripts/install-hooks.sh` TOML validation.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 

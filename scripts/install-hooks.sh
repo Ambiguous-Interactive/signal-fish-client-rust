@@ -99,14 +99,38 @@ fi
 
 # ── TOML config validation ────────────────────────────────────────────────
 TOML_FAIL=0
+TOML_HAS_PARSER=false
 for toml_file in "${REPO_ROOT}"/*.toml "${REPO_ROOT}"/.*.toml; do
     [ -f "$toml_file" ] || continue
     if command -v python3 &>/dev/null; then
-        if ! python3 -c "import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))" "$toml_file" 2>/dev/null; then
-            if ! python3 -c "import toml, sys; toml.load(sys.argv[1])" "$toml_file" 2>/dev/null; then
-                echo "TOML parse error: $toml_file"
-                TOML_FAIL=1
-            fi
+        # Exit 0 = valid TOML, exit 2 = no parser available, exit 1 = invalid
+        TOML_EXIT=0
+        python3 -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        try:
+            import toml
+        except ImportError:
+            sys.exit(2)
+        toml.load(sys.argv[1])
+        sys.exit(0)
+with open(sys.argv[1], 'rb') as f:
+    tomllib.load(f)
+" "$toml_file" 2>/dev/null || TOML_EXIT=$?
+
+        if [ "$TOML_EXIT" -eq 0 ]; then
+            TOML_HAS_PARSER=true
+        elif [ "$TOML_EXIT" -eq 2 ]; then
+            : # No parser available — skip, do not report as error
+        else
+            TOML_HAS_PARSER=true
+            echo "TOML parse error: $toml_file"
+            TOML_FAIL=1
         fi
     fi
 done
@@ -115,6 +139,10 @@ if [ "$TOML_FAIL" -ne 0 ]; then
     echo "Commit aborted: one or more TOML config files failed to parse."
     echo "Fix the TOML syntax errors above, then re-stage and commit."
     exit 1
+fi
+if [ "$TOML_HAS_PARSER" = false ] && command -v python3 &>/dev/null; then
+    echo "Note: no Python TOML parser available — skipping TOML validation."
+    echo "  Python 3.11+ includes tomllib; or install: pip install tomli"
 fi
 
 # ── FFI safety check ──────────────────────────────────────────────────────

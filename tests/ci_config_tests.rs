@@ -997,6 +997,100 @@ mod crate_version_consistency {
             );
         }
     }
+
+    /// Verify that no backtick-quoted feature/type name appears in both the
+    /// `### Added` and `### Changed` sections of the same version block.
+    /// A newly-added feature's behavior belongs entirely under `### Added`;
+    /// `### Changed` is reserved for features that existed in a prior release.
+    #[test]
+    fn changelog_no_duplicate_entries_across_added_and_changed() {
+        let changelog = read_project_file("CHANGELOG.md");
+        let mut current_version = String::new();
+        let mut added_names: Vec<String> = Vec::new();
+        let mut changed_names: Vec<String> = Vec::new();
+        let mut current_section = "";
+        let mut duplicates: Vec<String> = Vec::new();
+
+        for line in changelog.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with("## ") {
+                // Check for duplicates in the version we just finished
+                if !current_version.is_empty() {
+                    for name in &added_names {
+                        if changed_names.iter().any(|c| c == name) {
+                            duplicates.push(format!(
+                                "  {current_version}: `{name}` appears in both \
+                                 ### Added and ### Changed"
+                            ));
+                        }
+                    }
+                }
+                current_version = trimmed.to_string();
+                added_names.clear();
+                changed_names.clear();
+                current_section = "";
+                continue;
+            }
+
+            if trimmed.starts_with("### ") {
+                current_section = if trimmed == "### Added" {
+                    "added"
+                } else if trimmed == "### Changed" {
+                    "changed"
+                } else {
+                    ""
+                };
+                continue;
+            }
+
+            if trimmed.starts_with("- ") {
+                // Extract all backtick-quoted names from the bullet
+                // (not just prefix position) to catch bullets like
+                // "- The `tokio-runtime` feature..." as well as
+                // "- `tokio-runtime` feature flag..."
+                let target = match current_section {
+                    "added" => Some(&mut added_names),
+                    "changed" => Some(&mut changed_names),
+                    _ => None,
+                };
+                if let Some(names) = target {
+                    let mut rest = trimmed;
+                    while let Some(start) = rest.find('`') {
+                        rest = &rest[start + 1..];
+                        if let Some(end) = rest.find('`') {
+                            names.push(rest[..end].to_string());
+                            rest = &rest[end + 1..];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check the last version block
+        if !current_version.is_empty() {
+            for name in &added_names {
+                if changed_names.iter().any(|c| c == name) {
+                    duplicates.push(format!(
+                        "  {current_version}: `{name}` appears in both \
+                         ### Added and ### Changed"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            duplicates.is_empty(),
+            "CHANGELOG.md has features listed under both ### Added and \
+             ### Changed in the same version. A newly-added feature's \
+             behavior belongs entirely under ### Added; ### Changed is \
+             reserved for features that existed in a prior release.\n\
+             Duplicates found:\n{}",
+            duplicates.join("\n")
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2103,6 +2197,36 @@ mod ci_config_validation {
              changes (e.g., new CVSS format support, new rustdoc JSON version).\n\
              Add explicit version pins to each tool:\n{}",
             unpinned.join("\n")
+        );
+    }
+
+    /// Verify that `install-hooks.sh` TOML validation uses exit-code-based
+    /// logic to distinguish "no TOML parser available" (exit 2) from "invalid
+    /// TOML" (exit 1). The previous nested `if !` pattern conflated missing
+    /// parsers with validation failures, causing false positives on systems
+    /// without `tomllib` or `toml` Python packages.
+    #[test]
+    fn install_hooks_toml_validation_uses_exit_code_pattern() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        // Must use sys.exit(2) to signal "no parser available"
+        assert!(
+            contents.contains("sys.exit(2)"),
+            "scripts/install-hooks.sh TOML validation must use sys.exit(2) to \
+             signal 'no TOML parser available', distinguishing it from exit 1 \
+             (invalid TOML). Without this, valid TOML files are falsely reported \
+             as broken when neither tomllib nor toml is installed."
+        );
+
+        // Must NOT use the old nested `if !` pattern that conflates import
+        // failures with parse failures
+        assert!(
+            !contents.contains(
+                "if ! python3 -c \"import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))\""
+            ),
+            "scripts/install-hooks.sh must not use the old nested `if !` TOML \
+             validation pattern. Use exit-code-based logic (exit 2 = no parser, \
+             exit 1 = invalid, exit 0 = valid) instead."
         );
     }
 
