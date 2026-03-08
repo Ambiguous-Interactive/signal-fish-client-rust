@@ -1649,12 +1649,12 @@ mod ci_config_validation {
     }
 
     /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
-    /// field is an array of strings. Lychee v0.18+ expects headers as a
-    /// sequence of `"Name: value"` strings, not an inline table (map).
-    /// A map-typed `header` was a real CI failure — lychee rejects it with
-    /// "invalid type: map, expected a sequence".
+    /// field is a TOML inline table (map). Lychee v0.23.0+ expects headers as
+    /// an inline table `header = { key = "value" }`, not an array of strings.
+    /// An array-typed `header` was the old format (lychee <v0.23.0) and now
+    /// fails with "invalid type: sequence, expected a map".
     #[test]
-    fn lychee_config_header_is_an_array() {
+    fn lychee_config_header_is_a_table() {
         let contents = read_project_file(".lychee.toml");
         let parsed: toml::Value =
             toml::from_str(&contents).expect(".lychee.toml must be valid TOML");
@@ -1664,31 +1664,28 @@ mod ci_config_validation {
              for link checking requests.",
         );
 
-        let arr = header.as_array().unwrap_or_else(|| {
+        let table = header.as_table().unwrap_or_else(|| {
             panic!(
-                ".lychee.toml 'header' field must be an array of strings, \
-                 e.g.: header = [\"user-agent=...\"].\n\
-                 lychee v0.18+ rejects map syntax. Found type: {}",
+                ".lychee.toml 'header' field must be a TOML inline table, \
+                 e.g.: header = {{ user-agent = \"...\" }}.\n\
+                 lychee v0.23.0+ rejects array syntax. Found type: {}",
                 header.type_str()
             )
         });
 
         assert!(
-            !arr.is_empty(),
-            ".lychee.toml 'header' array must not be empty — \
+            !table.is_empty(),
+            ".lychee.toml 'header' table must not be empty — \
              at least a user-agent header is required."
         );
 
-        for (i, entry) in arr.iter().enumerate() {
-            let s = entry.as_str().unwrap_or_else(|| {
-                panic!(".lychee.toml header[{i}] must be a string, found: {entry}")
-            });
-            assert!(
-                s.contains('='),
-                ".lychee.toml header[{i}] = {s:?} does not contain '=' — \
-                 lychee v0.18+ requires headers in \"key=value\" format."
-            );
-        }
+        assert!(
+            table.contains_key("user-agent"),
+            ".lychee.toml 'header' table must contain a 'user-agent' key, \
+             e.g.: header = {{ user-agent = \"lychee (...)\" }}. \
+             Found keys: {:?}",
+            table.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
