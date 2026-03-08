@@ -72,3 +72,13 @@ pub use transport::Transport;
 
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
+
+#[cfg(feature = "polling-client")]
+pub mod polling_client;
+
+#[cfg(feature = "polling-client")]
+pub use polling_client::SignalFishPollingClient;
+
+// Re-export only on the correct target (see transports/mod.rs for rationale).
+#[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
+pub use transports::EmscriptenWebSocketTransport;

@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -69,6 +69,13 @@ bash scripts/check-docsrs.sh
 # Check for broken doc links
 cargo doc --all-features 2>&1 | grep "warning\|error"
 ```
+
+### Intra-doc links and target-gated types
+
+Types behind `#[cfg(target_os = "emscripten")]` or similar target restrictions
+are never in scope when building docs on a different host. Do **not** use
+intra-doc link syntax (`[`TypeName`]`) for these types — use plain backtick
+formatting (`\`TypeName\``) instead. See the *ci-configuration* skill for details.
 
 ## cargo-deny Configuration (deny.toml)
 
@@ -167,13 +174,27 @@ jobs:
 
 ```shell
 # Bump version (0.1.0 → 0.2.0)
-# 1. Update version in Cargo.toml
+# 1. Update version in ALL locations (see checklist below)
 # 2. Update CHANGELOG.md (user-visible changes only; exclude internal tooling/test/CI details)
 # 3. Commit: "chore: release 0.2.0"
 # 4. Tag: git tag -s v0.2.0 -m "Release 0.2.0"
 # 5. Push: git push && git push --tags
 # CI then publishes automatically
 ```
+
+### Version bump checklist
+
+A version bump must update **all** references, not just `Cargo.toml`:
+
+- `Cargo.toml` (`version`)
+- `README.md` (dependency snippet, badge if present)
+- `docs/*.md` (any version references in getting-started or guides)
+- `.llm/context.md` (Version field)
+- `.llm/skills/crate-publishing.md` (Cargo.toml metadata example)
+
+The `crate_version_consistency` tests in `tests/ci_config_tests.rs` catch
+stale version references, but it is better to update them all in the same
+commit as the bump.
 
 ## CHANGELOG.md Format
 

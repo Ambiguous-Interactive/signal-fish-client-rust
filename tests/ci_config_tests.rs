@@ -305,7 +305,7 @@ mod docsrs_policy {
     }
 
     #[test]
-    fn check_all_docsrs_failure_does_not_double_count_phase_4_failures() {
+    fn check_all_docsrs_failure_does_not_double_count_phase_failures() {
         let contents = read_project_file("scripts/check-all.sh");
 
         assert!(
@@ -316,15 +316,176 @@ mod docsrs_policy {
         );
 
         let docsrs_fail_pos = contents.find("docs.rs simulation: FAIL").expect(
-            "scripts/check-all.sh must report docs.rs simulation failures in the Phase 4 block",
+            "scripts/check-all.sh must report docs.rs simulation failures in the cargo doc phase block",
         );
         let docsrs_tail = &contents[docsrs_fail_pos..];
 
         assert!(
-            docsrs_tail.contains("mark_phase_fail 4"),
-            "scripts/check-all.sh must use mark_phase_fail 4 when docs.rs \
-             simulation fails, so Phase 4 remains a single failed phase \
-             in the final summary."
+            docsrs_tail.contains("mark_phase_fail 5"),
+            "scripts/check-all.sh must use mark_phase_fail 5 when docs.rs \
+             simulation fails, so the cargo doc phase remains a single \
+             failed phase in the final summary."
+        );
+    }
+
+    #[test]
+    fn transports_mod_does_not_use_intradoc_link_for_emscripten_transport() {
+        let contents = read_project_file("src/transports/mod.rs");
+        let forbidden = "[`EmscriptenWebSocketTransport`]";
+
+        for (i, line) in contents.lines().enumerate() {
+            assert!(
+                !line.contains(forbidden),
+                "src/transports/mod.rs line {} contains an intra-doc link to \
+                 EmscriptenWebSocketTransport: {line:?}. \
+                 This type is target-gated (only available on target_os = \"emscripten\"), \
+                 so it can never resolve on non-emscripten hosts. Use plain backtick \
+                 formatting (`EmscriptenWebSocketTransport`) instead of intra-doc link \
+                 syntax ([`EmscriptenWebSocketTransport`]).",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn no_source_file_uses_intradoc_link_for_target_gated_emscripten_type() {
+        // EmscriptenWebSocketTransport is gated on target_os = "emscripten",
+        // so intra-doc links to it will fail on any other host. Scan all Rust
+        // source files to prevent this regression anywhere in the crate.
+        //
+        // Files inside the emscripten_websocket module are excluded because
+        // they are themselves target-gated — rustdoc only processes them on
+        // emscripten where the type IS in scope, so their intra-doc links
+        // are valid.
+        //
+        // If new target-gated types are introduced, add their names here.
+        //
+        // The pattern omits the trailing `]` to also catch method-level
+        // links like [`EmscriptenWebSocketTransport::connect`].
+        let forbidden = "[`EmscriptenWebSocketTransport";
+        let src_dir = project_root().join("src");
+        let mut violations = Vec::new();
+
+        fn visit_rs_files(dir: &std::path::Path, forbidden: &str, violations: &mut Vec<String>) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, forbidden, violations);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    // Skip files inside the emscripten_websocket module: they
+                    // are compiled only on target_os = "emscripten" where the
+                    // type is in scope, so intra-doc links there are correct.
+                    //
+                    // We check ALL path components, not just the final filename,
+                    // so that files inside a potential `emscripten_websocket/`
+                    // directory (e.g., `emscripten_websocket/connection.rs`) are
+                    // also excluded. We match the exact stem "emscripten_websocket"
+                    // (directory component or `.rs` file) rather than a prefix to
+                    // avoid false-positive exclusions on unrelated files that
+                    // happen to share the prefix.
+                    if path.components().any(|c| {
+                        c.as_os_str().to_str().is_some_and(|s| {
+                            s == "emscripten_websocket" || s == "emscripten_websocket.rs"
+                        })
+                    }) {
+                        continue;
+                    }
+                    let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                        panic!("Failed to read '{}': {e}", path.display());
+                    });
+                    for (i, line) in contents.lines().enumerate() {
+                        if line.contains(forbidden) {
+                            violations.push(format!("{}:{}: {line}", path.display(), i + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        visit_rs_files(&src_dir, forbidden, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Found intra-doc links to EmscriptenWebSocketTransport (or its methods) \
+             in source files. This type is target-gated (target_os = \"emscripten\") \
+             and cannot resolve on other hosts, causing rustdoc failures with \
+             -D warnings. Use plain backtick formatting instead.\nViolations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// Regression test: verify that the emscripten_websocket exclusion logic
+    /// in `no_source_file_uses_intradoc_link_for_target_gated_emscripten_type`
+    /// checks path *components*, not just the final filename. This ensures
+    /// files inside a potential `emscripten_websocket/` directory (e.g.,
+    /// `emscripten_websocket/connection.rs`) are also correctly excluded.
+    #[test]
+    fn emscripten_exclusion_uses_component_based_path_matching() {
+        /// Checks whether a path should be excluded from the intra-doc link
+        /// scan. This duplicates the component-checking logic used in the
+        /// production test above, allowing us to unit-test it in isolation.
+        fn is_excluded_emscripten_path(path: &std::path::Path) -> bool {
+            path.components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs")
+            })
+        }
+
+        // Current single-file layout — must be excluded.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket.rs"
+            )),
+            "emscripten_websocket.rs (current layout) must be excluded"
+        );
+
+        // Potential future directory layout — must also be excluded.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket/connection.rs"
+            )),
+            "emscripten_websocket/connection.rs (future directory layout) must be excluded"
+        );
+
+        // Deeply nested file inside the emscripten_websocket directory.
+        assert!(
+            is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket/sub/helper.rs"
+            )),
+            "emscripten_websocket/sub/helper.rs must be excluded"
+        );
+
+        // Unrelated transport — must NOT be excluded.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/transports/websocket.rs")),
+            "websocket.rs must NOT be excluded"
+        );
+
+        // Unrelated source file — must NOT be excluded.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/client.rs")),
+            "client.rs must NOT be excluded"
+        );
+
+        // File whose name contains "emscripten" but not as a component prefix.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new("src/transports/not_emscripten.rs")),
+            "not_emscripten.rs must NOT be excluded (emscripten_websocket prefix required)"
+        );
+
+        // File that SHARES the emscripten_websocket prefix but is a different
+        // module — must NOT be excluded. This ensures exact-stem matching, not
+        // prefix matching.
+        assert!(
+            !is_excluded_emscripten_path(std::path::Path::new(
+                "src/transports/emscripten_websocket_notes.rs"
+            )),
+            "emscripten_websocket_notes.rs must NOT be excluded (different module)"
         );
     }
 }
@@ -565,6 +726,23 @@ mod ci_workflow_policy {
                 );
             }
         }
+    }
+
+    /// Verify that the CI clippy job tests all feature combinations:
+    /// default, `--all-features`, and `--no-default-features`.
+    ///
+    /// Regression: Without `--no-default-features`, dead_code warnings from
+    /// items only used behind feature gates go undetected until a user builds
+    /// the crate with a minimal feature set.
+    #[test]
+    fn ci_clippy_covers_no_default_features() {
+        let contents = ci_contents();
+        assert!(
+            contents.contains("--no-default-features"),
+            "ci.yml clippy job must include a '--no-default-features' matrix entry. \
+             Without this check, dead_code and other warnings that only appear \
+             when optional features are disabled will not be caught in CI."
+        );
     }
 
     /// Verify that key documentation and config files reference the same MSRV
@@ -818,6 +996,100 @@ mod crate_version_consistency {
                  because it is a user-visible public API addition."
             );
         }
+    }
+
+    /// Verify that no backtick-quoted feature/type name appears in both the
+    /// `### Added` and `### Changed` sections of the same version block.
+    /// A newly-added feature's behavior belongs entirely under `### Added`;
+    /// `### Changed` is reserved for features that existed in a prior release.
+    #[test]
+    fn changelog_no_duplicate_entries_across_added_and_changed() {
+        let changelog = read_project_file("CHANGELOG.md");
+        let mut current_version = String::new();
+        let mut added_names: Vec<String> = Vec::new();
+        let mut changed_names: Vec<String> = Vec::new();
+        let mut current_section = "";
+        let mut duplicates: Vec<String> = Vec::new();
+
+        for line in changelog.lines() {
+            let trimmed = line.trim();
+
+            if trimmed.starts_with("## ") {
+                // Check for duplicates in the version we just finished
+                if !current_version.is_empty() {
+                    for name in &added_names {
+                        if changed_names.iter().any(|c| c == name) {
+                            duplicates.push(format!(
+                                "  {current_version}: `{name}` appears in both \
+                                 ### Added and ### Changed"
+                            ));
+                        }
+                    }
+                }
+                current_version = trimmed.to_string();
+                added_names.clear();
+                changed_names.clear();
+                current_section = "";
+                continue;
+            }
+
+            if trimmed.starts_with("### ") {
+                current_section = if trimmed == "### Added" {
+                    "added"
+                } else if trimmed == "### Changed" {
+                    "changed"
+                } else {
+                    ""
+                };
+                continue;
+            }
+
+            if trimmed.starts_with("- ") {
+                // Extract all backtick-quoted names from the bullet
+                // (not just prefix position) to catch bullets like
+                // "- The `tokio-runtime` feature..." as well as
+                // "- `tokio-runtime` feature flag..."
+                let target = match current_section {
+                    "added" => Some(&mut added_names),
+                    "changed" => Some(&mut changed_names),
+                    _ => None,
+                };
+                if let Some(names) = target {
+                    let mut rest = trimmed;
+                    while let Some(start) = rest.find('`') {
+                        rest = &rest[start + 1..];
+                        if let Some(end) = rest.find('`') {
+                            names.push(rest[..end].to_string());
+                            rest = &rest[end + 1..];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check the last version block
+        if !current_version.is_empty() {
+            for name in &added_names {
+                if changed_names.iter().any(|c| c == name) {
+                    duplicates.push(format!(
+                        "  {current_version}: `{name}` appears in both \
+                         ### Added and ### Changed"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            duplicates.is_empty(),
+            "CHANGELOG.md has features listed under both ### Added and \
+             ### Changed in the same version. A newly-added feature's \
+             behavior belongs entirely under ### Added; ### Changed is \
+             reserved for features that existed in a prior release.\n\
+             Duplicates found:\n{}",
+            duplicates.join("\n")
+        );
     }
 }
 
@@ -1135,6 +1407,47 @@ mod workflow_security {
              before the else branch, causing fall-through on empty CARGO_MSRV."
         );
     }
+
+    /// Verify that scripts/check-workflows.sh contains Phase 7, which warns
+    /// about major-only version tags (e.g. `@v2` instead of `@v2.8.2`).
+    /// Major-only tags are mutable floating references that can silently
+    /// pick up breaking changes; Phase 7 flags them as an informational
+    /// warning so maintainers are aware.
+    #[test]
+    fn check_workflows_script_detects_major_only_version_tags() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        assert!(
+            contents.contains("signal-fish-major-only-violations"),
+            "scripts/check-workflows.sh must create a temp file for major-only \
+             version tag violations (signal-fish-major-only-violations)."
+        );
+
+        assert!(
+            contents.contains("MAJOR_ONLY_EXCEPTIONS"),
+            "scripts/check-workflows.sh must declare a MAJOR_ONLY_EXCEPTIONS \
+             list so that specific actions can be exempt from the major-only \
+             version tag warning."
+        );
+
+        assert!(
+            contents.contains("mymindstorm/setup-emsdk"),
+            "scripts/check-workflows.sh must include mymindstorm/setup-emsdk \
+             in the MAJOR_ONLY_EXCEPTIONS list as a known exception."
+        );
+
+        assert!(
+            contents.contains("^v[0-9]+$"),
+            "scripts/check-workflows.sh must use the regex pattern ^v[0-9]+$ \
+             to detect major-only version tags (e.g. @v2, @v14)."
+        );
+
+        assert!(
+            contents.contains("informational"),
+            "scripts/check-workflows.sh Phase 7 must be marked as informational \
+             to confirm it is a non-blocking warning rather than a hard failure."
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1336,10 +1649,12 @@ mod ci_config_validation {
     }
 
     /// Verify that `.lychee.toml` parses as valid TOML and that the `header`
-    /// field is an inline table (map), not an array. An array-typed `header`
-    /// was a real failure in CI — lychee silently ignores malformed headers.
+    /// field is an array of strings. Lychee v0.18+ expects headers as a
+    /// sequence of `"Name: value"` strings, not an inline table (map).
+    /// A map-typed `header` was a real CI failure — lychee rejects it with
+    /// "invalid type: map, expected a sequence".
     #[test]
-    fn lychee_config_header_is_a_map() {
+    fn lychee_config_header_is_an_array() {
         let contents = read_project_file(".lychee.toml");
         let parsed: toml::Value =
             toml::from_str(&contents).expect(".lychee.toml must be valid TOML");
@@ -1349,13 +1664,31 @@ mod ci_config_validation {
              for link checking requests.",
         );
 
+        let arr = header.as_array().unwrap_or_else(|| {
+            panic!(
+                ".lychee.toml 'header' field must be an array of strings, \
+                 e.g.: header = [\"user-agent=...\"].\n\
+                 lychee v0.18+ rejects map syntax. Found type: {}",
+                header.type_str()
+            )
+        });
+
         assert!(
-            header.is_table(),
-            ".lychee.toml 'header' field must be an inline table (map), \
-             not an array. lychee expects headers as key-value pairs, e.g.: \
-             header = {{ user-agent = \"...\" }}. Found type: {}",
-            header.type_str()
+            !arr.is_empty(),
+            ".lychee.toml 'header' array must not be empty — \
+             at least a user-agent header is required."
         );
+
+        for (i, entry) in arr.iter().enumerate() {
+            let s = entry.as_str().unwrap_or_else(|| {
+                panic!(".lychee.toml header[{i}] must be a string, found: {entry}")
+            });
+            assert!(
+                s.contains('='),
+                ".lychee.toml header[{i}] = {s:?} does not contain '=' — \
+                 lychee v0.18+ requires headers in \"key=value\" format."
+            );
+        }
     }
 
     #[test]
@@ -1509,6 +1842,75 @@ mod ci_config_validation {
         );
     }
 
+    /// Verify that the pre-push hook in `install-hooks.sh` runs the
+    /// panic-free policy check and the markdown snippet compilation check.
+    /// These are CI-critical scripts that should be caught before push.
+    #[test]
+    fn install_hooks_pre_push_runs_ci_scripts() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        assert!(
+            contents.contains("scripts/check-no-panics.sh"),
+            "scripts/install-hooks.sh pre-push hook must run \
+             scripts/check-no-panics.sh to catch panic-free policy \
+             violations before push."
+        );
+
+        assert!(
+            contents.contains("scripts/extract-rust-snippets.sh"),
+            "scripts/install-hooks.sh pre-push hook must run \
+             scripts/extract-rust-snippets.sh to catch markdown snippet \
+             compilation failures before push."
+        );
+    }
+
+    /// Verify that `.pre-commit-config.yaml` includes push-stage hooks
+    /// for the panic-free policy check and markdown snippet compilation.
+    #[test]
+    fn pre_commit_config_has_push_stage_ci_script_hooks() {
+        let contents = read_project_file(".pre-commit-config.yaml");
+
+        assert!(
+            contents.contains("id: check-no-panics"),
+            ".pre-commit-config.yaml must define a 'check-no-panics' hook \
+             to run the panic-free policy check on push."
+        );
+
+        assert!(
+            contents.contains("id: extract-rust-snippets"),
+            ".pre-commit-config.yaml must define an 'extract-rust-snippets' \
+             hook to run the markdown snippet compilation check on push."
+        );
+
+        // Both hooks must be push-only (too slow for every commit).
+        // Verify by checking the hook blocks contain `stages: [push]`.
+        let panics_block_start = contents
+            .find("id: check-no-panics")
+            .expect("check-no-panics hook must exist");
+        let panics_block_end = contents[panics_block_start..]
+            .find("\n  - repo:")
+            .map(|offset| panics_block_start + offset)
+            .unwrap_or(contents.len());
+        let panics_block = &contents[panics_block_start..panics_block_end];
+        assert!(
+            panics_block.contains("stages: [push]"),
+            "check-no-panics hook must be push-only (stages: [push])."
+        );
+
+        let snippets_block_start = contents
+            .find("id: extract-rust-snippets")
+            .expect("extract-rust-snippets hook must exist");
+        let snippets_block_end = contents[snippets_block_start..]
+            .find("\n  - repo:")
+            .map(|offset| snippets_block_start + offset)
+            .unwrap_or(contents.len());
+        let snippets_block = &contents[snippets_block_start..snippets_block_end];
+        assert!(
+            snippets_block.contains("stages: [push]"),
+            "extract-rust-snippets hook must be push-only (stages: [push])."
+        );
+    }
+
     #[test]
     fn ci_configuration_skill_documents_sc2004_for_reads_and_writes() {
         let contents = read_project_file(".llm/skills/ci-configuration.md");
@@ -1560,6 +1962,311 @@ mod ci_config_validation {
             "Cargo.toml [package.metadata.cargo-machete] ignored list must include \
              'serde_bytes'. This crate is used via #[serde(with = \"serde_bytes\")] \
              attribute annotations which cargo-machete cannot detect as usage."
+        );
+    }
+
+    /// Verify that `scripts/extract-rust-snippets.sh` is executed in a CI
+    /// workflow. The script validates that Rust code blocks embedded in
+    /// markdown files actually compile, catching stale or broken examples.
+    ///
+    /// The script is expected in the examples-validation workflow (which
+    /// covers doc tests, example programs, and markdown snippet compilation).
+    #[test]
+    fn ci_runs_extract_rust_snippets_script() {
+        let contents = read_project_file(".github/workflows/examples-validation.yml");
+        assert!(
+            contents.contains("bash scripts/extract-rust-snippets.sh"),
+            ".github/workflows/examples-validation.yml must run \
+             'bash scripts/extract-rust-snippets.sh'. This script validates \
+             that Rust code blocks in markdown files compile, preventing \
+             stale or broken documentation examples from reaching main."
+        );
+    }
+
+    /// Verify that the pre-push hook in `.pre-commit-config.yaml` includes
+    /// a `cargo clippy --no-default-features` check to catch dead_code
+    /// warnings and other issues that only surface when optional features
+    /// are disabled.
+    #[test]
+    fn pre_commit_config_has_no_default_features_clippy_hook() {
+        let contents = read_project_file(".pre-commit-config.yaml");
+        assert!(
+            contents.contains("cargo clippy --all-targets --no-default-features -- -D warnings"),
+            ".pre-commit-config.yaml must define a cargo clippy hook with \
+             --no-default-features to catch dead_code warnings and other \
+             issues that only surface when optional features are disabled."
+        );
+    }
+
+    /// Collect all workflow YAML files under `.github/workflows/`.
+    fn all_workflow_files() -> Vec<(String, String)> {
+        let workflows_dir = project_root().join(".github/workflows");
+        let mut results = Vec::new();
+        if workflows_dir.is_dir() {
+            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                    let relative = format!(
+                        ".github/workflows/{}",
+                        path.file_name().unwrap().to_string_lossy()
+                    );
+                    let contents = read_project_file(&relative);
+                    results.push((relative, contents));
+                }
+            }
+        }
+        results
+    }
+
+    /// Extract all `uses: owner/repo@version` references from workflow YAML,
+    /// returning `(action_name, version_ref, file_path, line_number)` tuples.
+    fn extract_action_references(
+        workflow_path: &str,
+        contents: &str,
+    ) -> Vec<(String, String, String, usize)> {
+        let mut refs = Vec::new();
+        for (line_num, line) in contents.lines().enumerate() {
+            let trimmed = line.trim();
+
+            // Only check `uses:` lines.
+            let uses_value = if let Some(rest) = trimmed.strip_prefix("- uses:") {
+                rest.trim()
+            } else if let Some(rest) = trimmed.strip_prefix("uses:") {
+                rest.trim()
+            } else {
+                continue;
+            };
+            let uses_value = uses_value.trim_matches('"');
+
+            // Skip local and docker actions.
+            if uses_value.starts_with("./") || uses_value.starts_with("docker://") {
+                continue;
+            }
+
+            if let Some(at_pos) = uses_value.find('@') {
+                let action_name = &uses_value[..at_pos];
+                let version_ref = uses_value[at_pos + 1..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                refs.push((
+                    action_name.to_string(),
+                    version_ref.to_string(),
+                    workflow_path.to_string(),
+                    line_num + 1,
+                ));
+            }
+        }
+        refs
+    }
+
+    /// All uses of the same GitHub Action across all workflow files should use
+    /// the same version tag. For example, if `actions/checkout@v6.0.2` appears
+    /// in ci.yml, every other workflow must also use `@v6.0.2` and not an older
+    /// or newer version. This prevents silent behavioral differences between
+    /// workflows caused by version skew.
+    ///
+    /// `dtolnay/rust-toolchain` is excluded because it intentionally uses
+    /// different channel refs (stable, nightly, beta) in different workflows.
+    #[test]
+    fn all_action_versions_are_consistent_across_workflows() {
+        let workflows = all_workflow_files();
+        assert!(
+            !workflows.is_empty(),
+            "No workflow files found under .github/workflows/. \
+             Expected at least one .yml file."
+        );
+
+        // Collect all action references across all workflows.
+        let mut action_versions: std::collections::HashMap<String, Vec<(String, String, usize)>> =
+            std::collections::HashMap::new();
+
+        for (path, contents) in &workflows {
+            for (action_name, version_ref, file_path, line_num) in
+                extract_action_references(path, contents)
+            {
+                action_versions.entry(action_name).or_default().push((
+                    version_ref,
+                    file_path,
+                    line_num,
+                ));
+            }
+        }
+
+        let mut inconsistencies = Vec::new();
+
+        for (action_name, usages) in &action_versions {
+            // Skip dtolnay/rust-toolchain — it uses channels, not versions.
+            if action_name == "dtolnay/rust-toolchain" {
+                continue;
+            }
+
+            let first_version = &usages[0].0;
+            for (version, file, line) in usages.iter().skip(1) {
+                if version != first_version {
+                    inconsistencies.push(format!(
+                        "  {action_name}: '{first_version}' (in {}, line {}) vs \
+                         '{version}' (in {file}, line {line})",
+                        usages[0].1, usages[0].2
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            inconsistencies.is_empty(),
+            "Action version inconsistencies found across workflow files.\n\
+             All uses of the same GitHub Action must use the same version tag \
+             to prevent silent behavioral differences between workflows.\n\
+             Fix by updating all references to use a single version:\n{}",
+            inconsistencies.join("\n")
+        );
+    }
+
+    /// When `taiki-e/install-action` is used with a `tool:` parameter, the
+    /// tool should include an explicit version pin (e.g., `cargo-audit@0.22.1`
+    /// not just `cargo-audit`). Without a version pin, CI silently installs
+    /// whatever the latest version is, which can break when tools release
+    /// breaking changes (e.g., cargo-audit adding CVSS 4.0 support that
+    /// requires a newer advisory database format, or cargo-semver-checks
+    /// requiring a newer rustdoc JSON format).
+    #[test]
+    fn install_action_tools_have_version_pins() {
+        let workflows = all_workflow_files();
+
+        let mut unpinned = Vec::new();
+
+        for (path, contents) in &workflows {
+            let lines: Vec<&str> = contents.lines().collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+
+                // Detect `uses: taiki-e/install-action@...`
+                let is_install_action =
+                    trimmed.contains("uses:") && trimmed.contains("taiki-e/install-action@");
+
+                if !is_install_action {
+                    continue;
+                }
+
+                // Look ahead for a `tool:` line within the next few lines
+                // (typically in a `with:` block immediately after).
+                let lookahead_end = std::cmp::min(i + 5, lines.len());
+                for (offset, lookahead_line) in lines[i + 1..lookahead_end].iter().enumerate() {
+                    let tool_trimmed = lookahead_line.trim();
+                    let line_num = i + 1 + offset + 1; // 1-based line number
+
+                    if let Some(tool_value) = tool_trimmed.strip_prefix("tool:") {
+                        let tool_value = tool_value.trim().trim_matches('"').trim_matches('\'');
+
+                        // Check each comma-separated tool for version pin.
+                        for tool in tool_value.split(',') {
+                            let tool = tool.trim();
+                            if tool.is_empty() {
+                                continue;
+                            }
+
+                            if !tool.contains('@') {
+                                unpinned.push(format!(
+                                    "  {path}:{line_num}: tool '{tool}' has no version pin. \
+                                     Use '{tool}@<version>' to prevent CI breakage \
+                                     from upstream tool releases.",
+                                ));
+                            }
+                        }
+                        break;
+                    }
+
+                    // Stop looking if we hit a step boundary or unrelated key.
+                    if tool_trimmed.starts_with("- name:")
+                        || tool_trimmed.starts_with("- uses:")
+                        || tool_trimmed.starts_with("- run:")
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            unpinned.is_empty(),
+            "Found taiki-e/install-action tool references without version pins.\n\
+             Unpinned tools can break CI when upstream releases include breaking \
+             changes (e.g., new CVSS format support, new rustdoc JSON version).\n\
+             Add explicit version pins to each tool:\n{}",
+            unpinned.join("\n")
+        );
+    }
+
+    /// Verify that `install-hooks.sh` TOML validation uses exit-code-based
+    /// logic to distinguish "no TOML parser available" (exit 2) from "invalid
+    /// TOML" (exit 1). The previous nested `if !` pattern conflated missing
+    /// parsers with validation failures, causing false positives on systems
+    /// without `tomllib` or `toml` Python packages.
+    #[test]
+    fn install_hooks_toml_validation_uses_exit_code_pattern() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        // Must use sys.exit(2) to signal "no parser available"
+        assert!(
+            contents.contains("sys.exit(2)"),
+            "scripts/install-hooks.sh TOML validation must use sys.exit(2) to \
+             signal 'no TOML parser available', distinguishing it from exit 1 \
+             (invalid TOML). Without this, valid TOML files are falsely reported \
+             as broken when neither tomllib nor toml is installed."
+        );
+
+        // Must NOT use the old nested `if !` pattern that conflates import
+        // failures with parse failures
+        assert!(
+            !contents.contains(
+                "if ! python3 -c \"import tomllib, sys; tomllib.load(open(sys.argv[1], 'rb'))\""
+            ),
+            "scripts/install-hooks.sh must not use the old nested `if !` TOML \
+             validation pattern. Use exit-code-based logic (exit 2 = no parser, \
+             exit 1 = invalid, exit 0 = valid) instead."
+        );
+    }
+
+    /// All `.toml` config files in the repo root (including hidden files like
+    /// `.lychee.toml` and `.typos.toml`) must parse successfully as valid TOML.
+    /// This catches format errors early — for example, a previous CI failure was
+    /// caused by `.lychee.toml` using map syntax for `header` instead of array
+    /// syntax, which only failed at lychee runtime.
+    #[test]
+    fn all_root_toml_files_parse_successfully() {
+        let root = project_root();
+        let mut failures = Vec::new();
+
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let entry = entry.unwrap();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            if !file_name.ends_with(".toml") {
+                continue;
+            }
+            if !entry.file_type().unwrap().is_file() {
+                continue;
+            }
+
+            let contents = std::fs::read_to_string(entry.path()).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", entry.path().display());
+            });
+
+            if let Err(e) = toml::from_str::<toml::Value>(&contents) {
+                failures.push(format!("  {file_name}: {e}"));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "Found TOML files in the repo root that fail to parse.\n\
+             All .toml config files must be valid TOML to prevent CI \
+             runtime failures from config format errors.\n\
+             Parse errors:\n{}",
+            failures.join("\n")
         );
     }
 }
@@ -2341,6 +3048,888 @@ mod llm_context_urls_validation {
             context_content.contains(documentation),
             ".llm/context.md does not contain the Cargo.toml documentation URL: {documentation}\n\
              Both homepage and documentation URLs from Cargo.toml must appear in context.md."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: ffi_safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod ffi_safety {
+
+    /// Verify that `#[repr(C)]` structs across the entire `src/` tree do not
+    /// use bare `bool` fields.
+    ///
+    /// Rust `bool` is 1 byte, but C's boolean-like types (e.g., `EM_BOOL`,
+    /// which is `int`) are typically 4 bytes. Using `bool` in a `#[repr(C)]`
+    /// struct causes an ABI mismatch: the C side writes 4 bytes, but Rust
+    /// only reads 1, leaving subsequent fields misaligned. This has caused
+    /// real production bugs where `is_text` was always read as `0` (binary).
+    ///
+    /// The correct type is `c_int` or a type alias like `EM_BOOL`.
+    #[test]
+    fn ffi_repr_c_structs_do_not_use_bare_bool() {
+        // Scan all .rs files under src/ to prevent this class of bug anywhere.
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut all_sources: Vec<(String, String)> = Vec::new();
+        fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_rs_files(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            out.push((path.display().to_string(), content));
+                        }
+                    }
+                }
+            }
+        }
+        collect_rs_files(&src_dir, &mut all_sources);
+        assert!(
+            !all_sources.is_empty(),
+            "Expected to find .rs files under src/"
+        );
+
+        let mut all_violations: Vec<String> = Vec::new();
+
+        for (file_path, source) in &all_sources {
+            let mut in_repr_c = false;
+            let mut in_struct = false;
+            let mut struct_name = String::new();
+            let mut brace_depth: i32 = 0;
+
+            for (lineno, line) in source.lines().enumerate() {
+                let trimmed = line.trim();
+
+                // Detect #[repr(C)] annotation.
+                if trimmed == "#[repr(C)]" {
+                    in_repr_c = true;
+                    continue;
+                }
+
+                // Detect struct opening after #[repr(C)].
+                if in_repr_c {
+                    if trimmed.starts_with("struct ") || trimmed.starts_with("pub struct ") {
+                        in_struct = true;
+                        struct_name = trimmed
+                            .split_whitespace()
+                            .find(|w| *w != "struct" && *w != "pub")
+                            .unwrap_or("unknown")
+                            .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .to_string();
+                        brace_depth = line.chars().filter(|&c| c == '{').count() as i32
+                            - line.chars().filter(|&c| c == '}').count() as i32;
+                        in_repr_c = false;
+                        continue;
+                    }
+                    if trimmed.is_empty() || trimmed.starts_with("#[") || trimmed.starts_with("///")
+                    {
+                        continue;
+                    }
+                    in_repr_c = false;
+                }
+
+                // Inside a #[repr(C)] struct body — check for bare bool fields.
+                if in_struct {
+                    brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+                    brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+
+                    if !trimmed.starts_with("//") {
+                        let field_parts: Vec<&str> = trimmed.splitn(2, ':').collect();
+                        if field_parts.len() == 2 {
+                            let type_part = field_parts[1].trim().trim_end_matches(',').trim();
+                            if type_part == "bool" {
+                                all_violations.push(format!(
+                                    "  {file_path}:{}: field in struct '{}' uses bare 'bool'\n    {trimmed}",
+                                    lineno + 1,
+                                    struct_name,
+                                ));
+                            }
+                        }
+                    }
+
+                    if brace_depth <= 0 {
+                        in_struct = false;
+                        struct_name.clear();
+                        brace_depth = 0;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            all_violations.is_empty(),
+            "#[repr(C)] structs must not use bare 'bool' fields in FFI code.\n\
+             Rust bool is 1 byte, but C uses int (4 bytes) for EM_BOOL.\n\
+             Use c_int or EM_BOOL instead.\n\n\
+             Violations found:\n{}",
+            all_violations.join("\n")
+        );
+    }
+
+    /// Check 6 in `check-ffi-safety.sh` (will_wake ref enforcement) must remain
+    /// retired. Nightly clippy flags explicit `&` as `needless_borrow`, and the
+    /// emscripten CI job now runs clippy on the actual target — catching type
+    /// errors directly. Reintroducing the check would conflict with clippy.
+    #[test]
+    fn ffi_safety_check6_will_wake_ref_enforcement_is_retired() {
+        let contents = super::read_project_file("scripts/check-ffi-safety.sh");
+
+        assert!(
+            contents.contains("Check 6: SKIP") || contents.contains("Check 6: retired"),
+            "scripts/check-ffi-safety.sh Check 6 (will_wake ref enforcement) must \
+             remain retired. Nightly clippy flags `.will_wake(&noop)` as \
+             `needless_borrow`. The emscripten CI job catches type errors via \
+             `cargo +nightly clippy` on the actual target."
+        );
+
+        // The script must NOT contain an active grep for .will_wake( that would
+        // flag missing &. Look for the old violation pattern.
+        let has_active_check = contents.lines().any(|line: &str| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('#')
+                && !trimmed.starts_with("echo")
+                && trimmed.contains(".will_wake(")
+                && trimmed.contains("VIOLATION")
+        });
+        assert!(
+            !has_active_check,
+            "scripts/check-ffi-safety.sh must not contain active VIOLATION logic \
+             for .will_wake() calls. Check 6 is retired — this enforcement is now \
+             handled by nightly clippy in the emscripten CI job."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: panic_script_cfg_handling
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod panic_script_cfg_handling {
+    use super::*;
+
+    /// The grep pattern used by `check-no-panics.sh` to detect `#[cfg(..test..)]`
+    /// module boundaries. This must match both simple `#[cfg(test)]` and compound
+    /// forms like `#[cfg(all(test, feature = "tokio-runtime"))]`.
+    ///
+    /// Regression: The original script only matched `#[cfg(test)]` exactly,
+    /// missing compound cfg attributes. This caused false violations for code
+    /// inside `#[cfg(all(test, ...))]` modules (e.g., `src/client.rs`).
+    #[test]
+    fn check_no_panics_script_uses_compound_cfg_test_pattern() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+
+        // The script must use a grep pattern that matches `test` as a word
+        // boundary inside any `#[cfg(...)]` attribute, not just exact
+        // `#[cfg(test)]`. The current pattern is:
+        //   grep -n '#\[cfg(.*\btest\b' "$file"
+        assert!(
+            contents.contains(r"#\[cfg(.*\btest\b"),
+            "scripts/check-no-panics.sh must use a grep pattern that matches \
+             compound cfg attributes containing `test` (e.g., \
+             `#[cfg(all(test, feature = \"...\"))]`). \
+             Expected pattern: `#\\[cfg(.*\\btest\\b`"
+        );
+    }
+
+    /// Verify that the compound cfg pattern in `check-no-panics.sh` would match
+    /// all real-world cfg(test) variants found in this project's source code.
+    ///
+    /// This is a data-driven test: it collects every `#[cfg(..test..)]` line
+    /// from `src/` and verifies the script's grep pattern would match each one.
+    #[test]
+    fn check_no_panics_pattern_matches_all_src_cfg_test_attributes() {
+        let src_dir = project_root().join("src");
+        let mut cfg_test_lines: Vec<(String, String)> = Vec::new();
+
+        fn collect_cfg_test_lines(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            out: &mut Vec<(String, String)>,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_cfg_test_lines(&path, root, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let relative = path
+                                .strip_prefix(root)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            for line in content.lines() {
+                                let trimmed = line.trim();
+                                if trimmed.starts_with("#[cfg(") && trimmed.contains("test") {
+                                    out.push((relative.clone(), trimmed.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        collect_cfg_test_lines(&src_dir, &project_root(), &mut cfg_test_lines);
+
+        assert!(
+            !cfg_test_lines.is_empty(),
+            "Expected to find at least one #[cfg(..test..)] attribute in src/. \
+             If all test modules have been removed, this test should be updated."
+        );
+
+        // The script's grep pattern is: #\[cfg(.*\btest\b
+        // This translates to: the line must contain `#[cfg(` followed (possibly
+        // with intervening characters) by the word `test` as a whole word.
+        // We check this without a regex dependency by verifying:
+        //   1. The line contains `#[cfg(`
+        //   2. After `#[cfg(`, the word `test` appears as a standalone identifier
+        //      (not part of a larger word like `testing`).
+        fn matches_cfg_test_pattern(line: &str) -> bool {
+            let Some(cfg_pos) = line.find("#[cfg(") else {
+                return false;
+            };
+            let after_cfg = &line[cfg_pos + 6..]; // skip past "#[cfg("
+                                                  // Check that `test` appears and is bounded by non-word characters.
+            let mut search = after_cfg;
+            while let Some(test_pos) = search.find("test") {
+                let before_ok = test_pos == 0
+                    || (!search.as_bytes()[test_pos - 1].is_ascii_alphanumeric()
+                        && search.as_bytes()[test_pos - 1] != b'_');
+                let after_pos = test_pos + 4;
+                let after_ok = after_pos >= search.len()
+                    || (!search.as_bytes()[after_pos].is_ascii_alphanumeric()
+                        && search.as_bytes()[after_pos] != b'_');
+                if before_ok && after_ok {
+                    return true;
+                }
+                search = &search[test_pos + 4..];
+            }
+            false
+        }
+
+        let mut unmatched: Vec<String> = Vec::new();
+        for (file, line) in &cfg_test_lines {
+            if !matches_cfg_test_pattern(line) {
+                unmatched.push(format!("  {file}: {line}"));
+            }
+        }
+
+        assert!(
+            unmatched.is_empty(),
+            "The grep pattern in check-no-panics.sh (`#\\[cfg(.*\\btest\\b`) \
+             does not match the following cfg(test) attributes found in src/:\n{}\n\
+             Update the script's pattern to handle these variants.",
+            unmatched.join("\n")
+        );
+    }
+
+    /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
+    ///
+    /// The grep pattern in `check-no-panics.sh` (`#\[cfg(.*\btest\b`) would
+    /// match `#[cfg(not(test))]`, incorrectly treating the code below it as
+    /// "inside a test module" when it is actually production code. As long as
+    /// no source file uses this attribute, the false positive cannot occur.
+    #[test]
+    fn no_src_file_uses_cfg_not_test() {
+        let src_dir = project_root().join("src");
+        let mut violations: Vec<(String, usize, String)> = Vec::new();
+
+        fn scan_for_cfg_not_test(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            out: &mut Vec<(String, usize, String)>,
+        ) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        scan_for_cfg_not_test(&path, root, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let relative = path
+                                .strip_prefix(root)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            for (i, line) in content.lines().enumerate() {
+                                let trimmed = line.trim();
+                                if trimmed.contains("#[cfg(not(test))]") {
+                                    out.push((relative.clone(), i + 1, trimmed.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        scan_for_cfg_not_test(&src_dir, &project_root(), &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
+             positive in check-no-panics.sh (the grep pattern `#\\[cfg(.*\\btest\\b` \
+             matches it and incorrectly treats the code as inside a test module). \
+             Use a different gating mechanism or update check-no-panics.sh to \
+             exclude `not(test)` before adding this attribute.\n\
+             Violations:\n{}",
+            violations
+                .iter()
+                .map(|(f, line, text)| format!("  {f}:{line}: {text}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Verify that the script explicitly documents the compound cfg handling
+    /// in its inline comments. This prevents future maintainers from
+    /// simplifying the pattern back to exact `#[cfg(test)]` matching.
+    #[test]
+    fn check_no_panics_script_documents_compound_cfg_handling() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+
+        assert!(
+            contents.contains("cfg(all(test,"),
+            "scripts/check-no-panics.sh must mention `cfg(all(test,` in a comment \
+             to document that compound cfg attributes are supported."
+        );
+
+        assert!(
+            contents.contains("#[cfg(..test..)]") || contents.contains("cfg(..test..)"),
+            "scripts/check-no-panics.sh must reference the general pattern \
+             `cfg(..test..)` to indicate it handles any cfg containing `test`."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: snippet_extraction_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod snippet_extraction_policy {
+    use super::*;
+
+    /// Verify that `extract-rust-snippets.sh` explicitly handles `rust,ignore`
+    /// code blocks by skipping them during compilation checks.
+    ///
+    /// Regression: The original script extracted `rust,ignore` blocks and
+    /// tried to compile them, causing CI failures for code that is
+    /// intentionally marked as not compilable (e.g., platform-specific or
+    /// external-crate snippets).
+    #[test]
+    fn extract_snippets_script_skips_rust_ignore_blocks() {
+        let contents = read_project_file("scripts/extract-rust-snippets.sh");
+
+        // The script must recognize `rust,ignore` as a language tag.
+        assert!(
+            contents.contains("rust,ignore"),
+            "scripts/extract-rust-snippets.sh must handle the `rust,ignore` \
+             language tag to skip blocks that are intentionally not compilable."
+        );
+
+        // The script must have explicit skip logic for rust,ignore blocks.
+        // It should set the block_lang to "rust,ignore" and then skip when
+        // closing the block.
+        assert!(
+            contents.contains(r#"block_lang = "rust,ignore""#)
+                || contents.contains(r#"block_lang="rust,ignore""#),
+            "scripts/extract-rust-snippets.sh must track `rust,ignore` blocks \
+             via block_lang so they can be skipped at the end of the block."
+        );
+
+        // The script must increment the SKIPPED counter for rust,ignore blocks.
+        assert!(
+            contents.contains(r#"if [ "$block_lang" = "rust,ignore" ]"#),
+            "scripts/extract-rust-snippets.sh must check block_lang = \"rust,ignore\" \
+             and skip compilation for those blocks."
+        );
+    }
+
+    /// Verify that the case statement in `extract-rust-snippets.sh` lists
+    /// all supported language tags. The script must process `rust` and
+    /// `rust,no_run` while skipping `rust,ignore`.
+    #[test]
+    fn extract_snippets_script_case_statement_covers_all_rust_tags() {
+        let contents = read_project_file("scripts/extract-rust-snippets.sh");
+
+        // Each recognized Rust code block tag must appear individually
+        // somewhere in the script's case statement or handling logic.
+        for tag in ["rust", "rust,no_run", "rust,ignore"] {
+            assert!(
+                contents.contains(tag),
+                "scripts/extract-rust-snippets.sh must recognize the `{tag}` \
+                 language tag to properly handle all Rust code block annotations."
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: emscripten_target_guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod emscripten_target_guard {
+    use super::*;
+
+    /// The `transport-websocket-emscripten` feature compiles FFI bindings that
+    /// only link on `wasm32-unknown-emscripten`. A `compile_error!()` guard
+    /// must be present so developers get a clear diagnostic instead of cryptic
+    /// linker failures when the feature is accidentally enabled on another target.
+    #[test]
+    fn emscripten_websocket_has_compile_error_target_guard() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        assert!(
+            contents.contains(r#"#[cfg(not(target_os = "emscripten"))]"#),
+            "src/transports/emscripten_websocket.rs must contain a \
+             `#[cfg(not(target_os = \"emscripten\"))]` guard to prevent \
+             compilation on non-Emscripten targets."
+        );
+
+        assert!(
+            contents.contains("compile_error!"),
+            "src/transports/emscripten_websocket.rs must contain a \
+             `compile_error!()` that fires when compiled on a \
+             non-Emscripten target."
+        );
+    }
+
+    /// The module declaration in `mod.rs` must gate the emscripten module
+    /// on BOTH the feature AND `target_os = "emscripten"`. This dual gate
+    /// ensures `--all-features` works on non-Emscripten hosts (features must
+    /// be additive per Cargo convention). The `compile_error!()` inside the
+    /// file serves as defense-in-depth.
+    #[test]
+    fn emscripten_module_gated_on_feature_and_target() {
+        let mod_rs = read_project_file("src/transports/mod.rs");
+
+        assert!(
+            mod_rs.contains(
+                r#"#[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]"#
+            ),
+            "src/transports/mod.rs must gate the emscripten_websocket module \
+             on both the feature and target_os = \"emscripten\" so that \
+             --all-features works on non-Emscripten hosts."
+        );
+
+        let lib_rs = read_project_file("src/lib.rs");
+
+        assert!(
+            lib_rs.contains(
+                r#"#[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]"#
+            ),
+            "src/lib.rs must gate the EmscriptenWebSocketTransport re-export \
+             on both the feature and target_os = \"emscripten\"."
+        );
+    }
+
+    /// Cargo.toml must document the target restriction for the
+    /// `transport-websocket-emscripten` feature so developers see the
+    /// constraint before enabling it.
+    #[test]
+    fn cargo_toml_documents_emscripten_target_restriction() {
+        let contents = read_project_file("Cargo.toml");
+
+        // Find the line defining transport-websocket-emscripten and check
+        // that there is a comment nearby mentioning the target restriction.
+        let feature_line_idx = contents
+            .lines()
+            .position(|line| line.starts_with("transport-websocket-emscripten"))
+            .expect("Cargo.toml must define the transport-websocket-emscripten feature");
+
+        // Check the preceding line(s) for a target restriction comment.
+        let lines: Vec<&str> = contents.lines().collect();
+        let has_target_comment = (feature_line_idx.saturating_sub(3)..feature_line_idx).any(|i| {
+            let line = lines[i].to_lowercase();
+            line.contains("emscripten") || line.contains("target")
+        });
+
+        assert!(
+            has_target_comment,
+            "Cargo.toml must have a comment near the transport-websocket-emscripten \
+             feature definition documenting the target restriction."
+        );
+    }
+
+    /// The `wasm.yml` workflow must run `cargo +nightly clippy` for the
+    /// emscripten target. This catches nightly-only lint issues (like
+    /// `needless_borrow`) in target-gated code that stable clippy never sees.
+    /// Without this step, lint regressions can only be caught by the local
+    /// FFI safety script, which may conflict with evolving clippy lints.
+    #[test]
+    fn wasm_emscripten_job_runs_nightly_clippy() {
+        let contents = read_project_file(".github/workflows/wasm.yml");
+
+        assert!(
+            contents.contains("cargo +nightly clippy"),
+            ".github/workflows/wasm.yml must run `cargo +nightly clippy` for \
+             the emscripten target. This catches nightly-only lints in \
+             target-gated code that stable clippy never compiles."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: check_all_documentation_accuracy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod check_all_documentation_accuracy {
+    use super::*;
+
+    /// Extract the TOTAL_PHASES value from check-all.sh.
+    fn script_total_phases() -> u32 {
+        let contents = read_project_file("scripts/check-all.sh");
+        contents
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("TOTAL_PHASES=")
+                    .and_then(|v| v.parse::<u32>().ok())
+            })
+            .expect("scripts/check-all.sh must define TOTAL_PHASES=<number>")
+    }
+
+    /// Extract the quick-mode phase count from check-all.sh.
+    fn script_quick_phases() -> u32 {
+        let contents = read_project_file("scripts/check-all.sh");
+        let mut in_quick_block = false;
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("QUICK") && trimmed.contains("true") && trimmed.contains("then") {
+                in_quick_block = true;
+                continue;
+            }
+            if in_quick_block {
+                if let Some(val) = trimmed.strip_prefix("TOTAL_PHASES=") {
+                    return val
+                        .parse::<u32>()
+                        .expect("Quick-mode TOTAL_PHASES must be a number");
+                }
+                if trimmed == "fi" {
+                    break;
+                }
+            }
+        }
+        panic!("scripts/check-all.sh must set TOTAL_PHASES inside the --quick conditional");
+    }
+
+    /// `.llm/skills/ci-configuration.md` must reference the correct total
+    /// phase count from `scripts/check-all.sh`. This prevents documentation
+    /// drift when phases are added or removed.
+    #[test]
+    fn ci_configuration_md_references_correct_total_phase_count() {
+        let total = script_total_phases();
+        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let expected_fragment = format!("{total}-phase");
+
+        assert!(
+            doc.contains(&expected_fragment),
+            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+             to match the TOTAL_PHASES={total} in scripts/check-all.sh. \
+             Found TOTAL_PHASES={total} in the script but the documentation \
+             does not contain '{expected_fragment}'."
+        );
+    }
+
+    /// `.llm/skills/ci-configuration.md` must reference the correct
+    /// `--quick` phase range. If the script runs phases 1-N in quick mode,
+    /// the docs must say "phases 1-N".
+    #[test]
+    fn ci_configuration_md_references_correct_quick_phase_count() {
+        let quick_phases = script_quick_phases();
+        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let expected_fragment = format!("phases 1-{quick_phases}");
+
+        assert!(
+            doc.contains(&expected_fragment),
+            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+             to match the --quick TOTAL_PHASES={quick_phases} in scripts/check-all.sh. \
+             The documentation is stale."
+        );
+    }
+
+    /// The check-all.sh header comment must list the correct number of phases.
+    /// This prevents the script's own documentation from drifting.
+    #[test]
+    fn check_all_header_matches_total_phases() {
+        let total = script_total_phases();
+        let contents = read_project_file("scripts/check-all.sh");
+
+        // Count PHASE_NAMES assignments in the script.
+        let phase_name_count = contents
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("PHASE_NAMES[")
+            })
+            .count() as u32;
+
+        assert_eq!(
+            phase_name_count, total,
+            "scripts/check-all.sh defines {phase_name_count} PHASE_NAMES entries \
+             but TOTAL_PHASES={total}. These must match."
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: ffi_safety_documentation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod ffi_safety_documentation {
+    use super::*;
+
+    /// Every `unsafe {` block in the Emscripten WebSocket transport must have
+    /// a SAFETY comment within the preceding 15 lines. This ensures that all
+    /// unsafe code has documented safety justification.
+    #[test]
+    fn emscripten_websocket_unsafe_blocks_have_safety_comments() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+        let lines: Vec<&str> = contents.lines().collect();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (i, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            // Match lines that open an unsafe block (not `unsafe impl`).
+            if (trimmed.starts_with("unsafe {")
+                || trimmed.contains("= unsafe {")
+                || (trimmed.starts_with("let ") && trimmed.contains("unsafe {")))
+                && !trimmed.contains("unsafe impl")
+            {
+                // Look backwards up to 15 lines for a SAFETY comment.
+                let start = i.saturating_sub(15);
+                let has_safety = lines[start..i].iter().any(|prev| prev.contains("SAFETY"));
+
+                if !has_safety {
+                    violations.push(format!("  line {}: `{}`", i + 1, trimmed));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "All `unsafe` blocks in emscripten_websocket.rs must have a \
+             SAFETY comment within the preceding 15 lines.\n\
+             Violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    /// The `connect()` error path and the `Drop` implementation must both
+    /// follow the same cleanup sequence: close → delete → drop. This test
+    /// verifies the ordering by checking that both code paths contain the
+    /// three operations in the correct order.
+    #[test]
+    fn error_path_cleanup_matches_drop_cleanup_order() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        // Find the connect() error path (inside the `for (name, result)` loop).
+        let error_block = contents
+            .find("if result != EMSCRIPTEN_RESULT_SUCCESS {")
+            .and_then(|start| {
+                contents[start..]
+                    .find("return Err(")
+                    .map(|end| &contents[start..start + end + 30])
+            })
+            .expect("connect() must have an error path checking EMSCRIPTEN_RESULT_SUCCESS");
+
+        assert!(
+            error_block.contains("emscripten_websocket_close"),
+            "connect() error path must call emscripten_websocket_close"
+        );
+        assert!(
+            error_block.contains("emscripten_websocket_delete"),
+            "connect() error path must call emscripten_websocket_delete"
+        );
+        assert!(
+            error_block.contains("Box::from_raw"),
+            "connect() error path must reclaim state_ptr via Box::from_raw"
+        );
+
+        // Verify ordering: close before delete before from_raw.
+        let close_pos = error_block.find("emscripten_websocket_close").unwrap();
+        let delete_pos = error_block.find("emscripten_websocket_delete").unwrap();
+        let from_raw_pos = error_block.find("Box::from_raw").unwrap();
+
+        assert!(
+            close_pos < delete_pos,
+            "connect() error path must call close BEFORE delete"
+        );
+        assert!(
+            delete_pos < from_raw_pos,
+            "connect() error path must call delete BEFORE Box::from_raw"
+        );
+
+        // Verify Drop follows the same order.
+        let drop_block = contents
+            .find("impl Drop for EmscriptenWebSocketTransport")
+            .map(|start| &contents[start..])
+            .expect("EmscriptenWebSocketTransport must implement Drop");
+
+        let drop_close = drop_block
+            .find("emscripten_websocket_close")
+            .expect("Drop must call emscripten_websocket_close");
+        let drop_delete = drop_block
+            .find("emscripten_websocket_delete")
+            .expect("Drop must call emscripten_websocket_delete");
+        let drop_from_raw = drop_block
+            .find("Box::from_raw")
+            .expect("Drop must reclaim state via Box::from_raw");
+
+        assert!(
+            drop_close < drop_delete,
+            "Drop must call close BEFORE delete"
+        );
+        assert!(
+            drop_delete < drop_from_raw,
+            "Drop must call delete BEFORE Box::from_raw"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: pending_future_documentation
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod pending_future_documentation {
+    use super::*;
+
+    /// Scan all `.rs` files for uses of `std::future::pending()` and verify
+    /// that each usage has an explanatory comment within 5 lines above.
+    ///
+    /// `std::future::pending()` creates a future that never completes and
+    /// never registers a waker. It is a dangerous pattern that can silently
+    /// hang tasks if used incorrectly. Every usage must be accompanied by
+    /// a nearby comment explaining why it is safe in context.
+    ///
+    /// The comment must contain at least one of these keywords/phrases:
+    /// "never wake", "noop waker", "pending", "polling", "never completes".
+    ///
+    /// Lines inside doc comments (`///` or `//!`) that merely *mention*
+    /// `std::future::pending()` (e.g., in module-level documentation) are
+    /// not flagged — only actual `.await` call sites are checked.
+    #[test]
+    fn all_std_future_pending_usages_have_explanatory_comments() {
+        let root = project_root();
+        let mut violations: Vec<String> = Vec::new();
+
+        fn visit_rs_files(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            violations: &mut Vec<String>,
+        ) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, root, violations);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    check_file(&path, root, violations);
+                }
+            }
+        }
+
+        fn check_file(
+            path: &std::path::Path,
+            root: &std::path::Path,
+            violations: &mut Vec<String>,
+        ) {
+            let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", path.display());
+            });
+            let lines: Vec<&str> = contents.lines().collect();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+
+            let required_keywords = [
+                "never wake",
+                "noop waker",
+                "pending",
+                "polling",
+                "never completes",
+            ];
+
+            // Build the search needle by concatenation so this test file
+            // does not self-match when scanned.
+            let needle = format!("std::future::{}().await", "pending");
+
+            for (i, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+
+                // Only check actual `.await` call sites. This filters out:
+                // - doc comments that merely discuss the pattern
+                // - string literals that mention the function name
+                // - comments referencing the function
+                if !trimmed.contains(&needle) {
+                    continue;
+                }
+
+                // Skip doc comments (/// and //!) — these describe the
+                // pattern but are not actual usages.
+                if trimmed.starts_with("///") || trimmed.starts_with("//!") {
+                    continue;
+                }
+
+                // Skip comment lines that merely reference the call site.
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+
+                // Look at up to 5 lines above for a comment containing
+                // at least one required keyword.
+                let window_start = i.saturating_sub(5);
+                let has_keyword = lines[window_start..i].iter().any(|prev_line| {
+                    let prev_trimmed = prev_line.trim();
+                    // Only consider comment lines.
+                    if !prev_trimmed.starts_with("//") {
+                        return false;
+                    }
+                    let lower = prev_trimmed.to_lowercase();
+                    required_keywords.iter().any(|kw| lower.contains(kw))
+                });
+
+                if !has_keyword {
+                    violations.push(format!(
+                        "{}:{}: `{needle}` usage lacks an explanatory comment \
+                         within 5 lines above. Add a comment containing one \
+                         of: {required_keywords:?}",
+                        relative,
+                        i + 1,
+                    ));
+                }
+            }
+        }
+
+        // Scan both src/ and tests/ directories.
+        let src_dir = root.join("src");
+        let tests_dir = root.join("tests");
+        visit_rs_files(&src_dir, &root, &mut violations);
+        if tests_dir.is_dir() {
+            visit_rs_files(&tests_dir, &root, &mut violations);
+        }
+
+        let needle_display = format!("std::future::{}().await", "pending");
+        let joined = violations.join("\n");
+        assert!(
+            violations.is_empty(),
+            "Found undocumented `{needle_display}` call sites. This pattern \
+             creates a future that never completes and never registers a \
+             waker, which can silently hang tasks. Every usage must have an \
+             explanatory comment within 5 lines above.\n\nViolations:\n\
+             {joined}"
         );
     }
 }

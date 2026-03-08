@@ -42,6 +42,46 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── FFI safety check ─────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: check-ffi-safety
+        name: FFI safety check
+        language: system
+        entry: bash scripts/check-ffi-safety.sh
+        pass_filenames: false
+        always_run: true
+
+  # ── FFI safety script tests ─────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: test-check-ffi-safety
+        name: FFI safety script tests
+        language: system
+        entry: bash scripts/test_check_ffi_safety.sh
+        pass_filenames: false
+        always_run: true
+
+  # ── Target-gated doc-link check ────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: check-target-gated-doc-links
+        name: target-gated doc-link check
+        language: system
+        entry: bash scripts/check-target-gated-doc-links.sh
+        pass_filenames: false
+        always_run: true
+
+  # ── Target-gated doc-link script tests ─────────────────────────────────
+  - repo: local
+    hooks:
+      - id: test-check-target-gated-doc-links
+        name: target-gated doc-link script tests
+        language: system
+        entry: bash scripts/test_check_target_gated_doc_links.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Workflow guard checks ─────────────────────────────────────────────────
   - repo: local
     hooks:
@@ -74,6 +114,17 @@ repos:
         types: [rust]
         always_run: true
 
+  # ── Rust linting (no-default-features, push only) ───────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-clippy-no-default-features
+        name: cargo clippy (all targets, no default features)
+        language: system
+        entry: cargo clippy --all-targets --no-default-features -- -D warnings
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
   # ── Rust tests (push only — too slow for every commit) ───────────────────
   - repo: local
     hooks:
@@ -81,6 +132,28 @@ repos:
         name: cargo test (all features)
         language: system
         entry: cargo test --all-features
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # ── Panic-free policy (push only — runs clippy internally) ──────────────
+  - repo: local
+    hooks:
+      - id: check-no-panics
+        name: panic-free policy check
+        language: system
+        entry: bash scripts/check-no-panics.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # ── Markdown snippet compilation (push only — slow) ─────────────────────
+  - repo: local
+    hooks:
+      - id: extract-rust-snippets
+        name: markdown snippet compilation check
+        language: system
+        entry: bash scripts/extract-rust-snippets.sh
         pass_filenames: false
         always_run: true
         stages: [push]

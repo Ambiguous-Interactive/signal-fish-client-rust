@@ -62,7 +62,11 @@ impl Transport for MockTransport {
         if let Some(item) = self.incoming.pop_front() {
             item   // None = clean close; Some(Ok(s)) = message; Some(Err(e)) = error
         } else {
-            // Hang forever — loop stays alive until client.shutdown()
+            // All scripted responses consumed — pending() never
+            // completes (yields `Poll::Pending` without registering a
+            // waker). The tokio runtime keeps this task alive until
+            // `client.shutdown()` aborts it. Missing mock responses
+            // surface as test timeouts rather than silent successes.
             std::future::pending().await
         }
     }
@@ -205,5 +209,16 @@ cargo test --test client_tests --all-features
 - Avoid `tokio::time::sleep` in tests where possible; prefer scripted responses
 - If timing is required, use small sleeps (50ms) to allow the transport loop
   to process queued commands — see the pattern in `client_tests.rs`
-- `std::future::pending()` in `MockTransport::recv` keeps the loop alive
-  without busy-polling until `shutdown()` is called
+- `std::future::pending()` in `MockTransport::recv`: this future **never
+  wakes** (it registers no waker). The tokio task stays alive because the
+  runtime keeps the task until `client.shutdown()` aborts it. Each call to
+  `recv` must create a new `pending()` future — never re-poll the same one.
+  If a test is missing a scripted response, the `recv` call hangs and the
+  test surfaces this as a timeout, not a panic
+
+## Cross-Platform Path Assertions
+
+When testing functions that produce file paths in error messages or output,
+never hardcode forward slashes (`/`) in assertions. Windows uses `\` as the
+path separator. Use `std::path::Path` to build expected paths so assertions
+work on both platforms.

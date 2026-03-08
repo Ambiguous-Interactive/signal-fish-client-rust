@@ -67,8 +67,11 @@ impl Transport for MockTransport {
         if let Some(item) = self.incoming.pop_front() {
             item
         } else {
-            // No more scripted messages — hang forever so the transport loop
-            // stays alive until shutdown is called.
+            // All scripted responses consumed — pending() never
+            // completes (yields `Poll::Pending` without registering a
+            // waker). The tokio runtime keeps this task alive until
+            // `client.shutdown()` aborts it. Missing mock responses
+            // surface as test timeouts rather than silent successes.
             std::future::pending().await
         }
     }

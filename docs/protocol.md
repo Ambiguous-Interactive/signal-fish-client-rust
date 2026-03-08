@@ -16,7 +16,7 @@ serialized as JSON over the transport layer.
 
 Two UUID-based aliases are used throughout the protocol:
 
-```rust
+```rust,ignore
 pub type PlayerId = uuid::Uuid;
 pub type RoomId = uuid::Uuid;
 ```
@@ -37,7 +37,7 @@ Selects the transport protocol for relay connections.
 - **Default:** `Auto`
 - **Serde:** `rename_all = "lowercase"`
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RelayTransport {
@@ -65,7 +65,7 @@ Encoding format for sequenced game-data payloads.
 - **Default:** `Json`
 - **Serde:** `rename_all = "snake_case"` (with per-variant overrides)
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GameDataEncoding {
@@ -92,7 +92,7 @@ Connection information for peer-to-peer establishment. This is an internally
 tagged enum (`serde(tag = "type")`), so each variant includes a `"type"`
 discriminator field in JSON.
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ConnectionInfo {
@@ -150,7 +150,7 @@ Lobby readiness state for a room.
 - **Default:** `Waiting`
 - **Serde:** `rename_all = "snake_case"`
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LobbyState {
@@ -176,7 +176,7 @@ Describes why a spectator state change occurred.
 - **Default:** `Joined`
 - **Serde:** `rename_all = "snake_case"`
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SpectatorStateChangeReason {
@@ -205,7 +205,7 @@ pub enum SpectatorStateChangeReason {
 
 Information about a player in a room.
 
-```rust
+```rust,ignore
 pub struct PlayerInfo {
     pub id: PlayerId,
     pub name: String,
@@ -231,7 +231,7 @@ pub struct PlayerInfo {
 
 Information about a spectator watching a room.
 
-```rust
+```rust,ignore
 pub struct SpectatorInfo {
     pub id: PlayerId,
     pub name: String,
@@ -251,7 +251,7 @@ pub struct SpectatorInfo {
 
 Peer connection information included in `GameStarting` events.
 
-```rust
+```rust,ignore
 pub struct PeerConnectionInfo {
     pub player_id: PlayerId,
     pub player_name: String,
@@ -275,7 +275,7 @@ pub struct PeerConnectionInfo {
 
 Rate-limit information returned after authentication.
 
-```rust
+```rust,ignore
 pub struct RateLimitInfo {
     pub per_minute: u32,
     pub per_hour: u32,
@@ -296,7 +296,7 @@ pub struct RateLimitInfo {
 Describes negotiated protocol capabilities for a specific SDK, sent by the
 server immediately after authentication.
 
-```rust
+```rust,ignore
 pub struct ProtocolInfoPayload {
     pub platform: Option<String>,
     pub sdk_version: Option<String>,
@@ -326,7 +326,7 @@ pub struct ProtocolInfoPayload {
 
 Describes the characters a deployment allows inside player names.
 
-```rust
+```rust,ignore
 pub struct PlayerNameRulesPayload {
     pub max_length: usize,
     pub min_length: usize,
@@ -356,7 +356,7 @@ Messages sent from the client to the server. There are **11 variants**, all
 constructed internally by `SignalFishClient` methods — you never need to build
 these by hand.
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage { /* ... */ }
@@ -389,7 +389,7 @@ Messages received from the server. There are **24 variants**. You don't parse
 these manually — they arrive as `SignalFishEvent` variants through the event
 channel.
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage { /* ... */ }
@@ -434,7 +434,7 @@ pub enum ServerMessage { /* ... */ }
 Both `ClientMessage` and `ServerMessage` use **adjacently-tagged** serde
 encoding:
 
-```rust
+```rust,ignore
 #[serde(tag = "type", content = "data")]
 ```
 
@@ -449,7 +449,7 @@ Every message on the wire is a JSON object with two top-level keys:
         "type": "Authenticate",
         "data": {
             "app_id": "mb_app_abc123",
-            "sdk_version": "0.3.1"
+            "sdk_version": "0.4.0"
         }
     }
     ```
@@ -479,7 +479,7 @@ version introduces new variants.
 
 You can match exhaustively without a wildcard arm:
 
-```rust
+```rust,ignore
 match event {
     SignalFishEvent::Authenticated { .. } => { /* handle */ }
     SignalFishEvent::RoomJoined { .. } => { /* handle */ }

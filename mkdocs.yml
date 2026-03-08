@@ -136,5 +136,7 @@ nav:
       - Events: events.md
       - Errors: errors.md
       - Protocol Types: protocol.md
+  - Guides:
+      - WebAssembly: wasm.md
   - Examples:
       - Walkthroughs: examples.md

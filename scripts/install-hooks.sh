@@ -97,6 +97,102 @@ else
     echo "       or: brew install shellcheck"
 fi
 
+# ── TOML config validation ────────────────────────────────────────────────
+TOML_FAIL=0
+TOML_HAS_PARSER=false
+for toml_file in "${REPO_ROOT}"/*.toml "${REPO_ROOT}"/.*.toml; do
+    [ -f "$toml_file" ] || continue
+    if command -v python3 &>/dev/null; then
+        # Exit 0 = valid TOML, exit 2 = no parser available, exit 1 = invalid
+        TOML_EXIT=0
+        python3 -c "
+import sys
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        try:
+            import toml
+        except ImportError:
+            sys.exit(2)
+        toml.load(sys.argv[1])
+        sys.exit(0)
+with open(sys.argv[1], 'rb') as f:
+    tomllib.load(f)
+" "$toml_file" 2>/dev/null || TOML_EXIT=$?
+
+        if [ "$TOML_EXIT" -eq 0 ]; then
+            TOML_HAS_PARSER=true
+        elif [ "$TOML_EXIT" -eq 2 ]; then
+            : # No parser available — skip, do not report as error
+        else
+            TOML_HAS_PARSER=true
+            echo "TOML parse error: $toml_file"
+            TOML_FAIL=1
+        fi
+    fi
+done
+if [ "$TOML_FAIL" -ne 0 ]; then
+    echo ""
+    echo "Commit aborted: one or more TOML config files failed to parse."
+    echo "Fix the TOML syntax errors above, then re-stage and commit."
+    exit 1
+fi
+if [ "$TOML_HAS_PARSER" = false ] && command -v python3 &>/dev/null; then
+    echo "Note: no Python TOML parser available — skipping TOML validation."
+    echo "  Python 3.11+ includes tomllib; or install: pip install tomli"
+fi
+
+# ── FFI safety check ──────────────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-ffi-safety.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-ffi-safety.sh"; then
+        echo ""
+        echo "Commit aborted: FFI safety check failed."
+        echo "Fix the FFI safety violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-ffi-safety.sh not found — skipping FFI safety check."
+fi
+
+# ── FFI safety script tests ──────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_ffi_safety.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/test_check_ffi_safety.sh"; then
+        echo ""
+        echo "Commit aborted: FFI safety script tests failed."
+        echo "Fix the test failures above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/test_check_ffi_safety.sh not found — skipping FFI safety script tests."
+fi
+
+# ── Target-gated doc-link check ─────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-target-gated-doc-links.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-target-gated-doc-links.sh"; then
+        echo ""
+        echo "Commit aborted: target-gated doc-link check failed."
+        echo "Fix the doc-link violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-target-gated-doc-links.sh not found — skipping target-gated doc-link check."
+fi
+
+# ── Target-gated doc-link script tests ──────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_target_gated_doc_links.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/test_check_target_gated_doc_links.sh"; then
+        echo ""
+        echo "Commit aborted: target-gated doc-link script tests failed."
+        echo "Fix the test failures above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/test_check_target_gated_doc_links.sh not found — skipping target-gated doc-link script tests."
+fi
+
 # ── Workflow guard checks ───────────────────────────────────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-workflows.sh" ]; then
     if ! bash "${REPO_ROOT}/scripts/check-workflows.sh"; then
@@ -146,7 +242,7 @@ HOOK_SCRIPT
 
 chmod +x "${HOOK_FILE}"
 
-# Fallback: write a minimal shell hook for pre-push (runs cargo test)
+# Fallback: write a minimal shell hook for pre-push (runs cargo test + CI scripts)
 cat > "${PUSH_HOOK_FILE}" << 'PUSH_SCRIPT'
 #!/usr/bin/env bash
 # Auto-generated pre-push hook — managed by scripts/install-hooks.sh
@@ -154,12 +250,46 @@ cat > "${PUSH_HOOK_FILE}" << 'PUSH_SCRIPT'
 
 set -euo pipefail
 
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# ── Cargo clippy (no-default-features) ────────────────────────────────────
+if ! cargo clippy --all-targets --no-default-features -- -D warnings; then
+    echo ""
+    echo "Push aborted: cargo clippy (no-default-features) reported warnings or errors."
+    echo "Fix the issues above, then re-push."
+    exit 1
+fi
+
 # ── Cargo test ────────────────────────────────────────────────────────────
 if ! cargo test --all-features; then
     echo ""
     echo "Push aborted: cargo test failed."
     echo "Fix the failing tests above, then re-push."
     exit 1
+fi
+
+# ── Panic-free policy check ──────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-no-panics.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-no-panics.sh"; then
+        echo ""
+        echo "Push aborted: panic-free policy check failed."
+        echo "Fix the violations above, then re-push."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-no-panics.sh not found — skipping panic-free policy check."
+fi
+
+# ── Markdown snippet compilation check ───────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/extract-rust-snippets.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/extract-rust-snippets.sh"; then
+        echo ""
+        echo "Push aborted: markdown snippet compilation check failed."
+        echo "Fix the snippet issues above, then re-push."
+        exit 1
+    fi
+else
+    echo "Note: scripts/extract-rust-snippets.sh not found — skipping snippet check."
 fi
 
 echo "All pre-push checks passed."
@@ -175,13 +305,21 @@ echo "  1. scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2. pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3. markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4. shellcheck scripts/*.sh     (optional, skipped if not installed)"
-echo "  5. bash scripts/check-workflows.sh"
-echo "  6. cargo fmt --all -- --check"
-echo "  7. cargo clippy --all-targets --all-features -- -D warnings"
-echo "  8. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo "  5. TOML config validation     (optional, requires python3)"
+echo "  6. bash scripts/check-ffi-safety.sh (FFI safety check)"
+echo "  7. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
+echo "  8. bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
+echo "  9. bash scripts/test_check_target_gated_doc_links.sh (target-gated doc-link script tests)"
+echo " 10. bash scripts/check-workflows.sh"
+echo " 11. cargo fmt --all -- --check"
+echo " 12. cargo clippy --all-targets --all-features -- -D warnings"
+echo " 13. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
-echo "  1. cargo test --all-features"
+echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
+echo "  2. cargo test --all-features"
+echo "  3. bash scripts/check-no-panics.sh (panic-free policy)"
+echo "  4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
 echo ""
 echo "Tip: Install the pre-commit framework for richer hook management:"
 echo "  pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push"

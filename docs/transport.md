@@ -10,7 +10,7 @@ of the SDK — and the built-in `WebSocketTransport` that ships with the crate.
 Every transport used by `SignalFishClient` must implement the `Transport` trait.
 It defines three async methods for bidirectional text messaging:
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
@@ -78,7 +78,7 @@ transport externally, then hand it to `SignalFishClient::start`.
 The crate ships with a ready-made WebSocket transport behind the
 **`transport-websocket`** feature flag (enabled by default).
 
-```rust
+```rust,ignore
 use signal_fish_client::WebSocketTransport;
 ```
 
@@ -89,7 +89,7 @@ It wraps a `tokio-tungstenite` `WebSocketStream` and supports both `ws://` and
 
 Establish a new WebSocket connection:
 
-```rust
+```rust,ignore
 let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
 ```
 
@@ -102,7 +102,7 @@ available.
 Same as `connect`, but fails with `SignalFishError::Timeout` if the connection
 is not established within the given duration:
 
-```rust
+```rust,ignore
 use std::time::Duration;
 
 let transport = WebSocketTransport::connect_with_timeout(
@@ -117,7 +117,7 @@ let transport = WebSocketTransport::connect_with_timeout(
 Wrap an already-established `WebSocketStream` for advanced use cases such as
 custom TLS configuration, proxy headers, or authentication cookies:
 
-```rust
+```rust,ignore
 use signal_fish_client::transports::websocket::WsStream;
 
 // WsStream is a type alias for:
@@ -173,6 +173,87 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
 ---
 
+## `EmscriptenWebSocketTransport`
+
+A `Transport` implementation that uses Emscripten's built-in WebSocket C API
+via raw FFI. Available behind the **`transport-websocket-emscripten`** feature
+flag.
+
+```rust,ignore
+use signal_fish_client::EmscriptenWebSocketTransport;
+```
+
+This transport is designed exclusively for the `wasm32-unknown-emscripten`
+target — used by Godot 4.5 web exports via gdext (godot-rust).
+
+!!! warning "Polling client only"
+    `EmscriptenWebSocketTransport` is **not** compatible with
+    `SignalFishClient::start()`. It must be used with
+    [`SignalFishPollingClient`](client.md#signalfishpollingclient), which drives
+    the transport synchronously from a game loop. See the
+    [WebAssembly Guide](wasm.md) for details.
+
+### `connect(url)`
+
+Create a new WebSocket connection:
+
+```rust,ignore
+let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
+```
+
+Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. The WebSocket
+is created immediately but the connection handshake completes asynchronously in
+the browser. Messages sent before the connection opens are buffered by the
+browser's WebSocket implementation.
+
+On failure the error is `SignalFishError::Io` (e.g., if the URL contains
+interior NUL bytes or `emscripten_websocket_new` returns an error code).
+
+### How It Works
+
+Emscripten's C WebSocket API uses **callbacks** to deliver events (open,
+message, error, close). The transport registers four C-compatible callback
+functions that push events onto a `std::sync::mpsc` channel. When `recv()` is
+called by the polling client, it drains this channel via `try_recv()`.
+
+```mermaid
+sequenceDiagram
+    participant G as Game Loop
+    participant P as SignalFishPollingClient
+    participant T as EmscriptenWebSocketTransport
+    participant C as std::sync::mpsc
+    participant E as Emscripten C API
+    participant B as Browser WebSocket
+
+    B->>E: WebSocket event fires
+    E->>C: C callback pushes IncomingEvent
+    G->>P: poll()
+    P->>T: recv() (via noop waker)
+    T->>C: try_recv()
+    C-->>T: IncomingEvent::Message(text)
+    T-->>P: Some(Ok(text))
+    P-->>G: Vec<SignalFishEvent>
+```
+
+### Threading Model
+
+On `wasm32-unknown-emscripten`, everything runs on a **single thread**.
+Emscripten WebSocket callbacks fire synchronously on the main thread. The
+`std::sync::mpsc` channel is used as a simple buffer — not for cross-thread
+communication.
+
+### Cleanup
+
+When the transport is dropped, it:
+
+1. Calls `emscripten_websocket_close` (if not already closed)
+2. Calls `emscripten_websocket_delete` to unregister all callbacks
+3. Reclaims the callback state via `Box::from_raw`
+
+This sequence ensures no dangling pointers remain in the Emscripten event loop.
+
+---
+
 ## Implementing a Custom Transport
 
 You can implement `Transport` for any bidirectional text channel — raw TCP,
@@ -186,13 +267,16 @@ testing.
       data channels).
     - **Unity / FFI interop** — bridge messages from a game engine's networking
       layer into the SDK.
+    - **Emscripten / Godot web** — use the built-in
+      `EmscriptenWebSocketTransport` (enable `transport-websocket-emscripten`), or
+      write a custom transport for other WASM environments.
 
 ### Step 1: Define the Struct
 
 Use `tokio::sync::mpsc` channels as the backing store. This gives you natural
 cancel safety for free:
 
-```rust
+```rust,ignore
 use tokio::sync::mpsc;
 
 pub struct LoopbackTransport {
@@ -205,7 +289,7 @@ pub struct LoopbackTransport {
 
 ### Step 2: Implement `Transport`
 
-```rust
+```rust,ignore
 use async_trait::async_trait;
 use signal_fish_client::{SignalFishError, Transport};
 
@@ -239,7 +323,7 @@ Key points:
 
 ### Step 3: Wire into `SignalFishClient::start()`
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishClient, SignalFishConfig, SignalFishEvent};
 
 // Create the loopback pair (client ↔ server channels)

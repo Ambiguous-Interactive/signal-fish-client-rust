@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.3.1
+- **Version:** 0.4.0
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -29,8 +29,10 @@ Run this before every commit. All three steps must pass with zero warnings.
 
 Use version tags in workflow `uses:` references, not commit hashes.
 
-- Use: `owner/action@vN` or `owner/action@vN.N.N`
+- Prefer: `owner/action@vN.N.N` (patch-level pin — immutable tag)
+- Acceptable: `owner/action@vN` (major-only pin — mutable, flagged by Phase 7 warning)
 - Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
+- Exception: `mymindstorm/setup-emsdk@vN` (no patch releases available)
 - Avoid commit-SHA refs unless a workflow has an explicit unavoidable requirement
 
 ## Changelog Policy
@@ -54,7 +56,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 
 ### Transport Trait
 
-```rust
+```rust,ignore
 #[async_trait]
 pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
@@ -112,7 +114,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
 Required second argument to `SignalFishClient::start`. Only `app_id` is required.
 
-```rust
+```rust,ignore
 pub struct SignalFishConfig {
     pub app_id: String,
     pub sdk_version: Option<String>,          // defaults to crate version
@@ -131,7 +133,7 @@ let config = SignalFishConfig::new("mb_app_abc123")
 
 Builder for `client.join_room(...)`.
 
-```rust
+```rust,ignore
 let params = JoinRoomParams::new("my-game", "Alice")
     .with_room_code("ABC123")   // omit for quick-match
     .with_max_players(4)
@@ -143,7 +145,7 @@ client.join_room(params)?;
 
 All methods except `shutdown` are synchronous (they queue a message, no round-trip):
 
-```rust
+```rust,ignore
 client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
 client.send_game_data(data: serde_json::Value) -> Result<()>
@@ -165,6 +167,9 @@ transport is closed.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
+| `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
+| `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
+| `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
 
 ## Dependencies
 
@@ -227,9 +232,12 @@ strings to match server expectations.
    immediately before spawning the transport loop.
 2. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
 3. Client may then call `join_room`, etc.
-4. The transport loop emits a synthetic `SignalFishEvent::Connected` at startup
-   and `SignalFishEvent::Disconnected` when the transport closes (best-effort;
-   delivery may be missed if the receiver is dropped or shutdown times out).
+4. Both clients emit a synthetic `SignalFishEvent::Connected` once the transport
+   is ready (`SignalFishClient`: at the start of the transport loop;
+   `SignalFishPollingClient`: once `Transport::is_ready()` returns `true`).
+   `SignalFishEvent::Disconnected` is emitted when the transport closes
+   (best-effort; delivery may be missed if the receiver is dropped or shutdown
+   times out).
 
 ## Protocol Overview
 
@@ -256,6 +264,7 @@ reference.
     ci-configuration.md
     crate-publishing.md
     doc-drift-validation.md
+    ffi-safety.md
     error-handling.md
     keep-a-changelog-format.md
     markdown-and-doc-validation.md
@@ -280,6 +289,8 @@ A pre-commit hook enforces:
 4. `cargo clippy --all-targets --all-features -- -D warnings` passes
 5. Workflow guard checks pass (`scripts/check-workflows.sh`), including explicit step names (`- name: ...`) in workflow steps and MSRV/toolchain policy validation
 6. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
+7. FFI safety check passes (`scripts/check-ffi-safety.sh`)
+8. FFI safety script tests pass (`scripts/test_check_ffi_safety.sh`)
 
 `cargo test` is part of the mandatory workflow but runs on push, not every
 commit, because it is too slow for a blocking hook. Run it manually before

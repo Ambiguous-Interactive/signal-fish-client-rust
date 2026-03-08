@@ -37,6 +37,7 @@ MD_FILES=()
 # docs/ directory
 if [ -d "$REPO_ROOT/docs" ]; then
     while IFS= read -r f; do
+        f="${f//$'\r'/}"
         MD_FILES+=("$f")
     done < <(find "$REPO_ROOT/docs" -name '*.md' -type f | sort)
 fi
@@ -341,6 +342,7 @@ for md_file in "${MD_FILES[@]}"; do
 
     line_num=0
     while IFS= read -r line || [ -n "$line" ]; do
+        line="${line//$'\r'/}"
         line_num=$((line_num + 1))
 
         if [ "$in_rust_block" = false ]; then
@@ -350,10 +352,18 @@ for md_file in "${MD_FILES[@]}"; do
                 block_lang="$(echo "$line" | sed -E 's/^\s*```\s*//' | sed -E 's/\s.*$//')"
                 # Only process rust blocks.
                 case "$block_lang" in
-                    rust|rust,no_run|rust,ignore)
+                    rust|rust,no_run)
                         in_rust_block=true
                         block_content=""
                         block_start_line=$line_num
+                        ;;
+                    rust,ignore)
+                        # rust,ignore blocks are intentionally not compiled
+                        # (e.g., platform-specific or external-crate snippets).
+                        in_rust_block=true
+                        block_content=""
+                        block_start_line=$line_num
+                        block_lang="rust,ignore"
                         ;;
                 esac
             fi
@@ -362,6 +372,14 @@ for md_file in "${MD_FILES[@]}"; do
             if echo "$line" | grep -qE '^\s*```\s*$'; then
                 in_rust_block=false
                 TOTAL=$((TOTAL + 1))
+
+                # Skip rust,ignore blocks — they are explicitly marked as
+                # not compilable (e.g., platform-specific or external deps).
+                if [ "$block_lang" = "rust,ignore" ]; then
+                    SKIPPED=$((SKIPPED + 1))
+                    echo -e "${YELLOW}SKIP${NC} $relative:$block_start_line (rust,ignore)"
+                    continue
+                fi
 
                 # Skip empty blocks.
                 if [ -z "$(echo "$block_content" | tr -d '[:space:]')" ]; then

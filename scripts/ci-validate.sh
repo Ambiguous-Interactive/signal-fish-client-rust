@@ -274,6 +274,7 @@ else
     # Nav entries look like: `  - Label: filename.md`
     IN_NAV=false
     while IFS= read -r line; do
+        line="${line//$'\r'/}"
         trimmed="${line#"${line%%[![:space:]]*}"}"
         trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
         if [ "$trimmed" = "nav:" ]; then

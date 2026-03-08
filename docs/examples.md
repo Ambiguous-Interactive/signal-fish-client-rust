@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 1. Connect to the server via WebSocket
 
-```rust
+```rust,ignore
 let transport = WebSocketTransport::connect(&url).await?;
 ```
 
@@ -131,7 +131,7 @@ variable; it defaults to `ws://localhost:3536/ws`.
 
 #### 2. Configure and start the client
 
-```rust
+```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
 let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
@@ -144,7 +144,7 @@ let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 
 #### 3. Event loop with `tokio::select!`
 
-```rust
+```rust,ignore
 loop {
     tokio::select! {
         event = event_rx.recv() => { /* … */ }
@@ -171,7 +171,7 @@ events** while also catching **Ctrl+C** for a clean exit.
 
 #### 5. Graceful shutdown
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -292,7 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 1. Define `LoopbackTransport` with mpsc channels
 
-```rust
+```rust,ignore
 pub struct LoopbackTransport {
     tx: mpsc::UnboundedSender<String>,
     rx: mpsc::UnboundedReceiver<String>,
@@ -307,7 +307,7 @@ the other side's `rx`.
 
 #### 2. Implement the `Transport` trait
 
-```rust
+```rust,ignore
 #[async_trait]
 impl Transport for LoopbackTransport {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
@@ -332,7 +332,7 @@ Only three methods are required:
 
 #### 3. Create a fake server that injects responses
 
-```rust
+```rust,ignore
 let auth_msg = server.rx.recv().await.expect("should receive Authenticate");
 let auth_response = serde_json::json!({ /* … */ });
 server.tx.send(auth_response.to_string())?;
@@ -343,7 +343,7 @@ a hand-crafted `Authenticated` JSON payload — no network required.
 
 #### 4. Wire into the client and observe events
 
-```rust
+```rust,ignore
 let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
 
@@ -372,3 +372,167 @@ Event: Connected (synthetic)
 Event: Authenticated — app_name=Test App
 Done — saw 2 event(s). Custom transport works!
 ```
+
+---
+
+## Godot Web Export (Polling Client)
+
+Demonstrates how to use `SignalFishPollingClient` with
+`EmscriptenWebSocketTransport` in a Godot 4.5 web export via gdext
+(godot-rust). This is the recommended pattern for browser-based multiplayer
+in Godot.
+
+!!! note "Feature gate"
+    This example requires the `transport-websocket-emscripten` feature and
+    the `wasm32-unknown-emscripten` target. It cannot be run with
+    `cargo run --example` — it must be compiled as part of a GDExtension
+    library. See the [WebAssembly Guide](wasm.md) for full build
+    instructions.
+
+### Cargo.toml
+
+```toml
+[package]
+name = "my-godot-game"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = "0.3"
+signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
+serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
+```
+
+### Source
+
+```rust,ignore
+use godot::prelude::*;
+use signal_fish_client::{
+    EmscriptenWebSocketTransport, JoinRoomParams,
+    SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
+};
+
+#[derive(GodotClass)]
+#[class(base=Node)]
+struct SignalFishNode {
+    base: Base<Node>,
+    client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+}
+
+#[godot_api]
+impl INode for SignalFishNode {
+    fn init(base: Base<Node>) -> Self {
+        Self {
+            base,
+            client: None,
+        }
+    }
+
+    fn ready(&mut self) {
+        let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+            .expect("WebSocket creation failed");
+
+        let config = SignalFishConfig::new("mb_app_abc123");
+        self.client = Some(SignalFishPollingClient::new(transport, config));
+
+        godot_print!("Signal Fish client initialized");
+    }
+
+    fn process(&mut self, _delta: f64) {
+        let Some(client) = &mut self.client else { return };
+
+        for event in client.poll() {
+            match event {
+                SignalFishEvent::Connected => {
+                    godot_print!("Transport connected");
+                }
+                SignalFishEvent::Authenticated { app_name, .. } => {
+                    godot_print!("Authenticated as {}", app_name);
+                    let params = JoinRoomParams::new("my-game", "WebPlayer")
+                        .with_max_players(4);
+                    if let Err(e) = client.join_room(params) {
+                        godot_print!("Failed to join room: {e}");
+                    }
+                }
+                SignalFishEvent::RoomJoined { room_code, player_id, .. } => {
+                    godot_print!("Joined room {} as {}", room_code, player_id);
+                }
+                SignalFishEvent::GameData { data, from_player, .. } => {
+                    godot_print!("Game data from {}: {}", from_player, data);
+                }
+                SignalFishEvent::Disconnected { reason } => {
+                    godot_print!(
+                        "Disconnected: {}",
+                        reason.as_deref().unwrap_or("unknown")
+                    );
+                    self.client = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+```
+
+### Step-by-step walkthrough
+
+#### 1. Define the GDExtension node
+
+```rust,ignore
+#[derive(GodotClass)]
+#[class(base=Node)]
+struct SignalFishNode {
+    base: Base<Node>,
+    client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+}
+```
+
+The `client` field is `Option` because the transport connection is
+established in `ready()`, not at construction time. The generic parameter
+`EmscriptenWebSocketTransport` satisfies the `Transport` bound.
+
+#### 2. Connect in `ready()`
+
+```rust,ignore
+fn ready(&mut self) {
+    let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+        .expect("WebSocket creation failed");
+    let config = SignalFishConfig::new("mb_app_abc123");
+    self.client = Some(SignalFishPollingClient::new(transport, config));
+}
+```
+
+`EmscriptenWebSocketTransport::connect` is **synchronous** — no `.await`
+needed. The polling client constructor queues an `Authenticate` message
+automatically.
+
+#### 3. Poll in `process()`
+
+```rust,ignore
+fn process(&mut self, _delta: f64) {
+    let Some(client) = &mut self.client else { return };
+    for event in client.poll() {
+        // handle events
+    }
+}
+```
+
+Godot calls `_process` once per frame. `poll()` drains incoming messages,
+flushes outgoing commands, and returns all events as a `Vec<SignalFishEvent>`.
+When idle, `poll()` returns an empty vec — it is designed to be cheap.
+
+#### 4. Build for web export
+
+```sh
+cargo +nightly build -Zbuild-std \
+    --target wasm32-unknown-emscripten \
+    --no-default-features \
+    --features transport-websocket-emscripten \
+    --release
+```
+
+The resulting `.wasm` file is used by Godot's HTML5 export template.

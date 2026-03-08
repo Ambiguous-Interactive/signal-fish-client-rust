@@ -31,82 +31,52 @@ accept = ["2xx", "429"]
 accept = ["200..=299", "429"]
 ```
 
-The `header` field must be a TOML **map**, not an array:
+The `header` field must be a TOML **array** of `"key=value"` strings (using `=`, not `:`), not a map:
 
 ```toml
-# WRONG — array syntax
-header = ["Accept: text/html"]
-
-# CORRECT — map syntax
+# WRONG — map syntax (lychee v0.18+ rejects with "invalid type: map, expected a sequence")
 [header]
 Accept = "text/html"
-```
 
-Always validate `.lychee.toml` with a TOML parser before committing. The `scripts/ci-validate.sh` script includes automated TOML validation.
+# WRONG — colon syntax (lychee v0.18+ requires key=value)
+header = ["Accept: text/html"]
+
+# CORRECT — array of key=value strings
+header = ["Accept=text/html"]
+```
 
 ### lychee: Avoid flaky external docs for badges
 
-Some external docs/blog hosts intermittently return `503` in CI even when links are valid. This creates nondeterministic failures in link-check jobs.
-
-For MSRV badges and similar stable references, prefer canonical, long-lived documentation pages over blog posts:
-
-- Prefer: `https://doc.rust-lang.org/stable/releases.html#...`
-- Avoid in badges: `https://blog.rust-lang.org/...`
-
-Regression policy:
-
-- Keep `README.md` and `docs/index.md` MSRV links pointed at `doc.rust-lang.org/stable/releases.html`.
-- `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+Some external docs/blog hosts intermittently return `503` in CI. For MSRV
+badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
+`https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
+links pointed at `doc.rust-lang.org/stable/releases.html`.
+`tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
 
-Functions used as `trap` handlers (`trap cleanup EXIT`) appear unreachable to
-ShellCheck because they are called indirectly by the shell, not by any visible
-call site. Suppress with a comment explaining why:
-
-```bash
-# shellcheck disable=SC2317  # called indirectly via trap
-cleanup() {
-    rm -rf "$TMPDIR"
-}
-trap cleanup EXIT
-```
-
-Do not use ` -- `, ` — `, or ` – ` on the directive line; keep rationale in a second comment segment using ` # ` so ShellCheck parses the directive reliably.
+Functions used as `trap` handlers appear unreachable to ShellCheck. Suppress with `# shellcheck disable=SC2317  # called indirectly via trap`. Keep rationale in a second `#` segment (no em-dashes) so ShellCheck parses the directive.
 
 ### ShellCheck SC2004 and array indexes
 
-Array indexes in Bash are arithmetic context. Do not prefix index variables with
-`$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes.
+Array indexes in Bash are arithmetic context. Do not prefix index variables with `$` inside `[...]` or ShellCheck will flag SC2004. This applies to both reads and writes: `${PHASE_RESULTS[phase]}` not `${PHASE_RESULTS[$phase]}`, and `PHASE_RESULTS[phase]="FAIL"` not `PHASE_RESULTS[$phase]="FAIL"`. Enforced by `ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
 
-```bash
-# WRONG
-if [ "${PHASE_RESULTS[$phase]}" != "FAIL" ]; then
-    :
-fi
-PHASE_RESULTS[$phase]="FAIL"
+### SC2001 — prefer parameter expansion over `echo | sed`
 
-# CORRECT
-if [ "${PHASE_RESULTS[phase]}" != "FAIL" ]; then
-    :
-fi
-PHASE_RESULTS[phase]="FAIL"
-```
+`echo "$var" | sed 's/pat/rep/'` triggers SC2001 when expressible with parameter expansion (e.g., `trimmed="${code#"${code%%[![:space:]]*}"}"` instead of `echo "$code" | sed 's/^[[:space:]]*//'`). Multi-stage `sed` pipelines and `printf '%s' "$var" | sed ...` do not trigger the warning.
 
-This pitfall is enforced by `tests/ci_config_tests.rs::ci_config_validation::check_all_script_avoids_shellcheck_sc2004_array_index_style`.
+### Intra-doc links to target-gated types
+
+Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts.
+Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
 
 ### cargo-machete false positives with serde attributes
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete's static analysis because no `use` or `extern crate` statement references them. Add such crates to the ignore list in `Cargo.toml`:
-
-```toml
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
-```
+Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete. Add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
 
 ### semver-checks on new crates
 
-`cargo semver-checks` compares the current API against the base branch. When the base branch does not contain the crate at all (e.g., the initial PR for a new package), the tool will fail because there is no baseline to diff against. The CI workflow must check for package existence on the base branch before running semver-checks.
+`cargo semver-checks` fails when the base branch lacks the crate. The CI workflow must check for package existence before running semver-checks.
 
 ### markdownlint: Emphasis conventions
 
@@ -159,19 +129,14 @@ rather than reformatting all existing content:
 
 Review new rules individually and enable only those that add genuine value.
 
-### typos: False positives on variable names
+### typos: US English locale and false positives
+
+The project uses `locale = "en-us"` in `.typos.toml`. Use American English
+spellings in code, comments, and docs (e.g., "queuing" not "queueing").
 
 The `typos` spell checker may flag variable names as misspellings. Use
-`[default.extend-identifiers]` for identifier-level suppressions:
-
-```toml
-[default.extend-identifiers]
-# Variable name in test destructuring (player_name abbreviation)
-pn = "pn"
-```
-
-Use `[default.extend-words]` for word-level suppressions (affects all
-contexts, not just identifiers).
+`[default.extend-identifiers]` for identifier-level suppressions (e.g.,
+`pn = "pn"`) and `[default.extend-words]` for word-level suppressions.
 
 ### Shell scripts: Comments must match behavior
 
@@ -182,29 +147,27 @@ Keep comments in CI shell scripts behaviorally exact:
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
 - Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
 
-### Shell scripts: Guard subsequent logic after extraction failures
+### check-no-panics.sh: Compound cfg(test) attributes
 
-When a shell script extracts a value (for example from `awk`/`grep`) and
-validates extraction, all dependent comparisons must stay inside the success
-branch (`else`) or return early (`continue`/`exit`). Avoid fall-through that
-produces confusing mismatch logs with empty values.
+`check-no-panics.sh` uses `#\[cfg(.*\btest\b` to match both `#[cfg(test)]`
+and compound forms like `#[cfg(all(test, feature = "..."))]`. When adding test
+modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
 
-This pattern is enforced by the regression test
-`ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+### Shell scripts: Guard logic after extraction failures
+
+When a script extracts a value (e.g., from `awk`/`grep`), all dependent comparisons must stay inside the success branch or return early (`continue`/`exit`). Enforced by `ci_config_tests.rs::workflow_security::check_workflows_script_guards_empty_cargo_msrv`.
+
+### Shell scripts: Distinguish "no tool" from "validation failure"
+
+When validating files with optional tools, never conflate "tool unavailable" with "file invalid." Use distinct exit codes (exit 0 = valid, exit 2 = no parser, exit 1 = invalid) and check them with `if/elif/else` branches. Do not use nested `if !` patterns that short-circuit when an import fails. Reference: `scripts/ci-validate.sh` (Check 5) and `scripts/install-hooks.sh` TOML validation.
 
 ### Shell scripts: Use REPO_ROOT for path resolution
 
-Scripts that use relative paths (e.g., `src`, `tests`) will silently fail if
-invoked from the wrong directory. Always resolve the repo root:
+Scripts using relative paths silently fail if invoked from the wrong directory. Resolve with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` then `REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"` and `cd "$REPO_ROOT"`.
 
-```bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$REPO_ROOT"
-```
+### Shell scripts: CRLF line endings break Bash parsing
 
-This matches the pattern used in `scripts/extract-rust-snippets.sh` and
-`scripts/check-no-panics.sh`.
+Bash `read -r` preserves `\r` from CRLF files. Strip with `line="${line//$'\r'/}"` and `| tr -d '\r'` in pipelines. Use `.gitattributes` with `* text=auto eol=lf`.
 
 ### MSRV drift
 
@@ -261,20 +224,60 @@ Use this pattern for MSRV jobs:
     toolchain: <msrv-from-Cargo.toml>
 ```
 
-Prevention checks in this repository:
+Enforced by `ci_config_tests.rs::ci_workflow_policy` tests
+(`ci_msrv_matches_cargo_toml`, `msrv_toolchain_step_regressions_are_caught`)
+and `scripts/check-workflows.sh`.
 
-- `tests/ci_config_tests.rs::ci_workflow_policy::ci_msrv_matches_cargo_toml`
-  validates the extracted `msrv` job block, not generic substring matches.
-- `tests/ci_config_tests.rs::ci_workflow_policy::msrv_toolchain_step_regressions_are_caught`
-  includes regression cases for semver-like refs (`@1.85.0`) and missing `with.toolchain`.
-- `scripts/check-workflows.sh` fails fast on problematic
-  `dtolnay/rust-toolchain@<digits-and-dots>` usage with actionable remediation text.
+### Documentation drift on quantitative claims
+
+Scripts like `check-all.sh` define phase counts and `--quick` boundaries referenced in this file. Update docs in the same commit as script changes. Enforced by `ci_config_tests.rs::check_all_documentation_accuracy` tests (total phase count, quick phase count, PHASE_NAMES vs TOTAL_PHASES).
+
+### Path-based exclusions in tests: check full path components
+
+When test code skips files by module name (e.g., excluding `emscripten_websocket`),
+match against **all path components**, not just the filename. Filename-only matching
+breaks when a flat module is refactored into a directory module. Use
+`path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs"))` instead of `path.file_name().starts_with(...)`.
+
+### Action version pinning: major-only vs patch-level
+
+Major-version tags like `@v2` are mutable (supply-chain risk). Prefer patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with `scripts/check-workflows.sh` Phase 7 `MAJOR_ONLY_EXCEPTIONS` array):
+
+- `dtolnay/rust-toolchain` — uses channels (`@stable`, `@nightly`, `@beta`)
+- `mymindstorm/setup-emsdk` — only publishes major-version tags
+- `taiki-e/install-action` — releases near-daily; patch pins go stale fast
+
+Phase 7 emits non-blocking warnings for major-only pins. Verified by
+`ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.
+
+### Action version consistency across workflow files
+
+All uses of the same action across workflow `.yml` files must use the same
+version tag (e.g., `actions/checkout@v6.0.2` everywhere, not `@v6.0.1` in
+one file). `dtolnay/rust-toolchain` is excluded (uses channel refs).
+Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
+
+### taiki-e/install-action: pin tool versions
+
+Always include a version pin in the `tool:` parameter: `cargo-audit@0.22.1`,
+not bare `cargo-audit`. Unpinned tools break CI when upstream ships breaking
+changes. Enforced by
+`ci_config_tests.rs::workflow_security::install_action_tools_have_version_pins`.
+
+### Documentation accuracy for WASM target capabilities
+
+`SignalFishClient::start()` requires `tokio::spawn` — unavailable on any WASM
+target. The correct client for all WASM targets is `SignalFishPollingClient`
+(requires `polling-client` feature). Cross-reference capability claims in tables
+against `docs/wasm.md` "What you do not get" sections to avoid contradictions.
+
+### Nightly clippy may flag different issues than stable
+
+The emscripten WASM target requires nightly, which may introduce lints (e.g., `needless_borrow`) not flagged by stable. Fix code for both when possible; otherwise use `#[allow(clippy::lint_name)]` with a comment.
 
 ## Validation Scripts
 
 ### Failure triage checklist
-
-Start with the first command in the matching row to localize failures quickly.
 
 | Symptom in CI | First command/script to run |
 |---|---|
@@ -282,19 +285,16 @@ Start with the first command in the matching row to localize failures quickly.
 | CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
 | Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
+| Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
+
+### `scripts/validate.sh`
+
+Pre-flight script: cargo fmt/clippy/test plus `.lychee.toml` format validation and markdownlint (if installed).
 
 ### `scripts/ci-validate.sh`
 
-Lightweight local CI validation covering the most common failure points:
-
-1. `cargo fmt --check`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test --all-features`
-4. `typos --config .typos.toml` (optional)
-5. `.lychee.toml` TOML syntax validation
-6. `.markdownlint.json` JSON syntax validation
+Lightweight local CI validation: fmt check, clippy, test, typos, TOML/JSON syntax validation.
 
 ### `scripts/check-all.sh`
 
-Full 17-phase CI parity script. Use `--quick` for the mandatory baseline
-(phases 1-3 only).
+Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4).

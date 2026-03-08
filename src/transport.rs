@@ -90,9 +90,39 @@ pub trait Transport: Send + 'static {
     /// After calling this method, subsequent calls to [`send`](Transport::send) and
     /// [`recv`](Transport::recv) may return errors or `None`.
     ///
+    /// # Polling-Client Contract
+    ///
+    /// When used with `SignalFishPollingClient`, `close()` is polled exactly
+    /// once with a noop waker. Transports whose `close()` may return `Pending`
+    /// will not complete their shutdown sequence. If your transport targets the
+    /// polling client, ensure `close()` resolves to `Ready` immediately.
+    ///
     /// # Errors
     ///
     /// Returns an error if the graceful shutdown fails. Implementations should
     /// still release resources even if the close handshake fails.
     async fn close(&mut self) -> Result<(), SignalFishError>;
+
+    /// Whether the transport's connection handshake is complete.
+    ///
+    /// Returns `true` once the transport is fully connected and ready to
+    /// exchange messages. The default implementation returns `true`, which
+    /// is correct for transports that are already connected at construction
+    /// time (e.g., [`WebSocketTransport`](crate::WebSocketTransport), whose
+    /// async `connect().await` completes the handshake before returning).
+    ///
+    /// Transports with asynchronous handshakes (e.g.,
+    /// `EmscriptenWebSocketTransport`, whose browser WebSocket `onopen`
+    /// callback fires after construction) should override this to return
+    /// `false` until the handshake completes.
+    ///
+    /// # Usage
+    ///
+    /// [`SignalFishPollingClient`](crate::SignalFishPollingClient) calls this
+    /// method each [`poll()`](crate::SignalFishPollingClient::poll) cycle and
+    /// defers the synthetic [`Connected`](crate::SignalFishEvent::Connected)
+    /// event until `is_ready()` returns `true`.
+    fn is_ready(&self) -> bool {
+        true
+    }
 }

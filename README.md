@@ -48,19 +48,22 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **Structured errors** — `SignalFishError` (9 variants) and `ErrorCode` (40 variants) for precise error handling
 - **Full protocol coverage** — 11 client message types, 24 server message types, 26 event variants
 - **Configurable** — tune event channel capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
+- **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
+- **Emscripten WebSocket transport** — the `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` with raw FFI to Emscripten's C API
+- **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for Godot 4.5 web exports
 
 ## Installation
 
 ```toml
 [dependencies]
-signal-fish-client = "0.3.1"
+signal-fish-client = "0.4.0"
 ```
 
 Without the built-in WebSocket transport (bring your own):
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.3.1", default-features = false }
+signal-fish-client = { version = "0.4.0", default-features = false }
 ```
 
 ## Quick Start
@@ -110,6 +113,8 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Feature               | Default | Description                                                             |
 | --------------------- | ------- | ----------------------------------------------------------------------- |
 | `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
+| `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
+| `tokio-runtime` | **yes** (via `transport-websocket`) | Tokio runtime integration (`rt`, `time`); disable for pure WASM targets |
 
 ## Architecture
 
@@ -122,6 +127,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `error_codes` | `ErrorCode` enum (40 server error code variants)                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
 | `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
+| `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
 
 ## Examples
 
@@ -147,6 +153,10 @@ cargo run --example custom_transport
 ```
 
 See [`examples/custom_transport.rs`](examples/custom_transport.rs).
+
+### WebAssembly
+
+The SDK compiles to WebAssembly. See the [WebAssembly Guide](docs/wasm.md) for Godot gdext integration examples and build instructions.
 
 ## Custom Transport
 
@@ -183,6 +193,62 @@ Key requirements:
 - `recv()` **must** be cancel-safe (it's used inside `tokio::select!`)
 - Connection setup happens *before* constructing the transport — the trait only covers message I/O
 - The transport must be `Send + 'static` (required by the async task boundary)
+
+## WebAssembly Support
+
+The SDK supports two WASM targets:
+
+| Target | Use Case | Transport | Client |
+| --- | --- | --- | --- |
+| `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
+| `wasm32-unknown-emscripten` | Godot 4.5 web exports (gdext) | `EmscriptenWebSocketTransport` | `SignalFishPollingClient` |
+
+### Emscripten Quick Start
+
+```rust,ignore
+use signal_fish_client::{
+    EmscriptenWebSocketTransport, SignalFishPollingClient,
+    SignalFishConfig, JoinRoomParams, SignalFishEvent,
+};
+
+// 1. Connect (synchronous — no .await needed).
+let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+    .expect("WebSocket creation failed");
+
+// 2. Create the polling client (auto-sends Authenticate).
+let config = SignalFishConfig::new("mb_app_abc123");
+let mut client = SignalFishPollingClient::new(transport, config);
+
+// 3. Each frame, poll and handle events.
+for event in client.poll() {
+    match event {
+        SignalFishEvent::Authenticated { app_name, .. } => {
+            println!("Authenticated as {app_name}");
+            client.join_room(JoinRoomParams::new("my-game", "Alice")).ok();
+        }
+        SignalFishEvent::RoomJoined { room_code, .. } => {
+            println!("Joined room {room_code}");
+        }
+        _ => {}
+    }
+}
+```
+
+### Building for Emscripten
+
+```sh
+# Install prerequisites
+rustup toolchain install nightly
+rustup component add rust-src --toolchain nightly
+
+# Build
+cargo +nightly build -Zbuild-std \
+    --target wasm32-unknown-emscripten \
+    --no-default-features \
+    --features transport-websocket-emscripten
+```
+
+See the [WebAssembly Guide](docs/wasm.md) for the full reference including Godot integration examples and toolchain setup.
 
 ## Development
 

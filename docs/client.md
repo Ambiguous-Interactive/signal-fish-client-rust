@@ -4,6 +4,9 @@ The core API surface of the Signal Fish Client SDK consists of three types:
 [`SignalFishConfig`](#signalfishconfig) for connection settings,
 [`JoinRoomParams`](#joinroomparams) for room entry, and
 [`SignalFishClient`](#signalfishclient) — the async client handle itself.
+For WebAssembly environments without an async runtime,
+[`SignalFishPollingClient`](#signalfishpollingclient) provides a synchronous,
+game-loop-driven alternative.
 
 ---
 
@@ -13,7 +16,7 @@ Configuration for a `SignalFishClient` connection. The only **required** field i
 
 ### Constructor
 
-```rust
+```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
 ```
 
@@ -41,7 +44,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 
 ### Full Example
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 use std::time::Duration;
 
@@ -52,12 +55,12 @@ let config = SignalFishConfig::new("mb_app_abc123")
 
 Or using struct literal syntax with defaults:
 
-```rust
+```rust,ignore
 use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.3.1".into()),
+    sdk_version: Some("0.4.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")
@@ -74,7 +77,7 @@ for quick-match / auto-create behavior.
 
 ### Constructor
 
-```rust
+```rust,ignore
 let params = JoinRoomParams::new("my-game", "Alice");
 ```
 
@@ -91,7 +94,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 
 ### Full Example
 
-```rust
+```rust,ignore
 use signal_fish_client::{JoinRoomParams, protocol::RelayTransport};
 
 let params = JoinRoomParams::new("my-game", "Alice")
@@ -128,7 +131,7 @@ round-trip.
 
 Start the client transport loop and return a handle plus event receiver.
 
-```rust
+```rust,ignore
 fn start(
     transport: impl Transport,
     config: SignalFishConfig,
@@ -142,7 +145,7 @@ On start, the client automatically sends an `Authenticate` message using the
 provided config. A background Tokio task is spawned to multiplex send/receive
 on the transport.
 
-```rust
+```rust,ignore
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, WebSocketTransport,
 };
@@ -164,11 +167,11 @@ let (client, mut event_rx) = SignalFishClient::start(transport, config);
 
 Join or create a room with the given parameters.
 
-```rust
+```rust,ignore
 fn join_room(&self, params: JoinRoomParams) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.join_room(
     JoinRoomParams::new("my-game", "Alice")
         .with_max_players(4),
@@ -183,11 +186,11 @@ Wait for `SignalFishEvent::RoomJoined` to confirm success.
 
 Leave the current room.
 
-```rust
+```rust,ignore
 fn leave_room(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.leave_room()?;
 ```
 
@@ -199,11 +202,11 @@ The server will broadcast a player-left event to remaining room members.
 
 Signal readiness to start the game in the lobby.
 
-```rust
+```rust,ignore
 fn set_ready(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.set_ready()?;
 ```
 
@@ -215,7 +218,7 @@ When all players in a room are ready, the server transitions the lobby state.
 
 Join a room as a read-only spectator.
 
-```rust
+```rust,ignore
 fn join_as_spectator(
     &self,
     game_name: String,
@@ -224,7 +227,7 @@ fn join_as_spectator(
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.join_as_spectator(
     "my-game".into(),
     "ABCD".into(),
@@ -240,11 +243,11 @@ Spectators receive game events but cannot send game data or affect room state.
 
 Leave spectator mode.
 
-```rust
+```rust,ignore
 fn leave_spectator(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.leave_spectator()?;
 ```
 
@@ -256,11 +259,11 @@ client.leave_spectator()?;
 
 Send arbitrary JSON game data to other players in the room.
 
-```rust
+```rust,ignore
 fn send_game_data(&self, data: serde_json::Value) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.send_game_data(serde_json::json!({
     "action": "move",
     "x": 10,
@@ -278,11 +281,11 @@ The data is forwarded to all other players (and spectators) in the room.
 
 Request to become (or relinquish) the room authority.
 
-```rust
+```rust,ignore
 fn request_authority(&self, become_authority: bool) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 // Claim authority
 client.request_authority(true)?;
 
@@ -301,14 +304,14 @@ Authority delegation must be enabled when creating the room
 
 Provide P2P connection information to the server for relay/direct connection establishment.
 
-```rust
+```rust,ignore
 fn provide_connection_info(
     &self,
     connection_info: ConnectionInfo,
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 use signal_fish_client::protocol::ConnectionInfo;
 
 client.provide_connection_info(ConnectionInfo::Direct {
@@ -326,7 +329,7 @@ and `Custom` variants.
 
 Reconnect to a previous session after a disconnection.
 
-```rust
+```rust,ignore
 fn reconnect(
     &self,
     player_id: PlayerId,
@@ -335,7 +338,7 @@ fn reconnect(
 ) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.reconnect(player_id, room_id, auth_token)?;
 ```
 
@@ -348,11 +351,11 @@ event, along with the `auth_token` provided by your application server.
 
 Send a heartbeat ping to the server.
 
-```rust
+```rust,ignore
 fn ping(&self) -> Result<()>
 ```
 
-```rust
+```rust,ignore
 client.ping()?;
 ```
 
@@ -372,7 +375,7 @@ Synchronous accessors use atomics; async accessors acquire an internal mutex.
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
 
-```rust
+```rust,ignore
 if client.is_connected() && client.is_authenticated() {
     if let Some(room_id) = client.current_room_id().await {
         println!("In room: {room_id}");
@@ -388,11 +391,11 @@ if client.is_connected() && client.is_authenticated() {
 
 Gracefully shut down the client.
 
-```rust
+```rust,ignore
 async fn shutdown(&mut self)
 ```
 
-```rust
+```rust,ignore
 client.shutdown().await;
 ```
 
@@ -411,3 +414,164 @@ Shutdown proceeds in three stages:
     If `shutdown()` is never called, the `Drop` implementation **aborts** the
     background task immediately. Always prefer an explicit `shutdown().await` for
     a clean disconnect.
+
+---
+
+## `SignalFishPollingClient`
+
+Synchronous, polling-based client for environments without an async runtime.
+Originally created for WebAssembly targets (specifically
+`wasm32-unknown-emscripten` and Godot 4.5 web exports via gdext), but usable
+in any single-threaded context with any `Transport` implementation.
+
+!!! note "Feature gate"
+    `SignalFishPollingClient` requires the `polling-client` feature.
+    This feature is automatically enabled by `transport-websocket-emscripten`.
+
+Unlike `SignalFishClient`, the polling client does **not** spawn background
+tasks. Instead, the caller drives the protocol by calling
+[`poll()`](#poll) once per frame from the game loop. All state is owned
+directly — no `Arc`, `Mutex`, or atomics.
+
+---
+
+### Creation
+
+#### `new`
+
+Create a new polling client with a connected transport and config.
+
+```rust,ignore
+fn new(transport: impl Transport, config: SignalFishConfig) -> Self
+```
+
+```rust,ignore
+use signal_fish_client::{
+    EmscriptenWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
+};
+
+let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+    .expect("connection failed");
+let config = SignalFishConfig::new("mb_app_abc123");
+let mut client = SignalFishPollingClient::new(transport, config);
+```
+
+On construction, the client immediately queues an `Authenticate` message
+(just like `SignalFishClient::start`). The message is flushed on the first
+call to `poll()`.
+
+---
+
+### Game Loop Integration
+
+#### `poll`
+
+Drain incoming messages, flush outgoing commands, and return all events
+generated this frame.
+
+```rust,ignore
+fn poll(&mut self) -> Vec<SignalFishEvent>
+```
+
+```rust,ignore
+// In your game loop (_process in Godot, Update in Unity, etc.)
+let events = client.poll();
+for event in events {
+    match event {
+        SignalFishEvent::Authenticated { app_name, .. } => {
+            // Safe to join a room now.
+        }
+        SignalFishEvent::RoomJoined { room_code, .. } => {
+            // You are in the room.
+        }
+        _ => {}
+    }
+}
+```
+
+`poll()` performs three steps internally:
+
+1. **Flush** — sends all queued outgoing messages via `transport.send()`.
+2. **Drain** — calls `transport.recv()` in a loop (using a noop waker) until
+   no more messages are buffered.
+3. **Parse** — deserializes each received JSON message into a
+   `ServerMessage`, updates internal state, and converts it to a
+   `SignalFishEvent`.
+
+!!! tip "Call frequency"
+    Call `poll()` once per frame. It is designed to be cheap when idle
+    (no messages buffered = no work done). Calling it more often than once
+    per frame is harmless but unnecessary.
+
+---
+
+### Command Methods
+
+All command methods are synchronous. They queue an outgoing message that is
+flushed on the next `poll()` call. All return `Result<(), SignalFishError>`.
+
+| Method | Description |
+|---|---|
+| `join_room(params: JoinRoomParams)` | Join or create a room. |
+| `leave_room()` | Leave the current room. |
+| `set_ready()` | Signal readiness in the lobby. |
+| `send_game_data(data: serde_json::Value)` | Send arbitrary JSON game data. |
+| `request_authority(become: bool)` | Request or release room authority. |
+| `provide_connection_info(info: ConnectionInfo)` | Provide P2P connection information. |
+| `reconnect(player_id, room_id, auth_token)` | Reconnect to a previous session. |
+| `ping()` | Send a heartbeat ping. |
+| `join_as_spectator(game, room, name)` | Join a room as a spectator. |
+| `leave_spectator()` | Leave spectator mode. |
+
+All methods return `Err(SignalFishError::NotConnected)` if the transport has
+closed.
+
+---
+
+### State Accessors
+
+All accessors are **synchronous** (no async, no mutex):
+
+| Method | Returns | Description |
+|---|---|---|
+| `is_connected()` | `bool` | Whether the transport is believed connected. |
+| `is_authenticated()` | `bool` | Whether the server confirmed authentication. |
+| `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
+| `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
+| `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
+
+!!! note "No async accessors"
+    Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are
+    plain `&self` methods — no `.await` needed. This is because the polling
+    client is single-threaded and owns its state directly.
+
+---
+
+### Lifecycle
+
+#### `close`
+
+Gracefully shut down the transport.
+
+```rust,ignore
+fn close(&mut self)
+```
+
+```rust,ignore
+client.close();
+```
+
+Calls `transport.close()` via a single noop-waker poll and clears session
+state. If the transport's `close()` future returns `Pending`, the result is
+silently discarded — only transports whose `close()` resolves to `Ready`
+immediately are guaranteed a clean shutdown. The primary transport
+(`EmscriptenWebSocketTransport`) always completes `close()` synchronously.
+After calling `close()`, `is_connected()` returns `false` and all command
+methods return `Err(SignalFishError::NotConnected)`.
+
+!!! warning "No Drop fallback"
+    Unlike `SignalFishClient`, the polling client does **not** abort a
+    background task on drop (there is no background task). However, the
+    underlying transport's `Drop` implementation will still clean up
+    resources (e.g., `EmscriptenWebSocketTransport` calls
+    `emscripten_websocket_close` and `emscripten_websocket_delete`).

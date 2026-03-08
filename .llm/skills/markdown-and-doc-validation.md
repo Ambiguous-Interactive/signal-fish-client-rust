@@ -58,6 +58,21 @@ for line in text.splitlines():
 | `scripts/pre-commit-llm.py` | Skill file paragraphs and titles for index generation | `extract_first_paragraph` and `extract_title` track `fence_char` |
 | `scripts/extract-rust-snippets.sh` | Markdown files for ```` ```rust ```` blocks | Tracks `in_rust_block` flag, extracts only Rust fences |
 
+### Using `rust,ignore` for Non-Compilable Snippets
+
+Markdown code blocks that reference external crates not in the snippet
+project's dependencies, or that use feature-gated types unavailable during
+extraction, should use ```` ```rust,ignore ```` instead of ```` ```rust ````.
+The `extract-rust-snippets.sh` script recognizes `rust,ignore` and skips
+those blocks during compilation checks.
+
+**Decision rule:** only use plain `` ```rust `` for complete,
+self-contained, compilable programs. Everything else gets
+`` ```rust,ignore ``. When in doubt, use `rust,ignore`. Use `rust,ignore`
+when a snippet depends on external crates, uses platform-specific or
+feature-gated APIs, is pseudo-code/illustrative, contains bare signatures
+without a body, or imports platform-specific modules.
+
 ### Testing the Parser
 
 `scripts/test_pre_commit_llm.py` contains pytest regression tests for
@@ -204,14 +219,10 @@ def validate_something() -> list[str]:
 
 *Checklist for validation functions:*
 
-- [ ] Is every `read_text()` / `read_to_string()` wrapped in error
-      handling?
-- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped in error
-      handling for non-critical paths?
-- [ ] Do error messages follow the same format as existing validators
-      (indented with two spaces, descriptive)?
-- [ ] Does the function continue checking remaining items after a
-      single I/O error (rather than aborting entirely)?
+- [ ] Is every `read_text()` / `read_to_string()` wrapped in error handling?
+- [ ] Are filesystem checks (`is_file()`, `is_dir()`) wrapped too?
+- [ ] Do error messages match the existing format (two-space indent, descriptive)?
+- [ ] Does the function continue after a single I/O error (not abort entirely)?
 
 ### Comment Accuracy in Comparison Logic
 
@@ -261,6 +272,20 @@ renaming a page, update both the page heading **and** the card in
 - [ ] If the target page's H1 changed, is the card label updated too?
 - [ ] Does `cargo test` pass the `nav_card_labels_match_page_titles`
       test?
+
+## Lychee Link Checker: Header Format
+
+In `.lychee.toml`, headers use `key=value` (equals), **not** `key: value`
+(colon). lychee v0.18+ rejects colon syntax with `Header value must be of the form key=value`.
+
+## Common Markdownlint Pitfalls
+
+- **MD032** (blank lines around lists): Add a blank line before and after every
+  list block, including after introductory paragraphs ending with a colon.
+- **MD040** (code fence language): Always add a language specifier to fenced code
+  blocks (e.g., ` ```rust `, ` ```toml `, ` ```text `).
+- **MD026** (trailing punctuation in headings): Do not end headings with `.`,
+  `:`, `;`, or `!`.
 
 ## Documentation Drift Validation
 

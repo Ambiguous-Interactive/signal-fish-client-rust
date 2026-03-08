@@ -25,6 +25,7 @@ Only include sections that have entries.
 - Public API additions (new fields/methods/types) must be listed under `### Added`.
 - Include migration guidance when behavior or API expectations changed.
 - Keep wording specific; avoid vague bullets like "improved things."
+- All behaviors of a newly-added feature belong under `### Added`, not `### Changed`. The `### Changed` section is reserved for modifications to features that existed in a prior release. If a feature and its behavior are both new in the same version, describe both together under `### Added`.
 
 ## Style Examples
 
@@ -33,6 +34,26 @@ Good:
 - Added `SignalFishClient::ping` to allow explicit heartbeat requests from clients.
 - Changed `SignalFishError::ServerError.error_code` to `Option<ErrorCode>`.
 - Fixed client shutdown race where `Disconnected` could be emitted twice.
+
+Bad (feature is new in this version — its behavior belongs under Added, not Changed):
+
+```markdown
+### Added
+- `new-feature` flag with `NewThing`.
+
+### Changed
+- `new-feature` now automatically enables `other-thing`.
+```
+
+Bad (same feature described in two sections — consolidate under Added):
+
+```markdown
+### Added
+- `tokio-runtime` feature flag for Tokio runtime opt-in.
+
+### Changed
+- The `tokio-runtime` feature, previously implicit, is now explicit.
+```
 
 Weak:
 
