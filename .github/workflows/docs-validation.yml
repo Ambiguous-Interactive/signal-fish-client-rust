@@ -74,7 +74,7 @@ jobs:
         uses: actions/checkout@v6.0.2
 
       - name: Run lychee link checker
-        uses: lycheeverse/lychee-action@v2.4.0
+        uses: lycheeverse/lychee-action@v2.8.0
         with:
           args: >-
             --config .lychee.toml
@@ -95,7 +95,7 @@ jobs:
         uses: actions/checkout@v6.0.2
 
       - name: Run typos spell checker
-        uses: crate-ci/typos@v1.31.1
+        uses: crate-ci/typos@v1.44.0
         with:
           config: .typos.toml
 

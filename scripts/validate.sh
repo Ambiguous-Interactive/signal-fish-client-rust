@@ -85,11 +85,12 @@ if [ -f "$LYCHEE_TOML" ]; then
     # Correct TOML: key = value or key = "value"
     # Wrong:        key: value (YAML syntax)
     #
-    # Check specifically for [header] section (map syntax) which lychee rejects.
+    # Check specifically for [header] section (table syntax) which lychee rejects —
+    # lychee v0.23.0+ requires an inline table: header = { key = "value" }
     if grep -qE '^\[header\]' "$LYCHEE_TOML"; then
-        fail ".lychee.toml uses [header] map syntax — lychee requires header = [\"key=value\"] array format"
+        fail ".lychee.toml uses [header] section syntax — lychee requires an inline table: header = { key = \"value\" }"
     else
-        pass ".lychee.toml does not use [header] map syntax"
+        pass ".lychee.toml does not use [header] section syntax"
     fi
 
     # Verify header field uses = assignment (not : assignment at top level)
@@ -100,12 +101,12 @@ if [ -f "$LYCHEE_TOML" ]; then
         pass ".lychee.toml uses correct TOML key=value format"
     fi
 
-    # Verify header entries inside the array use key=value (not key: value)
-    # lychee v0.18+ rejects "key: value" and requires "key=value"
-    if grep -E '^header[[:space:]]*=' "$LYCHEE_TOML" | grep -qE '"[^"]*[^=]*:[[:space:]]'; then
-        fail ".lychee.toml header entries use 'key: value' — lychee requires 'key=value' (equals, not colon)"
+    # Verify header field uses inline-table syntax (not old array syntax)
+    # lychee v0.23.0+ requires header = { key = "value" }, not header = ["key=value"]
+    if grep -E '^header[[:space:]]*=' "$LYCHEE_TOML" | grep -qE '^[[:space:]]*header[[:space:]]*=[[:space:]]*\['; then
+        fail ".lychee.toml header uses array syntax — lychee v0.23.0+ requires inline-table: header = { key = \"value\" }"
     else
-        pass ".lychee.toml header entries use correct key=value format"
+        pass ".lychee.toml header uses correct inline-table format"
     fi
 else
     skip ".lychee.toml not found"
