@@ -55,7 +55,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.68.18
+        uses: taiki-e/install-action@v2.68.22
         with:
           tool: cargo-audit@0.22.1
 
@@ -105,7 +105,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2.68.18
+        uses: taiki-e/install-action@v2.68.22
         with:
           tool: cargo-cyclonedx@0.5.7
 
