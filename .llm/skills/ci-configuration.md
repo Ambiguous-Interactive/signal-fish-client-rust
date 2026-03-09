@@ -50,8 +50,7 @@ header = ["Accept=text/html"]
 Some external docs/blog hosts intermittently return `503` in CI. For MSRV
 badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
 `https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
-links pointed at `doc.rust-lang.org/stable/releases.html`.
-`tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+links pointed at `doc.rust-lang.org/stable/releases.html`. `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -67,8 +66,7 @@ Array indexes in Bash are arithmetic context. Do not prefix index variables with
 
 ### Intra-doc links to target-gated types
 
-Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts.
-Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
+Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
 
 ### cargo-machete false positives with serde attributes
 
@@ -121,8 +119,10 @@ The project uses `locale = "en-us"` in `.typos.toml`. Use American English
 spellings (e.g., "recognize" not "recognise", "normalize" not "normalise").
 Use single words not hyphens: "misclassified" not "mis-classified".
 
-Use `[default.extend-identifiers]` for identifier-level suppressions (e.g.,
-`pn = "pn"`) and `[default.extend-words]` for word-level suppressions.
+Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`)
+and `[default.extend-words]` for standalone words in comments/strings (e.g.,
+`Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
+entries to both sections and cross-reference them with comments.
 
 ### Shell scripts: Comments must match behavior
 
@@ -135,9 +135,7 @@ Keep comments in CI shell scripts behaviorally exact:
 
 ### check-no-panics.sh: Compound cfg(test) attributes
 
-`check-no-panics.sh` uses `#\[cfg(.*\btest\b` to match both `#[cfg(test)]`
-and compound forms like `#[cfg(all(test, feature = "..."))]`. When adding test
-modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
+`check-no-panics.sh` uses a POSIX ERE pattern to match both `#[cfg(test)]` and compound forms like `#[cfg(all(test, ...))]`. When adding test modules in `src/`, prefer plain `#[cfg(test)]`.
 
 ### Shell scripts: Guard logic after extraction failures
 
@@ -287,14 +285,9 @@ The emscripten WASM target requires nightly, which may introduce lints (e.g., `n
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 | Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
 
-### `scripts/validate.sh`
-
-Pre-flight script: cargo fmt/clippy/test plus `.lychee.toml` format validation and markdownlint (if installed).
-
-### `scripts/ci-validate.sh`
-
-Lightweight local CI validation: fmt check, clippy, test, typos, TOML/JSON syntax validation.
-
-### `scripts/check-all.sh`
-
-Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4).
+| Script | Purpose |
+|---|---|
+| `scripts/validate.sh` | Pre-flight: cargo fmt/clippy/test + `.lychee.toml` validation + markdownlint |
+| `scripts/ci-validate.sh` | Lightweight local CI (13 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, test I/O unwrap |
+| `scripts/check-all.sh` | Full 20-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
+| `scripts/check-test-io-unwrap.sh` | Scans test `.rs` for bare `.unwrap()` on I/O ops (Phase 20 / Check 13) |

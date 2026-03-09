@@ -8,8 +8,10 @@
 #   1. Runs scripts/pre-commit-llm.py (line-limit check + skills index generation)
 #   2. Runs scripts/test_pre_commit_llm.py with pytest if available
 #   3. Runs markdownlint if available (to catch docs formatting drift early)
-#   4. Runs scripts/check-workflows.sh (workflow guard checks)
-#   5. Optionally uses the pre-commit framework if it is installed
+#   4. Runs scripts/test_shell_portability.sh (shell portability checks)
+#   5. Runs scripts/check-test-io-unwrap.sh (Rust test I/O unwrap check)
+#   6. Runs scripts/check-workflows.sh (workflow guard checks)
+#   7. Optionally uses the pre-commit framework if it is installed
 #
 # Hook behavior:
 #   On every commit : llm-line-limit, markdownlint (optional), workflow guards,
@@ -193,6 +195,30 @@ else
     echo "Note: scripts/test_check_target_gated_doc_links.sh not found — skipping target-gated doc-link script tests."
 fi
 
+# ── Shell portability checks ──────────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_shell_portability.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/test_shell_portability.sh"; then
+        echo ""
+        echo "Commit aborted: shell portability checks failed."
+        echo "Fix the portability violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/test_shell_portability.sh not found — skipping shell portability checks."
+fi
+
+# ── Rust test I/O unwrap check ───────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-test-io-unwrap.sh" ]; then
+    if ! bash "${REPO_ROOT}/scripts/check-test-io-unwrap.sh"; then
+        echo ""
+        echo "Commit aborted: Rust test I/O unwrap check failed."
+        echo "Fix the violations above, then re-stage and commit."
+        exit 1
+    fi
+else
+    echo "Note: scripts/check-test-io-unwrap.sh not found — skipping Rust test I/O unwrap check."
+fi
+
 # ── Workflow guard checks ───────────────────────────────────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-workflows.sh" ]; then
     if ! bash "${REPO_ROOT}/scripts/check-workflows.sh"; then
@@ -322,10 +348,12 @@ echo "  6. bash scripts/check-ffi-safety.sh (FFI safety check)"
 echo "  7. bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
 echo "  8. bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
 echo "  9. bash scripts/test_check_target_gated_doc_links.sh (target-gated doc-link script tests)"
-echo " 10. bash scripts/check-workflows.sh"
-echo " 11. cargo fmt --all -- --check"
-echo " 12. cargo clippy --all-targets --all-features -- -D warnings"
-echo " 13. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
+echo " 10. bash scripts/test_shell_portability.sh (shell portability checks)"
+echo " 11. bash scripts/check-test-io-unwrap.sh (Rust test I/O unwrap check)"
+echo " 12. bash scripts/check-workflows.sh"
+echo " 13. cargo fmt --all -- --check"
+echo " 14. cargo clippy --all-targets --all-features -- -D warnings"
+echo " 15. typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo ""
 echo "The pre-push hook runs on every 'git push':"
 echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"

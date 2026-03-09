@@ -89,8 +89,18 @@ mod workflow_existence {
         // Workflow files should use .yml, not .yaml, for consistency.
         let workflows_dir = project_root().join(".github/workflows");
         if workflows_dir.is_dir() {
-            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
-                let entry = entry.unwrap();
+            for entry in std::fs::read_dir(&workflows_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read workflows directory '{}': {e}",
+                    workflows_dir.display()
+                )
+            }) {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read entry in workflows directory '{}': {e}",
+                        workflows_dir.display()
+                    )
+                });
                 let name = entry.file_name().to_string_lossy().to_string();
                 assert!(
                     !name.ends_with(".yaml"),
@@ -371,7 +381,9 @@ mod docsrs_policy {
                 panic!("Failed to read directory '{}': {e}", dir.display());
             });
             for entry in entries {
-                let entry = entry.unwrap();
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in directory '{}': {e}", dir.display())
+                });
                 let path = entry.path();
                 if path.is_dir() {
                     visit_rs_files(&path, forbidden, violations);
@@ -1232,7 +1244,7 @@ mod workflow_security {
                     line_num + 1,
                 );
 
-                let at_pos = at_pos.unwrap();
+                let at_pos = at_pos.expect("at_pos verified as Some by preceding assert");
                 let action_name = &reference[..at_pos];
                 let after_at = &reference[at_pos + 1..];
                 // Remove any trailing comments or whitespace.
@@ -1397,7 +1409,9 @@ mod workflow_security {
         // Also verify there is no bare `fi` without an `else` between the
         // empty check and CI_MSRV_BLOCK extraction. The `else` must come
         // before any `fi` that would close the empty check's if-block.
-        let else_pos = between.find("else").unwrap();
+        let else_pos = between.find("else").expect(
+            "'else' keyword must exist in CARGO_MSRV guard block (verified by preceding assert)",
+        );
         let fi_before_else = between[..else_pos].lines().any(|line| line.trim() == "fi");
 
         assert!(
@@ -2000,13 +2014,25 @@ mod ci_config_validation {
         let workflows_dir = project_root().join(".github/workflows");
         let mut results = Vec::new();
         if workflows_dir.is_dir() {
-            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
-                let entry = entry.unwrap();
+            for entry in std::fs::read_dir(&workflows_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read workflows directory '{}': {e}",
+                    workflows_dir.display()
+                )
+            }) {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read entry in workflows directory '{}': {e}",
+                        workflows_dir.display()
+                    )
+                });
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("yml") {
                     let relative = format!(
                         ".github/workflows/{}",
-                        path.file_name().unwrap().to_string_lossy()
+                        path.file_name()
+                            .expect("workflow file path must have a file name")
+                            .to_string_lossy()
                     );
                     let contents = read_project_file(&relative);
                     results.push((relative, contents));
@@ -2237,14 +2263,33 @@ mod ci_config_validation {
         let root = project_root();
         let mut failures = Vec::new();
 
-        for entry in std::fs::read_dir(&root).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&root).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read project root directory '{}': {e}",
+                root.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in project root '{}': {e}",
+                    root.display()
+                )
+            });
             let file_name = entry.file_name().to_string_lossy().to_string();
 
             if !file_name.ends_with(".toml") {
                 continue;
             }
-            if !entry.file_type().unwrap().is_file() {
+            if !entry
+                .file_type()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to get file type for '{}': {e}",
+                        entry.path().display()
+                    )
+                })
+                .is_file()
+            {
                 continue;
             }
 
@@ -2375,12 +2420,31 @@ mod mkdocs_nav_validation {
             return;
         }
 
-        for entry in std::fs::read_dir(&docs_dir).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&docs_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read docs directory '{}': {e}",
+                docs_dir.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in docs directory '{}': {e}",
+                    docs_dir.display()
+                )
+            });
             let file_name = entry.file_name().to_string_lossy().to_string();
 
             // Skip directories — this test only checks top-level files.
-            if entry.file_type().unwrap().is_dir() {
+            if entry
+                .file_type()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to get file type for '{}': {e}",
+                        entry.path().display()
+                    )
+                })
+                .is_dir()
+            {
                 continue;
             }
 
@@ -3219,16 +3283,16 @@ mod panic_script_cfg_handling {
     fn check_no_panics_script_uses_compound_cfg_test_pattern() {
         let contents = read_project_file("scripts/check-no-panics.sh");
 
-        // The script must use a grep pattern that matches `test` as a word
-        // boundary inside any `#[cfg(...)]` attribute, not just exact
-        // `#[cfg(test)]`. The current pattern is:
-        //   grep -n '#\[cfg(.*\btest\b' "$file"
+        // The script must use a POSIX-portable grep -E pattern that matches
+        // `test` as a whole word inside any `#[cfg(...)]` attribute, not just
+        // exact `#[cfg(test)]`. The current pattern is:
+        //   grep -nE '#\[cfg\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)' "$file"
         assert!(
-            contents.contains(r"#\[cfg(.*\btest\b"),
-            "scripts/check-no-panics.sh must use a grep pattern that matches \
-             compound cfg attributes containing `test` (e.g., \
-             `#[cfg(all(test, feature = \"...\"))]`). \
-             Expected pattern: `#\\[cfg(.*\\btest\\b`"
+            contents.contains(r"#\[cfg\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)"),
+            "scripts/check-no-panics.sh must use a POSIX-portable grep -E \
+             pattern that matches compound cfg attributes containing `test` \
+             (e.g., `#[cfg(all(test, feature = \"...\"))]`). \
+             Expected pattern: `#\\[cfg\\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)`"
         );
     }
 
@@ -3751,9 +3815,15 @@ mod ffi_safety_documentation {
         );
 
         // Verify ordering: close before delete before from_raw.
-        let close_pos = error_block.find("emscripten_websocket_close").unwrap();
-        let delete_pos = error_block.find("emscripten_websocket_delete").unwrap();
-        let from_raw_pos = error_block.find("Box::from_raw").unwrap();
+        let close_pos = error_block.find("emscripten_websocket_close").expect(
+            "emscripten_websocket_close must be in error block (verified by preceding assert)",
+        );
+        let delete_pos = error_block.find("emscripten_websocket_delete").expect(
+            "emscripten_websocket_delete must be in error block (verified by preceding assert)",
+        );
+        let from_raw_pos = error_block
+            .find("Box::from_raw")
+            .expect("Box::from_raw must be in error block (verified by preceding assert)");
 
         assert!(
             close_pos < delete_pos,
@@ -3826,7 +3896,9 @@ mod pending_future_documentation {
                 panic!("Failed to read directory '{}': {e}", dir.display());
             });
             for entry in entries {
-                let entry = entry.unwrap();
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in directory '{}': {e}", dir.display())
+                });
                 let path = entry.path();
                 if path.is_dir() {
                     visit_rs_files(&path, root, violations);
@@ -3949,8 +4021,18 @@ mod shell_script_portability {
         );
 
         let mut scripts: Vec<(String, String)> = Vec::new();
-        for entry in std::fs::read_dir(&scripts_dir).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&scripts_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read scripts directory '{}': {e}",
+                scripts_dir.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in scripts directory '{}': {e}",
+                    scripts_dir.display()
+                )
+            });
             let path = entry.path();
             if !path.is_file() {
                 continue;
@@ -4355,5 +4437,484 @@ mod shell_script_portability {
                 "Detection mismatch for line: {line} (expected flagged={should_flag}, got flagged={found})"
             );
         }
+    }
+
+    /// Shell scripts must not use PCRE character-class shorthands (`\s`,
+    /// `\w`, `\d`, `\S`, `\W`, `\D`) inside `sed` expressions. These
+    /// shorthands are **not** part of POSIX BRE or ERE. GNU sed treats
+    /// `\s` as `[[:space:]]`, but macOS/BSD sed treats `\s` as the literal
+    /// character `s`, causing silent incorrect behavior.
+    ///
+    /// Portable replacements:
+    ///   `\s` -> `[[:space:]]`   `\S` -> `[^[:space:]]`
+    ///   `\w` -> `[[:alnum:]_]`  `\W` -> `[^[:alnum:]_]`
+    ///   `\d` -> `[[:digit:]]`   `\D` -> `[^[:digit:]]`
+    ///
+    /// This is a belt-and-suspenders companion to the same check in
+    /// `scripts/test_shell_portability.sh` (Check 4).
+    #[test]
+    fn shell_scripts_avoid_pcre_shorthand_in_sed() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Step 1: Check if this line invokes sed.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_sed = tokens
+                    .iter()
+                    .any(|token| *token == "sed" || token.ends_with("/sed"));
+
+                if !has_sed {
+                    continue;
+                }
+
+                // Step 2: Check if the line contains a PCRE shorthand
+                // (backslash followed by one of s, w, d, S, W, D).
+                let has_pcre_shorthand = trimmed
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)));
+
+                if has_pcre_shorthand {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found PCRE shorthand (\\s, \\w, \\d, \\S, \\W, \\D) in `sed` \
+             expressions in shell scripts. These character-class shorthands \
+             are not part of POSIX BRE or ERE. GNU sed treats \\s as \
+             [[:space:]], but macOS/BSD sed treats \\s as the literal \
+             character 's', causing silent incorrect behavior.\n\n\
+             Portable replacements:\n  \
+               \\s -> [[:space:]]   \\S -> [^[:space:]]\n  \
+               \\w -> [[:alnum:]_]  \\W -> [^[:alnum:]_]\n  \
+               \\d -> [[:digit:]]   \\D -> [^[:digit:]]\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use `\b` word boundaries in `grep` or `sed`
+    /// patterns. `\b` is a GNU extension and is **not** part of POSIX BRE
+    /// or ERE. macOS/BSD `grep` and `sed` do not support it.
+    ///
+    /// Portable replacements:
+    ///   `grep -w`                for whole-word matching
+    ///   `(^|[^[:alnum:]_])`     for leading word boundary
+    ///   `([^[:alnum:]_]|$)`     for trailing word boundary
+    ///
+    /// This is a belt-and-suspenders companion to the same check in
+    /// `scripts/test_shell_portability.sh` (Check 5).
+    #[test]
+    fn shell_scripts_avoid_word_boundary_in_grep_and_sed() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Step 1: Check if this line invokes grep or sed.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_grep_or_sed = tokens.iter().any(|token| {
+                    *token == "grep"
+                        || token.ends_with("/grep")
+                        || *token == "sed"
+                        || token.ends_with("/sed")
+                });
+
+                if !has_grep_or_sed {
+                    continue;
+                }
+
+                // Step 2: Check if the line contains a `\b` word boundary.
+                // We look for literal backslash-b sequences in the source text.
+                let has_word_boundary = trimmed
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0] == b'\\' && w[1] == b'b');
+
+                if has_word_boundary {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `\\b` word boundary in grep/sed calls in shell scripts. \
+             `\\b` is a GNU extension and is not part of POSIX BRE or ERE. \
+             macOS/BSD grep and sed do not support it.\n\n\
+             Portable replacements:\n  \
+               grep -w                    for whole-word matching\n  \
+               (^|[^[:alnum:]_])word      for leading word boundary\n  \
+               word([^[:alnum:]_]|$)      for trailing word boundary\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use `echo "$var" | cmd` patterns where a
+    /// shell variable is piped through `echo`. This pattern is fragile
+    /// because:
+    ///
+    /// 1. Some `echo` implementations interpret escape sequences (e.g.,
+    ///    `\n`, `\t`, `\c`) in the variable content, mangling data.
+    /// 2. If the variable value starts with `-`, `echo` may interpret it
+    ///    as a flag (e.g., `echo "-n"` suppresses the newline).
+    ///
+    /// The portable fix is `printf '%s\n' "$var" | cmd`, which handles
+    /// all values safely.
+    ///
+    /// This test only flags lines where a shell variable (`$VAR`,
+    /// `${VAR}`, `$1`, etc.) appears inside the echo argument and the
+    /// output is piped. Lines that echo only literal strings (e.g.,
+    /// `echo "hello world" | grep ...`) are safe and are not flagged.
+    #[test]
+    fn shell_scripts_avoid_echo_variable_pipe() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+
+                // We need to find lines matching the pattern:
+                //   echo <something with $var> | <cmd>
+                //
+                // Strategy: split on pipe `|` and check the left side for
+                // `echo` with a variable reference. We must be careful not
+                // to match pipe characters inside quoted strings, but for
+                // the purposes of this lint a simple split is sufficient
+                // since `|` inside quotes is uncommon in shell scripts and
+                // would be a code smell anyway.
+
+                // Check if the line contains a pipe.
+                if !trimmed.contains('|') {
+                    continue;
+                }
+
+                // Split on the first `|` to get the left-hand side.
+                let Some((lhs, _rhs)) = trimmed.split_once('|') else {
+                    continue;
+                };
+                let lhs = lhs.trim();
+
+                // Check if the left-hand side starts with `echo` (possibly
+                // preceded by variable assignment like `VAR=$(echo ...)`).
+                // We look for `echo ` as a token in the LHS.
+                let echo_pos = {
+                    let mut found: Option<usize> = None;
+                    // Check for `echo ` at the start of LHS
+                    if lhs.starts_with("echo ") {
+                        found = Some(0);
+                    }
+                    // Check for `echo ` after common shell prefixes
+                    // (e.g., in subshells or command substitution)
+                    if found.is_none() {
+                        for (i, _) in lhs.match_indices("echo ") {
+                            // Verify it's at a word boundary (preceded by
+                            // whitespace, `(`, `$`, `=`, or start of line).
+                            if i == 0 {
+                                found = Some(i);
+                                break;
+                            }
+                            let prev = lhs.as_bytes().get(i.wrapping_sub(1));
+                            if prev.is_some_and(|&ch| {
+                                ch == b' ' || ch == b'(' || ch == b'$' || ch == b'=' || ch == b';'
+                            }) {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    found
+                };
+
+                let Some(pos) = echo_pos else {
+                    continue;
+                };
+
+                // Extract the echo arguments (everything after `echo `).
+                let echo_args = &lhs[pos + 5..];
+
+                // Check if the echo arguments contain a shell variable
+                // reference ($VAR, ${VAR}, $1, $@, $*, $?, etc.).
+                // This distinguishes `echo "$var" | cmd` (flagged) from
+                // `echo "literal" | cmd` (safe).
+                let has_variable = echo_args.as_bytes().windows(2).any(|w| {
+                    w[0] == b'$'
+                        && (w[1].is_ascii_alphabetic()
+                            || w[1] == b'{'
+                            || w[1].is_ascii_digit()
+                            || w[1] == b'@'
+                            || w[1] == b'*'
+                            || w[1] == b'?')
+                });
+
+                if has_variable {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `echo \"$var\" | cmd` patterns in shell scripts. \
+             This pattern is fragile: some `echo` implementations interpret \
+             escape sequences in variable content (\\n, \\t, \\c), and values \
+             starting with `-` may be interpreted as echo flags.\n\n\
+             Fix: use `printf '%%s\\n' \"$var\" | cmd` instead, which handles \
+             all values safely.\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Validates the echo-variable-pipe detection logic against known
+    /// positive and negative cases to prevent regressions.
+    #[test]
+    fn echo_variable_pipe_detection_unit_tests() {
+        /// Simulates the echo-variable-pipe detection logic for a single line.
+        fn would_flag(line: &str) -> bool {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return false;
+            }
+            if !trimmed.contains('|') {
+                return false;
+            }
+            let Some((lhs, _rhs)) = trimmed.split_once('|') else {
+                return false;
+            };
+            let lhs = lhs.trim();
+
+            let echo_pos = {
+                let mut found: Option<usize> = None;
+                if lhs.starts_with("echo ") {
+                    found = Some(0);
+                }
+                if found.is_none() {
+                    for (i, _) in lhs.match_indices("echo ") {
+                        if i == 0 {
+                            found = Some(i);
+                            break;
+                        }
+                        let prev = lhs.as_bytes().get(i.wrapping_sub(1));
+                        if prev.is_some_and(|&ch| {
+                            ch == b' ' || ch == b'(' || ch == b'$' || ch == b'=' || ch == b';'
+                        }) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+
+            let Some(pos) = echo_pos else {
+                return false;
+            };
+
+            let echo_args = &lhs[pos + 5..];
+            echo_args.as_bytes().windows(2).any(|w| {
+                w[0] == b'$'
+                    && (w[1].is_ascii_alphabetic()
+                        || w[1] == b'{'
+                        || w[1].is_ascii_digit()
+                        || w[1] == b'@'
+                        || w[1] == b'*'
+                        || w[1] == b'?')
+            })
+        }
+
+        // Should be flagged (variable content piped through echo)
+        assert!(
+            would_flag("echo \"$var\" | grep pattern"),
+            "echo with $var pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"${var}\" | sed 's/a/b/'"),
+            "echo with ${{var}} pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"$1\" | cmd"),
+            "echo with positional param pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo $var | cmd"),
+            "echo with unquoted $var pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"$CI_MSRV_BLOCK\" | grep toolchain"),
+            "echo with $CI_MSRV_BLOCK pipe should be flagged"
+        );
+
+        // Should NOT be flagged (safe patterns)
+        assert!(
+            !would_flag("echo \"literal string\" | grep pattern"),
+            "echo with literal string pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo 'hello world' | wc -l"),
+            "echo with single-quoted literal pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo hello | grep hello"),
+            "echo with unquoted literal pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("printf '%s\\n' \"$var\" | cmd"),
+            "printf with variable pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("# echo \"$var\" | cmd"),
+            "commented-out echo pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo \"$var\""),
+            "echo without pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep pattern file.txt"),
+            "grep without echo should NOT be flagged"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: test_code_quality
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod test_code_quality {
+    use super::*;
+
+    /// Rust test files must not use bare `.unwrap()` on I/O operations
+    /// (file reads, directory reads, path operations). Bare `.unwrap()`
+    /// produces unhelpful panic messages like "called `Result::unwrap()`
+    /// on an `Err` value: Os { ... }" without any context about which
+    /// file or operation failed.
+    ///
+    /// The convention in this project is to use `.unwrap_or_else(|e| {
+    /// panic!("descriptive message: {e}") })` for all I/O operations,
+    /// which produces clear, actionable error messages.
+    ///
+    /// This test scans `.rs` files in `tests/` for bare `.unwrap()` calls
+    /// on common I/O function return values and fails if any are found.
+    /// It does NOT flag `.unwrap()` on non-I/O operations (e.g.,
+    /// `Mutex::lock().unwrap()`, `Option::unwrap()`, parsing) because
+    /// those are standard test patterns.
+    #[test]
+    fn test_files_avoid_bare_unwrap_on_io_operations() {
+        let tests_dir = project_root().join("tests");
+        assert!(
+            tests_dir.is_dir(),
+            "Expected tests/ directory to exist at project root."
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        // I/O function patterns that should use unwrap_or_else, not bare unwrap.
+        // Each pattern matches the function call that returns a Result, followed
+        // eventually by `.unwrap()` on the same line.
+        let io_patterns: &[&str] = &[
+            "read_to_string(",
+            "read_dir(",
+            "File::open(",
+            "File::create(",
+            "fs::read(",
+            "fs::write(",
+            "fs::remove_file(",
+            "fs::remove_dir(",
+            "fs::create_dir(",
+            "fs::metadata(",
+            "fs::read_link(",
+            "fs::copy(",
+            "fs::rename(",
+        ];
+
+        fn visit_rs_files(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            io_patterns: &[&str],
+            violations: &mut Vec<String>,
+        ) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in '{}': {e}", dir.display());
+                });
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, root, io_patterns, violations);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("Failed to read '{}': {e}", path.display());
+                });
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+
+                for (line_num, line) in contents.lines().enumerate() {
+                    // Skip lines that use unwrap_or_else (the correct pattern).
+                    if line.contains("unwrap_or_else") {
+                        continue;
+                    }
+                    // Skip lines that don't have .unwrap() at all.
+                    if !line.contains(".unwrap()") {
+                        continue;
+                    }
+                    // Check if the line contains any of the I/O patterns.
+                    for pattern in io_patterns {
+                        if line.contains(pattern) {
+                            violations.push(format!(
+                                "{relative}:{}: {}",
+                                line_num + 1,
+                                line.trim()
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        visit_rs_files(&tests_dir, &project_root(), io_patterns, &mut violations);
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found bare `.unwrap()` on I/O operations in test files. \
+             Bare unwrap produces unhelpful panic messages without context \
+             about which file or operation failed.\n\n\
+             Fix: use `.unwrap_or_else(|e| panic!(\"descriptive message: {{e}}\"))` \
+             instead, which produces clear, actionable error messages.\n\n\
+             Violations:\n  {joined}"
+        );
     }
 }

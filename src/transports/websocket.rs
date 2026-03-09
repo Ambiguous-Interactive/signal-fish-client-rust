@@ -253,12 +253,21 @@ mod tests {
             + 'static,
         Fut: std::future::Future<Output = ()> + Send,
     {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("TcpListener must bind to localhost");
+        let addr = listener
+            .local_addr()
+            .expect("TcpListener must have a local address");
 
         tokio::spawn(async move {
-            let (tcp, _) = listener.accept().await.unwrap();
-            let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let (tcp, _) = listener
+                .accept()
+                .await
+                .expect("TcpListener must accept a connection");
+            let ws = tokio_tungstenite::accept_async(tcp)
+                .await
+                .expect("WebSocket handshake must succeed");
             handler(ws).await;
         });
 
@@ -270,29 +279,45 @@ mod tests {
     #[tokio::test]
     async fn recv_receives_text_messages() {
         let url = start_mock_server(|mut ws| async move {
-            ws.send(Message::Text("hello".into())).await.unwrap();
-            ws.send(Message::Text("world".into())).await.unwrap();
-            ws.close(None).await.unwrap();
+            ws.send(Message::Text("hello".into()))
+                .await
+                .expect("server must send 'hello'");
+            ws.send(Message::Text("world".into()))
+                .await
+                .expect("server must send 'world'");
+            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
 
-        let msg1 = transport.recv().await.unwrap().unwrap();
+        let msg1 = transport
+            .recv()
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
         assert_eq!(msg1, "hello");
 
-        let msg2 = transport.recv().await.unwrap().unwrap();
+        let msg2 = transport
+            .recv()
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
         assert_eq!(msg2, "world");
     }
 
     #[tokio::test]
     async fn recv_returns_none_on_close_frame() {
         let url = start_mock_server(|mut ws| async move {
-            ws.close(None).await.unwrap();
+            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
         let result = transport.recv().await;
         assert!(result.is_none());
     }
@@ -302,16 +327,24 @@ mod tests {
         let url = start_mock_server(|mut ws| async move {
             ws.send(Message::Binary(vec![0xDE, 0xAD].into()))
                 .await
-                .unwrap();
-            ws.send(Message::Text("after_binary".into())).await.unwrap();
-            ws.close(None).await.unwrap();
+                .expect("server must send binary frame");
+            ws.send(Message::Text("after_binary".into()))
+                .await
+                .expect("server must send 'after_binary'");
+            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
 
         // The binary frame should be silently skipped.
-        let msg = transport.recv().await.unwrap().unwrap();
+        let msg = transport
+            .recv()
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
         assert_eq!(msg, "after_binary");
     }
 
@@ -323,8 +356,10 @@ mod tests {
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
-        transport.close().await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        transport.close().await.expect("close must succeed");
 
         let err = transport.send("oops".to_string()).await.unwrap_err();
         assert!(matches!(err, SignalFishError::TransportClosed));
@@ -336,10 +371,15 @@ mod tests {
             start_mock_server(|mut ws| async move { while let Some(Ok(_)) = ws.next().await {} })
                 .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
-        transport.close().await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        transport.close().await.expect("first close must succeed");
         // Second close should also succeed.
-        transport.close().await.unwrap();
+        transport
+            .close()
+            .await
+            .expect("second close must succeed (idempotent)");
     }
 
     #[tokio::test]
@@ -360,16 +400,22 @@ mod tests {
         let url = start_mock_server(|mut ws| async move {
             ws.send(Message::Text("from_stream_msg".into()))
                 .await
-                .unwrap();
-            ws.close(None).await.unwrap();
+                .expect("server must send 'from_stream_msg'");
+            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
         // Connect the raw stream ourselves, then wrap it.
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("raw WebSocket connect must succeed");
         let mut transport = WebSocketTransport::from_stream(ws_stream);
 
-        let msg = transport.recv().await.unwrap().unwrap();
+        let msg = transport
+            .recv()
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
         assert_eq!(msg, "from_stream_msg");
     }
 
@@ -378,16 +424,27 @@ mod tests {
         let url = start_mock_server(|mut ws| async move {
             // Read one message and echo it back.
             if let Some(Ok(Message::Text(text))) = ws.next().await {
-                ws.send(Message::Text(text)).await.unwrap();
+                ws.send(Message::Text(text))
+                    .await
+                    .expect("server must echo message back");
             }
-            ws.close(None).await.unwrap();
+            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
-        transport.send("ping_echo".to_string()).await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        transport
+            .send("ping_echo".to_string())
+            .await
+            .expect("send must succeed");
 
-        let msg = transport.recv().await.unwrap().unwrap();
+        let msg = transport
+            .recv()
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
         assert_eq!(msg, "ping_echo");
     }
 
@@ -397,8 +454,10 @@ mod tests {
             start_mock_server(|mut ws| async move { while let Some(Ok(_)) = ws.next().await {} })
                 .await;
 
-        let mut transport = WebSocketTransport::connect(&url).await.unwrap();
-        transport.close().await.unwrap();
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        transport.close().await.expect("close must succeed");
 
         // After closing, recv must not hang — it should return None or an error.
         let result = transport.recv().await;

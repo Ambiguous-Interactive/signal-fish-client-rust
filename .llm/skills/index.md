@@ -60,6 +60,10 @@ Reference for enum matching policy, semver, re-exports, feature flags, and MSRV 
 
 Reference for serde_json, enum tagging, field attributes, and wire format as used in this codebase.
 
+### [Shell Script Portability](shell-portability.md)
+
+Reference for writing portable shell scripts that work on both GNU (Linux) and BSD (macOS) systems.
+
 ### [Testing Async Code](testing-async.md)
 
 Reference for tokio::test, mock transports, and channel-based test patterns as used in this codebase.

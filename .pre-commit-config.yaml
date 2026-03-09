@@ -92,6 +92,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+  # ── Rust test I/O unwrap check ─────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: check-test-io-unwrap
+        name: Rust test I/O unwrap check
+        language: system
+        entry: bash scripts/check-test-io-unwrap.sh
+        pass_filenames: false
+        always_run: true
+
   # ── Workflow guard checks ─────────────────────────────────────────────────
   - repo: local
     hooks:

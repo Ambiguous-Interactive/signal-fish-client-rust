@@ -110,37 +110,37 @@ should_skip() {
     local content="$1"
 
     # Placeholder patterns — incomplete fragments.
-    if echo "$content" | grep -qE '^[[:space:]]*\.\.\.[[:space:]]*$'; then return 0; fi
-    if echo "$content" | grep -qE '//[[:space:]]*\.\.\.' ; then return 0; fi
-    if echo "$content" | grep -qE '/\*[[:space:]]*\.\.\.[[:space:]]*\*/' ; then return 0; fi
-    if echo "$content" | grep -qF '…'; then return 0; fi
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*\.\.\.[[:space:]]*$'; then return 0; fi
+    if printf '%s\n' "$content" | grep -qE '//[[:space:]]*\.\.\.' ; then return 0; fi
+    if printf '%s\n' "$content" | grep -qE '/\*[[:space:]]*\.\.\.[[:space:]]*\*/' ; then return 0; fi
+    if printf '%s\n' "$content" | grep -qF '…'; then return 0; fi
 
     # Bare function/method signatures without bodies (API reference docs).
     # e.g. "fn join_room(&self, params: JoinRoomParams) -> Result<()>"
     # These start with fn/async fn and end with a return type but no {.
     local trimmed
-    trimmed="$(echo "$content" | tr -d '[:space:]')"
-    if echo "$trimmed" | grep -qE '^(async)?fn[^{]+$'; then return 0; fi
+    trimmed="$(printf '%s\n' "$content" | tr -d '[:space:]')"
+    if printf '%s\n' "$trimmed" | grep -qE '^(async)?fn[^{]+$'; then return 0; fi
 
     # Snippets that are a bare #[serde(...)] attribute without a struct/enum.
-    if echo "$content" | grep -qE '^[[:space:]]*#\[serde'; then
-        if ! echo "$content" | grep -qE '(struct|enum|fn|impl|trait)'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*#\[serde'; then
+        if ! printf '%s\n' "$content" | grep -qE '(struct|enum|fn|impl|trait)'; then
             return 0
         fi
     fi
 
     # Pseudo-code method signature listings (e.g. "client.join_room(...) -> Result<()>").
     # These have `-> Result` on lines that start with a variable reference, not fn def.
-    if echo "$content" | grep -qE '^[[:space:]]*[[:alnum:]_]+\.[[:alnum:]_]+\(.*\)[[:space:]]*->[[:space:]]*Result'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*[[:alnum:]_]+\.[[:alnum:]_]+\(.*\)[[:space:]]*->[[:space:]]*Result'; then
         return 0
     fi
 
     # Snippets that impl a trait for a type that isn't defined in the snippet
     # (e.g. "impl Transport for LoopbackTransport" without struct definition).
-    if echo "$content" | grep -qE '^[[:space:]]*impl[[:space:]]+[[:alnum:]_]+[[:space:]]+for[[:space:]]+[[:alnum:]_]+'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*impl[[:space:]]+[[:alnum:]_]+[[:space:]]+for[[:space:]]+[[:alnum:]_]+'; then
         local impl_type
-        impl_type="$(echo "$content" | grep -oE 'impl[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' | head -1 | sed 's/.*for[[:space:]]*//')"
-        if [ -n "$impl_type" ] && ! echo "$content" | grep -qE "(struct|enum)[[:space:]]+${impl_type}"; then
+        impl_type="$(printf '%s\n' "$content" | grep -oE 'impl[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' | head -1 | sed 's/.*for[[:space:]]*//')"
+        if [ -n "$impl_type" ] && ! printf '%s\n' "$content" | grep -qE "(struct|enum)[[:space:]]+${impl_type}"; then
             return 0
         fi
     fi
@@ -148,11 +148,11 @@ should_skip() {
     # Very short snippets (1-3 non-blank lines) referencing undefined variables
     # like `transport`, `config`, `url`, etc. from surrounding context.
     local nonblank_count
-    nonblank_count="$(echo "$content" | grep -c -E '^[[:space:]]*[^[:space:]]' || true)"
+    nonblank_count="$(printf '%s\n' "$content" | grep -c -E '^[[:space:]]*[^[:space:]]' || true)"
     if [ "$nonblank_count" -le 3 ]; then
         # If it references variables from surrounding doc context, skip.
-        if echo "$content" | grep -qE '\b(transport|config|stream|my_stream|url)\b'; then
-            if ! echo "$content" | grep -qE '^[[:space:]]*(fn|struct|enum|trait|impl|pub)[[:space:]]'; then
+        if printf '%s\n' "$content" | grep -qwE '(transport|config|stream|my_stream|url)'; then
+            if ! printf '%s\n' "$content" | grep -qE '^[[:space:]]*(fn|struct|enum|trait|impl|pub)[[:space:]]'; then
                 return 0
             fi
         fi
@@ -160,16 +160,16 @@ should_skip() {
 
     # Snippets that reference types not defined in the snippet and not from the
     # crate (e.g. LoopbackTransport from a prior example snippet).
-    if echo "$content" | grep -qF 'LoopbackTransport'; then
-        if ! echo "$content" | grep -qE 'struct[[:space:]]+LoopbackTransport'; then
+    if printf '%s\n' "$content" | grep -qF 'LoopbackTransport'; then
+        if ! printf '%s\n' "$content" | grep -qE 'struct[[:space:]]+LoopbackTransport'; then
             return 0
         fi
     fi
 
     # Snippets that reference undefined variables like player_id, room_id,
     # auth_token without defining them.
-    if echo "$content" | grep -qE '\bclient\.reconnect\('; then
-        if ! echo "$content" | grep -qE '^[[:space:]]*let[[:space:]]+(player_id|room_id|auth_token)\b'; then
+    if printf '%s\n' "$content" | grep -qE '(^|[^[:alnum:]_])client\.reconnect\('; then
+        if ! printf '%s\n' "$content" | grep -qE '^[[:space:]]*let[[:space:]]+(player_id|room_id|auth_token)([^[:alnum:]_]|$)'; then
             return 0
         fi
     fi
@@ -193,47 +193,47 @@ use serde::{Serialize, Deserialize};
 use std::time::Duration;"
 
     # If snippet contains `fn main`, it is a complete program.
-    if echo "$content" | grep -q 'fn main'; then
+    if printf '%s\n' "$content" | grep -q 'fn main'; then
         printf '%s\n%s\n' "$allows" "$content" > "$out_file"
         return 0
     fi
 
     # Check if the snippet defines its own function or async fn (not as a method).
     local has_fn_def=false
-    if echo "$content" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[[:alnum:]_]+'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[[:alnum:]_]+'; then
         has_fn_def=true
     fi
 
     # Check if snippet defines a struct/enum/trait/impl/type.
     local has_item_def=false
-    if echo "$content" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?(struct|enum|trait|impl|type|mod|const|static)[[:space:]]'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?(struct|enum|trait|impl|type|mod|const|static)[[:space:]]'; then
         has_item_def=true
     fi
 
     # Check if snippet has an #[async_trait] or #[derive()] attribute.
     local has_attr=false
-    if echo "$content" | grep -qE '^[[:space:]]*#\['; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*#\['; then
         has_attr=true
     fi
 
     # Check if snippet has use statements.
     local has_use=false
-    if echo "$content" | grep -qE '^[[:space:]]*use[[:space:]]'; then
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*use[[:space:]]'; then
         has_use=true
     fi
 
     # Check if snippet uses variables that need to be in scope.
     local needs_client=false
     local needs_event=false
-    if echo "$content" | grep -qE '\bclient\.'; then
+    if printf '%s\n' "$content" | grep -qE '(^|[^[:alnum:]_])client\.'; then
         needs_client=true
     fi
-    if echo "$content" | grep -qE '\bmatch[[:space:]]+event\b'; then
+    if printf '%s\n' "$content" | grep -qE '(^|[^[:alnum:]_])match[[:space:]]+event([^[:alnum:]_]|$)'; then
         needs_event=true
     fi
-    if echo "$content" | grep -qE '\bevent\b' && [ "$needs_event" = false ]; then
+    if printf '%s\n' "$content" | grep -qwE 'event' && [ "$needs_event" = false ]; then
         # References to event outside match — might be a function parameter.
-        if echo "$content" | grep -qE '(fn[[:space:]]+[[:alnum:]_]+.*event)'; then
+        if printf '%s\n' "$content" | grep -qE '(fn[[:space:]]+[[:alnum:]_]+.*event)'; then
             needs_event=false  # It's a function parameter, fine.
         fi
     fi
@@ -241,9 +241,9 @@ use std::time::Duration;"
     # Bare struct/enum definitions without derives from protocol docs — skip.
     if [ "$has_item_def" = true ] && [ "$has_fn_def" = false ]; then
         local first_nonblank
-        first_nonblank="$(echo "$content" | grep -m1 -E '^[[:space:]]*[^[:space:]]' || true)"
-        if echo "$first_nonblank" | grep -qE '^[[:space:]]*pub[[:space:]]+(struct|enum)[[:space:]]'; then
-            if ! echo "$content" | grep -q '#\[derive'; then
+        first_nonblank="$(printf '%s\n' "$content" | grep -m1 -E '^[[:space:]]*[^[:space:]]' || true)"
+        if printf '%s\n' "$first_nonblank" | grep -qE '^[[:space:]]*pub[[:space:]]+(struct|enum)[[:space:]]'; then
+            if ! printf '%s\n' "$content" | grep -q '#\[derive'; then
                 return 1  # Skip — bare type definition listing.
             fi
         fi
@@ -255,29 +255,29 @@ use std::time::Duration;"
         # These are top-level items — they don't need fn main wrapping.
         # But they may need use/prelude.
         {
-            echo "$allows"
+            printf '%s\n' "$allows"
             if [ "$has_use" = false ]; then
-                echo "$prelude"
+                printf '%s\n' "$prelude"
             else
                 # Snippet has its own use statements. Add only the ones
                 # it doesn't already have.
-                if ! echo "$content" | grep -qE '^[[:space:]]*use async_trait'; then
+                if ! printf '%s\n' "$content" | grep -qE '^[[:space:]]*use async_trait'; then
                     echo "use async_trait::async_trait;"
                 fi
-                if ! echo "$content" | grep -qE '^[[:space:]]*use serde'; then
+                if ! printf '%s\n' "$content" | grep -qE '^[[:space:]]*use serde'; then
                     echo "use serde::{Serialize, Deserialize};"
                 fi
-                if ! echo "$content" | grep -qE '^[[:space:]]*use std::time'; then
+                if ! printf '%s\n' "$content" | grep -qE '^[[:space:]]*use std::time'; then
                     echo "use std::time::Duration;"
                 fi
                 # Always add the wildcard imports for types the snippet
                 # may reference indirectly.
-                if ! echo "$content" | grep -qE 'use signal_fish_client::\*'; then
+                if ! printf '%s\n' "$content" | grep -qE 'use signal_fish_client::\*'; then
                     echo "use signal_fish_client::*;"
                     echo "use signal_fish_client::protocol::*;"
                 fi
             fi
-            echo "$content"
+            printf '%s\n' "$content"
         } > "$out_file"
         return 0
     fi
@@ -287,22 +287,22 @@ use std::time::Duration;"
 
     # Determine if the wrapper function needs to return Result (uses `?`).
     local uses_question_mark=false
-    if echo "$content" | grep -qE '\?[[:space:]]*;'; then
+    if printf '%s\n' "$content" | grep -qE '\?[[:space:]]*;'; then
         uses_question_mark=true
     fi
 
     # Determine if the wrapper function needs to be async (uses `.await`).
     local uses_await=false
-    if echo "$content" | grep -qF '.await'; then
+    if printf '%s\n' "$content" | grep -qF '.await'; then
         uses_await=true
     fi
 
     {
-        echo "$allows"
+        printf '%s\n' "$allows"
         # Add prelude imports. We always add the full prelude and let
         # the #![allow(unused_imports)] suppress warnings. This avoids
         # breaking multi-line `use` blocks by trying to split them out.
-        echo "$prelude"
+        printf '%s\n' "$prelude"
 
         # Build the function signature.
         local fn_sig="fn _snippet_main()"
@@ -312,7 +312,7 @@ use std::time::Duration;"
         if [ "$uses_question_mark" = true ]; then
             fn_sig="${fn_sig} -> std::result::Result<(), Box<dyn std::error::Error>>"
         fi
-        echo "${fn_sig} {"
+        printf '%s\n' "${fn_sig} {"
 
         # Inject dummy variables that the snippet needs.
         if [ "$needs_client" = true ]; then
@@ -322,7 +322,7 @@ use std::time::Duration;"
             echo "let event: SignalFishEvent = todo!();"
         fi
 
-        echo "$content"
+        printf '%s\n' "$content"
 
         if [ "$uses_question_mark" = true ]; then
             echo "Ok(())"
@@ -347,9 +347,9 @@ for md_file in "${MD_FILES[@]}"; do
 
         if [ "$in_rust_block" = false ]; then
             # Detect start of a fenced code block.
-            if echo "$line" | grep -qE '^[[:space:]]*```'; then
+            if printf '%s\n' "$line" | grep -qE '^[[:space:]]*```'; then
                 # Extract the language tag.
-                block_lang="$(echo "$line" | sed -E 's/^\s*```\s*//' | sed -E 's/\s.*$//')"
+                block_lang="$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*```[[:space:]]*//' | sed -E 's/[[:space:]].*$//')"
                 # Only process rust blocks.
                 case "$block_lang" in
                     rust|rust,no_run)
@@ -369,7 +369,7 @@ for md_file in "${MD_FILES[@]}"; do
             fi
         else
             # Check for end of code block.
-            if echo "$line" | grep -qE '^[[:space:]]*```[[:space:]]*$'; then
+            if printf '%s\n' "$line" | grep -qE '^[[:space:]]*```[[:space:]]*$'; then
                 in_rust_block=false
                 TOTAL=$((TOTAL + 1))
 
@@ -382,7 +382,7 @@ for md_file in "${MD_FILES[@]}"; do
                 fi
 
                 # Skip empty blocks.
-                if [ -z "$(echo "$block_content" | tr -d '[:space:]')" ]; then
+                if [ -z "$(printf '%s\n' "$block_content" | tr -d '[:space:]')" ]; then
                     SKIPPED=$((SKIPPED + 1))
                     continue
                 fi

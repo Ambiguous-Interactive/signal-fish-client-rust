@@ -5,6 +5,8 @@
 #   - grep -P / grep -oP (GNU PCRE — breaks on macOS/BSD)
 #   - sed -r (GNU-only — use sed -E for portability)
 #   - \s, \w, \d, \S, \W, \D in grep -E patterns (PCRE shorthand, not POSIX ERE)
+#   - \s, \w, \d, \S, \W, \D in sed expressions (not POSIX — macOS/BSD treats as literal)
+#   - \b word boundaries in grep/sed (GNU extension, not POSIX ERE/BRE)
 #
 # Usage:
 #   bash scripts/test_shell_portability.sh
@@ -74,7 +76,7 @@ check_file() {
 
         # Skip lines that are just echo/printf strings describing grep -P
         # (e.g., usage messages or documentation)
-        if echo "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
+        if printf '%s\n' "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
             continue
         fi
 
@@ -86,7 +88,7 @@ check_file() {
         # The regex matches P anywhere in the option group (not just at
         # the end) using two alternations: P followed by more flags, or
         # P at the end. Combined into one pattern with alternation.
-        if echo "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*P[a-zA-Z]*([[:space:]]|$)'; then
+        if printf '%s\n' "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*P[a-zA-Z]*([[:space:]]|$)'; then
             echo "  VIOLATION: $file:$line_num: grep -P (PCRE)"
             echo "    $line"
             grep_p_violations=$((grep_p_violations + 1))
@@ -114,13 +116,13 @@ check_file() {
         [[ "$stripped" == \#* ]] && continue
 
         # Skip echo/printf strings
-        if echo "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
+        if printf '%s\n' "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
             continue
         fi
 
         # Check for sed invoked with -r flag (r can appear anywhere in
         # the short-option group, e.g., -r, -ri, -rn, -ir, -nr, etc.)
-        if echo "$line" | grep -qE 'sed[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*([[:space:]]|$)'; then
+        if printf '%s\n' "$line" | grep -qE 'sed[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*([[:space:]]|$)'; then
             echo "  VIOLATION: $file:$line_num: sed -r (GNU-only, use sed -E)"
             echo "    $line"
             sed_r_violations=$((sed_r_violations + 1))
@@ -158,19 +160,19 @@ check_file() {
         [[ "$stripped" == \#* ]] && continue
 
         # Skip echo/printf strings
-        if echo "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
+        if printf '%s\n' "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
             continue
         fi
 
         # Only check lines that invoke grep with -E (or combined flags
         # like -qE, -cE, -oE, -nE, etc.)
-        if ! echo "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*E'; then
+        if ! printf '%s\n' "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*E'; then
             continue
         fi
 
         # Now check if the line contains PCRE shorthand sequences
         # We look for backslash followed by s, w, d, S, W, or D
-        if echo "$line" | grep -qE '\\[swdSWD]'; then
+        if printf '%s\n' "$line" | grep -qE '\\[swdSWD]'; then
             echo "  VIOLATION: $file:$line_num: PCRE shorthand in grep -E (not POSIX ERE)"
             echo "    $line"
             pcre_shorthand_violations=$((pcre_shorthand_violations + 1))
@@ -179,6 +181,101 @@ check_file() {
 
     if [ "$pcre_shorthand_violations" -gt 0 ]; then
         FILE_VIOLATIONS=$((FILE_VIOLATIONS + pcre_shorthand_violations))
+    fi
+
+    # ── Check 4: PCRE shorthand (\s, \w, \d, etc.) in sed expressions ──
+    #
+    # These shorthands are NOT part of POSIX BRE or ERE. GNU sed treats
+    # \s as [[:space:]], but macOS/BSD sed treats \s as literal 's'.
+    # This causes silent incorrect behavior.
+    #
+    # Portable replacements:
+    #   \s -> [[:space:]]     \S -> [^[:space:]]
+    #   \w -> [[:alnum:]_]    \W -> [^[:alnum:]_]
+    #   \d -> [[:digit:]]     \D -> [^[:digit:]]
+    #
+    local sed_pcre_violations=0
+    line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+
+        # Skip blank lines
+        [ -z "$line" ] && continue
+
+        # Strip leading whitespace for comment detection
+        local stripped
+        stripped="${line#"${line%%[![:space:]]*}"}"
+
+        # Skip comment lines
+        [[ "$stripped" == \#* ]] && continue
+
+        # Skip echo/printf strings
+        if printf '%s\n' "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
+            continue
+        fi
+
+        # Only check lines that invoke sed
+        if ! printf '%s\n' "$line" | grep -qE 'sed[[:space:]]'; then
+            continue
+        fi
+
+        # Check if the line contains PCRE shorthand sequences in sed expressions
+        if printf '%s\n' "$line" | grep -qE '\\[swdSWD]'; then
+            echo "  VIOLATION: $file:$line_num: PCRE shorthand in sed expression (not POSIX)"
+            echo "    $line"
+            sed_pcre_violations=$((sed_pcre_violations + 1))
+        fi
+    done < "$file"
+
+    if [ "$sed_pcre_violations" -gt 0 ]; then
+        FILE_VIOLATIONS=$((FILE_VIOLATIONS + sed_pcre_violations))
+    fi
+
+    # ── Check 5: \b word boundary in grep or sed (GNU extension) ──────
+    #
+    # \b is a GNU extension for word boundaries. It is NOT part of
+    # POSIX BRE or ERE. macOS/BSD grep and sed do not support it.
+    #
+    # Portable replacements:
+    #   grep -w              for whole-word matching
+    #   (^|[^[:alnum:]_])    for leading word boundary
+    #   ([^[:alnum:]_]|$)    for trailing word boundary
+    #
+    local word_boundary_violations=0
+    line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+
+        # Skip blank lines
+        [ -z "$line" ] && continue
+
+        # Strip leading whitespace for comment detection
+        local stripped
+        stripped="${line#"${line%%[![:space:]]*}"}"
+
+        # Skip comment lines
+        [[ "$stripped" == \#* ]] && continue
+
+        # Skip echo/printf strings
+        if printf '%s\n' "$stripped" | grep -qE '^(echo|printf)[[:space:]]'; then
+            continue
+        fi
+
+        # Only check lines that invoke grep or sed
+        if ! printf '%s\n' "$line" | grep -qE '(grep|sed)[[:space:]]'; then
+            continue
+        fi
+
+        # Check for \b word boundary
+        if printf '%s\n' "$line" | grep -qE '\\b'; then
+            echo "  VIOLATION: $file:$line_num: \\b word boundary (GNU extension, not POSIX)"
+            echo "    $line"
+            word_boundary_violations=$((word_boundary_violations + 1))
+        fi
+    done < "$file"
+
+    if [ "$word_boundary_violations" -gt 0 ]; then
+        FILE_VIOLATIONS=$((FILE_VIOLATIONS + word_boundary_violations))
     fi
 }
 
@@ -233,6 +330,8 @@ if [ "$CHECKS_FAILED" -gt 0 ]; then
     echo "  grep -P  / grep -oP  -> grep -E / grep -oE / sed -nE / python"
     echo "  sed -r               -> sed -E"
     echo "  \\s in grep -E       -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
+    echo "  \\s in sed           -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
+    echo "  \\b in grep/sed      -> grep -w, or (^|[^[:alnum:]_])word([^[:alnum:]_]|$)"
     exit 1
 else
     echo ""

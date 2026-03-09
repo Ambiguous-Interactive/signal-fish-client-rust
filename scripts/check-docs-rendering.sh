@@ -207,7 +207,7 @@ else
                 [ -z "$line_no" ] && continue
                 # Find the next closing fence after this line
                 tail_content=$(tail -n +"$((line_no + 1))" "$md_file")
-                close_line=$(echo "$tail_content" | grep -nE '^[[:space:]]*```[[:space:]]*$' | head -1 | cut -d: -f1)
+                close_line=$(printf '%s\n' "$tail_content" | grep -nE '^[[:space:]]*```[[:space:]]*$' | head -1 | cut -d: -f1)
                 if [ -z "$close_line" ]; then
                     fail "Unclosed mermaid block at $rel_path:$line_no"
                     MERMAID_ISSUES=true
@@ -245,7 +245,7 @@ else
                     continue
                 fi
                 # Check against known languages (case-insensitive)
-                if ! echo "$tag" | grep -qiE "^($KNOWN_LANGS)$"; then
+                if ! printf '%s\n' "$tag" | grep -qiE "^($KNOWN_LANGS)$"; then
                     warn "Potentially unrecognized language tag '$tag' in $rel_path (may render as plain text)"
                     UNKNOWN_LANGS_FOUND=true
                 fi
@@ -348,7 +348,7 @@ else
                     | grep -vE '<code>[^<]*'"$MERMAID_KEYWORDS" || true)
                 if [ -n "$really_bad" ]; then
                     fail "Mermaid diagram keyword rendered as plain text in $rel_path"
-                    echo "$really_bad" | head -3 | while IFS= read -r line; do
+                    printf '%s\n' "$really_bad" | head -3 | while IFS= read -r line; do
                         trimmed="${line:0:200}"
                         echo "      $trimmed"
                     done
@@ -379,7 +379,7 @@ else
                 # Extract content within each language-text block
                 # (from class="language-text" up to the next </pre>)
                 block_content=$(sed -n '/class="language-text/,/<\/pre>/p' "$html_file")
-                rust_hits=$(echo "$block_content" | grep -cE "$RUST_STRONG" || true)
+                rust_hits=$(printf '%s\n' "$block_content" | grep -cE "$RUST_STRONG" || true)
                 if [ "$rust_hits" -ge 2 ]; then
                     fail "Code block classified as language-text appears to contain Rust code in $rel_path ($rust_hits Rust indicators found)"
                     info "This usually means the rustdoc_codeblocks hook failed to transform a fence tag"

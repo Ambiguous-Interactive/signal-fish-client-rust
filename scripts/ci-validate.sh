@@ -20,6 +20,8 @@
 #   9. mkdocs nav validation       (all nav-referenced files exist in docs/)
 #  10. workflow guard checks        (delegates to scripts/check-workflows.sh)
 #  11. docs.rs compatibility        (optional — requires nightly toolchain)
+#  12. shell portability            (delegates to scripts/test_shell_portability.sh)
+#  13. Rust test I/O unwrap         (delegates to scripts/check-test-io-unwrap.sh)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -41,7 +43,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=11
+TOTAL_CHECKS=13
 PASSED=0
 SKIPPED=0
 
@@ -336,6 +338,32 @@ else
     else
         fail "docs.rs/nightly rustdoc compatibility check failed"
     fi
+fi
+
+# ── Check 12: shell portability ─────────────────────────────────────
+section_header 12 "Shell portability (scripts/test_shell_portability.sh)"
+
+if [ -f "$SCRIPT_DIR/test_shell_portability.sh" ]; then
+    if bash "$SCRIPT_DIR/test_shell_portability.sh" 2>&1; then
+        pass "All shell scripts pass portability checks"
+    else
+        fail "Shell portability violations found"
+    fi
+else
+    skip "Shell portability" "scripts/test_shell_portability.sh not found"
+fi
+
+# ── Check 13: Rust test I/O unwrap ─────────────────────────────────
+section_header 13 "Rust test I/O unwrap (scripts/check-test-io-unwrap.sh)"
+
+if [ -f "$SCRIPT_DIR/check-test-io-unwrap.sh" ]; then
+    if bash "$SCRIPT_DIR/check-test-io-unwrap.sh" 2>&1; then
+        pass "No bare .unwrap() on I/O operations in Rust test files"
+    else
+        fail "Found bare .unwrap() on I/O operations in Rust test files"
+    fi
+else
+    skip "Rust test I/O unwrap" "scripts/check-test-io-unwrap.sh not found"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────

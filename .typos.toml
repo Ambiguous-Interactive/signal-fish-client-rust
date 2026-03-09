@@ -37,6 +37,9 @@ udeps = "udeps"
 machete = "machete"
 cyclonedx = "cyclonedx"
 sbom = "sbom"
+# `Pn` appears in grep flag combinations (`-Pn`, `-oPn`, `-qPn`)
+# in shell scripts and test data — not a misspelling of "On"
+Pn = "Pn"
 
 # ─────────────────────────────────────────────────────────────
 # Per-file identifier overrides — suppress false positives on
@@ -44,5 +47,7 @@ sbom = "sbom"
 # ─────────────────────────────────────────────────────────────
 [default.extend-identifiers]
 # `pn` is used as an abbreviation for `player_name` in test
-# destructuring patterns (e.g. `let (gn, rc, pn, mp, …) = …`)
+# destructuring patterns (e.g. `let (gn, rc, pn, mp, …) = …`).
+# See also: `Pn = "Pn"` in [default.extend-words] above (covers the
+# capitalized form that appears in grep flag combinations like `-Pn`).
 pn = "pn"

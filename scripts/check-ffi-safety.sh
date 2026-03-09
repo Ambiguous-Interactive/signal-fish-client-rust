@@ -71,18 +71,18 @@ else
             lineno=$((lineno + 1))
 
             # Detect #[repr(C)] annotation
-            if echo "$line" | grep -q '#\[repr(C)\]'; then
+            if printf '%s\n' "$line" | grep -q '#\[repr(C)\]'; then
                 in_repr_c=true
                 continue
             fi
 
             # Detect struct opening after #[repr(C)]
-            if [ "$in_repr_c" = true ] && echo "$line" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?struct[[:space:]]+'; then
+            if [ "$in_repr_c" = true ] && printf '%s\n' "$line" | grep -qE '^[[:space:]]*(pub[[:space:]]+)?struct[[:space:]]+'; then
                 in_struct=true
-                struct_name=$(echo "$line" | grep -oE 'struct[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' | sed 's/struct[[:space:]]*//')
+                struct_name=$(printf '%s\n' "$line" | grep -oE 'struct[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' | sed 's/struct[[:space:]]*//')
                 # Count opening braces on this line
-                opens=$(echo "$line" | tr -cd '{' | wc -c)
-                closes=$(echo "$line" | tr -cd '}' | wc -c)
+                opens=$(printf '%s\n' "$line" | tr -cd '{' | wc -c)
+                closes=$(printf '%s\n' "$line" | tr -cd '}' | wc -c)
                 brace_depth=$((brace_depth + opens - closes))
                 in_repr_c=false
                 continue
@@ -91,7 +91,7 @@ else
             # If we hit something else after #[repr(C)], cancel it
             if [ "$in_repr_c" = true ]; then
                 # Allow blank lines, attributes, and doc comments between #[repr(C)] and struct
-                if echo "$line" | grep -qE '^[[:space:]]*$|^[[:space:]]*#\[|^[[:space:]]*///'; then
+                if printf '%s\n' "$line" | grep -qE '^[[:space:]]*$|^[[:space:]]*#\[|^[[:space:]]*///'; then
                     continue
                 fi
                 in_repr_c=false
@@ -99,12 +99,12 @@ else
 
             # Inside a #[repr(C)] struct body
             if [ "$in_struct" = true ]; then
-                opens=$(echo "$line" | tr -cd '{' | wc -c)
-                closes=$(echo "$line" | tr -cd '}' | wc -c)
+                opens=$(printf '%s\n' "$line" | tr -cd '{' | wc -c)
+                closes=$(printf '%s\n' "$line" | tr -cd '}' | wc -c)
                 brace_depth=$((brace_depth + opens - closes))
 
                 # Check for bare bool field: `: bool` not preceded by `//`
-                if echo "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
+                if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
                     echo -e "${RED}VIOLATION:${NC} $file:$lineno: bare 'bool' in #[repr(C)] struct '$struct_name'"
                     echo "  $line"
                     echo "  Use c_int, EM_BOOL, or another integer type instead of bool in C FFI structs."
@@ -151,7 +151,7 @@ else
         # We read the file line-by-line, tracking context, to distinguish
         # bare calls from calls inside expressions (let, tuples, if, etc.).
         matches=$(grep -n 'emscripten_websocket_set_' "$file" \
-            | grep -v '^\s*//' \
+            | grep -v '^[[:space:]]*//' \
             | grep -v '//.*emscripten_websocket_set_' \
             | grep -v 'fn emscripten_websocket_set_' \
             | grep -v 'type.*emscripten_websocket_set_' \
@@ -164,8 +164,8 @@ else
             match_line="${match_line//$'\r'/}"
             [ -z "$match_line" ] && continue
 
-            lineno=$(echo "$match_line" | cut -d: -f1)
-            code=$(echo "$match_line" | cut -d: -f2-)
+            lineno=$(printf '%s\n' "$match_line" | cut -d: -f1)
+            code=$(printf '%s\n' "$match_line" | cut -d: -f2-)
             # Strip leading whitespace (pure bash, avoids SC2001)
             trimmed="${code#"${code%%[![:space:]]*}"}"
 
@@ -173,14 +173,14 @@ else
             #   - Line contains `let ... =` before the call
             #   - Line contains `=` before the call (assignment)
             #   - Line contains `if ` before the call
-            if echo "$code" | grep -qE '(let[[:space:]]+.*=|=[[:space:]]*|if[[:space:]]+).*emscripten_websocket_set_'; then
+            if printf '%s\n' "$code" | grep -qE '(let[[:space:]]+.*=|=[[:space:]]*|if[[:space:]]+).*emscripten_websocket_set_'; then
                 continue
             fi
 
             # If the line starts with the FFI call, check the preceding
             # non-blank line. If it's part of a tuple/array expression
             # (e.g., ("name",) or [(...),]), the return value is captured.
-            if echo "$trimmed" | grep -qE '^emscripten_websocket_set_'; then
+            if printf '%s\n' "$trimmed" | grep -qE '^emscripten_websocket_set_'; then
                 checked=false
                 # Walk backwards to find the nearest non-blank, non-comment line.
                 idx=$((lineno - 2)) # 0-indexed, minus one more for previous line
@@ -189,13 +189,13 @@ else
                     # Strip leading whitespace (pure bash, avoids SC2001)
                     prev_trimmed="${prev_line#"${prev_line%%[![:space:]]*}"}"
                     # Skip blank lines and comment-only lines
-                    if [ -z "$prev_trimmed" ] || echo "$prev_trimmed" | grep -qE '^[[:space:]]*//'; then
+                    if [ -z "$prev_trimmed" ] || printf '%s\n' "$prev_trimmed" | grep -qE '^[[:space:]]*//'; then
                         idx=$((idx - 1))
                         continue
                     fi
                     # If the previous meaningful line ends with ( or , or =
                     # or contains "let", it means this call is inside an expression.
-                    if echo "$prev_trimmed" | grep -qE '[,(=][[:space:]]*$'; then
+                    if printf '%s\n' "$prev_trimmed" | grep -qE '[,(=][[:space:]]*$'; then
                         checked=true
                     fi
                     break
@@ -289,7 +289,7 @@ else
 
             # Skip lines inside extern "C" { } blocks (FFI declarations, not callback definitions).
             # We only care about standalone extern "C" fn definitions.
-            if echo "$line" | grep -qE '^[[:space:]]*extern "C" fn '; then
+            if printf '%s\n' "$line" | grep -qE '^[[:space:]]*extern "C" fn '; then
                 lineno=$((i + 1))
                 # Walk backwards to find the nearest non-blank line.
                 prev_idx=$((i - 1))
@@ -306,8 +306,8 @@ else
                 done
 
                 # Check if the previous non-blank line is a // SAFETY: comment.
-                if ! echo "$prev_line" | grep -qE '^// SAFETY:'; then
-                    fn_name=$(echo "$line" | grep -oE 'fn [A-Za-z_][A-Za-z0-9_]*' | sed 's/fn //')
+                if ! printf '%s\n' "$prev_line" | grep -qE '^// SAFETY:'; then
+                    fn_name=$(printf '%s\n' "$line" | grep -oE 'fn [A-Za-z_][A-Za-z0-9_]*' | sed 's/fn //')
                     echo -e "${RED}VIOLATION:${NC} $file:$lineno: extern \"C\" fn '$fn_name' is missing a // SAFETY: comment on the preceding line"
                     echo "  $line"
                     echo "  Add: // SAFETY: See the callback SAFETY block comment above for pointer guarantees."
@@ -355,7 +355,7 @@ else
             lineno=$((lineno + 1))
 
             # Detect `async fn close` or `fn close` method signature
-            if echo "$line" | grep -qE '(async[[:space:]]+)?fn[[:space:]]+close[[:space:]]*\('; then
+            if printf '%s\n' "$line" | grep -qE '(async[[:space:]]+)?fn[[:space:]]+close[[:space:]]*\('; then
                 in_close_fn=true
                 brace_depth=0
                 has_ws_close=false
@@ -364,14 +364,14 @@ else
             fi
 
             if [ "$in_close_fn" = true ]; then
-                opens=$(echo "$line" | tr -cd '{' | wc -c)
-                closes=$(echo "$line" | tr -cd '}' | wc -c)
+                opens=$(printf '%s\n' "$line" | tr -cd '{' | wc -c)
+                closes=$(printf '%s\n' "$line" | tr -cd '}' | wc -c)
                 brace_depth=$((brace_depth + opens - closes))
 
-                if echo "$line" | grep -qv '^\s*//' && echo "$line" | grep -q 'emscripten_websocket_close'; then
+                if printf '%s\n' "$line" | grep -qv '^[[:space:]]*//' && printf '%s\n' "$line" | grep -q 'emscripten_websocket_close'; then
                     has_ws_close=true
                 fi
-                if echo "$line" | grep -qv '^\s*//' && echo "$line" | grep -q 'emscripten_websocket_delete'; then
+                if printf '%s\n' "$line" | grep -qv '^[[:space:]]*//' && printf '%s\n' "$line" | grep -q 'emscripten_websocket_delete'; then
                     has_ws_delete=true
                 fi
 
