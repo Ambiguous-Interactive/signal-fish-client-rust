@@ -47,6 +47,25 @@ if [ -z "$MKDOCS" ]; then
         echo "  Or set: MKDOCS=/path/to/mkdocs" >&2
         exit 1
     fi
+else
+    # Validate user-provided MKDOCS path
+    if [[ "$MKDOCS" == /* ]]; then
+        # Absolute path — check that it exists and is executable
+        if [ ! -x "$MKDOCS" ]; then
+            echo -e "${RED}ERROR: MKDOCS is set to '$MKDOCS' but it is not executable or does not exist.${NC}" >&2
+            echo "  Install: pip install mkdocs-material" >&2
+            echo "  Or set: MKDOCS=/path/to/mkdocs" >&2
+            exit 1
+        fi
+    else
+        # Bare command name — check that it's in PATH
+        if ! command -v "$MKDOCS" &>/dev/null; then
+            echo -e "${RED}ERROR: MKDOCS is set to '$MKDOCS' but it was not found in PATH.${NC}" >&2
+            echo "  Install: pip install mkdocs-material" >&2
+            echo "  Or set: MKDOCS=/path/to/mkdocs" >&2
+            exit 1
+        fi
+    fi
 fi
 
 # ── Phase tracking ───────────────────────────────────────────────

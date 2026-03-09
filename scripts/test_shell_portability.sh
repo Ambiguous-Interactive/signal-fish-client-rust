@@ -44,10 +44,12 @@ check_file() {
     # We look for patterns like:
     #   grep -P
     #   grep -oP
+    #   grep -Pq
+    #   grep -Pn
     #   grep -cP
     #   grep -qP
     #   grep -nP
-    #   grep -[any combo of letters]P
+    #   grep -[any combo containing P]
     #
     # We exclude:
     #   - Lines starting with # (comments)
@@ -77,15 +79,14 @@ check_file() {
         fi
 
         # Check for grep invoked with -P in its flags.
-        # The pattern matches: grep followed by optional whitespace then a
-        # flag group like -P, -oP, -cP, -qP, -nP, etc.
+        # The pattern matches: grep followed by whitespace then a
+        # short-option group containing P anywhere (e.g., -P, -oP, -Pq,
+        # -Pn, -cP, -qP, -nP, etc.).
         # We use -E (ERE) to stay portable.
-        if echo "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*P[[:space:]]'; then
-            echo "  VIOLATION: $file:$line_num: grep -P (PCRE)"
-            echo "    $line"
-            grep_p_violations=$((grep_p_violations + 1))
-        # Also catch grep -[flags]P at end of line (e.g., grep -qP$)
-        elif echo "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*P$'; then
+        # The regex matches P anywhere in the option group (not just at
+        # the end) using two alternations: P followed by more flags, or
+        # P at the end. Combined into one pattern with alternation.
+        if echo "$line" | grep -qE 'grep[[:space:]]+-[a-zA-Z]*P[a-zA-Z]*([[:space:]]|$)'; then
             echo "  VIOLATION: $file:$line_num: grep -P (PCRE)"
             echo "    $line"
             grep_p_violations=$((grep_p_violations + 1))
@@ -117,8 +118,9 @@ check_file() {
             continue
         fi
 
-        # Check for sed invoked with -r flag
-        if echo "$line" | grep -qE 'sed[[:space:]]+-[a-zA-Z]*r'; then
+        # Check for sed invoked with -r flag (r can appear anywhere in
+        # the short-option group, e.g., -r, -ri, -rn, -ir, -nr, etc.)
+        if echo "$line" | grep -qE 'sed[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*([[:space:]]|$)'; then
             echo "  VIOLATION: $file:$line_num: sed -r (GNU-only, use sed -E)"
             echo "    $line"
             sed_r_violations=$((sed_r_violations + 1))

@@ -177,6 +177,18 @@ Do **not** use `\s`, `\w`, or `\d` inside `grep -E` patterns -- these are GNU ex
 
 Enforced by `scripts/test_shell_portability.sh` and `tests/ci_config_tests.rs::shell_script_portability`.
 
+### Shell scripts: Flag detection must check anywhere in the flag group
+
+Short flags can be combined (`-rnP`, `-inEo`). When detecting a specific flag character, check if it appears **anywhere** in the group, not just at the end. In Rust: `flags.contains('P')` not `flags.ends_with('P')` (strip leading `-` first). In shell regex: `-[a-zA-Z]*P[a-zA-Z]*` not `-[a-zA-Z]*P$`. This applies to `grep -P`, `sed -r`, `grep -E`, and all similar flag checks. Reference: `tests/ci_config_tests.rs` uses `flags.contains('P')`, `flags.contains('r')`, and `flags.contains('E')`.
+
+### Shell scripts: Pipeline ordering for context-dependent filters
+
+Context-dependent filters (e.g., `grep -v '^#'` to remove comments) must appear **before** extraction commands that discard context. An extraction like `grep -oE` strips the leading `#`, making a downstream `grep -v '^#'` a no-op. Correct: `grep -vE '^[[:space:]]*#' file | grep -oE 'pattern'`. Reference: `scripts/validate-docs.sh`.
+
+### Shell scripts: Validate environment variables used as commands
+
+When a script accepts an env var as a command path (e.g., `MKDOCS`), validate before first use: for absolute paths use `[ -x "$VAR" ]`, for bare commands use `command -v "$VAR"`. Reference: `scripts/check-docs-rendering.sh`.
+
 ### MSRV drift
 
 When bumping the MSRV in `Cargo.toml`, many other files reference the

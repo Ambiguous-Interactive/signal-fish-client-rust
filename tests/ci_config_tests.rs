@@ -4002,7 +4002,8 @@ mod shell_script_portability {
     ///
     /// This test scans every `.sh` file in `scripts/` and fails if any
     /// non-comment, non-echo line invokes `grep` with the `-P` flag
-    /// (including combined flags like `-oP`, `-cP`, `-qP`, `-nP`).
+    /// (including combined flags like `-oP`, `-Pq`, `-Pn`, `-cP`, `-qP`,
+    /// `-nP` — P can appear anywhere in the short-option group).
     #[test]
     fn shell_scripts_avoid_gnu_grep_pcre() {
         let scripts = collect_shell_scripts();
@@ -4016,38 +4017,25 @@ mod shell_script_portability {
                 }
 
                 // Detect `grep` followed by a flag group containing `P`.
-                // Matches patterns like: grep -P, grep -oP, grep -cP,
-                // grep -qP, grep -nP, grep -[any letters]P
-                //
-                // We check for -<letters>P followed by whitespace or end
-                // of string, so we don't false-positive on unrelated flags.
-                let has_grep_p = trimmed
-                    .split_whitespace()
-                    .zip(trimmed.split_whitespace().skip(1))
-                    .any(|(word, next_word)| {
-                        if word != "grep" && !word.ends_with("/grep") {
-                            return false;
-                        }
-                        // Check the next argument for -<flags>P pattern.
-                        next_word.starts_with('-')
-                            && !next_word.starts_with("--")
-                            && next_word.ends_with('P')
-                    });
-
-                // Also check if grep and its -P flag appear with
-                // intervening arguments (e.g., `grep -qP 'pattern'`).
-                // We scan all tokens after a `grep` token.
-                let has_grep_p = has_grep_p || {
-                    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                // Matches patterns like: grep -P, grep -oP, grep -Pq,
+                // grep -Pn, grep -cP, grep -qP, grep -nP, etc.
+                // P can appear anywhere in the short-option group, not
+                // just at the end.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_grep_p = {
                     let mut found = false;
                     for (i, token) in tokens.iter().enumerate() {
                         if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
-                            // Scan subsequent flag-like tokens.
+                            // Scan subsequent flag-like tokens (stop at first
+                            // non-flag argument).
                             for subsequent in &tokens[i + 1..] {
                                 if !subsequent.starts_with('-') || subsequent.starts_with("--") {
                                     break;
                                 }
-                                if subsequent.ends_with('P') {
+                                // Strip the leading '-' and check if the flag
+                                // group contains 'P'.
+                                let flags = &subsequent[1..];
+                                if flags.contains('P') {
                                     found = true;
                                     break;
                                 }
@@ -4084,7 +4072,8 @@ mod shell_script_portability {
     ///
     /// This test scans every `.sh` file in `scripts/` and fails if any
     /// non-comment, non-echo line invokes `sed` with the `-r` flag
-    /// (including combined flags like `-ri`, `-rn`).
+    /// (including combined flags like `-ri`, `-rn`, `-ir`, `-nr` — r can
+    /// appear anywhere in the short-option group).
     #[test]
     fn shell_scripts_avoid_gnu_sed_extended_regex() {
         let scripts = collect_shell_scripts();
@@ -4227,5 +4216,144 @@ mod shell_script_portability {
                \\d -> [[:digit:]]   \\D -> [^[:digit:]]\n\n\
              Violations:\n  {joined}"
         );
+    }
+
+    /// Validates that the grep -P detection logic catches the `-P` flag
+    /// regardless of its position within a combined short-option group.
+    /// This guards against regressions where only `-P` at the end of the
+    /// flag group (e.g., `-oP`) is detected, while `-P` in other
+    /// positions (e.g., `-Pq`, `-Pn`) is missed.
+    #[test]
+    fn grep_p_detection_catches_all_flag_positions() {
+        // Each entry is (input_line, should_be_flagged).
+        let cases: Vec<(&str, bool)> = vec![
+            // P at the end of the flag group (classic case)
+            ("grep -P 'pattern' file.txt", true),
+            ("grep -oP 'pattern' file.txt", true),
+            ("grep -cP 'pattern' file.txt", true),
+            ("grep -qP 'pattern' file.txt", true),
+            ("grep -nP 'pattern' file.txt", true),
+            // P in the middle of the flag group
+            ("grep -Pq 'pattern' file.txt", true),
+            ("grep -Pn 'pattern' file.txt", true),
+            ("grep -Po 'pattern' file.txt", true),
+            ("grep -Pc 'pattern' file.txt", true),
+            // P at the start (after -)
+            ("grep -P pattern file.txt", true),
+            // P in a longer combined group
+            ("grep -oPn 'pattern' file.txt", true),
+            ("grep -nPo 'pattern' file.txt", true),
+            ("grep -qPn 'pattern' file.txt", true),
+            // Non-violations (no P flag)
+            ("grep -E 'pattern' file.txt", false),
+            ("grep -oE 'pattern' file.txt", false),
+            ("grep -q 'pattern' file.txt", false),
+            ("grep 'pattern' file.txt", false),
+            // Comments and echo lines (should be skipped)
+            ("# grep -P 'pattern' file.txt", false),
+            ("echo \"grep -P is not portable\"", false),
+            ("printf \"use grep -P for PCRE\\n\"", false),
+            // Long options (not currently detected — pre-existing gap)
+            // ("grep --perl-regexp 'pattern' file.txt", true),
+        ];
+
+        for (line, should_flag) in &cases {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                assert!(
+                    !should_flag,
+                    "Line should have been flagged but was skipped: {line}"
+                );
+                continue;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_grep_p = {
+                let mut found = false;
+                for (i, token) in tokens.iter().enumerate() {
+                    if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                        for subsequent in &tokens[i + 1..] {
+                            if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                                break;
+                            }
+                            let flags = &subsequent[1..];
+                            if flags.contains('P') {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                found
+            };
+
+            assert_eq!(
+                has_grep_p, *should_flag,
+                "Detection mismatch for line: {line} (expected flagged={should_flag}, got flagged={has_grep_p})"
+            );
+        }
+    }
+
+    /// Validates that the sed -r detection logic catches the `-r` flag
+    /// regardless of its position within a combined short-option group.
+    #[test]
+    fn sed_r_detection_catches_all_flag_positions() {
+        let cases: Vec<(&str, bool)> = vec![
+            // r at various positions
+            ("sed -r 's/foo/bar/' file.txt", true),
+            ("sed -ri 's/foo/bar/' file.txt", true),
+            ("sed -rn 's/foo/bar/' file.txt", true),
+            ("sed -ir 's/foo/bar/' file.txt", true),
+            ("sed -nr 's/foo/bar/' file.txt", true),
+            ("sed -irn 's/foo/bar/' file.txt", true),
+            ("sed -nri 's/foo/bar/' file.txt", true),
+            // Non-violations (no r flag)
+            ("sed -E 's/foo/bar/' file.txt", false),
+            ("sed -n 's/foo/bar/' file.txt", false),
+            ("sed -i 's/foo/bar/' file.txt", false),
+            ("sed 's/foo/bar/' file.txt", false),
+            // Comments and echo lines
+            ("# sed -r 's/foo/bar/' file.txt", false),
+            ("echo \"sed -r is GNU-only\"", false),
+        ];
+
+        for (line, should_flag) in &cases {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                assert!(
+                    !should_flag,
+                    "Line should have been flagged but was skipped: {line}"
+                );
+                continue;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut found = false;
+            for (i, token) in tokens.iter().enumerate() {
+                if (*token == "sed" || token.ends_with("/sed")) && i + 1 < tokens.len() {
+                    for subsequent in &tokens[i + 1..] {
+                        if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                            break;
+                        }
+                        let flags = &subsequent[1..];
+                        if flags.contains('r') {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                found, *should_flag,
+                "Detection mismatch for line: {line} (expected flagged={should_flag}, got flagged={found})"
+            );
+        }
     }
 }

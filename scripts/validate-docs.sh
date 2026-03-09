@@ -80,7 +80,7 @@ else
             echo "  MISSING: docs/$md_file (referenced in mkdocs.yml nav)"
             NAV_ERRORS=$((NAV_ERRORS + 1))
         fi
-    done < <(grep -oE '[a-zA-Z0-9_/.-]+\.md' "$MKDOCS_YML" | grep -v '^#' | grep -v 'includes/' | sort -u)
+    done < <(grep -vE '^[[:space:]]*#' "$MKDOCS_YML" | grep -oE '[a-zA-Z0-9_/.-]+\.md' | grep -v 'includes/' | sort -u)
 
     if [ "$NAV_ERRORS" -gt 0 ]; then
         fail "mkdocs.yml nav references $NAV_ERRORS missing file(s) in docs/"

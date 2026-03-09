@@ -225,6 +225,10 @@ Three layers of validation catch this bug:
       the nav -- link to it from a docs page instead.
 - [ ] Does `mkdocs build --strict` pass locally?
 
+### Comment Filtering in mkdocs.yml Nav Extraction
+
+When extracting `.md` filenames from `mkdocs.yml`, filter out YAML comments (`grep -vE '^[[:space:]]*#'`) **before** running extraction (`grep -oE`). Extraction discards the leading `#`, making a downstream comment filter a no-op. See `ci-configuration.md` "Pipeline ordering for context-dependent filters" for the general rule. Reference: `scripts/validate-docs.sh` uses the correct ordering.
+
 ## Changelog Reference Link Consistency
 
 Keep a Changelog examples must keep version links synchronized.
