@@ -50,8 +50,7 @@ header = ["Accept=text/html"]
 Some external docs/blog hosts intermittently return `503` in CI. For MSRV
 badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
 `https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
-links pointed at `doc.rust-lang.org/stable/releases.html`.
-`tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+links pointed at `doc.rust-lang.org/stable/releases.html`. `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -67,8 +66,7 @@ Array indexes in Bash are arithmetic context. Do not prefix index variables with
 
 ### Intra-doc links to target-gated types
 
-Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts.
-Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
+Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
 
 ### cargo-machete false positives with serde attributes
 
@@ -80,45 +78,31 @@ Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_byt
 
 ### markdownlint: Emphasis conventions
 
-Use **asterisks** for emphasis (`*text*`, `**text**`), not underscores. This
-avoids MD049/MD050 violations with the default markdownlint configuration.
+Use **asterisks** for emphasis (`*text*`, `**text**`), not underscores. This avoids MD049/MD050 violations with the default markdownlint configuration.
 
-This applies to **auto-generated markdown too**. The `scripts/pre-commit-llm.py`
-script generates `.llm/skills/index.md` — its footer must use `*...*` (asterisk),
-not `_..._` (underscore). Regression tests enforce this in both
-`tests/ci_config_tests.rs` (`llm_index_validation` module) and
-`scripts/test_pre_commit_llm.py` (`TestGenerateIndex` class).
+This applies to **auto-generated markdown too**. The `scripts/pre-commit-llm.py` script generates `.llm/skills/index.md` -- its footer must use `*...*` (asterisk), not `_..._` (underscore). Regression tests enforce this in both `tests/ci_config_tests.rs` (`llm_index_validation` module) and `scripts/test_pre_commit_llm.py` (`TestGenerateIndex` class).
 
-Bold text that acts as a section heading should be converted to a proper
-heading (`###`, `####`) rather than using `**Heading**` on its own line.
+Bold text that acts as a section heading should be converted to a proper heading (`###`, `####`) rather than using `**Heading**` on its own line.
 
 ### markdownlint: Heading spacing (MD022)
 
-Markdown headings must be surrounded by blank lines (leave an empty line before
-and after each heading block).
+Markdown headings must be surrounded by blank lines (leave an empty line before and after each heading block).
 
-This rule is enforced in CI by markdownlint and by
-`tests/ci_config_tests.rs::markdown_policy_validation`.
+This rule is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::markdown_policy_validation`.
 
 ### markdownlint: List spacing (MD032)
 
-Markdown lists must be surrounded by blank lines. If a paragraph introduces a
-list (for example ending with a colon), add an empty line before the first list
-item.
+Markdown lists must be surrounded by blank lines. If a paragraph introduces a list (for example ending with a colon), add an empty line before the first list item.
 
-This is enforced in CI by markdownlint and by
-`tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
+This is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
 
 ### markdownlint: New rules in updates
 
-When `markdownlint-cli2` is updated in CI (e.g., via Dependabot or
-`@latest` tag), new rules may be introduced that cause mass failures.
+When `markdownlint-cli2` is updated in CI (e.g., via Dependabot or `@latest` tag), new rules may be introduced that cause mass failures.
 
-Example: markdownlint v0.40.0 added MD060 (table column style) which
-generated 300+ violations across existing tables.
+Example: markdownlint v0.40.0 added MD060 (table column style) which generated 300+ violations across existing tables.
 
-**Strategy:** Disable overly strict new rules in `.markdownlint.json`
-rather than reformatting all existing content:
+**Strategy:** Disable overly strict new rules in `.markdownlint.json` rather than reformatting all existing content:
 
 ```json
 {
@@ -132,11 +116,13 @@ Review new rules individually and enable only those that add genuine value.
 ### typos: US English locale and false positives
 
 The project uses `locale = "en-us"` in `.typos.toml`. Use American English
-spellings in code, comments, and docs (e.g., "queuing" not "queueing").
+spellings (e.g., "recognize" not "recognise", "normalize" not "normalise").
+Use single words not hyphens: "misclassified" not "mis-classified".
 
-The `typos` spell checker may flag variable names as misspellings. Use
-`[default.extend-identifiers]` for identifier-level suppressions (e.g.,
-`pn = "pn"`) and `[default.extend-words]` for word-level suppressions.
+Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`)
+and `[default.extend-words]` for standalone words in comments/strings (e.g.,
+`Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
+entries to both sections and cross-reference them with comments.
 
 ### Shell scripts: Comments must match behavior
 
@@ -149,9 +135,7 @@ Keep comments in CI shell scripts behaviorally exact:
 
 ### check-no-panics.sh: Compound cfg(test) attributes
 
-`check-no-panics.sh` uses `#\[cfg(.*\btest\b` to match both `#[cfg(test)]`
-and compound forms like `#[cfg(all(test, feature = "..."))]`. When adding test
-modules in `src/`, prefer plain `#[cfg(test)]` over compound attributes.
+`check-no-panics.sh` uses a POSIX ERE pattern to match both `#[cfg(test)]` and compound forms like `#[cfg(all(test, ...))]`. When adding test modules in `src/`, prefer plain `#[cfg(test)]`.
 
 ### Shell scripts: Guard logic after extraction failures
 
@@ -168,6 +152,40 @@ Scripts using relative paths silently fail if invoked from the wrong directory. 
 ### Shell scripts: CRLF line endings break Bash parsing
 
 Bash `read -r` preserves `\r` from CRLF files. Strip with `line="${line//$'\r'/}"` and `| tr -d '\r'` in pipelines. Use `.gitattributes` with `* text=auto eol=lf`.
+
+### Shell scripts: Portable regex (no grep -P, no sed -r, no PCRE shorthand in ERE)
+
+`grep -P` (PCRE mode) and `sed -r` (GNU extended regex) are GNU-only flags that break on macOS/BSD. Always use `grep -E` (POSIX extended regex) and `sed -E` (POSIX extended regex) instead.
+
+When converting from PCRE to ERE, replace shorthand character classes with POSIX equivalents:
+
+| PCRE | ERE (POSIX) | Meaning |
+|------|-------------|---------|
+| `\s` | `[[:space:]]` | Whitespace |
+| `\S` | `[^[:space:]]` | Non-whitespace |
+| `\w` | `[[:alnum:]_]` | Word character |
+| `\W` | `[^[:alnum:]_]` | Non-word character |
+| `\d` | `[[:digit:]]` | Digit |
+| `\D` | `[^[:digit:]]` | Non-digit |
+| `(?:...)` | `(...)` | Non-capturing group (ERE has no distinction) |
+
+For PCRE features with no ERE equivalent (like `\K` match reset), use `sed -nE 's/.../\1/p'` or a Python snippet (Python is available in any environment that has MkDocs).
+
+Do **not** use `\s`, `\w`, or `\d` inside `grep -E` patterns -- these are GNU extensions that are not recognized by BSD grep. Always use the POSIX bracket expressions above.
+
+Enforced by `scripts/test_shell_portability.sh` and `tests/ci_config_tests.rs::shell_script_portability`.
+
+### Shell scripts: Flag detection must check anywhere in the flag group
+
+Short flags can be combined (`-rnP`, `-inEo`). When detecting a specific flag character, check if it appears **anywhere** in the group, not just at the end. In Rust: `flags.contains('P')` not `flags.ends_with('P')` (strip leading `-` first). In shell regex: `-[a-zA-Z]*P[a-zA-Z]*` not `-[a-zA-Z]*P$`. This applies to `grep -P`, `sed -r`, `grep -E`, and all similar flag checks. Reference: `tests/ci_config_tests.rs` uses `flags.contains('P')`, `flags.contains('r')`, and `flags.contains('E')`.
+
+### Shell scripts: Pipeline ordering for context-dependent filters
+
+Context-dependent filters (e.g., `grep -v '^#'` to remove comments) must appear **before** extraction commands that discard context. An extraction like `grep -oE` strips the leading `#`, making a downstream `grep -v '^#'` a no-op. Correct: `grep -vE '^[[:space:]]*#' file | grep -oE 'pattern'`. Reference: `scripts/validate-docs.sh`.
+
+### Shell scripts: Validate environment variables used as commands
+
+When a script accepts an env var as a command path (e.g., `MKDOCS`), validate before first use: for absolute paths use `[ -x "$VAR" ]`, for bare commands use `command -v "$VAR"`. Reference: `scripts/check-docs-rendering.sh`.
 
 ### MSRV drift
 
@@ -191,15 +209,12 @@ test enforces consistency between `Cargo.toml` and key documentation files.
 
 ### MSRV and transitive dependencies
 
-A common MSRV breakage pattern: a transitive dependency publishes a new
-version requiring a newer Rust edition or language features. Example:
+A common MSRV breakage pattern: a transitive dependency publishes a new version requiring a newer Rust edition or language features. Example:
 
 - `getrandom 0.4.1` requires `edition = "2024"` (Rust 1.85.0+)
 - The crate itself uses `edition = "2021"` but cannot build on older Rust
 
-**Fix:** Bump the MSRV to the minimum version that can compile all
-transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI
-for reproducible MSRV testing:
+**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
@@ -212,9 +227,7 @@ for reproducible MSRV testing:
 
 ### MSRV workflow incident: dtolnay ref vs explicit toolchain
 
-`dtolnay/rust-toolchain` action refs are action release refs, **not** Rust
-toolchain versions. A ref like `@1.100.0` can exist while being unrelated to
-the intended MSRV and silently run a newer compiler than expected.
+`dtolnay/rust-toolchain` action refs are action release refs, **not** Rust toolchain versions. A ref like `@1.100.0` can exist while being unrelated to the intended MSRV and silently run a newer compiler than expected.
 
 Use this pattern for MSRV jobs:
 
@@ -224,9 +237,7 @@ Use this pattern for MSRV jobs:
     toolchain: <msrv-from-Cargo.toml>
 ```
 
-Enforced by `ci_config_tests.rs::ci_workflow_policy` tests
-(`ci_msrv_matches_cargo_toml`, `msrv_toolchain_step_regressions_are_caught`)
-and `scripts/check-workflows.sh`.
+Enforced by `ci_config_tests.rs::ci_workflow_policy` tests (`ci_msrv_matches_cargo_toml`, `msrv_toolchain_step_regressions_are_caught`) and `scripts/check-workflows.sh`.
 
 ### Documentation drift on quantitative claims
 
@@ -234,10 +245,7 @@ Scripts like `check-all.sh` define phase counts and `--quick` boundaries referen
 
 ### Path-based exclusions in tests: check full path components
 
-When test code skips files by module name (e.g., excluding `emscripten_websocket`),
-match against **all path components**, not just the filename. Filename-only matching
-breaks when a flat module is refactored into a directory module. Use
-`path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs"))` instead of `path.file_name().starts_with(...)`.
+When test code skips files by module name (e.g., excluding `emscripten_websocket`), match against **all path components**, not just the filename. Filename-only matching breaks when a flat module is refactored into a directory module. Use `path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s == "emscripten_websocket" || s == "emscripten_websocket.rs"))` instead of `path.file_name().starts_with(...)`.
 
 ### Action version pinning: major-only vs patch-level
 
@@ -247,29 +255,19 @@ Major-version tags like `@v2` are mutable (supply-chain risk). Prefer patch-leve
 - `mymindstorm/setup-emsdk` — only publishes major-version tags
 - `taiki-e/install-action` — releases near-daily; patch pins go stale fast
 
-Phase 7 emits non-blocking warnings for major-only pins. Verified by
-`ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.
+Phase 7 emits non-blocking warnings for major-only pins. Verified by `ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.
 
 ### Action version consistency across workflow files
 
-All uses of the same action across workflow `.yml` files must use the same
-version tag (e.g., `actions/checkout@v6.0.2` everywhere, not `@v6.0.1` in
-one file). `dtolnay/rust-toolchain` is excluded (uses channel refs).
-Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
+All uses of the same action across workflow `.yml` files must use the same version tag (e.g., `actions/checkout@v6.0.2` everywhere, not `@v6.0.1` in one file). `dtolnay/rust-toolchain` is excluded (uses channel refs). Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
 
 ### taiki-e/install-action: pin tool versions
 
-Always include a version pin in the `tool:` parameter: `cargo-audit@0.22.1`,
-not bare `cargo-audit`. Unpinned tools break CI when upstream ships breaking
-changes. Enforced by
-`ci_config_tests.rs::workflow_security::install_action_tools_have_version_pins`.
+Always include a version pin in the `tool:` parameter: `cargo-audit@0.22.1`, not bare `cargo-audit`. Unpinned tools break CI when upstream ships breaking changes. Enforced by `ci_config_tests.rs::workflow_security::install_action_tools_have_version_pins`.
 
 ### Documentation accuracy for WASM target capabilities
 
-`SignalFishClient::start()` requires `tokio::spawn` — unavailable on any WASM
-target. The correct client for all WASM targets is `SignalFishPollingClient`
-(requires `polling-client` feature). Cross-reference capability claims in tables
-against `docs/wasm.md` "What you do not get" sections to avoid contradictions.
+`SignalFishClient::start()` requires `tokio::spawn` -- unavailable on any WASM target. The correct client for all WASM targets is `SignalFishPollingClient` (requires `polling-client` feature). Cross-reference capability claims in tables against `docs/wasm.md` "What you do not get" sections to avoid contradictions.
 
 ### Nightly clippy may flag different issues than stable
 
@@ -287,14 +285,9 @@ The emscripten WASM target requires nightly, which may introduce lints (e.g., `n
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 | Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
 
-### `scripts/validate.sh`
-
-Pre-flight script: cargo fmt/clippy/test plus `.lychee.toml` format validation and markdownlint (if installed).
-
-### `scripts/ci-validate.sh`
-
-Lightweight local CI validation: fmt check, clippy, test, typos, TOML/JSON syntax validation.
-
-### `scripts/check-all.sh`
-
-Full 18-phase CI parity script. Use `--quick` for the mandatory baseline (phases 1-4).
+| Script | Purpose |
+|---|---|
+| `scripts/validate.sh` | Pre-flight: cargo fmt/clippy/test + `.lychee.toml` validation + markdownlint |
+| `scripts/ci-validate.sh` | Lightweight local CI (13 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, test I/O unwrap |
+| `scripts/check-all.sh` | Full 20-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
+| `scripts/check-test-io-unwrap.sh` | Scans test `.rs` for bare `.unwrap()` on I/O ops (Phase 20 / Check 13) |

@@ -50,7 +50,7 @@ Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this
 
 ### [Markdown Parsing and Documentation Validation](markdown-and-doc-validation.md)
 
-Reference for correctly parsing markdown content in scripts and preventing documentation drift against source-of-trut...
+Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs rend...
 
 ### [Public API Design](public-api-design.md)
 
@@ -59,6 +59,10 @@ Reference for enum matching policy, semver, re-exports, feature flags, and MSRV 
 ### [Serde Patterns](serde-patterns.md)
 
 Reference for serde_json, enum tagging, field attributes, and wire format as used in this codebase.
+
+### [Shell Script Portability](shell-portability.md)
+
+Reference for writing portable shell scripts that work on both GNU (Linux) and BSD (macOS) systems.
 
 ### [Testing Async Code](testing-async.md)
 

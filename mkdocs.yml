@@ -5,6 +5,9 @@ repo_url: https://github.com/Ambiguous-Interactive/signal-fish-client-rust
 repo_name: signal-fish-client-rust
 edit_uri: edit/main/docs/
 
+hooks:
+  - hooks/rustdoc_codeblocks.py
+
 theme:
   name: material
   palette:

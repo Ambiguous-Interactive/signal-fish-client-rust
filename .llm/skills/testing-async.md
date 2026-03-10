@@ -222,3 +222,57 @@ When testing functions that produce file paths in error messages or output,
 never hardcode forward slashes (`/`) in assertions. Windows uses `\` as the
 path separator. Use `std::path::Path` to build expected paths so assertions
 work on both platforms.
+
+## Test Quality: Prefer `.expect()` Over `.unwrap()`
+
+Use `.expect("descriptive message")` instead of `.unwrap()` in tests. When a
+test fails in CI, `.unwrap()` produces only `called 'Option::unwrap()' on a
+'None' value` with no context. `.expect()` includes your message, making
+failures diagnosable without reproducing locally.
+
+### What Makes a Good Expect Message
+
+Include enough context to identify **what** failed and **where** the data
+came from:
+
+```rust
+// WRONG — no context on CI failure
+let path = find_config().unwrap();
+
+// CORRECT — describes the operation that failed
+let path = find_config().expect("find_config should locate Cargo.toml");
+
+// CORRECT — includes runtime context for file operations
+let content = std::fs::read_to_string(&path)
+    .expect(&format!("failed to read {}", path.display()));
+
+// CORRECT — includes variable context
+let value = map.get(key)
+    .expect(&format!("map should contain key '{key}'"));
+```
+
+### Guidelines for Good Messages
+
+- Describe the operation or expectation, not just the variable name
+- For file operations, include the path using `.display()`
+- For map/collection lookups, include the key being searched
+- For deserialization, mention the type and source
+- Phrase as what *should* have been true: `"config should have a [dependencies] section"`
+
+### Exceptions Where `.unwrap()` Is Acceptable
+
+Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
+
+- **Mutex locks** (`sent.lock().unwrap()`): A poisoned mutex indicates a
+  panic in another thread, which is already a test failure. The `.unwrap()`
+  panic message includes the poison error, which is sufficient context.
+
+- **Already-verified Options**: When the value was just checked (e.g.,
+  `assert!(opt.is_some()); let val = opt.unwrap();`) or when the `None`
+  case is structurally impossible from the preceding logic.
+
+- **Test assertions** (`assert!`, `assert_eq!`, `assert_matches!`): These
+  macros produce their own diagnostic output.
+
+- **Infallible conversions**: Operations that cannot fail for the given
+  input (e.g., `"valid_utf8".parse::<String>().unwrap()`).

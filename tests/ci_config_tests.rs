@@ -89,8 +89,18 @@ mod workflow_existence {
         // Workflow files should use .yml, not .yaml, for consistency.
         let workflows_dir = project_root().join(".github/workflows");
         if workflows_dir.is_dir() {
-            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
-                let entry = entry.unwrap();
+            for entry in std::fs::read_dir(&workflows_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read workflows directory '{}': {e}",
+                    workflows_dir.display()
+                )
+            }) {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read entry in workflows directory '{}': {e}",
+                        workflows_dir.display()
+                    )
+                });
                 let name = entry.file_name().to_string_lossy().to_string();
                 assert!(
                     !name.ends_with(".yaml"),
@@ -371,7 +381,9 @@ mod docsrs_policy {
                 panic!("Failed to read directory '{}': {e}", dir.display());
             });
             for entry in entries {
-                let entry = entry.unwrap();
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in directory '{}': {e}", dir.display())
+                });
                 let path = entry.path();
                 if path.is_dir() {
                     visit_rs_files(&path, forbidden, violations);
@@ -1232,7 +1244,7 @@ mod workflow_security {
                     line_num + 1,
                 );
 
-                let at_pos = at_pos.unwrap();
+                let at_pos = at_pos.expect("at_pos verified as Some by preceding assert");
                 let action_name = &reference[..at_pos];
                 let after_at = &reference[at_pos + 1..];
                 // Remove any trailing comments or whitespace.
@@ -1397,7 +1409,9 @@ mod workflow_security {
         // Also verify there is no bare `fi` without an `else` between the
         // empty check and CI_MSRV_BLOCK extraction. The `else` must come
         // before any `fi` that would close the empty check's if-block.
-        let else_pos = between.find("else").unwrap();
+        let else_pos = between.find("else").expect(
+            "'else' keyword must exist in CARGO_MSRV guard block (verified by preceding assert)",
+        );
         let fi_before_else = between[..else_pos].lines().any(|line| line.trim() == "fi");
 
         assert!(
@@ -2000,13 +2014,25 @@ mod ci_config_validation {
         let workflows_dir = project_root().join(".github/workflows");
         let mut results = Vec::new();
         if workflows_dir.is_dir() {
-            for entry in std::fs::read_dir(&workflows_dir).unwrap() {
-                let entry = entry.unwrap();
+            for entry in std::fs::read_dir(&workflows_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read workflows directory '{}': {e}",
+                    workflows_dir.display()
+                )
+            }) {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read entry in workflows directory '{}': {e}",
+                        workflows_dir.display()
+                    )
+                });
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("yml") {
                     let relative = format!(
                         ".github/workflows/{}",
-                        path.file_name().unwrap().to_string_lossy()
+                        path.file_name()
+                            .expect("workflow file path must have a file name")
+                            .to_string_lossy()
                     );
                     let contents = read_project_file(&relative);
                     results.push((relative, contents));
@@ -2237,14 +2263,33 @@ mod ci_config_validation {
         let root = project_root();
         let mut failures = Vec::new();
 
-        for entry in std::fs::read_dir(&root).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&root).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read project root directory '{}': {e}",
+                root.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in project root '{}': {e}",
+                    root.display()
+                )
+            });
             let file_name = entry.file_name().to_string_lossy().to_string();
 
             if !file_name.ends_with(".toml") {
                 continue;
             }
-            if !entry.file_type().unwrap().is_file() {
+            if !entry
+                .file_type()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to get file type for '{}': {e}",
+                        entry.path().display()
+                    )
+                })
+                .is_file()
+            {
                 continue;
             }
 
@@ -2375,12 +2420,31 @@ mod mkdocs_nav_validation {
             return;
         }
 
-        for entry in std::fs::read_dir(&docs_dir).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&docs_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read docs directory '{}': {e}",
+                docs_dir.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in docs directory '{}': {e}",
+                    docs_dir.display()
+                )
+            });
             let file_name = entry.file_name().to_string_lossy().to_string();
 
             // Skip directories — this test only checks top-level files.
-            if entry.file_type().unwrap().is_dir() {
+            if entry
+                .file_type()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to get file type for '{}': {e}",
+                        entry.path().display()
+                    )
+                })
+                .is_dir()
+            {
                 continue;
             }
 
@@ -3219,16 +3283,21 @@ mod panic_script_cfg_handling {
     fn check_no_panics_script_uses_compound_cfg_test_pattern() {
         let contents = read_project_file("scripts/check-no-panics.sh");
 
-        // The script must use a grep pattern that matches `test` as a word
-        // boundary inside any `#[cfg(...)]` attribute, not just exact
-        // `#[cfg(test)]`. The current pattern is:
-        //   grep -n '#\[cfg(.*\btest\b' "$file"
+        // The script must use a POSIX-portable grep -E pattern that matches
+        // `test` as a whole word inside any `#[cfg(...)]` attribute, not just
+        // exact `#[cfg(test)]`. The current pattern is:
+        //   grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file"
+        //
+        // The pattern `(.*[^[:alnum:]_])?` makes the pre-boundary optional so
+        // that `#[cfg(test)]` matches (where `test` immediately follows the
+        // opening paren already consumed by `\(`).
         assert!(
-            contents.contains(r"#\[cfg(.*\btest\b"),
-            "scripts/check-no-panics.sh must use a grep pattern that matches \
-             compound cfg attributes containing `test` (e.g., \
-             `#[cfg(all(test, feature = \"...\"))]`). \
-             Expected pattern: `#\\[cfg(.*\\btest\\b`"
+            contents.contains(r"#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)"),
+            "scripts/check-no-panics.sh must use a POSIX-portable grep -E \
+             pattern that matches both simple `#[cfg(test)]` and compound cfg \
+             attributes containing `test` \
+             (e.g., `#[cfg(all(test, feature = \"...\"))]`). \
+             Expected pattern: `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`"
         );
     }
 
@@ -3279,7 +3348,7 @@ mod panic_script_cfg_handling {
              If all test modules have been removed, this test should be updated."
         );
 
-        // The script's grep pattern is: #\[cfg(.*\btest\b
+        // The script's grep pattern is: #\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)
         // This translates to: the line must contain `#[cfg(` followed (possibly
         // with intervening characters) by the word `test` as a whole word.
         // We check this without a regex dependency by verifying:
@@ -3318,7 +3387,8 @@ mod panic_script_cfg_handling {
 
         assert!(
             unmatched.is_empty(),
-            "The grep pattern in check-no-panics.sh (`#\\[cfg(.*\\btest\\b`) \
+            "The grep pattern in check-no-panics.sh \
+             (`#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) \
              does not match the following cfg(test) attributes found in src/:\n{}\n\
              Update the script's pattern to handle these variants.",
             unmatched.join("\n")
@@ -3327,8 +3397,9 @@ mod panic_script_cfg_handling {
 
     /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
     ///
-    /// The grep pattern in `check-no-panics.sh` (`#\[cfg(.*\btest\b`) would
-    /// match `#[cfg(not(test))]`, incorrectly treating the code below it as
+    /// The grep pattern in `check-no-panics.sh`
+    /// (`#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) would match
+    /// `#[cfg(not(test))]`, incorrectly treating the code below it as
     /// "inside a test module" when it is actually production code. As long as
     /// no source file uses this attribute, the false positive cannot occur.
     #[test]
@@ -3370,8 +3441,9 @@ mod panic_script_cfg_handling {
         assert!(
             violations.is_empty(),
             "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
-             positive in check-no-panics.sh (the grep pattern `#\\[cfg(.*\\btest\\b` \
-             matches it and incorrectly treats the code as inside a test module). \
+             positive in check-no-panics.sh (the grep pattern \
+             `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)` matches it and \
+             incorrectly treats the code as inside a test module). \
              Use a different gating mechanism or update check-no-panics.sh to \
              exclude `not(test)` before adding this attribute.\n\
              Violations:\n{}",
@@ -3751,9 +3823,15 @@ mod ffi_safety_documentation {
         );
 
         // Verify ordering: close before delete before from_raw.
-        let close_pos = error_block.find("emscripten_websocket_close").unwrap();
-        let delete_pos = error_block.find("emscripten_websocket_delete").unwrap();
-        let from_raw_pos = error_block.find("Box::from_raw").unwrap();
+        let close_pos = error_block.find("emscripten_websocket_close").expect(
+            "emscripten_websocket_close must be in error block (verified by preceding assert)",
+        );
+        let delete_pos = error_block.find("emscripten_websocket_delete").expect(
+            "emscripten_websocket_delete must be in error block (verified by preceding assert)",
+        );
+        let from_raw_pos = error_block
+            .find("Box::from_raw")
+            .expect("Box::from_raw must be in error block (verified by preceding assert)");
 
         assert!(
             close_pos < delete_pos,
@@ -3826,7 +3904,9 @@ mod pending_future_documentation {
                 panic!("Failed to read directory '{}': {e}", dir.display());
             });
             for entry in entries {
-                let entry = entry.unwrap();
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in directory '{}': {e}", dir.display())
+                });
                 let path = entry.path();
                 if path.is_dir() {
                     visit_rs_files(&path, root, violations);
@@ -3927,6 +4007,1469 @@ mod pending_future_documentation {
              waker, which can silently hang tasks. Every usage must have an \
              explanatory comment within 5 lines above.\n\nViolations:\n\
              {joined}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: shell_script_portability
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod shell_script_portability {
+    use super::*;
+
+    /// Collects all `.sh` files in the `scripts/` directory, excluding
+    /// `test_shell_portability.sh` (which references non-portable patterns
+    /// in its own comments and echo statements as part of its documentation).
+    fn collect_shell_scripts() -> Vec<(String, String)> {
+        let scripts_dir = project_root().join("scripts");
+        assert!(
+            scripts_dir.is_dir(),
+            "Expected scripts/ directory to exist at project root."
+        );
+
+        let mut scripts: Vec<(String, String)> = Vec::new();
+        for entry in std::fs::read_dir(&scripts_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to read scripts directory '{}': {e}",
+                scripts_dir.display()
+            )
+        }) {
+            let entry = entry.unwrap_or_else(|e| {
+                panic!(
+                    "Failed to read entry in scripts directory '{}': {e}",
+                    scripts_dir.display()
+                )
+            });
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".sh") {
+                continue;
+            }
+            // Skip the portability test script itself — it references
+            // non-portable patterns in comments and echo output as part
+            // of explaining what it checks for. Also skip temporary test
+            // fixture scripts generated by the portability test suite.
+            if name == "test_shell_portability.sh" || name.starts_with("test_tmp_") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", path.display());
+            });
+            let relative = format!("scripts/{name}");
+            scripts.push((relative, contents));
+        }
+
+        assert!(
+            !scripts.is_empty(),
+            "No .sh files found in scripts/. Expected at least one shell \
+             script to verify portability constraints."
+        );
+
+        scripts
+    }
+
+    /// Returns true if a trimmed line is a comment or an echo/printf
+    /// statement (which may quote non-portable patterns as documentation).
+    fn is_skippable_line(trimmed: &str) -> bool {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return true;
+        }
+        // Skip echo/printf lines that mention patterns in string literals.
+        if trimmed.starts_with("echo ") || trimmed.starts_with("printf ") {
+            return true;
+        }
+        false
+    }
+
+    /// Shell scripts must not use `grep -P` (PCRE mode). The `-P` flag is
+    /// a GNU grep extension that is not available on macOS/BSD systems,
+    /// which ship with BSD grep. Use `grep -E` (extended regex) instead,
+    /// or rewrite the pattern using POSIX-compatible constructs.
+    ///
+    /// This test scans every `.sh` file in `scripts/` and fails if any
+    /// non-comment, non-echo line invokes `grep` with the `-P` flag
+    /// (including combined flags like `-oP`, `-Pq`, `-Pn`, `-cP`, `-qP`,
+    /// `-nP` — P can appear anywhere in the short-option group).
+    #[test]
+    fn shell_scripts_avoid_gnu_grep_pcre() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Detect `grep` followed by a flag group containing `P`.
+                // Matches patterns like: grep -P, grep -oP, grep -Pq,
+                // grep -Pn, grep -cP, grep -qP, grep -nP, etc.
+                // P can appear anywhere in the short-option group, not
+                // just at the end.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_grep_p = {
+                    let mut found = false;
+                    for (i, token) in tokens.iter().enumerate() {
+                        if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                            // Scan subsequent flag-like tokens (stop at first
+                            // non-flag argument).
+                            for subsequent in &tokens[i + 1..] {
+                                if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                                    break;
+                                }
+                                // Strip the leading '-' and check if the flag
+                                // group contains 'P'.
+                                let flags = &subsequent[1..];
+                                if flags.contains('P') {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if found {
+                            break;
+                        }
+                    }
+                    found
+                };
+
+                if has_grep_p {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1,));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `grep -P` (PCRE mode) in shell scripts. The `-P` flag is a \
+             GNU grep extension that is not available on macOS/BSD, which ships \
+             with BSD grep. Use `grep -E` (extended regex) instead, or rewrite \
+             the pattern using POSIX-compatible constructs.\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use `sed -r` (GNU extended regex flag). The
+    /// `-r` flag is GNU sed-specific and is not recognized by BSD sed on
+    /// macOS. The portable equivalent is `sed -E`, which is supported by
+    /// both GNU sed and BSD sed.
+    ///
+    /// This test scans every `.sh` file in `scripts/` and fails if any
+    /// non-comment, non-echo line invokes `sed` with the `-r` flag
+    /// (including combined flags like `-ri`, `-rn`, `-ir`, `-nr` — r can
+    /// appear anywhere in the short-option group).
+    #[test]
+    fn shell_scripts_avoid_gnu_sed_extended_regex() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Detect `sed` followed by a flag group containing `r`.
+                // Matches patterns like: sed -r, sed -ri, sed -rn,
+                // sed -[any letters]r[any letters]
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let mut found = false;
+
+                for (i, token) in tokens.iter().enumerate() {
+                    if (*token == "sed" || token.ends_with("/sed")) && i + 1 < tokens.len() {
+                        // Scan subsequent flag-like tokens (stop at first
+                        // non-flag argument).
+                        for subsequent in &tokens[i + 1..] {
+                            if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                                break;
+                            }
+                            // Strip the leading '-' and check if the flag
+                            // group contains 'r'. We avoid matching '--'
+                            // long options above.
+                            let flags = &subsequent[1..];
+                            if flags.contains('r') {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+
+                if found {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1,));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `sed -r` (GNU-only extended regex flag) in shell scripts. \
+             The `-r` flag is not recognized by BSD sed on macOS. Use `sed -E` \
+             instead, which is supported by both GNU sed and BSD sed.\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use PCRE character-class shorthands (`\s`,
+    /// `\w`, `\d`, `\S`, `\W`, `\D`) inside `grep -E` patterns. These
+    /// shorthands are GNU grep extensions and are **not** part of POSIX
+    /// ERE. They silently misbehave or error on macOS/BSD grep.
+    ///
+    /// Portable replacements:
+    ///   `\s` -> `[[:space:]]`   `\S` -> `[^[:space:]]`
+    ///   `\w` -> `[[:alnum:]_]`  `\W` -> `[^[:alnum:]_]`
+    ///   `\d` -> `[[:digit:]]`   `\D` -> `[^[:digit:]]`
+    ///
+    /// This test scans every `.sh` file in `scripts/` and fails if any
+    /// non-comment, non-echo line invokes `grep` with `-E` (including
+    /// combined flags like `-qE`, `-cE`, `-oE`, `-nE`) and also contains
+    /// a PCRE shorthand escape sequence.
+    #[test]
+    fn shell_scripts_avoid_pcre_shorthand_in_ere_grep() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        // The PCRE shorthand letters we want to detect after a backslash.
+        let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Step 1: Check if this line invokes grep with -E
+                // (including combined flags like -qE, -cE, -oE, -nE).
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let mut has_grep_e = false;
+
+                for (i, token) in tokens.iter().enumerate() {
+                    if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                        // Scan subsequent flag-like tokens.
+                        for subsequent in &tokens[i + 1..] {
+                            if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                                break;
+                            }
+                            // Strip leading '-' and check if flag group
+                            // contains 'E'.
+                            let flags = &subsequent[1..];
+                            if flags.contains('E') {
+                                has_grep_e = true;
+                                break;
+                            }
+                        }
+                    }
+                    if has_grep_e {
+                        break;
+                    }
+                }
+
+                if !has_grep_e {
+                    continue;
+                }
+
+                // Step 2: Check if the line contains a PCRE shorthand
+                // (backslash followed by one of s, w, d, S, W, D).
+                let has_pcre_shorthand = trimmed
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)));
+
+                if has_pcre_shorthand {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1,));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found PCRE shorthand (\\s, \\w, \\d, \\S, \\W, \\D) in `grep -E` \
+             calls in shell scripts. These character-class shorthands are GNU \
+             grep extensions and are not part of POSIX ERE. They will silently \
+             misbehave or error on macOS/BSD grep.\n\n\
+             Portable replacements:\n  \
+               \\s -> [[:space:]]   \\S -> [^[:space:]]\n  \
+               \\w -> [[:alnum:]_]  \\W -> [^[:alnum:]_]\n  \
+               \\d -> [[:digit:]]   \\D -> [^[:digit:]]\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Validates that the grep -P detection logic catches the `-P` flag
+    /// regardless of its position within a combined short-option group.
+    /// This guards against regressions where only `-P` at the end of the
+    /// flag group (e.g., `-oP`) is detected, while `-P` in other
+    /// positions (e.g., `-Pq`, `-Pn`) is missed.
+    #[test]
+    fn grep_p_detection_catches_all_flag_positions() {
+        // Each entry is (input_line, should_be_flagged).
+        let cases: Vec<(&str, bool)> = vec![
+            // P at the end of the flag group (classic case)
+            ("grep -P 'pattern' file.txt", true),
+            ("grep -oP 'pattern' file.txt", true),
+            ("grep -cP 'pattern' file.txt", true),
+            ("grep -qP 'pattern' file.txt", true),
+            ("grep -nP 'pattern' file.txt", true),
+            // P in the middle of the flag group
+            ("grep -Pq 'pattern' file.txt", true),
+            ("grep -Pn 'pattern' file.txt", true),
+            ("grep -Po 'pattern' file.txt", true),
+            ("grep -Pc 'pattern' file.txt", true),
+            // P at the start (after -)
+            ("grep -P pattern file.txt", true),
+            // P in a longer combined group
+            ("grep -oPn 'pattern' file.txt", true),
+            ("grep -nPo 'pattern' file.txt", true),
+            ("grep -qPn 'pattern' file.txt", true),
+            // Non-violations (no P flag)
+            ("grep -E 'pattern' file.txt", false),
+            ("grep -oE 'pattern' file.txt", false),
+            ("grep -q 'pattern' file.txt", false),
+            ("grep 'pattern' file.txt", false),
+            // Comments and echo lines (should be skipped)
+            ("# grep -P 'pattern' file.txt", false),
+            ("echo \"grep -P is not portable\"", false),
+            ("printf \"use grep -P for PCRE\\n\"", false),
+            // Long options (not currently detected — pre-existing gap)
+            // ("grep --perl-regexp 'pattern' file.txt", true),
+        ];
+
+        for (line, should_flag) in &cases {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                assert!(
+                    !should_flag,
+                    "Line should have been flagged but was skipped: {line}"
+                );
+                continue;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_grep_p = {
+                let mut found = false;
+                for (i, token) in tokens.iter().enumerate() {
+                    if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                        for subsequent in &tokens[i + 1..] {
+                            if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                                break;
+                            }
+                            let flags = &subsequent[1..];
+                            if flags.contains('P') {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                found
+            };
+
+            assert_eq!(
+                has_grep_p, *should_flag,
+                "Detection mismatch for line: {line} (expected flagged={should_flag}, got flagged={has_grep_p})"
+            );
+        }
+    }
+
+    /// Validates that the sed -r detection logic catches the `-r` flag
+    /// regardless of its position within a combined short-option group.
+    #[test]
+    fn sed_r_detection_catches_all_flag_positions() {
+        let cases: Vec<(&str, bool)> = vec![
+            // r at various positions
+            ("sed -r 's/foo/bar/' file.txt", true),
+            ("sed -ri 's/foo/bar/' file.txt", true),
+            ("sed -rn 's/foo/bar/' file.txt", true),
+            ("sed -ir 's/foo/bar/' file.txt", true),
+            ("sed -nr 's/foo/bar/' file.txt", true),
+            ("sed -irn 's/foo/bar/' file.txt", true),
+            ("sed -nri 's/foo/bar/' file.txt", true),
+            // Non-violations (no r flag)
+            ("sed -E 's/foo/bar/' file.txt", false),
+            ("sed -n 's/foo/bar/' file.txt", false),
+            ("sed -i 's/foo/bar/' file.txt", false),
+            ("sed 's/foo/bar/' file.txt", false),
+            // Comments and echo lines
+            ("# sed -r 's/foo/bar/' file.txt", false),
+            ("echo \"sed -r is GNU-only\"", false),
+        ];
+
+        for (line, should_flag) in &cases {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                assert!(
+                    !should_flag,
+                    "Line should have been flagged but was skipped: {line}"
+                );
+                continue;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut found = false;
+            for (i, token) in tokens.iter().enumerate() {
+                if (*token == "sed" || token.ends_with("/sed")) && i + 1 < tokens.len() {
+                    for subsequent in &tokens[i + 1..] {
+                        if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                            break;
+                        }
+                        let flags = &subsequent[1..];
+                        if flags.contains('r') {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+
+            assert_eq!(
+                found, *should_flag,
+                "Detection mismatch for line: {line} (expected flagged={should_flag}, got flagged={found})"
+            );
+        }
+    }
+
+    /// Shell scripts must not use PCRE character-class shorthands (`\s`,
+    /// `\w`, `\d`, `\S`, `\W`, `\D`) inside `sed` expressions. These
+    /// shorthands are **not** part of POSIX BRE or ERE. GNU sed treats
+    /// `\s` as `[[:space:]]`, but macOS/BSD sed treats `\s` as the literal
+    /// character `s`, causing silent incorrect behavior.
+    ///
+    /// Portable replacements:
+    ///   `\s` -> `[[:space:]]`   `\S` -> `[^[:space:]]`
+    ///   `\w` -> `[[:alnum:]_]`  `\W` -> `[^[:alnum:]_]`
+    ///   `\d` -> `[[:digit:]]`   `\D` -> `[^[:digit:]]`
+    ///
+    /// This is a belt-and-suspenders companion to the same check in
+    /// `scripts/test_shell_portability.sh` (Check 4).
+    #[test]
+    fn shell_scripts_avoid_pcre_shorthand_in_sed() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Step 1: Check if this line invokes sed.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_sed = tokens
+                    .iter()
+                    .any(|token| *token == "sed" || token.ends_with("/sed"));
+
+                if !has_sed {
+                    continue;
+                }
+
+                // Step 2: Check if the line contains a PCRE shorthand
+                // (backslash followed by one of s, w, d, S, W, D).
+                let has_pcre_shorthand = trimmed
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)));
+
+                if has_pcre_shorthand {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found PCRE shorthand (\\s, \\w, \\d, \\S, \\W, \\D) in `sed` \
+             expressions in shell scripts. These character-class shorthands \
+             are not part of POSIX BRE or ERE. GNU sed treats \\s as \
+             [[:space:]], but macOS/BSD sed treats \\s as the literal \
+             character 's', causing silent incorrect behavior.\n\n\
+             Portable replacements:\n  \
+               \\s -> [[:space:]]   \\S -> [^[:space:]]\n  \
+               \\w -> [[:alnum:]_]  \\W -> [^[:alnum:]_]\n  \
+               \\d -> [[:digit:]]   \\D -> [^[:digit:]]\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use `\b` word boundaries in `grep` or `sed`
+    /// patterns. `\b` is a GNU extension and is **not** part of POSIX BRE
+    /// or ERE. macOS/BSD `grep` and `sed` do not support it.
+    ///
+    /// Portable replacements:
+    ///   `grep -w`                for whole-word matching
+    ///   `(^|[^[:alnum:]_])`     for leading word boundary
+    ///   `([^[:alnum:]_]|$)`     for trailing word boundary
+    ///
+    /// This is a belt-and-suspenders companion to the same check in
+    /// `scripts/test_shell_portability.sh` (Check 5).
+    #[test]
+    fn shell_scripts_avoid_word_boundary_in_grep_and_sed() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if is_skippable_line(trimmed) {
+                    continue;
+                }
+
+                // Step 1: Check if this line invokes grep or sed.
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let has_grep_or_sed = tokens.iter().any(|token| {
+                    *token == "grep"
+                        || token.ends_with("/grep")
+                        || *token == "sed"
+                        || token.ends_with("/sed")
+                });
+
+                if !has_grep_or_sed {
+                    continue;
+                }
+
+                // Step 2: Check if the line contains a `\b` word boundary.
+                // We look for literal backslash-b sequences in the source text.
+                let has_word_boundary = trimmed
+                    .as_bytes()
+                    .windows(2)
+                    .any(|w| w[0] == b'\\' && w[1] == b'b');
+
+                if has_word_boundary {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `\\b` word boundary in grep/sed calls in shell scripts. \
+             `\\b` is a GNU extension and is not part of POSIX BRE or ERE. \
+             macOS/BSD grep and sed do not support it.\n\n\
+             Portable replacements:\n  \
+               grep -w                    for whole-word matching\n  \
+               (^|[^[:alnum:]_])word      for leading word boundary\n  \
+               word([^[:alnum:]_]|$)      for trailing word boundary\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Shell scripts must not use `echo "$var" | cmd` patterns where a
+    /// shell variable is piped through `echo`. This pattern is fragile
+    /// because:
+    ///
+    /// 1. Some `echo` implementations interpret escape sequences (e.g.,
+    ///    `\n`, `\t`, `\c`) in the variable content, mangling data.
+    /// 2. If the variable value starts with `-`, `echo` may interpret it
+    ///    as a flag (e.g., `echo "-n"` suppresses the newline).
+    ///
+    /// The portable fix is `printf '%s\n' "$var" | cmd`, which handles
+    /// all values safely.
+    ///
+    /// This test only flags lines where a shell variable (`$VAR`,
+    /// `${VAR}`, `$1`, etc.) appears inside the echo argument and the
+    /// output is piped. Lines that echo only literal strings (e.g.,
+    /// `echo "hello world" | grep ...`) are safe and are not flagged.
+    #[test]
+    fn shell_scripts_avoid_echo_variable_pipe() {
+        let scripts = collect_shell_scripts();
+        let mut violations: Vec<String> = Vec::new();
+
+        for (relative, contents) in &scripts {
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+
+                // We need to find lines matching the pattern:
+                //   echo <something with $var> | <cmd>
+                //
+                // Strategy: split on pipe `|` and check the left side for
+                // `echo` with a variable reference. We must be careful not
+                // to match pipe characters inside quoted strings, but for
+                // the purposes of this lint a simple split is sufficient
+                // since `|` inside quotes is uncommon in shell scripts and
+                // would be a code smell anyway.
+
+                // Check if the line contains a pipe.
+                if !trimmed.contains('|') {
+                    continue;
+                }
+
+                // Split on the first `|` to get the left-hand side.
+                let Some((lhs, _rhs)) = trimmed.split_once('|') else {
+                    continue;
+                };
+                let lhs = lhs.trim();
+
+                // Check if the left-hand side starts with `echo` (possibly
+                // preceded by variable assignment like `VAR=$(echo ...)`).
+                // We look for `echo ` as a token in the LHS.
+                let echo_pos = {
+                    let mut found: Option<usize> = None;
+                    // Check for `echo ` at the start of LHS
+                    if lhs.starts_with("echo ") {
+                        found = Some(0);
+                    }
+                    // Check for `echo ` after common shell prefixes
+                    // (e.g., in subshells or command substitution)
+                    if found.is_none() {
+                        for (i, _) in lhs.match_indices("echo ") {
+                            // Verify it's at a word boundary (preceded by
+                            // whitespace, `(`, `$`, `=`, or start of line).
+                            if i == 0 {
+                                found = Some(i);
+                                break;
+                            }
+                            let prev = lhs.as_bytes().get(i.wrapping_sub(1));
+                            if prev.is_some_and(|&ch| {
+                                ch == b' ' || ch == b'(' || ch == b'$' || ch == b'=' || ch == b';'
+                            }) {
+                                found = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    found
+                };
+
+                let Some(pos) = echo_pos else {
+                    continue;
+                };
+
+                // Extract the echo arguments (everything after `echo `).
+                let echo_args = &lhs[pos + 5..];
+
+                // Check if the echo arguments contain a shell variable
+                // reference ($VAR, ${VAR}, $1, $@, $*, $?, etc.).
+                // This distinguishes `echo "$var" | cmd` (flagged) from
+                // `echo "literal" | cmd` (safe).
+                let has_variable = echo_args.as_bytes().windows(2).any(|w| {
+                    w[0] == b'$'
+                        && (w[1].is_ascii_alphabetic()
+                            || w[1] == b'{'
+                            || w[1].is_ascii_digit()
+                            || w[1] == b'@'
+                            || w[1] == b'*'
+                            || w[1] == b'?')
+                });
+
+                if has_variable {
+                    violations.push(format!("{relative}:{}: {trimmed}", line_num + 1));
+                }
+            }
+        }
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found `echo \"$var\" | cmd` patterns in shell scripts. \
+             This pattern is fragile: some `echo` implementations interpret \
+             escape sequences in variable content (\\n, \\t, \\c), and values \
+             starting with `-` may be interpreted as echo flags.\n\n\
+             Fix: use `printf '%%s\\n' \"$var\" | cmd` instead, which handles \
+             all values safely.\n\n\
+             Violations:\n  {joined}"
+        );
+    }
+
+    /// Validates the echo-variable-pipe detection logic against known
+    /// positive and negative cases to prevent regressions.
+    #[test]
+    fn echo_variable_pipe_detection_unit_tests() {
+        /// Simulates the echo-variable-pipe detection logic for a single line.
+        fn would_flag(line: &str) -> bool {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return false;
+            }
+            if !trimmed.contains('|') {
+                return false;
+            }
+            let Some((lhs, _rhs)) = trimmed.split_once('|') else {
+                return false;
+            };
+            let lhs = lhs.trim();
+
+            let echo_pos = {
+                let mut found: Option<usize> = None;
+                if lhs.starts_with("echo ") {
+                    found = Some(0);
+                }
+                if found.is_none() {
+                    for (i, _) in lhs.match_indices("echo ") {
+                        if i == 0 {
+                            found = Some(i);
+                            break;
+                        }
+                        let prev = lhs.as_bytes().get(i.wrapping_sub(1));
+                        if prev.is_some_and(|&ch| {
+                            ch == b' ' || ch == b'(' || ch == b'$' || ch == b'=' || ch == b';'
+                        }) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                found
+            };
+
+            let Some(pos) = echo_pos else {
+                return false;
+            };
+
+            let echo_args = &lhs[pos + 5..];
+            echo_args.as_bytes().windows(2).any(|w| {
+                w[0] == b'$'
+                    && (w[1].is_ascii_alphabetic()
+                        || w[1] == b'{'
+                        || w[1].is_ascii_digit()
+                        || w[1] == b'@'
+                        || w[1] == b'*'
+                        || w[1] == b'?')
+            })
+        }
+
+        // Should be flagged (variable content piped through echo)
+        assert!(
+            would_flag("echo \"$var\" | grep pattern"),
+            "echo with $var pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"${var}\" | sed 's/a/b/'"),
+            "echo with ${{var}} pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"$1\" | cmd"),
+            "echo with positional param pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo $var | cmd"),
+            "echo with unquoted $var pipe should be flagged"
+        );
+        assert!(
+            would_flag("echo \"$CI_MSRV_BLOCK\" | grep toolchain"),
+            "echo with $CI_MSRV_BLOCK pipe should be flagged"
+        );
+
+        // Should NOT be flagged (safe patterns)
+        assert!(
+            !would_flag("echo \"literal string\" | grep pattern"),
+            "echo with literal string pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo 'hello world' | wc -l"),
+            "echo with single-quoted literal pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo hello | grep hello"),
+            "echo with unquoted literal pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("printf '%s\\n' \"$var\" | cmd"),
+            "printf with variable pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("# echo \"$var\" | cmd"),
+            "commented-out echo pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo \"$var\""),
+            "echo without pipe should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep pattern file.txt"),
+            "grep without echo should NOT be flagged"
+        );
+    }
+
+    /// Validates the PCRE shorthand detection logic against known positive
+    /// and negative cases. The production tests
+    /// (`shell_scripts_avoid_pcre_shorthand_in_ere_grep` and
+    /// `shell_scripts_avoid_pcre_shorthand_in_sed`) scan real scripts;
+    /// this data-driven test exercises the detection logic itself with
+    /// synthetic inputs to prevent regressions.
+    #[test]
+    fn pcre_shorthand_detection_unit_tests() {
+        /// Simulates the PCRE shorthand detection logic for `grep -E`
+        /// lines: returns `true` if the line invokes `grep` with `-E`
+        /// (in any flag-group position) AND contains a PCRE shorthand
+        /// (`\s`, `\w`, `\d`, `\S`, `\W`, `\D`).
+        fn would_flag_grep_e(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut has_grep_e = false;
+
+            for (i, token) in tokens.iter().enumerate() {
+                if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                    for subsequent in &tokens[i + 1..] {
+                        if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                            break;
+                        }
+                        let flags = &subsequent[1..];
+                        if flags.contains('E') {
+                            has_grep_e = true;
+                            break;
+                        }
+                    }
+                }
+                if has_grep_e {
+                    break;
+                }
+            }
+
+            if !has_grep_e {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)))
+        }
+
+        /// Simulates the PCRE shorthand detection logic for `sed` lines:
+        /// returns `true` if the line invokes `sed` AND contains a PCRE
+        /// shorthand (`\s`, `\w`, `\d`, `\S`, `\W`, `\D`).
+        fn would_flag_sed(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_sed = tokens
+                .iter()
+                .any(|token| *token == "sed" || token.ends_with("/sed"));
+
+            if !has_sed {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)))
+        }
+
+        // ── grep -E with PCRE shorthands (should be flagged) ──
+
+        // \s in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\s+' file.txt"),
+            "grep -E with \\s should be flagged"
+        );
+        // \w in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\w+' file.txt"),
+            "grep -E with \\w should be flagged"
+        );
+        // \d in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\d+' file.txt"),
+            "grep -E with \\d should be flagged"
+        );
+        // \S (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\S' file.txt"),
+            "grep -E with \\S should be flagged"
+        );
+        // \W (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\W' file.txt"),
+            "grep -E with \\W should be flagged"
+        );
+        // \D (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\D' file.txt"),
+            "grep -E with \\D should be flagged"
+        );
+        // -E combined with other flags
+        assert!(
+            would_flag_grep_e("grep -qE '\\s+' file.txt"),
+            "grep -qE with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -Eq '\\w+' file.txt"),
+            "grep -Eq with \\w should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -oE '\\d{3}' file.txt"),
+            "grep -oE with \\d should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -Eo '\\d{3}' file.txt"),
+            "grep -Eo with \\d should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -nE '\\s' file.txt"),
+            "grep -nE with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -cE '\\w' file.txt"),
+            "grep -cE with \\w should be flagged"
+        );
+        // -E in a longer combined flag group
+        assert!(
+            would_flag_grep_e("grep -oEn '\\s+' file.txt"),
+            "grep -oEn with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -nEo '\\d+' file.txt"),
+            "grep -nEo with \\d should be flagged"
+        );
+        // Full path to grep
+        assert!(
+            would_flag_grep_e("/usr/bin/grep -E '\\s' file.txt"),
+            "full-path grep -E with \\s should be flagged"
+        );
+
+        // ── grep -E with POSIX classes (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("grep -E '[[:space:]]+' file.txt"),
+            "grep -E with [[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[[:alnum:]_]+' file.txt"),
+            "grep -E with [[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[[:digit:]]+' file.txt"),
+            "grep -E with [[:digit:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:space:]]' file.txt"),
+            "grep -E with [^[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:alnum:]_]' file.txt"),
+            "grep -E with [^[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:digit:]]' file.txt"),
+            "grep -E with [^[:digit:]] should NOT be flagged"
+        );
+
+        // ── grep without -E (should NOT be flagged even with shorthands) ──
+
+        assert!(
+            !would_flag_grep_e("grep '\\s+' file.txt"),
+            "plain grep with \\s should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -q '\\w+' file.txt"),
+            "grep -q with \\w should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -o '\\d+' file.txt"),
+            "grep -o with \\d should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -F '\\s+' file.txt"),
+            "grep -F with \\s should NOT be flagged (not -E)"
+        );
+
+        // ── grep -E without any PCRE shorthand (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("grep -E 'pattern' file.txt"),
+            "grep -E with plain pattern should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '^start.*end$' file.txt"),
+            "grep -E with standard ERE should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '(foo|bar)+' file.txt"),
+            "grep -E with alternation should NOT be flagged"
+        );
+
+        // ── Comments and echo lines (should be skipped) ──
+
+        assert!(
+            !would_flag_grep_e("# grep -E '\\s+' file.txt"),
+            "commented grep -E with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("echo \"grep -E '\\s+'\""),
+            "echo mentioning grep -E with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("printf \"use grep -E with \\s for...\""),
+            "printf mentioning grep -E with \\s should NOT be flagged"
+        );
+
+        // ── sed with PCRE shorthands (should be flagged) ──
+
+        assert!(
+            would_flag_sed("sed 's/\\s\\+/ /g' file.txt"),
+            "sed with \\s should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\w\\+/WORD/g' file.txt"),
+            "sed with \\w should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\d\\+/NUM/g' file.txt"),
+            "sed with \\d should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\S\\+/NONSPACE/g' file.txt"),
+            "sed with \\S should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\W\\+/SEP/g' file.txt"),
+            "sed with \\W should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\D\\+/NONDIGIT/g' file.txt"),
+            "sed with \\D should be flagged"
+        );
+        // sed with flags combined
+        assert!(
+            would_flag_sed("sed -n 's/\\s\\+/ /gp' file.txt"),
+            "sed -n with \\s should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed -E 's/\\w+/WORD/g' file.txt"),
+            "sed -E with \\w should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed -i 's/\\d\\+/NUM/g' file.txt"),
+            "sed -i with \\d should be flagged"
+        );
+        // Full path to sed
+        assert!(
+            would_flag_sed("/usr/bin/sed 's/\\s\\+/ /g' file.txt"),
+            "full-path sed with \\s should be flagged"
+        );
+
+        // ── sed with POSIX classes (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_sed("sed 's/[[:space:]]\\+/ /g' file.txt"),
+            "sed with [[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/[[:alnum:]_]\\+/WORD/g' file.txt"),
+            "sed with [[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/[[:digit:]]\\+/NUM/g' file.txt"),
+            "sed with [[:digit:]] should NOT be flagged"
+        );
+
+        // ── sed without PCRE shorthand (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_sed("sed 's/foo/bar/g' file.txt"),
+            "sed with literal replacement should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed -n '/pattern/p' file.txt"),
+            "sed -n with plain pattern should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/^[[:space:]]*//g' file.txt"),
+            "sed with POSIX space class should NOT be flagged"
+        );
+
+        // ── Non-sed/non-grep commands (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("awk '/\\s+/ { print }' file.txt"),
+            "awk with \\s should NOT be flagged by grep-E check"
+        );
+        assert!(
+            !would_flag_sed("awk '/\\s+/ { print }' file.txt"),
+            "awk with \\s should NOT be flagged by sed check"
+        );
+        assert!(
+            !would_flag_grep_e("perl -ne 'print if /\\s+/' file.txt"),
+            "perl with \\s should NOT be flagged by grep-E check"
+        );
+
+        // ── Comments and echo lines for sed (should be skipped) ──
+
+        assert!(
+            !would_flag_sed("# sed 's/\\s\\+/ /g' file.txt"),
+            "commented sed with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("echo \"sed 's/\\s\\+/ /g'\""),
+            "echo mentioning sed with \\s should NOT be flagged"
+        );
+    }
+
+    /// Validates the `\b` word boundary detection logic against known
+    /// positive and negative cases. The production test
+    /// (`shell_scripts_avoid_word_boundary_in_grep_and_sed`) scans real
+    /// scripts; this data-driven test exercises the detection logic itself
+    /// with synthetic inputs to prevent regressions.
+    #[test]
+    fn word_boundary_detection_unit_tests() {
+        /// Simulates the `\b` word boundary detection logic for a single
+        /// line: returns `true` if the line invokes `grep` or `sed` AND
+        /// contains a `\b` sequence.
+        fn would_flag(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_grep_or_sed = tokens.iter().any(|token| {
+                *token == "grep"
+                    || token.ends_with("/grep")
+                    || *token == "sed"
+                    || token.ends_with("/sed")
+            });
+
+            if !has_grep_or_sed {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && w[1] == b'b')
+        }
+
+        // ── grep with \b (should be flagged) ──
+
+        assert!(
+            would_flag("grep '\\bword\\b' file.txt"),
+            "grep with \\b word boundaries should be flagged"
+        );
+        assert!(
+            would_flag("grep '\\bword' file.txt"),
+            "grep with leading \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep 'word\\b' file.txt"),
+            "grep with trailing \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -E '\\bfoo\\b' file.txt"),
+            "grep -E with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -q '\\bpattern\\b' file.txt"),
+            "grep -q with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -n '\\bpattern' file.txt"),
+            "grep -n with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -o '\\bword\\b' file.txt"),
+            "grep -o with \\b should be flagged"
+        );
+        // Combined flags with \b
+        assert!(
+            would_flag("grep -oE '\\bword\\b' file.txt"),
+            "grep -oE with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -qn '\\bword\\b' file.txt"),
+            "grep -qn with \\b should be flagged"
+        );
+        // Full path to grep
+        assert!(
+            would_flag("/usr/bin/grep '\\bword' file.txt"),
+            "full-path grep with \\b should be flagged"
+        );
+
+        // ── sed with \b (should be flagged) ──
+
+        assert!(
+            would_flag("sed 's/\\bword\\b/replacement/g' file.txt"),
+            "sed with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed -n '/\\bpattern\\b/p' file.txt"),
+            "sed -n with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed -E 's/\\bfoo\\b/bar/g' file.txt"),
+            "sed -E with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed 's/\\bword/replacement/' file.txt"),
+            "sed with leading \\b should be flagged"
+        );
+        // Full path to sed
+        assert!(
+            would_flag("/usr/bin/sed 's/\\bword\\b/replacement/g' file.txt"),
+            "full-path sed with \\b should be flagged"
+        );
+
+        // ── Portable alternatives (should NOT be flagged) ──
+
+        // grep -w for whole-word matching
+        assert!(
+            !would_flag("grep -w 'word' file.txt"),
+            "grep -w should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -wE 'pattern' file.txt"),
+            "grep -wE should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -Ew 'pattern' file.txt"),
+            "grep -Ew should NOT be flagged"
+        );
+        // POSIX word-boundary emulation
+        assert!(
+            !would_flag("grep -E '(^|[^[:alnum:]_])word([^[:alnum:]_]|$)' file.txt"),
+            "grep -E with POSIX word boundary emulation should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed 's/(^|[^[:alnum:]_])word([^[:alnum:]_]|$)/replacement/g' file.txt"),
+            "sed with POSIX word boundary emulation should NOT be flagged"
+        );
+
+        // ── grep/sed without \b (should NOT be flagged) ──
+
+        assert!(
+            !would_flag("grep 'pattern' file.txt"),
+            "plain grep should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -E 'pattern' file.txt"),
+            "grep -E without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -E '^start.*end$' file.txt"),
+            "grep -E with anchors should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed 's/foo/bar/g' file.txt"),
+            "sed without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed -n '/pattern/p' file.txt"),
+            "sed -n without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed -E 's/(foo|bar)/baz/g' file.txt"),
+            "sed -E with alternation should NOT be flagged"
+        );
+
+        // ── Non-grep/non-sed commands (should NOT be flagged) ──
+
+        assert!(
+            !would_flag("awk '/\\bword\\b/ { print }' file.txt"),
+            "awk with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("perl -ne 'print if /\\bword\\b/' file.txt"),
+            "perl with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("python -c \"import re; re.search(r'\\bword', s)\""),
+            "python with \\b should NOT be flagged"
+        );
+
+        // ── Comments and echo lines (should be skipped) ──
+
+        assert!(
+            !would_flag("# grep '\\bword\\b' file.txt"),
+            "commented grep with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo \"grep '\\bword\\b' is not portable\""),
+            "echo mentioning grep \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("printf \"use grep -w instead of \\b\""),
+            "printf mentioning \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("# sed 's/\\bword\\b/replacement/g' file.txt"),
+            "commented sed with \\b should NOT be flagged"
+        );
+
+        // ── Edge cases ──
+
+        // Empty line
+        assert!(!would_flag(""), "empty line should NOT be flagged");
+        // Whitespace-only line
+        assert!(
+            !would_flag("   "),
+            "whitespace-only line should NOT be flagged"
+        );
+        // Line with leading whitespace (indented)
+        assert!(
+            would_flag("  grep '\\bword' file.txt"),
+            "indented grep with \\b should be flagged"
+        );
+        assert!(
+            would_flag("    sed 's/\\bword/repl/' file.txt"),
+            "indented sed with \\b should be flagged"
+        );
+        // Backslash followed by non-b character should not match
+        assert!(
+            !would_flag("grep '\\n' file.txt"),
+            "grep with \\n should NOT be flagged (not \\b)"
+        );
+        assert!(
+            !would_flag("grep '\\t' file.txt"),
+            "grep with \\t should NOT be flagged (not \\b)"
+        );
+        assert!(
+            !would_flag("sed 's/\\n/ /g' file.txt"),
+            "sed with \\n should NOT be flagged (not \\b)"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: test_code_quality
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod test_code_quality {
+    use super::*;
+
+    /// Rust test files must not use bare `.unwrap()` on I/O operations
+    /// (file reads, directory reads, path operations). Bare `.unwrap()`
+    /// produces unhelpful panic messages like "called `Result::unwrap()`
+    /// on an `Err` value: Os { ... }" without any context about which
+    /// file or operation failed.
+    ///
+    /// The convention in this project is to use `.unwrap_or_else(|e| {
+    /// panic!("descriptive message: {e}") })` for all I/O operations,
+    /// which produces clear, actionable error messages.
+    ///
+    /// This test scans `.rs` files in `tests/` for bare `.unwrap()` calls
+    /// on common I/O function return values and fails if any are found.
+    /// It does NOT flag `.unwrap()` on non-I/O operations (e.g.,
+    /// `Mutex::lock().unwrap()`, `Option::unwrap()`, parsing) because
+    /// those are standard test patterns.
+    #[test]
+    fn test_files_avoid_bare_unwrap_on_io_operations() {
+        let tests_dir = project_root().join("tests");
+        assert!(
+            tests_dir.is_dir(),
+            "Expected tests/ directory to exist at project root."
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        // I/O function patterns that should use unwrap_or_else, not bare unwrap.
+        // Each pattern matches the function call that returns a Result, followed
+        // eventually by `.unwrap()` on the same line.
+        let io_patterns: &[&str] = &[
+            "read_to_string(",
+            "read_dir(",
+            "File::open(",
+            "File::create(",
+            "fs::read(",
+            "fs::write(",
+            "fs::remove_file(",
+            "fs::remove_dir(",
+            "fs::create_dir(",
+            "fs::metadata(",
+            "fs::read_link(",
+            "fs::copy(",
+            "fs::rename(",
+        ];
+
+        fn visit_rs_files(
+            dir: &std::path::Path,
+            root: &std::path::Path,
+            io_patterns: &[&str],
+            violations: &mut Vec<String>,
+        ) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in '{}': {e}", dir.display());
+                });
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_rs_files(&path, root, io_patterns, violations);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("Failed to read '{}': {e}", path.display());
+                });
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+
+                for (line_num, line) in contents.lines().enumerate() {
+                    // Skip lines that use unwrap_or_else (the correct pattern).
+                    if line.contains("unwrap_or_else") {
+                        continue;
+                    }
+                    // Skip lines that don't have .unwrap() at all.
+                    if !line.contains(".unwrap()") {
+                        continue;
+                    }
+                    // Check if the line contains any of the I/O patterns.
+                    for pattern in io_patterns {
+                        if line.contains(pattern) {
+                            violations.push(format!(
+                                "{relative}:{}: {}",
+                                line_num + 1,
+                                line.trim()
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        visit_rs_files(&tests_dir, &project_root(), io_patterns, &mut violations);
+
+        let joined = violations.join("\n  ");
+        assert!(
+            violations.is_empty(),
+            "Found bare `.unwrap()` on I/O operations in test files. \
+             Bare unwrap produces unhelpful panic messages without context \
+             about which file or operation failed.\n\n\
+             Fix: use `.unwrap_or_else(|e| panic!(\"descriptive message: {{e}}\"))` \
+             instead, which produces clear, actionable error messages.\n\n\
+             Violations:\n  {joined}"
         );
     }
 }

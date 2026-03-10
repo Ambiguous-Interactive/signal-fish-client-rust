@@ -65,8 +65,8 @@ for dir in src examples; do
         # Filter out matches inside #[cfg(test)] modules.
         while IFS= read -r line; do
             line="${line//$'\r'/}"
-            file=$(echo "$line" | cut -d: -f1)
-            lineno=$(echo "$line" | cut -d: -f2)
+            file=$(printf '%s\n' "$line" | cut -d: -f1)
+            lineno=$(printf '%s\n' "$line" | cut -d: -f2)
 
             # Find the last #[cfg(...test...)] line number in the file.
             # This matches both simple `#[cfg(test)]` and compound forms
@@ -78,7 +78,7 @@ for dir in src examples; do
             # test in tests/ci_config_tests.rs (module panic_script_cfg_handling)
             # verifies that no src/ file uses `#[cfg(not(test))]`, so this
             # false positive cannot occur in practice.
-            cfg_test_line=$(grep -n '#\[cfg(.*\btest\b' "$file" 2>/dev/null \
+            cfg_test_line=$(grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file" 2>/dev/null \
                 | tail -1 | cut -d: -f1 || true)
 
             if [ -n "$cfg_test_line" ] && [ "$lineno" -gt "$cfg_test_line" ]; then

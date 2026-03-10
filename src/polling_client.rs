@@ -658,7 +658,8 @@ mod tests {
             !client.transport.sent.is_empty(),
             "expected at least one sent message"
         );
-        let sent_json: serde_json::Value = serde_json::from_str(&client.transport.sent[0]).unwrap();
+        let sent_json: serde_json::Value = serde_json::from_str(&client.transport.sent[0])
+            .expect("first sent message must be valid JSON");
         assert_eq!(sent_json["type"], "Authenticate");
         assert_eq!(sent_json["data"]["app_id"], "test_app_id");
     }
@@ -709,9 +710,12 @@ mod tests {
 
         client.poll();
 
-        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
-        let expected_player_id: uuid::Uuid =
-            "00000000-0000-0000-0000-000000000002".parse().unwrap();
+        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001"
+            .parse()
+            .expect("test room_id UUID must parse");
+        let expected_player_id: uuid::Uuid = "00000000-0000-0000-0000-000000000002"
+            .parse()
+            .expect("test player_id UUID must parse");
         assert_eq!(client.current_room_id(), Some(expected_room_id));
         assert_eq!(client.current_room_code(), Some("ABC123"));
         assert_eq!(client.current_player_id(), Some(expected_player_id));
@@ -728,14 +732,19 @@ mod tests {
         // Now join a room.
         client
             .join_room(JoinRoomParams::new("test-game", "Alice"))
-            .unwrap();
+            .expect("join_room must succeed on connected client");
 
         // Poll again to flush the join_room command.
         client.poll();
 
         // The last sent message should be a JoinRoom command.
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "JoinRoom");
         assert_eq!(sent_json["data"]["game_name"], "test-game");
         assert_eq!(sent_json["data"]["player_name"], "Alice");
@@ -939,9 +948,12 @@ mod tests {
             "expected Reconnected event, got: {events:?}"
         );
 
-        let expected_player_id: uuid::Uuid =
-            "00000000-0000-0000-0000-000000000003".parse().unwrap();
-        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+        let expected_player_id: uuid::Uuid = "00000000-0000-0000-0000-000000000003"
+            .parse()
+            .expect("test player_id UUID must parse");
+        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001"
+            .parse()
+            .expect("test room_id UUID must parse");
         assert_eq!(client.current_player_id(), Some(expected_player_id));
         assert_eq!(client.current_room_id(), Some(expected_room_id));
         assert_eq!(client.current_room_code(), Some("RECON1"));
@@ -957,9 +969,12 @@ mod tests {
 
         client.poll();
 
-        let expected_player_id: uuid::Uuid =
-            "00000000-0000-0000-0000-000000000004".parse().unwrap();
-        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+        let expected_player_id: uuid::Uuid = "00000000-0000-0000-0000-000000000004"
+            .parse()
+            .expect("test spectator_id UUID must parse");
+        let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001"
+            .parse()
+            .expect("test room_id UUID must parse");
         assert_eq!(client.current_player_id(), Some(expected_player_id));
         assert_eq!(client.current_room_id(), Some(expected_room_id));
         assert_eq!(client.current_room_code(), Some("SPEC1"));
@@ -1097,11 +1112,18 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.leave_room().unwrap();
+        client
+            .leave_room()
+            .expect("leave_room must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "LeaveRoom");
     }
 
@@ -1113,11 +1135,16 @@ mod tests {
 
         client
             .send_game_data(serde_json::json!({"score": 42}))
-            .unwrap();
+            .expect("send_game_data must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "GameData");
         assert_eq!(sent_json["data"]["data"]["score"], 42);
     }
@@ -1128,11 +1155,18 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.set_ready().unwrap();
+        client
+            .set_ready()
+            .expect("set_ready must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "PlayerReady");
     }
 
@@ -1142,11 +1176,18 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.request_authority(true).unwrap();
+        client
+            .request_authority(true)
+            .expect("request_authority must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "AuthorityRequest");
         assert_eq!(sent_json["data"]["become_authority"], true);
     }
@@ -1162,11 +1203,16 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 7777,
             })
-            .unwrap();
+            .expect("provide_connection_info must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "ProvideConnectionInfo");
         assert_eq!(sent_json["data"]["connection_info"]["host"], "127.0.0.1");
         assert_eq!(sent_json["data"]["connection_info"]["port"], 7777);
@@ -1187,11 +1233,16 @@ mod tests {
                 token: "secret-token".into(),
                 client_id: Some(7),
             })
-            .unwrap();
+            .expect("provide_connection_info (relay) must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "ProvideConnectionInfo");
         let info = &sent_json["data"]["connection_info"];
         assert_eq!(info["host"], "relay.example.com");
@@ -1212,11 +1263,16 @@ mod tests {
         let room_id = uuid::Uuid::from_u128(2);
         client
             .reconnect(player_id, room_id, "token123".into())
-            .unwrap();
+            .expect("reconnect must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "Reconnect");
         assert_eq!(sent_json["data"]["player_id"], player_id.to_string());
         assert_eq!(sent_json["data"]["room_id"], room_id.to_string());
@@ -1231,11 +1287,16 @@ mod tests {
 
         client
             .join_as_spectator("my-game".into(), "ROOM1".into(), "Spectator1".into())
-            .unwrap();
+            .expect("join_as_spectator must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "JoinAsSpectator");
         assert_eq!(sent_json["data"]["game_name"], "my-game");
         assert_eq!(sent_json["data"]["room_code"], "ROOM1");
@@ -1248,11 +1309,18 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.leave_spectator().unwrap();
+        client
+            .leave_spectator()
+            .expect("leave_spectator must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "LeaveSpectator");
     }
 
@@ -1262,11 +1330,18 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.ping().unwrap();
+        client
+            .ping()
+            .expect("ping must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "Ping");
     }
 
@@ -1281,11 +1356,18 @@ mod tests {
             .with_supports_authority(true)
             .with_relay_transport(crate::protocol::RelayTransport::Tcp)
             .with_room_code("CUSTOM1");
-        client.join_room(params).unwrap();
+        client
+            .join_room(params)
+            .expect("join_room must succeed on connected client");
         client.poll();
 
-        let last_sent = client.transport.sent.last().unwrap();
-        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "JoinRoom");
         assert_eq!(sent_json["data"]["game_name"], "strategy-game");
         assert_eq!(sent_json["data"]["player_name"], "Bob");
@@ -1369,7 +1451,7 @@ mod tests {
                 connection_info: None,
             },
         })
-        .unwrap();
+        .expect("PlayerJoined ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1384,7 +1466,8 @@ mod tests {
     #[test]
     fn poll_receives_player_left_event() {
         let player_id = uuid::Uuid::from_u128(11);
-        let json = serde_json::to_string(&ServerMessage::PlayerLeft { player_id }).unwrap();
+        let json = serde_json::to_string(&ServerMessage::PlayerLeft { player_id })
+            .expect("PlayerLeft ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1403,7 +1486,7 @@ mod tests {
             from_player: from,
             data: serde_json::json!({"hp": 100}),
         })
-        .unwrap();
+        .expect("GameData ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1413,7 +1496,9 @@ mod tests {
             .iter()
             .find(|e| matches!(e, SignalFishEvent::GameData { .. }));
         assert!(gd.is_some(), "expected GameData event, got: {events:?}");
-        if let SignalFishEvent::GameData { from_player, data } = gd.unwrap() {
+        if let SignalFishEvent::GameData { from_player, data } =
+            gd.expect("GameData event must exist (verified by preceding assert)")
+        {
             assert_eq!(*from_player, from);
             assert_eq!(data["hp"], 100);
         }
@@ -1427,7 +1512,7 @@ mod tests {
             encoding: crate::protocol::GameDataEncoding::MessagePack,
             payload: vec![0xCA, 0xFE],
         })
-        .unwrap();
+        .expect("GameDataBinary ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1444,7 +1529,7 @@ mod tests {
             from_player,
             encoding,
             payload,
-        } = gdb.unwrap()
+        } = gdb.expect("GameDataBinary event must exist (verified by preceding assert)")
         {
             assert_eq!(*from_player, from);
             assert!(matches!(
@@ -1462,7 +1547,7 @@ mod tests {
             authority_player: Some(auth_player),
             you_are_authority: true,
         })
-        .unwrap();
+        .expect("AuthorityChanged ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1484,7 +1569,7 @@ mod tests {
             reason: None,
             error_code: None,
         })
-        .unwrap();
+        .expect("AuthorityResponse ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1507,7 +1592,7 @@ mod tests {
             reason: Some("already assigned".into()),
             error_code: None,
         })
-        .unwrap();
+        .expect("AuthorityResponse (denied) ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1524,7 +1609,7 @@ mod tests {
             granted,
             reason,
             error_code,
-        } = ar.unwrap()
+        } = ar.expect("AuthorityResponse event must exist (verified by preceding assert)")
         {
             assert!(!granted, "expected granted to be false");
             assert_eq!(reason.as_deref(), Some("already assigned"));
@@ -1540,7 +1625,7 @@ mod tests {
             ready_players: vec![player_id],
             all_ready: true,
         })
-        .unwrap();
+        .expect("LobbyStateChanged ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1560,7 +1645,7 @@ mod tests {
         let json = serde_json::to_string(&ServerMessage::GameStarting {
             peer_connections: vec![],
         })
-        .unwrap();
+        .expect("GameStarting ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1573,7 +1658,8 @@ mod tests {
 
     #[test]
     fn poll_receives_pong_event() {
-        let json = serde_json::to_string(&ServerMessage::Pong).unwrap();
+        let json = serde_json::to_string(&ServerMessage::Pong)
+            .expect("Pong ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1588,7 +1674,7 @@ mod tests {
             message: "something went wrong".into(),
             error_code: Some(crate::error_codes::ErrorCode::InternalError),
         })
-        .unwrap();
+        .expect("Error ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1601,7 +1687,7 @@ mod tests {
         if let SignalFishEvent::Error {
             message,
             error_code,
-        } = err.unwrap()
+        } = err.expect("Error event must exist (verified by preceding assert)")
         {
             assert_eq!(message, "something went wrong");
             assert_eq!(
@@ -1617,7 +1703,7 @@ mod tests {
             message: "minor issue".into(),
             error_code: None,
         })
-        .unwrap();
+        .expect("Error (no code) ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1630,7 +1716,7 @@ mod tests {
         if let SignalFishEvent::Error {
             message,
             error_code,
-        } = err.unwrap()
+        } = err.expect("Error event must exist (verified by preceding assert)")
         {
             assert_eq!(message, "minor issue");
             assert!(error_code.is_none());
@@ -1643,7 +1729,7 @@ mod tests {
             error: "bad app id".into(),
             error_code: crate::error_codes::ErrorCode::InvalidAppId,
         })
-        .unwrap();
+        .expect("AuthenticationError ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1660,7 +1746,7 @@ mod tests {
             reason: "room full".into(),
             error_code: Some(crate::error_codes::ErrorCode::RoomFull),
         })
-        .unwrap();
+        .expect("RoomJoinFailed ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1673,7 +1759,9 @@ mod tests {
             rjf.is_some(),
             "expected RoomJoinFailed event, got: {events:?}"
         );
-        if let SignalFishEvent::RoomJoinFailed { reason, error_code } = rjf.unwrap() {
+        if let SignalFishEvent::RoomJoinFailed { reason, error_code } =
+            rjf.expect("RoomJoinFailed event must exist (verified by preceding assert)")
+        {
             assert_eq!(reason, "room full");
             assert_eq!(*error_code, Some(crate::error_codes::ErrorCode::RoomFull));
         }
@@ -1685,7 +1773,7 @@ mod tests {
             reason: "not allowed".into(),
             error_code: Some(crate::error_codes::ErrorCode::SpectatorNotAllowed),
         })
-        .unwrap();
+        .expect("SpectatorJoinFailed ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1702,7 +1790,7 @@ mod tests {
             reason: "expired".into(),
             error_code: crate::error_codes::ErrorCode::ReconnectionExpired,
         })
-        .unwrap();
+        .expect("ReconnectionFailed ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1716,7 +1804,8 @@ mod tests {
     #[test]
     fn poll_receives_player_reconnected_event() {
         let player_id = uuid::Uuid::from_u128(20);
-        let json = serde_json::to_string(&ServerMessage::PlayerReconnected { player_id }).unwrap();
+        let json = serde_json::to_string(&ServerMessage::PlayerReconnected { player_id })
+            .expect("PlayerReconnected ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1740,7 +1829,7 @@ mod tests {
             current_spectators: vec![],
             reason: Some(crate::protocol::SpectatorStateChangeReason::Joined),
         })
-        .unwrap();
+        .expect("NewSpectatorJoined ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1759,7 +1848,7 @@ mod tests {
             reason: Some(crate::protocol::SpectatorStateChangeReason::Disconnected),
             current_spectators: vec![],
         })
-        .unwrap();
+        .expect("SpectatorDisconnected ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1788,7 +1877,7 @@ mod tests {
                 player_name_rules: None,
             },
         ))
-        .unwrap();
+        .expect("ProtocolInfo ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -1823,7 +1912,9 @@ mod tests {
             disconnected.is_some(),
             "expected Disconnected event, got: {events:?}"
         );
-        if let SignalFishEvent::Disconnected { reason: Some(r) } = disconnected.unwrap() {
+        if let SignalFishEvent::Disconnected { reason: Some(r) } =
+            disconnected.expect("Disconnected event must exist (verified by preceding assert)")
+        {
             assert!(
                 r.contains("transport send error"),
                 "expected reason to contain 'transport send error', got: {r}"
@@ -1872,7 +1963,7 @@ mod tests {
                 per_day: 10000,
             },
         })
-        .unwrap();
+        .expect("Authenticated ServerMessage must serialize to JSON");
         let room_joined_json = serde_json::to_string(&ServerMessage::RoomJoined(Box::new(
             crate::protocol::RoomJoinedPayload {
                 room_id,
@@ -1889,7 +1980,7 @@ mod tests {
                 current_spectators: vec![],
             },
         )))
-        .unwrap();
+        .expect("RoomJoined ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json)),
@@ -1934,8 +2025,9 @@ mod tests {
                 current_spectators: vec![],
             },
         )))
-        .unwrap();
-        let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
+        .expect("RoomJoined (first) ServerMessage must serialize to JSON");
+        let room_left = serde_json::to_string(&ServerMessage::RoomLeft)
+            .expect("RoomLeft ServerMessage must serialize to JSON");
         let room_joined2 = serde_json::to_string(&ServerMessage::RoomJoined(Box::new(
             crate::protocol::RoomJoinedPayload {
                 room_id: room_id2,
@@ -1952,7 +2044,7 @@ mod tests {
                 current_spectators: vec![],
             },
         )))
-        .unwrap();
+        .expect("RoomJoined (second) ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(room_joined1)),
@@ -1982,11 +2074,15 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
-        client.leave_room().unwrap();
+        client
+            .leave_room()
+            .expect("leave_room must succeed on connected client");
         client
             .join_room(JoinRoomParams::new("game", "Player"))
-            .unwrap();
-        client.ping().unwrap();
+            .expect("join_room must succeed on connected client");
+        client
+            .ping()
+            .expect("ping must succeed on connected client");
 
         client.poll();
 
@@ -1997,9 +2093,12 @@ mod tests {
             "expected 4 total sent messages (auth + 3 commands), got: {:?}",
             client.transport.sent
         );
-        let leave: serde_json::Value = serde_json::from_str(&client.transport.sent[1]).unwrap();
-        let join: serde_json::Value = serde_json::from_str(&client.transport.sent[2]).unwrap();
-        let ping: serde_json::Value = serde_json::from_str(&client.transport.sent[3]).unwrap();
+        let leave: serde_json::Value = serde_json::from_str(&client.transport.sent[1])
+            .expect("leave_room sent message must be valid JSON");
+        let join: serde_json::Value = serde_json::from_str(&client.transport.sent[2])
+            .expect("join_room sent message must be valid JSON");
+        let ping: serde_json::Value = serde_json::from_str(&client.transport.sent[3])
+            .expect("ping sent message must be valid JSON");
         assert_eq!(leave["type"], "LeaveRoom");
         assert_eq!(join["type"], "JoinRoom");
         assert_eq!(ping["type"], "Ping");
@@ -2072,7 +2171,8 @@ mod tests {
 
     #[test]
     fn ping_and_pong_flow() {
-        let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
+        let pong_json = serde_json::to_string(&ServerMessage::Pong)
+            .expect("Pong ServerMessage must serialize to JSON");
         let transport = MockTransport::new().with_incoming(vec![Some(Ok(pong_json))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
@@ -2084,14 +2184,17 @@ mod tests {
         );
 
         // Queue a ping command.
-        client.ping().unwrap();
+        client
+            .ping()
+            .expect("ping must succeed on connected client");
 
         // Second poll: sends the ping.
         client.poll();
 
         // Verify the Ping message was sent.
         let ping_sent = client.transport.sent.iter().any(|s| {
-            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(s).expect("sent message must be valid JSON");
             v["type"] == "Ping"
         });
         assert!(ping_sent, "expected Ping to be sent");

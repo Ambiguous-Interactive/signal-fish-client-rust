@@ -27,6 +27,8 @@
 #  16. Fuzz smoke tests      (optional — requires nightly + cargo-fuzz)
 #  17. Mutation testing      (optional — requires cargo-mutants)
 #  18. Code coverage          (optional — requires cargo-llvm-cov)
+#  19. Shell portability      (delegates to scripts/test_shell_portability.sh)
+#  20. Rust test I/O unwrap   (delegates to scripts/check-test-io-unwrap.sh)
 #
 # Notes:
 #   - MSRV (1.85.0) verification is CI-only (requires rustup toolchain override)
@@ -64,7 +66,7 @@ for arg in "$@"; do
 done
 
 # ── Phase tracking ───────────────────────────────────────────────────
-TOTAL_PHASES=18
+TOTAL_PHASES=20
 if [ "$QUICK" = true ]; then
     TOTAL_PHASES=4
 fi
@@ -90,6 +92,8 @@ PHASE_NAMES[15]="Miri (UB detection)"
 PHASE_NAMES[16]="Fuzz smoke tests"
 PHASE_NAMES[17]="Mutation testing"
 PHASE_NAMES[18]="Code coverage"
+PHASE_NAMES[19]="Shell portability"
+PHASE_NAMES[20]="Rust test I/O unwrap"
 
 for i in $(seq 1 "$TOTAL_PHASES"); do
     PHASE_RESULTS[i]="SKIP"
@@ -622,6 +626,38 @@ else
         echo -e "${YELLOW}Phase 18: WARN (coverage generation failed — informational only)${NC}"
         PHASE_RESULTS[18]="WARN"
     fi
+fi
+echo ""
+
+# ── Phase 19: Shell portability ─────────────────────────────────────
+echo -e "${YELLOW}Phase 19/$TOTAL_PHASES: Shell portability (scripts/test_shell_portability.sh)...${NC}"
+if [ -f "$SCRIPT_DIR/test_shell_portability.sh" ]; then
+    if bash "$SCRIPT_DIR/test_shell_portability.sh" 2>&1; then
+        echo -e "${GREEN}Phase 19: PASS${NC}"
+        PHASE_RESULTS[19]="PASS"
+    else
+        echo -e "${RED}Phase 19: FAIL${NC}"
+        mark_phase_fail 19
+    fi
+else
+    echo -e "${YELLOW}SKIP: scripts/test_shell_portability.sh not found.${NC}"
+    PHASE_RESULTS[19]="SKIP"
+fi
+echo ""
+
+# ── Phase 20: Rust test I/O unwrap ────────────────────────────────
+echo -e "${YELLOW}Phase 20/$TOTAL_PHASES: Rust test I/O unwrap (scripts/check-test-io-unwrap.sh)...${NC}"
+if [ -f "$SCRIPT_DIR/check-test-io-unwrap.sh" ]; then
+    if bash "$SCRIPT_DIR/check-test-io-unwrap.sh" 2>&1; then
+        echo -e "${GREEN}Phase 20: PASS${NC}"
+        PHASE_RESULTS[20]="PASS"
+    else
+        echo -e "${RED}Phase 20: FAIL${NC}"
+        mark_phase_fail 20
+    fi
+else
+    echo -e "${YELLOW}SKIP: scripts/check-test-io-unwrap.sh not found.${NC}"
+    PHASE_RESULTS[20]="SKIP"
 fi
 echo ""
 
