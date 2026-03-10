@@ -6,6 +6,16 @@
 # these patterns when explicitly opted in via #![allow(...)] or
 # #[allow(...)] attributes.
 #
+# Phase 1: grep-based scan of src/ and examples/ (~1-2 seconds)
+# Phase 2: verify test files have explicit opt-in attributes
+#
+# NOTE: A previous Phase 3 (running cargo clippy with panic-free lints)
+# was removed because those lints are already configured as deny in
+# Cargo.toml [lints.clippy], and the pre-commit hook already runs
+# `cargo clippy --all-targets --all-features -- -D warnings` which
+# catches all deny-level lints. Removing Phase 3 saves ~60-120 seconds
+# of redundant compilation per hook run.
+#
 # Exit codes:
 #   0 — no violations found
 #   1 — forbidden patterns detected
@@ -139,27 +149,6 @@ if [ "$TESTS_VIOLATIONS" -eq 0 ]; then
 else
     VIOLATIONS=$((VIOLATIONS + TESTS_VIOLATIONS))
 fi
-echo ""
-
-# ── Phase 3: Run Clippy with hard-fail lints ─────────────────────────
-# The deny-level lints are configured in Cargo.toml [lints.clippy].
-# We pass them again here as defense-in-depth (ensures enforcement even
-# if someone removes the [lints.clippy] section from Cargo.toml).
-echo -e "${YELLOW}Phase 3: Running Clippy with panic-free lints...${NC}"
-if cargo clippy --all-targets --all-features -- \
-    -D clippy::unwrap_used \
-    -D clippy::expect_used \
-    -D clippy::panic \
-    -D clippy::todo \
-    -D clippy::unimplemented \
-    -D clippy::indexing_slicing \
-    2>&1; then
-    echo -e "${GREEN}Phase 3: PASS${NC}"
-else
-    echo -e "${RED}Phase 3: FAIL${NC}"
-    VIOLATIONS=$((VIOLATIONS + 1))
-fi
-
 echo ""
 
 # ── Result ────────────────────────────────────────────────────────────

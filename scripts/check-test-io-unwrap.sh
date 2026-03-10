@@ -117,75 +117,61 @@ for file in "${RS_FILES[@]}"; do
     file_violations=0
 
     # ── Single-line check ────────────────────────────────────────────
+    # Use whole-file grep -nE per pattern instead of per-line iteration.
+    # This reduces ~52,000 subprocess spawns to ~24 (6 patterns × 4 files).
     for pattern in "${IO_PATTERNS[@]}"; do
-        lineno=0
-        while IFS= read -r line; do
-            lineno=$((lineno + 1))
-
-            # Skip blank lines
-            [ -z "$line" ] && continue
-
-            # Strip leading whitespace for comment detection
-            stripped="${line#"${line%%[![:space:]]*}"}"
-
-            # Skip comment lines
+        raw=$(grep -nE "$pattern" "$file" 2>/dev/null || true)
+        [ -z "$raw" ] && continue
+        while IFS= read -r match; do
+            lineno="${match%%:*}"
+            content="${match#*:}"
+            stripped="${content#"${content%%[![:space:]]*}"}"
             [[ "$stripped" == //* ]] && continue
-
-            # Check for the I/O .unwrap() pattern
-            if printf '%s\n' "$line" | grep -qE "$pattern"; then
-                echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation"
-                echo "  $stripped"
-                file_violations=$((file_violations + 1))
-            fi
-        done < "$file"
+            echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation"
+            echo "  $stripped"
+            file_violations=$((file_violations + 1))
+        done <<< "$raw"
     done
 
     # ── Multiline check ──────────────────────────────────────────────
     # Check for cases where an I/O call spans lines and .unwrap() is on
     # a subsequent line (e.g., read_dir(...)\n    .unwrap()).
-    mapfile -t file_lines < "$file"
-    total_lines=${#file_lines[@]}
+    #
+    # Instead of iterating every line, first grep for just the .unwrap()
+    # continuation lines, then only look back for those few matches.
+    # This reduces ~1.5M iterations to just the few matching lines.
+    unwrap_raw=$(grep -nE '^[[:space:]]*\.unwrap\(\)' "$file" 2>/dev/null || true)
+    if [ -n "$unwrap_raw" ]; then
+        mapfile -t file_lines < "$file"
+        while IFS= read -r match; do
+            lineno="${match%%:*}"
+            i=$((lineno - 1))  # convert to 0-indexed
 
-    for ((i = 0; i < total_lines; i++)); do
-        line="${file_lines[$i]}"
-        line="${line//$'\r'/}"
-
-        # Strip leading whitespace
-        stripped="${line#"${line%%[![:space:]]*}"}"
-
-        # Skip comments
-        [[ "$stripped" == //* ]] && continue
-
-        # If this line ends with .unwrap() and the call opened on a
-        # previous line, check if any recent preceding line (within 5
-        # lines) contains an I/O call starter without .unwrap().
-        if printf '%s\n' "$stripped" | grep -qE '^[[:space:]]*\.unwrap\(\)'; then
+            # Look back up to 5 lines for nearest non-blank, non-comment line
             for ((j = i - 1; j >= 0 && j >= i - 5; j--)); do
                 prev="${file_lines[$j]}"
                 prev="${prev//$'\r'/}"
                 prev_stripped="${prev#"${prev%%[![:space:]]*}"}"
-
-                # Skip blank/comment lines
                 [ -z "$prev_stripped" ] && continue
                 [[ "$prev_stripped" == //* ]] && continue
 
+                # Check if this previous line has an I/O call starter
                 for starter in "${IO_CALL_STARTERS[@]}"; do
                     if printf '%s\n' "$prev" | grep -qE "$starter"; then
                         # Make sure this isn't already caught by the single-line check
                         # (i.e., the same line doesn't also have .unwrap())
                         if ! printf '%s\n' "$prev" | grep -qE '\.unwrap\(\)'; then
-                            lineno=$((i + 1))
                             echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation (multiline)"
                             echo "  $prev_stripped"
-                            echo "  $stripped"
+                            printf '  %s\n' "$(printf '%s\n' "${file_lines[$i]}" | sed 's/^[[:space:]]*//')"
                             file_violations=$((file_violations + 1))
                         fi
                     fi
                 done
                 break  # Only check the nearest non-blank line
             done
-        fi
-    done
+        done <<< "$unwrap_raw"
+    fi
 
     if [ "$file_violations" -gt 0 ]; then
         VIOLATIONS=$((VIOLATIONS + file_violations))

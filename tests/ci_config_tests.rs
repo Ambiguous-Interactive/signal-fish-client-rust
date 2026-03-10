@@ -1875,6 +1875,166 @@ mod ci_config_validation {
         );
     }
 
+    /// Verify that cargo commands in the pre-push hook run sequentially
+    /// (without `&` background suffixes). Running `cargo clippy
+    /// --no-default-features` and `cargo test --all-features` in parallel
+    /// causes two problems: (1) cache thrashing in the shared `target/`
+    /// directory because different feature-flag combinations invalidate
+    /// each other's build artifacts, and (2) package-lock contention
+    /// where one process blocks on the Cargo package lock held by the
+    /// other, yielding no speedup and non-deterministic output.
+    #[test]
+    fn install_hooks_pre_push_cargo_commands_must_not_run_in_parallel() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        // Extract the PUSH_SCRIPT heredoc section (between the two PUSH_SCRIPT markers).
+        let push_start = contents
+            .find("cat > \"${PUSH_HOOK_FILE}\" << 'PUSH_SCRIPT'")
+            .expect("install-hooks.sh must contain a PUSH_SCRIPT heredoc for the pre-push hook");
+        let push_end = contents[push_start..]
+            .find("\nPUSH_SCRIPT\n")
+            .map(|offset| push_start + offset)
+            .expect("install-hooks.sh PUSH_SCRIPT heredoc must have a closing marker");
+        let push_section = &contents[push_start..push_end];
+
+        // Find all lines that invoke cargo and check none end with ` &`
+        // (which would background the command for parallel execution).
+        let offending_lines: Vec<(usize, &str)> = push_section
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let trimmed = line.trim();
+                trimmed.contains("cargo ") && trimmed.ends_with(" &")
+            })
+            .collect();
+
+        assert!(
+            offending_lines.is_empty(),
+            "Pre-push hook cargo commands in scripts/install-hooks.sh must NOT \
+             run in parallel (must not end with ' &'). Running cargo with \
+             different feature flags (e.g., --no-default-features vs \
+             --all-features) in parallel causes cache thrashing in the shared \
+             target/ directory, leading to non-deterministic build failures.\n\
+             Offending lines:\n{}",
+            offending_lines
+                .iter()
+                .map(|(i, line)| format!("  PUSH_SCRIPT+{i}: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Verify that `cargo fmt` runs in the foreground (no `&`) before
+    /// `cargo clippy` in the pre-commit hook.  `cargo fmt --check` is
+    /// fast (no compilation) and must finish before clippy starts,
+    /// because both contend for the Cargo package lock.  Running them
+    /// in parallel causes lock contention with no real speedup.
+    /// Clippy, on the other hand, *is* backgrounded so it can overlap
+    /// with the other non-cargo parallel checks.
+    #[test]
+    fn install_hooks_pre_commit_cargo_fmt_must_run_before_clippy() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        // Extract the HOOK_SCRIPT heredoc section (between the two HOOK_SCRIPT markers).
+        let hook_start = contents
+            .find("cat > \"${HOOK_FILE}\" << 'HOOK_SCRIPT'")
+            .expect("install-hooks.sh must contain a HOOK_SCRIPT heredoc for the pre-commit hook");
+        let hook_end = contents[hook_start..]
+            .find("\nHOOK_SCRIPT\n")
+            .map(|offset| hook_start + offset)
+            .expect("install-hooks.sh HOOK_SCRIPT heredoc must have a closing marker");
+        let hook_section = &contents[hook_start..hook_end];
+
+        // ── cargo fmt must NOT be backgrounded ──────────────────────────
+        // Find the run_check line for cargo fmt and verify it does not
+        // end with ` &` (which would background it).
+        let fmt_lines: Vec<(usize, &str)> = hook_section
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let trimmed = line.trim();
+                trimmed.contains("cargo fmt") && trimmed.starts_with("run_check")
+            })
+            .collect();
+
+        assert!(
+            !fmt_lines.is_empty(),
+            "Pre-commit hook in scripts/install-hooks.sh must contain a \
+             run_check invocation for cargo fmt."
+        );
+
+        // The run_check for cargo fmt is a multi-line continuation; gather
+        // the full logical command (all continuation lines) and check that
+        // the final line does NOT end with ` &`.
+        let fmt_start_idx = fmt_lines[0].0;
+        let hook_lines: Vec<&str> = hook_section.lines().collect();
+        let mut fmt_end_idx = fmt_start_idx;
+        for (i, line) in hook_lines.iter().enumerate().skip(fmt_start_idx) {
+            if line.trim().ends_with('\\') {
+                fmt_end_idx = i + 1;
+            } else {
+                fmt_end_idx = i;
+                break;
+            }
+        }
+        let fmt_final_line = hook_lines[fmt_end_idx];
+        assert!(
+            !fmt_final_line.trim().ends_with(" &"),
+            "Pre-commit hook: cargo fmt run_check must NOT be backgrounded \
+             (must not end with ' &'). cargo fmt must run in the foreground \
+             so it finishes before clippy starts, avoiding Cargo package-lock \
+             contention.\n  HOOK_SCRIPT+{}: {}",
+            fmt_end_idx,
+            fmt_final_line
+        );
+
+        // ── cargo clippy MUST be backgrounded ───────────────────────────
+        // Find the run_check line for cargo clippy and verify its final
+        // continuation line ends with ` &`.
+        let clippy_lines: Vec<(usize, &str)> = hook_section
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let trimmed = line.trim();
+                trimmed.contains("cargo clippy") && trimmed.starts_with("run_check")
+            })
+            .collect();
+
+        assert!(
+            !clippy_lines.is_empty(),
+            "Pre-commit hook in scripts/install-hooks.sh must contain a \
+             run_check invocation for cargo clippy."
+        );
+
+        let clippy_start_idx = clippy_lines[0].0;
+        let mut clippy_end_idx = clippy_start_idx;
+        for (i, line) in hook_lines.iter().enumerate().skip(clippy_start_idx) {
+            if line.trim().ends_with('\\') {
+                clippy_end_idx = i + 1;
+            } else {
+                clippy_end_idx = i;
+                break;
+            }
+        }
+        let clippy_final_line = hook_lines[clippy_end_idx];
+        assert!(
+            clippy_final_line.trim().ends_with(" &"),
+            "Pre-commit hook: cargo clippy run_check MUST be backgrounded \
+             (must end with ' &'). clippy should run in parallel with other \
+             non-cargo checks for speed.\n  HOOK_SCRIPT+{}: {}",
+            clippy_end_idx,
+            clippy_final_line
+        );
+
+        // ── cargo fmt must appear before cargo clippy ───────────────────
+        assert!(
+            fmt_start_idx < clippy_start_idx,
+            "Pre-commit hook: cargo fmt (line {fmt_start_idx}) must appear \
+             before cargo clippy (line {clippy_start_idx}) in the hook script \
+             so that formatting is verified before compilation begins."
+        );
+    }
+
     /// Verify that `.pre-commit-config.yaml` includes push-stage hooks
     /// for the panic-free policy check and markdown snippet compilation.
     #[test]
