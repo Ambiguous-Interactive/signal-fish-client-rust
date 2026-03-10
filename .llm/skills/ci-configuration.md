@@ -124,6 +124,12 @@ and `[default.extend-words]` for standalone words in comments/strings (e.g.,
 `Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
 entries to both sections and cross-reference them with comments.
 
+### Cargo parallelism: never run different feature flags in parallel
+
+Cargo commands with different feature flag combinations (e.g., `--all-features` vs `--no-default-features`) must **never** run in parallel when sharing the same `target/` directory. Different feature flags cause constant cache invalidation — each process rebuilds artifacts the other just compiled, yielding no parallelism benefit and significantly more total compilation work.
+
+**Correct patterns:** In local scripts/hooks, run cargo commands with different feature flags **sequentially**; non-cargo checks can run in parallel since they don't write to `target/`. In CI, matrix strategies give each feature combination its own runner and `target/` directory, so parallel execution is safe. Multiple cargo subcommands with the **same** feature flags can overlap since they share compilation artifacts. Enforced by `ci_config_tests.rs::ci_config_validation::install_hooks_pre_push_cargo_commands_must_not_run_in_parallel`. Reference: `scripts/install-hooks.sh` two-phase pre-push hook.
+
 ### Shell scripts: Comments must match behavior
 
 Keep comments in CI shell scripts behaviorally exact:

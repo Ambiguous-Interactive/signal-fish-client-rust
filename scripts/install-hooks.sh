@@ -21,16 +21,18 @@
 #  14.  typos --config .typos.toml  (optional)
 #  15.  TOML config validation      (optional)
 #
-# And a pre-push hook that runs ALL checks in parallel:
-#   1. cargo clippy --all-targets --no-default-features -- -D warnings
-#   2. cargo test --all-features
-#   3. scripts/check-no-panics.sh (phases 1-2 only)
-#   4. scripts/extract-rust-snippets.sh
-#   5. scripts/pre-commit-docs.sh (optional)
+# And a pre-push hook that runs checks in two phases:
+#   Phase 1 (parallel, background — no target/ access):
+#     3. scripts/check-no-panics.sh (phases 1-2 only)
+#     4. scripts/extract-rust-snippets.sh
+#     5. scripts/pre-commit-docs.sh (optional)
+#   Phase 2 (sequential, foreground — shared target/):
+#     1. cargo clippy --all-targets --no-default-features -- -D warnings
+#     2. cargo test --all-features
 #
 # Hook behavior:
 #   On every commit : all 15 checks above run in parallel
-#   On push only    : all 5 checks above run in parallel
+#   On push only    : non-cargo checks run in background; cargo commands run sequentially
 #
 # NOTE: .pre-commit-config.yaml is kept as documentation reference only.
 # This script always installs custom parallel hooks for speed.
@@ -290,9 +292,11 @@ with open(sys.argv[1], 'rb') as f:
 PIDS+=($!)
 
 # ── Wait for all checks ─────────────────────────────────────────────
-for pid in "${PIDS[@]}"; do
-    wait "$pid" 2>/dev/null || true
-done
+if [ ${#PIDS[@]} -gt 0 ]; then
+    for pid in "${PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+fi
 
 OVERALL_END=$(_now)
 OVERALL_ELAPSED=$(_elapsed "$OVERALL_START" "$OVERALL_END")
@@ -346,11 +350,12 @@ HOOK_SCRIPT
 
 chmod +x "${HOOK_FILE}"
 
-# ── Pre-push hook (parallel) ─────────────────────────────────────────────
+# ── Pre-push hook (two-phase) ────────────────────────────────────────────
 cat > "${PUSH_HOOK_FILE}" << 'PUSH_SCRIPT'
 #!/usr/bin/env bash
 # Auto-generated pre-push hook — managed by scripts/install-hooks.sh
-# Runs all checks in parallel for maximum speed.
+# Non-cargo checks run in parallel (background); cargo commands run sequentially
+# to avoid target/ cache thrashing from different feature flags.
 # To update, re-run: bash scripts/install-hooks.sh
 
 set -euo pipefail
@@ -397,19 +402,12 @@ run_check() {
 }
 
 OVERALL_START=$(_now)
-echo "Pre-push checks (parallel)..."
+echo "Pre-push checks..."
 
 PIDS=()
 
-# ── 1. Cargo clippy (no-default-features) ────────────────────────────
-run_check "clippy no-default" "01-clippy-nodef" \
-    cargo clippy --all-targets --no-default-features -- -D warnings &
-PIDS+=($!)
-
-# ── 2. Cargo test ────────────────────────────────────────────────────
-run_check "cargo test" "02-test" \
-    cargo test --all-features &
-PIDS+=($!)
+# ── Phase 1: Non-cargo checks (parallel, in background) ──────────
+# These don't write to the project's target/ directory.
 
 # ── 3. Panic-free policy check (phases 1-2 only) ────────────────────
 if [ -f "${REPO_ROOT}/scripts/check-no-panics.sh" ]; then
@@ -438,10 +436,24 @@ else
     printf 'SKIP 0.0 docs rendering (script not found)\n' > "$CHECK_TMPDIR/05-docs.result"
 fi
 
-# ── Wait for all checks ─────────────────────────────────────────────
-for pid in "${PIDS[@]}"; do
-    wait "$pid" 2>/dev/null || true
-done
+# ── Phase 2: Cargo commands (sequential, foreground) ─────────────
+# Different feature flags share the same target/ directory; running
+# them in parallel causes cache thrashing with no real speedup.
+
+# ── 1. Cargo clippy (no-default-features) ────────────────────────────
+run_check "clippy no-default" "01-clippy-nodef" \
+    cargo clippy --all-targets --no-default-features -- -D warnings
+
+# ── 2. Cargo test ────────────────────────────────────────────────────
+run_check "cargo test" "02-test" \
+    cargo test --all-features
+
+# ── Wait for background non-cargo checks ─────────────────────────
+if [ ${#PIDS[@]} -gt 0 ]; then
+    for pid in "${PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+fi
 
 OVERALL_END=$(_now)
 OVERALL_ELAPSED=$(_elapsed "$OVERALL_START" "$OVERALL_END")
@@ -521,12 +533,14 @@ echo " 13.  cargo clippy --all-targets --all-features -- -D warnings (skipped if
 echo " 14.  typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo " 15.  TOML config validation      (optional, requires python3)"
 echo ""
-echo "The pre-push hook runs on every 'git push' (all checks in parallel):"
-echo "  1. cargo clippy --all-targets --no-default-features -- -D warnings"
-echo "  2. cargo test --all-features"
-echo "  3. bash scripts/check-no-panics.sh (panic-free policy — phases 1-2)"
-echo "  4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
-echo "  5. bash scripts/pre-commit-docs.sh (docs rendering — optional, skipped if mkdocs not installed)"
+echo "The pre-push hook runs on every 'git push' (two-phase execution):"
+echo "  Phase 1 — parallel background (non-cargo):"
+echo "    3. bash scripts/check-no-panics.sh (panic-free policy — phases 1-2)"
+echo "    4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
+echo "    5. bash scripts/pre-commit-docs.sh (docs rendering — optional, skipped if mkdocs not installed)"
+echo "  Phase 2 — sequential foreground (cargo, shared target/):"
+echo "    1. cargo clippy --all-targets --no-default-features -- -D warnings"
+echo "    2. cargo test --all-features"
 echo ""
 echo "NOTE: .pre-commit-config.yaml is kept as documentation reference only."
 echo "      These hooks always use custom parallel execution for speed."

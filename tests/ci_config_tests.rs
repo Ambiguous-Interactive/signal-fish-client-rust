@@ -1875,6 +1875,53 @@ mod ci_config_validation {
         );
     }
 
+    /// Verify that cargo commands in the pre-push hook run sequentially
+    /// (without `&` background suffixes). Running `cargo clippy
+    /// --no-default-features` and `cargo test --all-features` in parallel
+    /// causes cache thrashing in the shared `target/` directory because
+    /// different feature-flag combinations invalidate each other's build
+    /// artifacts, leading to non-deterministic failures with no speedup.
+    #[test]
+    fn install_hooks_pre_push_cargo_commands_must_not_run_in_parallel() {
+        let contents = read_project_file("scripts/install-hooks.sh");
+
+        // Extract the PUSH_SCRIPT heredoc section (between the two PUSH_SCRIPT markers).
+        let push_start = contents
+            .find("cat > \"${PUSH_HOOK_FILE}\" << 'PUSH_SCRIPT'")
+            .expect("install-hooks.sh must contain a PUSH_SCRIPT heredoc for the pre-push hook");
+        let push_end = contents[push_start..]
+            .find("\nPUSH_SCRIPT\n")
+            .map(|offset| push_start + offset)
+            .expect("install-hooks.sh PUSH_SCRIPT heredoc must have a closing marker");
+        let push_section = &contents[push_start..push_end];
+
+        // Find all lines that invoke cargo and check none end with ` &`
+        // (which would background the command for parallel execution).
+        let offending_lines: Vec<(usize, &str)> = push_section
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let trimmed = line.trim();
+                trimmed.contains("cargo ") && trimmed.ends_with(" &")
+            })
+            .collect();
+
+        assert!(
+            offending_lines.is_empty(),
+            "Pre-push hook cargo commands in scripts/install-hooks.sh must NOT \
+             run in parallel (must not end with ' &'). Running cargo with \
+             different feature flags (e.g., --no-default-features vs \
+             --all-features) in parallel causes cache thrashing in the shared \
+             target/ directory, leading to non-deterministic build failures.\n\
+             Offending lines:\n{}",
+            offending_lines
+                .iter()
+                .map(|(i, line)| format!("  PUSH_SCRIPT+{i}: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
     /// Verify that `.pre-commit-config.yaml` includes push-stage hooks
     /// for the panic-free policy check and markdown snippet compilation.
     #[test]
