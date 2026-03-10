@@ -268,7 +268,7 @@ check_file() {
 
         # Check for \b word boundary
         if printf '%s\n' "$line" | grep -qE '\\b'; then
-            echo "  VIOLATION: $file:$line_num: \\b word boundary (GNU extension, not POSIX)"
+            printf '%s\n' "  VIOLATION: $file:$line_num: \\b word boundary (GNU extension, not POSIX)"
             echo "    $line"
             word_boundary_violations=$((word_boundary_violations + 1))
         fi
@@ -329,9 +329,9 @@ if [ "$CHECKS_FAILED" -gt 0 ]; then
     echo "Fixes:"
     echo "  grep -P  / grep -oP  -> grep -E / grep -oE / sed -nE / python"
     echo "  sed -r               -> sed -E"
-    echo "  \\s in grep -E       -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
-    echo "  \\s in sed           -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
-    echo "  \\b in grep/sed      -> grep -w, or (^|[^[:alnum:]_])word([^[:alnum:]_]|$)"
+    printf '%s\n' "  \\s in grep -E       -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
+    printf '%s\n' "  \\s in sed           -> [[:space:]]   (\\w->[[:alnum:]_], \\d->[[:digit:]])"
+    printf '%s\n' "  \\b in grep/sed      -> grep -w, or (^|[^[:alnum:]_])word([^[:alnum:]_]|$)"
     exit 1
 else
     echo ""

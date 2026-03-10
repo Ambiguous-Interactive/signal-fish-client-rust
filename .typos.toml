@@ -40,6 +40,10 @@ sbom = "sbom"
 # `Pn` appears in grep flag combinations (`-Pn`, `-oPn`, `-qPn`)
 # in shell scripts and test data — not a misspelling of "On"
 Pn = "Pn"
+# `BRE` and `ERE` are standard POSIX terms: Basic Regular Expression
+# and Extended Regular Expression. Not misspellings of "BE"/"BRIE"/"ERR".
+BRE = "BRE"
+ERE = "ERE"
 
 # ─────────────────────────────────────────────────────────────
 # Per-file identifier overrides — suppress false positives on

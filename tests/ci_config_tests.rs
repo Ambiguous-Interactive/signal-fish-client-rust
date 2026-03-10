@@ -4805,6 +4805,553 @@ mod shell_script_portability {
             "grep without echo should NOT be flagged"
         );
     }
+
+    /// Validates the PCRE shorthand detection logic against known positive
+    /// and negative cases. The production tests
+    /// (`shell_scripts_avoid_pcre_shorthand_in_ere_grep` and
+    /// `shell_scripts_avoid_pcre_shorthand_in_sed`) scan real scripts;
+    /// this data-driven test exercises the detection logic itself with
+    /// synthetic inputs to prevent regressions.
+    #[test]
+    fn pcre_shorthand_detection_unit_tests() {
+        /// Simulates the PCRE shorthand detection logic for `grep -E`
+        /// lines: returns `true` if the line invokes `grep` with `-E`
+        /// (in any flag-group position) AND contains a PCRE shorthand
+        /// (`\s`, `\w`, `\d`, `\S`, `\W`, `\D`).
+        fn would_flag_grep_e(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut has_grep_e = false;
+
+            for (i, token) in tokens.iter().enumerate() {
+                if (*token == "grep" || token.ends_with("/grep")) && i + 1 < tokens.len() {
+                    for subsequent in &tokens[i + 1..] {
+                        if !subsequent.starts_with('-') || subsequent.starts_with("--") {
+                            break;
+                        }
+                        let flags = &subsequent[1..];
+                        if flags.contains('E') {
+                            has_grep_e = true;
+                            break;
+                        }
+                    }
+                }
+                if has_grep_e {
+                    break;
+                }
+            }
+
+            if !has_grep_e {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)))
+        }
+
+        /// Simulates the PCRE shorthand detection logic for `sed` lines:
+        /// returns `true` if the line invokes `sed` AND contains a PCRE
+        /// shorthand (`\s`, `\w`, `\d`, `\S`, `\W`, `\D`).
+        fn would_flag_sed(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let pcre_chars: &[char] = &['s', 'w', 'd', 'S', 'W', 'D'];
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_sed = tokens
+                .iter()
+                .any(|token| *token == "sed" || token.ends_with("/sed"));
+
+            if !has_sed {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && pcre_chars.contains(&(w[1] as char)))
+        }
+
+        // ── grep -E with PCRE shorthands (should be flagged) ──
+
+        // \s in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\s+' file.txt"),
+            "grep -E with \\s should be flagged"
+        );
+        // \w in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\w+' file.txt"),
+            "grep -E with \\w should be flagged"
+        );
+        // \d in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\d+' file.txt"),
+            "grep -E with \\d should be flagged"
+        );
+        // \S (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\S' file.txt"),
+            "grep -E with \\S should be flagged"
+        );
+        // \W (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\W' file.txt"),
+            "grep -E with \\W should be flagged"
+        );
+        // \D (uppercase) in grep -E
+        assert!(
+            would_flag_grep_e("grep -E '\\D' file.txt"),
+            "grep -E with \\D should be flagged"
+        );
+        // -E combined with other flags
+        assert!(
+            would_flag_grep_e("grep -qE '\\s+' file.txt"),
+            "grep -qE with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -Eq '\\w+' file.txt"),
+            "grep -Eq with \\w should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -oE '\\d{3}' file.txt"),
+            "grep -oE with \\d should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -Eo '\\d{3}' file.txt"),
+            "grep -Eo with \\d should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -nE '\\s' file.txt"),
+            "grep -nE with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -cE '\\w' file.txt"),
+            "grep -cE with \\w should be flagged"
+        );
+        // -E in a longer combined flag group
+        assert!(
+            would_flag_grep_e("grep -oEn '\\s+' file.txt"),
+            "grep -oEn with \\s should be flagged"
+        );
+        assert!(
+            would_flag_grep_e("grep -nEo '\\d+' file.txt"),
+            "grep -nEo with \\d should be flagged"
+        );
+        // Full path to grep
+        assert!(
+            would_flag_grep_e("/usr/bin/grep -E '\\s' file.txt"),
+            "full-path grep -E with \\s should be flagged"
+        );
+
+        // ── grep -E with POSIX classes (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("grep -E '[[:space:]]+' file.txt"),
+            "grep -E with [[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[[:alnum:]_]+' file.txt"),
+            "grep -E with [[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[[:digit:]]+' file.txt"),
+            "grep -E with [[:digit:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:space:]]' file.txt"),
+            "grep -E with [^[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:alnum:]_]' file.txt"),
+            "grep -E with [^[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '[^[:digit:]]' file.txt"),
+            "grep -E with [^[:digit:]] should NOT be flagged"
+        );
+
+        // ── grep without -E (should NOT be flagged even with shorthands) ──
+
+        assert!(
+            !would_flag_grep_e("grep '\\s+' file.txt"),
+            "plain grep with \\s should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -q '\\w+' file.txt"),
+            "grep -q with \\w should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -o '\\d+' file.txt"),
+            "grep -o with \\d should NOT be flagged (no -E)"
+        );
+        assert!(
+            !would_flag_grep_e("grep -F '\\s+' file.txt"),
+            "grep -F with \\s should NOT be flagged (not -E)"
+        );
+
+        // ── grep -E without any PCRE shorthand (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("grep -E 'pattern' file.txt"),
+            "grep -E with plain pattern should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '^start.*end$' file.txt"),
+            "grep -E with standard ERE should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("grep -E '(foo|bar)+' file.txt"),
+            "grep -E with alternation should NOT be flagged"
+        );
+
+        // ── Comments and echo lines (should be skipped) ──
+
+        assert!(
+            !would_flag_grep_e("# grep -E '\\s+' file.txt"),
+            "commented grep -E with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("echo \"grep -E '\\s+'\""),
+            "echo mentioning grep -E with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_grep_e("printf \"use grep -E with \\s for...\""),
+            "printf mentioning grep -E with \\s should NOT be flagged"
+        );
+
+        // ── sed with PCRE shorthands (should be flagged) ──
+
+        assert!(
+            would_flag_sed("sed 's/\\s\\+/ /g' file.txt"),
+            "sed with \\s should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\w\\+/WORD/g' file.txt"),
+            "sed with \\w should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\d\\+/NUM/g' file.txt"),
+            "sed with \\d should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\S\\+/NONSPACE/g' file.txt"),
+            "sed with \\S should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\W\\+/SEP/g' file.txt"),
+            "sed with \\W should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed 's/\\D\\+/NONDIGIT/g' file.txt"),
+            "sed with \\D should be flagged"
+        );
+        // sed with flags combined
+        assert!(
+            would_flag_sed("sed -n 's/\\s\\+/ /gp' file.txt"),
+            "sed -n with \\s should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed -E 's/\\w+/WORD/g' file.txt"),
+            "sed -E with \\w should be flagged"
+        );
+        assert!(
+            would_flag_sed("sed -i 's/\\d\\+/NUM/g' file.txt"),
+            "sed -i with \\d should be flagged"
+        );
+        // Full path to sed
+        assert!(
+            would_flag_sed("/usr/bin/sed 's/\\s\\+/ /g' file.txt"),
+            "full-path sed with \\s should be flagged"
+        );
+
+        // ── sed with POSIX classes (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_sed("sed 's/[[:space:]]\\+/ /g' file.txt"),
+            "sed with [[:space:]] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/[[:alnum:]_]\\+/WORD/g' file.txt"),
+            "sed with [[:alnum:]_] should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/[[:digit:]]\\+/NUM/g' file.txt"),
+            "sed with [[:digit:]] should NOT be flagged"
+        );
+
+        // ── sed without PCRE shorthand (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_sed("sed 's/foo/bar/g' file.txt"),
+            "sed with literal replacement should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed -n '/pattern/p' file.txt"),
+            "sed -n with plain pattern should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("sed 's/^[[:space:]]*//g' file.txt"),
+            "sed with POSIX space class should NOT be flagged"
+        );
+
+        // ── Non-sed/non-grep commands (should NOT be flagged) ──
+
+        assert!(
+            !would_flag_grep_e("awk '/\\s+/ { print }' file.txt"),
+            "awk with \\s should NOT be flagged by grep-E check"
+        );
+        assert!(
+            !would_flag_sed("awk '/\\s+/ { print }' file.txt"),
+            "awk with \\s should NOT be flagged by sed check"
+        );
+        assert!(
+            !would_flag_grep_e("perl -ne 'print if /\\s+/' file.txt"),
+            "perl with \\s should NOT be flagged by grep-E check"
+        );
+
+        // ── Comments and echo lines for sed (should be skipped) ──
+
+        assert!(
+            !would_flag_sed("# sed 's/\\s\\+/ /g' file.txt"),
+            "commented sed with \\s should NOT be flagged"
+        );
+        assert!(
+            !would_flag_sed("echo \"sed 's/\\s\\+/ /g'\""),
+            "echo mentioning sed with \\s should NOT be flagged"
+        );
+    }
+
+    /// Validates the `\b` word boundary detection logic against known
+    /// positive and negative cases. The production test
+    /// (`shell_scripts_avoid_word_boundary_in_grep_and_sed`) scans real
+    /// scripts; this data-driven test exercises the detection logic itself
+    /// with synthetic inputs to prevent regressions.
+    #[test]
+    fn word_boundary_detection_unit_tests() {
+        /// Simulates the `\b` word boundary detection logic for a single
+        /// line: returns `true` if the line invokes `grep` or `sed` AND
+        /// contains a `\b` sequence.
+        fn would_flag(line: &str) -> bool {
+            let trimmed = line.trim();
+            if is_skippable_line(trimmed) {
+                return false;
+            }
+
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let has_grep_or_sed = tokens.iter().any(|token| {
+                *token == "grep"
+                    || token.ends_with("/grep")
+                    || *token == "sed"
+                    || token.ends_with("/sed")
+            });
+
+            if !has_grep_or_sed {
+                return false;
+            }
+
+            trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0] == b'\\' && w[1] == b'b')
+        }
+
+        // ── grep with \b (should be flagged) ──
+
+        assert!(
+            would_flag("grep '\\bword\\b' file.txt"),
+            "grep with \\b word boundaries should be flagged"
+        );
+        assert!(
+            would_flag("grep '\\bword' file.txt"),
+            "grep with leading \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep 'word\\b' file.txt"),
+            "grep with trailing \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -E '\\bfoo\\b' file.txt"),
+            "grep -E with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -q '\\bpattern\\b' file.txt"),
+            "grep -q with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -n '\\bpattern' file.txt"),
+            "grep -n with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -o '\\bword\\b' file.txt"),
+            "grep -o with \\b should be flagged"
+        );
+        // Combined flags with \b
+        assert!(
+            would_flag("grep -oE '\\bword\\b' file.txt"),
+            "grep -oE with \\b should be flagged"
+        );
+        assert!(
+            would_flag("grep -qn '\\bword\\b' file.txt"),
+            "grep -qn with \\b should be flagged"
+        );
+        // Full path to grep
+        assert!(
+            would_flag("/usr/bin/grep '\\bword' file.txt"),
+            "full-path grep with \\b should be flagged"
+        );
+
+        // ── sed with \b (should be flagged) ──
+
+        assert!(
+            would_flag("sed 's/\\bword\\b/replacement/g' file.txt"),
+            "sed with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed -n '/\\bpattern\\b/p' file.txt"),
+            "sed -n with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed -E 's/\\bfoo\\b/bar/g' file.txt"),
+            "sed -E with \\b should be flagged"
+        );
+        assert!(
+            would_flag("sed 's/\\bword/replacement/' file.txt"),
+            "sed with leading \\b should be flagged"
+        );
+        // Full path to sed
+        assert!(
+            would_flag("/usr/bin/sed 's/\\bword\\b/replacement/g' file.txt"),
+            "full-path sed with \\b should be flagged"
+        );
+
+        // ── Portable alternatives (should NOT be flagged) ──
+
+        // grep -w for whole-word matching
+        assert!(
+            !would_flag("grep -w 'word' file.txt"),
+            "grep -w should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -wE 'pattern' file.txt"),
+            "grep -wE should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -Ew 'pattern' file.txt"),
+            "grep -Ew should NOT be flagged"
+        );
+        // POSIX word-boundary emulation
+        assert!(
+            !would_flag("grep -E '(^|[^[:alnum:]_])word([^[:alnum:]_]|$)' file.txt"),
+            "grep -E with POSIX word boundary emulation should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed 's/(^|[^[:alnum:]_])word([^[:alnum:]_]|$)/replacement/g' file.txt"),
+            "sed with POSIX word boundary emulation should NOT be flagged"
+        );
+
+        // ── grep/sed without \b (should NOT be flagged) ──
+
+        assert!(
+            !would_flag("grep 'pattern' file.txt"),
+            "plain grep should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -E 'pattern' file.txt"),
+            "grep -E without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("grep -E '^start.*end$' file.txt"),
+            "grep -E with anchors should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed 's/foo/bar/g' file.txt"),
+            "sed without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed -n '/pattern/p' file.txt"),
+            "sed -n without \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("sed -E 's/(foo|bar)/baz/g' file.txt"),
+            "sed -E with alternation should NOT be flagged"
+        );
+
+        // ── Non-grep/non-sed commands (should NOT be flagged) ──
+
+        assert!(
+            !would_flag("awk '/\\bword\\b/ { print }' file.txt"),
+            "awk with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("perl -ne 'print if /\\bword\\b/' file.txt"),
+            "perl with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("python -c \"import re; re.search(r'\\bword', s)\""),
+            "python with \\b should NOT be flagged"
+        );
+
+        // ── Comments and echo lines (should be skipped) ──
+
+        assert!(
+            !would_flag("# grep '\\bword\\b' file.txt"),
+            "commented grep with \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("echo \"grep '\\bword\\b' is not portable\""),
+            "echo mentioning grep \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("printf \"use grep -w instead of \\b\""),
+            "printf mentioning \\b should NOT be flagged"
+        );
+        assert!(
+            !would_flag("# sed 's/\\bword\\b/replacement/g' file.txt"),
+            "commented sed with \\b should NOT be flagged"
+        );
+
+        // ── Edge cases ──
+
+        // Empty line
+        assert!(!would_flag(""), "empty line should NOT be flagged");
+        // Whitespace-only line
+        assert!(
+            !would_flag("   "),
+            "whitespace-only line should NOT be flagged"
+        );
+        // Line with leading whitespace (indented)
+        assert!(
+            would_flag("  grep '\\bword' file.txt"),
+            "indented grep with \\b should be flagged"
+        );
+        assert!(
+            would_flag("    sed 's/\\bword/repl/' file.txt"),
+            "indented sed with \\b should be flagged"
+        );
+        // Backslash followed by non-b character should not match
+        assert!(
+            !would_flag("grep '\\n' file.txt"),
+            "grep with \\n should NOT be flagged (not \\b)"
+        );
+        assert!(
+            !would_flag("grep '\\t' file.txt"),
+            "grep with \\t should NOT be flagged (not \\b)"
+        );
+        assert!(
+            !would_flag("sed 's/\\n/ /g' file.txt"),
+            "sed with \\n should NOT be flagged (not \\b)"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
