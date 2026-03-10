@@ -3286,13 +3286,18 @@ mod panic_script_cfg_handling {
         // The script must use a POSIX-portable grep -E pattern that matches
         // `test` as a whole word inside any `#[cfg(...)]` attribute, not just
         // exact `#[cfg(test)]`. The current pattern is:
-        //   grep -nE '#\[cfg\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)' "$file"
+        //   grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file"
+        //
+        // The pattern `(.*[^[:alnum:]_])?` makes the pre-boundary optional so
+        // that `#[cfg(test)]` matches (where `test` immediately follows the
+        // opening paren already consumed by `\(`).
         assert!(
-            contents.contains(r"#\[cfg\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)"),
+            contents.contains(r"#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)"),
             "scripts/check-no-panics.sh must use a POSIX-portable grep -E \
-             pattern that matches compound cfg attributes containing `test` \
+             pattern that matches both simple `#[cfg(test)]` and compound cfg \
+             attributes containing `test` \
              (e.g., `#[cfg(all(test, feature = \"...\"))]`). \
-             Expected pattern: `#\\[cfg\\(.*([^[:alnum:]_]|^)test([^[:alnum:]_]|$)`"
+             Expected pattern: `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`"
         );
     }
 
@@ -3343,7 +3348,7 @@ mod panic_script_cfg_handling {
              If all test modules have been removed, this test should be updated."
         );
 
-        // The script's grep pattern is: #\[cfg(.*\btest\b
+        // The script's grep pattern is: #\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)
         // This translates to: the line must contain `#[cfg(` followed (possibly
         // with intervening characters) by the word `test` as a whole word.
         // We check this without a regex dependency by verifying:
@@ -3382,7 +3387,8 @@ mod panic_script_cfg_handling {
 
         assert!(
             unmatched.is_empty(),
-            "The grep pattern in check-no-panics.sh (`#\\[cfg(.*\\btest\\b`) \
+            "The grep pattern in check-no-panics.sh \
+             (`#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) \
              does not match the following cfg(test) attributes found in src/:\n{}\n\
              Update the script's pattern to handle these variants.",
             unmatched.join("\n")
@@ -3391,8 +3397,9 @@ mod panic_script_cfg_handling {
 
     /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
     ///
-    /// The grep pattern in `check-no-panics.sh` (`#\[cfg(.*\btest\b`) would
-    /// match `#[cfg(not(test))]`, incorrectly treating the code below it as
+    /// The grep pattern in `check-no-panics.sh`
+    /// (`#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) would match
+    /// `#[cfg(not(test))]`, incorrectly treating the code below it as
     /// "inside a test module" when it is actually production code. As long as
     /// no source file uses this attribute, the false positive cannot occur.
     #[test]
@@ -3434,8 +3441,9 @@ mod panic_script_cfg_handling {
         assert!(
             violations.is_empty(),
             "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
-             positive in check-no-panics.sh (the grep pattern `#\\[cfg(.*\\btest\\b` \
-             matches it and incorrectly treats the code as inside a test module). \
+             positive in check-no-panics.sh (the grep pattern \
+             `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)` matches it and \
+             incorrectly treats the code as inside a test module). \
              Use a different gating mechanism or update check-no-panics.sh to \
              exclude `not(test)` before adding this attribute.\n\
              Violations:\n{}",
