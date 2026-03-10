@@ -4,7 +4,7 @@
 # Usage:
 #   bash scripts/install-hooks.sh
 #
-# This script installs a pre-commit hook that runs ALL checks in parallel:
+# This script installs a pre-commit hook that runs checks in parallel:
 #   1.  scripts/pre-commit-llm.py  (line-limit + skills index)
 #   2.  pytest -q scripts/test_pre_commit_llm.py (optional)
 #   3.  markdownlint on **/*.md     (optional)
@@ -31,7 +31,7 @@
 #     2. cargo test --all-features
 #
 # Hook behavior:
-#   On every commit : all 15 checks above run in parallel
+#   On every commit : 1-11,13-15 run in parallel; 12 (cargo fmt) runs in foreground before 13
 #   On push only    : non-cargo checks run in background; cargo commands run sequentially
 #
 # NOTE: .pre-commit-config.yaml is kept as documentation reference only.
@@ -85,7 +85,7 @@ _elapsed() {
     printf '%d.%d' "$sec" "$tenths"
 }
 
-# ── Run a single check in the background ─────────────────────────────
+# ── Run a single check (foreground or background) ────────────────────
 run_check() {
     local name="$1" id="$2"
     shift 2
@@ -213,10 +213,12 @@ else
 fi
 
 # ── 12. Cargo fmt check (skip if no Rust files staged) ──────────────
+# Run cargo fmt in the foreground (fast, no compilation) before
+# backgrounding clippy.  Both contend for the Cargo package lock, so
+# running them in parallel causes lock contention with no real speedup.
 if [ "$HAS_RUST_FILES" = true ]; then
     run_check "cargo fmt" "12-cargofmt" \
-        cargo fmt --all -- --check &
-    PIDS+=($!)
+        cargo fmt --all -- --check
 else
     printf 'SKIP 0.0 cargo fmt (no Rust files staged)\n' > "$CHECK_TMPDIR/12-cargofmt.result"
 fi

@@ -124,11 +124,11 @@ and `[default.extend-words]` for standalone words in comments/strings (e.g.,
 `Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
 entries to both sections and cross-reference them with comments.
 
-### Cargo parallelism: never run different feature flags in parallel
+### Cargo parallelism: never run cargo subcommands in parallel locally
 
-Cargo commands with different feature flag combinations (e.g., `--all-features` vs `--no-default-features`) must **never** run in parallel when sharing the same `target/` directory. Different feature flags cause constant cache invalidation — each process rebuilds artifacts the other just compiled, yielding no parallelism benefit and significantly more total compilation work.
+Any cargo subcommands sharing the same `target/` directory or Cargo package lock must not be run in parallel in local scripts/hooks. Two problems arise: (1) **Feature-flag conflicts** — different flag combinations (e.g., `--all-features` vs `--no-default-features`) cause constant cache invalidation, each process rebuilding what the other just compiled. (2) **Package-lock contention** — even non-compiling subcommands like `cargo fmt --check` acquire the Cargo package lock; running them in parallel with `cargo clippy` gains nothing because one blocks on the lock while the other holds it, and output becomes interleaved and non-deterministic.
 
-**Correct patterns:** In local scripts/hooks, run cargo commands with different feature flags **sequentially**; non-cargo checks can run in parallel since they don't write to `target/`. In CI, matrix strategies give each feature combination its own runner and `target/` directory, so parallel execution is safe. Multiple cargo subcommands with the **same** feature flags can overlap since they share compilation artifacts. Enforced by `ci_config_tests.rs::ci_config_validation::install_hooks_pre_push_cargo_commands_must_not_run_in_parallel`. Reference: `scripts/install-hooks.sh` two-phase pre-push hook.
+**Correct pattern (two-phase hooks):** Phase 1 runs non-cargo checks in parallel (typos, shellcheck, markdownlint, etc.). Phase 2 runs cargo commands sequentially to avoid lock contention and cache thrashing. The two hooks differ in Phase 2: the **pre-commit hook** runs `cargo fmt` in the foreground first (fast, no compilation), then backgrounds `cargo clippy` alongside remaining non-cargo checks; the **pre-push hook** runs `cargo clippy` then `cargo test` sequentially (no `cargo fmt`). In CI, matrix strategies give each job its own runner and `target/` directory, so parallel execution across jobs is safe. Enforced by `ci_config_tests.rs::ci_config_validation::install_hooks_pre_push_cargo_commands_must_not_run_in_parallel` and `install_hooks_pre_commit_cargo_fmt_must_run_before_clippy`. Reference: `scripts/install-hooks.sh`.
 
 ### Shell scripts: Comments must match behavior
 
