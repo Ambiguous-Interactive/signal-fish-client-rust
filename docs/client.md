@@ -60,7 +60,7 @@ use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.4.0".into()),
+    sdk_version: Some("0.4.1".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")
