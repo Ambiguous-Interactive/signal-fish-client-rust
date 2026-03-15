@@ -71,7 +71,7 @@ Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. 
 
 ### Identifier boundary matching in code scanners
 
-Simple substring checks (`line.contains(name)`) produce false positives when one name is a prefix of another (e.g., `tokio` matches `tokio_tungstenite`). Always enforce word boundaries: the character before and after the match must not be `[A-Za-z0-9_]`. Use `line.match_indices(ident)` and check the adjacent bytes. Canonical implementation: `ci_config_tests.rs::line_references_crate`.
+Simple substring checks (`line.contains(name)`) produce false positives when one name is a prefix of another (e.g., `tokio` matches `tokio_tungstenite`). Always enforce word boundaries: the character before and after the match must not be `[A-Za-z0-9_]`. Use `line.match_indices(ident)` and check the adjacent bytes. Canonical implementation: `ci_config_tests.rs::line_references_crate`. See also `skills/source-code-scanning.md` for raw-string handling, recursive directory traversal, and the `strip_non_code()` function.
 
 ### Dual-listed dependency awareness
 

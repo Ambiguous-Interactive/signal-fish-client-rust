@@ -64,6 +64,10 @@ Reference for serde_json, enum tagging, field attributes, and wire format as use
 
 Reference for writing portable shell scripts that work on both GNU (Linux) and BSD (macOS) systems.
 
+### [Source Code Scanning in Tests](source-code-scanning.md)
+
+Reference for writing tests and scripts that scan Rust source files for patterns — handling string literals, raw...
+
 ### [Testing Async Code](testing-async.md)
 
 Reference for tokio::test, mock transports, and channel-based test patterns as used in this codebase.

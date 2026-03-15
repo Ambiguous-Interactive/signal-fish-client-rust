@@ -49,6 +49,117 @@ fn project_file_exists(relative_path: &str) -> bool {
     project_root().join(relative_path).is_file()
 }
 
+/// Strips comment suffixes and string-literal contents from a source line,
+/// leaving only code tokens for crate-name scanning.
+///
+/// This prevents doc comments, line comments, and string literals from
+/// creating false-positive "usage" detections in the dev-dependency scanner.
+///
+/// Handles regular strings (`"..."`) with backslash escapes, and raw strings
+/// (`r"..."`, `r#"..."#`, `r##"..."##`, etc.) with proper delimiter counting.
+fn strip_non_code(line: &str) -> String {
+    let trimmed = line.trim();
+    // Full-line comments: no code tokens at all
+    if trimmed.starts_with("//") {
+        return String::new();
+    }
+
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut result = String::with_capacity(len);
+    let mut i = 0;
+
+    // State: when in_raw_string is Some(n), we are inside a raw string
+    // that requires `"` followed by exactly `n` `#` chars to close.
+    let mut in_regular_string = false;
+    let mut prev_was_backslash = false;
+    let mut in_raw_string: Option<usize> = None;
+
+    while i < len {
+        let ch = bytes[i];
+
+        // ── inside a raw string ────────────────────────────────────
+        if let Some(hash_count) = in_raw_string {
+            if ch == b'"' {
+                // Check for closing delimiter: `"` followed by `hash_count` `#`s.
+                let remaining = len - i - 1;
+                if remaining >= hash_count {
+                    let all_hashes = (1..=hash_count).all(|k| bytes[i + k] == b'#');
+                    if all_hashes {
+                        // Close the raw string; skip past `"` + hashes.
+                        i += 1 + hash_count;
+                        result.push('"'); // boundary marker
+                        in_raw_string = None;
+                        continue;
+                    }
+                }
+            }
+            // Still inside raw string — skip the character.
+            i += 1;
+            continue;
+        }
+
+        // ── inside a regular (non-raw) string ──────────────────────
+        if in_regular_string {
+            if ch == b'\\' && !prev_was_backslash {
+                prev_was_backslash = true;
+                i += 1;
+                continue;
+            }
+            if ch == b'"' && !prev_was_backslash {
+                in_regular_string = false;
+                result.push('"'); // boundary marker
+            }
+            prev_was_backslash = false;
+            i += 1;
+            continue;
+        }
+
+        // ── not inside any string ──────────────────────────────────
+
+        // Try to detect a raw string opening: `r` then 0+ `#` then `"`.
+        if ch == b'r' {
+            // Count consecutive `#` chars after `r`.
+            let mut hashes = 0;
+            while i + 1 + hashes < len && bytes[i + 1 + hashes] == b'#' {
+                hashes += 1;
+            }
+            // After the `#`s there must be a `"`.
+            if i + 1 + hashes < len && bytes[i + 1 + hashes] == b'"' {
+                // Make sure this `r` is not part of a longer identifier.
+                let is_word_start =
+                    i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                if is_word_start {
+                    // Enter raw-string mode; skip `r`, `#`s, and opening `"`.
+                    in_raw_string = Some(hashes);
+                    result.push('"'); // boundary marker
+                    i += 1 + hashes + 1; // skip r + #s + "
+                    continue;
+                }
+            }
+        }
+
+        // Regular string opening.
+        if ch == b'"' {
+            in_regular_string = true;
+            result.push('"'); // boundary marker
+            prev_was_backslash = false;
+            i += 1;
+            continue;
+        }
+
+        // Line comment starts — rest of line is comment.
+        if ch == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            break;
+        }
+
+        result.push(ch as char);
+        i += 1;
+    }
+
+    result
+}
+
 /// All required workflow files, relative to the project root.
 const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/ci.yml",
@@ -1117,16 +1228,35 @@ mod crate_version_consistency {
         let docs_dir = project_root().join("docs");
         let mut checked_files = 0;
 
-        for entry in std::fs::read_dir(&docs_dir).expect("docs/ directory must exist") {
-            let entry = entry.expect("failed to read docs/ entry");
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
+        fn collect_md_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in '{}': {e}", dir.display());
+                });
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_md_files(&path, out);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    out.push(path);
+                }
             }
-            let contents = std::fs::read_to_string(&path).expect("failed to read docs .md file");
+        }
+
+        let mut md_files = Vec::new();
+        collect_md_files(&docs_dir, &mut md_files);
+
+        for path in &md_files {
+            let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                panic!("Failed to read '{}': {e}", path.display());
+            });
             let rel = path
                 .strip_prefix(project_root())
-                .unwrap_or(&path)
+                .unwrap_or(path)
                 .display()
                 .to_string();
 
@@ -1135,16 +1265,47 @@ mod crate_version_consistency {
                 if !trimmed.starts_with("signal-fish-client") {
                     continue;
                 }
-                if !trimmed.contains("version") {
-                    continue;
+
+                if trimmed.contains("version") {
+                    // Inline-table form: signal-fish-client = { version = "X.Y.Z", ... }
+                    let expected = format!("version = \"{cargo_version}\"");
+                    assert!(
+                        trimmed.contains(&expected),
+                        "{rel}:{} has a signal-fish-client dependency snippet with a stale \
+                         version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                        line_num + 1
+                    );
+                } else if trimmed.contains('=') {
+                    // Bare string form: signal-fish-client = "X.Y.Z"
+                    // Extract the quoted version after `=`.
+                    if let Some(eq_pos) = trimmed.find('=') {
+                        let after_eq = trimmed[eq_pos + 1..].trim();
+                        // Strip trailing TOML comments (text after unquoted #)
+                        let after_eq = if let Some(rest) = after_eq.strip_prefix('"') {
+                            // Find closing quote, ignore everything after
+                            if let Some(close) = rest.find('"') {
+                                &after_eq[..close + 2] // Include both quotes
+                            } else {
+                                after_eq
+                            }
+                        } else {
+                            after_eq
+                        };
+                        if after_eq.starts_with('"')
+                            && after_eq.ends_with('"')
+                            && after_eq.len() > 2
+                        {
+                            let bare_version = &after_eq[1..after_eq.len() - 1];
+                            assert!(
+                                bare_version == cargo_version,
+                                "{rel}:{} has a signal-fish-client dependency snippet with a \
+                                 stale version.\nLine: `{trimmed}`\nExpected version \
+                                 \"{cargo_version}\" but found \"{bare_version}\".",
+                                line_num + 1
+                            );
+                        }
+                    }
                 }
-                let expected = format!("version = \"{cargo_version}\"");
-                assert!(
-                    trimmed.contains(&expected),
-                    "{rel}:{} has a signal-fish-client dependency snippet with a stale \
-                     version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
-                    line_num + 1
-                );
             }
             checked_files += 1;
         }
@@ -5655,9 +5816,12 @@ mod test_code_quality {
                     if !line.contains(".unwrap()") {
                         continue;
                     }
+                    // Strip comments and string literals so we don't match
+                    // I/O patterns that only appear inside strings.
+                    let code_only = strip_non_code(line);
                     // Check if the line contains any of the I/O patterns.
                     for pattern in io_patterns {
-                        if line.contains(pattern) {
+                        if code_only.contains(pattern) {
                             violations.push(format!(
                                 "{relative}:{}: {}",
                                 line_num + 1,
@@ -5763,58 +5927,6 @@ mod dev_dependency_usage {
         false
     }
 
-    /// Strips comment suffixes and string-literal contents from a source line,
-    /// leaving only code tokens for crate-name scanning.
-    ///
-    /// This prevents doc comments, line comments, and string literals from
-    /// creating false-positive "usage" detections in the dev-dependency scanner.
-    ///
-    /// Note: raw strings (`r#"..."#`) are handled correctly because `r#` is
-    /// kept as code tokens and the `"` still toggles string mode.
-    fn strip_non_code(line: &str) -> String {
-        let trimmed = line.trim();
-        // Full-line comments: no code tokens at all
-        if trimmed.starts_with("//") {
-            return String::new();
-        }
-
-        let mut result = String::with_capacity(line.len());
-        let mut chars = line.chars().peekable();
-        let mut in_string = false;
-        let mut prev_was_backslash = false;
-
-        while let Some(ch) = chars.next() {
-            if in_string {
-                if ch == '\\' && !prev_was_backslash {
-                    prev_was_backslash = true;
-                    continue;
-                }
-                if ch == '"' && !prev_was_backslash {
-                    in_string = false;
-                    result.push('"'); // keep the quote as a boundary
-                }
-                prev_was_backslash = false;
-                continue;
-            }
-
-            if ch == '"' {
-                in_string = true;
-                result.push('"'); // keep the quote as a boundary
-                prev_was_backslash = false;
-                continue;
-            }
-
-            // Line comment starts — rest of line is comment
-            if ch == '/' && chars.peek() == Some(&'/') {
-                break;
-            }
-
-            result.push(ch);
-        }
-
-        result
-    }
-
     /// Returns true if any `.rs` file under `dir` contains a reference to
     /// the given crate name as a complete identifier (word-boundary-aware).
     fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
@@ -5846,7 +5958,10 @@ mod dev_dependency_usage {
 
                 let mut in_block_comment = false;
                 for line in contents.lines() {
-                    // Handle block comments (simplified: track /* and */ per line)
+                    // Handle block comments (simplified: track /* and */ per line).
+                    // Note: raw strings containing /* or */ can confuse this tracker,
+                    // but strip_non_code() below handles string-literal content removal,
+                    // so the practical impact is minimal.
                     if in_block_comment {
                         if line.contains("*/") {
                             in_block_comment = false;
@@ -6122,6 +6237,86 @@ mod dev_dependency_usage {
         assert!(
             line_references_crate(result.trim(), "tokio"),
             "Should still match crate name in code after a URL string"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_raw_strings_with_inner_quotes() {
+        // r#"{"type":"ping"}"# contains inner quotes that must not toggle
+        // string mode. The entire raw-string body should be stripped.
+        let result = strip_non_code(r##"let json = r#"{"type":"ping"}"#;"##);
+        assert!(
+            !line_references_crate(result.trim(), "ping"),
+            "Should not match identifiers inside raw string contents. Got: `{result}`"
+        );
+        // `serde_json` patterns inside raw strings must not leak through.
+        let result2 = strip_non_code(
+            r##"let json = r#"{"type":"Authenticated","data":{"app_name":"test"}}"#;"##,
+        );
+        assert!(
+            !line_references_crate(result2.trim(), "serde_json"),
+            "Should not match crate-like patterns inside raw string. Got: `{result2}`"
+        );
+        assert!(
+            !line_references_crate(result2.trim(), "app_name"),
+            "Should not match identifiers inside raw string. Got: `{result2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_raw_strings_with_multiple_hashes() {
+        // r##"has "quotes" inside"## — the inner `"` should not close the raw string.
+        let result = strip_non_code(r###"let s = r##"has "quotes" inside"##;"###);
+        assert!(
+            !line_references_crate(result.trim(), "quotes"),
+            "Should not match identifiers inside multi-hash raw string. Got: `{result}`"
+        );
+        assert!(
+            !line_references_crate(result.trim(), "inside"),
+            "Should not match identifiers inside multi-hash raw string. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_raw_string_then_code() {
+        // Code after a raw string must still be visible.
+        let result = strip_non_code(r##"let x = r#"tokio"#; tokio::spawn(f());"##);
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match crate name in code after raw string. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_bare_r_string() {
+        // r"simple raw" — raw string with zero hashes.
+        let result = strip_non_code(r#"let s = r"simple raw"; tokio::spawn(f());"#);
+        assert!(
+            !line_references_crate(result.trim(), "simple"),
+            "Should not match identifiers inside bare r-string. Got: `{result}`"
+        );
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match crate name in code after bare r-string. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_empty_raw_string() {
+        let result = strip_non_code(r##"let x = r#""#; let y = 1;"##);
+        // The raw string is empty — code after it (let y = 1;) should be preserved
+        assert!(
+            result.contains("let y = 1;"),
+            "Code after empty raw string should be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_does_not_treat_raw_identifier_as_raw_string() {
+        let result = strip_non_code("let r#type = tokio::spawn(f());");
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Raw identifier r#type should not trigger raw string mode: {result}"
         );
     }
 }
