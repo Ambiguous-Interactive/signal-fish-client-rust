@@ -121,6 +121,60 @@ Do **not** use `strip_non_code()` in a per-line loop — it cannot detect
 multi-line `/* ... */` comments and will produce false positives on lines
 that are entirely inside a block comment.
 
+### Never use position checks as proxies for search results
+
+After a loop that scans for a closing delimiter (e.g., `*/`) and advances
+an index, testing `i >= len` to decide whether the delimiter was found is
+**ambiguous** — it is true both when the delimiter was not found *and* when
+the delimiter was found at the exact end of the input. This was the root
+cause of a bug in `strip_non_code_stateful` where finding `*/` at end-of-line
+left `in_block_comment` set to `true`, causing subsequent lines to be
+incorrectly stripped as comment content.
+
+The fix: always use an explicit boolean flag (e.g., `found_close`) to
+distinguish "delimiter found" from "input exhausted."
+
+Bad (ambiguous termination):
+
+```rust,ignore
+let mut i = 0;
+while i + 1 < len {
+    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+        i += 2;
+        break;
+    }
+    i += 1;
+}
+if i >= len {
+    // BUG: this branch fires when `*/` appears at the end of the line too
+    *in_block_comment = true;
+}
+```
+
+Good (explicit flag):
+
+```rust,ignore
+let mut i = 0;
+let mut found_close = false;
+while i + 1 < len {
+    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+        found_close = true;
+        i += 2;
+        break;
+    }
+    i += 1;
+}
+if !found_close {
+    *in_block_comment = true;
+}
+```
+
+**General principle:** When a loop can terminate in two ways (found the
+target vs. exhausted input), track which exit path was taken with a
+dedicated flag rather than inferring it from the loop variable's final
+value. This applies to any delimiter-scanning loop, not just block comment
+handling.
+
 ## Silent-Pass Anti-Pattern
 
 When a test conditionally parses a value (e.g., via `Option` or `if let`),
@@ -187,3 +241,5 @@ When writing a new test or script that scans `.rs` files for patterns:
 5. Add tests for raw strings with inner quotes, raw identifiers, and nested directories
 6. Never silently skip unparseable input — fail with a descriptive message
 7. Never pass `&mut <literal>` to stateful helpers — use a named local variable
+8. In delimiter-scanning loops, use an explicit boolean flag to track whether the
+   delimiter was found — never infer the result from the loop index's final value

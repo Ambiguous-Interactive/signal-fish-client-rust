@@ -183,16 +183,18 @@ fn strip_non_code_stateful(line: &str, in_block_comment: &mut bool) -> String {
         if ch == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
             i += 2; // skip /*
                     // Scan for closing */ on this same line.
+            let mut found_close = false;
             while i < len {
                 if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
                     i += 2; // skip */
+                    found_close = true;
                     break;
                 }
                 i += 1;
             }
             // If we exhausted the line without finding */, we are in a
             // multi-line block comment — set the flag for subsequent lines.
-            if i >= len {
+            if !found_close {
                 *in_block_comment = true;
             }
             // Continue processing any code after the closing */
@@ -6662,6 +6664,144 @@ mod dev_dependency_usage {
         assert!(
             line_references_crate(r1.trim(), "tokio"),
             "Should match code after string with fake /*. Got: `{r1}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_block_comment_closing_at_eol() {
+        // Regression: when /* ... */ closes exactly at the end of the line,
+        // `i` equals `len` after consuming `*/`, which previously caused
+        // the `if i >= len` check to incorrectly set `in_block_comment = true`.
+        let mut in_block = false;
+        let r = strip_non_code_stateful("let x = 1; /* comment */", &mut in_block);
+        assert!(
+            !in_block,
+            "Block comment closing at exact end-of-line must not leave in_block_comment set"
+        );
+        assert!(
+            r.contains("let x = 1;"),
+            "Code before block comment should be preserved. Got: `{r}`"
+        );
+
+        // Verify the next line is processed as normal code, not as a comment.
+        let r2 = strip_non_code_stateful("let y = tokio::spawn(f());", &mut in_block);
+        assert!(
+            line_references_crate(r2.trim(), "tokio"),
+            "Line after a properly closed block comment should be parsed as code. Got: `{r2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_whole_line_block_comment_at_eol() {
+        let mut in_block = false;
+        let r = strip_non_code_stateful("/* entire line is a comment */", &mut in_block);
+        assert!(
+            !in_block,
+            "Whole-line block comment must not leave in_block_comment set"
+        );
+        assert!(
+            r.trim().is_empty(),
+            "Output should be empty for whole-line block comment. Got: `{r}`"
+        );
+
+        // Next line should be normal code.
+        let r2 = strip_non_code_stateful("tokio::spawn(f());", &mut in_block);
+        assert!(
+            line_references_crate(r2.trim(), "tokio"),
+            "Line after whole-line block comment should be code. Got: `{r2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_multiple_block_comments_last_at_eol() {
+        let mut in_block = false;
+        let r = strip_non_code_stateful("let /* a */ x = /* b */", &mut in_block);
+        assert!(
+            !in_block,
+            "Multiple block comments where last closes at EOL must not leave state set"
+        );
+        assert!(
+            r.contains("let"),
+            "Code before first block comment should be preserved. Got: `{r}`"
+        );
+
+        let r2 = strip_non_code_stateful("tokio::spawn(f());", &mut in_block);
+        assert!(
+            line_references_crate(r2.trim(), "tokio"),
+            "Next line should be parsed as code. Got: `{r2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_first_closed_second_unclosed() {
+        // First block comment closes, second opens but doesn't close on this line.
+        let mut in_block = false;
+        let r = strip_non_code_stateful("code /* a */ more /* b", &mut in_block);
+        assert!(
+            in_block,
+            "Second unclosed block comment must set in_block_comment"
+        );
+        assert!(
+            r.contains("code"),
+            "Code before first block comment should be preserved. Got: `{r}`"
+        );
+        assert!(
+            r.contains("more"),
+            "Code between block comments should be preserved. Got: `{r}`"
+        );
+
+        // Next line should still be in block comment
+        let r2 = strip_non_code_stateful("still in comment */ tokio::spawn(f());", &mut in_block);
+        assert!(!in_block, "Block comment should close on next line");
+        assert!(
+            line_references_crate(r2.trim(), "tokio"),
+            "Code after closing */ should be visible. Got: `{r2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_close_alone_at_eol() {
+        // Closing */ is the entire line, with in_block_comment already set.
+        let mut in_block = true;
+        let r = strip_non_code_stateful("*/", &mut in_block);
+        assert!(
+            !in_block,
+            "Closing */ alone on a line must clear in_block_comment"
+        );
+        assert!(
+            r.trim().is_empty(),
+            "No code output expected when closing block comment alone. Got: `{r}`"
+        );
+
+        // Next line should be normal code.
+        let r2 = strip_non_code_stateful("tokio::spawn(f());", &mut in_block);
+        assert!(
+            line_references_crate(r2.trim(), "tokio"),
+            "Line after close should be code. Got: `{r2}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_block_comment_open_at_eol() {
+        let mut in_block = false;
+        let _r = strip_non_code_stateful("let x = 1; /*", &mut in_block);
+        assert!(
+            in_block,
+            "Block comment that opens at EOL without closing must set in_block_comment"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_empty_block_comment_at_eol() {
+        let mut in_block = false;
+        let r = strip_non_code_stateful("let x = 1; /**/", &mut in_block);
+        assert!(
+            !in_block,
+            "Empty block comment /**/ at EOL must not leave in_block_comment set"
+        );
+        assert!(
+            r.contains("let x = 1;"),
+            "Code before empty block comment should be preserved. Got: `{r}`"
         );
     }
 
