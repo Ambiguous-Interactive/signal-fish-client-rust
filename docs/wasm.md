@@ -113,7 +113,7 @@ Enable the `transport-websocket-emscripten` feature to access
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.4.1", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
 ### Building
@@ -345,7 +345,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.4.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.4.1", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 

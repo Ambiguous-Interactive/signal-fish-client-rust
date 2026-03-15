@@ -86,6 +86,22 @@ def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[P
                 rf"\g<1>{crate_version}\g<3>",
             )
         ],
+        REPO_ROOT / "docs" / "wasm.md": [
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
+        REPO_ROOT / "docs" / "examples.md": [
+            (
+                re.compile(
+                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
+                ),
+                rf"\g<1>{crate_version}\g<3>",
+            )
+        ],
         REPO_ROOT / "docs" / "client.md": [
             (
                 re.compile(r'(sdk_version:\s*Some\(")([^"]+)("\.into\(\)\),)'),
@@ -250,9 +266,13 @@ def generate_index(skill_files: list[Path]) -> str:
         title = extract_title(text)
         description = extract_first_paragraph(text)
 
-        # Truncate long descriptions
+        # Truncate long descriptions at word boundary
         if len(description) > 120:
-            description = description[:117] + "..."
+            # Find the last space at or before position 117
+            cut = description.rfind(' ', 0, 118)
+            if cut == -1:
+                cut = 117  # No space found; hard cut as fallback
+            description = description[:cut] + "..."
 
         lines.append(f"### [{title}]({rel})")
         lines.append("")

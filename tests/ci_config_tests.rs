@@ -835,7 +835,13 @@ mod crate_version_consistency {
     #[test]
     fn dependency_snippets_use_cargo_package_version() {
         let cargo_version = cargo_package_version();
-        let files = ["README.md", "docs/getting-started.md", "docs/index.md"];
+        let files = [
+            "README.md",
+            "docs/getting-started.md",
+            "docs/index.md",
+            "docs/wasm.md",
+            "docs/examples.md",
+        ];
 
         for path in files {
             let contents = read_project_file(path);
@@ -913,6 +919,7 @@ mod crate_version_consistency {
             "docs/concepts.md",
             "docs/errors.md",
             "docs/transport.md",
+            "docs/wasm.md",
         ];
 
         for path in files {
@@ -1101,6 +1108,50 @@ mod crate_version_consistency {
              reserved for features that existed in a prior release.\n\
              Duplicates found:\n{}",
             duplicates.join("\n")
+        );
+    }
+
+    #[test]
+    fn all_docs_dependency_snippets_use_cargo_package_version() {
+        let cargo_version = cargo_package_version();
+        let docs_dir = project_root().join("docs");
+        let mut checked_files = 0;
+
+        for entry in std::fs::read_dir(&docs_dir).expect("docs/ directory must exist") {
+            let entry = entry.expect("failed to read docs/ entry");
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).expect("failed to read docs .md file");
+            let rel = path
+                .strip_prefix(project_root())
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+
+            for (line_num, line) in contents.lines().enumerate() {
+                let trimmed = line.trim();
+                if !trimmed.starts_with("signal-fish-client") {
+                    continue;
+                }
+                if !trimmed.contains("version") {
+                    continue;
+                }
+                let expected = format!("version = \"{cargo_version}\"");
+                assert!(
+                    trimmed.contains(&expected),
+                    "{rel}:{} has a signal-fish-client dependency snippet with a stale \
+                     version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                    line_num + 1
+                );
+            }
+            checked_files += 1;
+        }
+
+        assert!(
+            checked_files > 0,
+            "Expected to find .md files in docs/ but found none."
         );
     }
 }
@@ -5647,9 +5698,14 @@ mod dev_dependency_usage {
     /// false-positives and are excluded from the usage scan.
     ///
     /// Only add entries here for deps that are truly invisible to the scanner.
-    /// If the scanner already detects usage (e.g., `tracing_subscriber::` in
+    /// If the scanner already detects usage (e.g., `some_crate::` in
     /// source files), an exception is redundant and should not be listed.
-    const INDIRECT_USE_EXCEPTIONS: &[(&str, &str)] = &[];
+    const INDIRECT_USE_EXCEPTIONS: &[(&str, &str)] = &[(
+        "futures-util",
+        "Dual-listed: optional in [dependencies] (feature-gated), unconditional in \
+             [dev-dependencies] so it is always available for test builds. Used in \
+             src/transports/websocket.rs but not directly imported in test code.",
+    )];
 
     /// Parses [dev-dependencies] from Cargo.toml and returns the crate names.
     fn dev_dependency_names() -> Vec<String> {
@@ -5707,6 +5763,58 @@ mod dev_dependency_usage {
         false
     }
 
+    /// Strips comment suffixes and string-literal contents from a source line,
+    /// leaving only code tokens for crate-name scanning.
+    ///
+    /// This prevents doc comments, line comments, and string literals from
+    /// creating false-positive "usage" detections in the dev-dependency scanner.
+    ///
+    /// Note: raw strings (`r#"..."#`) are handled correctly because `r#` is
+    /// kept as code tokens and the `"` still toggles string mode.
+    fn strip_non_code(line: &str) -> String {
+        let trimmed = line.trim();
+        // Full-line comments: no code tokens at all
+        if trimmed.starts_with("//") {
+            return String::new();
+        }
+
+        let mut result = String::with_capacity(line.len());
+        let mut chars = line.chars().peekable();
+        let mut in_string = false;
+        let mut prev_was_backslash = false;
+
+        while let Some(ch) = chars.next() {
+            if in_string {
+                if ch == '\\' && !prev_was_backslash {
+                    prev_was_backslash = true;
+                    continue;
+                }
+                if ch == '"' && !prev_was_backslash {
+                    in_string = false;
+                    result.push('"'); // keep the quote as a boundary
+                }
+                prev_was_backslash = false;
+                continue;
+            }
+
+            if ch == '"' {
+                in_string = true;
+                result.push('"'); // keep the quote as a boundary
+                prev_was_backslash = false;
+                continue;
+            }
+
+            // Line comment starts — rest of line is comment
+            if ch == '/' && chars.peek() == Some(&'/') {
+                break;
+            }
+
+            result.push(ch);
+        }
+
+        result
+    }
+
     /// Returns true if any `.rs` file under `dir` contains a reference to
     /// the given crate name as a complete identifier (word-boundary-aware).
     fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
@@ -5736,8 +5844,23 @@ mod dev_dependency_usage {
                     panic!("Failed to read '{}': {e}", path.display());
                 });
 
+                let mut in_block_comment = false;
                 for line in contents.lines() {
-                    if line_references_crate(line.trim(), rust_name) {
+                    // Handle block comments (simplified: track /* and */ per line)
+                    if in_block_comment {
+                        if line.contains("*/") {
+                            in_block_comment = false;
+                            // There might be code after */, but for simplicity skip the whole line
+                        }
+                        continue;
+                    }
+                    if line.trim().starts_with("/*") {
+                        in_block_comment = !line.contains("*/");
+                        continue;
+                    }
+
+                    let code_only = strip_non_code(line);
+                    if !code_only.is_empty() && line_references_crate(code_only.trim(), rust_name) {
                         return true;
                     }
                 }
@@ -5906,10 +6029,10 @@ mod dev_dependency_usage {
 
     #[test]
     fn crate_name_boundary_matching_rejects_suffixes() {
-        // "util" must NOT match when it is a suffix of a longer name.
+        // "zork" must NOT match when it is a suffix of a longer name.
         assert!(
-            !line_references_crate("use futures_util::StreamExt;", "util"),
-            "Should not match 'util' inside 'futures_util'"
+            !line_references_crate("use acme_zork::StreamExt;", "zork"),
+            "Should not match 'zork' inside 'acme_zork'"
         );
     }
 
@@ -5944,5 +6067,61 @@ mod dev_dependency_usage {
                  [dependencies] and [dev-dependencies])"
             );
         }
+    }
+
+    #[test]
+    fn strip_non_code_skips_line_comments() {
+        // Lines starting with // should produce empty output
+        assert!(strip_non_code("// use tokio::spawn;").is_empty());
+        assert!(strip_non_code("/// use tokio::spawn;").is_empty());
+        assert!(strip_non_code("//! use tokio::spawn;").is_empty());
+        assert!(strip_non_code("    // indented comment with tokio::spawn").is_empty());
+    }
+
+    #[test]
+    fn strip_non_code_removes_trailing_comments() {
+        let result = strip_non_code("let x = 1; // tokio::spawn");
+        assert!(
+            !line_references_crate(result.trim(), "tokio"),
+            "Should not match crate name in trailing comment"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_removes_string_literal_contents() {
+        let result = strip_non_code(r#"let msg = "use tokio::spawn";"#);
+        assert!(
+            !line_references_crate(result.trim(), "tokio"),
+            "Should not match crate name inside string literal"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_preserves_code_tokens() {
+        let result = strip_non_code("tokio::spawn(async {})");
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should still match crate name in actual code"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_escaped_quotes_in_strings() {
+        let result = strip_non_code(r#"let s = "escaped \" tokio::spawn";"#);
+        assert!(
+            !line_references_crate(result.trim(), "tokio"),
+            "Should not match crate name inside string with escaped quotes"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_url_slashes_inside_string_not_treated_as_comment() {
+        // URLs contain "//" which must not trigger line-comment detection
+        // when they appear inside a string literal.
+        let result = strip_non_code(r#"let url = "http://example.com"; tokio::spawn(f());"#);
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should still match crate name in code after a URL string"
+        );
     }
 }

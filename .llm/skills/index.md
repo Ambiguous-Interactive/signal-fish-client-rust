@@ -18,7 +18,7 @@ Reference for deciding when `CHANGELOG.md` must be updated for user-visible chan
 
 ### [CI Configuration](ci-configuration.md)
 
-Reference for CI/CD tool configuration, common pitfalls, identifier boundary matching in code scanners, and consisten...
+Reference for CI/CD tool configuration, common pitfalls, identifier boundary matching in code scanners, and...
 
 ### [Crate Publishing](crate-publishing.md)
 
@@ -26,7 +26,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 
 ### [Documentation Accuracy for Behavioral Guarantees](doc-accuracy-guarantees.md)
 
-Reference for writing accurate documentation about behavioral guarantees (e.g., event delivery, error handling, shutd...
+Reference for writing accurate documentation about behavioral guarantees (e.g., event delivery, error handling,...
 
 ### [Documentation Drift Validation](doc-drift-validation.md)
 
@@ -38,11 +38,11 @@ Reference for thiserror patterns, SignalFishError design, and error propagation 
 
 ### [Event Lifecycle Timing](event-lifecycle-timing.md)
 
-Reference for understanding and correctly documenting the timing semantics of synthetic events (`Connected`, `Disconn...
+Reference for understanding and correctly documenting the timing semantics of synthetic events (`Connected`,...
 
 ### [FFI Safety](ffi-safety.md)
 
-Reference for writing correct and safe FFI bindings, with emphasis on C type mapping, struct layout, pointer lifecycl...
+Reference for writing correct and safe FFI bindings, with emphasis on C type mapping, struct layout, pointer...
 
 ### [Keep a Changelog Format](keep-a-changelog-format.md)
 
@@ -50,7 +50,7 @@ Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this
 
 ### [Markdown Parsing and Documentation Validation](markdown-and-doc-validation.md)
 
-Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs rend...
+Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs...
 
 ### [Public API Design](public-api-design.md)
 
