@@ -63,7 +63,8 @@ fn project_file_exists(relative_path: &str) -> bool {
 /// For multi-line block comments that span across lines, the caller must
 /// track `in_block_comment` state and pass it via [`strip_non_code_stateful`].
 fn strip_non_code(line: &str) -> String {
-    strip_non_code_stateful(line, &mut false)
+    let mut in_block_comment = false;
+    strip_non_code_stateful(line, &mut in_block_comment)
 }
 
 /// Stateful variant of [`strip_non_code`] that tracks multi-line block comment
@@ -1070,27 +1071,33 @@ mod crate_version_consistency {
                     );
                 } else {
                     // Bare string form: signal-fish-client = "X.Y.Z"
-                    if let Some(eq_pos) = trimmed.find('=') {
-                        let rhs = &trimmed[eq_pos + 1..];
-                        let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
-                            panic!(
-                                "{path}:{} has a signal-fish-client dependency line \
-                                 but the version could not be parsed.\nLine: `{trimmed}`\n\
-                                 Expected a bare quoted version like \
-                                 `signal-fish-client = \"{cargo_version}\"` or an inline \
-                                 table with `version = \"{cargo_version}\"`.",
-                                line_num + 1
-                            );
-                        });
-                        assert!(
-                            bare_version == cargo_version,
-                            "{path}:{} has non-canonical signal-fish-client \
-                             dependency line.\nLine: `{trimmed}`\nExpected \
-                             version \"{cargo_version}\" but found \
-                             \"{bare_version}\".",
+                    let eq_pos = trimmed.find('=').unwrap_or_else(|| {
+                        panic!(
+                            "{path}:{} detected as dependency snippet (starts with \
+                             `signal-fish-client` followed by `=`) but `=` was not found \
+                             in the trimmed line. This is a bug in the test.\nLine: `{trimmed}`",
+                            line_num + 1
+                        )
+                    });
+                    let rhs = &trimmed[eq_pos + 1..];
+                    let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
+                        panic!(
+                            "{path}:{} has a signal-fish-client dependency line \
+                             but the version could not be parsed.\nLine: `{trimmed}`\n\
+                             Expected a bare quoted version like \
+                             `signal-fish-client = \"{cargo_version}\"` or an inline \
+                             table with `version = \"{cargo_version}\"`.",
                             line_num + 1
                         );
-                    }
+                    });
+                    assert!(
+                        bare_version == cargo_version,
+                        "{path}:{} has non-canonical signal-fish-client \
+                         dependency line.\nLine: `{trimmed}`\nExpected \
+                         version \"{cargo_version}\" but found \
+                         \"{bare_version}\".",
+                        line_num + 1
+                    );
                 }
             }
         }
@@ -1398,26 +1405,32 @@ mod crate_version_consistency {
                     );
                 } else {
                     // Bare string form: signal-fish-client = "X.Y.Z"
-                    if let Some(eq_pos) = trimmed.find('=') {
-                        let rhs = &trimmed[eq_pos + 1..];
-                        let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
-                            panic!(
-                                "{rel}:{} has a signal-fish-client dependency line \
-                                 but the version could not be parsed.\nLine: `{trimmed}`\n\
-                                 Expected a bare quoted version like \
-                                 `signal-fish-client = \"{cargo_version}\"` or an inline \
-                                 table with `version = \"{cargo_version}\"`.",
-                                line_num + 1
-                            );
-                        });
-                        assert!(
-                            bare_version == cargo_version,
-                            "{rel}:{} has a signal-fish-client dependency snippet with a \
-                             stale version.\nLine: `{trimmed}`\nExpected version \
-                             \"{cargo_version}\" but found \"{bare_version}\".",
+                    let eq_pos = trimmed.find('=').unwrap_or_else(|| {
+                        panic!(
+                            "{rel}:{} detected as dependency snippet (starts with \
+                             `signal-fish-client` followed by `=`) but `=` was not found \
+                             in the trimmed line. This is a bug in the test.\nLine: `{trimmed}`",
+                            line_num + 1
+                        )
+                    });
+                    let rhs = &trimmed[eq_pos + 1..];
+                    let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
+                        panic!(
+                            "{rel}:{} has a signal-fish-client dependency line \
+                             but the version could not be parsed.\nLine: `{trimmed}`\n\
+                             Expected a bare quoted version like \
+                             `signal-fish-client = \"{cargo_version}\"` or an inline \
+                             table with `version = \"{cargo_version}\"`.",
                             line_num + 1
                         );
-                    }
+                    });
+                    assert!(
+                        bare_version == cargo_version,
+                        "{rel}:{} has a signal-fish-client dependency snippet with a \
+                         stale version.\nLine: `{trimmed}`\nExpected version \
+                         \"{cargo_version}\" but found \"{bare_version}\".",
+                        line_num + 1
+                    );
                 }
             }
             checked_files += 1;
@@ -6650,6 +6663,36 @@ mod dev_dependency_usage {
             line_references_crate(r1.trim(), "tokio"),
             "Should match code after string with fake /*. Got: `{r1}`"
         );
+    }
+
+    #[test]
+    fn strip_non_code_wrapper_matches_fresh_stateful_call() {
+        // Regression: strip_non_code must behave identically to
+        // strip_non_code_stateful with a fresh (false) state variable.
+        // This ensures the wrapper doesn't accidentally rely on discarded
+        // temporary state.
+        let test_lines = [
+            "let x = tokio::spawn(f());",
+            "// line comment with tokio",
+            r#"let msg = "use tokio::spawn";"#,
+            "let x = /* hidden */ tokio::spawn(f());",
+            "/* whole line block comment */",
+            r##"let json = r#"{"type":"ping"}"#;"##,
+            "let r#type = tokio::spawn(f());",
+            r#"let url = "http://example.com"; tokio::spawn(f());"#,
+        ];
+
+        for line in &test_lines {
+            let wrapper_result = strip_non_code(line);
+            let mut fresh_state = false;
+            let stateful_result = strip_non_code_stateful(line, &mut fresh_state);
+            assert_eq!(
+                wrapper_result, stateful_result,
+                "strip_non_code and strip_non_code_stateful(_, &mut false) must \
+                 produce identical output.\nInput: `{line}`\nWrapper: `{wrapper_result}`\n\
+                 Stateful: `{stateful_result}`"
+            );
+        }
     }
 
     // ── CHANGELOG version consistency test ──────────────────────────────

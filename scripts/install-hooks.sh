@@ -20,6 +20,7 @@
 #  13.  cargo clippy --all-targets --all-features -- -D warnings (skipped if no Rust files staged)
 #  14.  typos --config .typos.toml  (optional)
 #  15.  TOML config validation      (optional)
+#  16.  scripts/check-test-quality.sh
 #
 # And a pre-push hook that runs checks in two phases:
 #   Phase 1 (parallel, background — no target/ access):
@@ -32,7 +33,7 @@
 #     6. cargo machete (optional — unused dependency heuristic check)
 #
 # Hook behavior:
-#   On every commit : 1-11,13-15 run in parallel; 12 (cargo fmt) runs in foreground before 13
+#   On every commit : 1-11,13-16 run in parallel; 12 (cargo fmt) runs in foreground before 13
 #   On push only    : non-cargo checks run in background; cargo commands run sequentially
 #
 # NOTE: .pre-commit-config.yaml is kept as documentation reference only.
@@ -294,6 +295,15 @@ with open(sys.argv[1], 'rb') as f:
 ) &
 PIDS+=($!)
 
+# ── 16. Test quality check ─────────────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-test-quality.sh" ]; then
+    run_check "test quality" "16-testqual" \
+        bash "${REPO_ROOT}/scripts/check-test-quality.sh" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 test quality (script not found)\n' > "$CHECK_TMPDIR/16-testqual.result"
+fi
+
 # ── Wait for all checks ─────────────────────────────────────────────
 if [ ${#PIDS[@]} -gt 0 ]; then
     for pid in "${PIDS[@]}"; do
@@ -543,6 +553,7 @@ echo " 12.  cargo fmt --all -- --check (skipped if no Rust files staged)"
 echo " 13.  cargo clippy --all-targets --all-features -- -D warnings (skipped if no Rust files staged)"
 echo " 14.  typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo " 15.  TOML config validation      (optional, requires python3)"
+echo " 16.  bash scripts/check-test-quality.sh (test quality check)"
 echo ""
 echo "The pre-push hook runs on every 'git push' (two-phase execution):"
 echo "  Phase 1 — parallel background (non-cargo):"

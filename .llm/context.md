@@ -281,6 +281,7 @@ A pre-commit hook enforces:
 6. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
 7. FFI safety check passes (`scripts/check-ffi-safety.sh`)
 8. FFI safety script tests pass (`scripts/test_check_ffi_safety.sh`)
+9. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
 
 `cargo test` is part of the mandatory workflow but runs on push, not every
 commit, because it is too slow for a blocking hook. Run it manually before

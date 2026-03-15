@@ -149,6 +149,32 @@ assert_eq!(version, expected);
 Apply this rule to any test that detects a pattern and then conditionally
 asserts on a parsed value. If the pattern was detected, parsing must succeed.
 
+## Mutable References to Temporaries
+
+Passing `&mut false` (or `&mut true`, `&mut 0`, etc.) to a function that mutates
+through the reference is valid Rust but is a code smell: the mutation is silently
+discarded because the temporary lives only for the duration of the expression.
+
+Bad (mutation discarded):
+
+```rust,ignore
+fn process(line: &str) -> String {
+    process_stateful(line, &mut false) // mutation to `false` is lost
+}
+```
+
+Good (explicit local variable):
+
+```rust,ignore
+fn process(line: &str) -> String {
+    let mut state = false;
+    process_stateful(line, &mut state)
+}
+```
+
+Even when discarding the mutation is intentional (single-call wrapper), the
+explicit variable makes the intent clear and avoids confusing future maintainers.
+
 ## Checklist for New Source Scanners
 
 When writing a new test or script that scans `.rs` files for patterns:
@@ -160,3 +186,4 @@ When writing a new test or script that scans `.rs` files for patterns:
 4. Handle all relevant syntactic forms (not just the most common one)
 5. Add tests for raw strings with inner quotes, raw identifiers, and nested directories
 6. Never silently skip unparseable input — fail with a descriptive message
+7. Never pass `&mut <literal>` to stateful helpers — use a named local variable
