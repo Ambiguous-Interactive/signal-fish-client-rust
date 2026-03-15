@@ -52,15 +52,28 @@ fn project_file_exists(relative_path: &str) -> bool {
 /// Strips comment suffixes and string-literal contents from a source line,
 /// leaving only code tokens for crate-name scanning.
 ///
-/// This prevents doc comments, line comments, and string literals from
-/// creating false-positive "usage" detections in the dev-dependency scanner.
+/// This prevents doc comments, line comments, block comments, and string
+/// literals from creating false-positive "usage" detections in the
+/// dev-dependency scanner.
 ///
-/// Handles regular strings (`"..."`) with backslash escapes, and raw strings
-/// (`r"..."`, `r#"..."#`, `r##"..."##`, etc.) with proper delimiter counting.
+/// Handles regular strings (`"..."`) with backslash escapes, raw strings
+/// (`r"..."`, `r#"..."#`, `r##"..."##`, etc.) with proper delimiter counting,
+/// line comments (`//`), and inline block comments (`/* ... */`).
+///
+/// For multi-line block comments that span across lines, the caller must
+/// track `in_block_comment` state and pass it via [`strip_non_code_stateful`].
 fn strip_non_code(line: &str) -> String {
+    strip_non_code_stateful(line, &mut false)
+}
+
+/// Stateful variant of [`strip_non_code`] that tracks multi-line block comment
+/// state across calls. When `in_block_comment` is `true` on entry, the line is
+/// treated as inside a block comment until `*/` is found; any code after the
+/// closing `*/` delimiter is still processed.
+fn strip_non_code_stateful(line: &str, in_block_comment: &mut bool) -> String {
     let trimmed = line.trim();
     // Full-line comments: no code tokens at all
-    if trimmed.starts_with("//") {
+    if !*in_block_comment && trimmed.starts_with("//") {
         return String::new();
     }
 
@@ -77,6 +90,18 @@ fn strip_non_code(line: &str) -> String {
 
     while i < len {
         let ch = bytes[i];
+
+        // ── inside a multi-line block comment ──────────────────────
+        if *in_block_comment {
+            if ch == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                // Close the block comment; process the rest of the line.
+                *in_block_comment = false;
+                i += 2; // skip */
+                continue;
+            }
+            i += 1;
+            continue;
+        }
 
         // ── inside a raw string ────────────────────────────────────
         if let Some(hash_count) = in_raw_string {
@@ -151,6 +176,26 @@ fn strip_non_code(line: &str) -> String {
         // Line comment starts — rest of line is comment.
         if ch == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
             break;
+        }
+
+        // Block comment starts — skip contents until */ (possibly multi-line).
+        if ch == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2; // skip /*
+                    // Scan for closing */ on this same line.
+            while i < len {
+                if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                    i += 2; // skip */
+                    break;
+                }
+                i += 1;
+            }
+            // If we exhausted the line without finding */, we are in a
+            // multi-line block comment — set the flag for subsequent lines.
+            if i >= len {
+                *in_block_comment = true;
+            }
+            // Continue processing any code after the closing */
+            continue;
         }
 
         result.push(ch as char);
@@ -1026,18 +1071,25 @@ mod crate_version_consistency {
                 } else {
                     // Bare string form: signal-fish-client = "X.Y.Z"
                     if let Some(eq_pos) = trimmed.find('=') {
-                        if let Some(bare_version) =
-                            extract_bare_toml_version(&trimmed[eq_pos + 1..])
-                        {
-                            assert!(
-                                bare_version == cargo_version,
-                                "{path}:{} has non-canonical signal-fish-client \
-                                 dependency line.\nLine: `{trimmed}`\nExpected \
-                                 version \"{cargo_version}\" but found \
-                                 \"{bare_version}\".",
+                        let rhs = &trimmed[eq_pos + 1..];
+                        let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
+                            panic!(
+                                "{path}:{} has a signal-fish-client dependency line \
+                                 but the version could not be parsed.\nLine: `{trimmed}`\n\
+                                 Expected a bare quoted version like \
+                                 `signal-fish-client = \"{cargo_version}\"` or an inline \
+                                 table with `version = \"{cargo_version}\"`.",
                                 line_num + 1
                             );
-                        }
+                        });
+                        assert!(
+                            bare_version == cargo_version,
+                            "{path}:{} has non-canonical signal-fish-client \
+                             dependency line.\nLine: `{trimmed}`\nExpected \
+                             version \"{cargo_version}\" but found \
+                             \"{bare_version}\".",
+                            line_num + 1
+                        );
                     }
                 }
             }
@@ -1327,7 +1379,15 @@ mod crate_version_consistency {
                     continue;
                 }
 
-                if trimmed.contains("version") {
+                // Ensure a `=` follows the crate name (with optional whitespace).
+                // This prevents prose lines like "signal-fish-client provides
+                // version tracking" from being falsely detected as dependency snippets.
+                let after_name = trimmed["signal-fish-client".len()..].trim_start();
+                if !after_name.starts_with('=') {
+                    continue;
+                }
+
+                if trimmed.contains('{') {
                     // Inline-table form: signal-fish-client = { version = "X.Y.Z", ... }
                     assert!(
                         text_contains_version_value(trimmed, &cargo_version),
@@ -1336,20 +1396,27 @@ mod crate_version_consistency {
                          `version = \"{cargo_version}\"` (with any whitespace around `=`).",
                         line_num + 1
                     );
-                } else if trimmed.contains('=') {
+                } else {
                     // Bare string form: signal-fish-client = "X.Y.Z"
                     if let Some(eq_pos) = trimmed.find('=') {
-                        if let Some(bare_version) =
-                            extract_bare_toml_version(&trimmed[eq_pos + 1..])
-                        {
-                            assert!(
-                                bare_version == cargo_version,
-                                "{rel}:{} has a signal-fish-client dependency snippet with a \
-                                 stale version.\nLine: `{trimmed}`\nExpected version \
-                                 \"{cargo_version}\" but found \"{bare_version}\".",
+                        let rhs = &trimmed[eq_pos + 1..];
+                        let bare_version = extract_bare_toml_version(rhs).unwrap_or_else(|| {
+                            panic!(
+                                "{rel}:{} has a signal-fish-client dependency line \
+                                 but the version could not be parsed.\nLine: `{trimmed}`\n\
+                                 Expected a bare quoted version like \
+                                 `signal-fish-client = \"{cargo_version}\"` or an inline \
+                                 table with `version = \"{cargo_version}\"`.",
                                 line_num + 1
                             );
-                        }
+                        });
+                        assert!(
+                            bare_version == cargo_version,
+                            "{rel}:{} has a signal-fish-client dependency snippet with a \
+                             stale version.\nLine: `{trimmed}`\nExpected version \
+                             \"{cargo_version}\" but found \"{bare_version}\".",
+                            line_num + 1
+                        );
                     }
                 }
             }
@@ -5937,18 +6004,20 @@ mod test_code_quality {
                     .to_string_lossy()
                     .to_string();
 
+                let mut in_block_comment = false;
                 for (line_num, line) in contents.lines().enumerate() {
+                    // Strip comments (including multi-line block comments)
+                    // and string literals so we don't match I/O patterns
+                    // that only appear inside strings or comments.
+                    let code_only = strip_non_code_stateful(line, &mut in_block_comment);
                     // Skip lines that use unwrap_or_else (the correct pattern).
-                    if line.contains("unwrap_or_else") {
+                    if code_only.contains("unwrap_or_else") {
                         continue;
                     }
                     // Skip lines that don't have .unwrap() at all.
-                    if !line.contains(".unwrap()") {
+                    if !code_only.contains(".unwrap()") {
                         continue;
                     }
-                    // Strip comments and string literals so we don't match
-                    // I/O patterns that only appear inside strings.
-                    let code_only = strip_non_code(line);
                     // Check if the line contains any of the I/O patterns.
                     for pattern in io_patterns {
                         if code_only.contains(pattern) {
@@ -6073,6 +6142,12 @@ mod dev_dependency_usage {
 
     /// Returns true if any `.rs` file under `dir` contains a reference to
     /// the given crate name as a complete identifier (word-boundary-aware).
+    ///
+    /// Uses [`strip_non_code_stateful`] to correctly handle line comments,
+    /// inline block comments, multi-line block comments, and string literals
+    /// (including raw strings). Code after a closing `*/` delimiter is still
+    /// scanned, and `/* ... */` inside string literals does not confuse the
+    /// tracker.
     fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
         if !dir.is_dir() {
             return false;
@@ -6102,23 +6177,7 @@ mod dev_dependency_usage {
 
                 let mut in_block_comment = false;
                 for line in contents.lines() {
-                    // Handle block comments (simplified: track /* and */ per line).
-                    // Note: raw strings containing /* or */ can confuse this tracker,
-                    // but strip_non_code() below handles string-literal content removal,
-                    // so the practical impact is minimal.
-                    if in_block_comment {
-                        if line.contains("*/") {
-                            in_block_comment = false;
-                            // There might be code after */, but for simplicity skip the whole line
-                        }
-                        continue;
-                    }
-                    if line.trim().starts_with("/*") {
-                        in_block_comment = !line.contains("*/");
-                        continue;
-                    }
-
-                    let code_only = strip_non_code(line);
+                    let code_only = strip_non_code_stateful(line, &mut in_block_comment);
                     if !code_only.is_empty() && line_references_crate(code_only.trim(), rust_name) {
                         return true;
                     }
@@ -6463,5 +6522,184 @@ mod dev_dependency_usage {
             line_references_crate(result.trim(), "tokio"),
             "Raw identifier r#type should not trigger raw string mode: {result}"
         );
+    }
+
+    // ── Block comment tests ────────────────────────────────────────────
+
+    #[test]
+    fn strip_non_code_removes_inline_block_comment() {
+        let result = strip_non_code("let x = /* hidden */ tokio::spawn(f());");
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match code after inline block comment. Got: `{result}`"
+        );
+        assert!(
+            !result.contains("hidden"),
+            "Block comment contents should be stripped. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_removes_multiple_inline_block_comments() {
+        let result =
+            strip_non_code("let /* HIDDEN1 */ x = /* HIDDEN2 */ tokio::spawn(/* HIDDEN3 */ f());");
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match code around multiple inline block comments. Got: `{result}`"
+        );
+        assert!(
+            !result.contains("HIDDEN1")
+                && !result.contains("HIDDEN2")
+                && !result.contains("HIDDEN3"),
+            "All block comment contents should be stripped. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_does_not_match_inside_block_comment() {
+        let result = strip_non_code("/* tokio::spawn(f()); */");
+        assert!(
+            !line_references_crate(result.trim(), "tokio"),
+            "Should not match crate name inside block comment. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_handles_code_after_block_comment() {
+        let result = strip_non_code("/* comment */ tokio::spawn(f());");
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match crate name in code after block comment. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_block_comment_delimiters_inside_string_not_treated_as_comment() {
+        let result = strip_non_code(r#"let s = "/* not a comment */"; tokio::spawn(f());"#);
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match code after string containing block comment delimiters. Got: `{result}`"
+        );
+        assert!(
+            !result.contains("not a comment"),
+            "String contents should be stripped. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_tracks_multiline_block_comment() {
+        let mut in_block = false;
+
+        // Line 1: block comment starts but doesn't close.
+        let r1 = strip_non_code_stateful("let x = 1; /* start of comment", &mut in_block);
+        assert!(in_block, "Should be inside block comment after unclosed /*");
+        assert!(
+            !r1.contains("start of comment"),
+            "Comment text should be stripped. Got: `{r1}`"
+        );
+        assert!(
+            r1.contains("let x = 1;"),
+            "Code before /* should be preserved. Got: `{r1}`"
+        );
+
+        // Line 2: entirely inside the block comment.
+        let r2 = strip_non_code_stateful("   tokio::spawn(f());", &mut in_block);
+        assert!(in_block, "Should still be inside block comment");
+        assert!(
+            r2.trim().is_empty(),
+            "Line inside block comment should produce empty output. Got: `{r2}`"
+        );
+
+        // Line 3: block comment closes, with code after.
+        let r3 = strip_non_code_stateful("end of comment */ tokio::spawn(f());", &mut in_block);
+        assert!(!in_block, "Should exit block comment after */");
+        assert!(
+            line_references_crate(r3.trim(), "tokio"),
+            "Should match crate name in code after closing */. Got: `{r3}`"
+        );
+        assert!(
+            !r3.contains("end of comment"),
+            "Comment text should be stripped. Got: `{r3}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_single_line_block_comment_resets() {
+        let mut in_block = false;
+        let result = strip_non_code_stateful("/* comment */ tokio::spawn(f());", &mut in_block);
+        assert!(
+            !in_block,
+            "Block comment that opens and closes on same line should not leave state set"
+        );
+        assert!(
+            line_references_crate(result.trim(), "tokio"),
+            "Should match code after single-line block comment. Got: `{result}`"
+        );
+    }
+
+    #[test]
+    fn strip_non_code_stateful_nested_delimiters_in_strings() {
+        // /* inside a string should not start a block comment
+        let mut in_block = false;
+        let r1 = strip_non_code_stateful(r#"let s = "/* fake"; tokio::spawn(f());"#, &mut in_block);
+        assert!(
+            !in_block,
+            "/* inside a string should not trigger block comment mode"
+        );
+        assert!(
+            line_references_crate(r1.trim(), "tokio"),
+            "Should match code after string with fake /*. Got: `{r1}`"
+        );
+    }
+
+    // ── CHANGELOG version consistency test ──────────────────────────────
+
+    #[test]
+    fn changelog_has_entry_for_cargo_version_when_not_unreleased_only() {
+        let cargo_version = cargo_package_version();
+        let changelog = read_project_file("CHANGELOG.md");
+
+        // Check if there's an [Unreleased] section with content but no
+        // matching version header. This catches the case where Cargo.toml
+        // version was bumped but CHANGELOG.md was not updated.
+        let version_header = format!("## [{cargo_version}]");
+        let has_version_entry = changelog
+            .lines()
+            .any(|line| line.trim().starts_with(&version_header));
+
+        // If the previous released version in CHANGELOG is older than the Cargo.toml
+        // version, there must be a dated entry for the current version.
+        let mut latest_changelog_version: Option<String> = None;
+        for line in changelog.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("## [")
+                && !trimmed.contains("Unreleased")
+                && trimmed.contains("] - ")
+            {
+                // Extract version from "## [x.y.z] - date"
+                if let Some(end) = trimmed.find("] - ") {
+                    let start = "## [".len();
+                    latest_changelog_version = Some(trimmed[start..end].to_string());
+                }
+                break;
+            }
+        }
+
+        if let Some(ref latest) = latest_changelog_version {
+            if *latest != cargo_version && !has_version_entry {
+                panic!(
+                    "Cargo.toml version is {cargo_version} but CHANGELOG.md has no \
+                     `## [{cargo_version}]` section. The latest released version in \
+                     CHANGELOG is {latest}.\n\n\
+                     Either:\n\
+                     1. Add a `## [{cargo_version}] - YYYY-MM-DD` section and move \
+                        relevant [Unreleased] items into it, or\n\
+                     2. Revert Cargo.toml version to {latest} if the release hasn't \
+                        been cut yet.\n\n\
+                     See .llm/skills/changelog-discipline.md and \
+                     .llm/skills/keep-a-changelog-format.md for guidance."
+                );
+            }
+        }
     }
 }

@@ -65,6 +65,22 @@ Before finalizing a user-visible change:
 - Internal implementation cleanup with identical behavior
 - Typo fixes that do not change meaning
 
+## Version Consistency Rule
+
+When bumping the version in `Cargo.toml`, you **must** also create a matching
+`## [x.y.z] - YYYY-MM-DD` section in `CHANGELOG.md` and move relevant
+`[Unreleased]` items into it. The test
+`changelog_has_entry_for_cargo_version_when_not_unreleased_only` enforces this:
+if `Cargo.toml` version is ahead of the latest released CHANGELOG entry, the
+test fails.
+
+Either:
+
+1. Bump `Cargo.toml` version **and** add the dated CHANGELOG section together, or
+2. Keep `Cargo.toml` at the current released version until release cutover.
+
+Never leave `Cargo.toml` at a new version with changes still under `[Unreleased]`.
+
 ## PR Review Gate
 
 If a PR has user-visible changes but no `CHANGELOG.md` update, treat it as

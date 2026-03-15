@@ -18,17 +18,21 @@ The canonical implementation lives in `tests/ci_config_tests.rs` (top-level scop
 - Raw strings with any hash count (`r"..."`, `r#"..."#`, `r##"..."##`)
 - Raw identifiers (`r#type`) — NOT treated as raw strings
 - Line comments (`//`)
+- Inline block comments (`/* ... */`) on a single line
+- Multi-line block comments via `strip_non_code_stateful()` variant
 - URLs inside strings (not confused with `//` comments)
+- `/* */` delimiters inside strings (not confused with block comments)
 
-**Always use `strip_non_code()` before pattern-matching on Rust source lines.** Do not use bare `line.contains(pattern)` on raw source — it will match inside string literals and comments.
+**Always use `strip_non_code_stateful()` when iterating over file lines.** The single-line `strip_non_code()` wrapper is only for unit tests and one-off single-line checks. Do not use bare `line.contains(pattern)` on raw source — it will match inside string literals and comments.
 
 ### Callers
 
-| Function | Purpose |
-|----------|---------|
-| `is_crate_referenced_in_dir()` | Dev-dependency usage scanner |
-| `test_files_avoid_bare_unwrap_on_io_operations()` | I/O unwrap policy |
-| `line_references_crate()` | Word-boundary crate name matching (used on stripped output) |
+| Function | Variant Used | Purpose |
+|----------|-------------|---------|
+| `is_crate_referenced_in_dir()` | `strip_non_code_stateful` | Dev-dependency usage scanner |
+| `test_files_avoid_bare_unwrap_on_io_operations()` | `strip_non_code_stateful` | I/O unwrap policy |
+| `line_references_crate()` | (operates on stripped output) | Word-boundary crate name matching |
+| Single-line unit tests | `strip_non_code` | Testing the stripping logic itself |
 
 ### Raw string delimiter algorithm
 
@@ -73,9 +77,9 @@ Dependency version snippets in docs can appear in multiple TOML forms:
 
 | Form | Example | Notes |
 |------|---------|-------|
-| Inline table | `signal-fish-client = { version = "0.4.1" }` | Most common |
-| Bare string | `signal-fish-client = "0.4.1"` | Simple form |
-| With features | `signal-fish-client = { version = "0.4.1", features = [...] }` | Extended |
+| Inline table | `signal-fish-client = { version = "X.Y.Z" }` | Most common |
+| Bare string | `signal-fish-client = "X.Y.Z"` | Simple form |
+| With features | `signal-fish-client = { version = "X.Y.Z", features = [...] }` | Extended |
 
 Tests validating version consistency must handle **all** forms, not just inline tables. The canonical implementation in `all_docs_dependency_snippets_use_cargo_package_version` handles both the `version = "..."` keyword form and the bare `= "..."` string form, including trailing TOML comments.
 
@@ -96,16 +100,63 @@ When creating exception lists for scanner tests (e.g., dependencies the scanner 
 
 Each entry must include a reason string explaining **why** the exception exists. Helper tests (`*_exceptions_are_documented`, `*_exceptions_are_actual_dev_dependencies`) enforce this. When adding a new exception, describe the specific scanner limitation that requires it.
 
-## Block Comment Tracking
+## Block Comment Handling
 
-The `is_crate_referenced_in_dir` function uses simplified block comment tracking (`/* ... */`). Known limitation: raw strings containing `/*` or `*/` can confuse the tracker. This is acceptable because `strip_non_code()` handles string-literal content removal at the line level, making the practical impact minimal.
+`strip_non_code()` handles inline block comments (`/* ... */`) on a single line.
+For multi-line block comments that span across lines, use
+`strip_non_code_stateful(line, &mut in_block_comment)` which tracks whether
+the scanner is inside an open block comment across successive calls.
+
+All callers that iterate over file lines must use `strip_non_code_stateful`:
+
+```rust,ignore
+let mut in_block_comment = false;
+for line in contents.lines() {
+    let code_only = strip_non_code_stateful(line, &mut in_block_comment);
+    // ... match on code_only ...
+}
+```
+
+Do **not** use `strip_non_code()` in a per-line loop — it cannot detect
+multi-line `/* ... */` comments and will produce false positives on lines
+that are entirely inside a block comment.
+
+## Silent-Pass Anti-Pattern
+
+When a test conditionally parses a value (e.g., via `Option` or `if let`),
+it must **fail explicitly** when parsing returns `None`/`Err` on input that
+was expected to be parseable. Otherwise the test silently passes on
+malformed input and cannot catch regressions.
+
+Bad (silent pass):
+
+```rust,ignore
+if let Some(version) = extract_version(line) {
+    assert_eq!(version, expected);
+}
+// If extract_version returns None, no assertion fires — test passes silently
+```
+
+Good (explicit failure):
+
+```rust,ignore
+let version = extract_version(line).unwrap_or_else(|| {
+    panic!("Could not parse version from line: `{line}`");
+});
+assert_eq!(version, expected);
+```
+
+Apply this rule to any test that detects a pattern and then conditionally
+asserts on a parsed value. If the pattern was detected, parsing must succeed.
 
 ## Checklist for New Source Scanners
 
 When writing a new test or script that scans `.rs` files for patterns:
 
-1. Use `strip_non_code()` to remove string literals and comments before matching
+1. Use `strip_non_code_stateful()` (not `strip_non_code()`) when iterating
+   over file lines to correctly handle multi-line block comments
 2. Use `line_references_crate()` for word-boundary-aware identifier matching
 3. Use recursive traversal if the test claims to cover "all" files in a directory
 4. Handle all relevant syntactic forms (not just the most common one)
 5. Add tests for raw strings with inner quotes, raw identifiers, and nested directories
+6. Never silently skip unparseable input — fail with a descriptive message
