@@ -18,7 +18,7 @@ Reference for deciding when `CHANGELOG.md` must be updated for user-visible chan
 
 ### [CI Configuration](ci-configuration.md)
 
-Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
+Reference for CI/CD tool configuration, common pitfalls, identifier boundary matching in code scanners, and consisten...
 
 ### [Crate Publishing](crate-publishing.md)
 

@@ -1,6 +1,6 @@
 # CI Configuration
 
-Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
+Reference for CI/CD tool configuration, common pitfalls, identifier boundary matching in code scanners, and consistency enforcement in this crate.
 
 ## Config File Inventory
 
@@ -47,10 +47,7 @@ header = ["Accept=text/html"]
 
 ### lychee: Avoid flaky external docs for badges
 
-Some external docs/blog hosts intermittently return `503` in CI. For MSRV
-badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
-`https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
-links pointed at `doc.rust-lang.org/stable/releases.html`. `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+Some external docs/blog hosts intermittently return `503` in CI. For MSRV badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over `https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV links pointed at `doc.rust-lang.org/stable/releases.html`. Enforced by `tests/ci_config_tests.rs`.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -71,6 +68,14 @@ Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. 
 ### Unused dependency detection: cargo-machete vs cargo-udeps
 
 `cargo-machete` uses heuristic grep-based detection; `cargo-udeps` uses build-based analysis. Machete is fast but may miss deps that udeps catches (e.g., a dev-dependency like `tokio-test` listed but never imported). Always treat `cargo-udeps` as authoritative. Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to machete -- add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`. Dev-dependencies go stale when code is refactored (e.g., switching from `tokio-test` utilities to a custom `MockTransport`). The `dev_dependency_usage` tests in `ci_config_tests.rs` verify every `[dev-dependencies]` entry is actually referenced in test code. The `uuid` duplicate-package warning in `cargo-udeps` output is a benign Cargo resolver artifact from platform-specific feature overrides and can be ignored.
+
+### Identifier boundary matching in code scanners
+
+Simple substring checks (`line.contains(name)`) produce false positives when one name is a prefix of another (e.g., `tokio` matches `tokio_tungstenite`). Always enforce word boundaries: the character before and after the match must not be `[A-Za-z0-9_]`. Use `line.match_indices(ident)` and check the adjacent bytes. Canonical implementation: `ci_config_tests.rs::line_references_crate`.
+
+### Dual-listed dependency awareness
+
+Dev-dependencies that also appear in `[dependencies]` are found in `src/` via the regular dependency entry. Scanning `src/` for such crates always produces false positives. Only scan test-context directories (`tests/`, `examples/`, `benches/`) for dev-dependencies that are also regular dependencies. Enforced by `ci_config_tests.rs::dev_dependency_usage`.
 
 ### semver-checks on new crates
 
@@ -115,14 +120,7 @@ Review new rules individually and enable only those that add genuine value.
 
 ### typos: US English locale and false positives
 
-The project uses `locale = "en-us"` in `.typos.toml`. Use American English
-spellings (e.g., "recognize" not "recognise", "normalize" not "normalise").
-Use single words not hyphens: "misclassified" not "mis-classified".
-
-Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`)
-and `[default.extend-words]` for standalone words in comments/strings (e.g.,
-`Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
-entries to both sections and cross-reference them with comments.
+The project uses `locale = "en-us"` in `.typos.toml`. Use American English spellings (e.g., "recognize" not "recognise"). Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`) and `[default.extend-words]` for standalone words in comments/strings (e.g., `Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add entries to both sections and cross-reference them with comments.
 
 ### Cargo parallelism: never run cargo subcommands in parallel locally
 

@@ -5663,8 +5663,52 @@ mod dev_dependency_usage {
             .unwrap_or_default()
     }
 
+    /// Parses [dependencies] from Cargo.toml and returns the crate names.
+    ///
+    /// Note: this does not parse target-specific `[target.'cfg(...)'.dependencies]`
+    /// sections. If a target-specific dep is also a dev-dep, it will not be
+    /// detected as dual-listed and src/ will be included in the scan (the
+    /// conservative/safe direction for false positives).
+    fn regular_dependency_names() -> Vec<String> {
+        let contents = read_project_file("Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&contents).expect("Cargo.toml must be valid TOML");
+
+        parsed
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .map(|table| table.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns true if `line` contains `ident` as a complete Rust
+    /// identifier — i.e., not merely a prefix/suffix of a longer name.
+    /// Boundary characters are anything that is NOT alphanumeric or `_`.
+    fn line_references_crate(line: &str, ident: &str) -> bool {
+        let bytes = line.as_bytes();
+        let ident_len = ident.len();
+        for (i, _) in line.match_indices(ident) {
+            // Character before must be a word boundary (or start of string).
+            if i > 0 {
+                let prev = bytes[i - 1];
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    continue;
+                }
+            }
+            // Character after must be a word boundary (or end of string).
+            let after = i + ident_len;
+            if after < bytes.len() {
+                let next = bytes[after];
+                if next.is_ascii_alphanumeric() || next == b'_' {
+                    continue;
+                }
+            }
+            return true;
+        }
+        false
+    }
+
     /// Returns true if any `.rs` file under `dir` contains a reference to
-    /// the given crate name (converted to a Rust identifier with underscores).
+    /// the given crate name as a complete identifier (word-boundary-aware).
     fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
         if !dir.is_dir() {
             return false;
@@ -5692,24 +5736,9 @@ mod dev_dependency_usage {
                     panic!("Failed to read '{}': {e}", path.display());
                 });
 
-                // Check for common usage patterns:
-                //   use <crate>::           (direct import)
-                //   <crate>::               (qualified path)
-                //   extern crate <crate>    (explicit extern)
-                //   #[tokio::test]          (proc-macro attribute using crate name)
-                //   #[tokio::main]          (proc-macro attribute using crate name)
-                let patterns = [
-                    format!("use {rust_name}"),
-                    format!("{rust_name}::"),
-                    format!("extern crate {rust_name}"),
-                ];
-
                 for line in contents.lines() {
-                    let trimmed = line.trim();
-                    for pattern in &patterns {
-                        if trimmed.contains(pattern.as_str()) {
-                            return true;
-                        }
+                    if line_references_crate(line.trim(), rust_name) {
+                        return true;
                     }
                 }
             }
@@ -5720,16 +5749,18 @@ mod dev_dependency_usage {
     }
 
     /// Every dev-dependency declared in Cargo.toml must be actually used
-    /// somewhere in tests/, examples/, or src/ (for #[cfg(test)] modules).
-    /// Unused dev-dependencies cause cargo-udeps CI failures and add
-    /// unnecessary build overhead.
+    /// somewhere in test-context code. For dev-only dependencies, this
+    /// scans tests/, examples/, benches/, and src/ (for `#[cfg(test)]`
+    /// modules). For dependencies that are also listed in [dependencies],
+    /// only tests/, examples/, and benches/ are scanned — their presence in src/ comes
+    /// from the regular dependency, not the dev-dependency entry.
     ///
     /// Dependencies that are used indirectly (e.g., via attributes or
     /// runtime setup) are listed in `INDIRECT_USE_EXCEPTIONS`.
     #[test]
     fn all_dev_dependencies_are_used() {
         let root = project_root();
-        let search_dirs = [root.join("tests"), root.join("examples"), root.join("src")];
+        let regular_deps = regular_dependency_names();
 
         let exception_names: Vec<&str> = INDIRECT_USE_EXCEPTIONS
             .iter()
@@ -5748,6 +5779,33 @@ mod dev_dependency_usage {
             // Convert Cargo crate name (hyphens) to Rust identifier (underscores).
             let rust_name = dep_name.replace('-', "_");
 
+            // When a dev-dependency also appears in [dependencies], its
+            // presence in src/ comes from the regular dependency — not from
+            // the dev-dependency entry. Scanning src/ for these would
+            // always report "used" even if no test code references them,
+            // defeating the purpose of the check. Limit the scan to
+            // test-only directories in that case.
+            //
+            // Trade-off: if a dual-listed dev-dep is ONLY used inside
+            // #[cfg(test)] blocks in src/ (and not in tests/, examples/, or benches/),
+            // it will be falsely flagged as unused. In practice, such deps
+            // are typically also used in tests/ or examples/.
+            let is_also_regular_dep = regular_deps.contains(dep_name);
+            let search_dirs: Vec<std::path::PathBuf> = if is_also_regular_dep {
+                vec![
+                    root.join("tests"),
+                    root.join("examples"),
+                    root.join("benches"),
+                ]
+            } else {
+                vec![
+                    root.join("tests"),
+                    root.join("examples"),
+                    root.join("benches"),
+                    root.join("src"),
+                ]
+            };
+
             let found = search_dirs
                 .iter()
                 .any(|dir| is_crate_referenced_in_dir(dir, &rust_name));
@@ -5761,7 +5819,9 @@ mod dev_dependency_usage {
         assert!(
             unused.is_empty(),
             "The following dev-dependencies are declared in Cargo.toml but never \
-             referenced in tests/, examples/, or src/: [{joined}]\n\n\
+             referenced in test-context code: [{joined}]\n\n\
+             Note: dev-deps also listed in [dependencies] are only scanned in \
+             tests/, examples/, and benches/ (src/ usage comes from the regular dep).\n\n\
              This causes cargo-udeps CI failures. Either:\n\
              1. Remove the unused dependency from [dev-dependencies], or\n\
              2. If the dependency is used indirectly (e.g., via attributes), add it \
@@ -5790,6 +5850,98 @@ mod dev_dependency_usage {
                 "INDIRECT_USE_EXCEPTIONS lists '{name}' but it is not in \
                  [dev-dependencies]. Remove stale exceptions when dependencies \
                  are removed."
+            );
+        }
+    }
+
+    #[test]
+    fn crate_name_boundary_matching_rejects_prefixes() {
+        // "tokio" must NOT match when it is only a prefix of a longer crate name.
+        assert!(
+            !line_references_crate("use tokio_tungstenite::connect_async;", "tokio"),
+            "Should not match 'tokio' inside 'tokio_tungstenite'"
+        );
+        assert!(
+            !line_references_crate("extern crate tokio_tungstenite;", "tokio"),
+            "Should not match 'tokio' inside 'extern crate tokio_tungstenite'"
+        );
+        assert!(
+            !line_references_crate("tokio_tungstenite::connect_async(url).await", "tokio"),
+            "Should not match 'tokio' in qualified path 'tokio_tungstenite::'"
+        );
+        assert!(
+            !line_references_crate("", "tokio"),
+            "Should not match on empty line"
+        );
+    }
+
+    #[test]
+    fn crate_name_boundary_matching_accepts_exact() {
+        // Positive cases — the crate name appears as a complete identifier.
+        assert!(
+            line_references_crate("use tokio::sync::mpsc;", "tokio"),
+            "Should match 'use tokio::'"
+        );
+        assert!(
+            line_references_crate("#[tokio::test]", "tokio"),
+            "Should match '#[tokio::test]'"
+        );
+        assert!(
+            line_references_crate("    tokio::spawn(async {});", "tokio"),
+            "Should match 'tokio::spawn' in indented code"
+        );
+        assert!(
+            line_references_crate("extern crate tokio;", "tokio"),
+            "Should match 'extern crate tokio;'"
+        );
+        assert!(
+            line_references_crate("use serde_json::Value;", "serde_json"),
+            "Should match multi-word crate 'serde_json'"
+        );
+        assert!(
+            line_references_crate("tokio", "tokio"),
+            "Should match when the entire line is the crate name"
+        );
+    }
+
+    #[test]
+    fn crate_name_boundary_matching_rejects_suffixes() {
+        // "util" must NOT match when it is a suffix of a longer name.
+        assert!(
+            !line_references_crate("use futures_util::StreamExt;", "util"),
+            "Should not match 'util' inside 'futures_util'"
+        );
+    }
+
+    #[test]
+    fn crate_name_boundary_matching_mixed_occurrences() {
+        // First occurrence is invalid (prefix of longer name), second is valid.
+        assert!(
+            line_references_crate("tokio_stuff and tokio::spawn", "tokio"),
+            "Should match when a valid occurrence follows an invalid one"
+        );
+        // All occurrences are invalid (all prefixes of longer names).
+        assert!(
+            !line_references_crate("tokio_a and tokio_b", "tokio"),
+            "Should not match when all occurrences are prefixes"
+        );
+    }
+
+    #[test]
+    fn dual_listed_deps_exclude_src_from_scan() {
+        // Verify that crates appearing in both [dependencies] and
+        // [dev-dependencies] are detected as dual-listed.
+        let regular = regular_dependency_names();
+        let dev = dev_dependency_names();
+
+        let dual_listed: Vec<&String> = dev.iter().filter(|d| regular.contains(d)).collect();
+
+        // We know tokio, futures-util, and serde_json are dual-listed.
+        for expected in &["tokio", "futures-util", "serde_json"] {
+            assert!(
+                dual_listed.iter().any(|d| d.as_str() == *expected),
+                "Expected '{expected}' to be detected as dual-listed (in both \
+                 [dependencies] and [dev-dependencies])"
             );
         }
     }

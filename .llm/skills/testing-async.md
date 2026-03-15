@@ -220,6 +220,10 @@ cargo test --test client_tests --all-features
   If a test is missing a scripted response, the `recv` call hangs and the
   test surfaces this as a timeout, not a panic
 
+## Custom Code Scanners in Tests
+
+When writing test functions that scan source files for identifier names (e.g., verifying dependency usage), use word-boundary-aware matching. Simple `line.contains(name)` checks produce false positives when one identifier is a prefix of another (e.g., `tokio` matching `tokio_tungstenite`). See `ci_config_tests.rs::line_references_crate` for the canonical pattern and the [ci-configuration](ci-configuration.md) skill for full guidance.
+
 ## Cross-Platform Path Assertions
 
 When testing functions that produce file paths in error messages or output,
