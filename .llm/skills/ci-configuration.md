@@ -75,7 +75,7 @@ Simple substring checks (`line.contains(name)`) produce false positives when one
 
 ### Dual-listed dependency awareness
 
-Dev-dependencies that also appear in `[dependencies]` are found in `src/` via the regular dependency entry. Scanning `src/` for such crates always produces false positives. Only scan test-context directories (`tests/`, `examples/`, `benches/`) for dev-dependencies that are also regular dependencies. Enforced by `ci_config_tests.rs::dev_dependency_usage`.
+Dev-dependencies that also appear in `[dependencies]` are found in `src/` via the regular dependency entry. Scanning `src/` for such crates always produces false positives. Only scan test-context directories (`tests/`, `examples/`, `benches/`) for dual-listed deps. Deps that elude the scanner for any reason go in `DEV_DEP_USAGE_EXCEPTIONS` with a reason string. Enforced by `ci_config_tests.rs::dev_dependency_usage`.
 
 ### semver-checks on new crates
 

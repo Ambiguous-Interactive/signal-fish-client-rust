@@ -931,6 +931,54 @@ mod crate_version_consistency {
             && patch.chars().all(|c| c.is_ascii_digit())
     }
 
+    /// Returns `true` if `text` contains a TOML-style `version = "<version>"`
+    /// fragment, tolerating arbitrary whitespace (including none) around the `=`.
+    /// Uses word-boundary checking: `version` must not be preceded by an
+    /// alphanumeric character or underscore (so `myversion` does not match).
+    ///
+    /// Examples that match for version `"0.4.1"`:
+    /// - `version = "0.4.1"`
+    /// - `version="0.4.1"`
+    /// - `version  =  "0.4.1"`
+    fn text_contains_version_value(text: &str, version: &str) -> bool {
+        let needle = "version";
+        let quoted_version = format!("\"{version}\"");
+        let text_bytes = text.as_bytes();
+        let mut remaining = text;
+        while let Some(pos) = remaining.find(needle) {
+            let abs_pos = text.len() - remaining.len() + pos;
+            // Word-boundary check: the byte before "version" must not be
+            // alphanumeric or underscore.
+            let at_word_boundary = abs_pos == 0 || {
+                let prev = text_bytes[abs_pos - 1];
+                !prev.is_ascii_alphanumeric() && prev != b'_'
+            };
+            if at_word_boundary {
+                let after_keyword = &remaining[pos + needle.len()..];
+                let after_ws = after_keyword.trim_start();
+                if let Some(after_eq) = after_ws.strip_prefix('=') {
+                    let after_eq_ws = after_eq.trim_start();
+                    if after_eq_ws.starts_with(&quoted_version) {
+                        return true;
+                    }
+                }
+            }
+            // Advance past this occurrence to avoid infinite loops.
+            remaining = &remaining[pos + needle.len()..];
+        }
+        false
+    }
+
+    /// Extracts the quoted version string from text after `=` in a bare TOML
+    /// dependency (e.g., given `"0.4.1"  # comment`, returns `Some("0.4.1")`).
+    /// Handles trailing TOML comments and arbitrary whitespace.
+    fn extract_bare_toml_version(text_after_eq: &str) -> Option<&str> {
+        let trimmed = text_after_eq.trim();
+        let rest = trimmed.strip_prefix('"')?;
+        let close = rest.find('"')?;
+        Some(&rest[..close])
+    }
+
     #[test]
     fn llm_context_version_matches_cargo_package_version() {
         let cargo_version = cargo_package_version();
@@ -958,26 +1006,39 @@ mod crate_version_consistency {
             let contents = read_project_file(path);
             for (line_num, line) in contents.lines().enumerate() {
                 let trimmed = line.trim();
-                if !trimmed.starts_with("signal-fish-client =") {
+                if !trimmed.starts_with("signal-fish-client") {
+                    continue;
+                }
+                // Ensure a `=` follows the crate name (with optional whitespace).
+                let after_name = trimmed["signal-fish-client".len()..].trim_start();
+                if !after_name.starts_with('=') {
                     continue;
                 }
 
                 if trimmed.contains('{') {
-                    let expected = format!("version = \"{cargo_version}\"");
                     assert!(
-                        trimmed.contains(&expected),
+                        text_contains_version_value(trimmed, &cargo_version),
                         "{path}:{} has signal-fish-client inline table without canonical \
-                         crate version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                         crate version.\nLine: `{trimmed}`\nExpected to contain \
+                         `version = \"{cargo_version}\"` (with any whitespace around `=`).",
                         line_num + 1
                     );
                 } else {
-                    let expected = format!("signal-fish-client = \"{cargo_version}\"");
-                    assert!(
-                        trimmed.contains(&expected),
-                        "{path}:{} has non-canonical signal-fish-client dependency line.\n\
-                         Line: `{trimmed}`\nExpected `{expected}`.",
-                        line_num + 1
-                    );
+                    // Bare string form: signal-fish-client = "X.Y.Z"
+                    if let Some(eq_pos) = trimmed.find('=') {
+                        if let Some(bare_version) =
+                            extract_bare_toml_version(&trimmed[eq_pos + 1..])
+                        {
+                            assert!(
+                                bare_version == cargo_version,
+                                "{path}:{} has non-canonical signal-fish-client \
+                                 dependency line.\nLine: `{trimmed}`\nExpected \
+                                 version \"{cargo_version}\" but found \
+                                 \"{bare_version}\".",
+                                line_num + 1
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -987,10 +1048,10 @@ mod crate_version_consistency {
     fn crate_publishing_skill_package_snippet_matches_cargo_package_version() {
         let cargo_version = cargo_package_version();
         let contents = read_project_file(".llm/skills/crate-publishing.md");
-        let expected = format!("version = \"{cargo_version}\"");
         assert!(
-            contents.contains(&expected),
-            ".llm/skills/crate-publishing.md must include `{expected}` in the \
+            text_contains_version_value(&contents, &cargo_version),
+            ".llm/skills/crate-publishing.md must include \
+             `version = \"{cargo_version}\"` (with any whitespace around `=`) in the \
              Cargo.toml metadata snippet."
         );
     }
@@ -1268,34 +1329,19 @@ mod crate_version_consistency {
 
                 if trimmed.contains("version") {
                     // Inline-table form: signal-fish-client = { version = "X.Y.Z", ... }
-                    let expected = format!("version = \"{cargo_version}\"");
                     assert!(
-                        trimmed.contains(&expected),
+                        text_contains_version_value(trimmed, &cargo_version),
                         "{rel}:{} has a signal-fish-client dependency snippet with a stale \
-                         version.\nLine: `{trimmed}`\nExpected to contain `{expected}`.",
+                         version.\nLine: `{trimmed}`\nExpected to contain \
+                         `version = \"{cargo_version}\"` (with any whitespace around `=`).",
                         line_num + 1
                     );
                 } else if trimmed.contains('=') {
                     // Bare string form: signal-fish-client = "X.Y.Z"
-                    // Extract the quoted version after `=`.
                     if let Some(eq_pos) = trimmed.find('=') {
-                        let after_eq = trimmed[eq_pos + 1..].trim();
-                        // Strip trailing TOML comments (text after unquoted #)
-                        let after_eq = if let Some(rest) = after_eq.strip_prefix('"') {
-                            // Find closing quote, ignore everything after
-                            if let Some(close) = rest.find('"') {
-                                &after_eq[..close + 2] // Include both quotes
-                            } else {
-                                after_eq
-                            }
-                        } else {
-                            after_eq
-                        };
-                        if after_eq.starts_with('"')
-                            && after_eq.ends_with('"')
-                            && after_eq.len() > 2
+                        if let Some(bare_version) =
+                            extract_bare_toml_version(&trimmed[eq_pos + 1..])
                         {
-                            let bare_version = &after_eq[1..after_eq.len() - 1];
                             assert!(
                                 bare_version == cargo_version,
                                 "{rel}:{} has a signal-fish-client dependency snippet with a \
@@ -1314,6 +1360,90 @@ mod crate_version_consistency {
             checked_files > 0,
             "Expected to find .md files in docs/ but found none."
         );
+    }
+
+    #[test]
+    fn text_contains_version_value_standard_spacing() {
+        assert!(text_contains_version_value(r#"version = "0.4.1""#, "0.4.1"));
+    }
+
+    #[test]
+    fn text_contains_version_value_no_spaces() {
+        assert!(text_contains_version_value(r#"version="0.4.1""#, "0.4.1"));
+    }
+
+    #[test]
+    fn text_contains_version_value_extra_spaces() {
+        assert!(text_contains_version_value(
+            r#"version  =  "0.4.1""#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_tabs_around_equals() {
+        assert!(text_contains_version_value(
+            "version\t=\t\"0.4.1\"",
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_wrong_version_does_not_match() {
+        assert!(!text_contains_version_value(
+            r#"version = "0.4.2""#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_in_inline_table() {
+        assert!(text_contains_version_value(
+            r#"signal-fish-client = { version = "0.4.1", features = ["transport-websocket"] }"#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_in_inline_table_no_spaces() {
+        assert!(text_contains_version_value(
+            r#"signal-fish-client = { version="0.4.1", features = ["transport-websocket"] }"#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_absent() {
+        assert!(!text_contains_version_value(
+            r#"signal-fish-client = "0.4.1""#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_multiline_match() {
+        let text = "name = \"signal-fish-client\"\nversion = \"0.4.1\"\nedition = \"2021\"";
+        assert!(text_contains_version_value(text, "0.4.1"));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_prefix() {
+        // "myversion" contains "version" but the word-boundary check
+        // correctly rejects it because 'y' precedes "version".
+        assert!(!text_contains_version_value(
+            r#"myversion = "0.4.1""#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_after_non_word_char() {
+        // "version" preceded by a non-word character (e.g., brace or space)
+        // should match.
+        assert!(text_contains_version_value(
+            r#"{ version = "0.4.1" }"#,
+            "0.4.1"
+        ));
     }
 }
 
@@ -5856,19 +5986,33 @@ mod test_code_quality {
 mod dev_dependency_usage {
     use super::*;
 
-    /// Dev-dependencies that are used indirectly (e.g., only via derive macros
-    /// whose name does not contain the crate name) and will not appear as a
-    /// direct `use <crate>::` import in source files. These are known
-    /// false-positives and are excluded from the usage scan.
+    /// Dev-dependencies that the usage scanner cannot detect automatically.
+    /// Each entry pairs a crate name with a human-readable reason explaining
+    /// why it is excepted. Two categories belong here:
     ///
-    /// Only add entries here for deps that are truly invisible to the scanner.
-    /// If the scanner already detects usage (e.g., `some_crate::` in
-    /// source files), an exception is redundant and should not be listed.
-    const INDIRECT_USE_EXCEPTIONS: &[(&str, &str)] = &[(
+    /// 1. **Indirect usage** -- dependencies consumed via derive macros,
+    ///    proc-macro attributes, or runtime setup whose identifiers never
+    ///    appear as `use <crate>::` imports in source files.
+    ///
+    /// 2. **Dual-listed dependencies** -- crates that appear in both
+    ///    `[dependencies]` (often feature-gated / optional) and
+    ///    `[dev-dependencies]` (unconditional). Because `src/` usage is
+    ///    attributed to the regular dependency, the scanner only checks
+    ///    `tests/`, `examples/`, and `benches/` for the dev-dep entry.
+    ///    If the crate is not referenced in those directories the scanner
+    ///    reports it as unused, even though the dev-dep entry is
+    ///    intentional (e.g., to guarantee availability in all test builds
+    ///    regardless of feature flags).
+    ///
+    /// Do **not** add an entry when the scanner already detects usage in the
+    /// appropriate directories -- an exception would be redundant.
+    const DEV_DEP_USAGE_EXCEPTIONS: &[(&str, &str)] = &[(
         "futures-util",
-        "Dual-listed: optional in [dependencies] (feature-gated), unconditional in \
-             [dev-dependencies] so it is always available for test builds. Used in \
-             src/transports/websocket.rs but not directly imported in test code.",
+        "Dual-listed: optional in [dependencies] (feature-gated on transport-websocket), \
+             unconditional in [dev-dependencies] so it is always available for test \
+             builds. The scanner only checks tests/examples/benches/ for dual-listed \
+             deps, but futures-util is used in src/transports/websocket.rs (attributed \
+             to the regular dep) and not directly imported in test code.",
     )];
 
     /// Parses [dev-dependencies] from Cargo.toml and returns the crate names.
@@ -5993,14 +6137,14 @@ mod dev_dependency_usage {
     /// only tests/, examples/, and benches/ are scanned — their presence in src/ comes
     /// from the regular dependency, not the dev-dependency entry.
     ///
-    /// Dependencies that are used indirectly (e.g., via attributes or
-    /// runtime setup) are listed in `INDIRECT_USE_EXCEPTIONS`.
+    /// Dependencies that the scanner cannot detect are listed in
+    /// `DEV_DEP_USAGE_EXCEPTIONS`.
     #[test]
     fn all_dev_dependencies_are_used() {
         let root = project_root();
         let regular_deps = regular_dependency_names();
 
-        let exception_names: Vec<&str> = INDIRECT_USE_EXCEPTIONS
+        let exception_names: Vec<&str> = DEV_DEP_USAGE_EXCEPTIONS
             .iter()
             .map(|(name, _)| *name)
             .collect();
@@ -6009,7 +6153,7 @@ mod dev_dependency_usage {
         let mut unused = Vec::new();
 
         for dep_name in &dev_deps {
-            // Skip known indirect-use exceptions.
+            // Skip known usage exceptions.
             if exception_names.contains(&dep_name.as_str()) {
                 continue;
             }
@@ -6062,30 +6206,31 @@ mod dev_dependency_usage {
              tests/, examples/, and benches/ (src/ usage comes from the regular dep).\n\n\
              This causes cargo-udeps CI failures. Either:\n\
              1. Remove the unused dependency from [dev-dependencies], or\n\
-             2. If the dependency is used indirectly (e.g., via attributes), add it \
-                to INDIRECT_USE_EXCEPTIONS in this test with an explanation."
+             2. If the scanner cannot detect usage (e.g., indirect use via \
+                attributes, or a dual-listed dep only used in src/), add it to \
+                DEV_DEP_USAGE_EXCEPTIONS in this test with an explanation."
         );
     }
 
     #[test]
-    fn indirect_use_exceptions_are_documented() {
-        for (name, reason) in INDIRECT_USE_EXCEPTIONS {
+    fn dev_dep_usage_exceptions_are_documented() {
+        for (name, reason) in DEV_DEP_USAGE_EXCEPTIONS {
             assert!(
                 !reason.is_empty(),
-                "INDIRECT_USE_EXCEPTIONS entry '{name}' has an empty reason. \
+                "DEV_DEP_USAGE_EXCEPTIONS entry '{name}' has an empty reason. \
                  Every exception must document why the dependency appears unused."
             );
         }
     }
 
     #[test]
-    fn indirect_use_exceptions_are_actual_dev_dependencies() {
+    fn dev_dep_usage_exceptions_are_actual_dev_dependencies() {
         let dev_deps = dev_dependency_names();
 
-        for (name, _reason) in INDIRECT_USE_EXCEPTIONS {
+        for (name, _reason) in DEV_DEP_USAGE_EXCEPTIONS {
             assert!(
                 dev_deps.iter().any(|dep| dep == name),
-                "INDIRECT_USE_EXCEPTIONS lists '{name}' but it is not in \
+                "DEV_DEP_USAGE_EXCEPTIONS lists '{name}' but it is not in \
                  [dev-dependencies]. Remove stale exceptions when dependencies \
                  are removed."
             );

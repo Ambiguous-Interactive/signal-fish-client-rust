@@ -79,6 +79,23 @@ Dependency version snippets in docs can appear in multiple TOML forms:
 
 Tests validating version consistency must handle **all** forms, not just inline tables. The canonical implementation in `all_docs_dependency_snippets_use_cargo_package_version` handles both the `version = "..."` keyword form and the bare `= "..."` string form, including trailing TOML comments.
 
+### Whitespace-tolerant TOML value matching
+
+Never use exact substring matching (e.g., `contains("version = \"0.4.1\"")`) to check TOML key-value pairs. TOML allows arbitrary whitespace around `=`, so `version="0.4.1"`, `version = "0.4.1"`, and `version  =  "0.4.1"` are all valid.
+
+Use the `text_contains_version_value(text, version)` helper in `ci_config_tests.rs` instead. It finds `version`, skips whitespace, matches `=`, skips whitespace, then checks the quoted value. This avoids false negatives from formatting differences.
+
+**General rule:** When matching structured data (TOML, YAML, JSON) in tests or scripts, parse the value rather than matching a literal formatted string. For TOML: use the `toml` crate or a whitespace-tolerant manual parser. For YAML/JSON: use the appropriate parser crate.
+
+## Exception Constant Naming
+
+When creating exception lists for scanner tests (e.g., dependencies the scanner cannot detect), name the constant after **what the scanner cannot handle**, not after a single specific case:
+
+- **Good:** `DEV_DEP_USAGE_EXCEPTIONS` — covers any reason a dev-dep might be undetectable
+- **Bad:** `INDIRECT_USE_EXCEPTIONS` — implies all entries are "indirect" when some may be dual-listed or scanner-limited
+
+Each entry must include a reason string explaining **why** the exception exists. Helper tests (`*_exceptions_are_documented`, `*_exceptions_are_actual_dev_dependencies`) enforce this. When adding a new exception, describe the specific scanner limitation that requires it.
+
 ## Block Comment Tracking
 
 The `is_crate_referenced_in_dir` function uses simplified block comment tracking (`/* ... */`). Known limitation: raw strings containing `/*` or `*/` can confuse the tracker. This is acceptable because `strip_non_code()` handles string-literal content removal at the line level, making the practical impact minimal.
