@@ -5633,3 +5633,164 @@ mod test_code_quality {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: dev_dependency_usage
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod dev_dependency_usage {
+    use super::*;
+
+    /// Dev-dependencies that are used indirectly (e.g., only via derive macros
+    /// whose name does not contain the crate name) and will not appear as a
+    /// direct `use <crate>::` import in source files. These are known
+    /// false-positives and are excluded from the usage scan.
+    ///
+    /// Only add entries here for deps that are truly invisible to the scanner.
+    /// If the scanner already detects usage (e.g., `tracing_subscriber::` in
+    /// source files), an exception is redundant and should not be listed.
+    const INDIRECT_USE_EXCEPTIONS: &[(&str, &str)] = &[];
+
+    /// Parses [dev-dependencies] from Cargo.toml and returns the crate names.
+    fn dev_dependency_names() -> Vec<String> {
+        let contents = read_project_file("Cargo.toml");
+        let parsed: toml::Value = toml::from_str(&contents).expect("Cargo.toml must be valid TOML");
+
+        parsed
+            .get("dev-dependencies")
+            .and_then(toml::Value::as_table)
+            .map(|table| table.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns true if any `.rs` file under `dir` contains a reference to
+    /// the given crate name (converted to a Rust identifier with underscores).
+    fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
+        if !dir.is_dir() {
+            return false;
+        }
+
+        fn scan_dir(dir: &std::path::Path, rust_name: &str) -> bool {
+            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+                panic!("Failed to read directory '{}': {e}", dir.display());
+            });
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!("Failed to read entry in directory '{}': {e}", dir.display());
+                });
+                let path = entry.path();
+                if path.is_dir() {
+                    if scan_dir(&path, rust_name) {
+                        return true;
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("Failed to read '{}': {e}", path.display());
+                });
+
+                // Check for common usage patterns:
+                //   use <crate>::           (direct import)
+                //   <crate>::               (qualified path)
+                //   extern crate <crate>    (explicit extern)
+                //   #[tokio::test]          (proc-macro attribute using crate name)
+                //   #[tokio::main]          (proc-macro attribute using crate name)
+                let patterns = [
+                    format!("use {rust_name}"),
+                    format!("{rust_name}::"),
+                    format!("extern crate {rust_name}"),
+                ];
+
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    for pattern in &patterns {
+                        if trimmed.contains(pattern.as_str()) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+
+        scan_dir(dir, rust_name)
+    }
+
+    /// Every dev-dependency declared in Cargo.toml must be actually used
+    /// somewhere in tests/, examples/, or src/ (for #[cfg(test)] modules).
+    /// Unused dev-dependencies cause cargo-udeps CI failures and add
+    /// unnecessary build overhead.
+    ///
+    /// Dependencies that are used indirectly (e.g., via attributes or
+    /// runtime setup) are listed in `INDIRECT_USE_EXCEPTIONS`.
+    #[test]
+    fn all_dev_dependencies_are_used() {
+        let root = project_root();
+        let search_dirs = [root.join("tests"), root.join("examples"), root.join("src")];
+
+        let exception_names: Vec<&str> = INDIRECT_USE_EXCEPTIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+
+        let dev_deps = dev_dependency_names();
+        let mut unused = Vec::new();
+
+        for dep_name in &dev_deps {
+            // Skip known indirect-use exceptions.
+            if exception_names.contains(&dep_name.as_str()) {
+                continue;
+            }
+
+            // Convert Cargo crate name (hyphens) to Rust identifier (underscores).
+            let rust_name = dep_name.replace('-', "_");
+
+            let found = search_dirs
+                .iter()
+                .any(|dir| is_crate_referenced_in_dir(dir, &rust_name));
+
+            if !found {
+                unused.push(dep_name.clone());
+            }
+        }
+
+        let joined = unused.join(", ");
+        assert!(
+            unused.is_empty(),
+            "The following dev-dependencies are declared in Cargo.toml but never \
+             referenced in tests/, examples/, or src/: [{joined}]\n\n\
+             This causes cargo-udeps CI failures. Either:\n\
+             1. Remove the unused dependency from [dev-dependencies], or\n\
+             2. If the dependency is used indirectly (e.g., via attributes), add it \
+                to INDIRECT_USE_EXCEPTIONS in this test with an explanation."
+        );
+    }
+
+    #[test]
+    fn indirect_use_exceptions_are_documented() {
+        for (name, reason) in INDIRECT_USE_EXCEPTIONS {
+            assert!(
+                !reason.is_empty(),
+                "INDIRECT_USE_EXCEPTIONS entry '{name}' has an empty reason. \
+                 Every exception must document why the dependency appears unused."
+            );
+        }
+    }
+
+    #[test]
+    fn indirect_use_exceptions_are_actual_dev_dependencies() {
+        let dev_deps = dev_dependency_names();
+
+        for (name, _reason) in INDIRECT_USE_EXCEPTIONS {
+            assert!(
+                dev_deps.iter().any(|dep| dep == name),
+                "INDIRECT_USE_EXCEPTIONS lists '{name}' but it is not in \
+                 [dev-dependencies]. Remove stale exceptions when dependencies \
+                 are removed."
+            );
+        }
+    }
+}

@@ -18,6 +18,10 @@ async fn test_concurrent() {
 }
 ```
 
+### tokio::test comes from tokio, not tokio-test
+
+The `#[tokio::test]` attribute macro is provided by the **`tokio`** crate itself (with the `macros` feature). The separate `tokio-test` crate provides different utilities: `assert_ready!`, `assert_pending!`, `task::spawn` (manual poll harness), and `io::Builder` (mock I/O). If your tests only use `#[tokio::test]`, you do not need `tokio-test` as a dev-dependency. Keeping it listed without use will cause `cargo-udeps` failures in CI.
+
 ## Mock Transport Pattern (actual pattern in this codebase)
 
 Tests use a `VecDeque`-based `MockTransport` that replays scripted server

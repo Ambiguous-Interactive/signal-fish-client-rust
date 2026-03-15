@@ -68,9 +68,9 @@ Array indexes in Bash are arithmetic context. Do not prefix index variables with
 
 Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
 
-### cargo-machete false positives with serde attributes
+### Unused dependency detection: cargo-machete vs cargo-udeps
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete. Add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
+`cargo-machete` uses heuristic grep-based detection; `cargo-udeps` uses build-based analysis. Machete is fast but may miss deps that udeps catches (e.g., a dev-dependency like `tokio-test` listed but never imported). Always treat `cargo-udeps` as authoritative. Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to machete -- add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`. Dev-dependencies go stale when code is refactored (e.g., switching from `tokio-test` utilities to a custom `MockTransport`). The `dev_dependency_usage` tests in `ci_config_tests.rs` verify every `[dev-dependencies]` entry is actually referenced in test code. The `uuid` duplicate-package warning in `cargo-udeps` output is a benign Cargo resolver artifact from platform-specific feature overrides and can be ignored.
 
 ### semver-checks on new crates
 

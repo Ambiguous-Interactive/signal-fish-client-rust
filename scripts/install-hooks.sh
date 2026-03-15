@@ -29,6 +29,7 @@
 #   Phase 2 (sequential, foreground — shared target/):
 #     1. cargo clippy --all-targets --no-default-features -- -D warnings
 #     2. cargo test --all-features
+#     6. cargo machete (optional — unused dependency heuristic check)
 #
 # Hook behavior:
 #   On every commit : 1-11,13-15 run in parallel; 12 (cargo fmt) runs in foreground before 13
@@ -450,6 +451,14 @@ run_check "clippy no-default" "01-clippy-nodef" \
 run_check "cargo test" "02-test" \
     cargo test --all-features
 
+# ── 6. Unused dependency check — cargo-machete (optional) ────────────
+if command -v cargo-machete &>/dev/null; then
+    run_check "cargo-machete" "06-machete" \
+        cargo machete
+else
+    printf 'SKIP 0.0 cargo-machete (not installed)\n' > "$CHECK_TMPDIR/06-machete.result"
+fi
+
 # ── Wait for background non-cargo checks ─────────────────────────
 if [ ${#PIDS[@]} -gt 0 ]; then
     for pid in "${PIDS[@]}"; do
@@ -543,6 +552,7 @@ echo "    5. bash scripts/pre-commit-docs.sh (docs rendering — optional, skipp
 echo "  Phase 2 — sequential foreground (cargo, shared target/):"
 echo "    1. cargo clippy --all-targets --no-default-features -- -D warnings"
 echo "    2. cargo test --all-features"
+echo "    6. cargo machete (optional — unused dependency check, skipped if not installed)"
 echo ""
 echo "NOTE: .pre-commit-config.yaml is kept as documentation reference only."
 echo "      These hooks always use custom parallel execution for speed."
