@@ -264,3 +264,30 @@ When writing a new test or script that scans `.rs` files for patterns:
 7. Never pass `&mut <literal>` to stateful helpers — use a named local variable
 8. In delimiter-scanning loops, use an explicit boolean flag to track whether the
    delimiter was found — never infer the result from the loop index's final value
+
+## Same-Line Multiple Match Handling
+
+When a scanner pattern can appear multiple times on one line, never make a
+line-level skip/pass decision based on only the first occurrence.
+
+Bad pattern (false negatives):
+
+```bash,ignore
+prefix="${line%%PATTERN*}"  # first occurrence only
+if should_skip "$prefix"; then
+        continue  # skips later real matches on the same line
+fi
+```
+
+Correct pattern:
+
+- Iterate through every match occurrence on the line.
+- Apply skip heuristics (for example, string-literal checks) to each specific
+    match position.
+- In shell scanners, keep an absolute offset into the original line while
+    advancing the remaining substring; this preserves correct match positions.
+- Report violations for non-skipped matches and keep scanning the remainder of
+    the line.
+
+This rule applies to shell scanners and Rust scanners alike (`match_indices`
+for Rust, iterative substring or regex loops for shell).

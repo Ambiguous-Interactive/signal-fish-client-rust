@@ -211,6 +211,49 @@ RUST
 run_check
 assert_exit "&mut false after a complete string should FAIL" 1
 
+# -- Should FAIL: string contains &mut literal, then real violation on same line --
+# Regression: this used to be skipped because the checker only inspected the
+# first &mut occurrence on the line.
+setup_fake_repo
+cat > "$FAKE_REPO/src/string_then_real.rs" << 'RUST'
+fn example() {
+    let msg = "skip &mut false"; some_fn(&mut true);
+}
+RUST
+run_check
+assert_exit "String literal &mut false then real &mut true should FAIL" 1
+
+# -- Should FAIL: multiple real violations on one line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/multiple_real.rs" << 'RUST'
+fn example() {
+    some_fn(&mut false, &mut true);
+}
+RUST
+run_check
+assert_exit "Multiple real &mut literal violations on one line should FAIL" 1
+
+# -- Should PASS: only string-literal matches, even with multiple occurrences --
+setup_fake_repo
+cat > "$FAKE_REPO/src/multiple_strings.rs" << 'RUST'
+fn example() {
+    let a = "one &mut false";
+    let b = "two &mut true";
+}
+RUST
+run_check
+assert_exit "Multiple string-literal &mut matches should PASS" 0
+
+# -- Should FAIL: escaped quotes in string, then real violation on same line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/escaped_then_real.rs" << 'RUST'
+fn example() {
+    let msg = "she said \"skip &mut true\""; some_fn(&mut false);
+}
+RUST
+run_check
+assert_exit "Escaped-quote string then real &mut false should FAIL" 1
+
 # -- Should PASS: Empty src/ and tests/ --
 setup_fake_repo
 run_check

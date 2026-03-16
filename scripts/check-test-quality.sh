@@ -34,6 +34,22 @@ NC='\033[0m' # No Color
 
 VIOLATIONS=0
 
+# Returns success when the match position is likely inside a double-quoted
+# string literal on the same line (best effort).
+is_inside_string_literal() {
+    local line="$1"
+    local match_start="$2"
+    local before_match unescaped quotes_only quote_count
+
+    before_match="${line:0:match_start}"
+    # Remove escaped quotes so they do not affect quote parity.
+    unescaped="${before_match//\\\"/}"
+    quotes_only="${unescaped//[!\"]/}"
+    quote_count=${#quotes_only}
+
+    [ $((quote_count % 2)) -ne 0 ]
+}
+
 echo -e "${YELLOW}=== Test quality check ===${NC}"
 echo ""
 
@@ -44,10 +60,10 @@ echo -e "${YELLOW}Check 1: Scanning for mutable references to temporaries (&mut 
 
 CHECK1_VIOLATIONS=0
 
-# Pattern matches &mut followed by a boolean or small integer literal.
-# The word-boundary after the literal prevents matching things like
-# `&mut true_count` or `&mut 100`.
-PATTERN='&mut (false|true|0|1)[^A-Za-z0-9_]|&mut (false|true|0|1)$'
+# Pattern matches `&mut` followed by a boolean or small integer literal.
+# The non-identifier boundary after the literal prevents matching things
+# like `&mut true_count` or `&mut 100`.
+PATTERN='&mut[[:space:]]+(false|true|0|1)([^A-Za-z0-9_]|$)'
 
 MATCHES=$(grep -rnE "$PATTERN" src/ tests/ 2>/dev/null \
     | grep -E '\.rs:' \
@@ -72,28 +88,35 @@ else
             //*) continue ;;
         esac
 
-        # Skip lines where the pattern appears inside a string literal (best effort).
-        # If the match is preceded by an odd number of unescaped quotes on the line,
-        # it is likely inside a string. We use a simple heuristic: strip escaped
-        # quotes (\") first, then count the remaining double-quote characters
-        # before the first occurrence of &mut.
-        before_match="${content%%&mut*}"
-        # Remove escaped quotes so they don't throw off the count
-        unescaped="${before_match//\\\"/}"
-        # Note: strings ending with \\" (escaped backslash + closing quote)
-        # may still be miscounted — an acceptable tradeoff for a best-effort heuristic.
-        # Count unescaped double quotes (remove everything except quotes, then measure length)
-        quotes_only="${unescaped//[!\"]/}"
-        quote_count=${#quotes_only}
-        if [ $((quote_count % 2)) -ne 0 ]; then
-            continue
-        fi
+        # Process every match on the line. Do not decide based on the first
+        # occurrence only, or later real violations can be missed.
+        remaining="$content"
+        offset=0
+        while [[ "$remaining" =~ $PATTERN ]]; do
+            matched="${BASH_REMATCH[0]}"
+            # Use the matched substring to find the first occurrence in the
+            # remaining text so we can map match positions back to the full line.
+            prefix="${remaining%%"$matched"*}"
+            match_start=$((offset + ${#prefix}))
+            advance=$(( ${#prefix} + ${#matched} ))
 
-        echo -e "${RED}VIOLATION:${NC} $file_and_line:$lineno: mutable reference to temporary"
-        echo "  $stripped"
-        echo "  \`&mut <literal>\` creates a reference to a temporary — mutations are silently discarded."
-        echo "  Assign the value to a variable first: \`let mut val = false; f(&mut val);\`"
-        CHECK1_VIOLATIONS=$((CHECK1_VIOLATIONS + 1))
+            if is_inside_string_literal "$content" "$match_start"; then
+                remaining="${remaining:$advance}"
+                offset=$((offset + advance))
+                continue
+            fi
+
+            echo -e "${RED}VIOLATION:${NC} $file_and_line:$lineno: mutable reference to temporary"
+            echo "  $stripped"
+            echo "  \`&mut <literal>\` creates a reference to a temporary — mutations are silently discarded."
+            echo "  Assign the value to a variable first: \`let mut val = false; f(&mut val);\`"
+            CHECK1_VIOLATIONS=$((CHECK1_VIOLATIONS + 1))
+
+            # Advance both the remaining slice and absolute offset to continue
+            # scanning subsequent matches on the same source line.
+            remaining="${remaining:$advance}"
+            offset=$((offset + advance))
+        done
     done <<< "$MATCHES"
 
     if [ "$CHECK1_VIOLATIONS" -eq 0 ]; then
