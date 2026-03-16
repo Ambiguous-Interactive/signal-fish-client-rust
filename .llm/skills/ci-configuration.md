@@ -136,6 +136,7 @@ Keep comments in CI shell scripts behaviorally exact:
 - If comments mention both `#![allow(...)]` and `#[allow(...)]`, checks must handle both (for example `grep -qE '#!?\[allow\('`).
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
 - Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
+- For string-literal detection heuristics (e.g., "odd number of unescaped quotes"), strip escaped quotes before counting: `unescaped="${var//\\\"/}"`. A comment saying "unescaped quotes" while the code counts ALL quotes (including `\"`) is a comment/behavior mismatch that hides bugs.
 
 ### check-no-panics.sh: Compound cfg(test) attributes
 

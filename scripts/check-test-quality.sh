@@ -74,11 +74,16 @@ else
 
         # Skip lines where the pattern appears inside a string literal (best effort).
         # If the match is preceded by an odd number of unescaped quotes on the line,
-        # it is likely inside a string. We use a simple heuristic: count the number
-        # of double-quote characters before the first occurrence of &mut.
+        # it is likely inside a string. We use a simple heuristic: strip escaped
+        # quotes (\") first, then count the remaining double-quote characters
+        # before the first occurrence of &mut.
         before_match="${content%%&mut*}"
-        # Count double quotes (remove everything except quotes, then measure length)
-        quotes_only="${before_match//[!\"]/}"
+        # Remove escaped quotes so they don't throw off the count
+        unescaped="${before_match//\\\"/}"
+        # Note: strings ending with \\" (escaped backslash + closing quote)
+        # may still be miscounted — an acceptable tradeoff for a best-effort heuristic.
+        # Count unescaped double quotes (remove everything except quotes, then measure length)
+        quotes_only="${unescaped//[!\"]/}"
         quote_count=${#quotes_only}
         if [ $((quote_count % 2)) -ne 0 ]; then
             continue

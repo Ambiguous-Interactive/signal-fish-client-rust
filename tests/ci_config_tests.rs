@@ -979,8 +979,16 @@ mod crate_version_consistency {
             && patch.chars().all(|c| c.is_ascii_digit())
     }
 
+    /// Trims only horizontal whitespace (spaces and tabs) from the start of
+    /// a string.  Unlike [`str::trim_start`], this intentionally does **not**
+    /// skip newlines, which matters when parsing TOML where key-value pairs
+    /// must reside on a single line.
+    fn trim_horizontal_start(s: &str) -> &str {
+        s.trim_start_matches([' ', '\t'])
+    }
+
     /// Returns `true` if `text` contains a TOML-style `version = "<version>"`
-    /// fragment, tolerating arbitrary whitespace (including none) around the `=`.
+    /// fragment, tolerating horizontal whitespace (spaces/tabs) around the `=`.
     /// Uses word-boundary checking: `version` must not be preceded by an
     /// alphanumeric character or underscore (so `myversion` does not match).
     ///
@@ -1003,9 +1011,9 @@ mod crate_version_consistency {
             };
             if at_word_boundary {
                 let after_keyword = &remaining[pos + needle.len()..];
-                let after_ws = after_keyword.trim_start();
+                let after_ws = trim_horizontal_start(after_keyword);
                 if let Some(after_eq) = after_ws.strip_prefix('=') {
-                    let after_eq_ws = after_eq.trim_start();
+                    let after_eq_ws = trim_horizontal_start(after_eq);
                     if after_eq_ws.starts_with(&quoted_version) {
                         return true;
                     }
@@ -1524,6 +1532,49 @@ mod crate_version_consistency {
         // should match.
         assert!(text_contains_version_value(
             r#"{ version = "0.4.1" }"#,
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_newline_before_equals() {
+        // TOML requires key = value on the same line; a newline between the
+        // keyword and `=` must not match.
+        assert!(!text_contains_version_value(
+            "version\n= \"0.4.1\"",
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_newline_after_equals() {
+        // Newline between `=` and the quoted value is also invalid TOML.
+        assert!(!text_contains_version_value(
+            "version =\n\"0.4.1\"",
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_multiple_newlines() {
+        assert!(!text_contains_version_value(
+            "version\n\n= \"0.4.1\"",
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_crlf_before_equals() {
+        assert!(!text_contains_version_value(
+            "version\r\n= \"0.4.1\"",
+            "0.4.1"
+        ));
+    }
+
+    #[test]
+    fn text_contains_version_value_rejects_crlf_after_equals() {
+        assert!(!text_contains_version_value(
+            "version =\r\n\"0.4.1\"",
             "0.4.1"
         ));
     }

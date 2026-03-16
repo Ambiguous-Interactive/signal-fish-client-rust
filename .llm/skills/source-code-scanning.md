@@ -91,6 +91,27 @@ Use the `text_contains_version_value(text, version)` helper in `ci_config_tests.
 
 **General rule:** When matching structured data (TOML, YAML, JSON) in tests or scripts, parse the value rather than matching a literal formatted string. For TOML: use the `toml` crate or a whitespace-tolerant manual parser. For YAML/JSON: use the appropriate parser crate.
 
+### Horizontal-only whitespace trimming for line-oriented formats
+
+Rust's `str::trim_start()` removes **all** Unicode whitespace including `\n`, `\r\n`, and other vertical whitespace. When a TOML/YAML value matcher operates on multi-line text (e.g., the full contents of a file), `trim_start()` silently crosses line boundaries. This can make a matcher accept malformed input like `version\n= "0.4.1"` as if the `=` immediately followed `version`.
+
+**Rule:** When parsing line-oriented formats from multi-line text, never use `trim_start()` or `trim_end()`. Use horizontal-only trimming:
+
+```rust,ignore
+fn trim_horizontal_start(s: &str) -> &str {
+    s.trim_start_matches([' ', '\t'])
+}
+```
+
+Or inline: `text.trim_start_matches([' ', '\t'])`.
+
+**Testing:** Always include a test case where the key and `=` are separated by a newline to verify the matcher rejects cross-line-break inputs:
+
+```rust,ignore
+// Must NOT match — newline between key and `=`
+assert!(!text_contains_version_value("version\n= \"0.4.1\"", "0.4.1"));
+```
+
 ## Exception Constant Naming
 
 When creating exception lists for scanner tests (e.g., dependencies the scanner cannot detect), name the constant after **what the scanner cannot handle**, not after a single specific case:
