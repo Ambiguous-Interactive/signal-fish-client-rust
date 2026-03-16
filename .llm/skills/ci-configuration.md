@@ -1,6 +1,6 @@
 # CI Configuration
 
-Reference for CI/CD tool configuration, common pitfalls, and consistency enforcement in this crate.
+Reference for CI/CD tool configuration, common pitfalls, identifier boundary matching in code scanners, and consistency enforcement in this crate.
 
 ## Config File Inventory
 
@@ -47,10 +47,7 @@ header = ["Accept=text/html"]
 
 ### lychee: Avoid flaky external docs for badges
 
-Some external docs/blog hosts intermittently return `503` in CI. For MSRV
-badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over
-`https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV
-links pointed at `doc.rust-lang.org/stable/releases.html`. `tests/ci_config_tests.rs` enforces this to prevent flaky link-check regressions.
+Some external docs/blog hosts intermittently return `503` in CI. For MSRV badges, prefer `https://doc.rust-lang.org/stable/releases.html#...` over `https://blog.rust-lang.org/...`. Keep `README.md` and `docs/index.md` MSRV links pointed at `doc.rust-lang.org/stable/releases.html`. Enforced by `tests/ci_config_tests.rs`.
 
 ### ShellCheck SC2317 and trap handlers
 
@@ -68,9 +65,17 @@ Array indexes in Bash are arithmetic context. Do not prefix index variables with
 
 Types gated on `target_os = "emscripten"` are never in scope on Linux CI hosts. Use `` `TypeName` `` (plain backticks) not `` [`TypeName`] `` (intra-doc link). Enforced by `docsrs_policy` tests in `ci_config_tests.rs`.
 
-### cargo-machete false positives with serde attributes
+### Unused dependency detection: cargo-machete vs cargo-udeps
 
-Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to cargo-machete. Add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`.
+`cargo-machete` uses heuristic grep-based detection; `cargo-udeps` uses build-based analysis. Machete is fast but may miss deps that udeps catches (e.g., a dev-dependency like `tokio-test` listed but never imported). Always treat `cargo-udeps` as authoritative. Dependencies used only via `#[serde(with = "...")]` attributes (e.g., `serde_bytes`) are invisible to machete -- add them to `[package.metadata.cargo-machete] ignored` in `Cargo.toml`. Dev-dependencies go stale when code is refactored (e.g., switching from `tokio-test` utilities to a custom `MockTransport`). The `dev_dependency_usage` tests in `ci_config_tests.rs` verify every `[dev-dependencies]` entry is actually referenced in test code. The `uuid` duplicate-package warning in `cargo-udeps` output is a benign Cargo resolver artifact from platform-specific feature overrides and can be ignored.
+
+### Identifier boundary matching in code scanners
+
+Simple substring checks (`line.contains(name)`) produce false positives when one name is a prefix of another (e.g., `tokio` matches `tokio_tungstenite`). Always enforce word boundaries: the character before and after the match must not be `[A-Za-z0-9_]`. Use `line.match_indices(ident)` and check the adjacent bytes. Canonical implementation: `ci_config_tests.rs::line_references_crate`. See also `skills/source-code-scanning.md` for raw-string handling, recursive directory traversal, and the `strip_non_code()` function.
+
+### Dual-listed dependency awareness
+
+Dev-dependencies that also appear in `[dependencies]` are found in `src/` via the regular dependency entry. Scanning `src/` for such crates always produces false positives. Only scan test-context directories (`tests/`, `examples/`, `benches/`) for dual-listed deps. Deps that elude the scanner for any reason go in `DEV_DEP_USAGE_EXCEPTIONS` with a reason string. Enforced by `ci_config_tests.rs::dev_dependency_usage`.
 
 ### semver-checks on new crates
 
@@ -115,14 +120,7 @@ Review new rules individually and enable only those that add genuine value.
 
 ### typos: US English locale and false positives
 
-The project uses `locale = "en-us"` in `.typos.toml`. Use American English
-spellings (e.g., "recognize" not "recognise", "normalize" not "normalise").
-Use single words not hyphens: "misclassified" not "mis-classified".
-
-Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`)
-and `[default.extend-words]` for standalone words in comments/strings (e.g.,
-`Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add
-entries to both sections and cross-reference them with comments.
+The project uses `locale = "en-us"` in `.typos.toml`. Use American English spellings (e.g., "recognize" not "recognise"). Use `[default.extend-identifiers]` for code identifiers (e.g., variable `pn`) and `[default.extend-words]` for standalone words in comments/strings (e.g., `Pn` in grep flags like `-Pn`). When a token triggers in both contexts, add entries to both sections and cross-reference them with comments.
 
 ### Cargo parallelism: never run cargo subcommands in parallel locally
 
@@ -138,6 +136,7 @@ Keep comments in CI shell scripts behaviorally exact:
 - If comments mention both `#![allow(...)]` and `#[allow(...)]`, checks must handle both (for example `grep -qE '#!?\[allow\('`).
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
 - Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
+- For string-literal detection heuristics (e.g., "odd number of unescaped quotes"), strip escaped quotes before counting: `unescaped="${var//\\\"/}"`. A comment saying "unescaped quotes" while the code counts ALL quotes (including `\"`) is a comment/behavior mismatch that hides bugs.
 
 ### check-no-panics.sh: Compound cfg(test) attributes
 

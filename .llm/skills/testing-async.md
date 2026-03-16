@@ -18,6 +18,10 @@ async fn test_concurrent() {
 }
 ```
 
+### tokio::test comes from tokio, not tokio-test
+
+The `#[tokio::test]` attribute macro is provided by the **`tokio`** crate itself (with the `macros` feature). The separate `tokio-test` crate provides different utilities: `assert_ready!`, `assert_pending!`, `task::spawn` (manual poll harness), and `io::Builder` (mock I/O). If your tests only use `#[tokio::test]`, you do not need `tokio-test` as a dev-dependency. Keeping it listed without use will cause `cargo-udeps` failures in CI.
+
 ## Mock Transport Pattern (actual pattern in this codebase)
 
 Tests use a `VecDeque`-based `MockTransport` that replays scripted server
@@ -215,6 +219,10 @@ cargo test --test client_tests --all-features
   `recv` must create a new `pending()` future — never re-poll the same one.
   If a test is missing a scripted response, the `recv` call hangs and the
   test surfaces this as a timeout, not a panic
+
+## Custom Code Scanners in Tests
+
+When writing test functions that scan source files for identifier names (e.g., verifying dependency usage), use word-boundary-aware matching. Simple `line.contains(name)` checks produce false positives when one identifier is a prefix of another (e.g., `tokio` matching `tokio_tungstenite`). See `ci_config_tests.rs::line_references_crate` for the canonical pattern and the [ci-configuration](ci-configuration.md) skill for full guidance.
 
 ## Cross-Platform Path Assertions
 

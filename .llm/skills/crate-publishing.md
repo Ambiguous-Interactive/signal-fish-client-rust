@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -188,7 +188,12 @@ A version bump must update **all** references, not just `Cargo.toml`:
 
 - `Cargo.toml` (`version`)
 - `README.md` (dependency snippet, badge if present)
-- `docs/*.md` (any version references in getting-started or guides)
+- `docs/getting-started.md` (dependency snippets)
+- `docs/index.md` (dependency snippet)
+- `docs/wasm.md` (dependency snippets)
+- `docs/examples.md` (dependency snippet)
+- `docs/client.md` (`sdk_version` example)
+- `docs/protocol.md` (`sdk_version` JSON example)
 - `.llm/context.md` (Version field)
 - `.llm/skills/crate-publishing.md` (Cargo.toml metadata example)
 
