@@ -1,12 +1,11 @@
 # Dependabot v2 configuration for signal-fish-client
 #
-# Keeps Cargo dependencies and GitHub Actions up to date via automated PRs.
-# PRs target the default branch (main) and trigger the full CI check suite.
+# Goal: prefer fewer, larger "area" PRs over many tiny PRs.
 #
-# Grouping strategy:
-#   - Cargo patch/minor updates are batched into a single PR to reduce noise.
-#   - GitHub Actions patch/minor updates are batched into a single PR.
-#   - Major version bumps (Cargo and Actions) get individual PRs for careful review.
+# Strategy:
+#   - One broad Cargo PR that batches ALL version updates (major/minor/patch).
+#   - One broad GitHub Actions PR that batches ALL version updates.
+#   - Low open PR limits so Dependabot focuses on consolidated batches.
 #
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
@@ -23,13 +22,14 @@ updates:
     labels:
       - dependencies
       - security
-    open-pull-requests-limit: 10
-    # Group patch and minor updates together to reduce PR churn.
-    # Major updates are left ungrouped so each gets its own PR for
-    # individual review (breaking changes require attention).
+    # Keep this low to strongly prefer a single, broad dependency batch.
+    open-pull-requests-limit: 2
     groups:
-      cargo-patch-minor:
+      cargo-all-dependencies:
+        patterns:
+          - "*"
         update-types:
+          - major
           - minor
           - patch
     commit-message:
@@ -46,13 +46,14 @@ updates:
     labels:
       - dependencies
       - security
-    open-pull-requests-limit: 10
-    # Group patch and minor Actions updates together to reduce PR churn.
-    # Major updates are left ungrouped so each gets its own PR for
-    # individual review (breaking changes require attention).
+    # Keep this low to strongly prefer a single, broad dependency batch.
+    open-pull-requests-limit: 2
     groups:
-      github-actions-patch-minor:
+      github-actions-all:
+        patterns:
+          - "*"
         update-types:
+          - major
           - minor
           - patch
     commit-message:
