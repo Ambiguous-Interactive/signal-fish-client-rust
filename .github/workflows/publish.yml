@@ -73,7 +73,7 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.8.2
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Verify version matches tag (if tag push)
         if: startsWith(github.ref, 'refs/tags/')
@@ -188,7 +188,7 @@ jobs:
           printf '%s\n' "$CHANGELOG_CONTENT" > "$RUNNER_TEMP/release_notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.5.0
+        uses: softprops/action-gh-release@v2.6.1
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
           name: ${{ steps.get_version.outputs.tag }}
