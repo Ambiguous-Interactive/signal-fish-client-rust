@@ -2030,6 +2030,114 @@ mod dependency_policy {
         );
     }
 
+    /// Splits `.github/dependabot.yml` into per-ecosystem sections.
+    ///
+    /// Each section starts at a `- package-ecosystem:` list item and runs until
+    /// the next one (or EOF). Returns `(ecosystem_name, section_text)` pairs in
+    /// declaration order.
+    fn dependabot_ecosystem_sections(contents: &str) -> Vec<(String, String)> {
+        let mut sections: Vec<(String, String)> = Vec::new();
+        let mut current_ecosystem: Option<String> = None;
+        let mut current_body = String::new();
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("- package-ecosystem:") {
+                if let Some(eco) = current_ecosystem.take() {
+                    sections.push((eco, std::mem::take(&mut current_body)));
+                }
+                current_ecosystem = Some(rest.trim().to_string());
+                current_body.clear();
+            } else if current_ecosystem.is_some() {
+                current_body.push_str(line);
+                current_body.push('\n');
+            }
+        }
+        if let Some(eco) = current_ecosystem {
+            sections.push((eco, current_body));
+        }
+        sections
+    }
+
+    #[test]
+    fn dependabot_each_ecosystem_sets_open_prs_limit_to_one() {
+        // Each ecosystem block must set open-pull-requests-limit: 1 so that
+        // Dependabot is forced into a single consolidated batch PR rather than
+        // scattering updates across multiple open PRs.
+        let contents = read_project_file(".github/dependabot.yml");
+        let sections = dependabot_ecosystem_sections(&contents);
+        assert!(
+            !sections.is_empty(),
+            "dependabot.yml has no 'updates' entries. \
+             Expected at least one '- package-ecosystem:' block."
+        );
+        for (ecosystem, body) in &sections {
+            assert!(
+                body.lines()
+                    .any(|l| l.trim() == "open-pull-requests-limit: 1"),
+                "dependabot.yml ecosystem '{ecosystem}' does not set \
+                 `open-pull-requests-limit: 1`. \
+                 The project policy requires exactly 1 to enforce a single \
+                 consolidated batch PR per ecosystem. \
+                 Either update the limit to 1 or revise the consolidation policy \
+                 and update this test."
+            );
+        }
+    }
+
+    #[test]
+    fn dependabot_open_prs_limits_are_all_consistent() {
+        // All open-pull-requests-limit values must be identical across ecosystems
+        // so the consolidation strategy is applied uniformly.
+        let contents = read_project_file(".github/dependabot.yml");
+        let limits: Vec<&str> = contents
+            .lines()
+            .filter_map(|l| {
+                let trimmed = l.trim();
+                trimmed
+                    .strip_prefix("open-pull-requests-limit:")
+                    .map(str::trim)
+            })
+            .collect();
+        assert!(
+            !limits.is_empty(),
+            "dependabot.yml sets no 'open-pull-requests-limit' values. \
+             Each ecosystem block must specify one."
+        );
+        let first = limits[0];
+        for (i, &limit) in limits.iter().enumerate().skip(1) {
+            assert_eq!(
+                first, limit,
+                "dependabot.yml has inconsistent open-pull-requests-limit values: \
+                 entry 0 is '{first}' but entry {i} is '{limit}'. \
+                 All ecosystems must use the same limit to apply the consolidation \
+                 policy uniformly."
+            );
+        }
+    }
+
+    #[test]
+    fn dependabot_each_ecosystem_has_wildcard_catchall_group() {
+        // Each ecosystem block must define at least one group that includes the
+        // `- "*"` wildcard pattern so all packages are batched together.
+        let contents = read_project_file(".github/dependabot.yml");
+        let sections = dependabot_ecosystem_sections(&contents);
+        assert!(
+            !sections.is_empty(),
+            "dependabot.yml has no 'updates' entries."
+        );
+        for (ecosystem, body) in &sections {
+            assert!(
+                body.lines().any(|l| l.trim() == r#"- "*""#),
+                "dependabot.yml ecosystem '{ecosystem}' does not define a group \
+                 with a wildcard `- \"*\"` pattern. \
+                 The project policy requires a catchall group so all packages are \
+                 consolidated into a single batch PR rather than triggering \
+                 individual per-package PRs."
+            );
+        }
+    }
+
     #[test]
     fn uuid_dependency_enables_v4_and_serde_features() {
         let parsed = cargo_toml();

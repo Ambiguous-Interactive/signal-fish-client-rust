@@ -1,12 +1,13 @@
 # Dependabot v2 configuration for signal-fish-client
 #
-# Keeps Cargo dependencies and GitHub Actions up to date via automated PRs.
-# PRs target the default branch (main) and trigger the full CI check suite.
+# Goal: prefer fewer, larger ecosystem-based PRs over many tiny per-package PRs.
 #
-# Grouping strategy:
-#   - Cargo patch/minor updates are batched into a single PR to reduce noise.
-#   - GitHub Actions patch/minor updates are batched into a single PR.
-#   - Major version bumps (Cargo and Actions) get individual PRs for careful review.
+# Strategy:
+#   - One broad Cargo PR that batches ALL version updates (major/minor/patch).
+#   - One broad GitHub Actions PR that batches ALL version updates.
+#   - open-pull-requests-limit: 1 per ecosystem so Dependabot can only open
+#     one consolidated batch PR at a time; once that batch is merged a fresh
+#     one is opened for any remaining pending updates.
 #
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
@@ -23,13 +24,14 @@ updates:
     labels:
       - dependencies
       - security
-    open-pull-requests-limit: 10
-    # Group patch and minor updates together to reduce PR churn.
-    # Major updates are left ungrouped so each gets its own PR for
-    # individual review (breaking changes require attention).
+    # Limit to 1 so Dependabot can only open one consolidated batch PR at a time.
+    open-pull-requests-limit: 1
     groups:
-      cargo-patch-minor:
+      cargo-all-dependencies:
+        patterns:
+          - "*"
         update-types:
+          - major
           - minor
           - patch
     commit-message:
@@ -46,13 +48,14 @@ updates:
     labels:
       - dependencies
       - security
-    open-pull-requests-limit: 10
-    # Group patch and minor Actions updates together to reduce PR churn.
-    # Major updates are left ungrouped so each gets its own PR for
-    # individual review (breaking changes require attention).
+    # Limit to 1 so Dependabot can only open one consolidated batch PR at a time.
+    open-pull-requests-limit: 1
     groups:
-      github-actions-patch-minor:
+      github-actions-all:
+        patterns:
+          - "*"
         update-types:
+          - major
           - minor
           - patch
     commit-message:
