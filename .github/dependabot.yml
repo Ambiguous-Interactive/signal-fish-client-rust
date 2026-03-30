@@ -1,11 +1,13 @@
 # Dependabot v2 configuration for signal-fish-client
 #
-# Goal: prefer fewer, larger "area" PRs over many tiny PRs.
+# Goal: prefer fewer, larger ecosystem-based PRs over many tiny per-package PRs.
 #
 # Strategy:
 #   - One broad Cargo PR that batches ALL version updates (major/minor/patch).
 #   - One broad GitHub Actions PR that batches ALL version updates.
-#   - Low open PR limits so Dependabot focuses on consolidated batches.
+#   - open-pull-requests-limit: 1 per ecosystem so Dependabot can only open
+#     one consolidated batch PR at a time; once that batch is merged a fresh
+#     one is opened for any remaining pending updates.
 #
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
@@ -22,8 +24,8 @@ updates:
     labels:
       - dependencies
       - security
-    # Keep this low to strongly prefer a single, broad dependency batch.
-    open-pull-requests-limit: 2
+    # Limit to 1 so Dependabot can only open one consolidated batch PR at a time.
+    open-pull-requests-limit: 1
     groups:
       cargo-all-dependencies:
         patterns:
@@ -46,8 +48,8 @@ updates:
     labels:
       - dependencies
       - security
-    # Keep this low to strongly prefer a single, broad dependency batch.
-    open-pull-requests-limit: 2
+    # Limit to 1 so Dependabot can only open one consolidated batch PR at a time.
+    open-pull-requests-limit: 1
     groups:
       github-actions-all:
         patterns:

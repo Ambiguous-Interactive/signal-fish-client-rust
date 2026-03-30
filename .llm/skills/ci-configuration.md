@@ -137,6 +137,7 @@ Keep comments in CI shell scripts behaviorally exact:
 - Remember `grep` is line-based; validate multi-line attributes with staged checks.
 - Avoid broad patterns (`grep -q '#\[allow('`) when you intend a specific lint.
 - For string-literal detection heuristics (e.g., "odd number of unescaped quotes"), strip escaped quotes before counting: `unescaped="${var//\\\"/}"`. A comment saying "unescaped quotes" while the code counts ALL quotes (including `\"`) is a comment/behavior mismatch that hides bugs.
+- **Dependabot config:** keep inline comments in `.github/dependabot.yml` synchronized with field values. A comment saying "single consolidated PR" while `open-pull-requests-limit: 2` is set is incorrect — set the limit to `1` or change the comment. Enforced by three tests in `tests/ci_config_tests.rs` (`dependency_policy` module): each ecosystem sets `open-pull-requests-limit: 1`, all values are consistent, and every ecosystem has a wildcard catchall group (`- "*"`).
 
 ### check-no-panics.sh: Compound cfg(test) attributes
 

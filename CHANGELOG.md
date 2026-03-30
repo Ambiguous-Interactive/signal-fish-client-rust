@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependabot: corrected `open-pull-requests-limit` from 2 to 1 for both the
+  `cargo` and `github-actions` ecosystems, aligning the config value with the
+  documented "single consolidated batch PR" intent. Updated header comment from
+  "area PRs" to "ecosystem-based PRs" for clarity.
+- CI policy tests: added three new tests in `ci_config_tests.rs` to enforce
+  Dependabot structural invariants — each ecosystem must set
+  `open-pull-requests-limit: 1`, all ecosystem limits must be consistent, and
+  every ecosystem must declare a wildcard catchall group.
+
 ## [0.4.1] - 2026-03-15
 
 ### Changed
