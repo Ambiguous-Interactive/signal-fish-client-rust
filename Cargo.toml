@@ -54,7 +54,7 @@ thiserror = "2.0"
 tracing = "0.1"
 
 # Optional: WebSocket transport
-tokio-tungstenite = { version = "0.28", optional = true }
+tokio-tungstenite = { version = "0.29", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
