@@ -331,11 +331,12 @@ echo ""
 # ── Phase 8: concurrency block policy — prevent redundant CI runs ─────
 echo -e "${YELLOW}Phase 8: Checking workflow concurrency block policy...${NC}"
 
-for workflow_path in .github/workflows/*.yml; do
+while IFS= read -r workflow_path; do
+    workflow_path="${workflow_path//$'\r'/}"
     if ! grep -q "concurrency:" "$workflow_path"; then
         echo "  $workflow_path: missing 'concurrency:' block" >>"$TMP_CONCURRENCY_VIOLATIONS"
     fi
-done
+done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
 
 if [ -s "$TMP_CONCURRENCY_VIOLATIONS" ]; then
     echo -e "${RED}Phase 8: FAIL${NC}"

@@ -222,6 +222,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/unused-deps.yml",
     ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
+    ".github/workflows/publish.yml",
     ".github/workflows/dependabot-auto-merge.yml",
 ];
 
