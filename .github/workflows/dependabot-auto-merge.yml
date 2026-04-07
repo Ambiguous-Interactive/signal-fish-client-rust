@@ -8,10 +8,15 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action }}
+  cancel-in-progress: true
+
 jobs:
   dependabot:
     name: Enable auto-merge for Dependabot PRs
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Enable auto-merge

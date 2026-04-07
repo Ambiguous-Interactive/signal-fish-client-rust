@@ -222,6 +222,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/unused-deps.yml",
     ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
+    ".github/workflows/dependabot-auto-merge.yml",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1668,6 +1669,25 @@ mod workflow_security {
         }
     }
 
+    #[test]
+    fn all_workflows_have_concurrency() {
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            assert!(
+                contents.contains("concurrency:"),
+                "Workflow '{workflow_path}' is missing a 'concurrency:' block. \
+                 Every workflow must define a concurrency group to prevent redundant \
+                 runs from consuming CI resources when new commits are pushed rapidly."
+            );
+            assert!(
+                contents.contains("cancel-in-progress:"),
+                "Workflow '{workflow_path}' is missing 'cancel-in-progress:' in its \
+                 concurrency block. Without this setting, superseded workflow runs \
+                 will continue consuming CI capacity instead of being cancelled."
+            );
+        }
+    }
+
     // Verifies that action `uses:` references are version tags (v-prefixed)
     // rather than commit hashes.
     //
@@ -1935,6 +1955,29 @@ mod workflow_security {
             contents.contains("informational"),
             "scripts/check-workflows.sh Phase 7 must be marked as informational \
              to confirm it is a non-blocking warning rather than a hard failure."
+        );
+    }
+
+    #[test]
+    fn check_workflows_script_detects_missing_concurrency() {
+        let contents = read_project_file("scripts/check-workflows.sh");
+
+        assert!(
+            contents.contains("signal-fish-concurrency-violations"),
+            "scripts/check-workflows.sh must create a temp file for concurrency \
+             block violations (signal-fish-concurrency-violations)."
+        );
+
+        assert!(
+            contents.contains("concurrency:"),
+            "scripts/check-workflows.sh must scan for 'concurrency:' to detect \
+             workflows missing a concurrency block."
+        );
+
+        assert!(
+            contents.contains("Phase 8"),
+            "scripts/check-workflows.sh must include Phase 8 for concurrency \
+             block enforcement."
         );
     }
 }
