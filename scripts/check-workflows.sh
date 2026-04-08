@@ -333,14 +333,18 @@ echo -e "${YELLOW}Phase 8: Checking workflow concurrency block policy...${NC}"
 
 while IFS= read -r workflow_path; do
     workflow_path="${workflow_path//$'\r'/}"
-    if ! grep -q "concurrency:" "$workflow_path"; then
+    # Use anchored grep (-E) to match only real YAML keys, not comment lines.
+    if ! grep -Eq '^[[:space:]]*concurrency:' "$workflow_path"; then
         echo "  $workflow_path: missing 'concurrency:' block" >>"$TMP_CONCURRENCY_VIOLATIONS"
+    fi
+    if ! grep -Eq '^[[:space:]]*cancel-in-progress:' "$workflow_path"; then
+        echo "  $workflow_path: missing 'cancel-in-progress:' in concurrency block" >>"$TMP_CONCURRENCY_VIOLATIONS"
     fi
 done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
 
 if [ -s "$TMP_CONCURRENCY_VIOLATIONS" ]; then
     echo -e "${RED}Phase 8: FAIL${NC}"
-    echo "The following workflows are missing a 'concurrency:' block:"
+    echo "The following workflows are missing required concurrency settings:"
     cat "$TMP_CONCURRENCY_VIOLATIONS"
     VIOLATIONS=$((VIOLATIONS + 1))
 else
