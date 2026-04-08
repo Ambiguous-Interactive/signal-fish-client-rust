@@ -26,6 +26,7 @@ TMP_TOOLCHAIN_VIOLATIONS="$(mktemp -t signal-fish-toolchain-violations.XXXXXX)"
 TMP_STEP_NAME_VIOLATIONS="$(mktemp -t signal-fish-step-name-violations.XXXXXX)"
 TMP_ACTION_REF_VIOLATIONS="$(mktemp -t signal-fish-action-ref-violations.XXXXXX)"
 TMP_MAJOR_ONLY_VIOLATIONS="$(mktemp -t signal-fish-major-only-violations.XXXXXX)"
+TMP_CONCURRENCY_VIOLATIONS="$(mktemp -t signal-fish-concurrency-violations.XXXXXX)"
 
 # shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
@@ -33,6 +34,7 @@ cleanup() {
     rm -f "$TMP_STEP_NAME_VIOLATIONS"
     rm -f "$TMP_ACTION_REF_VIOLATIONS"
     rm -f "$TMP_MAJOR_ONLY_VIOLATIONS"
+    rm -f "$TMP_CONCURRENCY_VIOLATIONS"
 }
 
 trap cleanup EXIT
@@ -323,6 +325,30 @@ if [ -s "$TMP_MAJOR_ONLY_VIOLATIONS" ]; then
     echo -e "${YELLOW}Phase 7: WARNING (informational — not blocking)${NC}"
 else
     echo -e "${GREEN}Phase 7: PASS${NC}"
+fi
+echo ""
+
+# ── Phase 8: concurrency block policy — prevent redundant CI runs ─────
+echo -e "${YELLOW}Phase 8: Checking workflow concurrency block policy...${NC}"
+
+while IFS= read -r workflow_path; do
+    workflow_path="${workflow_path//$'\r'/}"
+    # Use anchored grep (-E) to match only real YAML keys, not comment lines.
+    if ! grep -Eq '^[[:space:]]*concurrency:' "$workflow_path"; then
+        echo "  $workflow_path: missing 'concurrency:' block" >>"$TMP_CONCURRENCY_VIOLATIONS"
+    fi
+    if ! grep -Eq '^[[:space:]]*cancel-in-progress:' "$workflow_path"; then
+        echo "  $workflow_path: missing 'cancel-in-progress:' in concurrency block" >>"$TMP_CONCURRENCY_VIOLATIONS"
+    fi
+done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+
+if [ -s "$TMP_CONCURRENCY_VIOLATIONS" ]; then
+    echo -e "${RED}Phase 8: FAIL${NC}"
+    echo "The following workflows are missing required concurrency settings:"
+    cat "$TMP_CONCURRENCY_VIOLATIONS"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    echo -e "${GREEN}Phase 8: PASS${NC}"
 fi
 echo ""
 
