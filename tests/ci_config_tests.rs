@@ -1846,7 +1846,7 @@ mod workflow_security {
     }
 
     #[test]
-    fn dependabot_auto_merge_uses_repository_allowed_strategy() {
+    fn dependabot_auto_merge_uses_squash_strategy() {
         let contents = read_project_file(".github/workflows/dependabot-auto-merge.yml");
 
         assert!(
@@ -1927,7 +1927,7 @@ mod workflow_security {
         );
 
         assert!(
-            contents.contains("command -v rg"),
+            contents.contains("if command -v rg"),
             "scripts/check-workflows.sh must treat ripgrep as optional and fall back \
              to grep so local workflow validation works on minimal systems."
         );
