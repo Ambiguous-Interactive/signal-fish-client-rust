@@ -1846,6 +1846,23 @@ mod workflow_security {
     }
 
     #[test]
+    fn dependabot_auto_merge_uses_repository_allowed_strategy() {
+        let contents = read_project_file(".github/workflows/dependabot-auto-merge.yml");
+
+        assert!(
+            contents.contains("gh pr merge --auto --squash \"$PR_URL\""),
+            "Dependabot auto-merge must use squash auto-merge because repository \
+             settings reject merge commits."
+        );
+
+        assert!(
+            !contents.contains(" --merge"),
+            "Dependabot auto-merge must not request merge commits; GitHub rejects \
+             `--merge` when merge commits are disabled for the repository."
+        );
+    }
+
+    #[test]
     fn check_workflows_script_enforces_msrv_toolchain_match() {
         let contents = read_project_file("scripts/check-workflows.sh");
 
@@ -1907,6 +1924,18 @@ mod workflow_security {
         assert!(
             contents.contains("^[[:space:]]*-[[:space:]]+(uses|run):"),
             "scripts/check-workflows.sh must enforce explicit `name:` fields by detecting raw `- uses:` / `- run:` steps."
+        );
+
+        assert!(
+            contents.contains("command -v rg"),
+            "scripts/check-workflows.sh must treat ripgrep as optional and fall back \
+             to grep so local workflow validation works on minimal systems."
+        );
+
+        assert!(
+            contents.contains("grep -n -E"),
+            "scripts/check-workflows.sh must provide a grep fallback for step-name \
+             enforcement when ripgrep is unavailable."
         );
     }
 

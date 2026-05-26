@@ -244,7 +244,15 @@ echo ""
 # ── Phase 6: step naming policy — improve Actions UI readability ─────
 echo -e "${YELLOW}Phase 6: Checking workflow step naming policy...${NC}"
 
-if rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml >"$TMP_STEP_NAME_VIOLATIONS"; then
+find_unnamed_workflow_steps() {
+    if command -v rg &>/dev/null; then
+        rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml
+    else
+        grep -n -E "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml
+    fi
+}
+
+if find_unnamed_workflow_steps >"$TMP_STEP_NAME_VIOLATIONS" 2>&1; then
     echo -e "${RED}Phase 6: FAIL${NC}"
     echo "Found workflow steps missing explicit 'name:' fields."
     echo "Action: Convert each '- uses:' or '- run:' step into:"
