@@ -57,7 +57,7 @@ jobs:
 
       - name: Configure sccache
         id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
         continue-on-error: true
 
       - name: Verify sccache is working
@@ -188,7 +188,7 @@ jobs:
           printf '%s\n' "$CHANGELOG_CONTENT" > "$RUNNER_TEMP/release_notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.6.1
+        uses: softprops/action-gh-release@v3.0.0
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
           name: ${{ steps.get_version.outputs.tag }}

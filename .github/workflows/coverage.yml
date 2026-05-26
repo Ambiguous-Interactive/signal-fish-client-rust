@@ -44,7 +44,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.74.0
+        uses: taiki-e/install-action@v2.76.0
         with:
           tool: cargo-llvm-cov@0.8.4
 
@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload HTML coverage report
         if: always()
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-html-${{ github.run_id }}-${{ github.run_attempt }}
           path: coverage-html/
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload LCOV coverage data
         if: always()
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-lcov-${{ github.run_id }}-${{ github.run_attempt }}
           path: lcov.info

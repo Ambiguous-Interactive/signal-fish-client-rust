@@ -285,7 +285,7 @@ The emscripten WASM target requires nightly, which may introduce lints (e.g., `n
 
 | Symptom in CI | First command/script to run |
 |---|---|
-| Workflow YAML/action pin/toolchain policy failure | `bash scripts/check-workflows.sh` |
+| Workflow YAML/action pin/toolchain/auto-merge policy failure | `bash scripts/check-workflows.sh` then `cargo test --test ci_config_tests -- --nocapture workflow_security` |
 | CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
 | Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
