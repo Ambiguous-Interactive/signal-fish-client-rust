@@ -1927,7 +1927,7 @@ mod workflow_security {
         );
 
         assert!(
-            contents.contains("if command -v rg"),
+            contents.contains("if command -v rg &>/dev/null"),
             "scripts/check-workflows.sh must treat ripgrep as optional and fall back \
              to grep so local workflow validation works on minimal systems."
         );
