@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,7 +63,7 @@ jobs:
             flags: "--no-default-features"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -93,7 +93,7 @@ jobs:
             flags: "--no-default-features"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
@@ -111,7 +111,7 @@ jobs:
     needs: fmt
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -135,7 +135,7 @@ jobs:
     needs: fmt
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
@@ -157,9 +157,9 @@ jobs:
     needs: fmt
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2.0.17
+        uses: EmbarkStudios/cargo-deny-action@v2.0.20
 
   # ──────────────────────────────────────────────────────────────
   # Publish dry-run — verify crate packages correctly
@@ -172,7 +172,7 @@ jobs:
     needs: [clippy, test, msrv, doc, deny]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
