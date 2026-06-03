@@ -51,7 +51,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
 
       - name: Install Rust nightly with Miri
         uses: dtolnay/rust-toolchain@nightly
@@ -93,13 +93,13 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.76.0
+        uses: taiki-e/install-action@v2.81.3
         with:
           tool: cargo-fuzz@0.13.1
 
@@ -132,7 +132,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v6.0.3
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -144,7 +144,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.76.0
+        uses: taiki-e/install-action@v2.81.3
         with:
           tool: cargo-mutants@26.2.0
 
