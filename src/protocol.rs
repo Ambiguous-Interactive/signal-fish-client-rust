@@ -57,6 +57,43 @@ pub enum GameDataEncoding {
     Rkyv,
 }
 
+/// Session topology selected by the server for a finalized room (protocol v3).
+///
+/// The server is authoritative: it chooses the topology and communicates the
+/// result via [`SessionPlanPayload`]. The client obeys it; it never computes a
+/// topology itself.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Topology {
+    /// Server relay hub — the v2 behavior, always available (the "relay floor").
+    Relay,
+    /// Star topology around a single elected host/authority.
+    Host,
+    /// Full mesh: every peer connects to every other peer.
+    Mesh,
+}
+
+/// Data-path transport selected by the server for a finalized room (protocol v3).
+///
+/// Distinct from the [`Transport`](crate::Transport) I/O trait: `TransportKind`
+/// is a wire *value* the server sends to describe how peers should exchange game
+/// data, whereas `Transport` is the byte channel to the signaling server.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    /// Server WebSocket fan-out — the mandatory floor every client supports.
+    Relay,
+    /// Direct IP:port connection (LAN / routable host).
+    Direct,
+    /// Peer-to-peer WebRTC data channel.
+    ///
+    /// `rename_all = "snake_case"` would emit `web_rtc`; the protocol requires
+    /// the token `webrtc`, so the variant is renamed explicitly. This token
+    /// deliberately matches [`ConnectionInfo::WebRTC`]'s `#[serde(rename = "webrtc")]`.
+    #[serde(rename = "webrtc")]
+    WebRtc,
+}
+
 /// Connection information for P2P establishment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -187,6 +224,18 @@ pub struct ProtocolInfoPayload {
     pub game_data_formats: Vec<GameDataEncoding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name_rules: Option<PlayerNameRulesPayload>,
+    /// Protocol version negotiated for this connection (protocol v3+ only).
+    ///
+    /// `None` for a negotiated v2 connection, keeping the v2 wire contract
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u16>,
+    /// Lowest protocol version this deployment accepts (protocol v3+ only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_protocol_version: Option<u16>,
+    /// Highest protocol version this deployment speaks (protocol v3+ only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_protocol_version: Option<u16>,
 }
 
 /// Describes the characters a deployment allows inside `player_name`.
@@ -201,6 +250,38 @@ pub struct PlayerNameRulesPayload {
     pub allowed_symbols: Vec<char>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_allowed_characters: Option<String>,
+}
+
+/// A STUN/TURN server for WebRTC ICE negotiation (protocol v3).
+///
+/// `username`/`credential` are present only for TURN servers; bare STUN entries
+/// omit them, keeping the wire bytes minimal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IceServer {
+    /// STUN/TURN URLs (e.g. `stun:stun.l.google.com:19302`).
+    pub urls: Vec<String>,
+    /// TURN username (omitted for credential-less STUN servers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// TURN credential (omitted for credential-less STUN servers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+/// A peer the recipient should connect to within a [`SessionPlanPayload`] (protocol v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionPeer {
+    /// The other peer's identifier.
+    pub player_id: PlayerId,
+    /// The other peer's display name.
+    pub player_name: String,
+    /// Whether this peer is the session's authoritative host.
+    pub is_authority: bool,
+    /// Whether the recipient sends the WebRTC offer to this peer.
+    ///
+    /// Server-assigned (a deterministic "designated offerer"). Obey it
+    /// verbatim — the client never computes who initiates.
+    pub initiate: bool,
 }
 
 // ── Payload structs ─────────────────────────────────────────────────
@@ -223,6 +304,12 @@ pub struct RoomJoinedPayload {
     /// List of spectators currently watching (if any).
     #[serde(default)]
     pub current_spectators: Vec<SpectatorInfo>,
+    /// ICE (STUN/TURN) servers for early WebRTC candidate gathering during the
+    /// lobby wait (protocol v3 only; "ICE pre-gather"). Empty — and absent from
+    /// the wire via `skip_serializing_if` — for v2 connections, keeping the v2
+    /// JSON byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ice_servers: Vec<IceServer>,
 }
 
 /// Payload for the `Reconnected` server message.
@@ -243,6 +330,10 @@ pub struct ReconnectedPayload {
     /// List of spectators currently watching (if any).
     #[serde(default)]
     pub current_spectators: Vec<SpectatorInfo>,
+    /// ICE (STUN/TURN) servers for early WebRTC candidate gathering (protocol
+    /// v3 only). Empty — and absent from the wire — for v2 connections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ice_servers: Vec<IceServer>,
     /// Events that occurred while disconnected.
     pub missed_events: Vec<ServerMessage>,
 }
@@ -260,6 +351,31 @@ pub struct SpectatorJoinedPayload {
     pub lobby_state: LobbyState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<SpectatorStateChangeReason>,
+}
+
+/// Payload for the `SessionPlan` server message (protocol v3).
+/// Boxed in `ServerMessage` to reduce enum size.
+///
+/// Sent per-recipient when a room finalizes to a non-relay session (and again
+/// on late-join or host re-election). Each recipient receives a plan tailored
+/// to it: `peers` excludes the recipient, and each `initiate` flag is set from
+/// the recipient's perspective.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPlanPayload {
+    /// Chosen session topology (`relay`, `host`, or `mesh`).
+    pub topology: Topology,
+    /// Chosen data-path transport (`relay`, `direct`, or `webrtc`).
+    pub transport: TransportKind,
+    /// The elected host, present only for `host` topology.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<PlayerId>,
+    /// Peers this recipient should connect to (excludes the recipient itself).
+    pub peers: Vec<SessionPeer>,
+    /// ICE (STUN/TURN) servers for WebRTC; omitted for non-WebRTC plans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ice_servers: Vec<IceServer>,
+    /// The universal fallback transport — always [`TransportKind::Relay`], the floor.
+    pub fallback: TransportKind,
 }
 
 // ── Messages ────────────────────────────────────────────────────────
@@ -282,6 +398,18 @@ pub enum ClientMessage {
         /// Preferred game data encoding (defaults to JSON text frames).
         #[serde(skip_serializing_if = "Option::is_none")]
         game_data_format: Option<GameDataEncoding>,
+        /// Highest protocol version the client speaks (protocol v3+).
+        ///
+        /// Omitted by default so the server treats the client as v2 relay-only
+        /// and the wire bytes stay identical to v2.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<u16>,
+        /// Data-path transports the client can actually fulfill (protocol v3+).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        supported_transports: Option<Vec<TransportKind>>,
+        /// Session topologies the client can participate in (protocol v3+).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        supported_topologies: Option<Vec<Topology>>,
     },
     /// Join or create a room for a specific game.
     JoinRoom {
@@ -322,6 +450,35 @@ pub enum ClientMessage {
     },
     /// Leave spectator mode.
     LeaveSpectator,
+    /// Explicitly start the game, finalizing the lobby with its current members
+    /// (protocol v2).
+    ///
+    /// Accepted only when every current player is ready. If the room has a
+    /// designated authority, only that authority may start; otherwise any
+    /// member may. On success the server broadcasts `GameStarting` (and, for a
+    /// negotiated v3 non-relay room, a per-recipient `SessionPlan`).
+    StartGame,
+    /// Relay an opaque WebRTC signal to a single peer (protocol v3).
+    ///
+    /// The `signal` is forwarded verbatim by the server. It is typically a
+    /// [`PeerSignal`](crate::PeerSignal) (`{"Offer"|"Answer"|"IceCandidate": …}`)
+    /// but is modeled as `serde_json::Value` so unknown future shapes never
+    /// fail to round-trip.
+    Signal {
+        /// The recipient peer.
+        to: PlayerId,
+        /// The opaque signal payload (offer/answer/ICE candidate).
+        signal: serde_json::Value,
+    },
+    /// Report whether a data-path transport to peers is currently established
+    /// (protocol v3). Informational; the server fans it out as
+    /// `PeerTransportStatus` and uses it for fallback decisions.
+    TransportStatus {
+        /// The transport being reported on.
+        transport: TransportKind,
+        /// Whether that transport is currently connected.
+        connected: bool,
+    },
 }
 
 /// Message types sent from server to client.
@@ -447,5 +604,38 @@ pub enum ServerMessage {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         error_code: Option<ErrorCode>,
+    },
+    /// An opaque WebRTC signal relayed from a peer (protocol v3).
+    ///
+    /// `signal` is modeled as `serde_json::Value` (typically a
+    /// [`PeerSignal`](crate::PeerSignal)) so unknown future shapes always
+    /// round-trip. Convert with `PeerSignal::try_from(&signal)`.
+    Signal {
+        /// The peer the signal came from.
+        from: PlayerId,
+        /// The opaque signal payload (offer/answer/ICE candidate).
+        signal: serde_json::Value,
+    },
+    /// A new peer to connect to after the session was finalized — a late joiner
+    /// (protocol v3).
+    NewPeer {
+        /// The new peer's identifier.
+        peer_id: PlayerId,
+        /// Whether the recipient sends the WebRTC offer to this peer.
+        /// Server-assigned; obey verbatim.
+        you_initiate: bool,
+    },
+    /// Per-recipient session plan for a finalized non-relay room (protocol v3).
+    /// Boxed to reduce enum size. May be received multiple times (host
+    /// re-election / late-join); each one fully replaces the previous plan.
+    SessionPlan(Box<SessionPlanPayload>),
+    /// A peer's data-path transport state changed (protocol v3). Informational.
+    PeerTransportStatus {
+        /// The peer whose transport state changed.
+        peer_id: PlayerId,
+        /// The transport being reported on.
+        transport: TransportKind,
+        /// Whether that transport is currently connected for the peer.
+        connected: bool,
     },
 }

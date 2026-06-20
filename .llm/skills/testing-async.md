@@ -284,3 +284,15 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
 
 - **Infallible conversions**: Operations that cannot fail for the given
   input (e.g., `"valid_utf8".parse::<String>().unwrap()`).
+
+## Protocol v2/v3 Test Patterns
+
+- **Golden-wire conformance**: `tests/wire_golden_tests.rs` round-trips the real
+  server samples — see [protocol-wire-conformance](protocol-wire-conformance.md).
+- **Negotiation**: script `protocol_info_json(Some(3))` after `authenticated_json()`
+  through `MockTransport`, then assert `negotiated_protocol_version()`/`supports_mesh()`
+  and that v3 sends succeed; assert `ProtocolUnsupported` before negotiation.
+- **`MeshController`**: test the choreography with a recording `WebRtcDriver` mock
+  (see `src/webrtc.rs` tests) — drive the handshake, assert `connect(peer, initiate)`
+  obeys the server, signals are relayed, and `PeerConnected`/`PeerDisconnected`
+  surface with correct transport-status reports.

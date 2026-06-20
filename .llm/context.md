@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.4.1
+- **Version:** 0.5.0
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -42,16 +42,19 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 - Include: public API, behavior, protocol, feature flags, error-model, MSRV/dependency changes that affect consumers, and contributor-facing environment fixes that unblock using the repository.
 - Exclude: internal-only updates such as CI/script/pre-commit automation, refactors, tests, and non-behavioral maintenance.
 
-## Architecture — 7 Core Modules
+## Architecture — Core Modules
 
 | File | Purpose |
 |------|---------|
 | `src/transport.rs` | `Transport` trait — async bidirectional text messages |
-| `src/protocol.rs` | Wire-compatible protocol types (`ClientMessage`, `ServerMessage`) |
-| `src/error_codes.rs` | `ErrorCode` enum — 40 variants from server |
+| `src/protocol.rs` | Wire-compatible protocol types (`ClientMessage`, `ServerMessage`, v3 `Topology`/`TransportKind`/`SessionPlanPayload`) |
+| `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
+| `src/error_codes.rs` | `ErrorCode` enum — 48 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client.rs` | `SignalFishClient` async client + `SignalFishConfig` + `JoinRoomParams` |
+| `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
+| `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
 
 ### Transport Trait
@@ -81,14 +84,10 @@ use signal_fish_client::{
 async fn main() -> Result<(), signal_fish_client::SignalFishError> {
     // 1. Connect transport
     let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
-
     // 2. Build config with your App ID
     let config = SignalFishConfig::new("mb_app_abc123");
-
-    // 3. start() returns (client_handle, event_receiver)
-    //    Authenticate is sent automatically on start.
+    // 3. start() returns (client, events); Authenticate is sent automatically
     let (mut client, mut events) = SignalFishClient::start(transport, config);
-
     // 4. Process events
     while let Some(event) = events.recv().await {
         match event {
@@ -113,6 +112,8 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 ### SignalFishConfig
 
 Required second argument to `SignalFishClient::start`. Only `app_id` is required.
+Opt into the protocol v3 mesh with `.enable_mesh()` (advertises `protocol_version`/
+`supported_transports`/`supported_topologies`); see `skills/webrtc-mesh-signaling.md`.
 
 ```rust,ignore
 pub struct SignalFishConfig {
@@ -150,6 +151,7 @@ client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
 client.send_game_data(data: serde_json::Value) -> Result<()>
 client.set_ready() -> Result<()>
+client.start_game() -> Result<()>           // protocol v2: explicit game start
 client.request_authority(become_authority: bool) -> Result<()>
 client.provide_connection_info(info: ConnectionInfo) -> Result<()>
 client.reconnect(player_id, room_id, auth_token) -> Result<()>
@@ -170,6 +172,7 @@ transport is closed.
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
 | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
+| `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |
 
 ## Dependencies
 
@@ -249,8 +252,11 @@ Both `ClientMessage` and `ServerMessage` use adjacent tagging:
 ```
 
 Variant names are PascalCase in JSON (serde default for adjacently-tagged enums
-with no `rename_all`). See `skills/serde-patterns.md` for the full wire format
-reference.
+with no `rename_all`). Protocol v3 adds the additive, opt-in mesh (the default
+stays a byte-identical-to-v2 "relay floor"); WebRTC signals are externally tagged
+(`{ "Offer": "..." }`). See `skills/serde-patterns.md` for the full wire format,
+and `skills/protocol-versioning-and-negotiation.md` + `skills/webrtc-mesh-signaling.md`
+for the v2/v3 deltas.
 
 ## `.llm/` Structure
 

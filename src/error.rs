@@ -39,6 +39,22 @@ pub enum SignalFishError {
         error_code: Option<ErrorCode>,
     },
 
+    /// A protocol-v3-only operation (sending a WebRTC signal or transport
+    /// status) was attempted on a connection that has not negotiated v3.
+    ///
+    /// The server would reject the message, so the client fails fast at the call
+    /// site instead — better UX than an asynchronous, unattributed error event.
+    /// Opt into v3 with [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh).
+    #[error(
+        "operation requires a negotiated protocol v3 session (current mode: {mode}); \
+         opt into the mesh with SignalFishConfig::enable_mesh()"
+    )]
+    ProtocolUnsupported {
+        /// Why v3 is unavailable: `"relay-only"` (negotiated, but not v3) or
+        /// `"pre-negotiation"` (the server has not yet sent `ProtocolInfo`).
+        mode: &'static str,
+    },
+
     /// An operation timed out.
     #[error("operation timed out")]
     Timeout,

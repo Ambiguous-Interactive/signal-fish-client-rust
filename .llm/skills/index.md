@@ -56,6 +56,14 @@ Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this
 
 Reference for correctly parsing markdown content in scripts, preventing documentation drift, and avoiding MkDocs...
 
+### [Protocol Versioning and Capability Negotiation](protocol-versioning-and-negotiation.md)
+
+Reference for the relay-floor backward-compatibility guarantee, v2/v3 capability negotiation, and the "client obeys...
+
+### [Protocol Wire Conformance](protocol-wire-conformance.md)
+
+Reference for the vendored golden wire samples, the provenance marker, and the procedure for keeping the client...
+
 ### [Public API Design](public-api-design.md)
 
 Reference for enum matching policy, semver, re-exports, feature flags, and MSRV in this crate.
@@ -83,6 +91,10 @@ Reference for the tracing crate, #[instrument] macro, spans, events, and log lev
 ### [Transport Abstraction](transport-abstraction.md)
 
 Reference for the `Transport` trait design, writing mock transports for tests, and implementing custom transports.
+
+### [WebRTC Mesh Signaling](webrtc-mesh-signaling.md)
+
+Reference for the matchbox-compatible `PeerSignal` shape, the `WebRtcDriver` seam, the `MeshController` choreography,...
 
 ### [WebSocket Client](websocket-client.md)
 

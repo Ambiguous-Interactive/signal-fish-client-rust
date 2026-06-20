@@ -19,17 +19,18 @@ use std::collections::VecDeque;
 
 use async_trait::async_trait;
 use signal_fish_client::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage,
+    ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage, TransportKind,
 };
 use signal_fish_client::{
-    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
+    ErrorCode, JoinRoomParams, PeerSignal, SignalFishClient, SignalFishConfig, SignalFishError,
     SignalFishEvent, Transport,
 };
 
 use common::{
     authenticated_json, authority_response_json, error_json, game_data_binary_json, game_data_json,
-    player_left_json, pong_json, reconnected_json, room_joined_json, room_left_json,
-    spectator_joined_json, spectator_left_json, MockTransport,
+    new_peer_json, peer_transport_status_json, player_left_json, pong_json, protocol_info_json,
+    reconnected_json, reconnected_with_protocol_info_json, room_joined_json, room_left_json,
+    session_plan_json, signal_json, spectator_joined_json, spectator_left_json, MockTransport,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -1311,6 +1312,9 @@ async fn protocol_info_event() {
             notes: None,
             game_data_formats: vec![GameDataEncoding::Json],
             player_name_rules: None,
+            protocol_version: None,
+            min_protocol_version: None,
+            max_protocol_version: None,
         },
     ))
     .expect("serialize");
@@ -1484,5 +1488,380 @@ async fn player_joined_with_connection_info_direct() {
         panic!("expected PlayerJoined event, got {ev:?}");
     }
 
+    client.shutdown().await;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Protocol v2/v3: start_game, mesh signaling, and the negotiation guard
+// ════════════════════════════════════════════════════════════════════
+
+/// Consume events until a `ProtocolInfo` event is observed (which proves the
+/// client processed the negotiation and updated its state).
+async fn drain_until_protocol_info(rx: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>) {
+    loop {
+        let ev = rx.recv().await.expect("expected ProtocolInfo event");
+        if matches!(ev, SignalFishEvent::ProtocolInfo(_)) {
+            return;
+        }
+    }
+}
+
+/// Parse all currently-recorded outgoing messages into `ClientMessage`s.
+fn sent_messages(sent: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<ClientMessage> {
+    sent.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|m| serde_json::from_str::<ClientMessage>(m).ok())
+        .collect()
+}
+
+#[tokio::test]
+async fn start_game_sends_start_game_message() {
+    let (mut client, mut events, sent, _closed) =
+        start_client(vec![Some(Ok(authenticated_json()))]);
+    drain_until_authenticated(&mut events).await;
+
+    client.start_game().expect("start_game");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert!(sent_messages(&sent)
+        .iter()
+        .any(|m| matches!(m, ClientMessage::StartGame)));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn start_game_available_on_relay_floor() {
+    // start_game is the universal v2 change — NOT gated behind v3 negotiation.
+    let (mut client, mut events, sent, _closed) =
+        start_client(vec![Some(Ok(authenticated_json()))]);
+    drain_until_authenticated(&mut events).await;
+    assert!(client.negotiated_protocol_version().is_none());
+
+    client
+        .start_game()
+        .expect("start_game must work on the relay floor");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(sent_messages(&sent)
+        .iter()
+        .any(|m| matches!(m, ClientMessage::StartGame)));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_signal_before_v3_returns_protocol_unsupported() {
+    let (mut client, mut events, sent, _closed) =
+        start_client(vec![Some(Ok(authenticated_json()))]);
+    drain_until_authenticated(&mut events).await;
+
+    let err = client
+        .send_signal(uuid::Uuid::from_u128(2), PeerSignal::Offer("sdp".into()))
+        .expect_err("send_signal must fail on the relay floor");
+    assert!(matches!(
+        err,
+        SignalFishError::ProtocolUnsupported { mode: "relay-only" }
+    ));
+    // report_transport_status fails fast too.
+    assert!(matches!(
+        client.report_transport_status(TransportKind::WebRtc, true),
+        Err(SignalFishError::ProtocolUnsupported { .. })
+    ));
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // No v3 message ever reached the wire.
+    assert!(!sent_messages(&sent).iter().any(|m| matches!(
+        m,
+        ClientMessage::Signal { .. } | ClientMessage::TransportStatus { .. }
+    )));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_signal_after_v3_negotiation_is_sent() {
+    let peer = uuid::Uuid::from_u128(2);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert_eq!(client.negotiated_protocol_version(), Some(3));
+
+    client.send_offer(peer, "the-sdp").expect("send_offer");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let signal = sent_messages(&sent).into_iter().find_map(|m| match m {
+        ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+        _ => None,
+    });
+    assert_eq!(signal, Some(serde_json::json!({ "Offer": "the-sdp" })));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn report_transport_status_after_v3_is_sent() {
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+
+    client
+        .report_transport_status(TransportKind::WebRtc, true)
+        .expect("report_transport_status");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(sent_messages(&sent).iter().any(|m| matches!(
+        m,
+        ClientMessage::TransportStatus {
+            transport: TransportKind::WebRtc,
+            connected: true
+        }
+    )));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn v2_protocol_info_keeps_relay_floor_guard() {
+    // A v2 ProtocolInfo (no version field) leaves negotiated version None, so v3
+    // sends still fail fast.
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(client.negotiated_protocol_version().is_none());
+    assert!(client.send_offer(uuid::Uuid::from_u128(2), "x").is_err());
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn v3_session_plan_and_signal_events_are_emitted() {
+    let peer = uuid::Uuid::from_u128(7);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(session_plan_json(peer, true))),
+        Some(Ok(signal_json(
+            peer,
+            serde_json::json!({ "Offer": "remote-sdp" }),
+        ))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+
+    let mut saw_plan = false;
+    let mut saw_signal = false;
+    while !(saw_plan && saw_signal) {
+        match events.recv().await.expect("event") {
+            SignalFishEvent::SessionPlan {
+                topology,
+                transport,
+                peers,
+                fallback,
+                ..
+            } => {
+                assert!(matches!(topology, signal_fish_client::Topology::Mesh));
+                assert!(matches!(transport, TransportKind::WebRtc));
+                assert!(matches!(fallback, TransportKind::Relay));
+                assert_eq!(peers.len(), 1);
+                assert_eq!(peers[0].player_id, peer);
+                assert!(peers[0].initiate);
+                saw_plan = true;
+            }
+            SignalFishEvent::SignalReceived { from, signal } => {
+                assert_eq!(from, peer);
+                assert_eq!(
+                    PeerSignal::try_from(&signal).expect("typed signal"),
+                    PeerSignal::Offer("remote-sdp".into())
+                );
+                saw_signal = true;
+            }
+            _ => {}
+        }
+    }
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn new_peer_and_peer_transport_status_events_are_emitted() {
+    let peer = uuid::Uuid::from_u128(8);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(new_peer_json(peer, true))),
+        Some(Ok(peer_transport_status_json(peer, true))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+
+    let mut saw_new_peer = false;
+    let mut saw_status = false;
+    while !(saw_new_peer && saw_status) {
+        match events.recv().await.expect("event") {
+            SignalFishEvent::NewPeer {
+                peer_id,
+                you_initiate,
+            } => {
+                assert_eq!(peer_id, peer);
+                assert!(you_initiate);
+                saw_new_peer = true;
+            }
+            SignalFishEvent::PeerTransportStatus {
+                peer_id,
+                transport,
+                connected,
+            } => {
+                assert_eq!(peer_id, peer);
+                assert!(matches!(transport, TransportKind::WebRtc));
+                assert!(connected);
+                saw_status = true;
+            }
+            _ => {}
+        }
+    }
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_server_message_type_is_skipped_then_next_arrives() {
+    // Forward-compat: a well-formed but unknown `type` is logged+skipped, and the
+    // following valid message still surfaces.
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
+        Some(Ok(pong_json())),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    let ev = events.recv().await.expect("event after unknown type");
+    assert!(matches!(ev, SignalFishEvent::Pong));
+    assert!(client.is_connected());
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_signal_before_authentication_is_pre_negotiation() {
+    // The `mode: "pre-negotiation"` branch of the guard: no auth scripted, so the
+    // client is connected but has not authenticated/negotiated.
+    let (mut client, _events, sent, _closed) = start_client(vec![]);
+
+    let err = client
+        .send_offer(uuid::Uuid::from_u128(2), "sdp")
+        .expect_err("send before negotiation must fail");
+    assert!(matches!(
+        err,
+        SignalFishError::ProtocolUnsupported {
+            mode: "pre-negotiation"
+        }
+    ));
+    assert!(!client.supports_mesh());
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(sent_messages(&sent)
+        .iter()
+        .all(|m| !matches!(m, ClientMessage::Signal { .. })));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn negotiated_version_resets_on_disconnect() {
+    // Note: the scripted clean-close races the mid-stream state, so we assert the
+    // post-disconnect state only. The full negotiate-then-reset cycle is proven
+    // deterministically by the polling client's synchronous equivalent.
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        None, // clean close
+    ]);
+    drain_until_authenticated(&mut events).await;
+
+    // Drain until the transport closes (clear_session_state runs before the
+    // Disconnected event is delivered).
+    loop {
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { .. }) | None => break,
+            _ => {}
+        }
+    }
+    assert_eq!(client.negotiated_protocol_version(), None);
+    assert!(!client.supports_mesh());
+    assert!(client.send_offer(uuid::Uuid::from_u128(2), "x").is_err());
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn reconnect_restores_negotiated_version_from_missed_events() {
+    let peer = uuid::Uuid::from_u128(2);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(reconnected_with_protocol_info_json(Some(3)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    // Drain until the Reconnected event (state updated by then).
+    loop {
+        if matches!(
+            events.recv().await.expect("event"),
+            SignalFishEvent::Reconnected { .. }
+        ) {
+            break;
+        }
+    }
+    assert_eq!(client.negotiated_protocol_version(), Some(3));
+    assert!(client.supports_mesh());
+
+    client
+        .send_offer(peer, "sdp")
+        .expect("send_offer after reconnect");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(sent_messages(&sent)
+        .iter()
+        .any(|m| matches!(m, ClientMessage::Signal { .. })));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn v4_negotiation_still_enables_mesh() {
+    // `>= 3` (not `== 3`) semantics: a future v4 negotiation must still enable mesh.
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(4)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert_eq!(client.negotiated_protocol_version(), Some(4));
+    assert!(client.supports_mesh());
+    client
+        .send_offer(uuid::Uuid::from_u128(2), "sdp")
+        .expect("v4 must enable mesh");
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_answer_ice_and_raw_signal_wire_shapes() {
+    let peer = uuid::Uuid::from_u128(5);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+
+    client.send_answer(peer, "ans").expect("send_answer");
+    client
+        .send_ice_candidate(peer, "cand")
+        .expect("send_ice_candidate");
+    client
+        .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
+        .expect("send_raw_signal");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let signals: Vec<serde_json::Value> = sent_messages(&sent)
+        .into_iter()
+        .filter_map(|m| match m {
+            ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+            _ => None,
+        })
+        .collect();
+    assert!(signals.contains(&serde_json::json!({ "Answer": "ans" })));
+    assert!(signals.contains(&serde_json::json!({ "IceCandidate": "cand" })));
+    // The raw escape hatch forwards an opaque value verbatim.
+    assert!(signals.contains(&serde_json::json!({ "Renegotiate": true })));
     client.shutdown().await;
 }

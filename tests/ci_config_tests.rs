@@ -224,6 +224,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/workflow-lint.yml",
     ".github/workflows/publish.yml",
     ".github/workflows/dependabot-auto-merge.yml",
+    ".github/workflows/protocol-sync.yml",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7179,6 +7180,204 @@ mod dev_dependency_usage {
                      .llm/skills/keep-a-changelog-format.md for guidance."
                 );
             }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Protocol wire-sample conformance policy (protocol v2/v3)
+// ════════════════════════════════════════════════════════════════════
+
+mod protocol_wire_conformance_policy {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    const SAMPLE_FILES: [&str; 4] = [
+        "v2-client-messages.jsonl",
+        "v2-server-messages.jsonl",
+        "v3-client-messages.jsonl",
+        "v3-server-messages.jsonl",
+    ];
+
+    fn sample_path(name: &str) -> String {
+        format!("tests/wire-samples/{name}")
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn wire_sample_files_exist_and_are_non_empty() {
+        for name in SAMPLE_FILES {
+            let rel = sample_path(name);
+            assert!(
+                project_file_exists(&rel),
+                "missing vendored wire sample: {rel}"
+            );
+            let content = read_project_file(&rel);
+            assert!(
+                content.lines().any(|l| !l.trim().is_empty()),
+                "vendored wire sample is empty: {rel}"
+            );
+        }
+        assert!(
+            project_file_exists("tests/wire-samples/PROVENANCE.toml"),
+            "tests/wire-samples/PROVENANCE.toml is required"
+        );
+        assert!(
+            project_file_exists("tests/wire-samples/README.md"),
+            "tests/wire-samples/README.md is required"
+        );
+    }
+
+    #[test]
+    fn wire_provenance_marker_is_valid() {
+        let toml_str = read_project_file("tests/wire-samples/PROVENANCE.toml");
+        let parsed: toml::Value =
+            toml::from_str(&toml_str).expect("PROVENANCE.toml must be valid TOML");
+
+        let upstream = parsed.get("upstream").expect("[upstream] table required");
+        let commit = upstream
+            .get("commit")
+            .and_then(toml::Value::as_str)
+            .expect("[upstream].commit required");
+        assert_eq!(
+            commit.len(),
+            40,
+            "commit must be a 40-char git SHA: {commit}"
+        );
+        assert!(
+            commit.chars().all(|c| c.is_ascii_hexdigit()),
+            "commit must be hexadecimal: {commit}"
+        );
+        assert!(
+            upstream
+                .get("synced")
+                .and_then(toml::Value::as_str)
+                .is_some(),
+            "[upstream].synced date required"
+        );
+        assert!(
+            upstream
+                .get("protocol_version_min")
+                .and_then(toml::Value::as_integer)
+                .is_some(),
+            "[upstream].protocol_version_min required"
+        );
+        assert!(
+            upstream
+                .get("protocol_version_max")
+                .and_then(toml::Value::as_integer)
+                .is_some(),
+            "[upstream].protocol_version_max required"
+        );
+
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table required");
+        for name in SAMPLE_FILES {
+            let sum = files
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .unwrap_or_else(|| panic!("[files] missing checksum for {name}"));
+            assert_eq!(sum.len(), 64, "{name}: checksum must be 64 hex chars");
+            assert!(
+                sum.chars().all(|c| c.is_ascii_hexdigit()),
+                "{name}: checksum must be hexadecimal"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_provenance_checksums_match_vendored_files() {
+        // Guards against editing a sample without updating the marker (or vice
+        // versa) — the provenance stays honest.
+        let toml_str = read_project_file("tests/wire-samples/PROVENANCE.toml");
+        let parsed: toml::Value = toml::from_str(&toml_str).expect("valid TOML");
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table");
+
+        for name in SAMPLE_FILES {
+            let expected = files
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .expect("checksum entry");
+            let bytes = std::fs::read(project_root().join(sample_path(name)))
+                .unwrap_or_else(|e| panic!("read {name}: {e}"));
+            let actual = hex_encode(&Sha256::digest(&bytes));
+            assert_eq!(
+                actual, expected,
+                "{name}: SHA-256 differs from PROVENANCE.toml — the sample was \
+                 edited but the marker was not updated (or vice versa). See \
+                 .llm/skills/protocol-wire-conformance.md."
+            );
+        }
+    }
+
+    #[test]
+    fn no_protocol_type_uses_deny_unknown_fields() {
+        // Forward-compat: protocol types must tolerate unknown (additive) server
+        // fields, so `deny_unknown_fields` must never appear in the protocol layer.
+        for file in ["src/protocol.rs", "src/signal.rs"] {
+            let content = read_project_file(file);
+            let mut in_block = false;
+            for (i, line) in content.lines().enumerate() {
+                let code = strip_non_code_stateful(line, &mut in_block);
+                assert!(
+                    !code.contains("deny_unknown_fields"),
+                    "{file}:{}: protocol types must not use `deny_unknown_fields` \
+                     (it breaks forward-compatibility with additive server fields)",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_protocol_error_codes_documented_in_changelog() {
+        // Durability guard: every error code introduced by the v2/v3 upgrade must
+        // be named in CHANGELOG.md, so the user-facing error surface stays
+        // documented. A future protocol change that adds a code updates both this
+        // list and the CHANGELOG together.
+        let changelog = read_project_file("CHANGELOG.md");
+        for code in [
+            "GAME_START_NOT_READY",
+            "GAME_START_FORBIDDEN",
+            "CROSS_ROOM_SIGNAL",
+            "UNSUPPORTED_TRANSPORT",
+            "SIGNAL_TARGET_NOT_FOUND",
+            "SIGNAL_RATE_LIMITED",
+            "SIGNAL_TOO_LARGE",
+            "CONNECTION_IDLE_TIMEOUT",
+        ] {
+            assert!(
+                changelog.contains(code),
+                "error code `{code}` (added in the v2/v3 upgrade) is not documented \
+                 in CHANGELOG.md"
+            );
+        }
+    }
+
+    #[test]
+    fn new_protocol_skills_exist_and_are_indexed() {
+        let index = read_project_file(".llm/skills/index.md");
+        for skill in [
+            "protocol-versioning-and-negotiation",
+            "webrtc-mesh-signaling",
+            "protocol-wire-conformance",
+        ] {
+            assert!(
+                project_file_exists(&format!(".llm/skills/{skill}.md")),
+                "missing skill file: .llm/skills/{skill}.md"
+            );
+            assert!(
+                index.contains(&format!("{skill}.md")),
+                "skill not referenced in the auto-generated index: {skill}"
+            );
         }
     }
 }

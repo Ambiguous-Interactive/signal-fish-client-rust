@@ -26,7 +26,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,8 +48,10 @@ use crate::event::SignalFishEvent;
 #[cfg(feature = "tokio-runtime")]
 use crate::protocol::ServerMessage;
 use crate::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, PlayerId, RelayTransport, RoomId,
+    ClientMessage, ConnectionInfo, GameDataEncoding, PlayerId, RelayTransport, RoomId, Topology,
+    TransportKind,
 };
+use crate::signal::PeerSignal;
 #[cfg(feature = "tokio-runtime")]
 use crate::transport::Transport;
 
@@ -97,6 +99,20 @@ pub struct SignalFishConfig {
     pub platform: Option<String>,
     /// Preferred game data encoding format.
     pub game_data_format: Option<GameDataEncoding>,
+    /// Highest signaling protocol version to advertise (protocol v3+).
+    ///
+    /// `None` (the default) keeps the client on the v2 **relay floor**: the
+    /// `Authenticate` message omits all negotiation fields and is byte-identical
+    /// to v2. Opt into the mesh with
+    /// [`enable_mesh`](Self::enable_mesh) or [`with_protocol_version`](Self::with_protocol_version).
+    pub protocol_version: Option<u16>,
+    /// Data-path transports the client can actually fulfill (protocol v3+).
+    ///
+    /// `None` advertises nothing. Only advertise a transport (e.g.
+    /// [`TransportKind::WebRtc`]) you have a real WebRTC stack to back.
+    pub supported_transports: Option<Vec<TransportKind>>,
+    /// Session topologies the client can participate in (protocol v3+).
+    pub supported_topologies: Option<Vec<Topology>>,
     /// Capacity of the bounded event channel.
     ///
     /// When the consumer cannot keep up with incoming server messages, events
@@ -128,6 +144,9 @@ impl SignalFishConfig {
             sdk_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             platform: None,
             game_data_format: None,
+            protocol_version: None,
+            supported_transports: None,
+            supported_topologies: None,
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
@@ -149,6 +168,64 @@ impl SignalFishConfig {
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
+        self
+    }
+
+    /// Opt into the protocol v3 P2P mesh.
+    ///
+    /// This is the one-liner for "I have a WebRTC stack — give me mesh with relay
+    /// fallback." It advertises protocol version [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION),
+    /// the `webrtc` and `relay` transports, and the `mesh`, `host`, and `relay`
+    /// topologies. The **server still chooses** the actual topology/transport and
+    /// may keep the room on the relay floor; the client merely declares what it can
+    /// fulfill.
+    ///
+    /// Only call this when you actually bridge the resulting signaling events
+    /// (`SessionPlan`, `SignalReceived`, `NewPeer`) to a WebRTC implementation —
+    /// never advertise a transport you cannot fulfill. Leaving this unset keeps
+    /// the client on the byte-identical-to-v2 relay floor.
+    ///
+    /// When wiring up WebRTC, feed the `ice_servers` from the `SessionPlan`
+    /// (and the pre-gathered `ice_servers` on `RoomJoined`/`Reconnected`) into
+    /// your peer connection's STUN/TURN configuration, or NAT traversal will
+    /// silently fail.
+    #[must_use]
+    pub fn enable_mesh(mut self) -> Self {
+        self.protocol_version = Some(crate::PROTOCOL_VERSION);
+        self.supported_transports = Some(vec![TransportKind::WebRtc, TransportKind::Relay]);
+        self.supported_topologies = Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]);
+        self
+    }
+
+    /// Advertise the highest protocol version this client speaks.
+    ///
+    /// Power-user escape hatch; most consumers want [`enable_mesh`](Self::enable_mesh)
+    /// instead. Setting a version without also setting transports/topologies keeps
+    /// the room on the relay floor (the server requires both to form a session).
+    #[must_use]
+    pub fn with_protocol_version(mut self, version: u16) -> Self {
+        self.protocol_version = Some(version);
+        self
+    }
+
+    /// Advertise the data-path transports this client can fulfill.
+    ///
+    /// Power-user escape hatch (e.g. `[TransportKind::WebRtc]` for mesh-only, no
+    /// relay fallback for this client). Only advertise a transport you have a real
+    /// implementation to back.
+    #[must_use]
+    pub fn with_transports(mut self, transports: impl IntoIterator<Item = TransportKind>) -> Self {
+        self.supported_transports = Some(transports.into_iter().collect());
+        self
+    }
+
+    /// Advertise the session topologies this client can participate in.
+    ///
+    /// Power-user escape hatch (e.g. `[Topology::Mesh, Topology::Relay]` for
+    /// strictly full-mesh-or-relay).
+    #[must_use]
+    pub fn with_topologies(mut self, topologies: impl IntoIterator<Item = Topology>) -> Self {
+        self.supported_topologies = Some(topologies.into_iter().collect());
         self
     }
 }
@@ -235,6 +312,9 @@ impl JoinRoomParams {
 struct ClientState {
     connected: AtomicBool,
     authenticated: AtomicBool,
+    /// Protocol version negotiated by the server (from `ProtocolInfo`).
+    /// `0` means "not yet negotiated, or negotiated v2" — i.e. not v3-capable.
+    negotiated_protocol_version: AtomicU16,
     player_id: Mutex<Option<PlayerId>>,
     room_id: Mutex<Option<RoomId>>,
     room_code: Mutex<Option<String>>,
@@ -246,6 +326,7 @@ impl ClientState {
         Self {
             connected: AtomicBool::new(true),
             authenticated: AtomicBool::new(false),
+            negotiated_protocol_version: AtomicU16::new(0),
             player_id: Mutex::new(None),
             room_id: Mutex::new(None),
             room_code: Mutex::new(None),
@@ -254,6 +335,7 @@ impl ClientState {
 
     async fn clear_session_state(&self) {
         self.authenticated.store(false, Ordering::Release);
+        self.negotiated_protocol_version.store(0, Ordering::Release);
         *self.player_id.lock().await = None;
         *self.room_id.lock().await = None;
         *self.room_code.lock().await = None;
@@ -324,6 +406,9 @@ impl SignalFishClient {
             sdk_version: config.sdk_version,
             platform: config.platform,
             game_data_format: config.game_data_format,
+            protocol_version: config.protocol_version,
+            supported_transports: config.supported_transports,
+            supported_topologies: config.supported_topologies,
         };
         // This cannot fail because we just created the channel.
         let _ = cmd_tx.send(auth_msg);
@@ -504,7 +589,138 @@ impl SignalFishClient {
         self.send(ClientMessage::Ping)
     }
 
+    // ── Game start (protocol v2) ────────────────────────────────────
+
+    /// Request that the server start the game (protocol v2).
+    ///
+    /// The game now starts **explicitly** rather than implicitly when everyone
+    /// is ready. The server accepts this only when every player in the room is
+    /// ready; if the room has a designated authority, only that authority may
+    /// start it. A rejected request surfaces as an [`Error`](SignalFishEvent::Error)
+    /// event with [`ErrorCode::GameStartNotReady`](crate::ErrorCode::GameStartNotReady)
+    /// or [`ErrorCode::GameStartForbidden`](crate::ErrorCode::GameStartForbidden).
+    ///
+    /// This is available on every connection (it is the universal v2 behavior),
+    /// not gated behind the mesh opt-in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    pub fn start_game(&self) -> Result<()> {
+        self.send(ClientMessage::StartGame)
+    }
+
+    // ── Mesh signaling (protocol v3) ────────────────────────────────
+
+    /// Send a typed WebRTC signal to a single peer (protocol v3).
+    ///
+    /// Accepts a [`PeerSignal`] or anything `Into<PeerSignal>`. Use this (or the
+    /// [`send_offer`](Self::send_offer)/[`send_answer`](Self::send_answer)/
+    /// [`send_ice_candidate`](Self::send_ice_candidate) helpers) to relay your
+    /// WebRTC stack's offers, answers, and ICE candidates to the peer the server
+    /// named in a [`SessionPlan`](SignalFishEvent::SessionPlan) or
+    /// [`NewPeer`](SignalFishEvent::NewPeer) event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
+    /// negotiated protocol v3 (fail-fast — the server would otherwise reject it),
+    /// or [`SignalFishError::NotConnected`] if the transport has closed.
+    pub fn send_signal(&self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
+        self.ensure_v3()?;
+        self.send(ClientMessage::Signal {
+            to,
+            signal: signal.into().into(),
+        })
+    }
+
+    /// Send an SDP offer to a peer (protocol v3). See [`send_signal`](Self::send_signal).
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_offer(&self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::Offer(sdp.into()))
+    }
+
+    /// Send an SDP answer to a peer (protocol v3). See [`send_signal`](Self::send_signal).
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_answer(&self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::Answer(sdp.into()))
+    }
+
+    /// Send a single trickle ICE candidate to a peer (protocol v3).
+    /// See [`send_signal`](Self::send_signal).
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_ice_candidate(&self, to: PlayerId, candidate: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::IceCandidate(candidate.into()))
+    }
+
+    /// Raw escape hatch: relay a signal whose shape the SDK does not model
+    /// (protocol v3). The `signal` value is forwarded to the peer verbatim.
+    ///
+    /// Like the typed helpers, this is still gated on a negotiated v3 session —
+    /// the escape hatch bypasses the *typing*, not the negotiation guard.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_raw_signal(&self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
+        self.ensure_v3()?;
+        self.send(ClientMessage::Signal { to, signal })
+    }
+
+    /// Report to the server whether a data-path transport is established
+    /// (protocol v3). The server fans this out to peers as
+    /// [`PeerTransportStatus`](SignalFishEvent::PeerTransportStatus) and uses it
+    /// for fallback decisions. Purely informational; the relay floor stays open
+    /// regardless.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
+    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
+    /// transport has closed.
+    pub fn report_transport_status(&self, transport: TransportKind, connected: bool) -> Result<()> {
+        self.ensure_v3()?;
+        self.send(ClientMessage::TransportStatus {
+            transport,
+            connected,
+        })
+    }
+
     // ── State accessors ─────────────────────────────────────────────
+
+    /// The protocol version negotiated with the server, or `None` if not yet
+    /// negotiated or negotiated as v2 (the relay floor).
+    ///
+    /// Set from the server's [`ProtocolInfo`](SignalFishEvent::ProtocolInfo)
+    /// message. A value of `Some(3)` or higher means mesh signaling is available.
+    pub fn negotiated_protocol_version(&self) -> Option<u16> {
+        match self
+            .state
+            .negotiated_protocol_version
+            .load(Ordering::Acquire)
+        {
+            0 => None,
+            v => Some(v),
+        }
+    }
+
+    /// Returns `true` once the connection has negotiated protocol v3 — i.e. mesh
+    /// signaling (`send_signal`/`report_transport_status`) is available.
+    ///
+    /// This is the "am I in mesh mode?" check; it returns `false` both before
+    /// negotiation completes and on a v2 relay-floor connection.
+    pub fn supports_mesh(&self) -> bool {
+        self.negotiated_protocol_version().is_some_and(|v| v >= 3)
+    }
 
     /// Returns `true` if the transport is believed to be connected.
     pub fn is_connected(&self) -> bool {
@@ -532,6 +748,28 @@ impl SignalFishClient {
     }
 
     // ── Internal helpers ────────────────────────────────────────────
+
+    /// Guard for protocol-v3-only operations: returns an error unless the
+    /// connection negotiated v3, so signaling never goes out on a relay-floor
+    /// connection the server would reject.
+    fn ensure_v3(&self) -> Result<()> {
+        // Mesh signaling was introduced in protocol v3; any negotiated version
+        // >= 3 supports it (independent of the highest version this SDK speaks).
+        if self
+            .state
+            .negotiated_protocol_version
+            .load(Ordering::Acquire)
+            >= 3
+        {
+            return Ok(());
+        }
+        let mode = if self.state.authenticated.load(Ordering::Acquire) {
+            "relay-only"
+        } else {
+            "pre-negotiation"
+        };
+        Err(SignalFishError::ProtocolUnsupported { mode })
+    }
 
     /// Queue a `ClientMessage` to the transport loop.
     fn send(&self, msg: ClientMessage) -> Result<()> {
@@ -684,6 +922,16 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             state.authenticated.store(true, Ordering::Release);
             debug!("state: authenticated");
         }
+        ServerMessage::ProtocolInfo(payload) => {
+            // Record the negotiated protocol version so v3-only sends can fail
+            // fast on a relay-floor connection. v2 negotiation omits the field
+            // (parses as None → 0 → not v3-capable).
+            let version = payload.protocol_version.unwrap_or(0);
+            state
+                .negotiated_protocol_version
+                .store(version, Ordering::Release);
+            debug!("state: negotiated protocol version {version}");
+        }
         ServerMessage::RoomJoined(payload) => {
             *state.player_id.lock().await = Some(payload.player_id);
             *state.room_id.lock().await = Some(payload.room_id);
@@ -702,6 +950,20 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             *state.player_id.lock().await = Some(payload.player_id);
             *state.room_id.lock().await = Some(payload.room_id);
             *state.room_code.lock().await = Some(payload.room_code.clone());
+            // If the negotiated version was replayed via missed_events, restore
+            // it so v3 sends aren't wrongly blocked after a reconnect. (A
+            // top-level ProtocolInfo is already handled by its own arm.) Only a
+            // versioned (v3+) ProtocolInfo restores — a replayed v2 one must not
+            // silently downgrade an active v3 session.
+            for missed in &payload.missed_events {
+                if let ServerMessage::ProtocolInfo(info) = missed {
+                    if let Some(version) = info.protocol_version {
+                        state
+                            .negotiated_protocol_version
+                            .store(version, Ordering::Release);
+                    }
+                }
+            }
             debug!(
                 "state: reconnected to room {} ({})",
                 payload.room_code, payload.room_id
@@ -864,6 +1126,7 @@ mod tests {
             ready_players: vec![],
             relay_type: "auto".into(),
             current_spectators: vec![],
+            ice_servers: vec![],
         };
         serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload))).unwrap()
     }
@@ -891,9 +1154,44 @@ mod tests {
             assert!(!messages.is_empty());
             let first: ClientMessage = serde_json::from_str(&messages[0]).unwrap();
             assert!(matches!(first, ClientMessage::Authenticate { .. }));
-            if let ClientMessage::Authenticate { app_id, .. } = first {
+            if let ClientMessage::Authenticate { app_id, .. } = &first {
                 assert_eq!(app_id, "mb_test_123");
             }
+            // Relay floor on the CLIENT-PRODUCED path: the actually-sent bytes
+            // (not a hand-built message) must omit every v3 negotiation key, so a
+            // default client stays byte-identical to v2.
+            let val: serde_json::Value = serde_json::from_str(&messages[0]).unwrap();
+            assert!(val["data"].get("protocol_version").is_none());
+            assert!(val["data"].get("supported_transports").is_none());
+            assert!(val["data"].get("supported_topologies").is_none());
+        }
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn start_with_enable_mesh_advertises_v3_on_the_wire() {
+        let (transport, sent, _closed) = MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+
+        let config = SignalFishConfig::new("mb_mesh").enable_mesh();
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Drain Connected + Authenticated so the auth message is flushed.
+        let _ = events.recv().await.unwrap();
+        let _ = events.recv().await.unwrap();
+
+        {
+            let messages = sent.lock().unwrap();
+            let val: serde_json::Value = serde_json::from_str(&messages[0]).unwrap();
+            assert_eq!(val["data"]["protocol_version"], 3);
+            assert_eq!(
+                val["data"]["supported_transports"],
+                serde_json::json!(["webrtc", "relay"])
+            );
+            assert_eq!(
+                val["data"]["supported_topologies"],
+                serde_json::json!(["mesh", "host", "relay"])
+            );
         }
 
         client.shutdown().await;
@@ -1041,6 +1339,10 @@ mod tests {
         assert!(config.sdk_version.is_some());
         assert!(config.platform.is_none());
         assert!(config.game_data_format.is_none());
+        // Relay floor by default: no protocol negotiation advertised.
+        assert!(config.protocol_version.is_none());
+        assert!(config.supported_transports.is_none());
+        assert!(config.supported_topologies.is_none());
         assert_eq!(config.event_channel_capacity, 256);
         assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(1));
     }
@@ -1052,6 +1354,37 @@ mod tests {
             .with_shutdown_timeout(std::time::Duration::from_secs(5));
         assert_eq!(config.event_channel_capacity, 512);
         assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn config_enable_mesh_advertises_v3() {
+        let config = SignalFishConfig::new("mb_test").enable_mesh();
+        assert_eq!(config.protocol_version, Some(crate::PROTOCOL_VERSION));
+        assert_eq!(
+            config.supported_transports,
+            Some(vec![TransportKind::WebRtc, TransportKind::Relay])
+        );
+        assert_eq!(
+            config.supported_topologies,
+            Some(vec![Topology::Mesh, Topology::Host, Topology::Relay])
+        );
+    }
+
+    #[tokio::test]
+    async fn config_mesh_power_user_builders() {
+        let config = SignalFishConfig::new("mb_test")
+            .with_protocol_version(3)
+            .with_transports([TransportKind::WebRtc])
+            .with_topologies([Topology::Mesh, Topology::Relay]);
+        assert_eq!(config.protocol_version, Some(3));
+        assert_eq!(
+            config.supported_transports,
+            Some(vec![TransportKind::WebRtc])
+        );
+        assert_eq!(
+            config.supported_topologies,
+            Some(vec![Topology::Mesh, Topology::Relay])
+        );
     }
 
     #[tokio::test]
@@ -1539,6 +1872,7 @@ mod tests {
             ready_players: vec![],
             relay_type: "tcp".into(),
             current_spectators: vec![],
+            ice_servers: vec![],
             missed_events: vec![],
         };
         serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()

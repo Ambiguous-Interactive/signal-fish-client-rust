@@ -14,11 +14,12 @@
 
 use signal_fish_client::error_codes::ErrorCode;
 use signal_fish_client::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, LobbyState, PeerConnectionInfo, PlayerInfo,
-    PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload, RelayTransport,
-    RoomJoinedPayload, ServerMessage, SpectatorInfo, SpectatorJoinedPayload,
-    SpectatorStateChangeReason,
+    ClientMessage, ConnectionInfo, GameDataEncoding, IceServer, LobbyState, PeerConnectionInfo,
+    PlayerInfo, PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
+    RelayTransport, RoomJoinedPayload, ServerMessage, SessionPeer, SessionPlanPayload,
+    SpectatorInfo, SpectatorJoinedPayload, SpectatorStateChangeReason, Topology, TransportKind,
 };
+use signal_fish_client::PeerSignal;
 
 // ════════════════════════════════════════════════════════════════════
 // Helper
@@ -49,6 +50,9 @@ fn client_message_authenticate_round_trip() {
         sdk_version: Some("0.1.0".into()),
         platform: Some("rust".into()),
         game_data_format: Some(GameDataEncoding::Json),
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let deser: ClientMessage = serde_json::from_str(&json).expect("deserialize");
@@ -57,12 +61,19 @@ fn client_message_authenticate_round_trip() {
         sdk_version,
         platform,
         game_data_format,
+        protocol_version,
+        supported_transports,
+        supported_topologies,
     } = deser
     {
         assert_eq!(app_id, "mb_app_test");
         assert_eq!(sdk_version.as_deref(), Some("0.1.0"));
         assert_eq!(platform.as_deref(), Some("rust"));
         assert!(matches!(game_data_format, Some(GameDataEncoding::Json)));
+        // A v2 (relay-floor) Authenticate round-trips the v3 fields as None.
+        assert!(protocol_version.is_none());
+        assert!(supported_transports.is_none());
+        assert!(supported_topologies.is_none());
     } else {
         panic!("expected Authenticate variant");
     }
@@ -274,6 +285,9 @@ fn server_message_protocol_info_round_trip() {
             allowed_symbols: vec!['-', '_'],
             additional_allowed_characters: None,
         }),
+        protocol_version: None,
+        min_protocol_version: None,
+        max_protocol_version: None,
     });
     let deser = round_trip(&msg);
     if let ServerMessage::ProtocolInfo(payload) = deser {
@@ -325,6 +339,7 @@ fn server_message_room_joined_round_trip() {
         ready_players: vec![test_uuid(5)],
         relay_type: "tcp".into(),
         current_spectators: vec![],
+        ice_servers: vec![],
     };
     let msg = ServerMessage::RoomJoined(Box::new(payload));
     let deser = round_trip(&msg);
@@ -544,6 +559,7 @@ fn server_message_reconnected_round_trip() {
         ready_players: vec![],
         relay_type: "udp".into(),
         current_spectators: vec![],
+        ice_servers: vec![],
         missed_events: vec![ServerMessage::Pong],
     };
     let msg = ServerMessage::Reconnected(Box::new(payload));
@@ -787,6 +803,14 @@ fn error_code_round_trip_all_variants() {
         ErrorCode::InternalError,
         ErrorCode::StorageError,
         ErrorCode::ServiceUnavailable,
+        ErrorCode::GameStartNotReady,
+        ErrorCode::GameStartForbidden,
+        ErrorCode::CrossRoomSignal,
+        ErrorCode::UnsupportedTransport,
+        ErrorCode::SignalTargetNotFound,
+        ErrorCode::SignalRateLimited,
+        ErrorCode::SignalTooLarge,
+        ErrorCode::ConnectionIdleTimeout,
     ];
     for variant in &variants {
         let json = serde_json::to_string(variant).expect("serialize");
@@ -804,6 +828,527 @@ fn error_code_round_trip_all_variants() {
         // Round-trip.
         let deser: ErrorCode = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(&deser, variant);
+    }
+}
+
+#[test]
+fn new_v3_error_codes_serialize_exact_strings() {
+    let cases = [
+        (ErrorCode::GameStartNotReady, "GAME_START_NOT_READY"),
+        (ErrorCode::GameStartForbidden, "GAME_START_FORBIDDEN"),
+        (ErrorCode::CrossRoomSignal, "CROSS_ROOM_SIGNAL"),
+        (ErrorCode::UnsupportedTransport, "UNSUPPORTED_TRANSPORT"),
+        (ErrorCode::SignalTargetNotFound, "SIGNAL_TARGET_NOT_FOUND"),
+        (ErrorCode::SignalRateLimited, "SIGNAL_RATE_LIMITED"),
+        (ErrorCode::SignalTooLarge, "SIGNAL_TOO_LARGE"),
+        (ErrorCode::ConnectionIdleTimeout, "CONNECTION_IDLE_TIMEOUT"),
+    ];
+    for (code, expected) in cases {
+        let json = serde_json::to_string(&code).expect("serialize");
+        assert_eq!(json, format!("\"{expected}\""), "wire string for {code:?}");
+        let deser: ErrorCode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deser, code);
+        assert!(
+            !code.description().is_empty(),
+            "{code:?} needs a description"
+        );
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Protocol v2/v3 additions: enums, signals, session plan, negotiation
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn topology_serializes_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&Topology::Relay).expect("ser"),
+        r#""relay""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Topology::Host).expect("ser"),
+        r#""host""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Topology::Mesh).expect("ser"),
+        r#""mesh""#
+    );
+    // Pin the INBOUND parse too (a deser-only divergence would otherwise slip).
+    assert_eq!(
+        serde_json::from_str::<Topology>(r#""relay""#).expect("deser"),
+        Topology::Relay
+    );
+    assert_eq!(
+        serde_json::from_str::<Topology>(r#""host""#).expect("deser"),
+        Topology::Host
+    );
+    assert_eq!(
+        serde_json::from_str::<Topology>(r#""mesh""#).expect("deser"),
+        Topology::Mesh
+    );
+}
+
+#[test]
+fn transport_kind_serializes_with_webrtc_rename() {
+    assert_eq!(
+        serde_json::to_string(&TransportKind::Relay).expect("ser"),
+        r#""relay""#
+    );
+    assert_eq!(
+        serde_json::to_string(&TransportKind::Direct).expect("ser"),
+        r#""direct""#
+    );
+    // rename_all = "snake_case" would emit "web_rtc"; the explicit rename fixes it.
+    assert_eq!(
+        serde_json::to_string(&TransportKind::WebRtc).expect("ser"),
+        r#""webrtc""#
+    );
+    // Pin the INBOUND parse so the rename is locked on the receive path too.
+    assert_eq!(
+        serde_json::from_str::<TransportKind>(r#""webrtc""#).expect("deser"),
+        TransportKind::WebRtc
+    );
+    assert_eq!(
+        serde_json::from_str::<TransportKind>(r#""direct""#).expect("deser"),
+        TransportKind::Direct
+    );
+    assert_eq!(round_trip(&TransportKind::WebRtc), TransportKind::WebRtc);
+}
+
+#[test]
+fn peer_signal_is_externally_tagged_on_client_signal() {
+    let msg = ClientMessage::Signal {
+        to: test_uuid(3),
+        signal: PeerSignal::Offer("SDP".into()).into(),
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["type"], "Signal");
+    assert_eq!(val["data"]["to"], test_uuid(3).to_string());
+    assert_eq!(val["data"]["signal"], serde_json::json!({ "Offer": "SDP" }));
+    let deser: ClientMessage =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("deser");
+    assert!(matches!(deser, ClientMessage::Signal { .. }));
+}
+
+#[test]
+fn ice_server_omits_credentials_when_absent() {
+    let stun = IceServer {
+        urls: vec!["stun:stun.l.google.com:19302".into()],
+        username: None,
+        credential: None,
+    };
+    let json = serde_json::to_string(&stun).expect("ser");
+    assert!(!json.contains("username"), "{json}");
+    assert!(!json.contains("credential"), "{json}");
+    assert_eq!(round_trip(&stun), stun);
+}
+
+#[test]
+fn ice_server_includes_turn_credentials() {
+    let turn = IceServer {
+        urls: vec!["turn:turn.example.com:3478".into()],
+        username: Some("user".into()),
+        credential: Some("pass".into()),
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&turn).expect("ser")).expect("parse");
+    assert_eq!(val["username"], "user");
+    assert_eq!(val["credential"], "pass");
+}
+
+#[test]
+fn session_peer_round_trip_preserves_initiate() {
+    // Both directions of `initiate` must be faithful — the "client obeys server"
+    // model hinges on it, so verify true AND false reach the wire literally.
+    let initiator = SessionPeer {
+        player_id: test_uuid(11),
+        player_name: "Bob".into(),
+        is_authority: true,
+        initiate: true,
+    };
+    let responder = SessionPeer {
+        player_id: test_uuid(12),
+        player_name: "Carol".into(),
+        is_authority: false,
+        initiate: false,
+    };
+    assert_eq!(round_trip(&initiator), initiator);
+    assert_eq!(round_trip(&responder), responder);
+
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&responder).expect("ser")).expect("parse");
+    assert_eq!(val["initiate"], false);
+    assert_eq!(val["is_authority"], false);
+    assert_eq!(val["player_name"], "Carol");
+}
+
+#[test]
+fn session_plan_omits_host_and_empty_ice() {
+    let plan = SessionPlanPayload {
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        peers: vec![SessionPeer {
+            player_id: test_uuid(2),
+            player_name: "B".into(),
+            is_authority: false,
+            initiate: true,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    let json = serde_json::to_string(&plan).expect("ser");
+    assert!(!json.contains("host"), "{json}");
+    assert!(!json.contains("ice_servers"), "{json}");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["topology"], "mesh");
+    assert_eq!(val["transport"], "webrtc");
+    assert_eq!(val["fallback"], "relay");
+    assert_eq!(val["peers"][0]["initiate"], true);
+}
+
+#[test]
+fn session_plan_includes_host_and_ice_for_host_topology() {
+    let plan = SessionPlanPayload {
+        topology: Topology::Host,
+        transport: TransportKind::WebRtc,
+        host: Some(test_uuid(7)),
+        peers: vec![],
+        ice_servers: vec![IceServer {
+            urls: vec!["stun:x".into()],
+            username: None,
+            credential: None,
+        }],
+        fallback: TransportKind::Relay,
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&plan).expect("ser")).expect("parse");
+    assert_eq!(val["host"], test_uuid(7).to_string());
+    assert_eq!(val["ice_servers"][0]["urls"][0], "stun:x");
+}
+
+#[test]
+fn client_message_start_game_unit_variant_has_no_data() {
+    let json = serde_json::to_string(&ClientMessage::StartGame).expect("ser");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["type"], "StartGame");
+    assert!(val.get("data").is_none(), "StartGame must have no 'data'");
+    assert_eq!(val.as_object().expect("object").len(), 1);
+    assert!(matches!(
+        round_trip(&ClientMessage::StartGame),
+        ClientMessage::StartGame
+    ));
+}
+
+#[test]
+fn reconnected_missed_events_carry_v3_messages() {
+    // Reconnect replay must ferry v3 messages through unchanged (they convert to
+    // events for free via the recursive `From` impl).
+    let payload = ReconnectedPayload {
+        room_id: nil_uuid(),
+        room_code: "R".into(),
+        player_id: nil_uuid(),
+        game_name: "g".into(),
+        max_players: 2,
+        supports_authority: false,
+        current_players: vec![],
+        is_authority: false,
+        lobby_state: LobbyState::Finalized,
+        ready_players: vec![],
+        relay_type: "auto".into(),
+        current_spectators: vec![],
+        ice_servers: vec![],
+        missed_events: vec![
+            ServerMessage::NewPeer {
+                peer_id: test_uuid(2),
+                you_initiate: true,
+            },
+            ServerMessage::Signal {
+                from: test_uuid(2),
+                signal: serde_json::json!({ "Offer": "SDP" }),
+            },
+        ],
+    };
+    let msg = ServerMessage::Reconnected(Box::new(payload));
+    if let ServerMessage::Reconnected(p) = round_trip(&msg) {
+        assert_eq!(p.missed_events.len(), 2);
+        assert!(matches!(
+            p.missed_events[0],
+            ServerMessage::NewPeer {
+                you_initiate: true,
+                ..
+            }
+        ));
+        assert!(matches!(p.missed_events[1], ServerMessage::Signal { .. }));
+    } else {
+        panic!("expected Reconnected variant");
+    }
+}
+
+#[test]
+fn client_message_transport_status_round_trip() {
+    let msg = ClientMessage::TransportStatus {
+        transport: TransportKind::WebRtc,
+        connected: true,
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["data"]["transport"], "webrtc");
+    assert_eq!(val["data"]["connected"], true);
+    assert!(matches!(
+        round_trip(&msg),
+        ClientMessage::TransportStatus {
+            connected: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn server_message_signal_round_trip() {
+    let msg = ServerMessage::Signal {
+        from: test_uuid(4),
+        signal: serde_json::json!({ "Answer": "SDP" }),
+    };
+    // Pin the `from` wire KEY (not just round-trip) so a consistent rename
+    // like `sender`/`from_peer` cannot slip through.
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["type"], "Signal");
+    assert_eq!(val["data"]["from"], test_uuid(4).to_string());
+    assert_eq!(
+        val["data"]["signal"],
+        serde_json::json!({ "Answer": "SDP" })
+    );
+    assert!(
+        val["data"].get("to").is_none(),
+        "server Signal uses `from`, not `to`"
+    );
+
+    // Also lock the contract by deserializing a hand-written server-shaped literal.
+    let literal = format!(
+        r#"{{"type":"Signal","data":{{"from":"{}","signal":{{"Answer":"SDP"}}}}}}"#,
+        test_uuid(4)
+    );
+    let deser: ServerMessage = serde_json::from_str(&literal).expect("deser literal");
+    if let ServerMessage::Signal { from, signal } = deser {
+        assert_eq!(from, test_uuid(4));
+        assert_eq!(signal, serde_json::json!({ "Answer": "SDP" }));
+    } else {
+        panic!("expected Signal variant");
+    }
+}
+
+#[test]
+fn server_message_new_peer_round_trip() {
+    let msg = ServerMessage::NewPeer {
+        peer_id: test_uuid(8),
+        you_initiate: true,
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["type"], "NewPeer");
+    assert_eq!(val["data"]["you_initiate"], true);
+    assert!(matches!(
+        round_trip(&msg),
+        ServerMessage::NewPeer {
+            you_initiate: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn server_message_peer_transport_status_round_trip() {
+    let msg = ServerMessage::PeerTransportStatus {
+        peer_id: test_uuid(9),
+        transport: TransportKind::WebRtc,
+        connected: false,
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["data"]["transport"], "webrtc");
+    assert_eq!(val["data"]["connected"], false);
+}
+
+#[test]
+fn server_message_session_plan_round_trip() {
+    let payload = SessionPlanPayload {
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        peers: vec![SessionPeer {
+            player_id: test_uuid(2),
+            player_name: "B".into(),
+            is_authority: false,
+            initiate: true,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    let msg = ServerMessage::SessionPlan(Box::new(payload));
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["type"], "SessionPlan");
+    assert_eq!(val["data"]["topology"], "mesh");
+    // Deep-assert the boxed payload survives the round-trip (every field), not
+    // merely that the variant matches.
+    if let ServerMessage::SessionPlan(p) = round_trip(&msg) {
+        assert_eq!(p.topology, Topology::Mesh);
+        assert_eq!(p.transport, TransportKind::WebRtc);
+        assert_eq!(p.fallback, TransportKind::Relay);
+        assert!(p.host.is_none());
+        assert_eq!(p.peers.len(), 1);
+        assert_eq!(p.peers[0].player_id, test_uuid(2));
+        assert!(p.peers[0].initiate);
+        assert!(p.ice_servers.is_empty());
+    } else {
+        panic!("expected SessionPlan variant");
+    }
+}
+
+#[test]
+fn authenticate_relay_floor_omits_v3_fields() {
+    // THE backward-compat guarantee: a default (v2) Authenticate is byte-identical
+    // to v2 — none of the negotiation keys appear.
+    let msg = ClientMessage::Authenticate {
+        app_id: "mb_app".into(),
+        sdk_version: Some("0.5.0".into()),
+        platform: None,
+        game_data_format: None,
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
+    };
+    let json = serde_json::to_string(&msg).expect("ser");
+    assert!(
+        !json.contains("protocol_version"),
+        "relay floor must omit it: {json}"
+    );
+    assert!(!json.contains("supported_transports"), "{json}");
+    assert!(!json.contains("supported_topologies"), "{json}");
+}
+
+#[test]
+fn authenticate_mesh_includes_v3_fields_with_exact_strings() {
+    let msg = ClientMessage::Authenticate {
+        app_id: "mb_app".into(),
+        sdk_version: None,
+        platform: None,
+        game_data_format: None,
+        protocol_version: Some(3),
+        supported_transports: Some(vec![TransportKind::WebRtc, TransportKind::Relay]),
+        supported_topologies: Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]),
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
+    assert_eq!(val["data"]["protocol_version"], 3);
+    assert_eq!(
+        val["data"]["supported_transports"],
+        serde_json::json!(["webrtc", "relay"])
+    );
+    assert_eq!(
+        val["data"]["supported_topologies"],
+        serde_json::json!(["mesh", "host", "relay"])
+    );
+}
+
+#[test]
+fn protocol_info_v2_negotiation_omits_version_fields() {
+    let payload = ProtocolInfoPayload {
+        platform: None,
+        sdk_version: None,
+        minimum_version: None,
+        recommended_version: None,
+        capabilities: vec![],
+        notes: None,
+        game_data_formats: vec![],
+        player_name_rules: None,
+        protocol_version: None,
+        min_protocol_version: None,
+        max_protocol_version: None,
+    };
+    let json = serde_json::to_string(&payload).expect("ser");
+    assert!(!json.contains("protocol_version"), "{json}");
+    assert!(!json.contains("min_protocol_version"), "{json}");
+    assert!(!json.contains("max_protocol_version"), "{json}");
+}
+
+#[test]
+fn protocol_info_v2_json_without_version_fields_deserializes() {
+    // A negotiated-v2 ProtocolInfo carries none of the new keys; must still parse.
+    let v2 = r#"{"capabilities":["authority"],"game_data_formats":["json"]}"#;
+    let payload: ProtocolInfoPayload = serde_json::from_str(v2).expect("deser");
+    assert!(payload.protocol_version.is_none());
+    assert_eq!(payload.capabilities, vec!["authority".to_string()]);
+}
+
+#[test]
+fn protocol_info_v3_negotiation_surfaces_versions() {
+    let v3 = r#"{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}"#;
+    let payload: ProtocolInfoPayload = serde_json::from_str(v3).expect("deser");
+    assert_eq!(payload.protocol_version, Some(3));
+    assert_eq!(payload.min_protocol_version, Some(2));
+    assert_eq!(payload.max_protocol_version, Some(3));
+}
+
+#[test]
+fn room_joined_omits_ice_servers_when_empty() {
+    let payload = RoomJoinedPayload {
+        room_id: nil_uuid(),
+        room_code: "X".into(),
+        player_id: nil_uuid(),
+        game_name: "g".into(),
+        max_players: 2,
+        supports_authority: false,
+        current_players: vec![],
+        is_authority: false,
+        lobby_state: LobbyState::Waiting,
+        ready_players: vec![],
+        relay_type: "auto".into(),
+        current_spectators: vec![],
+        ice_servers: vec![],
+    };
+    let json = serde_json::to_string(&payload).expect("ser");
+    assert!(!json.contains("ice_servers"), "{json}");
+}
+
+#[test]
+fn room_joined_v2_json_without_ice_servers_deserializes() {
+    // A v2 RoomJoined payload (no ice_servers key) must still deserialize.
+    let v2 = r#"{"room_id":"00000000-0000-0000-0000-000000000000","room_code":"X","player_id":"00000000-0000-0000-0000-000000000000","game_name":"g","max_players":2,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"auto"}"#;
+    let payload: RoomJoinedPayload = serde_json::from_str(v2).expect("deser");
+    assert!(payload.ice_servers.is_empty());
+}
+
+#[test]
+fn server_message_tolerates_unknown_fields_forward_compat() {
+    // Additive server fields must not break deserialization (no deny_unknown_fields).
+    let json = r#"{"type":"PlayerLeft","data":{"player_id":"00000000-0000-0000-0000-000000000000","future_flag":true}}"#;
+    let msg: ServerMessage = serde_json::from_str(json).expect("deser");
+    assert!(matches!(msg, ServerMessage::PlayerLeft { .. }));
+}
+
+#[test]
+fn server_message_unknown_type_fails_to_deserialize() {
+    // The transport loop logs+skips an un-deserializable message; we document the
+    // hard-fail contract here (no silent catch-all variant).
+    let json = r#"{"type":"SomeFutureV4Message","data":{}}"#;
+    assert!(serde_json::from_str::<ServerMessage>(json).is_err());
+}
+
+#[test]
+fn signal_payload_round_trips_as_opaque_value() {
+    // An unmodeled signal shape survives round-trip because the wire field is a Value.
+    let msg = ServerMessage::Signal {
+        from: nil_uuid(),
+        signal: serde_json::json!({ "Renegotiate": { "foo": 1 } }),
+    };
+    if let ServerMessage::Signal { signal, .. } = round_trip(&msg) {
+        assert_eq!(signal, serde_json::json!({ "Renegotiate": { "foo": 1 } }));
+    } else {
+        panic!("expected Signal variant");
     }
 }
 
@@ -1568,6 +2113,9 @@ fn client_message_uses_type_and_content_tags() {
         sdk_version: None,
         platform: None,
         game_data_format: None,
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
@@ -1725,6 +2273,9 @@ fn protocol_info_payload_round_trip_minimal() {
         notes: None,
         game_data_formats: vec![],
         player_name_rules: None,
+        protocol_version: None,
+        min_protocol_version: None,
+        max_protocol_version: None,
     };
     let deser = round_trip(&payload);
     assert!(deser.platform.is_none());

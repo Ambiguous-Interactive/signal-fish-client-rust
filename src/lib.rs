@@ -42,6 +42,11 @@
 //!             }
 //!             SignalFishEvent::RoomJoined { room_code, .. } => {
 //!                 println!("Joined room {room_code}");
+//!                 client.set_ready()?;
+//!             }
+//!             // Protocol v2: the game starts explicitly, not on readiness.
+//!             SignalFishEvent::LobbyStateChanged { all_ready: true, .. } => {
+//!                 client.start_game()?;
 //!             }
 //!             SignalFishEvent::Disconnected { .. } => break,
 //!             _ => {}
@@ -59,15 +64,26 @@ pub mod error;
 pub mod error_codes;
 pub mod event;
 pub mod protocol;
+pub mod signal;
 pub mod transport;
 pub mod transports;
+
+/// Highest signaling protocol version this SDK speaks.
+///
+/// Advertised in `Authenticate` when a consumer opts into the mesh via
+/// [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh).
+pub const PROTOCOL_VERSION: u16 = 3;
 
 // Re-export primary types for ergonomic imports.
 pub use client::{JoinRoomParams, SignalFishClient, SignalFishConfig};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
 pub use event::SignalFishEvent;
-pub use protocol::{ClientMessage, ServerMessage};
+pub use protocol::{
+    ClientMessage, IceServer, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
+    TransportKind,
+};
+pub use signal::PeerSignal;
 pub use transport::Transport;
 
 #[cfg(feature = "transport-websocket")]
@@ -78,6 +94,21 @@ pub mod polling_client;
 
 #[cfg(feature = "polling-client")]
 pub use polling_client::SignalFishPollingClient;
+
+#[cfg(feature = "mesh")]
+pub mod mesh;
+
+#[cfg(feature = "mesh")]
+pub use mesh::{MeshPeer, MeshSession};
+
+#[cfg(feature = "mesh")]
+pub mod webrtc;
+
+#[cfg(feature = "mesh")]
+pub use webrtc::{DriverEvent, MeshEvent, WebRtcDriver};
+
+#[cfg(all(feature = "mesh", feature = "tokio-runtime"))]
+pub use webrtc::MeshController;
 
 // Re-export only on the correct target (see transports/mod.rs for rationale).
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-20
+
+### Added
+
+- Protocol v2: explicit `ClientMessage::StartGame` to begin a game once players
+  are ready (`SignalFishClient::start_game()` / `SignalFishPollingClient::start_game()`),
+  plus error codes `GameStartNotReady` (`GAME_START_NOT_READY`) and
+  `GameStartForbidden` (`GAME_START_FORBIDDEN`).
+- Protocol v3 (additive, backward-compatible "relay floor"): new wire types
+  `Topology`, `TransportKind`, `IceServer`, `SessionPeer`, `SessionPlanPayload`,
+  and the externally-tagged, matchbox-compatible `PeerSignal`
+  (`Offer`/`Answer`/`IceCandidate`).
+- New client messages `Signal` and `TransportStatus`, and new server messages
+  `Signal`, `NewPeer`, `SessionPlan`, and `PeerTransportStatus`, surfaced as the
+  corresponding `SignalFishEvent` variants.
+- Six v3 error codes: `CROSS_ROOM_SIGNAL`, `UNSUPPORTED_TRANSPORT`,
+  `SIGNAL_TARGET_NOT_FOUND`, `SIGNAL_RATE_LIMITED`, `SIGNAL_TOO_LARGE`, and
+  `CONNECTION_IDLE_TIMEOUT`.
+- `SignalFishConfig::enable_mesh()` (one-liner mesh opt-in) plus
+  `with_protocol_version`/`with_transports`/`with_topologies`. `Authenticate`
+  gains optional `protocol_version`/`supported_transports`/`supported_topologies`
+  (omitted from the wire by default, so v2 bytes are unchanged); `ProtocolInfo`
+  gains negotiated version fields; `RoomJoined`/`Reconnected` gain optional
+  `ice_servers` (ICE pre-gather).
+- Mesh client API: `send_signal`/`send_offer`/`send_answer`/`send_ice_candidate`/
+  `send_raw_signal`, `report_transport_status`, `negotiated_protocol_version()`,
+  and `supports_mesh()` on both clients; a fail-fast
+  `SignalFishError::ProtocolUnsupported` guard for v3 sends before negotiation.
+- `mesh` feature: `MeshSession` (zero-dependency v3 state tracker) and the
+  batteries-included `WebRtcDriver` seam + `MeshController` that drives the whole
+  signaling handshake against a consumer's WebRTC backend, with a runnable
+  `examples/mesh_session.rs`.
+- Golden-wire conformance: vendored server protocol samples
+  (`tests/wire-samples/`) with byte-exact round-trip tests
+  (`tests/wire_golden_tests.rs`) and a scheduled drift workflow
+  (`.github/workflows/protocol-sync.yml`). The default relay path is verified
+  byte-identical to v2.
+
 ### Fixed
 
 - Dev container: removed Unix-only host initialization and required host-home
@@ -18,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Game start is now explicit (migration).** The game no longer auto-starts when
+  all players are ready — the authority (or any member, if the room has no
+  authority) must call `start_game()`. Non-authority callers in an authority room
+  receive `GameStartForbidden`; calling before everyone is ready yields
+  `GameStartNotReady`.
+- **Relay users are unaffected.** Clients that do not call `enable_mesh()` see no
+  wire-format or behavioral change — the relay path is byte-identical to v2. Mesh
+  signaling is strictly opt-in.
+- Adding variants to the public `ClientMessage`, `ServerMessage`,
+  `SignalFishEvent`, `ErrorCode`, and `SignalFishError` enums is breaking under
+  semver, so this is a MINOR (`0.4.1` → `0.5.0`) bump for a 0.x crate.
 - Dependabot: corrected `open-pull-requests-limit` from 2 to 1 for both the
   `cargo` and `github-actions` ecosystems, aligning the config value with the
   documented "single consolidated batch PR" intent. Updated header comment from

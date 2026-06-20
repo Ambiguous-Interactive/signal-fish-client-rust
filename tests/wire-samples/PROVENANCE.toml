@@ -1,0 +1,23 @@
+# Provenance for the vendored Signal Fish server protocol wire samples.
+#
+# Refresh procedure: see .llm/skills/protocol-wire-conformance.md
+# Update this file IN THE SAME COMMIT as any change to the *.jsonl files.
+
+[upstream]
+repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
+path = ".llm/code-samples/protocol"
+# Exact server commit the .jsonl bytes were copied from.
+commit = "6820c696b4b7783e3d9b9c7e0de3394336239361"
+# Protocol version range these samples exercise.
+protocol_version_min = 2
+protocol_version_max = 3
+# ISO 8601 date of the last refresh.
+synced = "2026-06-20"
+
+# SHA-256 of each vendored file. A policy test recomputes these, so a sample
+# cannot be edited without also updating this marker (keeps provenance honest).
+[files]
+"v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
+"v2-server-messages.jsonl" = "9ca02863958bf8c388b36a7ab700fb01904c58c7181917e97c9d17d307120511"
+"v3-client-messages.jsonl" = "274cb0af451b86f6930b570bd3a48d2c34084c62f00760cf49016d3ead092ad1"
+"v3-server-messages.jsonl" = "f328457f39b2079af2503d3ebf1290e73dba880346851bd2d76af50dbfc6d289"

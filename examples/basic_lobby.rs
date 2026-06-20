@@ -114,6 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ..
                     } => {
                         tracing::info!("Lobby state → {lobby_state:?} (all_ready={all_ready})");
+                        // Protocol v2: the game no longer auto-starts on readiness.
+                        // Once everyone is ready, explicitly start it. (If the room
+                        // has a designated authority, only the authority may start.)
+                        if all_ready {
+                            client.start_game()?;
+                        }
                     }
 
                     SignalFishEvent::GameStarting {

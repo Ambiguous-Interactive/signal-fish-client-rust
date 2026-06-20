@@ -16,9 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use signal_fish_client::protocol::SpectatorJoinedPayload;
 use signal_fish_client::protocol::{
-    LobbyState, PlayerInfo, RateLimitInfo, ReconnectedPayload, RoomJoinedPayload, ServerMessage,
-    SpectatorJoinedPayload,
+    LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
+    RoomJoinedPayload, ServerMessage, SessionPeer, SessionPlanPayload, Topology, TransportKind,
 };
 use signal_fish_client::{SignalFishError, Transport};
 
@@ -118,6 +119,7 @@ pub fn room_joined_json_with(room_code: &str, game_name: &str, player_id: uuid::
         ready_players: vec![],
         relay_type: "auto".into(),
         current_spectators: vec![],
+        ice_servers: vec![],
     };
     serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload)))
         .expect("room_joined_json serialization")
@@ -143,6 +145,7 @@ pub fn reconnected_json() -> String {
         ready_players: vec![],
         relay_type: "tcp".into(),
         current_spectators: vec![],
+        ice_servers: vec![],
         missed_events: vec![],
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
@@ -239,4 +242,103 @@ pub fn game_data_binary_json(
         payload,
     })
     .expect("game_data_binary_json serialization")
+}
+
+// ── Protocol v3 fixtures ────────────────────────────────────────────
+
+/// Builds a `ProtocolInfoPayload` with the given negotiated version (min 2 /
+/// max 3 when the version is set; all version fields omitted for `None`).
+pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPayload {
+    ProtocolInfoPayload {
+        platform: None,
+        sdk_version: None,
+        minimum_version: None,
+        recommended_version: None,
+        capabilities: vec![],
+        notes: None,
+        game_data_formats: vec![],
+        player_name_rules: None,
+        protocol_version,
+        min_protocol_version: protocol_version.map(|_| 2),
+        max_protocol_version: protocol_version.map(|_| 3),
+    }
+}
+
+/// Returns the JSON for a `ProtocolInfo` message with the given negotiated
+/// protocol version. `Some(3)` advertises v3 (min 2, max 3); `None` is a v2
+/// negotiation (version fields omitted).
+pub fn protocol_info_json(protocol_version: Option<u16>) -> String {
+    serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_payload(
+        protocol_version,
+    )))
+    .expect("protocol_info_json serialization")
+}
+
+/// Returns a `Reconnected` whose `missed_events` replays a `ProtocolInfo` with
+/// the given negotiated version — exercises the reconnect guard-restore path.
+pub fn reconnected_with_protocol_info_json(protocol_version: Option<u16>) -> String {
+    let payload = ReconnectedPayload {
+        room_id: uuid::Uuid::from_u128(100),
+        room_code: "RECON1".into(),
+        player_id: uuid::Uuid::from_u128(200),
+        game_name: "recon-game".into(),
+        max_players: 6,
+        supports_authority: false,
+        current_players: vec![],
+        is_authority: true,
+        lobby_state: LobbyState::Waiting,
+        ready_players: vec![],
+        relay_type: "tcp".into(),
+        current_spectators: vec![],
+        ice_servers: vec![],
+        missed_events: vec![ServerMessage::ProtocolInfo(protocol_info_payload(
+            protocol_version,
+        ))],
+    };
+    serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
+        .expect("reconnected_with_protocol_info_json serialization")
+}
+
+/// Returns the JSON for a `SessionPlan` (mesh + webrtc) naming a single peer.
+pub fn session_plan_json(peer_id: PlayerId, initiate: bool) -> String {
+    let payload = SessionPlanPayload {
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        peers: vec![SessionPeer {
+            player_id: peer_id,
+            player_name: "Peer".into(),
+            is_authority: false,
+            initiate,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload)))
+        .expect("session_plan_json serialization")
+}
+
+/// Returns the JSON for a server `Signal` relayed from `from`.
+pub fn signal_json(from: PlayerId, signal: serde_json::Value) -> String {
+    serde_json::to_string(&ServerMessage::Signal { from, signal })
+        .expect("signal_json serialization")
+}
+
+/// Returns the JSON for a `NewPeer` (late-join) message.
+pub fn new_peer_json(peer_id: PlayerId, you_initiate: bool) -> String {
+    serde_json::to_string(&ServerMessage::NewPeer {
+        peer_id,
+        you_initiate,
+    })
+    .expect("new_peer_json serialization")
+}
+
+/// Returns the JSON for a `PeerTransportStatus` message.
+pub fn peer_transport_status_json(peer_id: PlayerId, connected: bool) -> String {
+    serde_json::to_string(&ServerMessage::PeerTransportStatus {
+        peer_id,
+        transport: TransportKind::WebRtc,
+        connected,
+    })
+    .expect("peer_transport_status_json serialization")
 }

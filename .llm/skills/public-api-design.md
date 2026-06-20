@@ -228,3 +228,23 @@ let (client, events) = SignalFishClient::start(transport, config);
 
 `async-trait` makes this work by boxing the returned futures. Without
 `async-trait`, `async fn` in traits is not object-safe.
+
+## Protocol v2/v3 Additions
+
+- **`TransportKind` vs the `Transport` trait.** The protocol data-path enum is
+  named `TransportKind` (a wire *value*: `relay`/`direct`/`webrtc`) so it never
+  collides with the `Transport` I/O *trait* (the byte channel to the server).
+  Both are public and documented to cross-reference each other; never rename the
+  trait, and never name the enum `Transport`.
+- **New exhaustive variants are breaking (MINOR for 0.x).** This release adds
+  variants to `ClientMessage` (`StartGame`, `Signal`, `TransportStatus`),
+  `ServerMessage` (`Signal`, `NewPeer`, `SessionPlan`, `PeerTransportStatus`),
+  `SignalFishEvent` (the matching events + `ice_servers` on `RoomJoined`/
+  `Reconnected`), `ErrorCode` (8 new), and `SignalFishError` (`ProtocolUnsupported`),
+  plus new public types (`Topology`, `TransportKind`, `IceServer`, `SessionPeer`,
+  `SessionPlanPayload`, `PeerSignal`) and the `mesh` types (`MeshSession`,
+  `MeshController`, `WebRtcDriver`, …). `cargo semver-checks` flags these as
+  breaking — expected for the `0.4.1 → 0.5.0` bump.
+- **The mesh surface is feature-gated** behind `mesh` (and the async controller
+  additionally behind `tokio-runtime`), keeping the default build minimal. See
+  [webrtc-mesh-signaling](webrtc-mesh-signaling.md).
