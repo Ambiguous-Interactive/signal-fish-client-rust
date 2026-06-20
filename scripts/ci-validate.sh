@@ -15,13 +15,15 @@
 #   4. typos spell check           (optional — skipped if typos not installed)
 #   5. .lychee.toml syntax         (TOML validity)
 #   6. .markdownlint.json syntax   (JSON validity)
-#   7. shellcheck on scripts/*.sh  (optional — skipped if shellcheck not installed)
+#   7. shellcheck on shell scripts  (optional — skipped if shellcheck not installed)
 #   8. markdownlint on *.md        (optional — skipped if markdownlint not installed)
 #   9. mkdocs nav validation       (all nav-referenced files exist in docs/)
 #  10. workflow guard checks        (delegates to scripts/check-workflows.sh)
 #  11. docs.rs compatibility        (optional — requires nightly toolchain)
 #  12. shell portability            (delegates to scripts/test_shell_portability.sh)
 #  13. Rust test I/O unwrap         (delegates to scripts/check-test-io-unwrap.sh)
+#  14. devcontainer cross-platform  (lifecycle commands + host mount policy)
+#  15. devcontainer Dockerfile      (optional — requires docker buildx)
 #
 # Exit codes:
 #   0 — all checks passed (or optional checks skipped)
@@ -43,7 +45,7 @@ NC='\033[0m' # No Color
 
 # ── State tracking ───────────────────────────────────────────────────
 FAILURES=0
-TOTAL_CHECKS=13
+TOTAL_CHECKS=15
 PASSED=0
 SKIPPED=0
 
@@ -226,18 +228,23 @@ else
     fi
 fi
 
-# ── Check 7: shellcheck on scripts/*.sh ────────────────────────────
-section_header 7 "Shell script lint (shellcheck scripts/*.sh)"
+# ── Check 7: shellcheck on shell scripts ───────────────────────────
+section_header 7 "Shell script lint (shellcheck scripts/*.sh .devcontainer/scripts/*.sh)"
 
 if ! command -v shellcheck &>/dev/null; then
     skip "shellcheck" "shellcheck is not installed (install: apt install shellcheck)"
-elif ! compgen -G "$REPO_ROOT/scripts/*.sh" > /dev/null; then
-    skip "shellcheck" "no .sh files found in scripts/"
+elif ! compgen -G "$REPO_ROOT/scripts/*.sh" > /dev/null && ! compgen -G "$REPO_ROOT/.devcontainer/scripts/*.sh" > /dev/null; then
+    skip "shellcheck" "no .sh files found in scripts/ or .devcontainer/scripts/"
 else
-    if shellcheck "$REPO_ROOT"/scripts/*.sh 2>&1; then
+    shell_files=()
+    for shell_file in "$REPO_ROOT"/scripts/*.sh "$REPO_ROOT"/.devcontainer/scripts/*.sh; do
+        [ -f "$shell_file" ] || continue
+        shell_files+=("$shell_file")
+    done
+    if shellcheck "${shell_files[@]}" 2>&1; then
         pass "All shell scripts pass shellcheck"
     else
-        fail "shellcheck reported issues in scripts/*.sh"
+        fail "shellcheck reported issues in shell scripts"
     fi
 fi
 
@@ -364,6 +371,34 @@ if [ -f "$SCRIPT_DIR/check-test-io-unwrap.sh" ]; then
     fi
 else
     skip "Rust test I/O unwrap" "scripts/check-test-io-unwrap.sh not found"
+fi
+
+# ── Check 14: Devcontainer cross-platform compatibility ─────────────
+section_header 14 "Devcontainer cross-platform compat (scripts/check-devcontainer-compat.sh)"
+
+if [ -f "$SCRIPT_DIR/check-devcontainer-compat.sh" ]; then
+    if bash "$SCRIPT_DIR/check-devcontainer-compat.sh" 2>&1; then
+        pass "devcontainer.json lifecycle commands and mounts are cross-platform compatible"
+    else
+        fail "devcontainer.json has cross-platform compatibility violations"
+    fi
+else
+    skip "Devcontainer compat" "scripts/check-devcontainer-compat.sh not found"
+fi
+
+# ── Check 15: Devcontainer Dockerfile static build check ────────────
+section_header 15 "Devcontainer Dockerfile (docker buildx build --check)"
+
+if ! command -v docker &>/dev/null; then
+    skip "Devcontainer Dockerfile check" "docker is not installed"
+elif ! docker buildx version &>/dev/null; then
+    skip "Devcontainer Dockerfile check" "docker buildx is not available"
+else
+    if docker buildx build --check -f "$REPO_ROOT/.devcontainer/Dockerfile" "$REPO_ROOT" 2>&1; then
+        pass "Devcontainer Dockerfile passes buildx static checks"
+    else
+        fail "Devcontainer Dockerfile failed buildx static checks"
+    fi
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────

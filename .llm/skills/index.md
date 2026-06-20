@@ -24,6 +24,10 @@ Reference for CI/CD tool configuration, common pitfalls, identifier boundary mat
 
 Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.
 
+### [Devcontainer Cross-Platform Compatibility](devcontainer-cross-platform.md)
+
+The committed `devcontainer.json` must be able to open in VS Code on Windows, macOS, Linux, WSL, Codespaces, and...
+
 ### [Documentation Accuracy for Behavioral Guarantees](doc-accuracy-guarantees.md)
 
 Reference for writing accurate documentation about behavioral guarantees (e.g., event delivery, error handling,...

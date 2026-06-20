@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Git safe.directory (system-level — ~/.gitconfig is mounted read-only)
+# Git safe.directory (system-level default for this container)
 # -----------------------------------------------------------------------------
 # safe.directory uses --add because it is a multi-valued git key.
 # --replace-all would destroy any other safe.directory entries set by
@@ -24,20 +24,6 @@ elif sudo git config --system --add safe.directory "${WORKSPACE_FOLDER}" 2>/dev/
     echo "post-start: safe.directory configured for ${WORKSPACE_FOLDER}"
 else
     echo "post-start: WARNING: safe.directory configuration failed (git may show 'dubious ownership')"
-fi
-
-# -----------------------------------------------------------------------------
-# UID sanity check (Linux bind mount compatibility)
-# -----------------------------------------------------------------------------
-# On Linux, bind-mounted host directories (SSH keys, gitconfig, GPG keyring)
-# inherit host file ownership. If the host user's UID differs from the vscode
-# user's UID (1000), SSH and GPG operations inside the container will fail
-# silently due to "bad permissions" or "ownership mismatch" errors.
-VSCODE_UID=$(id -u)
-if [ "${VSCODE_UID}" != "1000" ]; then
-    echo "post-start: WARNING: vscode user has UID ${VSCODE_UID} (expected 1000)."
-    echo "post-start: WARNING: SSH/GPG bind mounts from host may have permission errors."
-    echo "post-start: WARNING: See .devcontainer/README.md for workarounds."
 fi
 
 # -----------------------------------------------------------------------------

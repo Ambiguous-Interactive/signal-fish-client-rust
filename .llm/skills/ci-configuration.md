@@ -294,6 +294,6 @@ The emscripten WASM target requires nightly, which may introduce lints (e.g., `n
 | Script | Purpose |
 |---|---|
 | `scripts/validate.sh` | Pre-flight: cargo fmt/clippy/test + `.lychee.toml` validation + markdownlint |
-| `scripts/ci-validate.sh` | Lightweight local CI (13 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, test I/O unwrap |
-| `scripts/check-all.sh` | Full 20-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
+| `scripts/ci-validate.sh` | Lightweight local CI (15 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, devcontainer policy/Dockerfile |
+| `scripts/check-all.sh` | Full 22-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
 | `scripts/check-test-io-unwrap.sh` | Scans test `.rs` for bare `.unwrap()` on I/O ops (Phase 20 / Check 13) |

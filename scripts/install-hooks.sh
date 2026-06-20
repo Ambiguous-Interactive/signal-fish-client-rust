@@ -8,7 +8,7 @@
 #   1.  scripts/pre-commit-llm.py  (line-limit + skills index)
 #   2.  pytest -q scripts/test_pre_commit_llm.py (optional)
 #   3.  markdownlint on **/*.md     (optional)
-#   4.  shellcheck scripts/*.sh     (optional)
+#   4.  shellcheck scripts/*.sh .devcontainer/scripts/*.sh (optional)
 #   5.  scripts/check-ffi-safety.sh
 #   6.  scripts/test_check_ffi_safety.sh
 #   7.  scripts/check-target-gated-doc-links.sh
@@ -22,6 +22,9 @@
 #  15.  TOML config validation      (optional)
 #  16.  scripts/check-test-quality.sh
 #  17.  scripts/test_check_test_quality.sh
+#  18.  scripts/check-devcontainer-compat.sh
+#  19.  scripts/test_check_devcontainer_compat.sh
+#  20.  docker buildx build --check -f .devcontainer/Dockerfile .
 #
 # And a pre-push hook that runs checks in two phases:
 #   Phase 1 (parallel, background — no target/ access):
@@ -146,7 +149,7 @@ fi
 # ── 4. Shell lint (optional) ─────────────────────────────────────────
 if command -v shellcheck &>/dev/null; then
     run_check "shellcheck" "04-shellcheck" \
-        shellcheck "${REPO_ROOT}"/scripts/*.sh &
+        shellcheck "${REPO_ROOT}"/scripts/*.sh "${REPO_ROOT}"/.devcontainer/scripts/*.sh &
     PIDS+=($!)
 else
     printf 'SKIP 0.0 shellcheck (not installed)\n' > "$CHECK_TMPDIR/04-shellcheck.result"
@@ -312,6 +315,33 @@ if [ -f "${REPO_ROOT}/scripts/test_check_test_quality.sh" ]; then
     PIDS+=($!)
 else
     printf 'SKIP 0.0 test quality tests (script not found)\n' > "$CHECK_TMPDIR/17-testqual-test.result"
+fi
+
+# ── 18. Devcontainer cross-platform compatibility ────────────────────
+if [ -f "${REPO_ROOT}/scripts/check-devcontainer-compat.sh" ]; then
+    run_check "devcontainer compat" "18-devcontainer" \
+        bash "${REPO_ROOT}/scripts/check-devcontainer-compat.sh" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 devcontainer compat (script not found)\n' > "$CHECK_TMPDIR/18-devcontainer.result"
+fi
+
+# ── 19. Devcontainer compat script tests ─────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_devcontainer_compat.sh" ]; then
+    run_check "devcontainer compat tests" "19-devcontainer-test" \
+        bash "${REPO_ROOT}/scripts/test_check_devcontainer_compat.sh" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 devcontainer compat tests (script not found)\n' > "$CHECK_TMPDIR/19-devcontainer-test.result"
+fi
+
+# ── 20. Devcontainer Dockerfile static build check ──────────────────
+if command -v docker &>/dev/null && docker buildx version &>/dev/null; then
+    run_check "devcontainer Dockerfile" "20-devcontainer-dockerfile" \
+        docker buildx build --check -f "${REPO_ROOT}/.devcontainer/Dockerfile" "${REPO_ROOT}" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 devcontainer Dockerfile (docker buildx not available)\n' > "$CHECK_TMPDIR/20-devcontainer-dockerfile.result"
 fi
 
 # ── Wait for all checks ─────────────────────────────────────────────
@@ -551,7 +581,7 @@ echo "The pre-commit hook runs on every 'git commit' (all checks in parallel):"
 echo "  1.  python3 scripts/pre-commit-llm.py  (line-limit + skills index)"
 echo "  2.  pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3.  markdownlint on **/*.md     (optional, skipped if not installed)"
-echo "  4.  shellcheck scripts/*.sh     (optional, skipped if not installed)"
+echo "  4.  shellcheck scripts/*.sh .devcontainer/scripts/*.sh (optional, skipped if not installed)"
 echo "  5.  bash scripts/check-ffi-safety.sh (FFI safety check)"
 echo "  6.  bash scripts/test_check_ffi_safety.sh (FFI safety script tests)"
 echo "  7.  bash scripts/check-target-gated-doc-links.sh (target-gated doc-link check)"
@@ -565,6 +595,9 @@ echo " 14.  typos --config .typos.toml  (spell check — optional, skipped if no
 echo " 15.  TOML config validation      (optional, requires python3)"
 echo " 16.  bash scripts/check-test-quality.sh (test quality check)"
 echo " 17.  bash scripts/test_check_test_quality.sh (test quality script tests)"
+echo " 18.  bash scripts/check-devcontainer-compat.sh (devcontainer compatibility check)"
+echo " 19.  bash scripts/test_check_devcontainer_compat.sh (devcontainer compatibility tests)"
+echo " 20.  docker buildx build --check -f .devcontainer/Dockerfile . (optional, skipped if docker buildx unavailable)"
 echo ""
 echo "The pre-push hook runs on every 'git push' (two-phase execution):"
 echo "  Phase 1 — parallel background (non-cargo):"

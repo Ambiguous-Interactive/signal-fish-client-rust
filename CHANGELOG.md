@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev container: removed Unix-only host initialization and required host-home
+  credential bind mounts (`~/.ssh`, `~/.gitconfig`, `~/.gnupg`) so VS Code can
+  open the devcontainer reliably across Windows, macOS, Linux, WSL, Codespaces,
+  and remote Docker hosts. Previously the container could fail before startup
+  when `initializeCommand` ran through Windows `cmd.exe`, when `HOME` was unset,
+  or when host credential paths were missing/not shared with Docker.
+
 ### Changed
 
 - Dependabot: corrected `open-pull-requests-limit` from 2 to 1 for both the

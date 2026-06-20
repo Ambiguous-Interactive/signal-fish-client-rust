@@ -7,7 +7,8 @@ Reference for deciding when `CHANGELOG.md` must be updated for user-visible chan
 If a change is user-visible, update `CHANGELOG.md` in the same PR under
 `## [Unreleased]`.
 
-User-visible means any change that can affect crate consumers, including:
+User-visible means any change that can affect crate consumers or contributors
+using this repository, including:
 
 - Public API additions, removals, or signature/type changes
 - Behavior changes in existing APIs (including validation and edge cases)
@@ -16,13 +17,15 @@ User-visible means any change that can affect crate consumers, including:
 - Protocol/wire-format behavior changes
 - Dependency or MSRV changes that affect downstream users
 - Documentation changes that alter recommended usage or migration steps
+- Contributor environment fixes that unblock opening, building, or testing the
+  repository (for example a devcontainer startup failure)
 
 Do not add changelog entries for internal-only refactors that preserve behavior
 and public surface area.
 
 Internal implementation details must stay out of `CHANGELOG.md`, including:
 
-- CI/workflow/script changes
+- CI/workflow/script changes with no direct user or contributor workflow impact
 - Pre-commit or release automation updates
 - Test-only additions/refactors
 - Internal code cleanup with no observable behavior/API change
@@ -57,11 +60,13 @@ Before finalizing a user-visible change:
 - Changed default `SignalFishConfig` behavior
 - Fixed bug that changes observable runtime behavior
 - Changed target-specific dependency features in a way that affects supported targets (for example enabling WASM-specific `uuid` features)
+- Fixed devcontainer startup failure that prevented contributors from opening
+  the repository in VS Code
 
 ### Usually does not require changelog
 
 - Test-only refactors
-- CI/script cleanup with no user impact
+- CI/script cleanup with no user or contributor workflow impact
 - Internal implementation cleanup with identical behavior
 - Typo fixes that do not change meaning
 

@@ -17,7 +17,8 @@ Only include sections that have entries.
 
 ## Entry Writing Rules
 
-- Write for crate consumers, not internal implementation details.
+- Write for crate consumers and contributors affected by repository usability,
+  not internal implementation details.
 - Exclude internal-only maintenance (scripts, CI wiring, pre-commit automation, test-only refactors).
 - Use one bullet per distinct change.
 - Start bullets with the user-facing outcome, then include technical detail.

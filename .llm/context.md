@@ -39,7 +39,7 @@ Use version tags in workflow `uses:` references, not commit hashes.
 
 Only add `CHANGELOG.md` entries for user-visible changes.
 
-- Include: public API, behavior, protocol, feature flags, error-model, MSRV/dependency changes that affect consumers.
+- Include: public API, behavior, protocol, feature flags, error-model, MSRV/dependency changes that affect consumers, and contributor-facing environment fixes that unblock using the repository.
 - Exclude: internal-only updates such as CI/script/pre-commit automation, refactors, tests, and non-behavioral maintenance.
 
 ## Architecture — 7 Core Modules
@@ -282,6 +282,9 @@ A pre-commit hook enforces:
 7. FFI safety check passes (`scripts/check-ffi-safety.sh`)
 8. FFI safety script tests pass (`scripts/test_check_ffi_safety.sh`)
 9. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
+10. Devcontainer compatibility check passes (`scripts/check-devcontainer-compat.sh`) — catches non-portable host lifecycle commands and required host-home credential bind mounts
+11. Devcontainer compatibility script tests pass (`scripts/test_check_devcontainer_compat.sh`)
+12. Devcontainer Dockerfile static check passes when Docker buildx is available (`docker buildx build --check -f .devcontainer/Dockerfile .`)
 
 `cargo test` is part of the mandatory workflow but runs on push, not every
 commit, because it is too slow for a blocking hook. Run it manually before

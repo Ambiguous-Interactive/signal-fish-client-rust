@@ -31,6 +31,27 @@ validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 read_cargo_package_version = _mod.read_cargo_package_version
 sync_crate_version_references = _mod.sync_crate_version_references
 warn_absolute_guarantee_language = _mod.warn_absolute_guarantee_language
+path_for_bash = _mod.path_for_bash
+
+
+# ===================================================================
+# Tests for path_for_bash
+# ===================================================================
+
+
+def test_path_for_bash_replaces_windows_backslashes():
+    """Backslash paths passed to Bash must not lose separators."""
+    assert path_for_bash(Path(r"C:\Code\repo\scripts\check.sh")) == (
+        "C:/Code/repo/scripts/check.sh"
+    )
+
+
+def test_path_for_bash_prefers_relative_posix_path():
+    """Repo-local scripts should not be passed to Bash as host absolute paths."""
+    repo = Path("/repo")
+    assert path_for_bash(repo / "scripts" / "check.sh", repo) == (
+        "scripts/check.sh"
+    )
 
 
 # ===================================================================

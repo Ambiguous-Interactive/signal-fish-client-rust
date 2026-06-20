@@ -23,6 +23,16 @@ SKILLS_DIR = LLM_DIR / "skills"
 INDEX_FILE = SKILLS_DIR / "index.md"
 
 
+def path_for_bash(path: Path, cwd: Path | None = None) -> str:
+    """Return a Bash-safe path, preferring cwd-relative POSIX syntax."""
+    if cwd is not None:
+        try:
+            return path.relative_to(cwd).as_posix()
+        except ValueError:
+            pass
+    return str(path).replace("\\", "/")
+
+
 def read_cargo_package_version() -> str:
     """Read `[package].version` from Cargo.toml."""
     cargo_toml = REPO_ROOT / "Cargo.toml"
@@ -763,7 +773,7 @@ def main() -> int:
     validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
     if validate_script.exists():
         result = subprocess.run(
-            ["bash", str(validate_script)],
+            ["bash", path_for_bash(validate_script, REPO_ROOT)],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,

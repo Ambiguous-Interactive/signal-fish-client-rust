@@ -9,6 +9,9 @@ This directory contains the development container configuration for the Signal F
 3. Open this repository in VS Code
 4. Click "Reopen in Container" when prompted (or use Command Palette: `Dev Containers: Reopen in Container`)
 
+Docker must support BuildKit because the Dockerfile uses cache mounts for APT
+and Cargo downloads. Current Docker Desktop releases enable this by default.
+
 ## What's Included
 
 ### Rust Toolchain
@@ -80,31 +83,37 @@ The container uses named volumes for caching:
 - `signal-fish-cargo-git` - Git dependency cache
 - `signal-fish-target-*` - Build artifacts
 
-Host directories are mounted read-only:
+This devcontainer intentionally does **not** bind-mount host credential paths
+such as `~/.ssh`, `~/.gitconfig`, or `~/.gnupg`. Required host-home bind mounts
+are fragile across Windows, macOS, Linux, WSL, remote Docker hosts, and
+Codespaces because the source path must exist and be shared with Docker before
+the container can start.
 
-- `~/.ssh` - SSH keys for git operations
-- `~/.gitconfig` - Git configuration
-- `~/.gnupg` - GPG keys (read-only; see GPG Signing section)
+VS Code Dev Containers already copies local Git configuration and forwards a
+running SSH agent. Keep machine-specific extra mounts in a personal local
+override instead of committing them to this repository.
 
-## Prerequisites
+## Git Credentials
 
-Before opening the devcontainer, ensure these files/directories exist on your host:
+For HTTPS remotes, configure a credential helper on the host. VS Code reuses it
+inside the container.
+
+For SSH remotes, run an SSH agent on the host and add your key:
 
 ```bash
-mkdir -p ~/.ssh ~/.gnupg
-touch ~/.gitconfig
+ssh-add
 ```
 
-These are mounted into the container for git operations and commit signing.
+VS Code forwards the agent socket into the container automatically.
 
 ## Troubleshooting
 
 ### macOS Users
 
-If you experience mount failures or slow performance:
+If you experience workspace mount failures or slow performance:
 
 1. Open Docker Desktop → Settings → Resources → File Sharing
-2. Ensure your home directory (or at least `~/.ssh`, `~/.gnupg`) is in the shared paths
+2. Ensure the repository's parent directory is in the shared paths
 3. Consider using "VirtioFS" for better performance (Settings → General → "Use VirtioFS")
 
 ### Windows Users
@@ -120,7 +129,9 @@ This is a Linux container. To use on Windows:
 
 ### Mount Failures
 
-If the container fails to start due to mount issues, see the [Prerequisites](#prerequisites) section above.
+The committed devcontainer only uses Docker named volumes for caches, so it
+should not fail because host credential files are missing. If you add personal
+bind mounts locally, ensure each source path exists and is shared with Docker.
 
 ### Startup Reliability
 
@@ -139,29 +150,22 @@ tool is missing, install it manually inside the container with `cargo install --
 - First build downloads dependencies; subsequent builds use the cached volumes
 - If builds are still slow, check Docker resource allocation in Docker Desktop settings
 
-### GPG Commit Signing
+### Commit Signing
 
-The `~/.gnupg` directory is mounted **read-only** for security. If you need commit signing:
+#### Option 1: SSH Signing
 
-#### Option 1: GPG Agent Forwarding (Recommended)
-
-Configure your host's `gpg-agent` to forward to the container by adding to your host's `~/.gnupg/gpg-agent.conf`:
-
-```text
-extra-socket /path/to/socket
-```
-
-#### Option 2: SSH Signing
-
-Use SSH key signing instead of GPG:
+Use SSH key signing with the forwarded SSH agent:
 
 ```bash
 git config --global gpg.format ssh
 git config --global user.signingkey ~/.ssh/id_ed25519.pub
 ```
 
-**Option 3: Modify the mount (Not Recommended)**
-Edit `devcontainer.json` to remove `,readonly` from the `.gnupg` mount. This is less secure.
+#### Option 2: GPG Signing
+
+Configure GPG on the host and let VS Code Dev Containers share it with the
+container. Avoid committing a direct `~/.gnupg` bind mount; it is platform- and
+machine-specific and can block the container from opening.
 
 ### rust-analyzer Issues
 
