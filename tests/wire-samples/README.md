@@ -3,10 +3,12 @@
 These JSONL files are copied verbatim from the Signal Fish **server** repository
 (`.llm/code-samples/protocol/`) and are the source of truth for the
 [`tests/wire_golden_tests.rs`](../wire_golden_tests.rs) conformance suite, which
-proves the client's wire types stay byte-compatible with the server.
+proves the client's wire types stay wire-compatible with the server.
 
-- **`v3-*`** samples are complete (real ids, all fields) and get full byte-exact
-  round-trip conformance.
+- **`v3-*`** samples are complete (real ids, all fields) and get full semantic
+  round-trip conformance: each line must deserialize into our typed enum and
+  re-serialize to a semantically identical `serde_json::Value` (compared as
+  parsed JSON, so key order and whitespace are ignored).
 - **`v2-*`** samples are illustrative documentation (they elide optional fields
   and use `"..."` placeholders for ids), so they get a structural sanity check
   only. The v2 wire format is byte-tested directly with complete messages in

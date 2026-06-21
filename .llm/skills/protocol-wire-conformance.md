@@ -1,6 +1,6 @@
 # Protocol Wire Conformance
 
-Reference for the vendored golden wire samples, the provenance marker, and the procedure for keeping the client byte-compatible with the Signal Fish server as the protocol evolves.
+Reference for the vendored golden wire samples, the provenance marker, and the procedure for keeping the client wire-compatible with the Signal Fish server as the protocol evolves.
 
 ## What Is Vendored
 
@@ -9,9 +9,10 @@ The server publishes literal wire samples at
 vendored verbatim into `tests/wire-samples/` and consumed by
 `tests/wire_golden_tests.rs`:
 
-- **`v3-*`** samples are complete (real ids, all fields) → full byte-exact
+- **`v3-*`** samples are complete (real ids, all fields) → full semantic
   round-trip conformance: each line must deserialize into our typed enum AND
-  re-serialize to a semantically identical `serde_json::Value`.
+  re-serialize to a semantically identical `serde_json::Value` (compared as
+  parsed JSON, so key order / whitespace are ignored).
 - **`v2-*`** samples are illustrative docs (placeholders / partial payloads) →
   structural check only (valid JSON + string `type`). v2 bytes are tested
   directly with complete messages in `tests/protocol_tests.rs`.

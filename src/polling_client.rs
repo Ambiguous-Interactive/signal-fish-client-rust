@@ -27,6 +27,11 @@ struct PollingClientState {
     /// Protocol version negotiated by the server (from `ProtocolInfo`).
     /// `0` means not-yet-negotiated or negotiated v2 — i.e. not v3-capable.
     negotiated_protocol_version: u16,
+    /// Whether a `ProtocolInfo` has been observed on this connection. Separates
+    /// "negotiation hasn't happened yet" from "negotiation completed at the v2
+    /// relay floor" — both leave `negotiated_protocol_version` at `0`. Drives
+    /// the `ProtocolUnsupported { mode }` diagnostic.
+    protocol_info_seen: bool,
     player_id: Option<PlayerId>,
     room_id: Option<RoomId>,
     room_code: Option<String>,
@@ -40,6 +45,7 @@ impl PollingClientState {
             connected: true,
             authenticated: false,
             negotiated_protocol_version: 0,
+            protocol_info_seen: false,
             player_id: None,
             room_id: None,
             room_code: None,
@@ -49,6 +55,7 @@ impl PollingClientState {
     fn clear_session(&mut self) {
         self.authenticated = false;
         self.negotiated_protocol_version = 0;
+        self.protocol_info_seen = false;
         self.player_id = None;
         self.room_id = None;
         self.room_code = None;
@@ -559,7 +566,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
         if self.state.negotiated_protocol_version >= 3 {
             return Ok(());
         }
-        let mode = if self.state.authenticated {
+        // A `ProtocolInfo` that resolved below v3 is a terminal relay floor;
+        // its absence means negotiation is still in flight. Keying off the
+        // observed `ProtocolInfo` (not authentication) keeps this diagnostic
+        // correct regardless of handshake message ordering.
+        let mode = if self.state.protocol_info_seen {
             "relay-only"
         } else {
             "pre-negotiation"
@@ -588,6 +599,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             }
             ServerMessage::ProtocolInfo(payload) => {
                 self.state.negotiated_protocol_version = payload.protocol_version.unwrap_or(0);
+                // Mark negotiation as observed even for a v2 floor (version 0):
+                // this separates "relay-only" from "pre-negotiation" in the guard.
+                self.state.protocol_info_seen = true;
             }
             ServerMessage::RoomJoined(payload) => {
                 self.state.player_id = Some(payload.player_id);
@@ -610,6 +624,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     crate::protocol::replayed_negotiated_version(&payload.missed_events)
                 {
                     self.state.negotiated_protocol_version = version;
+                    // A replayed `ProtocolInfo` *was* observed; keep the flag
+                    // consistent with its name (moot while the guard
+                    // short-circuits on version >= 3, but preserves the
+                    // "seen implies a ProtocolInfo arrived" invariant).
+                    self.state.protocol_info_seen = true;
                 }
             }
             ServerMessage::SpectatorJoined(payload) => {
@@ -844,14 +863,28 @@ mod tests {
     // ── Protocol v2/v3: start_game, signaling, negotiation guard ────
 
     const PROTOCOL_INFO_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#;
+    // A v2 negotiation omits the version fields entirely (so the bytes stay
+    // identical to a v2 server), which deserializes to `protocol_version: None`.
+    const PROTOCOL_INFO_V2: &str =
+        r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[]}}"#;
     const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 
+    /// Parse every queued outgoing frame into a `ClientMessage`.
+    ///
+    /// Each frame MUST deserialize cleanly: silently dropping unparseable
+    /// frames would let assertions like "no `Signal` reached the wire" pass
+    /// against a malformed shape they never saw. A parse failure is a real
+    /// client bug, so surface it loudly.
     fn last_sent(client: &SignalFishPollingClient<MockTransport>) -> Vec<ClientMessage> {
         client
             .transport
             .sent
             .iter()
-            .filter_map(|m| serde_json::from_str::<ClientMessage>(m).ok())
+            .map(|m| {
+                serde_json::from_str::<ClientMessage>(m).unwrap_or_else(|e| {
+                    panic!("outgoing client message must deserialize: {e}\n{m}")
+                })
+            })
             .collect()
     }
 
@@ -877,15 +910,62 @@ mod tests {
         assert!(client.negotiated_protocol_version().is_none());
         assert!(!client.supports_mesh());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
+        // Authenticated but no `ProtocolInfo` yet → negotiation in flight, so
+        // the guard reports "pre-negotiation" (NOT "relay-only", which requires
+        // an observed v2 `ProtocolInfo` — see `v2_protocol_info_is_relay_only`).
         assert!(matches!(
             client.send_offer(peer, "sdp"),
-            Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+            Err(SignalFishError::ProtocolUnsupported {
+                mode: "pre-negotiation"
+            })
         ));
         // Nothing v3 reached the wire (the guard runs before enqueue).
         client.poll();
         assert!(last_sent(&client)
             .iter()
             .all(|m| !matches!(m, ClientMessage::Signal { .. })));
+    }
+
+    #[test]
+    fn v2_protocol_info_is_relay_only() {
+        // A v2 `ProtocolInfo` (no version field) is a terminal relay floor: the
+        // guard reports "relay-only", distinct from the "pre-negotiation" state
+        // before any `ProtocolInfo` arrives.
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.negotiated_protocol_version().is_none());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+        ));
+    }
+
+    #[test]
+    fn disconnect_resets_protocol_info_seen_to_pre_negotiation() {
+        // Negotiate v3, then disconnect: the guard must fall all the way back to
+        // "pre-negotiation" (proving `protocol_info_seen` is cleared with the
+        // rest of the session state, not just the version).
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.supports_mesh());
+        client.close();
+        assert!(client.negotiated_protocol_version().is_none());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported {
+                mode: "pre-negotiation"
+            })
+        ));
     }
 
     #[test]

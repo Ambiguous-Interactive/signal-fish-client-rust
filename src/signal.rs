@@ -52,10 +52,18 @@ pub enum PeerSignal {
 
 impl From<PeerSignal> for serde_json::Value {
     fn from(signal: PeerSignal) -> Self {
-        // A `PeerSignal` only ever holds `String`s, so serialization to a
-        // `Value` is infallible in practice; fall back to `Null` rather than
-        // panicking to honor the crate's no-panic policy.
-        serde_json::to_value(signal).unwrap_or(serde_json::Value::Null)
+        // Build the externally-tagged object directly so the conversion is
+        // *structurally* infallible: there is no serializer that can fail and
+        // no lossy `Null` fallback that could silently corrupt the wire. This
+        // mirrors serde's externally-tagged enum representation exactly (see
+        // the round-trip tests below, which pin it against `Serialize`).
+        match signal {
+            PeerSignal::Offer(sdp) => serde_json::json!({ "Offer": sdp }),
+            PeerSignal::Answer(sdp) => serde_json::json!({ "Answer": sdp }),
+            PeerSignal::IceCandidate(candidate) => {
+                serde_json::json!({ "IceCandidate": candidate })
+            }
+        }
     }
 }
 
@@ -122,6 +130,24 @@ mod tests {
             serde_json::from_str::<PeerSignal>(r#"{"IceCandidate":"z"}"#).expect("deser ice"),
             PeerSignal::IceCandidate("z".into())
         );
+    }
+
+    #[test]
+    fn from_matches_serialize_for_every_variant() {
+        // The hand-written `From` must stay byte-for-byte identical to serde's
+        // derived `Serialize`; if a variant is ever added to `PeerSignal`
+        // without extending `From`, this pins the divergence. (Also proves the
+        // conversion never yields `Null`.)
+        for sig in [
+            PeerSignal::Offer("a".into()),
+            PeerSignal::Answer("b".into()),
+            PeerSignal::IceCandidate("c".into()),
+        ] {
+            let via_from: serde_json::Value = sig.clone().into();
+            let via_serialize = serde_json::to_value(&sig).expect("serialize");
+            assert_eq!(via_from, via_serialize, "From diverged from Serialize");
+            assert!(!via_from.is_null(), "From must never yield Null");
+        }
     }
 
     #[test]

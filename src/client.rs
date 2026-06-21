@@ -315,6 +315,12 @@ struct ClientState {
     /// Protocol version negotiated by the server (from `ProtocolInfo`).
     /// `0` means "not yet negotiated, or negotiated v2" — i.e. not v3-capable.
     negotiated_protocol_version: AtomicU16,
+    /// Whether a `ProtocolInfo` has been observed on this connection. This
+    /// distinguishes "negotiation hasn't happened yet" from "negotiation
+    /// completed at the v2 relay floor" — both leave
+    /// `negotiated_protocol_version` at `0`, but only the latter is terminal.
+    /// Drives the `ProtocolUnsupported { mode }` diagnostic.
+    protocol_info_seen: AtomicBool,
     player_id: Mutex<Option<PlayerId>>,
     room_id: Mutex<Option<RoomId>>,
     room_code: Mutex<Option<String>>,
@@ -327,6 +333,7 @@ impl ClientState {
             connected: AtomicBool::new(true),
             authenticated: AtomicBool::new(false),
             negotiated_protocol_version: AtomicU16::new(0),
+            protocol_info_seen: AtomicBool::new(false),
             player_id: Mutex::new(None),
             room_id: Mutex::new(None),
             room_code: Mutex::new(None),
@@ -336,6 +343,7 @@ impl ClientState {
     async fn clear_session_state(&self) {
         self.authenticated.store(false, Ordering::Release);
         self.negotiated_protocol_version.store(0, Ordering::Release);
+        self.protocol_info_seen.store(false, Ordering::Release);
         *self.player_id.lock().await = None;
         *self.room_id.lock().await = None;
         *self.room_code.lock().await = None;
@@ -769,7 +777,11 @@ impl SignalFishClient {
         {
             return Ok(());
         }
-        let mode = if self.state.authenticated.load(Ordering::Acquire) {
+        // A `ProtocolInfo` that resolved below v3 is a terminal relay floor;
+        // its absence means negotiation is still in flight. Keying off the
+        // observed `ProtocolInfo` (not authentication) keeps this diagnostic
+        // correct regardless of handshake message ordering.
+        let mode = if self.state.protocol_info_seen.load(Ordering::Acquire) {
             "relay-only"
         } else {
             "pre-negotiation"
@@ -936,6 +948,9 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             state
                 .negotiated_protocol_version
                 .store(version, Ordering::Release);
+            // Mark negotiation as observed even for a v2 floor (version 0): this
+            // is what separates "relay-only" from "pre-negotiation" in the guard.
+            state.protocol_info_seen.store(true, Ordering::Release);
             debug!("state: negotiated protocol version {version}");
         }
         ServerMessage::RoomJoined(payload) => {
@@ -967,6 +982,12 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
                 state
                     .negotiated_protocol_version
                     .store(version, Ordering::Release);
+                // A replayed `ProtocolInfo` *was* observed, so keep the flag
+                // consistent with its name. (Behaviorally moot while the guard
+                // short-circuits on version >= 3, but it preserves the
+                // "seen implies a ProtocolInfo arrived" invariant for any future
+                // reader.)
+                state.protocol_info_seen.store(true, Ordering::Release);
             }
             debug!(
                 "state: reconnected to room {} ({})",

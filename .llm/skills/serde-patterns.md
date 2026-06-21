@@ -229,6 +229,12 @@ assert_eq!(value["data"]["game_name"], "my-game");
   `ClientMessage::Signal`/`ServerMessage::Signal` is `serde_json::Value` (so an
   unknown future signal shape never fails to deserialize); `PeerSignal` is the
   typed convenience layered above.
+- `From<PeerSignal> for serde_json::Value` builds the tagged object **directly**
+  (`json!({ "Offer": sdp })`), NOT via `to_value(..).unwrap_or(Null)`. A `Null`
+  fallback would silently corrupt the wire on a (theoretical) serialize failure;
+  direct construction is structurally infallible. `signal.rs`'s
+  `from_matches_serialize_for_every_variant` test pins it against the derived
+  `Serialize` so the two representations cannot drift.
 
 ### The v2-byte-identical rule
 

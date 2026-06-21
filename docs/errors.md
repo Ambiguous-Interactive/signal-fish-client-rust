@@ -31,7 +31,7 @@ variants**:
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
-| `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet) or `"relay-only"` (authenticated, but v2). See [Protocol Versioning](protocol-versioning.md). |
+| `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md). |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 

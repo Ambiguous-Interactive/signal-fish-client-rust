@@ -51,9 +51,12 @@ v3-only sends (`send_signal`/`send_offer`/`send_answer`/`send_ice_candidate`/
 `send_raw_signal`/`report_transport_status`) call `ensure_v3()` and return
 `SignalFishError::ProtocolUnsupported { mode }` when the connection has not
 negotiated v3 — fail-fast at the call site instead of an async, unattributed
-`Error` event. `mode` is `"relay-only"` (authenticated, not v3) or
-`"pre-negotiation"` (no `ProtocolInfo` yet). `start_game` is **not** guarded — it
-is the universal v2 change.
+`Error` event. The `mode` is keyed off whether a `ProtocolInfo` has been
+observed (NOT authentication state, so the diagnostic is correct regardless of
+handshake ordering): `"relay-only"` (a `ProtocolInfo` arrived but negotiated
+below v3 — a terminal relay floor) or `"pre-negotiation"` (no `ProtocolInfo`
+yet — negotiation still in flight). `start_game` is **not** guarded — it is the
+universal v2 change.
 
 The guard threshold is `>= 3` (the version that introduced mesh signaling), NOT
 `>= PROTOCOL_VERSION` — a future SDK version bump must not reject a v3-negotiated

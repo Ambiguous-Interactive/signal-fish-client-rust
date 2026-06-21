@@ -69,8 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signaling handshake against a consumer's WebRTC backend, with a runnable
   `examples/mesh_session.rs`.
 - Golden-wire conformance: vendored server protocol samples
-  (`tests/wire-samples/`) with byte-exact round-trip tests
-  (`tests/wire_golden_tests.rs`) and a scheduled drift workflow
+  (`tests/wire-samples/`) with semantic round-trip tests
+  (`tests/wire_golden_tests.rs`, compared as `serde_json::Value` so key
+  order / whitespace are ignored) and a scheduled drift workflow
   (`.github/workflows/protocol-sync.yml`). The default relay path is verified
   byte-identical to v2.
 

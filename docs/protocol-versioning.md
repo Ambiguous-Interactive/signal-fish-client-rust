@@ -132,8 +132,8 @@ The `mode` field tells you why:
 
 | `mode` | Meaning |
 |--------|---------|
-| `"pre-negotiation"` | No `ProtocolInfo` has arrived yet — wait for negotiation. |
-| `"relay-only"` | The connection authenticated but negotiated v2 (the relay floor). |
+| `"pre-negotiation"` | No `ProtocolInfo` has arrived yet — negotiation is still in flight; retry once it completes. |
+| `"relay-only"` | A `ProtocolInfo` arrived but negotiated v2 (the relay floor) — waiting will not help; enable the mesh and reconnect. |
 
 ```rust,ignore
 match client.send_offer(peer, sdp) {

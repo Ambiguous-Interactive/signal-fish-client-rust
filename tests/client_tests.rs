@@ -1507,11 +1507,20 @@ async fn drain_until_protocol_info(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
 }
 
 /// Parse all currently-recorded outgoing messages into `ClientMessage`s.
+///
+/// Every captured frame MUST deserialize cleanly: silently dropping
+/// unparseable frames would let a malformed or unexpected wire shape pass
+/// assertions like "no v3 message reached the wire" that depend on *seeing*
+/// every outgoing message. A parse failure here is a real bug in the client,
+/// so we surface it loudly instead of hiding it.
 fn sent_messages(sent: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<ClientMessage> {
     sent.lock()
         .unwrap()
         .iter()
-        .filter_map(|m| serde_json::from_str::<ClientMessage>(m).ok())
+        .map(|m| {
+            serde_json::from_str::<ClientMessage>(m)
+                .unwrap_or_else(|e| panic!("outgoing client message must deserialize: {e}\n{m}"))
+        })
         .collect()
 }
 
@@ -1554,12 +1563,18 @@ async fn send_signal_before_v3_returns_protocol_unsupported() {
         start_client(vec![Some(Ok(authenticated_json()))]);
     drain_until_authenticated(&mut events).await;
 
+    // Authenticated but no `ProtocolInfo` yet → negotiation is still in flight,
+    // so the guard reports "pre-negotiation" (NOT "relay-only", which is
+    // reserved for a `ProtocolInfo` that resolved at the v2 floor — see
+    // `v2_protocol_info_keeps_relay_floor_guard`).
     let err = client
         .send_signal(uuid::Uuid::from_u128(2), PeerSignal::Offer("sdp".into()))
-        .expect_err("send_signal must fail on the relay floor");
+        .expect_err("send_signal must fail before negotiation completes");
     assert!(matches!(
         err,
-        SignalFishError::ProtocolUnsupported { mode: "relay-only" }
+        SignalFishError::ProtocolUnsupported {
+            mode: "pre-negotiation"
+        }
     ));
     // report_transport_status fails fast too.
     assert!(matches!(
@@ -1624,7 +1639,10 @@ async fn report_transport_status_after_v3_is_sent() {
 #[tokio::test]
 async fn v2_protocol_info_keeps_relay_floor_guard() {
     // A v2 ProtocolInfo (no version field) leaves negotiated version None, so v3
-    // sends still fail fast.
+    // sends still fail fast — and because a `ProtocolInfo` *did* arrive, the
+    // guard reports the terminal "relay-only" mode (contrast
+    // `send_signal_before_v3_returns_protocol_unsupported`, which is
+    // "pre-negotiation" because no `ProtocolInfo` has arrived).
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
@@ -1632,7 +1650,10 @@ async fn v2_protocol_info_keeps_relay_floor_guard() {
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     assert!(client.negotiated_protocol_version().is_none());
-    assert!(client.send_offer(uuid::Uuid::from_u128(2), "x").is_err());
+    assert!(matches!(
+        client.send_offer(uuid::Uuid::from_u128(2), "x"),
+        Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+    ));
     client.shutdown().await;
 }
 

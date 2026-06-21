@@ -50,8 +50,12 @@ pub enum SignalFishError {
          opt into the mesh with SignalFishConfig::enable_mesh()"
     )]
     ProtocolUnsupported {
-        /// Why v3 is unavailable: `"relay-only"` (negotiated, but not v3) or
-        /// `"pre-negotiation"` (the server has not yet sent `ProtocolInfo`).
+        /// Why v3 is unavailable:
+        /// - `"relay-only"` — a `ProtocolInfo` was received but negotiated below
+        ///   v3 (the v2 relay floor); waiting will not help. Opt into the mesh
+        ///   and reconnect.
+        /// - `"pre-negotiation"` — no `ProtocolInfo` has been received yet;
+        ///   negotiation is still in flight, so retry once it completes.
         mode: &'static str,
     },
 

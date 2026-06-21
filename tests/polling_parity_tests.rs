@@ -32,6 +32,9 @@ use signal_fish_client::{SignalFishEvent, Transport};
 const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 const AUTH: &str = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
 const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#;
+// A v2 negotiation omits the version fields, so it deserializes to
+// `protocol_version: None` — a terminal relay floor.
+const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[]}}"#;
 
 // ── Shared mock transport (works for both async + polling drivers) ────
 
@@ -179,16 +182,24 @@ async fn parity_ensure_v3_pre_negotiation_mode() {
 }
 
 #[tokio::test]
-async fn parity_ensure_v3_relay_only_mode_after_auth_no_v3() {
+async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
+    // Both clients must report the terminal "relay-only" mode once a v2
+    // `ProtocolInfo` has been observed — distinct from the "pre-negotiation"
+    // state before any `ProtocolInfo` arrives (see the parity test above).
     let peer: PlayerId = PEER_UUID.parse().unwrap();
 
-    let async_mock = SharedMock::new(vec![AUTH]);
+    let async_mock = SharedMock::new(vec![AUTH, PI_V2]);
     let (client, mut events) = SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
-    let _ = events.recv().await; // Connected
-    let _ = events.recv().await; // Authenticated
+    // Drain until the v2 ProtocolInfo has been processed into client state.
+    loop {
+        match events.recv().await {
+            Some(SignalFishEvent::ProtocolInfo(_)) | None => break,
+            _ => {}
+        }
+    }
     let async_err = client.send_offer(peer, "sdp").unwrap_err();
 
-    let poll_mock = SharedMock::new(vec![AUTH]);
+    let poll_mock = SharedMock::new(vec![AUTH, PI_V2]);
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
     poll_client.poll();
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();

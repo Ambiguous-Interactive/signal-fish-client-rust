@@ -52,6 +52,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // transport and emits events on `event_rx`.
     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 
+    // ── Lobby bookkeeping ───────────────────────────────────────────
+    // The server can emit many `LobbyStateChanged` updates while readiness
+    // stays true, and in an authority room only the authority may start the
+    // game. We track just enough state to start the game exactly once, and only
+    // when we're actually allowed to — otherwise the example would spam
+    // `StartGame` and collect `GameStartNotReady` / `GameStartForbidden` errors.
+    // The decision depends on three inputs that arrive from different events
+    // (readiness, authority, and the one-shot latch), so it is centralized in
+    // `maybe_start_game` and re-evaluated whenever any input changes.
+    let mut supports_authority = false;
+    let mut is_authority = false;
+    let mut all_ready = false;
+    let mut game_start_requested = false;
+
     // ── Event loop ──────────────────────────────────────────────────
     // Use `tokio::select!` to listen for both server events and Ctrl+C.
     loop {
@@ -87,6 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         room_code,
                         player_id,
                         current_players,
+                        supports_authority: room_supports_authority,
+                        is_authority: locally_authority,
                         ..
                     } => {
                         tracing::info!(
@@ -95,9 +111,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             current_players.len()
                         );
 
+                        // Remember who may start the game in this room. Reset the
+                        // readiness and one-shot start latch for the fresh room.
+                        supports_authority = room_supports_authority;
+                        is_authority = locally_authority;
+                        all_ready = false;
+                        game_start_requested = false;
+
                         // Mark ourselves as ready.
                         client.set_ready()?;
                         tracing::info!("Set ready");
+                    }
+
+                    // ── Reconnected: adopt the server's authoritative state ──
+                    SignalFishEvent::Reconnected {
+                        supports_authority: room_supports_authority,
+                        is_authority: locally_authority,
+                        current_players,
+                        ..
+                    } => {
+                        tracing::info!("Reconnected to room");
+                        // The payload carries the server's current truth, so adopt
+                        // it directly instead of waiting for a follow-up event.
+                        // We deliberately do NOT reset `game_start_requested`: this
+                        // is the same session, so if we already started the game we
+                        // must not send a second `StartGame`.
+                        supports_authority = room_supports_authority;
+                        is_authority = locally_authority;
+                        all_ready = !current_players.is_empty()
+                            && current_players.iter().all(|p| p.is_ready);
+                        maybe_start_game(
+                            &client,
+                            supports_authority,
+                            is_authority,
+                            all_ready,
+                            &mut game_start_requested,
+                        )?;
                     }
 
                     SignalFishEvent::PlayerJoined { player } => {
@@ -110,16 +159,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     SignalFishEvent::LobbyStateChanged {
                         lobby_state,
-                        all_ready,
+                        all_ready: ready,
                         ..
                     } => {
-                        tracing::info!("Lobby state → {lobby_state:?} (all_ready={all_ready})");
-                        // Protocol v2: the game no longer auto-starts on readiness.
-                        // Once everyone is ready, explicitly start it. (If the room
-                        // has a designated authority, only the authority may start.)
-                        if all_ready {
-                            client.start_game()?;
-                        }
+                        tracing::info!("Lobby state → {lobby_state:?} (all_ready={ready})");
+                        all_ready = ready;
+                        maybe_start_game(
+                            &client,
+                            supports_authority,
+                            is_authority,
+                            all_ready,
+                            &mut game_start_requested,
+                        )?;
+                    }
+
+                    // ── Authority changes ────────────────────────────
+                    // In an authority room, who may start can change mid-lobby —
+                    // e.g. we become the authority *after* everyone is already
+                    // ready, in which case no new `LobbyStateChanged` arrives, so
+                    // we must re-evaluate the start decision here too.
+                    SignalFishEvent::AuthorityChanged {
+                        you_are_authority, ..
+                    } => {
+                        is_authority = you_are_authority;
+                        tracing::info!("Authority changed (you_are_authority={you_are_authority})");
+                        maybe_start_game(
+                            &client,
+                            supports_authority,
+                            is_authority,
+                            all_ready,
+                            &mut game_start_requested,
+                        )?;
                     }
 
                     SignalFishEvent::GameStarting {
@@ -165,5 +235,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Cleanup ─────────────────────────────────────────────────────
     client.shutdown().await;
     tracing::info!("Client shut down. Goodbye!");
+    Ok(())
+}
+
+/// Send `StartGame` exactly once, and only when this client is allowed to.
+///
+/// Protocol v2+ no longer auto-starts the game on readiness — someone must
+/// explicitly start it. In an authority room only the authority may start;
+/// without authority delegation any player may. `game_start_requested` is a
+/// one-shot latch so repeated `LobbyStateChanged` / `AuthorityChanged` events
+/// (which fire while everyone stays ready) never send a second `StartGame`.
+fn maybe_start_game(
+    client: &SignalFishClient,
+    supports_authority: bool,
+    is_authority: bool,
+    all_ready: bool,
+    game_start_requested: &mut bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !all_ready || *game_start_requested {
+        return Ok(());
+    }
+    if supports_authority && !is_authority {
+        tracing::info!("All players ready — waiting for the authority to start");
+        return Ok(());
+    }
+    client.start_game()?;
+    *game_start_requested = true;
+    tracing::info!("All players ready — start requested");
     Ok(())
 }
