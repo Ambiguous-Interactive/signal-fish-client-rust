@@ -291,9 +291,9 @@ A pre-commit hook enforces:
 10. Devcontainer compatibility check passes (`scripts/check-devcontainer-compat.sh`) — catches non-portable host lifecycle commands and required host-home credential bind mounts
 11. Devcontainer compatibility script tests pass (`scripts/test_check_devcontainer_compat.sh`)
 12. Devcontainer Dockerfile static check passes when Docker buildx is available (`docker buildx build --check -f .devcontainer/Dockerfile .`)
+13. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`, self-tested by `scripts/test_check_admonitions.py`) — no embedded double quotes that silently break title rendering
 
-`cargo test` is part of the mandatory workflow but runs on push, not every
-commit, because it is too slow for a blocking hook. Run it manually before
-opening a PR.
+`cargo test` is part of the mandatory workflow but runs on push, not every commit
+(too slow for a blocking hook). Run it manually before opening a PR.
 
 Install hooks with: `bash scripts/install-hooks.sh`

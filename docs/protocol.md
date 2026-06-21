@@ -519,7 +519,7 @@ let value: serde_json::Value = PeerSignal::Offer(sdp).into();   // infallible
 let signal = PeerSignal::try_from(&value)?;                     // fallible
 ```
 
-!!! warning "External tagging, not the `{ "type": ..., "data": ... }` envelope"
+!!! warning "External tagging, not the `{ type, data }` envelope"
     Unlike `ClientMessage`/`ServerMessage` (adjacently tagged), `PeerSignal`
     uses serde's default **external** tagging — the variant name is the key.
     This matches the matchbox wire format exactly.

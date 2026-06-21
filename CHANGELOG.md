@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MeshController` now restarts a peer's handshake when the server *reassigns*
+  its offerer role across a re-plan — a host re-election or topology change that
+  flips the peer's `initiate`/`you_initiate`. Previously a surviving peer kept
+  the driver in its stale offerer role, which could cause WebRTC glare (both
+  peers offer) or a stuck handshake (both wait); a survivor whose role is
+  unchanged still keeps its live connection.
 - `MeshController` now reports `TransportStatus(WebRtc, false)` on the final
   channel-down edge when leaving a room or disconnecting with a live data
   channel; previously the `RoomLeft`/`Disconnected` teardown cleared its

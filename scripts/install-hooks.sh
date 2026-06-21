@@ -25,6 +25,8 @@
 #  18.  scripts/check-devcontainer-compat.sh
 #  19.  scripts/test_check_devcontainer_compat.sh
 #  20.  docker buildx build --check -f .devcontainer/Dockerfile .
+#  21.  scripts/check-admonitions.py (MkDocs admonition title check)
+#  22.  scripts/test_check_admonitions.py
 #
 # And a pre-push hook that runs checks in two phases:
 #   Phase 1 (parallel, background — no target/ access):
@@ -344,6 +346,24 @@ else
     printf 'SKIP 0.0 devcontainer Dockerfile (docker buildx not available)\n' > "$CHECK_TMPDIR/20-devcontainer-dockerfile.result"
 fi
 
+# ── 21. Admonition title check (MkDocs rendering) ───────────────────
+if [ -f "${REPO_ROOT}/scripts/check-admonitions.py" ] && command -v python3 &>/dev/null; then
+    run_check "admonition titles" "21-admonitions" \
+        python3 "${REPO_ROOT}/scripts/check-admonitions.py" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 admonition titles (python3 or script not found)\n' > "$CHECK_TMPDIR/21-admonitions.result"
+fi
+
+# ── 22. Admonition check self-tests ─────────────────────────────────
+if [ -f "${REPO_ROOT}/scripts/test_check_admonitions.py" ] && command -v python3 &>/dev/null; then
+    run_check "admonition tests" "22-admonitions-test" \
+        python3 "${REPO_ROOT}/scripts/test_check_admonitions.py" &
+    PIDS+=($!)
+else
+    printf 'SKIP 0.0 admonition tests (python3 or script not found)\n' > "$CHECK_TMPDIR/22-admonitions-test.result"
+fi
+
 # ── Wait for all checks ─────────────────────────────────────────────
 if [ ${#PIDS[@]} -gt 0 ]; then
     for pid in "${PIDS[@]}"; do
@@ -598,6 +618,8 @@ echo " 17.  bash scripts/test_check_test_quality.sh (test quality script tests)"
 echo " 18.  bash scripts/check-devcontainer-compat.sh (devcontainer compatibility check)"
 echo " 19.  bash scripts/test_check_devcontainer_compat.sh (devcontainer compatibility tests)"
 echo " 20.  docker buildx build --check -f .devcontainer/Dockerfile . (optional, skipped if docker buildx unavailable)"
+echo " 21.  python3 scripts/check-admonitions.py (MkDocs admonition title check)"
+echo " 22.  python3 scripts/test_check_admonitions.py (admonition checker self-tests)"
 echo ""
 echo "The pre-push hook runs on every 'git push' (two-phase execution):"
 echo "  Phase 1 — parallel background (non-cargo):"

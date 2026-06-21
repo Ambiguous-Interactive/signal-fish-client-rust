@@ -21,10 +21,11 @@ byte-identical to `matchbox_socket::PeerSignal`:
 ```
 
 The wire field on `ClientMessage::Signal` / `ServerMessage::Signal` is
-`serde_json::Value` (so an unknown future signal shape never breaks deserialization);
-`PeerSignal` is the typed convenience with `From<PeerSignal> for Value` (infallible,
-via `unwrap_or(Null)` — never panics) and `TryFrom<&Value>`. See
-[serde-patterns](serde-patterns.md).
+`serde_json::Value` (so an unknown future signal shape never breaks deserialization).
+`PeerSignal` is the typed convenience with an infallible `From<PeerSignal> for Value`
+— it constructs the externally-tagged object **directly** (`json!({ "Offer": sdp })`),
+structurally infallible with no lossy `Null` fallback — and a fallible
+`TryFrom<&Value>`. See [serde-patterns](serde-patterns.md).
 
 ## Designated Offerer / Initiate Obedience
 
@@ -33,6 +34,13 @@ clients-initiate-to-host in host topology) and tells each client via the
 `initiate` flag (`SessionPlan.peers[].initiate`) and `you_initiate` (`NewPeer`).
 The client **must obey verbatim** — never compute who offers, never both-offer.
 This avoids glare without perfect-negotiation rollback.
+
+Because there is no rollback, when the server *reassigns* the offerer — a host
+re-election or topology change flips `initiate`/`you_initiate` for a peer that
+survives the re-plan — `MeshController` restarts that peer's handshake in the new
+role (`disconnect` then `connect`) instead of leaving the driver in the stale one,
+which would otherwise glare (both offer) or stall (both wait). A survivor whose
+role is unchanged keeps its live connection.
 
 ## MeshSession Tracker (no WebRTC)
 

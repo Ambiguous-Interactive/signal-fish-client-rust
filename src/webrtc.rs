@@ -165,6 +165,17 @@ mod controller {
     /// / data when no signaling event is arriving.
     const DEFAULT_PUMP_INTERVAL: Duration = Duration::from_millis(20);
 
+    /// A peer the controller has told the driver to connect to, paired with the
+    /// server's current offerer assignment. Tracking `initiate` lets a re-plan
+    /// that *reassigns* who offers (a host re-election or topology change)
+    /// restart the handshake in the new role instead of leaving the driver
+    /// stuck in the stale one.
+    #[derive(Clone, Copy)]
+    struct KnownPeer {
+        id: PlayerId,
+        initiate: bool,
+    }
+
     /// Drives a [`WebRtcDriver`] through the full v3 mesh signaling handshake on
     /// top of a [`SignalFishClient`], surfacing a [`MeshEvent`] stream.
     ///
@@ -197,9 +208,10 @@ mod controller {
         events: mpsc::Receiver<SignalFishEvent>,
         driver: D,
         session: MeshSession,
-        /// Peers the driver has been told to connect to (so they can be torn
-        /// down on re-election, room-leave, or disconnect).
-        known_peers: Vec<PlayerId>,
+        /// Peers the driver has been told to connect to (each with its current
+        /// offerer role), so a role change can re-drive them and so they can be
+        /// torn down on re-election, room-leave, or disconnect.
+        known_peers: Vec<KnownPeer>,
         /// Peers currently reporting an open data channel (for transport-status
         /// transitions: 0↔1 boundaries report `TransportStatus`).
         connected_peers: Vec<PlayerId>,
@@ -313,30 +325,30 @@ mod controller {
                     }
                     let new_ids: Vec<PlayerId> = peers.iter().map(|p| p.player_id).collect();
                     // Disconnect peers dropped from the new plan (host re-election
-                    // or topology change).
-                    for old in self.known_peers.clone() {
-                        if !new_ids.contains(&old) {
-                            self.driver.disconnect(old);
-                            self.mark_disconnected(old);
-                        }
+                    // or topology change), then forget them.
+                    let dropped: Vec<PlayerId> = self
+                        .known_peers
+                        .iter()
+                        .map(|k| k.id)
+                        .filter(|id| !new_ids.contains(id))
+                        .collect();
+                    for old in dropped {
+                        self.driver.disconnect(old);
+                        self.mark_disconnected(old);
                     }
-                    // Connect peers newly named by this plan; survivors keep their
-                    // existing connection.
+                    self.known_peers.retain(|k| new_ids.contains(&k.id));
+                    // Connect peers newly named by this plan; a survivor whose
+                    // offerer role changed is restarted in the new role, and one
+                    // whose role is unchanged keeps its existing connection.
                     for peer in peers {
-                        if !self.known_peers.contains(&peer.player_id) {
-                            self.driver.connect(peer.player_id, peer.initiate);
-                        }
+                        self.ensure_peer(peer.player_id, peer.initiate);
                     }
-                    self.known_peers = new_ids;
                 }
                 SignalFishEvent::NewPeer {
                     peer_id,
                     you_initiate,
                 } => {
-                    if !self.known_peers.contains(peer_id) {
-                        self.driver.connect(*peer_id, *you_initiate);
-                        self.known_peers.push(*peer_id);
-                    }
+                    self.ensure_peer(*peer_id, *you_initiate);
                 }
                 SignalFishEvent::SignalReceived { from, signal } => {
                     match PeerSignal::try_from(signal) {
@@ -347,7 +359,7 @@ mod controller {
                 SignalFishEvent::PlayerLeft { player_id } => {
                     self.driver.disconnect(*player_id);
                     self.mark_disconnected(*player_id);
-                    self.known_peers.retain(|p| p != player_id);
+                    self.known_peers.retain(|k| k.id != *player_id);
                 }
                 // The session ended: tear down every peer connection. Route each
                 // through `mark_disconnected` so the 1->0 transport-status edge
@@ -357,8 +369,8 @@ mod controller {
                 // `mark_disconnected` empties `connected_peers` as it goes.
                 SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
                     for peer in std::mem::take(&mut self.known_peers) {
-                        self.driver.disconnect(peer);
-                        self.mark_disconnected(peer);
+                        self.driver.disconnect(peer.id);
+                        self.mark_disconnected(peer.id);
                     }
                 }
                 SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
@@ -392,6 +404,48 @@ mod controller {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        /// Ensure the driver holds the server's current offerer role for `peer`.
+        ///
+        /// A peer the controller has not connected yet is connected fresh. A
+        /// known peer whose `initiate` assignment *changed* (a host re-election
+        /// or topology change reassigned who offers) has its handshake cleanly
+        /// restarted in the new role: leaving the stale role in place would let
+        /// the two sides glare (both offer) or stall (both wait), because the SDK
+        /// obeys the server verbatim and runs no perfect-negotiation rollback. A
+        /// known peer whose role is unchanged keeps its live connection untouched
+        /// (the common re-plan case — survivors are never needlessly re-driven).
+        ///
+        /// If a restarted peer's data channel was already open, the teardown's
+        /// `1->0` edge reports `TransportStatus(false)` (and the re-handshake's
+        /// `0->1` edge later reports it back up) — a real, observable data-path flap.
+        fn ensure_peer(&mut self, peer: PlayerId, initiate: bool) {
+            let current = self
+                .known_peers
+                .iter()
+                .find(|k| k.id == peer)
+                .map(|k| k.initiate);
+            match current {
+                None => {
+                    self.driver.connect(peer, initiate);
+                    self.known_peers.push(KnownPeer { id: peer, initiate });
+                }
+                Some(prev) if prev != initiate => {
+                    debug!(
+                        %peer,
+                        initiate,
+                        "server reassigned the offerer role; restarting handshake"
+                    );
+                    self.driver.disconnect(peer);
+                    self.mark_disconnected(peer);
+                    self.driver.connect(peer, initiate);
+                    if let Some(k) = self.known_peers.iter_mut().find(|k| k.id == peer) {
+                        k.initiate = initiate;
+                    }
+                }
+                Some(_) => {}
             }
         }
 
@@ -1341,7 +1395,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_new_peer_connects_once() {
+    async fn repeated_identical_new_peer_connects_once() {
+        // A NewPeer repeated with the SAME `you_initiate` is idempotent — the
+        // live connection is kept, never re-driven. (A NewPeer that *changes*
+        // the role is a different case, covered by
+        // `new_peer_role_change_restarts_handshake`.)
         let p = uuid(4);
         let driver = SharedDriver::default();
         let (transport, _sent) = MockTransport::new(vec![
@@ -1349,7 +1407,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(new_peer_msg(p, true))),
-            Some(Ok(new_peer_msg(p, false))),
+            Some(Ok(new_peer_msg(p, true))),
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
@@ -1360,7 +1418,235 @@ mod tests {
                 |c| matches!(c, DriverCall::Connect(x, _) if *x == p)
             ),
             1,
-            "repeated NewPeer for the same peer connects exactly once"
+            "repeated identical NewPeer for the same peer connects exactly once"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c| matches!(c, DriverCall::Disconnect(x) if *x == p)
+            ),
+            0,
+            "an unchanged peer is never torn down"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn replan_role_flip_restarts_handshake_in_new_role() {
+        // Regression for "stale initiate after replan": a *surviving* peer whose
+        // `initiate` assignment FLIPS across a re-plan (a host re-election or
+        // topology change reassigns who offers) must have its handshake
+        // restarted in the new role. A stale offerer role would otherwise glare
+        // (both sides offer) or stall (both wait). Plan 1 makes us the answerer
+        // (initiate=false); Plan 2 flips us to the offerer (initiate=true) for
+        // the SAME peer.
+        let p = uuid(60);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(p, false))),
+            Some(Ok(session_plan(p, true))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let flipped = pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(p, true))
+        })
+        .await;
+        assert!(
+            flipped,
+            "a survivor whose initiate flipped must be reconnected in the new role"
+        );
+        let calls = driver.calls();
+        assert!(
+            calls.contains(&DriverCall::Connect(p, false)),
+            "the first plan connects us as the answerer"
+        );
+        assert!(
+            calls.contains(&DriverCall::Disconnect(p)),
+            "the stale role is torn down before restarting"
+        );
+        assert!(
+            calls.contains(&DriverCall::Connect(p, true)),
+            "the flipped plan reconnects us as the offerer"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c| matches!(c, DriverCall::Connect(x, _) if *x == p)
+            ),
+            2,
+            "exactly one restart: connect(answerer) then connect(offerer)"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn new_peer_role_change_restarts_handshake() {
+        // The same stale-role hazard via NewPeer: a later NewPeer for a known
+        // peer that CHANGES `you_initiate` must restart the handshake in the new
+        // role. (`MeshSession` already adopts the latest flag — latest wins — so
+        // the controller must drive the driver to match.)
+        let p = uuid(61);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(new_peer_msg(p, false))),
+            Some(Ok(new_peer_msg(p, true))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let flipped = pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(p, true))
+        })
+        .await;
+        assert!(flipped, "a NewPeer role change must restart the handshake");
+        let calls = driver.calls();
+        assert!(calls.contains(&DriverCall::Connect(p, false)));
+        assert!(calls.contains(&DriverCall::Disconnect(p)));
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c| matches!(c, DriverCall::Connect(x, _) if *x == p)
+            ),
+            2,
+            "exactly one restart on the role change"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn replan_role_flip_while_channel_open_rechurns_transport_status() {
+        // The key consequence of restart-on-flip: if the peer's channel was
+        // already OPEN, the restart's teardown must report the 1->0
+        // TransportStatus edge (so the server learns WebRTC went down before the
+        // role swap), and a re-handshake would report 0->1 again. Drive P to an
+        // open channel as the initiator, then flip it to the answerer and assert
+        // exactly one TransportStatus(true) followed by exactly one (false).
+        let p = uuid(62);
+        let driver = SharedDriver::default();
+        let (transport, sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(p, true))),
+            Some(Ok(signal_from(p, serde_json::json!({ "Answer": "r" })))),
+            Some(Ok(session_plan(p, false))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+
+        // Drive the handshake to an open channel (reports TransportStatus(true)).
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            recv_until_peer_connected(&mut mesh),
+        )
+        .await
+        .expect("timed out")
+        .expect("stream closed");
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            1,
+            "precondition: the open channel reports status true once"
+        );
+
+        // Reach the queued role-flip plan; the restart tears the open channel
+        // down (1->0) and reconnects P as the answerer.
+        pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(p, false))
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let calls = driver.calls();
+        assert!(
+            calls.contains(&DriverCall::Disconnect(p)),
+            "the open channel's stale role is torn down"
+        );
+        assert!(
+            calls.contains(&DriverCall::Connect(p, false)),
+            "P is reconnected as the answerer"
+        );
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "the restart's 1->0 edge reports exactly one TransportStatus(false)"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn replan_simultaneously_flips_survivor_drops_one_and_adds_one() {
+        // One re-plan exercising all three paths at once: A survives with a
+        // FLIPPED role (restart), B is dropped (disconnect), C is newly added.
+        // Pins the interaction of the drop loop, the `retain`, and the
+        // `ensure_peer` loop within a single SessionPlan.
+        let a = uuid(70);
+        let b = uuid(71);
+        let c = uuid(72);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(
+                &[(a, false), (b, true)],
+                &["stun:1"],
+            ))),
+            Some(Ok(session_plan_multi(
+                &[(a, true), (c, false)],
+                &["stun:2"],
+            ))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        pump_until(&mut mesh, &driver, |calls| {
+            calls.contains(&DriverCall::Connect(c, false))
+        })
+        .await;
+        let calls = driver.calls();
+        // A: flipped survivor → restarted (answerer then offerer), exactly twice.
+        assert!(
+            calls.contains(&DriverCall::Connect(a, false)),
+            "A first connected as answerer"
+        );
+        assert!(
+            calls.contains(&DriverCall::Disconnect(a)),
+            "A's stale role torn down"
+        );
+        assert!(
+            calls.contains(&DriverCall::Connect(a, true)),
+            "A reconnected as offerer"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c2| matches!(c2, DriverCall::Connect(p, _) if *p == a)
+            ),
+            2,
+            "A connected exactly twice (one restart)"
+        );
+        // B: dropped from the new plan → disconnected, connected only by plan 1.
+        assert!(
+            calls.contains(&DriverCall::Disconnect(b)),
+            "B dropped on re-plan"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c2| matches!(c2, DriverCall::Connect(p, _) if *p == b)
+            ),
+            1,
+            "B connected only by the first plan"
+        );
+        // C: newly named → connected exactly once.
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c2| matches!(c2, DriverCall::Connect(p, _) if *p == c)
+            ),
+            1,
+            "C newly connected exactly once"
         );
         mesh.shutdown().await;
     }

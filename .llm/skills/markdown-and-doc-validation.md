@@ -283,14 +283,17 @@ Scripts that validate documentation (e.g., `check-docs-rendering.sh`, `validate-
 - **MD026** (trailing punctuation in headings): Do not end headings with `.`,
   `:`, `;`, or `!`.
 
+## MkDocs Admonition Title Quoting
+
+Admonition/details titles are `"`-delimited (`!!! warning "Title"`), so a literal `"`
+inside one (e.g. an embedded `{ "type": ... }` envelope) closes it early and leaks raw
+text — `mkdocs build --strict` misses it. Use backticks or drop the inner quotes;
+`scripts/check-admonitions.py` (fence-aware; pre-commit + `check-docs-rendering.sh`,
+tested by `test_check_admonitions.py`) enforces 0-or-2 `"` per opener. Relatedly, give a
+conversion's observable **contract**, not its mechanism (`via unwrap_or(Null)` rots) — see [serde-patterns](serde-patterns.md).
+
 ## Documentation Drift Validation
 
-Detailed guidance for cross-referencing docs against source-of-truth config
-files was split into `doc-drift-validation.md` to keep this skill under the
-pre-commit line limit.
-
-Use that guide for:
-
-- `scripts/validate-devcontainer-docs.sh` style checks
-- Checklist for when to add new doc-vs-config validators
-- JSONC-safe matching patterns and failure-message conventions
+Cross-referencing docs against source-of-truth config files is covered in
+`doc-drift-validation.md` (validator style, doc-vs-config checks, JSONC-safe
+matching) — split out to keep this skill under the line limit.
