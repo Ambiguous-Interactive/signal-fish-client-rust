@@ -1509,7 +1509,7 @@ async fn drain_until_protocol_info(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
 /// Parse all currently-recorded outgoing messages into `ClientMessage`s.
 ///
 /// Every captured frame MUST deserialize cleanly: silently dropping
-/// unparseable frames would let a malformed or unexpected wire shape pass
+/// unparsable frames would let a malformed or unexpected wire shape pass
 /// assertions like "no v3 message reached the wire" that depend on *seeing*
 /// every outgoing message. A parse failure here is a real bug in the client,
 /// so we surface it loudly instead of hiding it.

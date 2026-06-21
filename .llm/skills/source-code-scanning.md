@@ -260,7 +260,7 @@ When writing a new test or script that scans `.rs` files for patterns:
 3. Use recursive traversal if the test claims to cover "all" files in a directory
 4. Handle all relevant syntactic forms (not just the most common one)
 5. Add tests for raw strings with inner quotes, raw identifiers, and nested directories
-6. Never silently skip unparseable input — fail with a descriptive message
+6. Never silently skip unparsable input — fail with a descriptive message
 7. Never pass `&mut <literal>` to stateful helpers — use a named local variable
 8. In delimiter-scanning loops, use an explicit boolean flag to track whether the
    delimiter was found — never infer the result from the loop index's final value

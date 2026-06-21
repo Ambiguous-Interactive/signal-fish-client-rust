@@ -871,7 +871,7 @@ mod tests {
 
     /// Parse every queued outgoing frame into a `ClientMessage`.
     ///
-    /// Each frame MUST deserialize cleanly: silently dropping unparseable
+    /// Each frame MUST deserialize cleanly: silently dropping unparsable
     /// frames would let assertions like "no `Signal` reached the wire" pass
     /// against a malformed shape they never saw. A parse failure is a real
     /// client bug, so surface it loudly.
