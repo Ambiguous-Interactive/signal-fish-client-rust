@@ -73,7 +73,10 @@ auto-starting on readiness must now call `start_game()`.
 Purely additive on v2. New wire types (`Topology`, `TransportKind`, `IceServer`,
 `SessionPeer`, `SessionPlanPayload`, `PeerSignal`), new messages (`Signal`,
 `TransportStatus`, `NewPeer`, `SessionPlan`, `PeerTransportStatus`), optional
-`ice_servers` on `RoomJoined`/`Reconnected`, and six new error codes. See
+`ice_servers` on `RoomJoined`/`Reconnected`, and six new *signaling/lifecycle*
+error codes (the `ErrorCode` (8 new) figure in
+[public-api-design](public-api-design.md) also counts the two v2 `GameStart`
+codes). See
 [webrtc-mesh-signaling](webrtc-mesh-signaling.md).
 
 ## Client Obeys the Server

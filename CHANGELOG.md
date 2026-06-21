@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional low-latency mesh pump: `WebRtcDriver::set_ready_waker` (default no-op)
+  hands the driver a `MeshWaker` it can `wake()` when it has output ready, so
+  trickled ICE candidates and inbound data surface immediately instead of waiting
+  up to one `MeshController` pump interval. Entirely optional to implement and
+  available with the `mesh` + `tokio-runtime` features.
+- Comprehensive v2/v3 user documentation: new `docs/protocol-versioning.md` and
+  `docs/mesh-guide.md` guides, expanded protocol/events/errors/concepts/examples
+  pages, a v3 walkthrough of `examples/mesh_session.rs`, and consistent
+  "Protocol v3 only" rustdoc notes across the v3 API.
+
+### Changed
+
+- `MeshSession` and `MeshController` now defensively replay any mesh events a
+  server batches into a reconnect's `missed_events` (in addition to handling a
+  re-sent live `SessionPlan`), so a mesh session is rebuilt correctly after a
+  reconnect regardless of which strategy the server uses. The fold is idempotent.
+
+### Fixed
+
+- `MeshController` now reports `TransportStatus(WebRtc, false)` on the final
+  channel-down edge when leaving a room or disconnecting with a live data
+  channel; previously the `RoomLeft`/`Disconnected` teardown cleared its
+  connected-peer set directly and skipped that report (the per-peer `PlayerLeft`
+  path already reported it).
+- `MeshSession::apply` no longer reports a spurious change when re-applying an
+  ICE pre-gather set identical to the one already held.
+
 ## [0.5.0] - 2026-06-20
 
 ### Added

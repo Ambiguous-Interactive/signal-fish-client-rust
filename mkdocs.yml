@@ -133,6 +133,7 @@ nav:
   - Getting Started:
       - Installation & Quick Start: getting-started.md
       - Core Concepts: concepts.md
+      - Protocol Versioning: protocol-versioning.md
   - API Reference:
       - Client: client.md
       - Transport: transport.md
@@ -140,6 +141,7 @@ nav:
       - Errors: errors.md
       - Protocol Types: protocol.md
   - Guides:
+      - Mesh (v3): mesh-guide.md
       - WebAssembly: wasm.md
   - Examples:
       - Walkthroughs: examples.md

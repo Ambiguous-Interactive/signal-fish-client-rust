@@ -19,6 +19,13 @@ Demonstrates the **full WebSocket lifecycle** — connecting to a Signal Fish
 server, authenticating, joining a room, reacting to lobby events, and shutting
 down gracefully.
 
+!!! info "This is a v2 / relay example"
+    `basic_lobby` uses the default relay-floor configuration
+    (`SignalFishConfig::new(...)`), so all traffic is relayed through the server.
+    For peer-to-peer WebRTC mesh see the
+    [Mesh Session example](#mesh-session-protocol-v3) and the
+    [Mesh Guide](mesh-guide.md).
+
 ### Full source
 
 ```rust
@@ -203,6 +210,12 @@ Demonstrates how to **implement the `Transport` trait** with a simple in-memory
 loopback, then wire it into the SDK — perfect for **unit testing without a
 network**.
 
+!!! info "This is a v2 / relay example"
+    Like `basic_lobby`, this example uses the default relay-floor configuration.
+    The `Transport` trait being implemented here is the byte channel to the
+    *signaling server* — distinct from the v3 `WebRtcDriver` peer-to-peer seam in
+    the [Mesh Guide](mesh-guide.md).
+
 ### Simplified source
 
 !!! note
@@ -371,6 +384,127 @@ Server received: {"type":"Authenticate","data":{"app_id":"mb_app_test","sdk_vers
 Event: Connected (synthetic)
 Event: Authenticated — app_name=Test App
 Done — saw 2 event(s). Custom transport works!
+```
+
+---
+
+## Mesh Session (protocol v3)
+
+**Source:** `examples/mesh_session.rs`
+
+Demonstrates the **batteries-included mesh path**: implement the `WebRtcDriver`
+trait against your WebRTC stack, hand it to `MeshController`, and the SDK drives
+the entire v3 signaling handshake for you — obeying the server's `initiate`
+directives, relaying offers/answers/ICE, reporting transport status, and
+surfacing a clean `MeshEvent` stream. The example is fully self-contained: a
+scripted in-process "server" plays the v3 handshake and a tiny in-memory driver
+completes it, so the whole stack runs end-to-end with no network.
+
+!!! info "Requires the `mesh` and `tokio-runtime` features"
+    Run it with:
+    ```sh
+    cargo run --example mesh_session --features mesh,tokio-runtime
+    ```
+    See the [Mesh Guide](mesh-guide.md) for the full concepts behind this flow.
+
+### Step-by-step walkthrough
+
+#### 1. Implement `WebRtcDriver`
+
+The example's `DemoDriver` models a realistic handshake without real WebRTC: the
+initiator emits an offer on `connect`; the answerer emits an answer (and "opens"
+the channel) when it receives an offer; the initiator "opens" the channel when it
+receives the answer. The integration points are marked `// REAL DRIVER:`.
+
+```rust,ignore
+impl WebRtcDriver for DemoDriver {
+    fn set_ice_servers(&mut self, servers: &[IceServer]) { /* configure STUN/TURN */ }
+
+    fn connect(&mut self, peer: PlayerId, initiate: bool) {
+        // Obey `initiate`: only the designated offerer creates an offer.
+        if initiate {
+            self.outbox.push_back(DriverEvent::Signal {
+                peer,
+                signal: PeerSignal::Offer("<sdp-offer>".into()),
+            });
+        }
+    }
+
+    fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal) {
+        match signal {
+            PeerSignal::Offer(_) => {
+                self.outbox.push_back(DriverEvent::Signal {
+                    peer, signal: PeerSignal::Answer("<sdp-answer>".into()),
+                });
+                self.outbox.push_back(DriverEvent::Connected { peer });
+            }
+            PeerSignal::Answer(_) => self.outbox.push_back(DriverEvent::Connected { peer }),
+            PeerSignal::IceCandidate(_) => {}
+        }
+    }
+
+    fn send(&mut self, peer: PlayerId, data: &[u8]) { /* write to data channel */ }
+    fn disconnect(&mut self, peer: PlayerId) { /* close the peer connection */ }
+    fn poll(&mut self) -> Option<DriverEvent> { self.outbox.pop_front() }
+}
+```
+
+A **real** driver wraps str0m, webrtc-rs, or the browser's `RtcPeerConnection`
+(via web-sys) — see [Integrating a real backend](mesh-guide.md#integrating-a-real-backend).
+
+#### 2. Start the `MeshController`
+
+`MeshController::start` enables mesh automatically if the config didn't, then
+drives the handshake. Note the config is the plain relay-floor
+`SignalFishConfig::new("demo-app")` — `start` upgrades it to mesh for you.
+
+```rust,ignore
+let mut mesh = MeshController::start(
+    transport,
+    SignalFishConfig::new("demo-app"),
+    DemoDriver::default(),
+);
+```
+
+#### 3. Drive the event loop
+
+A handful of lines drive the whole flow. The controller surfaces every underlying
+event as `MeshEvent::Signaling`, plus the high-level `PeerConnected` /
+`PeerDisconnected` / `Data` events.
+
+```rust,ignore
+while let Some(event) = mesh.recv().await {
+    match event {
+        MeshEvent::Signaling(sig) => match *sig {
+            SignalFishEvent::Authenticated { .. } =>
+                mesh.join_room(JoinRoomParams::new("demo-game", "Alice"))?,
+            SignalFishEvent::LobbyStateChanged { all_ready: true, .. } =>
+                mesh.start_game()?,
+            SignalFishEvent::SessionPlan { peers, .. } =>
+                println!("session plan: {} peer(s) to connect", peers.len()),
+            _ => {}
+        },
+        MeshEvent::PeerConnected(peer) => {
+            mesh.send_to(peer, b"hello peer"); // data channel is open
+            break; // demo complete
+        }
+        MeshEvent::PeerDisconnected(peer) => println!("peer {peer} disconnected"),
+        MeshEvent::Data { from, data } => println!("{} bytes from {from}", data.len()),
+    }
+}
+
+mesh.shutdown().await;
+```
+
+The flow end to end: authenticate → join room → `start_game()` → the scripted
+server sends a `SessionPlan` (`initiate=true`) → the driver offers → the
+controller relays the offer → the peer's answer arrives → the driver opens the
+channel → `MeshEvent::PeerConnected` fires and the example sends a packet.
+
+### Running it
+
+```sh
+cargo run --example mesh_session --features mesh,tokio-runtime
 ```
 
 ---

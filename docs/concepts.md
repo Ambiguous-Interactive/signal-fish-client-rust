@@ -78,6 +78,65 @@ stateDiagram-v2
 
 ---
 
+## Protocol versioning & topology
+
+The SDK speaks two generations of the Signal Fish protocol, and you pick which
+one through `SignalFishConfig`. For the full story see
+[Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
+
+### The relay-floor guarantee
+
+**v2 is the relay floor.** `SignalFishConfig::new("app")` advertises no v3
+capabilities; the server relays all traffic through itself, and the
+`Authenticate` message is **byte-identical** to the old v2 client. The promise:
+opt into nothing and nothing changes.
+
+**v3 is additive and opt-in.** `SignalFishConfig::enable_mesh()` advertises the
+WebRTC/relay transports and mesh/host/relay topologies, letting the server form
+a peer-to-peer session. Existing v2 code keeps working unchanged — v3 only adds
+new optional fields, messages, and events that a v2 connection never sees.
+
+### Capability negotiation
+
+1. The client advertises what it can fulfill in `Authenticate`
+   (`protocol_version`, `supported_transports`, `supported_topologies`).
+2. The server clamps to its own range and echoes the negotiated
+   `protocol_version` (plus min/max) back in `ProtocolInfo`.
+3. The client records it; read it via `negotiated_protocol_version()` and
+   `supports_mesh()` (true once the negotiated version is ≥ 3).
+
+v3-only sends (`send_signal`, `report_transport_status`, …) **fail fast** with
+[`SignalFishError::ProtocolUnsupported`](errors.md) until v3 is negotiated —
+better than an asynchronous, unattributed server rejection. `start_game()` is the
+one universal v2 change and is **not** guarded.
+
+### Topology and transport
+
+When the server forms a non-relay session it sends a `SessionPlan` naming the
+chosen **topology** and data-path **transport**:
+
+| `Topology` | Meaning |
+|------------|---------|
+| `Relay` | Server relays all traffic — the v2 behavior, always available. |
+| `Host` | Star topology: one elected host relays for the session. |
+| `Mesh` | Full mesh: every peer connects to every other peer. |
+
+| `TransportKind` | Meaning |
+|-----------------|---------|
+| `Relay` | Via the signaling server (the mandatory floor; `fallback` is always this). |
+| `Direct` | A direct IP:port connection. |
+| `WebRtc` | A peer-to-peer WebRTC data channel (serializes as `"webrtc"`). |
+
+### Client obeys the server
+
+The server is the brain. It selects topology/transport and assigns the
+deterministic WebRTC offerer via the `initiate` flag (in `SessionPlan.peers`) and
+`you_initiate` (in `NewPeer`). **The client copies these verbatim and never
+computes who offers** — this is what avoids WebRTC "glare" (two peers offering at
+once). See the [Mesh Guide](mesh-guide.md).
+
+---
+
 ## Event-Driven Architecture
 
 All server responses arrive as `SignalFishEvent` variants on a **bounded
@@ -254,12 +313,13 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `NotConnected` | Attempted an operation without an active connection. |
 | `NotInRoom` | Attempted a room operation without being in a room. |
 | `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
+| `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning & topology](#protocol-versioning--topology). |
 | `Timeout` | An operation exceeded its time limit. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 40-variant enum that arrives inside events. The server sends
+`ErrorCode` is a 48-variant enum that arrives inside events. The server sends
 these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore
@@ -286,6 +346,11 @@ Error codes are grouped by category:
 | **Reconnection** | `ReconnectionFailed`, `ReconnectionTokenInvalid`, `ReconnectionExpired` |
 | **Spectator** | `SpectatorNotAllowed`, `TooManySpectators`, `SpectatorJoinFailed` |
 | **Server** | `InternalError`, `StorageError`, `ServiceUnavailable` |
+| **Game Start (v2)** | `GameStartNotReady`, `GameStartForbidden` |
+| **Signaling (v3)** | `CrossRoomSignal`, `UnsupportedTransport`, `SignalTargetNotFound`, `SignalRateLimited`, `SignalTooLarge` |
+| **Connection Lifecycle (v3)** | `ConnectionIdleTimeout` |
+
+See [Errors](errors.md) for the full table with descriptions.
 
 !!! tip "Programmatic handling"
     Every `ErrorCode` variant has a `.description()` method that returns a

@@ -210,6 +210,8 @@ pub enum SignalFishEvent {
     // ── Mesh / WebRTC signaling (protocol v3) ───────────────────────
     /// The server delivered this client's per-recipient session plan.
     ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
+    ///
     /// May arrive multiple times (host re-election, late-join re-plan); each
     /// one **fully replaces** the previous plan. Fields are flattened from
     /// [`SessionPlanPayload`].
@@ -231,6 +233,8 @@ pub enum SignalFishEvent {
     },
 
     /// A late-joining peer to connect to after the session was finalized.
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
     NewPeer {
         /// The new peer's identifier.
         peer_id: PlayerId,
@@ -239,6 +243,8 @@ pub enum SignalFishEvent {
     },
 
     /// An opaque WebRTC signal relayed from a peer.
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
     ///
     /// Convert with [`PeerSignal::try_from(&signal)`](crate::PeerSignal) for the
     /// common offer/answer/ICE-candidate shapes; the raw `Value` is preserved
@@ -251,6 +257,8 @@ pub enum SignalFishEvent {
     },
 
     /// A peer's data-path transport state changed (informational).
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
     PeerTransportStatus {
         /// The peer whose transport state changed.
         peer_id: PlayerId,

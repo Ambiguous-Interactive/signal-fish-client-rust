@@ -42,11 +42,12 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 ## Features
 
 - **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
-- **Wire-compatible** — all protocol types match the Signal Fish server's v2 JSON format exactly
+- **Wire-compatible** — all protocol types match the Signal Fish server's JSON format exactly
+- **Protocol support: v2 relay + v3 mesh** — v3 (opt-in, backward-compatible) adds WebRTC mesh signaling; a default client stays byte-identical to v2 (the "relay-floor guarantee"). Enable with `SignalFishConfig::enable_mesh()`.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
-- **Structured errors** — `SignalFishError` (9 variants) and `ErrorCode` (40 variants) for precise error handling
-- **Full protocol coverage** — 11 client message types, 24 server message types, 26 event variants
+- **Structured errors** — `SignalFishError` (10 variants) and `ErrorCode` (48 variants) for precise error handling
+- **Full protocol coverage** — 14 client message types, 28 server message types, 30 event variants
 - **Configurable** — tune event channel capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
 - **Emscripten WebSocket transport** — the `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` with raw FFI to Emscripten's C API
@@ -121,13 +122,15 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Module        | Purpose                                                           |
 | ------------- | ----------------------------------------------------------------- |
 | `client`      | `SignalFishClient` handle, `SignalFishConfig`, `JoinRoomParams`   |
-| `event`       | `SignalFishEvent` enum (24 server + 2 synthetic variants)         |
-| `protocol`    | Wire-compatible `ClientMessage` (11) / `ServerMessage` (24) types |
-| `error`       | `SignalFishError` unified error type (9 variants)                 |
-| `error_codes` | `ErrorCode` enum (40 server error code variants)                  |
+| `event`       | `SignalFishEvent` enum (28 server + 2 synthetic variants)         |
+| `protocol`    | Wire-compatible `ClientMessage` (14) / `ServerMessage` (28) types |
+| `error`       | `SignalFishError` unified error type (10 variants)                |
+| `error_codes` | `ErrorCode` enum (48 server error code variants)                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
 | `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
 | `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
+| `mesh`        | `MeshSession` — zero-dep v3 mesh state tracker (`mesh` feature)    |
+| `webrtc`      | `WebRtcDriver` seam + `MeshController` v3 orchestrator (`mesh` feature) |
 
 ## Examples
 

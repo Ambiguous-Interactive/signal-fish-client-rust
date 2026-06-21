@@ -399,7 +399,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     // ── Mesh signaling (protocol v3) ────────────────────────────────
 
-    /// Send a typed WebRTC signal to a single peer (protocol v3).
+    /// Send a typed WebRTC signal to a single peer.
+    ///
+    /// **Protocol v3 only.** Fails fast on a relay-floor connection (see Errors).
     ///
     /// See [`SignalFishClient::send_signal`](crate::SignalFishClient::send_signal).
     ///
@@ -416,7 +418,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         })
     }
 
-    /// Send an SDP offer to a peer (protocol v3).
+    /// Send an SDP offer to a peer. **Protocol v3 only.**
     ///
     /// # Errors
     ///
@@ -425,7 +427,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.send_signal(to, PeerSignal::Offer(sdp.into()))
     }
 
-    /// Send an SDP answer to a peer (protocol v3).
+    /// Send an SDP answer to a peer. **Protocol v3 only.**
     ///
     /// # Errors
     ///
@@ -434,7 +436,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.send_signal(to, PeerSignal::Answer(sdp.into()))
     }
 
-    /// Send a single trickle ICE candidate to a peer (protocol v3).
+    /// Send a single trickle ICE candidate to a peer. **Protocol v3 only.**
     ///
     /// # Errors
     ///
@@ -443,7 +445,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.send_signal(to, PeerSignal::IceCandidate(candidate.into()))
     }
 
-    /// Raw escape hatch: relay an un-modeled signal shape (protocol v3).
+    /// Raw escape hatch: relay an un-modeled signal shape. **Protocol v3 only.**
     ///
     /// Still gated on a negotiated v3 session — the escape hatch bypasses the
     /// typing, not the negotiation guard.
@@ -456,7 +458,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.queue_cmd(ClientMessage::Signal { to, signal })
     }
 
-    /// Report whether a data-path transport is established (protocol v3).
+    /// Report whether a data-path transport is established. **Protocol v3 only.**
     ///
     /// See [`SignalFishClient::report_transport_status`](crate::SignalFishClient::report_transport_status).
     ///
@@ -604,12 +606,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 // missed_events, so v3 sends aren't wrongly blocked after a
                 // reconnect. Only a versioned (v3+) ProtocolInfo restores — a
                 // replayed v2 one must not silently downgrade an active session.
-                for missed in &payload.missed_events {
-                    if let ServerMessage::ProtocolInfo(info) = missed {
-                        if let Some(version) = info.protocol_version {
-                            self.state.negotiated_protocol_version = version;
-                        }
-                    }
+                if let Some(version) =
+                    crate::protocol::replayed_negotiated_version(&payload.missed_events)
+                {
+                    self.state.negotiated_protocol_version = version;
                 }
             }
             ServerMessage::SpectatorJoined(payload) => {

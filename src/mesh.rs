@@ -139,14 +139,32 @@ impl MeshSession {
             }
             // ICE pre-gather: seed the ICE servers during the lobby wait. Do not
             // create peers here — a relay-floor room may never produce a plan.
-            SignalFishEvent::RoomJoined { ice_servers, .. }
-            | SignalFishEvent::Reconnected { ice_servers, .. } => {
-                if ice_servers.is_empty() {
-                    false
-                } else {
-                    self.ice_servers = ice_servers.clone();
-                    true
+            SignalFishEvent::RoomJoined { ice_servers, .. } => self.apply_pre_gather(ice_servers),
+            // Reconnect: seed pre-gather ICE, then defensively replay any mesh
+            // events the server batched into `missed_events`. Today's server
+            // rebuilds the session by re-sending a *live* `SessionPlan` after the
+            // `Reconnected` (so `missed_events` is empty), but folding here keeps
+            // the view correct against servers that carry mesh state in
+            // `missed_events`. The fold is idempotent and a later live plan
+            // replaces the peer set wholesale.
+            SignalFishEvent::Reconnected {
+                ice_servers,
+                missed_events,
+                ..
+            } => {
+                let mut changed = self.apply_pre_gather(ice_servers);
+                for missed in missed_events {
+                    match missed {
+                        // Terminal / meta events never belong in a reconnect
+                        // replay — by definition we are back in the room.
+                        SignalFishEvent::RoomLeft
+                        | SignalFishEvent::Disconnected { .. }
+                        | SignalFishEvent::Reconnected { .. }
+                        | SignalFishEvent::RoomJoined { .. } => {}
+                        other => changed |= self.apply(other),
+                    }
                 }
+                changed
             }
             // The session is over.
             SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
@@ -159,6 +177,18 @@ impl MeshSession {
             // Every other event is irrelevant to mesh bookkeeping. (A wildcard is
             // intentional here: the tracker folds only the mesh-relevant events.)
             _ => false,
+        }
+    }
+
+    /// Fold an ICE pre-gather set (from `RoomJoined`/`Reconnected`). An empty set
+    /// preserves the existing one and an identical set is a no-op; either way it
+    /// reports `false` so `apply` only signals a real change.
+    fn apply_pre_gather(&mut self, ice_servers: &[IceServer]) -> bool {
+        if ice_servers.is_empty() || self.ice_servers.as_slice() == ice_servers {
+            false
+        } else {
+            self.ice_servers = ice_servers.to_vec();
+            true
         }
     }
 
@@ -401,6 +431,23 @@ mod tests {
     }
 
     #[test]
+    fn pre_gather_ice_reapply_identical_reports_no_change() {
+        // Re-applying RoomJoined/Reconnected with an ICE set identical to the
+        // one already held must report `changed == false` — `apply` returns true
+        // only when the view actually changes (avoids spurious redraws /
+        // connection re-evaluation on a duplicate or echoed pre-gather).
+        let mut s = MeshSession::new();
+        assert!(s.apply(&room_joined(vec![ice("stun:a")])));
+        assert!(
+            !s.apply(&room_joined(vec![ice("stun:a")])),
+            "identical pre-gather ICE must not report a change"
+        );
+        // A genuinely different set still reports a change.
+        assert!(s.apply(&room_joined(vec![ice("stun:b")])));
+        assert_eq!(s.ice_servers(), &[ice("stun:b")]);
+    }
+
+    #[test]
     fn reset_on_disconnect_and_room_left() {
         for terminal in [
             SignalFishEvent::Disconnected { reason: None },
@@ -551,5 +598,90 @@ mod tests {
             current_spectators: vec![],
             ice_servers,
         }
+    }
+
+    fn reconnected(
+        ice_servers: Vec<IceServer>,
+        missed_events: Vec<SignalFishEvent>,
+    ) -> SignalFishEvent {
+        SignalFishEvent::Reconnected {
+            room_id: uuid(0),
+            room_code: "R".into(),
+            player_id: uuid(0),
+            game_name: "g".into(),
+            max_players: 4,
+            supports_authority: false,
+            current_players: vec![],
+            is_authority: false,
+            lobby_state: crate::protocol::LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "auto".into(),
+            current_spectators: vec![],
+            ice_servers,
+            missed_events,
+        }
+    }
+
+    #[test]
+    fn reconnect_replays_missed_mesh_events_to_rebuild_view() {
+        // A server that batches mesh state into `Reconnected.missed_events`
+        // (instead of re-sending a live SessionPlan) must still rebuild the view.
+        let mut s = MeshSession::new();
+        let changed = s.apply(&reconnected(
+            vec![ice("stun:pre")],
+            vec![
+                plan(
+                    Topology::Mesh,
+                    None,
+                    vec![peer(1, true)],
+                    vec![ice("stun:plan")],
+                ),
+                SignalFishEvent::NewPeer {
+                    peer_id: uuid(2),
+                    you_initiate: false,
+                },
+            ],
+        ));
+        assert!(changed, "replaying missed mesh events changes the view");
+        assert_eq!(s.topology(), Some(Topology::Mesh));
+        assert!(s.peer(uuid(1)).is_some(), "plan peer restored");
+        assert!(s.peer(uuid(2)).is_some(), "missed NewPeer restored");
+        // The plan's ICE supersedes the pre-gather set.
+        assert_eq!(s.ice_servers(), &[ice("stun:plan")]);
+    }
+
+    #[test]
+    fn reconnect_ignores_terminal_events_in_missed_events() {
+        // Build an active mesh, then a reconnect whose missed_events contains a
+        // stray terminal event must NOT reset the freshly rebuilt session.
+        let mut s = MeshSession::new();
+        let changed = s.apply(&reconnected(
+            vec![],
+            vec![
+                plan(Topology::Mesh, None, vec![peer(1, true)], vec![]),
+                SignalFishEvent::RoomLeft,
+                SignalFishEvent::Disconnected { reason: None },
+            ],
+        ));
+        assert!(changed);
+        assert_eq!(
+            s.topology(),
+            Some(Topology::Mesh),
+            "terminal events were ignored"
+        );
+        assert!(s.peer(uuid(1)).is_some());
+    }
+
+    #[test]
+    fn reconnect_without_missed_events_is_pre_gather_only() {
+        // The common case (server re-sends a live plan; missed_events empty):
+        // the reconnect only seeds pre-gather ICE and creates no peers.
+        let mut s = MeshSession::new();
+        assert!(s.apply(&reconnected(vec![ice("stun:pre")], vec![])));
+        assert!(s.topology().is_none(), "no plan means no topology yet");
+        assert!(s.peers().is_empty());
+        assert_eq!(s.ice_servers(), &[ice("stun:pre")]);
+        // Identical reconnect ICE is a no-op.
+        assert!(!s.apply(&reconnected(vec![ice("stun:pre")], vec![])));
     }
 }

@@ -9,8 +9,34 @@
 //!
 //! - **Transport-agnostic** — implement the [`Transport`] trait for any backend
 //! - **Wire-compatible** — all protocol types match the server's v2 format exactly
+//! - **Protocol v2 relay + v3 mesh** — v3 is additive and opt-in; a default client
+//!   stays byte-identical to v2 (see [Protocol versions](#protocol-versions))
 //! - **WebSocket built-in** — default `transport-websocket` feature provides `WebSocketTransport`
 //! - **Event-driven** — receive typed `SignalFishEvent`s via a channel
+//!
+//! ## Protocol versions
+//!
+//! The SDK speaks two protocol generations, and you choose which by how you
+//! build [`SignalFishConfig`]:
+//!
+//! - **v2 — the relay floor (default).** [`SignalFishConfig::new`] advertises no
+//!   v3 capabilities, the server relays all traffic through itself, and the
+//!   `Authenticate` bytes are byte-identical to the old v2 client. This is the
+//!   *relay-floor guarantee*: opt into nothing and nothing changes.
+//! - **v3 — additive mesh (opt-in).** [`SignalFishConfig::enable_mesh`] advertises
+//!   the WebRTC/relay transports and mesh/host/relay topologies, letting the
+//!   server form a peer-to-peer session. v3 is purely additive on v2: existing
+//!   code keeps working unchanged, and the server falls back to the relay floor
+//!   whenever it cannot form a session.
+//!
+//! The negotiated version comes back in the server's `ProtocolInfo`; check it via
+//! [`SignalFishClient::negotiated_protocol_version`] /
+//! [`SignalFishClient::supports_mesh`]. v3-only sends fail fast with
+//! [`SignalFishError::ProtocolUnsupported`] until v3 is negotiated. The SDK is
+//! *signaling-only* — it bundles no WebRTC stack; with the `mesh` feature you
+//! implement the [`webrtc::WebRtcDriver`] seam (or use
+//! [`webrtc::MeshController`]) against str0m / webrtc-rs / web-sys. The highest
+//! version this SDK speaks is [`PROTOCOL_VERSION`].
 //!
 //! ## Quick Start
 //!

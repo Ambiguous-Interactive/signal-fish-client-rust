@@ -458,7 +458,9 @@ pub enum ClientMessage {
     /// member may. On success the server broadcasts `GameStarting` (and, for a
     /// negotiated v3 non-relay room, a per-recipient `SessionPlan`).
     StartGame,
-    /// Relay an opaque WebRTC signal to a single peer (protocol v3).
+    /// Relay an opaque WebRTC signal to a single peer.
+    ///
+    /// **Protocol v3 only.** Rejected on a relay-floor (v2) connection.
     ///
     /// The `signal` is forwarded verbatim by the server. It is typically a
     /// [`PeerSignal`](crate::PeerSignal) (`{"Offer"|"Answer"|"IceCandidate": …}`)
@@ -470,8 +472,9 @@ pub enum ClientMessage {
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
     },
-    /// Report whether a data-path transport to peers is currently established
-    /// (protocol v3). Informational; the server fans it out as
+    /// Report whether a data-path transport to peers is currently established.
+    ///
+    /// **Protocol v3 only.** Informational; the server fans it out as
     /// `PeerTransportStatus` and uses it for fallback decisions.
     TransportStatus {
         /// The transport being reported on.
@@ -605,7 +608,9 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         error_code: Option<ErrorCode>,
     },
-    /// An opaque WebRTC signal relayed from a peer (protocol v3).
+    /// An opaque WebRTC signal relayed from a peer.
+    ///
+    /// **Protocol v3 only.** Sent only on a v3-negotiated connection.
     ///
     /// `signal` is modeled as `serde_json::Value` (typically a
     /// [`PeerSignal`](crate::PeerSignal)) so unknown future shapes always
@@ -616,8 +621,9 @@ pub enum ServerMessage {
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
     },
-    /// A new peer to connect to after the session was finalized — a late joiner
-    /// (protocol v3).
+    /// A new peer to connect to after the session was finalized — a late joiner.
+    ///
+    /// **Protocol v3 only.** Sent only on a v3-negotiated connection.
     NewPeer {
         /// The new peer's identifier.
         peer_id: PlayerId,
@@ -625,11 +631,15 @@ pub enum ServerMessage {
         /// Server-assigned; obey verbatim.
         you_initiate: bool,
     },
-    /// Per-recipient session plan for a finalized non-relay room (protocol v3).
-    /// Boxed to reduce enum size. May be received multiple times (host
-    /// re-election / late-join); each one fully replaces the previous plan.
+    /// Per-recipient session plan for a finalized non-relay room.
+    ///
+    /// **Protocol v3 only.** Boxed to reduce enum size. May be received multiple
+    /// times (host re-election / late-join); each one fully replaces the
+    /// previous plan.
     SessionPlan(Box<SessionPlanPayload>),
-    /// A peer's data-path transport state changed (protocol v3). Informational.
+    /// A peer's data-path transport state changed. Informational.
+    ///
+    /// **Protocol v3 only.** Sent only on a v3-negotiated connection.
     PeerTransportStatus {
         /// The peer whose transport state changed.
         peer_id: PlayerId,
@@ -638,4 +648,24 @@ pub enum ServerMessage {
         /// Whether that transport is currently connected for the peer.
         connected: bool,
     },
+}
+
+/// The negotiated protocol version to restore from a reconnect's `missed_events`,
+/// if any — the last versioned (v3+) [`ProtocolInfo`](ServerMessage::ProtocolInfo)
+/// replayed in the batch.
+///
+/// A replayed v2 `ProtocolInfo` (version `None`) is ignored so it can never
+/// silently downgrade an already-negotiated v3 session; later versioned entries
+/// win over earlier ones. Shared by the async and polling clients so the two
+/// reconnect paths cannot drift apart.
+///
+/// Gated to its consumers (the async client needs `tokio-runtime`; the polling
+/// client needs `polling-client`) so it is not dead code in a build with neither.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+#[must_use]
+pub(crate) fn replayed_negotiated_version(missed_events: &[ServerMessage]) -> Option<u16> {
+    missed_events.iter().rev().find_map(|msg| match msg {
+        ServerMessage::ProtocolInfo(info) => info.protocol_version,
+        _ => None,
+    })
 }

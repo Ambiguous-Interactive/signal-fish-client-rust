@@ -48,6 +48,45 @@ pub trait WebRtcDriver {
     /// Drain the next driver output, or `None` when idle. The controller calls
     /// this in a loop until it returns `None`.
     fn poll(&mut self) -> Option<DriverEvent>;
+
+    /// Register a [`MeshWaker`] the driver signals (via [`MeshWaker::wake`]) when
+    /// it has output ready to be polled — e.g. a trickled ICE candidate or
+    /// inbound data became available *between* signaling events.
+    ///
+    /// A driver that wakes on readiness is pumped on demand, so trickle ICE and
+    /// data surface immediately instead of waiting up to one pump interval. The
+    /// default implementation ignores the waker; such drivers are still pumped on
+    /// every signaling event and on the controller's periodic timer (see
+    /// [`MeshController::with_pump_interval`]), so this is purely a latency
+    /// optimization and entirely optional to implement.
+    #[cfg(feature = "tokio-runtime")]
+    fn set_ready_waker(&mut self, _waker: MeshWaker) {}
+}
+
+/// A handle a [`WebRtcDriver`] uses to wake the [`MeshController`] when it has
+/// output ready to be polled, eliminating up to one pump-interval of latency on
+/// trickle ICE / inbound data. Obtained via [`WebRtcDriver::set_ready_waker`].
+///
+/// [`wake`](Self::wake) is cheap and safe to call from any thread and as often
+/// as the driver likes (extra wakes at worst cause a redundant, cheap poll).
+#[cfg(feature = "tokio-runtime")]
+#[derive(Clone)]
+pub struct MeshWaker(std::sync::Arc<tokio::sync::Notify>);
+
+#[cfg(feature = "tokio-runtime")]
+impl MeshWaker {
+    /// Signal that the driver has output ready; the controller will pump it on
+    /// the next loop turn (waking `recv()` if it is parked).
+    pub fn wake(&self) {
+        self.0.notify_one();
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl std::fmt::Debug for MeshWaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MeshWaker")
+    }
 }
 
 /// An output produced by a [`WebRtcDriver`], drained via [`WebRtcDriver::poll`].
@@ -114,7 +153,7 @@ mod controller {
     use tokio::sync::mpsc;
     use tracing::{debug, warn};
 
-    use super::{DriverEvent, MeshEvent, WebRtcDriver};
+    use super::{DriverEvent, MeshEvent, MeshWaker, WebRtcDriver};
     use crate::client::{SignalFishClient, SignalFishConfig};
     use crate::event::SignalFishEvent;
     use crate::mesh::MeshSession;
@@ -165,6 +204,9 @@ mod controller {
         /// transitions: 0↔1 boundaries report `TransportStatus`).
         connected_peers: Vec<PlayerId>,
         pump_interval: Duration,
+        /// Signaled by the driver (via its [`MeshWaker`]) when it has output
+        /// ready, so `recv` pumps on demand instead of waiting for the timer.
+        ready: std::sync::Arc<tokio::sync::Notify>,
     }
 
     impl<D: WebRtcDriver> MeshController<D> {
@@ -180,6 +222,13 @@ mod controller {
                 config
             };
             let (client, events) = SignalFishClient::start(transport, config);
+            // Hand the driver a waker so it can pump on demand (eliminating up to
+            // one pump-interval of trickle-ICE / data latency). Drivers that do not
+            // override `set_ready_waker` simply ignore it and fall back to the
+            // periodic timer.
+            let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+            let mut driver = driver;
+            driver.set_ready_waker(MeshWaker(std::sync::Arc::clone(&ready)));
             Self {
                 client,
                 events,
@@ -188,6 +237,7 @@ mod controller {
                 known_peers: Vec::new(),
                 connected_peers: Vec::new(),
                 pump_interval: DEFAULT_PUMP_INTERVAL,
+                ready,
             }
         }
 
@@ -230,17 +280,30 @@ mod controller {
                             None => return None,
                         }
                     }
+                    () = self.ready.notified() => {
+                        // The driver signaled it has output ready: loop back to
+                        // drain it immediately (no pump-interval latency).
+                    }
                     () = tokio::time::sleep(self.pump_interval) => {
-                        // Loop back to drain the driver for trickle ICE / data.
+                        // Periodic safety-net pump for drivers that do not wake
+                        // (or to catch readiness that raced the select).
                     }
                 }
             }
         }
 
-        /// Drive the driver in response to a signaling event (and fold the mesh
-        /// session view).
+        /// Fold the mesh session view, then perform the driver choreography for
+        /// `event`.
         fn handle_event(&mut self, event: &SignalFishEvent) {
             self.session.apply(event);
+            self.choreograph(event);
+        }
+
+        /// Drive the driver in response to a single signaling event. The mesh
+        /// session view is assumed to be already folded (by [`handle_event`], or
+        /// by the recursive `MeshSession::apply` for events replayed out of a
+        /// `Reconnected`'s `missed_events`).
+        fn choreograph(&mut self, event: &SignalFishEvent) {
             match event {
                 SignalFishEvent::SessionPlan {
                     peers, ice_servers, ..
@@ -286,18 +349,47 @@ mod controller {
                     self.mark_disconnected(*player_id);
                     self.known_peers.retain(|p| p != player_id);
                 }
-                // The session ended: tear down every peer connection.
+                // The session ended: tear down every peer connection. Route each
+                // through `mark_disconnected` so the 1->0 transport-status edge
+                // still fires a single `TransportStatus(WebRtc, false)` — matching
+                // the per-peer `PlayerLeft` path. On `Disconnected` the underlying
+                // send simply returns `NotConnected` and is harmlessly swallowed;
+                // `mark_disconnected` empties `connected_peers` as it goes.
                 SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
                     for peer in std::mem::take(&mut self.known_peers) {
                         self.driver.disconnect(peer);
+                        self.mark_disconnected(peer);
                     }
-                    self.connected_peers.clear();
                 }
-                SignalFishEvent::RoomJoined { ice_servers, .. }
-                | SignalFishEvent::Reconnected { ice_servers, .. }
-                    if !ice_servers.is_empty() =>
-                {
+                SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
                     self.driver.set_ice_servers(ice_servers);
+                }
+                // Reconnect: apply ICE pre-gather, then defensively replay any
+                // mesh events the server batched into `missed_events`. Today's
+                // server rebuilds the session by re-sending a *live* `SessionPlan`
+                // after `Reconnected` (so `missed_events` is empty), but replaying
+                // here keeps the client correct against servers that instead carry
+                // mesh state in `missed_events`. The fold is idempotent and a later
+                // live plan replaces the peer set wholesale.
+                SignalFishEvent::Reconnected {
+                    ice_servers,
+                    missed_events,
+                    ..
+                } => {
+                    if !ice_servers.is_empty() {
+                        self.driver.set_ice_servers(ice_servers);
+                    }
+                    for missed in missed_events {
+                        match missed {
+                            // Terminal / meta events never belong in a reconnect
+                            // replay — by definition we are back in the room.
+                            SignalFishEvent::RoomLeft
+                            | SignalFishEvent::Disconnected { .. }
+                            | SignalFishEvent::Reconnected { .. }
+                            | SignalFishEvent::RoomJoined { .. } => {}
+                            other => self.choreograph(other),
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -422,6 +514,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    // The docs promise `MeshController<D>` is `Send` when `D` is, so the `recv()`
+    // loop can run on a spawned task. Pin that with a compile-time assertion.
+    const _: fn() = || {
+        fn assert_send<T: Send>() {}
+        assert_send::<MeshController<SharedDriver>>();
+    };
+
     // ── A recording mock driver ─────────────────────────────────────
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,6 +537,8 @@ mod tests {
         calls: Vec<DriverCall>,
         /// Outputs to emit on subsequent `poll()` calls.
         outputs: VecDeque<DriverEvent>,
+        /// The waker handed by the controller (used by the latency test).
+        waker: Option<super::MeshWaker>,
     }
 
     impl MockDriver {
@@ -447,6 +548,9 @@ mod tests {
     }
 
     impl WebRtcDriver for MockDriver {
+        fn set_ready_waker(&mut self, waker: super::MeshWaker) {
+            self.waker = Some(waker);
+        }
         fn set_ice_servers(&mut self, servers: &[IceServer]) {
             self.calls.push(DriverCall::SetIceServers(servers.len()));
         }
@@ -502,9 +606,24 @@ mod tests {
         fn emit(&self, event: DriverEvent) {
             self.0.lock().unwrap().emit(event);
         }
+        /// Enqueue an output AND signal the controller's waker, so a parked
+        /// `recv()` pumps it immediately rather than waiting for the timer.
+        fn emit_and_wake(&self, event: DriverEvent) {
+            let waker = {
+                let mut g = self.0.lock().unwrap();
+                g.emit(event);
+                g.waker.clone()
+            };
+            if let Some(w) = waker {
+                w.wake();
+            }
+        }
     }
 
     impl WebRtcDriver for SharedDriver {
+        fn set_ready_waker(&mut self, waker: super::MeshWaker) {
+            self.0.lock().unwrap().set_ready_waker(waker);
+        }
         fn set_ice_servers(&mut self, servers: &[IceServer]) {
             self.0.lock().unwrap().set_ice_servers(servers);
         }
@@ -619,6 +738,104 @@ mod tests {
 
     fn signal_from(peer: PlayerId, signal: serde_json::Value) -> String {
         serde_json::to_string(&ServerMessage::Signal { from: peer, signal }).unwrap()
+    }
+
+    /// A `SessionPlan` over several peers with an explicit ICE-server set (use an
+    /// empty slice to model a plan that carries no ICE servers).
+    fn session_plan_multi(peers: &[(PlayerId, bool)], ice_urls: &[&str]) -> String {
+        use crate::protocol::{
+            IceServer, SessionPeer, SessionPlanPayload, Topology, TransportKind,
+        };
+        let payload = SessionPlanPayload {
+            topology: Topology::Mesh,
+            transport: TransportKind::WebRtc,
+            host: None,
+            peers: peers
+                .iter()
+                .map(|(id, initiate)| SessionPeer {
+                    player_id: *id,
+                    player_name: "P".into(),
+                    is_authority: false,
+                    initiate: *initiate,
+                })
+                .collect(),
+            ice_servers: ice_urls
+                .iter()
+                .map(|u| IceServer {
+                    urls: vec![(*u).into()],
+                    username: None,
+                    credential: None,
+                })
+                .collect(),
+            fallback: TransportKind::Relay,
+        };
+        serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload))).unwrap()
+    }
+
+    fn new_peer_msg(peer: PlayerId, you_initiate: bool) -> String {
+        format!(
+            r#"{{"type":"NewPeer","data":{{"peer_id":"{peer}","you_initiate":{you_initiate}}}}}"#
+        )
+    }
+
+    /// A `Reconnected` message carrying `missed_events` (the nested events a
+    /// server may batch in lieu of re-sending a live plan).
+    fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
+        use crate::protocol::ReconnectedPayload;
+        let payload = ReconnectedPayload {
+            room_id: uuid(0),
+            room_code: "R".into(),
+            player_id: uuid(0),
+            game_name: "g".into(),
+            max_players: 4,
+            supports_authority: false,
+            current_players: vec![],
+            is_authority: false,
+            lobby_state: crate::protocol::LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "auto".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            missed_events: missed,
+        };
+        serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
+    }
+
+    /// Pump `mesh.recv()` (draining driver output and inbound messages) until
+    /// `pred` holds over the driver's recorded calls, or a bounded number of
+    /// iterations elapse. Returns whether `pred` ultimately held.
+    async fn pump_until(
+        mesh: &mut MeshController<SharedDriver>,
+        driver: &SharedDriver,
+        pred: impl Fn(&[DriverCall]) -> bool,
+    ) -> bool {
+        for _ in 0..40 {
+            if pred(&driver.calls()) {
+                return true;
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(40), mesh.recv()).await;
+        }
+        pred(&driver.calls())
+    }
+
+    fn count_calls(driver: &SharedDriver, pred: impl Fn(&DriverCall) -> bool) -> usize {
+        driver.calls().iter().filter(|c| pred(c)).count()
+    }
+
+    /// Drive `mesh.recv()` a bounded number of times to drain all scripted
+    /// inbound messages (each parked `recv` past the script times out quickly).
+    async fn drain(mesh: &mut MeshController<SharedDriver>, iterations: usize) {
+        for _ in 0..iterations {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(20), mesh.recv()).await;
+        }
+    }
+
+    fn sent_count(sent: &Arc<Mutex<Vec<String>>>, needles: &[&str]) -> usize {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter(|m| needles.iter().all(|n| m.contains(n)))
+            .count()
     }
 
     async fn recv_until_peer_connected(
@@ -932,6 +1149,397 @@ mod tests {
             .calls()
             .iter()
             .any(|c| matches!(c, DriverCall::SetIceServers(n) if *n == 1)));
+        mesh.shutdown().await;
+    }
+
+    // ── Adversarial choreography tests (B1) ─────────────────────────
+
+    #[tokio::test]
+    async fn room_left_reports_transport_status_false_when_channel_open() {
+        // Regression for the teardown asymmetry: once a peer's channel is open
+        // (TransportStatus(true) was reported), leaving the room must route the
+        // teardown through `mark_disconnected` so the 1->0 edge still reports
+        // TransportStatus(false). Previously RoomLeft cleared `connected_peers`
+        // directly and the server was never told WebRTC went down.
+        let peer = uuid(31);
+        let driver = SharedDriver::default();
+        let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
+        let (transport, sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(peer, true))),
+            Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
+            Some(Ok(room_left)),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+
+        // Drive the handshake to an open channel (reports TransportStatus(true)).
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            recv_until_peer_connected(&mut mesh),
+        )
+        .await
+        .expect("timed out")
+        .expect("stream closed");
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            1,
+            "precondition: channel-up reports status true once"
+        );
+
+        // Now reach the queued RoomLeft.
+        pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Disconnect(peer))
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "RoomLeft with a live channel must report exactly one TransportStatus(false)"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_status_flapping_reports_only_boundary_edges() {
+        // Two answerer peers (no auto-handshake), then a hand-driven flap of
+        // Connected/Disconnected. Only the 0->1 and 1->0 boundary edges report
+        // status: two `true`s (each fresh 0->1) and one `false` (the single
+        // 1->0), never one-per-peer.
+        let a = uuid(41);
+        let b = uuid(42);
+        let driver = SharedDriver::default();
+        let (transport, sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[(a, false), (b, false)], &[]))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(a, false)) && c.contains(&DriverCall::Connect(b, false))
+        })
+        .await;
+
+        for ev in [
+            DriverEvent::Connected { peer: a },    // 0->1 : true
+            DriverEvent::Connected { peer: b },    // 1->2 : no report
+            DriverEvent::Disconnected { peer: a }, // 2->1 : no report
+            DriverEvent::Disconnected { peer: b }, // 1->0 : false
+            DriverEvent::Connected { peer: a },    // 0->1 : true
+        ] {
+            driver.emit(ev);
+        }
+        for _ in 0..30 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(15), mesh.recv()).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            2,
+            "exactly two 0->1 edges report true"
+        );
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "exactly one 1->0 edge reports false"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn replan_keeps_survivors_drops_removed_and_obeys_initiate() {
+        // Plan 1: {A(initiate), B(answer)}. Plan 2: {B(answer), C(initiate)}.
+        // A is dropped (disconnect), B survives (connected once, never dropped),
+        // C is newly connected. Every `initiate` flag is copied verbatim.
+        let a = uuid(1);
+        let b = uuid(2);
+        let c = uuid(3);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(
+                &[(a, true), (b, false)],
+                &["stun:1"],
+            ))),
+            Some(Ok(session_plan_multi(
+                &[(b, false), (c, true)],
+                &["stun:2"],
+            ))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        pump_until(&mut mesh, &driver, |c2| {
+            c2.contains(&DriverCall::Connect(c, true))
+        })
+        .await;
+
+        let calls = driver.calls();
+        assert!(
+            calls.contains(&DriverCall::Connect(a, true)),
+            "A initiate=true verbatim"
+        );
+        assert!(
+            calls.contains(&DriverCall::Connect(b, false)),
+            "B initiate=false verbatim"
+        );
+        assert!(
+            calls.contains(&DriverCall::Connect(c, true)),
+            "C initiate=true verbatim"
+        );
+        assert!(
+            calls.contains(&DriverCall::Disconnect(a)),
+            "A dropped on re-plan"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c2| matches!(c2, DriverCall::Connect(p, _) if *p == b)
+            ),
+            1,
+            "survivor B connected exactly once"
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c2| matches!(c2, DriverCall::Disconnect(p) if *p == b)
+            ),
+            0,
+            "survivor B never disconnected"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn plan_then_new_peer_for_same_peer_connects_once() {
+        // A SessionPlan names a peer, then a NewPeer arrives for the SAME peer:
+        // it must not be connected twice (idempotent on known peers).
+        let p = uuid(10);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[(p, true)], &["stun:a"]))),
+            Some(Ok(new_peer_msg(p, true))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        drain(&mut mesh, 12).await;
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c| matches!(c, DriverCall::Connect(x, _) if *x == p)
+            ),
+            1,
+            "SessionPlan + NewPeer for the same peer connects exactly once"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn repeated_new_peer_connects_once() {
+        let p = uuid(4);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(new_peer_msg(p, true))),
+            Some(Ok(new_peer_msg(p, true))),
+            Some(Ok(new_peer_msg(p, false))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        drain(&mut mesh, 12).await;
+        assert_eq!(
+            count_calls(
+                &driver,
+                |c| matches!(c, DriverCall::Connect(x, _) if *x == p)
+            ),
+            1,
+            "repeated NewPeer for the same peer connects exactly once"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unrecognized_signal_shape_is_dropped_without_panic() {
+        // A signal whose JSON shape is not a PeerSignal must be dropped (warn) and
+        // never reach the driver or panic; a subsequent valid signal still does.
+        let p = uuid(5);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(p, false))),
+            Some(Ok(signal_from(p, serde_json::json!({ "Bogus": "x" })))),
+            Some(Ok(signal_from(p, serde_json::json!({ "Offer": "ok" })))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::OnSignal(p, PeerSignal::Offer("ok".into())))
+        })
+        .await;
+        let calls = driver.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, DriverCall::OnSignal(_, PeerSignal::Offer(o)) if o == "x")),
+            "the bogus signal must be dropped"
+        );
+        assert!(calls.contains(&DriverCall::OnSignal(p, PeerSignal::Offer("ok".into()))));
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn empty_ice_in_later_plan_does_not_push_empty_set_to_driver() {
+        // A non-empty ICE set is applied once; a later plan with an EMPTY ICE list
+        // must NOT push an empty set to the driver (it preserves the prior set).
+        let p = uuid(9);
+        let q = uuid(99);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[(p, false)], &["stun:real"]))),
+            Some(Ok(session_plan_multi(&[(p, false), (q, false)], &[]))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(q, false))
+        })
+        .await;
+        assert_eq!(
+            count_calls(&driver, |c| matches!(c, DriverCall::SetIceServers(0))),
+            0,
+            "controller must not push an empty ICE set to the driver"
+        );
+        assert_eq!(
+            count_calls(&driver, |c| matches!(c, DriverCall::SetIceServers(1))),
+            1,
+            "the one non-empty ICE set is applied exactly once"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn new_peer_only_peer_is_torn_down_by_later_plan_omitting_it() {
+        // A peer that arrived only via NewPeer (never in a plan) must still be torn
+        // down by a later SessionPlan that omits it (no known/connected desync).
+        let p = uuid(15);
+        let q = uuid(16);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(new_peer_msg(p, true))),
+            Some(Ok(session_plan_multi(&[(q, true)], &["stun:a"]))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let ok = pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Disconnect(p)) && c.contains(&DriverCall::Connect(q, true))
+        })
+        .await;
+        assert!(
+            ok,
+            "a NewPeer-only peer absent from a later plan must be disconnected"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_missed_events_and_drives_driver() {
+        // A reconnect whose `missed_events` batch a SessionPlan + NewPeer (instead
+        // of the server re-sending a live plan) must still drive the driver to
+        // connect those peers — keeping the client correct across server impls.
+        use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
+        let a = uuid(51);
+        let b = uuid(52);
+        let driver = SharedDriver::default();
+        let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+            topology: Topology::Mesh,
+            transport: TransportKind::WebRtc,
+            host: None,
+            peers: vec![SessionPeer {
+                player_id: a,
+                player_name: "A".into(),
+                is_authority: false,
+                initiate: true,
+            }],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        }));
+        let new_peer = ServerMessage::NewPeer {
+            peer_id: b,
+            you_initiate: false,
+        };
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(reconnected_with_missed(vec![plan, new_peer]))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let ok = pump_until(&mut mesh, &driver, |c| {
+            c.contains(&DriverCall::Connect(a, true)) && c.contains(&DriverCall::Connect(b, false))
+        })
+        .await;
+        assert!(
+            ok,
+            "missed SessionPlan/NewPeer must drive connect with verbatim initiate flags"
+        );
+        // The replayed plan is also reflected in the session view.
+        assert_eq!(mesh.session().topology(), Some(Topology::Mesh));
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waker_surfaces_driver_output_without_waiting_for_pump() {
+        // With a deliberately huge pump interval, driver output produced while
+        // recv() is parked must still surface promptly because the driver wakes
+        // the controller via its MeshWaker (no up-to-one-pump-interval latency).
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![Some(Ok(authed()))]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone())
+                .with_pump_interval(std::time::Duration::from_secs(30));
+
+        // Drain the initial signaling events so the next recv() genuinely parks.
+        while (tokio::time::timeout(std::time::Duration::from_millis(60), mesh.recv()).await)
+            .is_ok()
+        {}
+
+        // Produce driver data AND wake from another task after recv() has parked.
+        let d2 = driver.clone();
+        let waker_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            d2.emit_and_wake(DriverEvent::Data {
+                peer: uuid(1),
+                data: vec![7],
+            });
+        });
+
+        let start = std::time::Instant::now();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), mesh.recv())
+            .await
+            .expect("recv must surface waker-signaled data well before the 30s pump");
+        let elapsed = start.elapsed();
+        waker_task.await.unwrap();
+
+        assert!(
+            matches!(got, Some(MeshEvent::Data { .. })),
+            "should surface the driver data, got {got:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "waker must surface output promptly (well under one 30s pump), took {elapsed:?}"
+        );
         mesh.shutdown().await;
     }
 }

@@ -612,7 +612,9 @@ impl SignalFishClient {
 
     // ── Mesh signaling (protocol v3) ────────────────────────────────
 
-    /// Send a typed WebRTC signal to a single peer (protocol v3).
+    /// Send a typed WebRTC signal to a single peer.
+    ///
+    /// **Protocol v3 only.** Fails fast on a relay-floor connection (see Errors).
     ///
     /// Accepts a [`PeerSignal`] or anything `Into<PeerSignal>`. Use this (or the
     /// [`send_offer`](Self::send_offer)/[`send_answer`](Self::send_answer)/
@@ -634,7 +636,8 @@ impl SignalFishClient {
         })
     }
 
-    /// Send an SDP offer to a peer (protocol v3). See [`send_signal`](Self::send_signal).
+    /// Send an SDP offer to a peer. **Protocol v3 only.**
+    /// See [`send_signal`](Self::send_signal).
     ///
     /// # Errors
     ///
@@ -643,7 +646,8 @@ impl SignalFishClient {
         self.send_signal(to, PeerSignal::Offer(sdp.into()))
     }
 
-    /// Send an SDP answer to a peer (protocol v3). See [`send_signal`](Self::send_signal).
+    /// Send an SDP answer to a peer. **Protocol v3 only.**
+    /// See [`send_signal`](Self::send_signal).
     ///
     /// # Errors
     ///
@@ -652,7 +656,7 @@ impl SignalFishClient {
         self.send_signal(to, PeerSignal::Answer(sdp.into()))
     }
 
-    /// Send a single trickle ICE candidate to a peer (protocol v3).
+    /// Send a single trickle ICE candidate to a peer. **Protocol v3 only.**
     /// See [`send_signal`](Self::send_signal).
     ///
     /// # Errors
@@ -662,8 +666,9 @@ impl SignalFishClient {
         self.send_signal(to, PeerSignal::IceCandidate(candidate.into()))
     }
 
-    /// Raw escape hatch: relay a signal whose shape the SDK does not model
-    /// (protocol v3). The `signal` value is forwarded to the peer verbatim.
+    /// Raw escape hatch: relay a signal whose shape the SDK does not model.
+    ///
+    /// **Protocol v3 only.** The `signal` value is forwarded to the peer verbatim.
     ///
     /// Like the typed helpers, this is still gated on a negotiated v3 session —
     /// the escape hatch bypasses the *typing*, not the negotiation guard.
@@ -676,8 +681,9 @@ impl SignalFishClient {
         self.send(ClientMessage::Signal { to, signal })
     }
 
-    /// Report to the server whether a data-path transport is established
-    /// (protocol v3). The server fans this out to peers as
+    /// Report to the server whether a data-path transport is established.
+    ///
+    /// **Protocol v3 only.** The server fans this out to peers as
     /// [`PeerTransportStatus`](SignalFishEvent::PeerTransportStatus) and uses it
     /// for fallback decisions. Purely informational; the relay floor stays open
     /// regardless.
@@ -955,14 +961,12 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             // top-level ProtocolInfo is already handled by its own arm.) Only a
             // versioned (v3+) ProtocolInfo restores — a replayed v2 one must not
             // silently downgrade an active v3 session.
-            for missed in &payload.missed_events {
-                if let ServerMessage::ProtocolInfo(info) = missed {
-                    if let Some(version) = info.protocol_version {
-                        state
-                            .negotiated_protocol_version
-                            .store(version, Ordering::Release);
-                    }
-                }
+            if let Some(version) =
+                crate::protocol::replayed_negotiated_version(&payload.missed_events)
+            {
+                state
+                    .negotiated_protocol_version
+                    .store(version, Ordering::Release);
             }
             debug!(
                 "state: reconnected to room {} ({})",
