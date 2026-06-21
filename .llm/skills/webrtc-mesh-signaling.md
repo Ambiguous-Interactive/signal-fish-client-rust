@@ -79,6 +79,7 @@ The SDK never bundles WebRTC; map your backend's primitives onto `WebRtcDriver`.
 
 **str0m** (sans-I/O, native; the recommended backend — matchbox's data plane is
 coupled to its own signaling and cannot consume our external signals):
+
 - Own a `str0m::Rtc` + a UDP socket per peer.
 - `connect(peer, true)`: `rtc.sdp_api()` → create offer → emit `DriverEvent::Signal{Offer}`.
 - `on_signal`: apply the remote SDP via `sdp_api`, or `rtc.add_remote_candidate` for ICE.

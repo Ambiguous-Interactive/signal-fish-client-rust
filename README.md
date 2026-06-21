@@ -280,7 +280,7 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 | `cargo deny check` | ci.yml | `cargo install cargo-deny` |
 | `cargo audit` | security-supply-chain.yml | `cargo install cargo-audit` |
 | `bash scripts/check-no-panics.sh` | no-panics.yml | (built-in) |
-| `typos` | docs-validation.yml | `cargo install typos-cli` |
+| `typos` | ci.yml | `cargo install typos-cli` |
 | `markdownlint-cli2 "**/*.md"` | docs-validation.yml | `npm install -g markdownlint-cli2` |
 | `lychee --config .lychee.toml "**/*.md"` | docs-validation.yml | `cargo install lychee` |
 | `cargo machete` | unused-deps.yml | `cargo install cargo-machete` |

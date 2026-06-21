@@ -99,7 +99,7 @@ This rule is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::ma
 
 Markdown lists must be surrounded by blank lines. If a paragraph introduces a list (for example ending with a colon), add an empty line before the first list item.
 
-This is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
+This is enforced in CI by markdownlint and, for the "blank line before a top-level list" case, by `tests/ci_config_tests.rs::markdown_policy_validation::markdown_lists_are_preceded_by_blank_lines`, which scans every lintable markdown file (not a hard-coded list).
 
 ### markdownlint: New rules in updates
 

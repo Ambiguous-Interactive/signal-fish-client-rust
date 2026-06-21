@@ -10,8 +10,8 @@
 //! Cargo.toml lints conform to project policy. If any test fails, it means
 //! CI configuration has drifted from the agreed-upon standards.
 //!
-//! All checks are synchronous filesystem reads — no network access or async
-//! runtime needed.
+//! All checks are synchronous and offline — filesystem reads plus a
+//! `git ls-files` query — with no network access or async runtime needed.
 
 use std::path::PathBuf;
 
@@ -292,7 +292,7 @@ mod config_existence {
         ),
         (
             ".typos.toml",
-            "Typos config is required for spell-checking in the docs-validation workflow.",
+            "Typos config is required for the whole-repo spell-check job in the CI workflow.",
         ),
         (
             ".lychee.toml",
@@ -677,6 +677,7 @@ mod ci_workflow_policy {
 
     const REQUIRED_JOBS: &[&str] = &[
         "fmt",
+        "spell-check",
         "clippy",
         "test",
         "msrv",
@@ -3760,60 +3761,177 @@ mod markdown_policy_validation {
         );
     }
 
-    #[test]
-    fn list_introduction_lines_require_blank_spacing_before_list_items() {
-        let cases = [
-            (
-                ".llm/skills/ci-configuration.md",
-                "Keep comments in CI shell scripts behaviorally exact:",
-            ),
-            (
-                ".llm/skills/ci-configuration.md",
-                "version and must be updated in sync:",
-            ),
-        ];
-
-        for (path, intro_line) in cases {
-            let content = read_project_file(path);
-            let lines: Vec<&str> = content.lines().collect();
-            let intro_idx = lines
-                .iter()
-                .position(|line| line.trim() == intro_line)
-                .unwrap_or_else(|| {
-                    panic!("Could not find intro line `{intro_line}` in {path}");
-                });
-
-            let blank_line = lines.get(intro_idx + 1).unwrap_or_else(|| {
-                panic!(
-                    "{path}:{line} intro line `{intro_line}` must be followed by a blank line and list items",
-                    line = intro_idx + 1
-                )
+    /// Returns every markdown file the docs-validation `markdownlint` job
+    /// lints, sourced from `git ls-files` so the set is exactly what a clean
+    /// CI checkout contains: tracked files only. `.gitignore`d build/tool
+    /// directories (`target/`, `.venv/`, `.pytest_cache/`, …) and untracked
+    /// scratch files are excluded for free, so this stays deterministic and
+    /// identical to CI with no hand-maintained ignore list to drift.
+    fn collect_lintable_markdown_files() -> Vec<PathBuf> {
+        let root = project_root();
+        // `-z` emits NUL-separated, unquoted paths, so non-ASCII filenames
+        // survive verbatim (without it, git C-quotes them and they would be
+        // silently dropped). `--cached` lists tracked files only, so the
+        // `.gitignore`d build/tool dirs (`target/`, `.venv/`, `.pytest_cache/`,
+        // …) and untracked scratch files are excluded automatically — matching
+        // exactly what markdownlint lints in a clean CI checkout, with no
+        // hand-maintained ignore list to drift out of sync.
+        let output = std::process::Command::new("git")
+            .args(["ls-files", "-z", "--cached", "*.md"])
+            .current_dir(&root)
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("Failed to run `git ls-files` in '{}': {e}", root.display())
             });
-            assert!(
-                blank_line.trim().is_empty(),
-                "{path}:{line} intro line `{intro_line}` must be followed by a blank line before list items",
-                line = intro_idx + 1
-            );
+        assert!(
+            output.status.success(),
+            "`git ls-files` failed (these repo-policy tests require a git checkout): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-            let first_non_empty_after_intro = lines
-                .iter()
-                .skip(intro_idx + 1)
-                .position(|line| !line.trim().is_empty())
-                .map(|offset| intro_idx + 1 + offset)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{path}:{line} intro line `{intro_line}` must be followed by list items",
-                        line = intro_idx + 1
-                    )
-                });
+        let mut files: Vec<PathBuf> = output
+            .stdout
+            .split(|&byte| byte == 0)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| root.join(String::from_utf8_lossy(segment).as_ref()))
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        files
+    }
 
-            assert!(
-                is_list_item_line(lines[first_non_empty_after_intro]),
-                "{path}:{line} expected first non-empty line after `{intro_line}` to be a list item, found `{found}`",
-                line = first_non_empty_after_intro + 1,
-                found = lines[first_non_empty_after_intro].trim()
-            );
+    /// True for a thematic break (`---`, `***`, `___`, or spaced forms such as
+    /// `- - -`). CommonMark renders these as a horizontal rule, not a list, so
+    /// the MD032 check must not treat them as list items.
+    fn is_thematic_break(line: &str) -> bool {
+        let marks: Vec<char> = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+        marks.len() >= 3
+            && (marks.iter().all(|&ch| ch == '-')
+                || marks.iter().all(|&ch| ch == '*')
+                || marks.iter().all(|&ch| ch == '_'))
+    }
+
+    /// True when `line` begins a list that would interrupt a preceding
+    /// paragraph. Bullets (`-`/`*`/`+`) always interrupt; an ordered marker
+    /// interrupts only when it starts at `1` (CommonMark — `3. text` directly
+    /// under a paragraph is lazy continuation, not a list). Thematic breaks are
+    /// excluded by [`is_thematic_break`].
+    fn starts_paragraph_interrupting_list(line: &str) -> bool {
+        if is_thematic_break(line) {
+            return false;
         }
+        let trimmed = line.trim_start();
+        trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || trimmed.starts_with("1. ")
+            || trimmed.starts_with("1) ")
+    }
+
+    #[test]
+    fn markdown_lists_are_preceded_by_blank_lines() {
+        // Shift-left mirror of markdownlint MD032 (blanks-around-lists) for the
+        // "blank line before a list" case, so a plain `cargo test` catches the
+        // violation locally — the exact class that reached CI when a skill file
+        // placed a list directly under an introductory paragraph.
+        //
+        // This replaces an earlier check hard-coded to two specific intro lines
+        // in a single file, which could not see violations anywhere else (and so
+        // missed the one that failed CI).
+        //
+        // Detection is intentionally limited to the unambiguous case — a
+        // TOP-LEVEL (column-0) list that interrupts a paragraph — and follows
+        // CommonMark so it never flags constructs markdownlint accepts: lines
+        // inside ``` / ~~~ fences and `<…>` HTML blocks are skipped, ordered
+        // lists interrupt only at `1.`, and thematic breaks are not lists. It
+        // does not chase nested lists or the blank-line-AFTER half of MD032;
+        // markdownlint remains the complete authority in CI.
+        let files = collect_lintable_markdown_files();
+        assert!(
+            !files.is_empty(),
+            "`git ls-files '*.md'` returned no markdown files."
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in files {
+            let relative = path
+                .strip_prefix(project_root())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()));
+            let lines: Vec<&str> = contents.lines().collect();
+
+            // A fence closes only on the same marker character that opened it;
+            // an HTML block opened by a column-0 `<` runs until the next blank
+            // line (CommonMark). List-like lines inside either are markup, not
+            // lists, so they are skipped.
+            let mut fence: Option<char> = None;
+            let mut in_html_block = false;
+
+            for (idx, line) in lines.iter().enumerate() {
+                let stripped = line.trim_start();
+
+                if stripped.starts_with("```") || stripped.starts_with("~~~") {
+                    let marker = if stripped.starts_with('~') { '~' } else { '`' };
+                    match fence {
+                        None => fence = Some(marker),
+                        Some(open) if open == marker => fence = None,
+                        Some(_) => {}
+                    }
+                    continue;
+                }
+                if fence.is_some() {
+                    continue;
+                }
+
+                if line.trim().is_empty() {
+                    in_html_block = false;
+                    continue;
+                }
+                if !line.starts_with(char::is_whitespace) && line.starts_with('<') {
+                    in_html_block = true;
+                }
+                if in_html_block {
+                    continue;
+                }
+
+                // Only a column-0 list that interrupts a paragraph is of
+                // interest; indented items are nested or continuation lines.
+                if line.starts_with(char::is_whitespace)
+                    || idx == 0
+                    || !starts_paragraph_interrupting_list(line)
+                {
+                    continue;
+                }
+
+                let prev = lines[idx - 1];
+                // A violation only when the preceding line is real paragraph
+                // content — not blank, not another list item, not indented list
+                // continuation.
+                if !prev.trim().is_empty()
+                    && !is_list_item_line(prev)
+                    && !prev.starts_with(char::is_whitespace)
+                {
+                    violations.push(format!(
+                        "{relative}:{} a top-level list starts directly under \
+                         `{}` with no blank line above it (markdownlint MD032).",
+                        idx + 1,
+                        prev.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Markdown list-spacing violations detected — add a blank line before \
+             each top-level list, including after an introductory paragraph that \
+             ends with a colon (markdownlint MD032):\n{}",
+            violations.join("\n")
+        );
     }
 }
 

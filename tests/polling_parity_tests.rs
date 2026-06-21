@@ -1,8 +1,8 @@
 //! Parity regression tests: `SignalFishPollingClient` (sync) must mirror
-//! `SignalFishClient` (async) v3 behaviour exactly.
+//! `SignalFishClient` (async) v3 behavior exactly.
 //!
 //! These drive BOTH clients through equivalent scenarios with the same scripted
-//! server messages and assert identical observable behaviour: negotiated-version
+//! server messages and assert identical observable behavior: negotiated-version
 //! tracking, `ensure_v3` guard modes, reconnect replay restoration (no v2
 //! downgrade), accessors, and relay-floor byte-identity. The polling client is a
 //! primary WASM/Godot path, so any divergence is a silent bug for those users.

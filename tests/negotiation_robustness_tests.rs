@@ -1,7 +1,7 @@
 //! Adversarial regression tests for protocol-version negotiation across
 //! reconnects (no silent downgrade of an active v3 session) and for transport
 //! robustness (send errors mid-flight, sends after disconnect, out-of-order
-//! server messages). These pin behaviours that are easy to regress and would
+//! server messages). These pin behaviors that are easy to regress and would
 //! silently break mesh sessions after a network blip.
 #![cfg(feature = "tokio-runtime")]
 #![allow(
