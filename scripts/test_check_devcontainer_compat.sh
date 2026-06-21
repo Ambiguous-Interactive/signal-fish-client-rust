@@ -97,6 +97,18 @@ _run_test() {
     fi
 }
 
+_run_mount_case() {
+    local fixture="$1"
+    local expected_exit="$2"
+    local description="$3"
+    local mounts_json="$4"
+
+    local dir="$TMPDIR_FIXTURES/$fixture"
+    mkdir -p "$dir"
+    _make_fixture "$dir" "MISSING" "$mounts_json"
+    _run_test "$dir" "$expected_exit" "$description"
+}
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 echo -e "${BOLD}${YELLOW}=== Tests: check-devcontainer-compat.sh ===${NC}"
@@ -258,33 +270,59 @@ _run_test "$D" 0 "Accepts: JSONC comments with trailing commas"
 echo ""
 echo -e "${YELLOW}Group 4: Required host-home credential bind mounts${NC}"
 
-D="$TMPDIR_FIXTURES/t30"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,type=bind,readonly"]'
-_run_test "$D" 1 "Rejects: HOME-based ~/.ssh bind mount"
+_run_mount_case \
+    "t30" \
+    1 \
+    "Rejects: HOME-based source even with neutral target" \
+    "[\"source=\${localEnv:HOME}/project-cache,target=/workspace-cache,type=bind,readonly\"]"
 
-D="$TMPDIR_FIXTURES/t31"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly"]'
-_run_test "$D" 1 "Rejects: USERPROFILE-based ~/.gitconfig bind mount"
+_run_mount_case \
+    "t31" \
+    1 \
+    "Rejects: USERPROFILE-based source even with neutral target" \
+    "[\"source=\${localEnv:USERPROFILE}/project-cache,target=/workspace-cache,type=bind,readonly\"]"
 
-D="$TMPDIR_FIXTURES/t32"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=${localEnv:HOME}${localEnv:USERPROFILE}/.gnupg,target=/home/vscode/.gnupg,type=bind,readonly"]'
-_run_test "$D" 1 "Rejects: combined home-variable ~/.gnupg bind mount"
+_run_mount_case \
+    "t32" \
+    1 \
+    "Rejects: combined home-variable source even with neutral target" \
+    "[\"source=\${localEnv:HOME}\${localEnv:USERPROFILE}/cache,target=/workspace-cache,type=bind,readonly\"]"
 
-D="$TMPDIR_FIXTURES/t33"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '[{"source":"${localEnv:HOME}/.ssh","target":"/home/vscode/.ssh","type":"bind"}]'
-_run_test "$D" 1 "Rejects: object-form host credential bind mount"
+_run_mount_case \
+    "t33" \
+    1 \
+    "Rejects: object-form host credential source with neutral target" \
+    "[{\"source\":\"\${localEnv:HOME}/.ssh\",\"target\":\"/workspace-cache\",\"type\":\"bind\"}]"
 
-D="$TMPDIR_FIXTURES/t34"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=C:\\Users\\alice\\.ssh,target=/home/vscode/.ssh,type=bind,readonly"]'
-_run_test "$D" 1 "Rejects: hard-coded Windows SSH credential bind mount"
+_run_mount_case \
+    "t34" \
+    1 \
+    "Rejects: hard-coded Windows SSH credential source with neutral target" \
+    "[\"source=C:\\\\Users\\\\alice\\\\.ssh,target=/workspace-cache,type=bind,readonly\"]"
 
-D="$TMPDIR_FIXTURES/t35"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=signal-fish-cargo-registry,target=/home/vscode/.cargo/registry,type=volume"]'
-_run_test "$D" 0 "Accepts: named cache volume"
+_run_mount_case \
+    "t35" \
+    1 \
+    "Rejects: neutral source targeting container SSH credentials" \
+    "[\"source=\${localWorkspaceFolder}/fixtures,target=/home/vscode/.ssh,type=bind\"]"
 
-D="$TMPDIR_FIXTURES/t36"; mkdir -p "$D"
-_make_fixture "$D" "MISSING" '["source=${localWorkspaceFolder}/fixtures,target=/fixtures,type=bind"]'
-_run_test "$D" 0 "Accepts: workspace-relative non-credential bind mount"
+_run_mount_case \
+    "t36" \
+    1 \
+    "Rejects: neutral source targeting root Git config" \
+    "[\"source=\${localWorkspaceFolder}/fixtures,target=/root/.gitconfig,type=bind\"]"
+
+_run_mount_case \
+    "t37" \
+    0 \
+    "Accepts: named cache volume" \
+    "[\"source=signal-fish-cargo-registry,target=/home/vscode/.cargo/registry,type=volume\"]"
+
+_run_mount_case \
+    "t38" \
+    0 \
+    "Accepts: workspace-relative non-credential bind mount" \
+    "[\"source=\${localWorkspaceFolder}/fixtures,target=/fixtures,type=bind\"]"
 
 echo ""
 

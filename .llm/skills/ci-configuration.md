@@ -12,6 +12,7 @@ Reference for CI/CD tool configuration, common pitfalls, identifier boundary mat
 | `.yamllint.yml` | yamllint | YAML | YAML lint config for GitHub Actions workflows |
 | `deny.toml` | cargo-deny | TOML | License, advisory, ban, and source policies |
 | `.markdownlint-cli2.jsonc` | markdownlint-cli2 | JSONC | Directory ignores for markdownlint |
+| `.cargo/config.toml` | cargo | TOML | Shared Cargo network retry policy for CI and local runs |
 
 ## Common Pitfalls
 

@@ -12,12 +12,12 @@
 #   (b) is an array form with a cross-platform executable (pwsh, node, python3, etc.), OR
 #   (c) is an object form where every named command is cross-platform.
 #
-# It also rejects required bind mounts from host-home credential paths
-# (~/.ssh, ~/.gitconfig, ~/.gnupg). Those mounts are fragile because the source
-# path must exist and be shared with Docker before the container can start, and
-# variables like HOME are not guaranteed on Windows. VS Code already handles Git
-# config copying and SSH agent forwarding; keep personal credential mounts in
-# local, uncommitted overrides.
+# It also rejects required bind mounts from host-home variables and credential
+# paths (~/.ssh, ~/.gitconfig, ~/.gnupg). Those mounts are fragile because the
+# source path must exist and be shared with Docker before the container can
+# start, and variables like HOME are not guaranteed on Windows. VS Code already
+# handles Git config copying and SSH agent forwarding; keep personal credential
+# mounts in local, uncommitted overrides.
 #
 # IMPORTANT: The '||' fallback pattern responds to any non-zero exit code, not
 # only 'binary not found'.  If powershell.exe runs but fails at runtime, the '||'
@@ -45,6 +45,59 @@ VIOLATIONS=0
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+_source_uses_host_home() {
+    local source="$1"
+    local marker
+    local tilde='~'
+    local -a host_home_markers=(
+        "\${localEnv:HOME}"
+        "\${localEnv:USERPROFILE}"
+        "\$HOME"
+        "%USERPROFILE%"
+    )
+
+    for marker in "${host_home_markers[@]}"; do
+        if [[ "$source" == *"$marker"* ]]; then
+            return 0
+        fi
+    done
+
+    [[ "$source" == "$tilde" || "$source" == "${tilde}/"* ]]
+}
+
+_path_uses_credential_location() {
+    local path="$1"
+    local normalized="${path//\\//}"
+
+    case "$normalized" in
+        */.ssh|*/.ssh/*|\
+        */.gnupg|*/.gnupg/*|\
+        */.gitconfig|*/.gitconfig/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+_target_is_container_credential_location() {
+    local target="$1"
+    local normalized="${target//\\//}"
+
+    case "$normalized" in
+        /home/vscode/.ssh|/home/vscode/.ssh/*|\
+        /root/.ssh|/root/.ssh/*|\
+        /home/vscode/.gnupg|/home/vscode/.gnupg/*|\
+        /root/.gnupg|/root/.gnupg/*|\
+        /home/vscode/.gitconfig|/home/vscode/.gitconfig/*|\
+        /root/.gitconfig|/root/.gitconfig/*)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
 
 echo -e "${YELLOW}=== Devcontainer cross-platform compatibility check ===${NC}"
 echo ""
@@ -539,28 +592,17 @@ else
         fi
 
         forbidden_reason=""
-        case "$source" in
-            *'${localEnv:HOME}'*|*'${localEnv:USERPROFILE}'*|'~'|'~/'*|\
-            *'$HOME'*|*'%USERPROFILE%'*)
-                forbidden_reason="required bind mount uses a host-home environment variable or ~"
-                ;;
-        esac
+        if _source_uses_host_home "$source"; then
+            forbidden_reason="required bind mount uses a host-home environment variable or ~"
+        fi
 
-        case "$source" in
-            *'/.ssh'|*'/.ssh/'*|*'\\.ssh'|*'\\.ssh\\'*|\
-            *'/.gnupg'|*'/.gnupg/'*|*'\\.gnupg'|*'\\.gnupg\\'*|\
-            *'/.gitconfig'|*'\\.gitconfig')
-                forbidden_reason="required bind mount reads host credential/config path"
-                ;;
-        esac
+        if _path_uses_credential_location "$source"; then
+            forbidden_reason="required bind mount reads host credential/config path"
+        fi
 
-        case "$target" in
-            '/home/vscode/.ssh'|'/home/vscode/.ssh/'*|'/root/.ssh'|'/root/.ssh/'*|\
-            '/home/vscode/.gnupg'|'/home/vscode/.gnupg/'*|'/root/.gnupg'|'/root/.gnupg/'*|\
-            '/home/vscode/.gitconfig'|'/root/.gitconfig')
-                forbidden_reason="required bind mount targets container credential/config path"
-                ;;
-        esac
+        if _target_is_container_credential_location "$target"; then
+            forbidden_reason="required bind mount targets container credential/config path"
+        fi
 
         if [ -n "$forbidden_reason" ]; then
             echo -e "${RED}FAIL${NC}: mounts[$index] is not cross-platform reliable."

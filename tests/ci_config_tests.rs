@@ -310,6 +310,10 @@ mod config_existence {
             ".pre-commit-config.yaml",
             "Pre-commit config ensures local developer checks match CI.",
         ),
+        (
+            ".cargo/config.toml",
+            "Cargo config keeps Cargo network behavior consistent across local and CI runs.",
+        ),
     ];
 
     #[test]
@@ -320,6 +324,35 @@ mod config_existence {
                 "Required config file '{path}' is missing. {reason}"
             );
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: cargo_network_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod cargo_network_policy {
+    use super::*;
+
+    #[test]
+    fn cargo_network_retry_is_configured_for_ci_resilience() {
+        let contents = read_project_file(".cargo/config.toml");
+        let parsed: toml::Value =
+            toml::from_str(&contents).expect(".cargo/config.toml must be valid TOML");
+
+        let retry = parsed
+            .get("net")
+            .and_then(|net| net.get("retry"))
+            .and_then(toml::Value::as_integer)
+            .expect(".cargo/config.toml must set [net].retry");
+
+        assert!(
+            (5..=20).contains(&retry),
+            ".cargo/config.toml must set [net].retry between 5 and 20. \
+             The Cargo default is 3, which is too brittle for transient crates.io \
+             EOFs during lockfile generation; values above 20 make real outages \
+             slow to diagnose. Current value: {retry}"
+        );
     }
 }
 
