@@ -48,11 +48,11 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.8.4
 
-      - name: Generate lockfile
-        run: cargo generate-lockfile
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Generate lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Run tests with coverage instrumentation
         run: cargo llvm-cov --all-features --no-report

@@ -17,7 +17,7 @@ CI before it reaches the published site.
 The rule is deliberately simple and robust: the text following an admonition /
 details marker must contain exactly zero or two double quotes. Zero = no title;
 two = a single well-formed `"..."` title. Any other count is an embedded or
-unbalanced quote that will mis-render. Backticks (inline code such as
+unbalanced quote that will render incorrectly. Backticks (inline code such as
 `!!! tip "the `?` operator"`) are fine — only double quotes delimit the title.
 
 Fenced code blocks are skipped: an admonition shown *inside* a ```` ```markdown ````

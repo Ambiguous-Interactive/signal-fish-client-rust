@@ -24,7 +24,7 @@ _SPEC.loader.exec_module(check)
 
 # (name, markdown, should_be_flagged)
 CASES: list[tuple[str, str, bool]] = [
-    # ── RED: embedded / unbalanced quotes that mis-render ──────────────
+    # ── RED: embedded / unbalanced quotes that render incorrectly ──────
     (
         "embedded JSON envelope (the real Copilot bug)",
         '!!! warning "External tagging, not the `{ "type": ..., "data": ... }` envelope"',

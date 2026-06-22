@@ -289,14 +289,19 @@ if ! command -v cargo-audit &>/dev/null; then
     echo "  Install: cargo install cargo-audit"
     PHASE_RESULTS[7]="SKIP"
 else
+    LOCKFILE_READY=true
     # Ensure a lockfile exists (library crate may not commit Cargo.lock)
     if [ ! -f Cargo.lock ]; then
-        cargo generate-lockfile 2>&1
+        if ! "$SCRIPT_DIR/cargo-retry.sh" generate-lockfile 2>&1; then
+            echo -e "${RED}Phase 7: FAIL (could not generate Cargo.lock)${NC}"
+            mark_phase_fail 7
+            LOCKFILE_READY=false
+        fi
     fi
-    if cargo audit 2>&1; then
+    if [ "$LOCKFILE_READY" = true ] && cargo audit 2>&1; then
         echo -e "${GREEN}Phase 7: PASS${NC}"
         PHASE_RESULTS[7]="PASS"
-    else
+    elif [ "$LOCKFILE_READY" = true ]; then
         echo -e "${RED}Phase 7: FAIL${NC}"
         mark_phase_fail 7
     fi

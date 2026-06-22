@@ -221,15 +221,15 @@ A common MSRV breakage pattern: a transitive dependency publishes a new version 
 - `getrandom 0.4.1` requires `edition = "2024"` (Rust 1.85.0+)
 - The crate itself uses `edition = "2021"` but cannot build on older Rust
 
-**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
+**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Restore the Cargo cache before generating the ephemeral lockfile, then use `scripts/cargo-retry.sh generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
   with:
     toolchain: 1.85.0
-- run: cargo generate-lockfile
-- run: cargo build --locked --all-features
-- run: cargo test --locked --all-features
+- uses: Swatinem/rust-cache@v2.9.1
+- run: bash scripts/cargo-retry.sh generate-lockfile
+- run: cargo build --locked --all-features && cargo test --locked --all-features
 ```
 
 ### MSRV workflow incident: dtolnay ref vs explicit toolchain

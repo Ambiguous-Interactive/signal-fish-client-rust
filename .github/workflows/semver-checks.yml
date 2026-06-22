@@ -62,7 +62,7 @@ jobs:
           tool: cargo-semver-checks@0.46.0
 
       - name: Generate lockfile
-        run: cargo generate-lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Check if package exists on base branch
         id: check-base-package
@@ -87,7 +87,13 @@ jobs:
         id: check-published
         if: github.event_name == 'push'
         run: |
-          if CARGO_TERM_COLOR=never cargo search signal-fish-client --limit 1 2>/dev/null | grep -q '^signal-fish-client '; then
+          if ! search_output="$(CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search signal-fish-client --limit 1 2>&1)"; then
+            echo "::error::Could not query crates.io for signal-fish-client."
+            printf '%s\n' "$search_output"
+            exit 1
+          fi
+
+          if printf '%s\n' "$search_output" | grep -q '^signal-fish-client '; then
             echo "published=true" >> "$GITHUB_OUTPUT"
           else
             echo "published=false" >> "$GITHUB_OUTPUT"

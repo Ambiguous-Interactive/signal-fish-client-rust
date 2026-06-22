@@ -334,6 +334,137 @@ mod config_existence {
 mod cargo_network_policy {
     use super::*;
 
+    #[cfg(all(unix, not(miri)))]
+    fn make_fake_cargo_bin(test_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "signal-fish-client-{test_name}-{}-{unique}",
+            std::process::id()
+        ));
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to create fake Cargo bin directory '{}': {e}",
+                bin_dir.display()
+            )
+        });
+
+        let fake_cargo = bin_dir.join("cargo");
+        std::fs::write(
+            &fake_cargo,
+            r#"#!/usr/bin/env bash
+set -u
+
+count=1
+if [ -n "${FAKE_CARGO_COUNT_FILE:-}" ]; then
+    count=0
+    if [ -f "$FAKE_CARGO_COUNT_FILE" ]; then
+        count="$(cat "$FAKE_CARGO_COUNT_FILE")"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$FAKE_CARGO_COUNT_FILE"
+fi
+
+case "${FAKE_CARGO_MODE:-always-fail}" in
+    always-fail)
+        exit "${FAKE_CARGO_EXIT:-37}"
+        ;;
+    fail-then-success)
+        if [ "$count" -lt "${FAKE_CARGO_SUCCESS_AT:-2}" ]; then
+            exit "${FAKE_CARGO_EXIT:-37}"
+        fi
+        printf 'fake cargo success on attempt %s\n' "$count"
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+"#,
+        )
+        .unwrap_or_else(|e| panic!("Failed to write '{}': {e}", fake_cargo.display()));
+
+        let mut permissions = std::fs::metadata(&fake_cargo)
+            .unwrap_or_else(|e| panic!("Failed to stat '{}': {e}", fake_cargo.display()))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_cargo, permissions).unwrap_or_else(|e| {
+            panic!(
+                "Failed to make fake Cargo executable '{}': {e}",
+                fake_cargo.display()
+            )
+        });
+
+        (dir, bin_dir)
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_command(fake_bin_dir: &std::path::Path) -> std::process::Command {
+        let mut paths = vec![fake_bin_dir.to_path_buf()];
+        if let Some(existing_path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing_path));
+        }
+        let path = std::env::join_paths(paths).expect("test PATH must be joinable");
+
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg(project_root().join("scripts/cargo-retry.sh"))
+            .env("PATH", path)
+            .env("CARGO_RETRY_DELAY_SECONDS", "0");
+        command
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn read_attempt_count(path: &std::path::Path) -> u32 {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("Failed to read attempt count '{}': {e}", path.display()))
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| {
+                panic!("Attempt count in '{}' must be numeric: {e}", path.display())
+            })
+    }
+
+    fn workflow_job_blocks(contents: &str) -> Vec<(String, String)> {
+        let mut jobs_started = false;
+        let mut current_name: Option<String> = None;
+        let mut current_lines: Vec<&str> = Vec::new();
+        let mut blocks = Vec::new();
+
+        for line in contents.lines() {
+            if line.trim_end() == "jobs:" {
+                jobs_started = true;
+                continue;
+            }
+            if !jobs_started {
+                continue;
+            }
+
+            let is_job_header = line.starts_with("  ")
+                && !line.starts_with("    ")
+                && line.trim_end().ends_with(':');
+            if is_job_header {
+                if let Some(name) = current_name.take() {
+                    blocks.push((name, current_lines.join("\n")));
+                    current_lines.clear();
+                }
+                current_name = Some(line.trim().trim_end_matches(':').to_string());
+            } else if current_name.is_some() {
+                current_lines.push(line);
+            }
+        }
+
+        if let Some(name) = current_name {
+            blocks.push((name, current_lines.join("\n")));
+        }
+
+        blocks
+    }
+
     #[test]
     fn cargo_network_retry_is_configured_for_ci_resilience() {
         let contents = read_project_file(".cargo/config.toml");
@@ -352,6 +483,160 @@ mod cargo_network_policy {
              The Cargo default is 3, which is too brittle for transient crates.io \
              EOFs during lockfile generation; values above 20 make real outages \
              slow to diagnose. Current value: {retry}"
+        );
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_preserves_final_failure_status() {
+        let (temp_dir, fake_bin_dir) = make_fake_cargo_bin("retry-final-failure");
+        let count_file = temp_dir.join("attempts");
+
+        let output = cargo_retry_command(&fake_bin_dir)
+            .arg("generate-lockfile")
+            .env("CARGO_RETRY_ATTEMPTS", "2")
+            .env("FAKE_CARGO_MODE", "always-fail")
+            .env("FAKE_CARGO_EXIT", "37")
+            .env("FAKE_CARGO_COUNT_FILE", &count_file)
+            .output()
+            .expect("cargo retry wrapper must execute under bash");
+
+        assert_eq!(
+            output.status.code(),
+            Some(37),
+            "scripts/cargo-retry.sh must preserve the final Cargo failure status.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            read_attempt_count(&count_file),
+            2,
+            "wrapper must stop after the configured attempt count"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed after 2 attempt(s); exit code 37"),
+            "final failure diagnostic should include attempts and exit code.\nstderr:\n{stderr}"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_succeeds_after_transient_failure() {
+        let (temp_dir, fake_bin_dir) = make_fake_cargo_bin("retry-transient-success");
+        let count_file = temp_dir.join("attempts");
+
+        let output = cargo_retry_command(&fake_bin_dir)
+            .arg("generate-lockfile")
+            .env("CARGO_RETRY_ATTEMPTS", "3")
+            .env("FAKE_CARGO_MODE", "fail-then-success")
+            .env("FAKE_CARGO_SUCCESS_AT", "2")
+            .env("FAKE_CARGO_EXIT", "37")
+            .env("FAKE_CARGO_COUNT_FILE", &count_file)
+            .output()
+            .expect("cargo retry wrapper must execute under bash");
+
+        assert!(
+            output.status.success(),
+            "scripts/cargo-retry.sh should return success once Cargo succeeds.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            read_attempt_count(&count_file),
+            2,
+            "wrapper should stop retrying as soon as Cargo succeeds"
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("fake cargo success on attempt 2"),
+            "successful Cargo stdout should be preserved.\nstdout:\n{stdout}"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn workflows_use_retry_wrapper_for_lockfile_generation() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (line_num, line) in contents.lines().enumerate() {
+                if line.contains("generate-lockfile")
+                    && !line.contains("scripts/cargo-retry.sh generate-lockfile")
+                {
+                    violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Workflow lockfile generation must use scripts/cargo-retry.sh so \
+             transient crates.io sparse-index EOFs do not fail CI immediately.\n\
+             Violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn workflows_restore_cargo_cache_before_generating_lockfiles() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (job_name, job_block) in workflow_job_blocks(&contents) {
+                let Some(lockfile_pos) = job_block.find("generate-lockfile") else {
+                    continue;
+                };
+                match job_block.find("Swatinem/rust-cache@") {
+                    Some(cache_pos) if cache_pos < lockfile_pos => {}
+                    Some(_) => violations.push(format!(
+                        "{workflow_path} job '{job_name}' generates a lockfile before \
+                         restoring the Cargo cache."
+                    )),
+                    None => violations.push(format!(
+                        "{workflow_path} job '{job_name}' generates a lockfile without \
+                         restoring the Cargo cache first."
+                    )),
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Jobs that generate ephemeral Cargo.lock files must restore the \
+             Cargo registry cache first. This makes CI faster and reduces \
+             exposure to transient crates.io fetch failures.\nViolations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn workflows_use_retry_wrapper_for_crates_io_searches() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (line_num, line) in contents.lines().enumerate() {
+                if line.contains("cargo search") && !line.contains("scripts/cargo-retry.sh search")
+                {
+                    violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Workflow crates.io searches must use scripts/cargo-retry.sh so \
+             transient registry query failures do not masquerade as package \
+             publication state.\nViolations:\n{}",
+            violations.join("\n")
         );
     }
 }
@@ -379,6 +664,10 @@ mod script_existence {
         (
             "scripts/check-workflows.sh",
             "The workflow check script validates CI configuration locally.",
+        ),
+        (
+            "scripts/cargo-retry.sh",
+            "The Cargo retry wrapper hardens CI jobs that touch crates.io.",
         ),
         (
             "scripts/extract-rust-snippets.sh",

@@ -88,7 +88,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Generate lockfile
-        run: cargo generate-lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-udeps
         uses: taiki-e/install-action@v2.81.11
