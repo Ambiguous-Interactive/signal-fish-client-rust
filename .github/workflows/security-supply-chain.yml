@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -58,7 +58,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.81.11
+        uses: taiki-e/install-action@v2.82.2
         with:
           tool: cargo-audit@0.22.1
 
@@ -79,7 +79,7 @@ jobs:
     if: github.event_name == 'schedule'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2.0.20
@@ -96,7 +96,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -108,7 +108,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2.81.11
+        uses: taiki-e/install-action@v2.82.2
         with:
           tool: cargo-cyclonedx@0.5.7
 

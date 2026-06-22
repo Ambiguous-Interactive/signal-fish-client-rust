@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Set up Go
         uses: actions/setup-go@v6.4.0
@@ -71,7 +71,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Install yamllint
         run: pip install 'yamllint>=1.35,<2'
@@ -88,7 +88,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Run shellcheck
         run: shellcheck scripts/*.sh .devcontainer/scripts/*.sh
@@ -102,7 +102,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Validate devcontainer cross-platform compatibility
         run: bash scripts/check-devcontainer-compat.sh

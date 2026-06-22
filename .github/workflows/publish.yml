@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.0
 
       - name: Validate release_version format
         if: github.event_name == 'workflow_dispatch'
@@ -188,7 +188,7 @@ jobs:
           printf '%s\n' "$CHANGELOG_CONTENT" > "$RUNNER_TEMP/release_notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@v3.0.1
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
           name: ${{ steps.get_version.outputs.tag }}
