@@ -299,6 +299,26 @@ pub fn reconnected_with_protocol_info_json(protocol_version: Option<u16>) -> Str
         .expect("reconnected_with_protocol_info_json serialization")
 }
 
+/// Wait until the mock transport records at least `expected_len` outgoing
+/// messages. This avoids fixed sleeps when testing queued async sends.
+pub async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if sent.lock().unwrap().len() >= expected_len {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out waiting for {expected_len} sent message(s); got {}",
+            sent.lock().unwrap().len()
+        )
+    });
+}
+
 /// Returns the JSON for a `SessionPlan` (mesh + webrtc) naming a single peer.
 pub fn session_plan_json(peer_id: PlayerId, initiate: bool) -> String {
     let payload = SessionPlanPayload {

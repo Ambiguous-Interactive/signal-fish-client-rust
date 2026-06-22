@@ -125,6 +125,24 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }
 
+async fn wait_for_sent_len(mock: &SharedMock, expected_len: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if mock.sent.lock().unwrap().len() >= expected_len {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out waiting for {expected_len} sent message(s); got {}",
+            mock.sent.lock().unwrap().len()
+        )
+    });
+}
+
 // ── PARITY 1: relay-floor Authenticate byte-identity ─────────────────
 
 #[tokio::test]
@@ -132,7 +150,7 @@ async fn parity_relay_floor_authenticate_is_byte_identical() {
     let async_mock = SharedMock::new(vec![]);
     let (_client, _events) =
         SignalFishClient::start(async_mock.clone(), SignalFishConfig::new("app"));
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&async_mock, 1).await;
     let async_sent = async_mock.sent.lock().unwrap().clone();
 
     let poll_mock = SharedMock::new(vec![]);
@@ -296,7 +314,7 @@ async fn parity_enable_mesh_authenticate_is_byte_identical() {
         async_mock.clone(),
         SignalFishConfig::new("app").enable_mesh(),
     );
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&async_mock, 1).await;
     let async_sent = async_mock.sent.lock().unwrap().clone();
 
     let poll_mock = SharedMock::new(vec![]);

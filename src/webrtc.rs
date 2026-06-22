@@ -892,6 +892,25 @@ mod tests {
             .count()
     }
 
+    async fn wait_for_sent_count(
+        sent: &Arc<Mutex<Vec<String>>>,
+        needles: &[&str],
+        expected: usize,
+    ) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while sent_count(sent, needles) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {expected} sent message(s) containing {needles:?}; got {}",
+                sent_count(sent, needles)
+            )
+        });
+    }
+
     async fn recv_until_peer_connected(
         mesh: &mut MeshController<SharedDriver>,
     ) -> Option<PlayerId> {
@@ -930,7 +949,6 @@ mod tests {
         .expect("stream closed");
         assert_eq!(connected, peer);
 
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         let calls = driver.calls();
         // Obeyed the server's `initiate` flag and applied the plan's ICE servers.
         assert!(calls.contains(&DriverCall::Connect(peer, true)));
@@ -946,6 +964,8 @@ mod tests {
         // Relayed the driver's local offer to the server, and reported WebRTC
         // transport up once the channel opened. (Compute the booleans before the
         // await so no lock guard is held across it.)
+        wait_for_sent_count(&sent, &["\"Signal\"", "local-sdp"], 1).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 1).await;
         let relayed_offer = sent
             .lock()
             .unwrap()
@@ -994,9 +1014,8 @@ mod tests {
             peer,
             PeerSignal::Offer("remote-offer".into())
         )));
-        // Relayed our answer to the server (allow the client's transport loop to
-        // flush the queued Signal first).
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        // Relayed our answer to the server.
+        wait_for_sent_count(&sent, &["\"Signal\"", "local-answer"], 1).await;
         assert!(sent
             .lock()
             .unwrap()
@@ -1120,7 +1139,7 @@ mod tests {
         }
         assert!(got, "PeerDisconnected should surface");
         // The last peer closing reports WebRTC transport down (1→0 transition).
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         let reported_false =
             sent.lock().unwrap().iter().any(|m| {
                 m.contains("TransportStatus") && m.contains("webrtc") && m.contains("false")
@@ -1236,7 +1255,7 @@ mod tests {
         .await
         .expect("timed out")
         .expect("stream closed");
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
             1,
@@ -1248,7 +1267,7 @@ mod tests {
             c.contains(&DriverCall::Disconnect(peer))
         })
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
             1,
@@ -1290,7 +1309,8 @@ mod tests {
         for _ in 0..30 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(15), mesh.recv()).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 2).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
             2,
@@ -1545,7 +1565,7 @@ mod tests {
         .await
         .expect("timed out")
         .expect("stream closed");
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
             1,
@@ -1558,7 +1578,7 @@ mod tests {
             c.contains(&DriverCall::Connect(p, false))
         })
         .await;
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         let calls = driver.calls();
         assert!(
             calls.contains(&DriverCall::Disconnect(p)),

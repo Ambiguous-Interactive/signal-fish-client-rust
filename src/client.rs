@@ -1124,6 +1124,24 @@ mod tests {
 
     // ── Helper ──────────────────────────────────────────────────────
 
+    async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if sent.lock().unwrap().len() >= expected_len {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {expected_len} sent message(s); got {}",
+                sent.lock().unwrap().len()
+            )
+        });
+    }
+
     fn authenticated_json() -> String {
         serde_json::to_string(&ServerMessage::Authenticated {
             app_name: "test-app".into(),
@@ -1272,8 +1290,7 @@ mod tests {
         let params = JoinRoomParams::new("my-game", "Alice").with_max_players(4);
         client.join_room(params).unwrap();
 
-        // Give the loop a moment to process.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -1346,7 +1363,7 @@ mod tests {
         let _ = events.recv().await; // Authenticated
         client.ping().unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -1634,7 +1651,7 @@ mod tests {
         let _ = events.recv().await; // Authenticated
         client.leave_room().unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -1656,7 +1673,7 @@ mod tests {
         let _ = events.recv().await; // Authenticated
         client.set_ready().unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -1822,7 +1839,7 @@ mod tests {
         let data = serde_json::json!({ "action": "move", "x": 10, "y": 20 });
         client.send_game_data(data.clone()).unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -1857,7 +1874,7 @@ mod tests {
             .reconnect(player_id, room_id, "tok123".into())
             .unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_sent_len(&sent, 2).await;
 
         {
             let messages = sent.lock().unwrap();

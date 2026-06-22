@@ -289,7 +289,8 @@ Admonition/details titles are `"`-delimited (`!!! warning "Title"`), so a litera
 inside one (e.g. an embedded `{ "type": ... }` envelope) closes it early and leaks raw
 text — `mkdocs build --strict` misses it. Use backticks or drop the inner quotes;
 `scripts/check-admonitions.py` (fence-aware; pre-commit + `check-docs-rendering.sh`,
-tested by `test_check_admonitions.py`) enforces 0-or-2 `"` per opener. Relatedly, give a
+tested by `test_check_admonitions.py`) enforces 0-or-2 `"` per opener. Plain-python
+validation entrypoints should avoid PEP 585/604 annotations (`list[str]`, `Path | None`) so `python3` on older LTS systems can import them. Relatedly, give a
 conversion's observable **contract**, not its mechanism (`via unwrap_or(Null)` rots) — see [serde-patterns](serde-patterns.md).
 
 ## Documentation Drift Validation

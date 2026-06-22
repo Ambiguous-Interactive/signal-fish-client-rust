@@ -30,7 +30,8 @@ use common::{
     authenticated_json, authority_response_json, error_json, game_data_binary_json, game_data_json,
     new_peer_json, peer_transport_status_json, player_left_json, pong_json, protocol_info_json,
     reconnected_json, reconnected_with_protocol_info_json, room_joined_json, room_left_json,
-    session_plan_json, signal_json, spectator_joined_json, spectator_left_json, MockTransport,
+    session_plan_json, signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len,
+    MockTransport,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -242,7 +243,7 @@ async fn reconnection_flow_updates_state() {
     assert_eq!(client.current_player_id().await, Some(pid));
 
     // Verify the Reconnect message was sent.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     {
         let messages = sent.lock().unwrap();
         // The reconnect message might be any position after authenticate.
@@ -339,7 +340,7 @@ async fn authority_request_granted() {
     }
 
     // Verify the AuthorityRequest message was sent.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     {
         let messages = sent.lock().unwrap();
         let found = messages.iter().any(|m| {
@@ -404,7 +405,7 @@ async fn provide_connection_info_sends_correct_message() {
         .provide_connection_info(conn_info)
         .expect("provide_connection_info");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -455,7 +456,7 @@ async fn provide_relay_connection_info() {
         .provide_connection_info(conn_info)
         .expect("provide_connection_info");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -505,7 +506,7 @@ async fn join_as_spectator_sends_correct_message() {
         .join_as_spectator("game1".into(), "CODE1".into(), "Viewer".into())
         .expect("join_as_spectator");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -540,7 +541,7 @@ async fn leave_spectator_sends_correct_message() {
 
     client.leave_spectator().expect("leave_spectator");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -660,9 +661,6 @@ async fn operations_fail_after_disconnect() {
     // Wait for Disconnected.
     let _ev = events.recv().await;
 
-    // Give the loop time to update the connected flag.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
     let result = client.ping();
     assert!(
         matches!(result, Err(SignalFishError::NotConnected)),
@@ -749,7 +747,7 @@ async fn send_game_data_produces_correct_json() {
     let data = serde_json::json!({"type": "chat", "msg": "hello"});
     client.send_game_data(data.clone()).expect("send_game_data");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -782,7 +780,7 @@ async fn set_ready_sends_player_ready_message() {
 
     client.set_ready().expect("set_ready");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -809,7 +807,7 @@ async fn ping_and_pong_flow() {
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::Pong));
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     {
         let messages = sent.lock().unwrap();
         let found = messages.iter().any(|m| {
@@ -842,7 +840,7 @@ async fn join_room_with_all_options_sends_correct_message() {
 
     client.join_room(params).expect("join_room");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -926,7 +924,7 @@ async fn multiple_sequential_operations() {
     assert!(matches!(ev, SignalFishEvent::RoomLeft));
 
     // Verify all expected messages were sent.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 5).await;
     {
         let messages = sent.lock().unwrap();
         // Should have: Authenticate, JoinRoom, GameData, Ping, LeaveRoom
@@ -1392,7 +1390,7 @@ async fn leave_room_sends_leave_room_message() {
 
     client.leave_room().expect("leave_room");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -1531,7 +1529,7 @@ async fn start_game_sends_start_game_message() {
     drain_until_authenticated(&mut events).await;
 
     client.start_game().expect("start_game");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     assert!(sent_messages(&sent)
         .iter()
@@ -1550,7 +1548,7 @@ async fn start_game_available_on_relay_floor() {
     client
         .start_game()
         .expect("start_game must work on the relay floor");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     assert!(sent_messages(&sent)
         .iter()
         .any(|m| matches!(m, ClientMessage::StartGame)));
@@ -1582,7 +1580,6 @@ async fn send_signal_before_v3_returns_protocol_unsupported() {
         Err(SignalFishError::ProtocolUnsupported { .. })
     ));
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     // No v3 message ever reached the wire.
     assert!(!sent_messages(&sent).iter().any(|m| matches!(
         m,
@@ -1603,7 +1600,7 @@ async fn send_signal_after_v3_negotiation_is_sent() {
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
     client.send_offer(peer, "the-sdp").expect("send_offer");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
 
     let signal = sent_messages(&sent).into_iter().find_map(|m| match m {
         ClientMessage::Signal { to, signal } if to == peer => Some(signal),
@@ -1625,7 +1622,7 @@ async fn report_transport_status_after_v3_is_sent() {
     client
         .report_transport_status(TransportKind::WebRtc, true)
         .expect("report_transport_status");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     assert!(sent_messages(&sent).iter().any(|m| matches!(
         m,
         ClientMessage::TransportStatus {
@@ -1774,7 +1771,6 @@ async fn send_signal_before_authentication_is_pre_negotiation() {
         }
     ));
     assert!(!client.supports_mesh());
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     assert!(sent_messages(&sent)
         .iter()
         .all(|m| !matches!(m, ClientMessage::Signal { .. })));
@@ -1830,7 +1826,7 @@ async fn reconnect_restores_negotiated_version_from_missed_events() {
     client
         .send_offer(peer, "sdp")
         .expect("send_offer after reconnect");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 2).await;
     assert!(sent_messages(&sent)
         .iter()
         .any(|m| matches!(m, ClientMessage::Signal { .. })));
@@ -1871,7 +1867,7 @@ async fn send_answer_ice_and_raw_signal_wire_shapes() {
     client
         .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
         .expect("send_raw_signal");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_sent_len(&sent, 4).await;
 
     let signals: Vec<serde_json::Value> = sent_messages(&sent)
         .into_iter()

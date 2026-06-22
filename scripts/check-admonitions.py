@@ -36,11 +36,10 @@ the only tree MkDocs renders. Pass explicit files or directories to scan others.
 Exit code 0 = clean, 1 = malformed titles found.
 """
 
-from __future__ import annotations
-
 import re
 import sys
 from pathlib import Path
+from typing import List, Optional, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,14 +61,14 @@ ADMONITION_MARKERS = ("!!!", "???")
 _FENCE_RE = re.compile(r"^[ \t]*(?P<run>`{3,}|~{3,})(?P<info>.*)$")
 
 
-def admonition_quote_errors(text: str, path: str) -> list[str]:
+def admonition_quote_errors(text: str, path: str) -> List[str]:
     """Return human-readable errors for malformed admonition titles in `text`.
 
     Fence-aware: lines inside a fenced code block are ignored so documented
     *example* admonitions never trip the check.
     """
-    errors: list[str] = []
-    open_fence: tuple[str, int] | None = None  # (char, run length) when inside a fence
+    errors: List[str] = []
+    open_fence: Optional[Tuple[str, int]] = None  # (char, run length) when inside a fence
     for lineno, line in enumerate(text.splitlines(), start=1):
         fence = _FENCE_RE.match(line)
         if fence is not None:
@@ -109,12 +108,12 @@ def admonition_quote_errors(text: str, path: str) -> list[str]:
     return errors
 
 
-def iter_markdown_files(roots: list[Path]) -> list[Path]:
+def iter_markdown_files(roots: List[Path]) -> List[Path]:
     """Expand `roots` (files or directories) into a sorted list of .md files."""
-    files: list[Path] = []
-    seen: set[Path] = set()
+    files: List[Path] = []
+    seen: Set[Path] = set()
     for root in roots:
-        candidates: list[Path]
+        candidates: List[Path]
         if root.is_file():
             candidates = [root] if root.suffix == ".md" else []
         elif root.is_dir():
@@ -133,15 +132,15 @@ def iter_markdown_files(roots: list[Path]) -> list[Path]:
     return files
 
 
-def resolve_roots(args: list[str]) -> list[Path]:
+def resolve_roots(args: List[str]) -> List[Path]:
     if args:
         return [Path(a) for a in args]
     return [REPO_ROOT / r for r in DEFAULT_ROOTS]
 
 
-def main(argv: list[str]) -> int:
+def main(argv: List[str]) -> int:
     files = iter_markdown_files(resolve_roots(argv))
-    all_errors: list[str] = []
+    all_errors: List[str] = []
     for path in files:
         try:
             text = path.read_text(encoding="utf-8")

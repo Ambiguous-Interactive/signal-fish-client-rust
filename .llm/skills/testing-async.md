@@ -119,13 +119,16 @@ async fn test_room_join() {
 
 ## Verifying Outgoing Messages
 
-Messages are recorded in `sent` in the order they are dispatched.
-`messages[0]` is always the `Authenticate` message sent automatically on start.
+Messages are recorded in `sent`; `messages[0]` is the automatic `Authenticate`.
 
 ```rust
-// Give the transport loop time to process the queued command
-tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+tokio::time::timeout(std::time::Duration::from_secs(1), async {
+    while sent.lock().unwrap().len() < 2 {
+        tokio::task::yield_now().await;
+    }
+})
+.await
+.expect("queued command should be sent promptly");
 let messages = sent.lock().unwrap();
 let join_msg: ClientMessage = serde_json::from_str(&messages[1]).unwrap();
 if let ClientMessage::JoinRoom { game_name, player_name, .. } = join_msg {
@@ -211,8 +214,7 @@ cargo test --test client_tests --all-features
 
 - All tests use the default `current_thread` runtime (deterministic ordering)
 - Avoid `tokio::time::sleep` in tests where possible; prefer scripted responses
-- If timing is required, use small sleeps (50ms) to allow the transport loop
-  to process queued commands — see the pattern in `client_tests.rs`
+- For outbound mock sends, wait for the mock's `sent` buffer to reach the expected length with a bounded timeout; fixed sleeps are CI-flaky.
 - `std::future::pending()` in `MockTransport::recv`: this future **never
   wakes** (it registers no waker). The tokio task stays alive because the
   runtime keeps the task until `client.shutdown()` aborts it. Each call to

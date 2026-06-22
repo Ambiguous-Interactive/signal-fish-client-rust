@@ -15,6 +15,7 @@ import subprocess
 import sys
 import re
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 MAX_LINES = 300
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -23,7 +24,7 @@ SKILLS_DIR = LLM_DIR / "skills"
 INDEX_FILE = SKILLS_DIR / "index.md"
 
 
-def path_for_bash(path: Path, cwd: Path | None = None) -> str:
+def path_for_bash(path: Path, cwd: Optional[Path] = None) -> str:
     """Return a Bash-safe path, preferring cwd-relative POSIX syntax."""
     if cwd is not None:
         try:
@@ -31,6 +32,42 @@ def path_for_bash(path: Path, cwd: Path | None = None) -> str:
         except ValueError:
             pass
     return str(path).replace("\\", "/")
+
+
+def validate_plain_python_annotation_syntax() -> List[str]:
+    """Reject annotations that make plain `python3` entrypoints too new."""
+    errors = []
+    checked = [
+        REPO_ROOT / "scripts" / "pre-commit-llm.py",
+        REPO_ROOT / "scripts" / "check-admonitions.py",
+    ]
+    forbidden = [
+        (
+            re.compile(r"\b(?:->|:)\s*(?:list|tuple|dict|set)\["),
+            "PEP 585 built-in generic annotation",
+        ),
+        (
+            re.compile(r"\b(?:->|:)\s*[^#\n=]+?\|\s*(?:None|[A-Za-z_][A-Za-z0-9_]*)"),
+            "PEP 604 union annotation",
+        ),
+    ]
+
+    for path in checked:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            errors.append(f"  {path_for_bash(path, REPO_ROOT)}: could not read: {e}")
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            for pattern, description in forbidden:
+                if pattern.search(line):
+                    errors.append(
+                        f"  {path_for_bash(path, REPO_ROOT)}:{lineno}: "
+                        f"{description}: {line.strip()}"
+                    )
+    return errors
 
 
 def read_cargo_package_version() -> str:
@@ -59,7 +96,7 @@ def read_cargo_package_version() -> str:
     raise RuntimeError("Cargo.toml [package].version is missing or invalid.")
 
 
-def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[Path]]:
+def sync_crate_version_references(crate_version: str) -> Tuple[List[str], List[Path]]:
     """Sync selected docs/context references to the canonical crate version."""
     errors = []
     changed_files = []
@@ -162,12 +199,12 @@ def sync_crate_version_references(crate_version: str) -> tuple[list[str], list[P
     return errors, changed_files
 
 
-def find_md_files(directory: Path) -> list[Path]:
+def find_md_files(directory: Path) -> List[Path]:
     """Recursively find all .md files under a directory."""
     return sorted(directory.rglob("*.md"))
 
 
-def check_line_counts(md_files: list[Path]) -> list[str]:
+def check_line_counts(md_files: List[Path]) -> List[str]:
     """Return a list of error messages for files exceeding MAX_LINES."""
     errors = []
     for path in md_files:
@@ -251,7 +288,7 @@ def extract_first_paragraph(text: str) -> str:
     return " ".join(paragraph_lines).strip()
 
 
-def generate_index(skill_files: list[Path]) -> str:
+def generate_index(skill_files: List[Path]) -> str:
     """Generate the content of skills/index.md."""
     lines = [
         "# Skills Index",
@@ -314,7 +351,7 @@ def git_add(path: Path) -> None:
         print(f"Warning: could not stage {rel}: {result.stderr.strip()}", file=sys.stderr)
 
 
-def validate_mkdocs_nav() -> list[str]:
+def validate_mkdocs_nav() -> List[str]:
     """Validate that all files referenced in mkdocs.yml nav exist in docs/.
 
     Returns a list of error messages for missing files.
@@ -380,7 +417,7 @@ def validate_mkdocs_nav() -> list[str]:
     return errors
 
 
-def validate_yaml_step_indentation(md_files: list[Path]) -> list[str]:
+def validate_yaml_step_indentation(md_files: List[Path]) -> List[str]:
     """Validate fenced YAML step blocks use consistent step key indentation.
 
     Detects malformed snippets where step keys (`name:`, `uses:`, `with:`, `run:`)
@@ -459,7 +496,7 @@ def validate_yaml_step_indentation(md_files: list[Path]) -> list[str]:
     return errors
 
 
-def validate_doc_nav_card_consistency() -> list[str]:
+def validate_doc_nav_card_consistency() -> List[str]:
     """Validate that nav card labels in docs/index.md match page H1 headings.
 
     Returns a list of error messages for mismatched labels.
@@ -513,7 +550,7 @@ def validate_doc_nav_card_consistency() -> list[str]:
     return errors
 
 
-def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
+def validate_changelog_example_links(md_files: List[Path]) -> List[str]:
     """Validate Keep a Changelog-style reference links are internally consistent.
 
     Rules:
@@ -611,7 +648,7 @@ def validate_changelog_example_links(md_files: list[Path]) -> list[str]:
     return errors
 
 
-def validate_changelog_added_api_entries() -> list[str]:
+def validate_changelog_added_api_entries() -> List[str]:
     """Validate required public API additions exist in a changelog Added section."""
     changelog = REPO_ROOT / "CHANGELOG.md"
     if not changelog.exists():
@@ -653,7 +690,7 @@ def validate_changelog_added_api_entries() -> list[str]:
     return errors
 
 
-def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
+def validate_unstable_feature_wording(md_files: List[Path]) -> List[str]:
     """Reject stale release-specific wording for unstable rustdoc removals."""
     errors = []
 
@@ -675,7 +712,7 @@ def validate_unstable_feature_wording(md_files: list[Path]) -> list[str]:
     return errors
 
 
-def warn_absolute_guarantee_language() -> list[str]:
+def warn_absolute_guarantee_language() -> List[str]:
     """Scan src/**/*.rs doc comments for absolute guarantee language.
 
     Detects words like "always", "never", "guaranteed", "unconditional" when
@@ -811,7 +848,10 @@ def main() -> int:
     # 11. Validate required changelog Added entries for public APIs (blocking)
     changelog_added_api_errors = validate_changelog_added_api_entries()
 
-    # 12. Advisory: warn about absolute guarantee language in doc comments
+    # 12. Validate Python syntax compatibility for plain `python3` entrypoints
+    python_syntax_errors = validate_plain_python_annotation_syntax()
+
+    # 13. Advisory: warn about absolute guarantee language in doc comments
     guarantee_warnings = warn_absolute_guarantee_language()
     if guarantee_warnings:
         print(
@@ -829,7 +869,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # 13. Report all collected errors together
+    # 14. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,
@@ -875,6 +915,11 @@ def main() -> int:
             changelog_added_api_errors,
             "required changelog public API additions are missing:",
             "Document required user-visible public APIs under a `### Added` section in CHANGELOG.md.",
+        ),
+        (
+            python_syntax_errors,
+            "plain-python script compatibility checks failed:",
+            "Use typing.Optional/List/Tuple/Dict/Set instead of PEP 585/604 annotations in scripts expected to run under plain python3.",
         ),
     ]
 

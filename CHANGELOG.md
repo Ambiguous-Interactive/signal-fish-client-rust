@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `examples/basic_lobby.rs` now bases reconnect start decisions on the
+  authoritative reconnect snapshot while using missed events only to detect that
+  the game already started or finalized.
+- Documentation validation scripts now avoid Python 3.10-only annotation forms,
+  keeping the pre-commit/docs checks importable on Python 3.9 environments.
 - `MeshController` now restarts a peer's handshake when the server *reassigns*
   its offerer role across a re-plan — a host re-election or topology change that
   flips the peer's `initiate`/`you_initiate`. Previously a surviving peer kept

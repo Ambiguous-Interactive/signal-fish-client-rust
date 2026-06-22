@@ -519,7 +519,7 @@ let value: serde_json::Value = PeerSignal::Offer(sdp).into();   // infallible
 let signal = PeerSignal::try_from(&value)?;                     // fallible
 ```
 
-!!! warning "External tagging, not the `{ type, data }` envelope"
+!!! warning "External tagging, not the `{ type: ..., data: ... }` envelope"
     Unlike `ClientMessage`/`ServerMessage` (adjacently tagged), `PeerSignal`
     uses serde's default **external** tagging — the variant name is the key.
     This matches the matchbox wire format exactly.
@@ -530,7 +530,8 @@ let signal = PeerSignal::try_from(&value)?;                     // fallible
 
 Messages sent from the client to the server. There are **14 variants**, all
 constructed internally by `SignalFishClient` methods — you never need to build
-these by hand. The last three are protocol-v3 additions.
+these by hand. `StartGame` is the protocol-v2 explicit-start message; `Signal`
+and `TransportStatus` are protocol-v3 additions.
 
 ```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]

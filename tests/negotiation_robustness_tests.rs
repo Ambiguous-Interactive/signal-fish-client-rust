@@ -27,7 +27,8 @@ use signal_fish_client::{
 };
 
 use common::{
-    authenticated_json, game_data_json, protocol_info_json, protocol_info_payload, room_joined_json,
+    authenticated_json, game_data_json, protocol_info_json, protocol_info_payload,
+    room_joined_json, wait_for_sent_len,
 };
 
 fn start_client(
@@ -202,7 +203,7 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
         .send_offer(uuid::Uuid::from_u128(9), "sdp")
         .expect("mesh must survive a reconnect that omits ProtocolInfo");
 
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    wait_for_sent_len(&sent, 2).await;
     let signal_sent = sent.lock().unwrap().iter().any(|m| m.contains("Signal"));
     assert!(signal_sent, "Signal should have reached the wire");
     client.shutdown().await;
