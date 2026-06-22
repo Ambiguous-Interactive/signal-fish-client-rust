@@ -216,3 +216,34 @@ assert_eq!(value["data"]["game_name"], "my-game");
 | `#[serde(skip_serializing_if = "Option::is_none")]` | Omit None fields |
 | `#[serde(default)]` | Use Default when field absent in input |
 | `#[serde(with = "serde_bytes")]` | Efficient byte array (Vec<u8>) |
+
+## Protocol v2/v3 Wire Types
+
+- `Topology` ({Relay,Host,Mesh}) and `TransportKind` ({Relay,Direct,WebRtc}) use
+  `#[serde(rename_all = "snake_case")]`. `TransportKind::WebRtc` additionally has
+  `#[serde(rename = "webrtc")]` — snake_case would emit `web_rtc`, but the
+  protocol requires the token `webrtc` (matching `ConnectionInfo::WebRTC`).
+- **`PeerSignal` is externally tagged** (the serde *default* — NO `tag`/`content`/
+  `rename_all`): `{"Offer":"…"}` / `{"Answer":"…"}` / `{"IceCandidate":"…"}`,
+  byte-identical to `matchbox_socket::PeerSignal`. The wire field on
+  `ClientMessage::Signal`/`ServerMessage::Signal` is `serde_json::Value` (so an
+  unknown future signal shape never fails to deserialize); `PeerSignal` is the
+  typed convenience layered above.
+- `From<PeerSignal> for serde_json::Value` builds the tagged object **directly**
+  (`json!({ "Offer": sdp })`), NOT via `to_value(..).unwrap_or(Null)`. A `Null`
+  fallback would silently corrupt the wire on a (theoretical) serialize failure;
+  direct construction is structurally infallible. `signal.rs`'s
+  `from_matches_serialize_for_every_variant` test pins it against the derived
+  `Serialize` so the two representations cannot drift.
+
+### The v2-byte-identical rule
+
+Every NEW optional field on an EXISTING message/payload (`Authenticate`'s
+`protocol_version`/`supported_transports`/`supported_topologies`; `ProtocolInfo`'s
+version fields; `RoomJoined`/`Reconnected`'s `ice_servers`) MUST be `Option` +
+`skip_serializing_if = "Option::is_none"`, or `Vec` + `default` +
+`skip_serializing_if = "Vec::is_empty"`. This keeps the default (v2) wire bytes
+identical — the "relay floor". Pinned by `tests/wire_golden_tests.rs` and the
+`authenticate_relay_floor_*` tests. **Never** add `#[serde(deny_unknown_fields)]`
+to a protocol type (it breaks forward-compatibility; enforced by a policy test).
+See [protocol-versioning-and-negotiation](protocol-versioning-and-negotiation.md).

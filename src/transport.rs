@@ -51,6 +51,11 @@ use crate::error::SignalFishError;
 /// Each call to [`send`](Transport::send) transmits one complete JSON message.
 /// Each call to [`recv`](Transport::recv) returns one complete JSON message.
 ///
+/// Not to be confused with [`TransportKind`](crate::TransportKind): this trait is
+/// the *byte channel* to the signaling server, whereas `TransportKind` is a
+/// protocol *value* (`relay`/`direct`/`webrtc`) the server sends to describe how
+/// peers should exchange game data.
+///
 /// # Object Safety
 ///
 /// This trait is object-safe, so `Box<dyn Transport>` works for dynamic dispatch.

@@ -2,7 +2,10 @@
 #
 # Runs on every push to main and on all pull requests that touch
 # markdown files, documentation config, or this workflow itself.
-# Jobs: markdownlint, link-check, spell-check, rendering-check
+# Jobs: markdownlint, link-check, rendering-check
+#
+# Spell checking (typos) lives in ci.yml instead: typos scans the whole
+# repository, so it must run on every change — not only docs-touching ones.
 #
 # Cancel in-progress runs on the same branch to save resources.
 
@@ -17,7 +20,6 @@ on:
       - ".markdownlint.json"
       - ".markdownlint-cli2.jsonc"
       - ".lychee.toml"
-      - ".typos.toml"
       - "mkdocs.yml"
       - "hooks/**"
       - "requirements-docs.txt"
@@ -30,7 +32,6 @@ on:
       - ".markdownlint.json"
       - ".markdownlint-cli2.jsonc"
       - ".lychee.toml"
-      - ".typos.toml"
       - "mkdocs.yml"
       - "hooks/**"
       - "requirements-docs.txt"
@@ -80,24 +81,6 @@ jobs:
             --config .lychee.toml
             "**/*.md"
           fail: true
-
-  # ──────────────────────────────────────────────────────────────
-  # Spell check — catch typos in source and documentation
-  # Note: typos scans all project files (not just markdown) which
-  # also catches typos in Rust source, TOML configs, YAML, etc.
-  # ──────────────────────────────────────────────────────────────
-  spell-check:
-    name: Spell Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.3
-
-      - name: Run typos spell checker
-        uses: crate-ci/typos@v1.47.2
-        with:
-          config: .typos.toml
 
   # ──────────────────────────────────────────────────────────────
   # Rendering check — verify MkDocs builds cleanly and code blocks

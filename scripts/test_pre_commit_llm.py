@@ -31,6 +31,60 @@ validate_unstable_feature_wording = _mod.validate_unstable_feature_wording
 read_cargo_package_version = _mod.read_cargo_package_version
 sync_crate_version_references = _mod.sync_crate_version_references
 warn_absolute_guarantee_language = _mod.warn_absolute_guarantee_language
+path_for_bash = _mod.path_for_bash
+validate_plain_python_annotation_syntax = _mod.validate_plain_python_annotation_syntax
+
+
+# ===================================================================
+# Tests for path_for_bash
+# ===================================================================
+
+
+def test_path_for_bash_replaces_windows_backslashes():
+    """Backslash paths passed to Bash must not lose separators."""
+    assert path_for_bash(Path(r"C:\Code\repo\scripts\check.sh")) == (
+        "C:/Code/repo/scripts/check.sh"
+    )
+
+
+def test_path_for_bash_prefers_relative_posix_path():
+    """Repo-local scripts should not be passed to Bash as host absolute paths."""
+    repo = Path("/repo")
+    assert path_for_bash(repo / "scripts" / "check.sh", repo) == (
+        "scripts/check.sh"
+    )
+
+
+def test_plain_python_entrypoints_avoid_modern_annotation_syntax():
+    """Plain `python3` scripts should avoid syntax that narrows interpreter support."""
+    assert validate_plain_python_annotation_syntax() == []
+
+    scripts_dir = Path(__file__).resolve().parent
+    checked = [
+        scripts_dir / "pre-commit-llm.py",
+        scripts_dir / "check-admonitions.py",
+    ]
+    forbidden = [
+        (
+            re.compile(r"\b(?:->|:)\s*(?:list|tuple|dict|set)\["),
+            "PEP 585 built-in generic annotation",
+        ),
+        (
+            re.compile(r"\b(?:->|:)\s*[^#\n=]+?\|\s*(?:None|[A-Za-z_][A-Za-z0-9_]*)"),
+            "PEP 604 union annotation",
+        ),
+    ]
+
+    violations = []
+    for path in checked:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for pattern, description in forbidden:
+                if pattern.search(line):
+                    violations.append(f"{path.name}:{lineno}: {description}: {line.strip()}")
+
+    assert violations == []
 
 
 # ===================================================================

@@ -9,8 +9,34 @@
 //!
 //! - **Transport-agnostic** — implement the [`Transport`] trait for any backend
 //! - **Wire-compatible** — all protocol types match the server's v2 format exactly
+//! - **Protocol v2 relay + v3 mesh** — v3 is additive and opt-in; a default client
+//!   stays byte-identical to v2 (see [Protocol versions](#protocol-versions))
 //! - **WebSocket built-in** — default `transport-websocket` feature provides `WebSocketTransport`
 //! - **Event-driven** — receive typed `SignalFishEvent`s via a channel
+//!
+//! ## Protocol versions
+//!
+//! The SDK speaks two protocol generations, and you choose which by how you
+//! build [`SignalFishConfig`]:
+//!
+//! - **v2 — the relay floor (default).** [`SignalFishConfig::new`] advertises no
+//!   v3 capabilities, the server relays all traffic through itself, and the
+//!   `Authenticate` bytes are byte-identical to the old v2 client. This is the
+//!   *relay-floor guarantee*: opt into nothing and nothing changes.
+//! - **v3 — additive mesh (opt-in).** [`SignalFishConfig::enable_mesh`] advertises
+//!   the WebRTC/relay transports and mesh/host/relay topologies, letting the
+//!   server form a peer-to-peer session. v3 is purely additive on v2: existing
+//!   code keeps working unchanged, and the server falls back to the relay floor
+//!   whenever it cannot form a session.
+//!
+//! The negotiated version comes back in the server's `ProtocolInfo`; check it via
+//! [`SignalFishClient::negotiated_protocol_version`] /
+//! [`SignalFishClient::supports_mesh`]. v3-only sends fail fast with
+//! [`SignalFishError::ProtocolUnsupported`] until v3 is negotiated. The SDK is
+//! *signaling-only* — it bundles no WebRTC stack; with the `mesh` feature you
+//! implement the [`webrtc::WebRtcDriver`] seam (or use
+//! [`webrtc::MeshController`]) against str0m / webrtc-rs / web-sys. The highest
+//! version this SDK speaks is [`PROTOCOL_VERSION`].
 //!
 //! ## Quick Start
 //!
@@ -42,6 +68,11 @@
 //!             }
 //!             SignalFishEvent::RoomJoined { room_code, .. } => {
 //!                 println!("Joined room {room_code}");
+//!                 client.set_ready()?;
+//!             }
+//!             // Protocol v2: the game starts explicitly, not on readiness.
+//!             SignalFishEvent::LobbyStateChanged { all_ready: true, .. } => {
+//!                 client.start_game()?;
 //!             }
 //!             SignalFishEvent::Disconnected { .. } => break,
 //!             _ => {}
@@ -59,15 +90,26 @@ pub mod error;
 pub mod error_codes;
 pub mod event;
 pub mod protocol;
+pub mod signal;
 pub mod transport;
 pub mod transports;
+
+/// Highest signaling protocol version this SDK speaks.
+///
+/// Advertised in `Authenticate` when a consumer opts into the mesh via
+/// [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh).
+pub const PROTOCOL_VERSION: u16 = 3;
 
 // Re-export primary types for ergonomic imports.
 pub use client::{JoinRoomParams, SignalFishClient, SignalFishConfig};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
 pub use event::SignalFishEvent;
-pub use protocol::{ClientMessage, ServerMessage};
+pub use protocol::{
+    ClientMessage, IceServer, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
+    TransportKind,
+};
+pub use signal::PeerSignal;
 pub use transport::Transport;
 
 #[cfg(feature = "transport-websocket")]
@@ -78,6 +120,21 @@ pub mod polling_client;
 
 #[cfg(feature = "polling-client")]
 pub use polling_client::SignalFishPollingClient;
+
+#[cfg(feature = "mesh")]
+pub mod mesh;
+
+#[cfg(feature = "mesh")]
+pub use mesh::{MeshPeer, MeshSession};
+
+#[cfg(feature = "mesh")]
+pub mod webrtc;
+
+#[cfg(feature = "mesh")]
+pub use webrtc::{DriverEvent, MeshEvent, WebRtcDriver};
+
+#[cfg(all(feature = "mesh", feature = "tokio-runtime"))]
+pub use webrtc::MeshController;
 
 // Re-export only on the correct target (see transports/mod.rs for rationale).
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]

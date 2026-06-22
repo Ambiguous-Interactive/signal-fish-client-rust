@@ -12,6 +12,7 @@ Reference for CI/CD tool configuration, common pitfalls, identifier boundary mat
 | `.yamllint.yml` | yamllint | YAML | YAML lint config for GitHub Actions workflows |
 | `deny.toml` | cargo-deny | TOML | License, advisory, ban, and source policies |
 | `.markdownlint-cli2.jsonc` | markdownlint-cli2 | JSONC | Directory ignores for markdownlint |
+| `.cargo/config.toml` | cargo | TOML | Shared Cargo network retry policy for CI and local runs |
 
 ## Common Pitfalls
 
@@ -99,7 +100,7 @@ This rule is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::ma
 
 Markdown lists must be surrounded by blank lines. If a paragraph introduces a list (for example ending with a colon), add an empty line before the first list item.
 
-This is enforced in CI by markdownlint and by `tests/ci_config_tests.rs::markdown_policy_validation::list_introduction_lines_require_blank_spacing_before_list_items`.
+This is enforced in CI by markdownlint and, for the "blank line before a top-level list" case, by `tests/ci_config_tests.rs::markdown_policy_validation::markdown_lists_are_preceded_by_blank_lines`, which scans every lintable markdown file (not a hard-coded list).
 
 ### markdownlint: New rules in updates
 
@@ -220,15 +221,15 @@ A common MSRV breakage pattern: a transitive dependency publishes a new version 
 - `getrandom 0.4.1` requires `edition = "2024"` (Rust 1.85.0+)
 - The crate itself uses `edition = "2021"` but cannot build on older Rust
 
-**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Use `cargo generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
+**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Restore the Cargo cache before generating the ephemeral lockfile, then use `scripts/cargo-retry.sh generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
   with:
     toolchain: 1.85.0
-- run: cargo generate-lockfile
-- run: cargo build --locked --all-features
-- run: cargo test --locked --all-features
+- uses: Swatinem/rust-cache@v2.9.1
+- run: bash scripts/cargo-retry.sh generate-lockfile
+- run: cargo build --locked --all-features && cargo test --locked --all-features
 ```
 
 ### MSRV workflow incident: dtolnay ref vs explicit toolchain
@@ -294,6 +295,6 @@ The emscripten WASM target requires nightly, which may introduce lints (e.g., `n
 | Script | Purpose |
 |---|---|
 | `scripts/validate.sh` | Pre-flight: cargo fmt/clippy/test + `.lychee.toml` validation + markdownlint |
-| `scripts/ci-validate.sh` | Lightweight local CI (13 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, test I/O unwrap |
-| `scripts/check-all.sh` | Full 20-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
+| `scripts/ci-validate.sh` | Lightweight local CI (15 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, devcontainer policy/Dockerfile |
+| `scripts/check-all.sh` | Full 22-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
 | `scripts/check-test-io-unwrap.sh` | Scans test `.rs` for bare `.unwrap()` on I/O ops (Phase 20 / Check 13) |

@@ -29,6 +29,8 @@
 #  18. Code coverage          (optional — requires cargo-llvm-cov)
 #  19. Shell portability      (delegates to scripts/test_shell_portability.sh)
 #  20. Rust test I/O unwrap   (delegates to scripts/check-test-io-unwrap.sh)
+#  21. Devcontainer compat    (delegates to check + fixture test scripts)
+#  22. Devcontainer Dockerfile (optional — docker buildx build --check)
 #
 # Notes:
 #   - MSRV (1.85.0) verification is CI-only (requires rustup toolchain override)
@@ -66,7 +68,7 @@ for arg in "$@"; do
 done
 
 # ── Phase tracking ───────────────────────────────────────────────────
-TOTAL_PHASES=20
+TOTAL_PHASES=22
 if [ "$QUICK" = true ]; then
     TOTAL_PHASES=4
 fi
@@ -94,6 +96,8 @@ PHASE_NAMES[17]="Mutation testing"
 PHASE_NAMES[18]="Code coverage"
 PHASE_NAMES[19]="Shell portability"
 PHASE_NAMES[20]="Rust test I/O unwrap"
+PHASE_NAMES[21]="Devcontainer compatibility"
+PHASE_NAMES[22]="Devcontainer Dockerfile"
 
 for i in $(seq 1 "$TOTAL_PHASES"); do
     PHASE_RESULTS[i]="SKIP"
@@ -285,14 +289,19 @@ if ! command -v cargo-audit &>/dev/null; then
     echo "  Install: cargo install cargo-audit"
     PHASE_RESULTS[7]="SKIP"
 else
+    LOCKFILE_READY=true
     # Ensure a lockfile exists (library crate may not commit Cargo.lock)
     if [ ! -f Cargo.lock ]; then
-        cargo generate-lockfile 2>&1
+        if ! "$SCRIPT_DIR/cargo-retry.sh" generate-lockfile 2>&1; then
+            echo -e "${RED}Phase 7: FAIL (could not generate Cargo.lock)${NC}"
+            mark_phase_fail 7
+            LOCKFILE_READY=false
+        fi
     fi
-    if cargo audit 2>&1; then
+    if [ "$LOCKFILE_READY" = true ] && cargo audit 2>&1; then
         echo -e "${GREEN}Phase 7: PASS${NC}"
         PHASE_RESULTS[7]="PASS"
-    else
+    elif [ "$LOCKFILE_READY" = true ]; then
         echo -e "${RED}Phase 7: FAIL${NC}"
         mark_phase_fail 7
     fi
@@ -658,6 +667,66 @@ if [ -f "$SCRIPT_DIR/check-test-io-unwrap.sh" ]; then
 else
     echo -e "${YELLOW}SKIP: scripts/check-test-io-unwrap.sh not found.${NC}"
     PHASE_RESULTS[20]="SKIP"
+fi
+echo ""
+
+# ── Phase 21: Devcontainer compatibility ───────────────────────────
+echo -e "${YELLOW}Phase 21/$TOTAL_PHASES: Devcontainer compatibility checks...${NC}"
+PHASE21_FAILURES=0
+PHASE21_RAN=0
+
+if [ -f "$SCRIPT_DIR/check-devcontainer-compat.sh" ]; then
+    PHASE21_RAN=$((PHASE21_RAN + 1))
+    if bash "$SCRIPT_DIR/check-devcontainer-compat.sh" 2>&1; then
+        echo -e "${GREEN}  policy check: PASS${NC}"
+    else
+        echo -e "${RED}  policy check: FAIL${NC}"
+        PHASE21_FAILURES=$((PHASE21_FAILURES + 1))
+    fi
+else
+    echo -e "${YELLOW}  policy check: SKIP (script not found)${NC}"
+fi
+
+if [ -f "$SCRIPT_DIR/test_check_devcontainer_compat.sh" ]; then
+    PHASE21_RAN=$((PHASE21_RAN + 1))
+    if bash "$SCRIPT_DIR/test_check_devcontainer_compat.sh" 2>&1; then
+        echo -e "${GREEN}  fixture tests: PASS${NC}"
+    else
+        echo -e "${RED}  fixture tests: FAIL${NC}"
+        PHASE21_FAILURES=$((PHASE21_FAILURES + 1))
+    fi
+else
+    echo -e "${YELLOW}  fixture tests: SKIP (script not found)${NC}"
+fi
+
+if [ "$PHASE21_FAILURES" -gt 0 ]; then
+    echo -e "${RED}Phase 21: FAIL ($PHASE21_FAILURES sub-check(s) failed)${NC}"
+    mark_phase_fail 21
+elif [ "$PHASE21_RAN" -eq 0 ]; then
+    echo -e "${YELLOW}Phase 21: SKIP (devcontainer scripts not found)${NC}"
+    PHASE_RESULTS[21]="SKIP"
+else
+    echo -e "${GREEN}Phase 21: PASS${NC}"
+    PHASE_RESULTS[21]="PASS"
+fi
+echo ""
+
+# ── Phase 22: Devcontainer Dockerfile static check ─────────────────
+echo -e "${YELLOW}Phase 22/$TOTAL_PHASES: Devcontainer Dockerfile (docker buildx build --check)...${NC}"
+if ! command -v docker &>/dev/null; then
+    echo -e "${YELLOW}SKIP: docker is not installed.${NC}"
+    PHASE_RESULTS[22]="SKIP"
+elif ! docker buildx version &>/dev/null; then
+    echo -e "${YELLOW}SKIP: docker buildx is not available.${NC}"
+    PHASE_RESULTS[22]="SKIP"
+else
+    if docker buildx build --check -f "$REPO_ROOT/.devcontainer/Dockerfile" "$REPO_ROOT" 2>&1; then
+        echo -e "${GREEN}Phase 22: PASS${NC}"
+        PHASE_RESULTS[22]="PASS"
+    else
+        echo -e "${RED}Phase 22: FAIL${NC}"
+        mark_phase_fail 22
+    fi
 fi
 echo ""
 

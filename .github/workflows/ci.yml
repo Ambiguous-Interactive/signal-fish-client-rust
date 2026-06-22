@@ -44,6 +44,25 @@ jobs:
         run: cargo fmt --check
 
   # ──────────────────────────────────────────────────────────────
+  # Spell check — typos scans the WHOLE repository (Rust source,
+  # TOML, YAML, Markdown, …), so it lives here in the always-on CI
+  # rather than the path-filtered docs-validation workflow. That
+  # guarantees it runs on every change, including Rust-only PRs.
+  # Standalone and fast (~seconds): no Rust toolchain, no `needs`.
+  # ──────────────────────────────────────────────────────────────
+  spell-check:
+    name: Spell Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+      - name: Run typos spell checker
+        uses: crate-ci/typos@v1.47.2
+        with:
+          config: .typos.toml
+
+  # ──────────────────────────────────────────────────────────────
   # Clippy — lint check across feature combinations
   # ──────────────────────────────────────────────────────────────
   clippy:
@@ -119,7 +138,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
       - name: Generate lockfile
-        run: cargo generate-lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile
       - name: Build with MSRV
         run: cargo build --locked --all-features
       - name: Test with MSRV

@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **9
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **10
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -31,6 +31,7 @@ variants**:
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
+| `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md). |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 
@@ -70,7 +71,7 @@ fn try_join(client: &SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **40 variants** representing
+`ErrorCode` is a protocol-level enum with **48 variants** representing
 structured error codes returned by the Signal Fish server. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
@@ -166,6 +167,42 @@ println!("{}", code.description());
 | `InternalError` | An internal server error occurred. |
 | `StorageError` | A storage error occurred while processing your request. |
 | `ServiceUnavailable` | The service is temporarily unavailable. |
+
+### Game Start — protocol v2 (2)
+
+The game now starts **explicitly** via `client.start_game()` rather than
+automatically when everyone is ready (see [Concepts](concepts.md#protocol-versioning--topology)).
+
+| Variant | Description |
+|---------|-------------|
+| `GameStartNotReady` | Cannot start the game: not every player in the room is ready yet. |
+| `GameStartForbidden` | You are not permitted to start the game. Only the room's authority may start it. |
+
+### Signaling — protocol v3 (5)
+
+Returned only on a v3-negotiated connection, in response to a `send_signal`
+(or `send_offer` / `send_answer` / `send_ice_candidate` / `send_raw_signal`)
+that the server could not honor. See the [Mesh Guide](mesh-guide.md).
+
+| Variant | Description |
+|---------|-------------|
+| `CrossRoomSignal` | The signal targets a peer that is not in your room. |
+| `UnsupportedTransport` | The requested data-path transport is not supported or was not negotiated for this connection. |
+| `SignalTargetNotFound` | The signal's target peer could not be found in the room. |
+| `SignalRateLimited` | Too many signaling messages were sent in a short time. Slow down and try again. |
+| `SignalTooLarge` | The signal payload exceeds the maximum size allowed by the server. |
+
+### Connection Lifecycle — protocol v3 (1)
+
+| Variant | Description |
+|---------|-------------|
+| `ConnectionIdleTimeout` | The connection was closed by the server after being idle for too long. |
+
+!!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
+    The five `Signal*` codes plus `ConnectionIdleTimeout` are **server-sent**
+    `ErrorCode`s that arrive inside `SignalFishEvent::Error`. They are distinct
+    from the client-side `SignalFishError::ProtocolUnsupported`, which fails a
+    v3-only send *locally* before it ever reaches the server.
 
 ---
 

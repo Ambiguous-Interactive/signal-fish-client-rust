@@ -4,8 +4,16 @@ Every message from the Signal Fish server — plus two synthetic transport-layer
 signals — is delivered as a [`SignalFishEvent`] variant through the event
 receiver returned by [`SignalFishClient::start`].
 
-This page documents all **26 variants** grouped by category, with field
+This page documents all **30 variants** grouped by category, with field
 descriptions and usage examples.
+
+!!! info "Protocol v2 relay + v3 mesh"
+    Four variants — [`SessionPlan`](#mesh-events-protocol-v3),
+    `NewPeer`, `SignalReceived`, and `PeerTransportStatus` — only arrive on a
+    **v3-negotiated** connection (opt in with `SignalFishConfig::enable_mesh()`).
+    The other 26 are available on every connection, including the v2 relay floor.
+    See [Protocol Versioning](protocol-versioning.md) and the
+    [Mesh Guide](mesh-guide.md).
 
 !!! info "Type aliases used throughout"
     `PlayerId` is an alias for `uuid::Uuid`.
@@ -265,6 +273,81 @@ match event {
     _ => {}
 }
 ```
+
+---
+
+## Mesh Events (protocol v3)
+
+!!! warning "v3-negotiated connections only"
+    These four events arrive **only** when the connection has negotiated
+    protocol v3 — i.e. you opted in with `SignalFishConfig::enable_mesh()` and the
+    server agreed. A v2 relay-floor connection never emits them. See the
+    [Mesh Guide](mesh-guide.md) for the full peer-to-peer flow and
+    [Protocol Versioning](protocol-versioning.md) for how negotiation works.
+
+These events carry the server's WebRTC mesh signaling. The server is
+authoritative: it chooses the topology and assigns the deterministic WebRTC
+offerer via the `initiate` / `you_initiate` flags, which you must obey verbatim
+(never compute who offers — that avoids WebRTC glare).
+
+| Variant | Key Fields | Description |
+|---------|------------|-------------|
+| `SessionPlan` | `topology`, `transport`, `host`, `peers`, `ice_servers`, `fallback` | The server's per-recipient plan for a finalized non-relay session. |
+| `NewPeer` | `peer_id: PlayerId`, `you_initiate: bool` | A late-joining peer to connect to after the session was finalized. |
+| `SignalReceived` | `from: PlayerId`, `signal: serde_json::Value` | An opaque WebRTC signal (offer/answer/ICE candidate) relayed from a peer. |
+| `PeerTransportStatus` | `peer_id: PlayerId`, `transport: TransportKind`, `connected: bool` | A peer's data-path transport state changed (informational). |
+
+### `SessionPlan`
+
+May arrive multiple times (host re-election, late-join re-plan); each one
+**fully replaces** the previous plan — replace the peer set, never merge.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `topology` | `Topology` | Chosen session topology (`Relay`, `Host`, or `Mesh`). |
+| `transport` | `TransportKind` | Chosen data-path transport (`Relay`, `Direct`, or `WebRtc`). |
+| `host` | `Option<PlayerId>` | The elected host (present for `Host` topology). |
+| `peers` | `Vec<SessionPeer>` | Peers this client should connect to, each with its server-assigned `initiate` flag. |
+| `ice_servers` | `Vec<IceServer>` | ICE (STUN/TURN) servers for WebRTC. |
+| `fallback` | `TransportKind` | The universal fallback transport (always `Relay`). |
+
+### `SignalReceived`
+
+Convert the opaque `signal` value with `PeerSignal::try_from(&signal)` for the
+common `Offer` / `Answer` / `IceCandidate` shapes; the raw `Value` is preserved
+for any other shape.
+
+```rust,ignore
+use signal_fish_client::PeerSignal;
+
+match event {
+    SignalFishEvent::SessionPlan { topology, peers, ice_servers, .. } => {
+        println!("Session plan: {topology:?} with {} peer(s)", peers.len());
+        for peer in &peers {
+            // Obey the server's offerer assignment verbatim.
+            my_driver.connect(peer.player_id, peer.initiate);
+        }
+    }
+    SignalFishEvent::NewPeer { peer_id, you_initiate } => {
+        my_driver.connect(peer_id, you_initiate);
+    }
+    SignalFishEvent::SignalReceived { from, signal } => {
+        if let Ok(peer_signal) = PeerSignal::try_from(&signal) {
+            my_driver.on_signal(from, peer_signal);
+        }
+    }
+    SignalFishEvent::PeerTransportStatus { peer_id, connected, .. } => {
+        println!("Peer {peer_id} transport connected={connected}");
+    }
+    _ => {}
+}
+```
+
+!!! tip "Let the SDK do the choreography"
+    With the `mesh` feature, [`MeshController`](mesh-guide.md#using-meshcontroller-batteries-included)
+    handles all four of these events for you — calling your `WebRtcDriver`,
+    relaying signals, and reporting transport status — so you rarely match them
+    by hand. See the [Mesh Guide](mesh-guide.md).
 
 ---
 

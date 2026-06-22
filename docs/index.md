@@ -22,6 +22,7 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 - :material-swap-horizontal: **Transport-Agnostic** — Plug in any transport that implements the `Transport` trait; swap WebSocket for TCP, QUIC, or a test loopback without changing your game code.
 - :material-lightning-bolt: **Async / Await** — Built on Tokio with a fully non-blocking API. Command methods return immediately; events arrive on an async channel.
 - :material-message-flash: **Event-Driven Architecture** — All server responses are delivered as strongly-typed `SignalFishEvent` variants on a bounded `mpsc` channel — just `match` in a loop.
+- :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and backward-compatible; a default client stays byte-identical to v2. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
 - :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
@@ -73,7 +74,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 !!! tip "Feature flag"
     `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.4.1", features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.5.0", features = ["transport-websocket"] }
     ```
 
 ---

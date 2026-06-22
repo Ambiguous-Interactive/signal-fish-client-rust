@@ -15,8 +15,9 @@
 
 use crate::error_codes::ErrorCode;
 use crate::protocol::{
-    GameDataEncoding, LobbyState, PeerConnectionInfo, PlayerId, PlayerInfo, ProtocolInfoPayload,
-    RateLimitInfo, RoomId, ServerMessage, SpectatorInfo, SpectatorStateChangeReason,
+    GameDataEncoding, IceServer, LobbyState, PeerConnectionInfo, PlayerId, PlayerInfo,
+    ProtocolInfoPayload, RateLimitInfo, RoomId, ServerMessage, SessionPeer, SpectatorInfo,
+    SpectatorStateChangeReason, Topology, TransportKind,
 };
 
 /// Events emitted by the Signal Fish client.
@@ -121,6 +122,10 @@ pub enum SignalFishEvent {
         relay_type: String,
         /// Spectators currently watching.
         current_spectators: Vec<SpectatorInfo>,
+        /// ICE (STUN/TURN) servers for early WebRTC candidate gathering
+        /// (protocol v3 "pre-gather"). Empty unless the server opted this
+        /// connection into ICE pre-gather.
+        ice_servers: Vec<IceServer>,
     },
 
     /// Failed to join a room.
@@ -202,6 +207,67 @@ pub enum SignalFishEvent {
         peer_connections: Vec<PeerConnectionInfo>,
     },
 
+    // ── Mesh / WebRTC signaling (protocol v3) ───────────────────────
+    /// The server delivered this client's per-recipient session plan.
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
+    ///
+    /// May arrive multiple times (host re-election, late-join re-plan); each
+    /// one **fully replaces** the previous plan. Fields are flattened from
+    /// [`SessionPlanPayload`].
+    ///
+    /// [`SessionPlanPayload`]: crate::protocol::SessionPlanPayload
+    SessionPlan {
+        /// Chosen session topology.
+        topology: Topology,
+        /// Chosen data-path transport.
+        transport: TransportKind,
+        /// The elected host (present for `host` topology).
+        host: Option<PlayerId>,
+        /// Peers this client should connect to, each with its `initiate` flag.
+        peers: Vec<SessionPeer>,
+        /// ICE (STUN/TURN) servers for WebRTC.
+        ice_servers: Vec<IceServer>,
+        /// The universal fallback transport (always relay).
+        fallback: TransportKind,
+    },
+
+    /// A late-joining peer to connect to after the session was finalized.
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
+    NewPeer {
+        /// The new peer's identifier.
+        peer_id: PlayerId,
+        /// Whether this client sends the WebRTC offer (server-assigned; obey it).
+        you_initiate: bool,
+    },
+
+    /// An opaque WebRTC signal relayed from a peer.
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
+    ///
+    /// Convert with [`PeerSignal::try_from(&signal)`](crate::PeerSignal) for the
+    /// common offer/answer/ICE-candidate shapes; the raw `Value` is preserved
+    /// for any other shape.
+    SignalReceived {
+        /// The peer the signal came from.
+        from: PlayerId,
+        /// The opaque signal payload.
+        signal: serde_json::Value,
+    },
+
+    /// A peer's data-path transport state changed (informational).
+    ///
+    /// **Protocol v3 only.** Arrives only on a v3-negotiated connection.
+    PeerTransportStatus {
+        /// The peer whose transport state changed.
+        peer_id: PlayerId,
+        /// The transport being reported on.
+        transport: TransportKind,
+        /// Whether that transport is connected for the peer.
+        connected: bool,
+    },
+
     // ── Heartbeat ───────────────────────────────────────────────────
     /// Pong response to a ping.
     Pong,
@@ -235,6 +301,10 @@ pub enum SignalFishEvent {
         relay_type: String,
         /// Spectators currently watching.
         current_spectators: Vec<SpectatorInfo>,
+        /// ICE (STUN/TURN) servers for early WebRTC candidate gathering
+        /// (protocol v3 "pre-gather"). Empty unless the server opted this
+        /// connection into ICE pre-gather.
+        ice_servers: Vec<IceServer>,
         /// Events that occurred while the client was disconnected.
         missed_events: Vec<SignalFishEvent>,
     },
@@ -360,6 +430,7 @@ impl From<ServerMessage> for SignalFishEvent {
                     ready_players: p.ready_players,
                     relay_type: p.relay_type,
                     current_spectators: p.current_spectators,
+                    ice_servers: p.ice_servers,
                 }
             }
             ServerMessage::RoomJoinFailed { reason, error_code } => {
@@ -422,6 +493,7 @@ impl From<ServerMessage> for SignalFishEvent {
                     ready_players: p.ready_players,
                     relay_type: p.relay_type,
                     current_spectators: p.current_spectators,
+                    ice_servers: p.ice_servers,
                     missed_events: p
                         .missed_events
                         .into_iter()
@@ -484,6 +556,34 @@ impl From<ServerMessage> for SignalFishEvent {
             } => Self::Error {
                 message,
                 error_code,
+            },
+            ServerMessage::Signal { from, signal } => Self::SignalReceived { from, signal },
+            ServerMessage::NewPeer {
+                peer_id,
+                you_initiate,
+            } => Self::NewPeer {
+                peer_id,
+                you_initiate,
+            },
+            ServerMessage::SessionPlan(payload) => {
+                let p = *payload;
+                Self::SessionPlan {
+                    topology: p.topology,
+                    transport: p.transport,
+                    host: p.host,
+                    peers: p.peers,
+                    ice_servers: p.ice_servers,
+                    fallback: p.fallback,
+                }
+            }
+            ServerMessage::PeerTransportStatus {
+                peer_id,
+                transport,
+                connected,
+            } => Self::PeerTransportStatus {
+                peer_id,
+                transport,
+                connected,
             },
         }
     }
@@ -550,6 +650,7 @@ mod tests {
             ready_players: vec![],
             relay_type: "auto".into(),
             current_spectators: vec![],
+            ice_servers: vec![],
         };
         let msg = ServerMessage::RoomJoined(Box::new(payload));
         let event = SignalFishEvent::from(msg);
@@ -609,6 +710,7 @@ mod tests {
             ready_players: vec![],
             relay_type: "tcp".into(),
             current_spectators: vec![],
+            ice_servers: vec![],
             missed_events: vec![ServerMessage::Pong],
         };
         let msg = ServerMessage::Reconnected(Box::new(payload));

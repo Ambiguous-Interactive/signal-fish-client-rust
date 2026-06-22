@@ -254,6 +254,23 @@ else
         if [ "$UNKNOWN_LANGS_FOUND" = false ]; then
             pass "All code fence language tags are recognized (or handled by hook)"
         fi
+
+        # 2d. Admonition / details titles must not contain embedded double
+        # quotes: the title is "..."-delimited, so an inner quote closes it
+        # early and leaks the rest as raw text. `mkdocs build --strict` does
+        # not catch this, so a dedicated fence-aware checker does.
+        if command -v python3 &>/dev/null; then
+            if ADMON_OUT=$(python3 "$REPO_ROOT/scripts/check-admonitions.py" "$DOCS_DIR" 2>&1); then
+                pass "All admonition/details titles are well-formed"
+            else
+                fail "Malformed admonition/details title(s) — see below"
+                printf '%s\n' "$ADMON_OUT" | while IFS= read -r admon_line; do
+                    echo "      $admon_line"
+                done
+            fi
+        else
+            warn "python3 not found — skipping admonition title check"
+        fi
     fi
 fi
 

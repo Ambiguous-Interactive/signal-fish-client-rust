@@ -70,6 +70,20 @@ pub enum ErrorCode {
     InternalError,
     StorageError,
     ServiceUnavailable,
+
+    // Game-start errors (protocol v2)
+    GameStartNotReady,
+    GameStartForbidden,
+
+    // Signaling errors (protocol v3)
+    CrossRoomSignal,
+    UnsupportedTransport,
+    SignalTargetNotFound,
+    SignalRateLimited,
+    SignalTooLarge,
+
+    // Connection lifecycle (protocol v3)
+    ConnectionIdleTimeout,
 }
 
 impl ErrorCode {
@@ -213,6 +227,36 @@ impl ErrorCode {
             }
             Self::ServiceUnavailable => {
                 "The service is temporarily unavailable. Please try again in a few moments."
+            }
+
+            // Game-start errors (protocol v2)
+            Self::GameStartNotReady => {
+                "Cannot start the game: not every player in the room is ready yet."
+            }
+            Self::GameStartForbidden => {
+                "You are not permitted to start the game. Only the room's authority may start it."
+            }
+
+            // Signaling errors (protocol v3)
+            Self::CrossRoomSignal => {
+                "The signal targets a peer that is not in your room."
+            }
+            Self::UnsupportedTransport => {
+                "The requested data-path transport is not supported or was not negotiated for this connection."
+            }
+            Self::SignalTargetNotFound => {
+                "The signal's target peer could not be found in the room."
+            }
+            Self::SignalRateLimited => {
+                "Too many signaling messages were sent in a short time. Please slow down and try again."
+            }
+            Self::SignalTooLarge => {
+                "The signal payload exceeds the maximum size allowed by the server."
+            }
+
+            // Connection lifecycle (protocol v3)
+            Self::ConnectionIdleTimeout => {
+                "The connection was closed by the server after being idle for too long."
             }
         }
     }

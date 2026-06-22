@@ -10,8 +10,8 @@
 //! Cargo.toml lints conform to project policy. If any test fails, it means
 //! CI configuration has drifted from the agreed-upon standards.
 //!
-//! All checks are synchronous filesystem reads — no network access or async
-//! runtime needed.
+//! All checks are synchronous and offline — filesystem reads plus a
+//! `git ls-files` query — with no network access or async runtime needed.
 
 use std::path::PathBuf;
 
@@ -224,6 +224,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/workflow-lint.yml",
     ".github/workflows/publish.yml",
     ".github/workflows/dependabot-auto-merge.yml",
+    ".github/workflows/protocol-sync.yml",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -291,7 +292,7 @@ mod config_existence {
         ),
         (
             ".typos.toml",
-            "Typos config is required for spell-checking in the docs-validation workflow.",
+            "Typos config is required for the whole-repo spell-check job in the CI workflow.",
         ),
         (
             ".lychee.toml",
@@ -309,6 +310,10 @@ mod config_existence {
             ".pre-commit-config.yaml",
             "Pre-commit config ensures local developer checks match CI.",
         ),
+        (
+            ".cargo/config.toml",
+            "Cargo config keeps Cargo network behavior consistent across local and CI runs.",
+        ),
     ];
 
     #[test]
@@ -319,6 +324,320 @@ mod config_existence {
                 "Required config file '{path}' is missing. {reason}"
             );
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: cargo_network_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod cargo_network_policy {
+    use super::*;
+
+    #[cfg(all(unix, not(miri)))]
+    fn make_fake_cargo_bin(test_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "signal-fish-client-{test_name}-{}-{unique}",
+            std::process::id()
+        ));
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to create fake Cargo bin directory '{}': {e}",
+                bin_dir.display()
+            )
+        });
+
+        let fake_cargo = bin_dir.join("cargo");
+        std::fs::write(
+            &fake_cargo,
+            r#"#!/usr/bin/env bash
+set -u
+
+count=1
+if [ -n "${FAKE_CARGO_COUNT_FILE:-}" ]; then
+    count=0
+    if [ -f "$FAKE_CARGO_COUNT_FILE" ]; then
+        count="$(cat "$FAKE_CARGO_COUNT_FILE")"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$FAKE_CARGO_COUNT_FILE"
+fi
+
+case "${FAKE_CARGO_MODE:-always-fail}" in
+    always-fail)
+        exit "${FAKE_CARGO_EXIT:-37}"
+        ;;
+    fail-then-success)
+        if [ "$count" -lt "${FAKE_CARGO_SUCCESS_AT:-2}" ]; then
+            exit "${FAKE_CARGO_EXIT:-37}"
+        fi
+        printf 'fake cargo success on attempt %s\n' "$count"
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+"#,
+        )
+        .unwrap_or_else(|e| panic!("Failed to write '{}': {e}", fake_cargo.display()));
+
+        let mut permissions = std::fs::metadata(&fake_cargo)
+            .unwrap_or_else(|e| panic!("Failed to stat '{}': {e}", fake_cargo.display()))
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_cargo, permissions).unwrap_or_else(|e| {
+            panic!(
+                "Failed to make fake Cargo executable '{}': {e}",
+                fake_cargo.display()
+            )
+        });
+
+        (dir, bin_dir)
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_command(fake_bin_dir: &std::path::Path) -> std::process::Command {
+        let mut paths = vec![fake_bin_dir.to_path_buf()];
+        if let Some(existing_path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing_path));
+        }
+        let path = std::env::join_paths(paths).expect("test PATH must be joinable");
+
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg(project_root().join("scripts/cargo-retry.sh"))
+            .env("PATH", path)
+            .env("CARGO_RETRY_DELAY_SECONDS", "0");
+        command
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn read_attempt_count(path: &std::path::Path) -> u32 {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("Failed to read attempt count '{}': {e}", path.display()))
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| {
+                panic!("Attempt count in '{}' must be numeric: {e}", path.display())
+            })
+    }
+
+    fn workflow_job_blocks(contents: &str) -> Vec<(String, String)> {
+        let mut jobs_started = false;
+        let mut current_name: Option<String> = None;
+        let mut current_lines: Vec<&str> = Vec::new();
+        let mut blocks = Vec::new();
+
+        for line in contents.lines() {
+            if line.trim_end() == "jobs:" {
+                jobs_started = true;
+                continue;
+            }
+            if !jobs_started {
+                continue;
+            }
+
+            let is_job_header = line.starts_with("  ")
+                && !line.starts_with("    ")
+                && line.trim_end().ends_with(':');
+            if is_job_header {
+                if let Some(name) = current_name.take() {
+                    blocks.push((name, current_lines.join("\n")));
+                    current_lines.clear();
+                }
+                current_name = Some(line.trim().trim_end_matches(':').to_string());
+            } else if current_name.is_some() {
+                current_lines.push(line);
+            }
+        }
+
+        if let Some(name) = current_name {
+            blocks.push((name, current_lines.join("\n")));
+        }
+
+        blocks
+    }
+
+    #[test]
+    fn cargo_network_retry_is_configured_for_ci_resilience() {
+        let contents = read_project_file(".cargo/config.toml");
+        let parsed: toml::Value =
+            toml::from_str(&contents).expect(".cargo/config.toml must be valid TOML");
+
+        let retry = parsed
+            .get("net")
+            .and_then(|net| net.get("retry"))
+            .and_then(toml::Value::as_integer)
+            .expect(".cargo/config.toml must set [net].retry");
+
+        assert!(
+            (5..=20).contains(&retry),
+            ".cargo/config.toml must set [net].retry between 5 and 20. \
+             The Cargo default is 3, which is too brittle for transient crates.io \
+             EOFs during lockfile generation; values above 20 make real outages \
+             slow to diagnose. Current value: {retry}"
+        );
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_preserves_final_failure_status() {
+        let (temp_dir, fake_bin_dir) = make_fake_cargo_bin("retry-final-failure");
+        let count_file = temp_dir.join("attempts");
+
+        let output = cargo_retry_command(&fake_bin_dir)
+            .arg("generate-lockfile")
+            .env("CARGO_RETRY_ATTEMPTS", "2")
+            .env("FAKE_CARGO_MODE", "always-fail")
+            .env("FAKE_CARGO_EXIT", "37")
+            .env("FAKE_CARGO_COUNT_FILE", &count_file)
+            .output()
+            .expect("cargo retry wrapper must execute under bash");
+
+        assert_eq!(
+            output.status.code(),
+            Some(37),
+            "scripts/cargo-retry.sh must preserve the final Cargo failure status.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            read_attempt_count(&count_file),
+            2,
+            "wrapper must stop after the configured attempt count"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed after 2 attempt(s); exit code 37"),
+            "final failure diagnostic should include attempts and exit code.\nstderr:\n{stderr}"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    #[cfg(all(unix, not(miri)))]
+    fn cargo_retry_succeeds_after_transient_failure() {
+        let (temp_dir, fake_bin_dir) = make_fake_cargo_bin("retry-transient-success");
+        let count_file = temp_dir.join("attempts");
+
+        let output = cargo_retry_command(&fake_bin_dir)
+            .arg("generate-lockfile")
+            .env("CARGO_RETRY_ATTEMPTS", "3")
+            .env("FAKE_CARGO_MODE", "fail-then-success")
+            .env("FAKE_CARGO_SUCCESS_AT", "2")
+            .env("FAKE_CARGO_EXIT", "37")
+            .env("FAKE_CARGO_COUNT_FILE", &count_file)
+            .output()
+            .expect("cargo retry wrapper must execute under bash");
+
+        assert!(
+            output.status.success(),
+            "scripts/cargo-retry.sh should return success once Cargo succeeds.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            read_attempt_count(&count_file),
+            2,
+            "wrapper should stop retrying as soon as Cargo succeeds"
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("fake cargo success on attempt 2"),
+            "successful Cargo stdout should be preserved.\nstdout:\n{stdout}"
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn workflows_use_retry_wrapper_for_lockfile_generation() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (line_num, line) in contents.lines().enumerate() {
+                if line.contains("generate-lockfile")
+                    && !line.contains("scripts/cargo-retry.sh generate-lockfile")
+                {
+                    violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Workflow lockfile generation must use scripts/cargo-retry.sh so \
+             transient crates.io sparse-index EOFs do not fail CI immediately.\n\
+             Violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn workflows_restore_cargo_cache_before_generating_lockfiles() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (job_name, job_block) in workflow_job_blocks(&contents) {
+                let Some(lockfile_pos) = job_block.find("generate-lockfile") else {
+                    continue;
+                };
+                match job_block.find("Swatinem/rust-cache@") {
+                    Some(cache_pos) if cache_pos < lockfile_pos => {}
+                    Some(_) => violations.push(format!(
+                        "{workflow_path} job '{job_name}' generates a lockfile before \
+                         restoring the Cargo cache."
+                    )),
+                    None => violations.push(format!(
+                        "{workflow_path} job '{job_name}' generates a lockfile without \
+                         restoring the Cargo cache first."
+                    )),
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Jobs that generate ephemeral Cargo.lock files must restore the \
+             Cargo registry cache first. This makes CI faster and reduces \
+             exposure to transient crates.io fetch failures.\nViolations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn workflows_use_retry_wrapper_for_crates_io_searches() {
+        let mut violations = Vec::new();
+
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            for (line_num, line) in contents.lines().enumerate() {
+                if line.contains("cargo search") && !line.contains("scripts/cargo-retry.sh search")
+                {
+                    violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Workflow crates.io searches must use scripts/cargo-retry.sh so \
+             transient registry query failures do not masquerade as package \
+             publication state.\nViolations:\n{}",
+            violations.join("\n")
+        );
     }
 }
 
@@ -345,6 +664,10 @@ mod script_existence {
         (
             "scripts/check-workflows.sh",
             "The workflow check script validates CI configuration locally.",
+        ),
+        (
+            "scripts/cargo-retry.sh",
+            "The Cargo retry wrapper hardens CI jobs that touch crates.io.",
         ),
         (
             "scripts/extract-rust-snippets.sh",
@@ -676,6 +999,7 @@ mod ci_workflow_policy {
 
     const REQUIRED_JOBS: &[&str] = &[
         "fmt",
+        "spell-check",
         "clippy",
         "test",
         "msrv",
@@ -3759,60 +4083,177 @@ mod markdown_policy_validation {
         );
     }
 
-    #[test]
-    fn list_introduction_lines_require_blank_spacing_before_list_items() {
-        let cases = [
-            (
-                ".llm/skills/ci-configuration.md",
-                "Keep comments in CI shell scripts behaviorally exact:",
-            ),
-            (
-                ".llm/skills/ci-configuration.md",
-                "version and must be updated in sync:",
-            ),
-        ];
-
-        for (path, intro_line) in cases {
-            let content = read_project_file(path);
-            let lines: Vec<&str> = content.lines().collect();
-            let intro_idx = lines
-                .iter()
-                .position(|line| line.trim() == intro_line)
-                .unwrap_or_else(|| {
-                    panic!("Could not find intro line `{intro_line}` in {path}");
-                });
-
-            let blank_line = lines.get(intro_idx + 1).unwrap_or_else(|| {
-                panic!(
-                    "{path}:{line} intro line `{intro_line}` must be followed by a blank line and list items",
-                    line = intro_idx + 1
-                )
+    /// Returns every markdown file the docs-validation `markdownlint` job
+    /// lints, sourced from `git ls-files` so the set is exactly what a clean
+    /// CI checkout contains: tracked files only. `.gitignore`d build/tool
+    /// directories (`target/`, `.venv/`, `.pytest_cache/`, …) and untracked
+    /// scratch files are excluded for free, so this stays deterministic and
+    /// identical to CI with no hand-maintained ignore list to drift.
+    fn collect_lintable_markdown_files() -> Vec<PathBuf> {
+        let root = project_root();
+        // `-z` emits NUL-separated, unquoted paths, so non-ASCII filenames
+        // survive verbatim (without it, git C-quotes them and they would be
+        // silently dropped). `--cached` lists tracked files only, so the
+        // `.gitignore`d build/tool dirs (`target/`, `.venv/`, `.pytest_cache/`,
+        // …) and untracked scratch files are excluded automatically — matching
+        // exactly what markdownlint lints in a clean CI checkout, with no
+        // hand-maintained ignore list to drift out of sync.
+        let output = std::process::Command::new("git")
+            .args(["ls-files", "-z", "--cached", "*.md"])
+            .current_dir(&root)
+            .output()
+            .unwrap_or_else(|e| {
+                panic!("Failed to run `git ls-files` in '{}': {e}", root.display())
             });
-            assert!(
-                blank_line.trim().is_empty(),
-                "{path}:{line} intro line `{intro_line}` must be followed by a blank line before list items",
-                line = intro_idx + 1
-            );
+        assert!(
+            output.status.success(),
+            "`git ls-files` failed (these repo-policy tests require a git checkout): {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-            let first_non_empty_after_intro = lines
-                .iter()
-                .skip(intro_idx + 1)
-                .position(|line| !line.trim().is_empty())
-                .map(|offset| intro_idx + 1 + offset)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{path}:{line} intro line `{intro_line}` must be followed by list items",
-                        line = intro_idx + 1
-                    )
-                });
+        let mut files: Vec<PathBuf> = output
+            .stdout
+            .split(|&byte| byte == 0)
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| root.join(String::from_utf8_lossy(segment).as_ref()))
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        files
+    }
 
-            assert!(
-                is_list_item_line(lines[first_non_empty_after_intro]),
-                "{path}:{line} expected first non-empty line after `{intro_line}` to be a list item, found `{found}`",
-                line = first_non_empty_after_intro + 1,
-                found = lines[first_non_empty_after_intro].trim()
-            );
+    /// True for a thematic break (`---`, `***`, `___`, or spaced forms such as
+    /// `- - -`). CommonMark renders these as a horizontal rule, not a list, so
+    /// the MD032 check must not treat them as list items.
+    fn is_thematic_break(line: &str) -> bool {
+        let marks: Vec<char> = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+        marks.len() >= 3
+            && (marks.iter().all(|&ch| ch == '-')
+                || marks.iter().all(|&ch| ch == '*')
+                || marks.iter().all(|&ch| ch == '_'))
+    }
+
+    /// True when `line` begins a list that would interrupt a preceding
+    /// paragraph. Bullets (`-`/`*`/`+`) always interrupt; an ordered marker
+    /// interrupts only when it starts at `1` (CommonMark — `3. text` directly
+    /// under a paragraph is lazy continuation, not a list). Thematic breaks are
+    /// excluded by [`is_thematic_break`].
+    fn starts_paragraph_interrupting_list(line: &str) -> bool {
+        if is_thematic_break(line) {
+            return false;
         }
+        let trimmed = line.trim_start();
+        trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || trimmed.starts_with("1. ")
+            || trimmed.starts_with("1) ")
+    }
+
+    #[test]
+    fn markdown_lists_are_preceded_by_blank_lines() {
+        // Shift-left mirror of markdownlint MD032 (blanks-around-lists) for the
+        // "blank line before a list" case, so a plain `cargo test` catches the
+        // violation locally — the exact class that reached CI when a skill file
+        // placed a list directly under an introductory paragraph.
+        //
+        // This replaces an earlier check hard-coded to two specific intro lines
+        // in a single file, which could not see violations anywhere else (and so
+        // missed the one that failed CI).
+        //
+        // Detection is intentionally limited to the unambiguous case — a
+        // TOP-LEVEL (column-0) list that interrupts a paragraph — and follows
+        // CommonMark so it never flags constructs markdownlint accepts: lines
+        // inside ``` / ~~~ fences and `<…>` HTML blocks are skipped, ordered
+        // lists interrupt only at `1.`, and thematic breaks are not lists. It
+        // does not chase nested lists or the blank-line-AFTER half of MD032;
+        // markdownlint remains the complete authority in CI.
+        let files = collect_lintable_markdown_files();
+        assert!(
+            !files.is_empty(),
+            "`git ls-files '*.md'` returned no markdown files."
+        );
+
+        let mut violations: Vec<String> = Vec::new();
+
+        for path in files {
+            let relative = path
+                .strip_prefix(project_root())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            let contents = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", path.display()));
+            let lines: Vec<&str> = contents.lines().collect();
+
+            // A fence closes only on the same marker character that opened it;
+            // an HTML block opened by a column-0 `<` runs until the next blank
+            // line (CommonMark). List-like lines inside either are markup, not
+            // lists, so they are skipped.
+            let mut fence: Option<char> = None;
+            let mut in_html_block = false;
+
+            for (idx, line) in lines.iter().enumerate() {
+                let stripped = line.trim_start();
+
+                if stripped.starts_with("```") || stripped.starts_with("~~~") {
+                    let marker = if stripped.starts_with('~') { '~' } else { '`' };
+                    match fence {
+                        None => fence = Some(marker),
+                        Some(open) if open == marker => fence = None,
+                        Some(_) => {}
+                    }
+                    continue;
+                }
+                if fence.is_some() {
+                    continue;
+                }
+
+                if line.trim().is_empty() {
+                    in_html_block = false;
+                    continue;
+                }
+                if !line.starts_with(char::is_whitespace) && line.starts_with('<') {
+                    in_html_block = true;
+                }
+                if in_html_block {
+                    continue;
+                }
+
+                // Only a column-0 list that interrupts a paragraph is of
+                // interest; indented items are nested or continuation lines.
+                if line.starts_with(char::is_whitespace)
+                    || idx == 0
+                    || !starts_paragraph_interrupting_list(line)
+                {
+                    continue;
+                }
+
+                let prev = lines[idx - 1];
+                // A violation only when the preceding line is real paragraph
+                // content — not blank, not another list item, not indented list
+                // continuation.
+                if !prev.trim().is_empty()
+                    && !is_list_item_line(prev)
+                    && !prev.starts_with(char::is_whitespace)
+                {
+                    violations.push(format!(
+                        "{relative}:{} a top-level list starts directly under \
+                         `{}` with no blank line above it (markdownlint MD032).",
+                        idx + 1,
+                        prev.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Markdown list-spacing violations detected — add a blank line before \
+             each top-level list, including after an introductory paragraph that \
+             ends with a colon (markdownlint MD032):\n{}",
+            violations.join("\n")
+        );
     }
 }
 
@@ -7179,6 +7620,204 @@ mod dev_dependency_usage {
                      .llm/skills/keep-a-changelog-format.md for guidance."
                 );
             }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Protocol wire-sample conformance policy (protocol v2/v3)
+// ════════════════════════════════════════════════════════════════════
+
+mod protocol_wire_conformance_policy {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    const SAMPLE_FILES: [&str; 4] = [
+        "v2-client-messages.jsonl",
+        "v2-server-messages.jsonl",
+        "v3-client-messages.jsonl",
+        "v3-server-messages.jsonl",
+    ];
+
+    fn sample_path(name: &str) -> String {
+        format!("tests/wire-samples/{name}")
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn wire_sample_files_exist_and_are_non_empty() {
+        for name in SAMPLE_FILES {
+            let rel = sample_path(name);
+            assert!(
+                project_file_exists(&rel),
+                "missing vendored wire sample: {rel}"
+            );
+            let content = read_project_file(&rel);
+            assert!(
+                content.lines().any(|l| !l.trim().is_empty()),
+                "vendored wire sample is empty: {rel}"
+            );
+        }
+        assert!(
+            project_file_exists("tests/wire-samples/PROVENANCE.toml"),
+            "tests/wire-samples/PROVENANCE.toml is required"
+        );
+        assert!(
+            project_file_exists("tests/wire-samples/README.md"),
+            "tests/wire-samples/README.md is required"
+        );
+    }
+
+    #[test]
+    fn wire_provenance_marker_is_valid() {
+        let toml_str = read_project_file("tests/wire-samples/PROVENANCE.toml");
+        let parsed: toml::Value =
+            toml::from_str(&toml_str).expect("PROVENANCE.toml must be valid TOML");
+
+        let upstream = parsed.get("upstream").expect("[upstream] table required");
+        let commit = upstream
+            .get("commit")
+            .and_then(toml::Value::as_str)
+            .expect("[upstream].commit required");
+        assert_eq!(
+            commit.len(),
+            40,
+            "commit must be a 40-char git SHA: {commit}"
+        );
+        assert!(
+            commit.chars().all(|c| c.is_ascii_hexdigit()),
+            "commit must be hexadecimal: {commit}"
+        );
+        assert!(
+            upstream
+                .get("synced")
+                .and_then(toml::Value::as_str)
+                .is_some(),
+            "[upstream].synced date required"
+        );
+        assert!(
+            upstream
+                .get("protocol_version_min")
+                .and_then(toml::Value::as_integer)
+                .is_some(),
+            "[upstream].protocol_version_min required"
+        );
+        assert!(
+            upstream
+                .get("protocol_version_max")
+                .and_then(toml::Value::as_integer)
+                .is_some(),
+            "[upstream].protocol_version_max required"
+        );
+
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table required");
+        for name in SAMPLE_FILES {
+            let sum = files
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .unwrap_or_else(|| panic!("[files] missing checksum for {name}"));
+            assert_eq!(sum.len(), 64, "{name}: checksum must be 64 hex chars");
+            assert!(
+                sum.chars().all(|c| c.is_ascii_hexdigit()),
+                "{name}: checksum must be hexadecimal"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_provenance_checksums_match_vendored_files() {
+        // Guards against editing a sample without updating the marker (or vice
+        // versa) — the provenance stays honest.
+        let toml_str = read_project_file("tests/wire-samples/PROVENANCE.toml");
+        let parsed: toml::Value = toml::from_str(&toml_str).expect("valid TOML");
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table");
+
+        for name in SAMPLE_FILES {
+            let expected = files
+                .get(name)
+                .and_then(toml::Value::as_str)
+                .expect("checksum entry");
+            let bytes = std::fs::read(project_root().join(sample_path(name)))
+                .unwrap_or_else(|e| panic!("read {name}: {e}"));
+            let actual = hex_encode(&Sha256::digest(&bytes));
+            assert_eq!(
+                actual, expected,
+                "{name}: SHA-256 differs from PROVENANCE.toml — the sample was \
+                 edited but the marker was not updated (or vice versa). See \
+                 .llm/skills/protocol-wire-conformance.md."
+            );
+        }
+    }
+
+    #[test]
+    fn no_protocol_type_uses_deny_unknown_fields() {
+        // Forward-compat: protocol types must tolerate unknown (additive) server
+        // fields, so `deny_unknown_fields` must never appear in the protocol layer.
+        for file in ["src/protocol.rs", "src/signal.rs"] {
+            let content = read_project_file(file);
+            let mut in_block = false;
+            for (i, line) in content.lines().enumerate() {
+                let code = strip_non_code_stateful(line, &mut in_block);
+                assert!(
+                    !code.contains("deny_unknown_fields"),
+                    "{file}:{}: protocol types must not use `deny_unknown_fields` \
+                     (it breaks forward-compatibility with additive server fields)",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_protocol_error_codes_documented_in_changelog() {
+        // Durability guard: every error code introduced by the v2/v3 upgrade must
+        // be named in CHANGELOG.md, so the user-facing error surface stays
+        // documented. A future protocol change that adds a code updates both this
+        // list and the CHANGELOG together.
+        let changelog = read_project_file("CHANGELOG.md");
+        for code in [
+            "GAME_START_NOT_READY",
+            "GAME_START_FORBIDDEN",
+            "CROSS_ROOM_SIGNAL",
+            "UNSUPPORTED_TRANSPORT",
+            "SIGNAL_TARGET_NOT_FOUND",
+            "SIGNAL_RATE_LIMITED",
+            "SIGNAL_TOO_LARGE",
+            "CONNECTION_IDLE_TIMEOUT",
+        ] {
+            assert!(
+                changelog.contains(code),
+                "error code `{code}` (added in the v2/v3 upgrade) is not documented \
+                 in CHANGELOG.md"
+            );
+        }
+    }
+
+    #[test]
+    fn new_protocol_skills_exist_and_are_indexed() {
+        let index = read_project_file(".llm/skills/index.md");
+        for skill in [
+            "protocol-versioning-and-negotiation",
+            "webrtc-mesh-signaling",
+            "protocol-wire-conformance",
+        ] {
+            assert!(
+                project_file_exists(&format!(".llm/skills/{skill}.md")),
+                "missing skill file: .llm/skills/{skill}.md"
+            );
+            assert!(
+                index.contains(&format!("{skill}.md")),
+                "skill not referenced in the auto-generated index: {skill}"
+            );
         }
     }
 }

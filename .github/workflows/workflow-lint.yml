@@ -1,8 +1,9 @@
 # Workflow lint and hygiene checks for signal-fish-client
 #
 # Runs on every push to main and on all pull requests that touch
-# workflow files, shell scripts, or this workflow itself.
-# Jobs: actionlint — workflow syntax, yamllint — YAML style, shellcheck — shell scripts
+# workflow files, shell scripts, devcontainer config, or this workflow itself.
+# Jobs: actionlint — workflow syntax, yamllint — YAML style, shellcheck — shell scripts,
+#        devcontainer-compat — cross-platform devcontainer validation
 #
 # Cancel in-progress runs on the same branch to save resources.
 
@@ -16,14 +17,18 @@ on:
       - ".github/*.yml"
       - ".github/*.yaml"
       - "scripts/*.sh"
+      - ".devcontainer/scripts/*.sh"
       - ".yamllint.yml"
+      - ".devcontainer/**"
   pull_request:
     paths:
       - ".github/workflows/**"
       - ".github/*.yml"
       - ".github/*.yaml"
       - "scripts/*.sh"
+      - ".devcontainer/scripts/*.sh"
       - ".yamllint.yml"
+      - ".devcontainer/**"
 
 permissions:
   contents: read
@@ -86,4 +91,24 @@ jobs:
         uses: actions/checkout@v6.0.3
 
       - name: Run shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh .devcontainer/scripts/*.sh
+
+  # ──────────────────────────────────────────────────────────────
+  # devcontainer-compat — validate cross-platform devcontainer behavior
+  # ──────────────────────────────────────────────────────────────
+  devcontainer-compat:
+    name: Devcontainer compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+
+      - name: Validate devcontainer cross-platform compatibility
+        run: bash scripts/check-devcontainer-compat.sh
+
+      - name: Run devcontainer compat unit tests
+        run: bash scripts/test_check_devcontainer_compat.sh
+
+      - name: Check devcontainer Dockerfile
+        run: docker buildx build --check -f .devcontainer/Dockerfile .

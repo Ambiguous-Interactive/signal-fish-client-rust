@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -235,3 +235,20 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 | MSRV violation | Run `cargo +1.85.0 check --all-features` |
 | Yanked dependency | Update in Cargo.toml, run `cargo update` |
 | License mismatch | Run `cargo deny check licenses` |
+
+## Protocol v2/v3 (0.5.0) Notes
+
+The `0.4.1 → 0.5.0` release adds the protocol v2/v3 mesh surface. Beyond the
+standard version-sync locations, this release introduced new files to keep in
+mind on future bumps:
+
+- `tests/wire-samples/PROVENANCE.toml` — its `synced` date is human-maintained
+  (refresh at release; see [protocol-wire-conformance](protocol-wire-conformance.md)).
+- New skills: `protocol-versioning-and-negotiation.md`, `webrtc-mesh-signaling.md`,
+  `protocol-wire-conformance.md` (auto-indexed; no version literal).
+- New feature `mesh` (pure-std, zero deps). Concrete WebRTC backends (str0m,
+  web-sys) are documented integrations, not bundled as heavy deps — the crate
+  stays dependency-light.
+
+Adding the new public enum variants/types is a breaking change, so this is a
+MINOR bump for a 0.x crate; `cargo semver-checks` will (correctly) flag it.

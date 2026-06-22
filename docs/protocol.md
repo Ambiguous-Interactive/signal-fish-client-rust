@@ -86,6 +86,62 @@ pub enum GameDataEncoding {
 
 ---
 
+### `Topology` (protocol v3)
+
+The session topology the server selects for a finalized room and reports in a
+[`SessionPlanPayload`](#sessionplanpayload-protocol-v3). The server is
+authoritative — the client never computes a topology.
+
+- **Serde:** `rename_all = "snake_case"`
+
+```rust,ignore
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Topology {
+    Relay,
+    Host,
+    Mesh,
+}
+```
+
+| Variant | JSON value | Description |
+|---------|-----------|-------------|
+| `Relay` | `"relay"` | Server relay hub — the v2 behavior, always available (the "relay floor"). |
+| `Host` | `"host"` | Star topology around a single elected host/authority. |
+| `Mesh` | `"mesh"` | Full mesh: every peer connects to every other peer. |
+
+---
+
+### `TransportKind` (protocol v3)
+
+The data-path transport the server selects for game data between peers.
+
+!!! note "Distinct from the `Transport` trait"
+    `TransportKind` is a wire **value** describing how peers exchange game data.
+    It is *not* the [`Transport`](transport.md) I/O trait, which is the byte
+    channel to the signaling server.
+
+- **Serde:** `rename_all = "snake_case"`, except `WebRtc` is renamed to `"webrtc"`.
+
+```rust,ignore
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    Relay,
+    Direct,
+    #[serde(rename = "webrtc")]
+    WebRtc,
+}
+```
+
+| Variant | JSON value | Description |
+|---------|-----------|-------------|
+| `Relay` | `"relay"` | Server WebSocket fan-out — the mandatory floor every client supports. |
+| `Direct` | `"direct"` | Direct IP:port connection (LAN / routable host). |
+| `WebRtc` | `"webrtc"` | Peer-to-peer WebRTC data channel. (Note: serializes as `"webrtc"`, not `"web_rtc"`.) |
+
+---
+
 ### `ConnectionInfo`
 
 Connection information for peer-to-peer establishment. This is an internally
@@ -306,6 +362,10 @@ pub struct ProtocolInfoPayload {
     pub notes: Option<String>,
     pub game_data_formats: Vec<GameDataEncoding>,
     pub player_name_rules: Option<PlayerNameRulesPayload>,
+    // Protocol v3+ — omitted (None) for a negotiated v2 connection.
+    pub protocol_version: Option<u16>,
+    pub min_protocol_version: Option<u16>,
+    pub max_protocol_version: Option<u16>,
 }
 ```
 
@@ -319,6 +379,9 @@ pub struct ProtocolInfoPayload {
 | `notes` | `Option<String>` | Freeform notes from the server (e.g. deprecation warnings). |
 | `game_data_formats` | `Vec<GameDataEncoding>` | Game-data encodings the server supports. |
 | `player_name_rules` | `Option<PlayerNameRulesPayload>` | Validation rules for player names (if enforced). |
+| `protocol_version` | `Option<u16>` | **Protocol v3+.** The negotiated protocol version. `None` for a v2 negotiation, keeping v2 bytes identical. |
+| `min_protocol_version` | `Option<u16>` | **Protocol v3+.** Lowest version this deployment accepts. |
+| `max_protocol_version` | `Option<u16>` | **Protocol v3+.** Highest version this deployment speaks. |
 
 ---
 
@@ -350,11 +413,125 @@ pub struct PlayerNameRulesPayload {
 
 ---
 
+### `IceServer` (protocol v3)
+
+A STUN/TURN server for WebRTC ICE negotiation. `username` / `credential` are
+present only for TURN servers; bare STUN entries omit them.
+
+```rust,ignore
+pub struct IceServer {
+    pub urls: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `urls` | `Vec<String>` | STUN/TURN URLs (e.g. `stun:stun.l.google.com:19302`). |
+| `username` | `Option<String>` | TURN username (omitted for credential-less STUN servers). |
+| `credential` | `Option<String>` | TURN credential (omitted for credential-less STUN servers). |
+
+---
+
+### `SessionPeer` (protocol v3)
+
+A peer the recipient should connect to within a
+[`SessionPlanPayload`](#sessionplanpayload-protocol-v3).
+
+```rust,ignore
+pub struct SessionPeer {
+    pub player_id: PlayerId,
+    pub player_name: String,
+    pub is_authority: bool,
+    pub initiate: bool,
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `player_id` | `PlayerId` | The other peer's identifier. |
+| `player_name` | `String` | The other peer's display name. |
+| `is_authority` | `bool` | Whether this peer is the session's authoritative host. |
+| `initiate` | `bool` | Whether the recipient sends the WebRTC offer to this peer. **Server-assigned — obey it verbatim; the client never computes who initiates.** |
+
+---
+
+### `SessionPlanPayload` (protocol v3)
+
+The per-recipient plan the server sends when a room finalizes to a non-relay
+session (delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3)
+event). Sent again on late-join or host re-election; each one **fully replaces**
+the previous plan.
+
+```rust,ignore
+pub struct SessionPlanPayload {
+    pub topology: Topology,
+    pub transport: TransportKind,
+    pub host: Option<PlayerId>,
+    pub peers: Vec<SessionPeer>,
+    pub ice_servers: Vec<IceServer>,
+    pub fallback: TransportKind,
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `topology` | `Topology` | Chosen session topology (`relay`, `host`, or `mesh`). |
+| `transport` | `TransportKind` | Chosen data-path transport (`relay`, `direct`, or `webrtc`). |
+| `host` | `Option<PlayerId>` | The elected host, present only for `host` topology. |
+| `peers` | `Vec<SessionPeer>` | Peers this recipient should connect to (excludes the recipient itself). |
+| `ice_servers` | `Vec<IceServer>` | ICE (STUN/TURN) servers for WebRTC; omitted for non-WebRTC plans. |
+| `fallback` | `TransportKind` | The universal fallback transport — always `Relay`, the floor. |
+
+---
+
+### `PeerSignal` (protocol v3)
+
+The typed convenience view over the opaque `signal` field carried by
+`ClientMessage::Signal` / `ServerMessage::Signal`. Those wire fields are
+`serde_json::Value` so an unknown future signal shape can never break
+deserialization; `PeerSignal` lets you work with the common shapes ergonomically
+via its `From`/`TryFrom` conversions.
+
+`PeerSignal` is **externally tagged** (serde's default for enums), byte-identical
+to `matchbox_socket::PeerSignal`:
+
+```rust,ignore
+pub enum PeerSignal {
+    Offer(String),
+    Answer(String),
+    IceCandidate(String),
+}
+```
+
+| Variant | JSON value |
+|---------|-----------|
+| `Offer(sdp)` | `{ "Offer": "<sdp>" }` |
+| `Answer(sdp)` | `{ "Answer": "<sdp>" }` |
+| `IceCandidate(cand)` | `{ "IceCandidate": "<candidate>" }` |
+
+```rust,ignore
+use signal_fish_client::PeerSignal;
+
+// PeerSignal <-> serde_json::Value
+let value: serde_json::Value = PeerSignal::Offer(sdp).into();   // infallible
+let signal = PeerSignal::try_from(&value)?;                     // fallible
+```
+
+!!! warning "External tagging, not the `{ type: ..., data: ... }` envelope"
+    Unlike `ClientMessage`/`ServerMessage` (adjacently tagged), `PeerSignal`
+    uses serde's default **external** tagging — the variant name is the key.
+    This matches the matchbox wire format exactly.
+
+---
+
 ## `ClientMessage`
 
-Messages sent from the client to the server. There are **11 variants**, all
+Messages sent from the client to the server. There are **14 variants**, all
 constructed internally by `SignalFishClient` methods — you never need to build
-these by hand.
+these by hand. `StartGame` is the protocol-v2 explicit-start message; `Signal`
+and `TransportStatus` are protocol-v3 additions.
 
 ```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +552,9 @@ pub enum ClientMessage { /* ... */ }
 | `Reconnect` | Reconnect to a room after a disconnection. |
 | `JoinAsSpectator` | Join a room as a read-only spectator. |
 | `LeaveSpectator` | Leave spectator mode. |
+| `StartGame` | **(v2)** Explicitly start the game, finalizing the lobby (via `client.start_game()`). |
+| `Signal` | **(v3)** Relay an opaque WebRTC signal to a single peer (via `client.send_signal(...)`). |
+| `TransportStatus` | **(v3)** Report whether a data-path transport is established (via `client.report_transport_status(...)`). |
 
 !!! note
     You don't construct `ClientMessage` values directly. Call the corresponding
@@ -385,9 +565,10 @@ pub enum ClientMessage { /* ... */ }
 
 ## `ServerMessage`
 
-Messages received from the server. There are **24 variants**. You don't parse
+Messages received from the server. There are **28 variants**. You don't parse
 these manually — they arrive as `SignalFishEvent` variants through the event
-channel.
+channel. The last four are protocol-v3 additions, sent only on a v3-negotiated
+connection.
 
 ```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,11 +602,30 @@ pub enum ServerMessage { /* ... */ }
 | `NewSpectatorJoined` | Another spectator joined the room. |
 | `SpectatorDisconnected` | Another spectator disconnected. |
 | `Error` | Generic server error. |
+| `Signal` | **(v3)** An opaque WebRTC signal relayed from a peer. |
+| `NewPeer` | **(v3)** A late-joining peer to connect to after the session was finalized. |
+| `SessionPlan` | **(v3)** The per-recipient session plan for a finalized non-relay room. |
+| `PeerTransportStatus` | **(v3)** A peer's data-path transport state changed (informational). |
 
 !!! note
     You don't parse `ServerMessage` directly. The `SignalFishClient` run loop
     deserializes incoming JSON and emits typed `SignalFishEvent` variants
     through the event receiver. See the [Events](events.md) page for details.
+
+---
+
+## New optional fields (protocol v3)
+
+v3 stays backward compatible by **adding optional fields to existing messages**.
+Each is `Option` + `skip_serializing_if` (or a `Vec` skipped when empty), so a v2
+connection that sets none of them produces byte-identical v2 JSON. A v2 client
+safely ignores any of these it doesn't recognize.
+
+| Message | New field(s) | Purpose |
+|---------|--------------|---------|
+| `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies` | Advertise the highest version, data-path transports, and topologies the client can fulfill. Set by `SignalFishConfig::enable_mesh()`. |
+| `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version` | The negotiated version (plus the deployment's accepted range). |
+| `RoomJoinedPayload` / `ReconnectedPayload` | `ice_servers: Vec<IceServer>` | ICE pre-gather: STUN/TURN servers delivered during the lobby wait so WebRTC candidate gathering can start early. Empty (and absent from the wire) for v2. |
 
 ---
 
@@ -449,7 +649,7 @@ Every message on the wire is a JSON object with two top-level keys:
         "type": "Authenticate",
         "data": {
             "app_id": "mb_app_abc123",
-            "sdk_version": "0.4.1"
+            "sdk_version": "0.5.0"
         }
     }
     ```

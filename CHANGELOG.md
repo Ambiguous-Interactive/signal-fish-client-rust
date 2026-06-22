@@ -7,8 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional low-latency mesh pump: `WebRtcDriver::set_ready_waker` (default no-op)
+  hands the driver a `MeshWaker` it can `wake()` when it has output ready, so
+  trickled ICE candidates and inbound data surface immediately instead of waiting
+  up to one `MeshController` pump interval. Entirely optional to implement and
+  available with the `mesh` + `tokio-runtime` features.
+- Comprehensive v2/v3 user documentation: new `docs/protocol-versioning.md` and
+  `docs/mesh-guide.md` guides, expanded protocol/events/errors/concepts/examples
+  pages, a v3 walkthrough of `examples/mesh_session.rs`, and consistent
+  "Protocol v3 only" rustdoc notes across the v3 API.
+
 ### Changed
 
+- `MeshSession` and `MeshController` now defensively replay any mesh events a
+  server batches into a reconnect's `missed_events` (in addition to handling a
+  re-sent live `SessionPlan`), so a mesh session is rebuilt correctly after a
+  reconnect regardless of which strategy the server uses. The fold is idempotent.
+
+### Fixed
+
+- `examples/basic_lobby.rs` now bases reconnect start decisions on the
+  authoritative reconnect snapshot while using missed events only to detect that
+  the game already started or finalized.
+- Documentation validation scripts now avoid Python 3.10-only annotation forms,
+  keeping the pre-commit/docs checks importable on Python 3.9 environments.
+- `MeshController` now restarts a peer's handshake when the server *reassigns*
+  its offerer role across a re-plan — a host re-election or topology change that
+  flips the peer's `initiate`/`you_initiate`. Previously a surviving peer kept
+  the driver in its stale offerer role, which could cause WebRTC glare (both
+  peers offer) or a stuck handshake (both wait); a survivor whose role is
+  unchanged still keeps its live connection.
+- `MeshController` now reports `TransportStatus(WebRtc, false)` on the final
+  channel-down edge when leaving a room or disconnecting with a live data
+  channel; previously the `RoomLeft`/`Disconnected` teardown cleared its
+  connected-peer set directly and skipped that report (the per-peer `PlayerLeft`
+  path already reported it).
+- `MeshSession::apply` no longer reports a spurious change when re-applying an
+  ICE pre-gather set identical to the one already held.
+
+## [0.5.0] - 2026-06-20
+
+### Added
+
+- Protocol v2: explicit `ClientMessage::StartGame` to begin a game once players
+  are ready (`SignalFishClient::start_game()` / `SignalFishPollingClient::start_game()`),
+  plus error codes `GameStartNotReady` (`GAME_START_NOT_READY`) and
+  `GameStartForbidden` (`GAME_START_FORBIDDEN`).
+- Protocol v3 (additive, backward-compatible "relay floor"): new wire types
+  `Topology`, `TransportKind`, `IceServer`, `SessionPeer`, `SessionPlanPayload`,
+  and the externally-tagged, matchbox-compatible `PeerSignal`
+  (`Offer`/`Answer`/`IceCandidate`).
+- New client messages `Signal` and `TransportStatus`, and new server messages
+  `Signal`, `NewPeer`, `SessionPlan`, and `PeerTransportStatus`, surfaced as the
+  corresponding `SignalFishEvent` variants.
+- Six v3 error codes: `CROSS_ROOM_SIGNAL`, `UNSUPPORTED_TRANSPORT`,
+  `SIGNAL_TARGET_NOT_FOUND`, `SIGNAL_RATE_LIMITED`, `SIGNAL_TOO_LARGE`, and
+  `CONNECTION_IDLE_TIMEOUT`.
+- `SignalFishConfig::enable_mesh()` (one-liner mesh opt-in) plus
+  `with_protocol_version`/`with_transports`/`with_topologies`. `Authenticate`
+  gains optional `protocol_version`/`supported_transports`/`supported_topologies`
+  (omitted from the wire by default, so v2 bytes are unchanged); `ProtocolInfo`
+  gains negotiated version fields; `RoomJoined`/`Reconnected` gain optional
+  `ice_servers` (ICE pre-gather).
+- Mesh client API: `send_signal`/`send_offer`/`send_answer`/`send_ice_candidate`/
+  `send_raw_signal`, `report_transport_status`, `negotiated_protocol_version()`,
+  and `supports_mesh()` on both clients; a fail-fast
+  `SignalFishError::ProtocolUnsupported` guard for v3 sends before negotiation.
+- `mesh` feature: `MeshSession` (zero-dependency v3 state tracker) and the
+  batteries-included `WebRtcDriver` seam + `MeshController` that drives the whole
+  signaling handshake against a consumer's WebRTC backend, with a runnable
+  `examples/mesh_session.rs`.
+- Golden-wire conformance: vendored server protocol samples
+  (`tests/wire-samples/`) with semantic round-trip tests
+  (`tests/wire_golden_tests.rs`, compared as `serde_json::Value` so key
+  order / whitespace are ignored) and a scheduled drift workflow
+  (`.github/workflows/protocol-sync.yml`). The default relay path is verified
+  byte-identical to v2.
+
+### Fixed
+
+- Dev container: removed Unix-only host initialization and required host-home
+  credential bind mounts (`~/.ssh`, `~/.gitconfig`, `~/.gnupg`) so VS Code can
+  open the devcontainer reliably across Windows, macOS, Linux, WSL, Codespaces,
+  and remote Docker hosts. Previously the container could fail before startup
+  when `initializeCommand` ran through Windows `cmd.exe`, when `HOME` was unset,
+  or when host credential paths were missing/not shared with Docker.
+
+### Changed
+
+- **Game start is now explicit (migration).** The game no longer auto-starts when
+  all players are ready — the authority (or any member, if the room has no
+  authority) must call `start_game()`. Non-authority callers in an authority room
+  receive `GameStartForbidden`; calling before everyone is ready yields
+  `GameStartNotReady`.
+- **Relay users are unaffected.** Clients that do not call `enable_mesh()` see no
+  wire-format or behavioral change — the relay path is byte-identical to v2. Mesh
+  signaling is strictly opt-in.
+- Adding variants to the public `ClientMessage`, `ServerMessage`,
+  `SignalFishEvent`, `ErrorCode`, and `SignalFishError` enums is breaking under
+  semver, so this is a MINOR (`0.4.1` → `0.5.0`) bump for a 0.x crate.
 - Dependabot: corrected `open-pull-requests-limit` from 2 to 1 for both the
   `cargo` and `github-actions` ecosystems, aligning the config value with the
   documented "single consolidated batch PR" intent. Updated header comment from

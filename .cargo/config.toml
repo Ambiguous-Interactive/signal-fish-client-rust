@@ -1,0 +1,4 @@
+[net]
+# Cargo defaults to 3 retries, which is too brittle for CI jobs that generate a
+# fresh lockfile and fetch many sparse-index entries from crates.io.
+retry = 10

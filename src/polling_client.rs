@@ -12,7 +12,10 @@ use tracing::{debug, error, warn};
 use crate::client::{JoinRoomParams, SignalFishConfig};
 use crate::error::{Result, SignalFishError};
 use crate::event::SignalFishEvent;
-use crate::protocol::{ClientMessage, ConnectionInfo, PlayerId, RoomId, ServerMessage};
+use crate::protocol::{
+    ClientMessage, ConnectionInfo, PlayerId, RoomId, ServerMessage, TransportKind,
+};
+use crate::signal::PeerSignal;
 use crate::transport::Transport;
 
 // ── Internal state ──────────────────────────────────────────────────
@@ -21,6 +24,14 @@ use crate::transport::Transport;
 struct PollingClientState {
     connected: bool,
     authenticated: bool,
+    /// Protocol version negotiated by the server (from `ProtocolInfo`).
+    /// `0` means not-yet-negotiated or negotiated v2 — i.e. not v3-capable.
+    negotiated_protocol_version: u16,
+    /// Whether a `ProtocolInfo` has been observed on this connection. Separates
+    /// "negotiation hasn't happened yet" from "negotiation completed at the v2
+    /// relay floor" — both leave `negotiated_protocol_version` at `0`. Drives
+    /// the `ProtocolUnsupported { mode }` diagnostic.
+    protocol_info_seen: bool,
     player_id: Option<PlayerId>,
     room_id: Option<RoomId>,
     room_code: Option<String>,
@@ -33,6 +44,8 @@ impl PollingClientState {
             // Set true at construction; set false by handle_disconnect().
             connected: true,
             authenticated: false,
+            negotiated_protocol_version: 0,
+            protocol_info_seen: false,
             player_id: None,
             room_id: None,
             room_code: None,
@@ -41,6 +54,8 @@ impl PollingClientState {
 
     fn clear_session(&mut self) {
         self.authenticated = false;
+        self.negotiated_protocol_version = 0;
+        self.protocol_info_seen = false;
         self.player_id = None;
         self.room_id = None;
         self.room_code = None;
@@ -115,6 +130,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             sdk_version: config.sdk_version,
             platform: config.platform,
             game_data_format: config.game_data_format,
+            protocol_version: config.protocol_version,
+            supported_transports: config.supported_transports,
+            supported_topologies: config.supported_topologies,
         };
 
         let mut cmd_queue = VecDeque::new();
@@ -371,7 +389,119 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.queue_cmd(ClientMessage::Ping)
     }
 
+    // ── Game start (protocol v2) ────────────────────────────────────
+
+    /// Request that the server start the game (protocol v2).
+    ///
+    /// See [`SignalFishClient::start_game`](crate::SignalFishClient::start_game)
+    /// for the full semantics (explicit start, all-ready + authority gating).
+    /// Available on every connection, not gated behind the mesh opt-in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    pub fn start_game(&mut self) -> Result<()> {
+        self.queue_cmd(ClientMessage::StartGame)
+    }
+
+    // ── Mesh signaling (protocol v3) ────────────────────────────────
+
+    /// Send a typed WebRTC signal to a single peer.
+    ///
+    /// **Protocol v3 only.** Fails fast on a relay-floor connection (see Errors).
+    ///
+    /// See [`SignalFishClient::send_signal`](crate::SignalFishClient::send_signal).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
+    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
+    /// transport has closed.
+    pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
+        self.ensure_v3()?;
+        self.queue_cmd(ClientMessage::Signal {
+            to,
+            signal: signal.into().into(),
+        })
+    }
+
+    /// Send an SDP offer to a peer. **Protocol v3 only.**
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_offer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::Offer(sdp.into()))
+    }
+
+    /// Send an SDP answer to a peer. **Protocol v3 only.**
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_answer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::Answer(sdp.into()))
+    }
+
+    /// Send a single trickle ICE candidate to a peer. **Protocol v3 only.**
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_ice_candidate(&mut self, to: PlayerId, candidate: impl Into<String>) -> Result<()> {
+        self.send_signal(to, PeerSignal::IceCandidate(candidate.into()))
+    }
+
+    /// Raw escape hatch: relay an un-modeled signal shape. **Protocol v3 only.**
+    ///
+    /// Still gated on a negotiated v3 session — the escape hatch bypasses the
+    /// typing, not the negotiation guard.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal`](Self::send_signal).
+    pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
+        self.ensure_v3()?;
+        self.queue_cmd(ClientMessage::Signal { to, signal })
+    }
+
+    /// Report whether a data-path transport is established. **Protocol v3 only.**
+    ///
+    /// See [`SignalFishClient::report_transport_status`](crate::SignalFishClient::report_transport_status).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
+    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
+    /// transport has closed.
+    pub fn report_transport_status(
+        &mut self,
+        transport: TransportKind,
+        connected: bool,
+    ) -> Result<()> {
+        self.ensure_v3()?;
+        self.queue_cmd(ClientMessage::TransportStatus {
+            transport,
+            connected,
+        })
+    }
+
     // ── State accessors ─────────────────────────────────────────────
+
+    /// The protocol version negotiated with the server, or `None` if not yet
+    /// negotiated or negotiated as v2 (the relay floor).
+    pub fn negotiated_protocol_version(&self) -> Option<u16> {
+        match self.state.negotiated_protocol_version {
+            0 => None,
+            v => Some(v),
+        }
+    }
+
+    /// Returns `true` once the connection has negotiated protocol v3 — i.e. mesh
+    /// signaling is available. The "am I in mesh mode?" check.
+    pub fn supports_mesh(&self) -> bool {
+        self.negotiated_protocol_version().is_some_and(|v| v >= 3)
+    }
 
     /// Whether the transport connection is still alive.
     pub fn is_connected(&self) -> bool {
@@ -427,6 +557,27 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     // ── Private helpers ─────────────────────────────────────────────
 
+    /// Guard for protocol-v3-only operations: returns an error unless the
+    /// connection negotiated v3, so signaling never goes out on a relay-floor
+    /// connection the server would reject.
+    fn ensure_v3(&self) -> Result<()> {
+        // Mesh signaling was introduced in protocol v3; any negotiated version
+        // >= 3 supports it.
+        if self.state.negotiated_protocol_version >= 3 {
+            return Ok(());
+        }
+        // A `ProtocolInfo` that resolved below v3 is a terminal relay floor;
+        // its absence means negotiation is still in flight. Keying off the
+        // observed `ProtocolInfo` (not authentication) keeps this diagnostic
+        // correct regardless of handshake message ordering.
+        let mode = if self.state.protocol_info_seen {
+            "relay-only"
+        } else {
+            "pre-negotiation"
+        };
+        Err(SignalFishError::ProtocolUnsupported { mode })
+    }
+
     fn queue_cmd(&mut self, msg: ClientMessage) -> Result<()> {
         if !self.state.connected {
             return Err(SignalFishError::NotConnected);
@@ -446,6 +597,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
             ServerMessage::Authenticated { .. } => {
                 self.state.authenticated = true;
             }
+            ServerMessage::ProtocolInfo(payload) => {
+                self.state.negotiated_protocol_version = payload.protocol_version.unwrap_or(0);
+                // Mark negotiation as observed even for a v2 floor (version 0):
+                // this separates "relay-only" from "pre-negotiation" in the guard.
+                self.state.protocol_info_seen = true;
+            }
             ServerMessage::RoomJoined(payload) => {
                 self.state.player_id = Some(payload.player_id);
                 self.state.room_id = Some(payload.room_id);
@@ -459,6 +616,20 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 self.state.player_id = Some(payload.player_id);
                 self.state.room_id = Some(payload.room_id);
                 self.state.room_code = Some(payload.room_code.clone());
+                // Restore the negotiated version if it was replayed via
+                // missed_events, so v3 sends aren't wrongly blocked after a
+                // reconnect. Only a versioned (v3+) ProtocolInfo restores — a
+                // replayed v2 one must not silently downgrade an active session.
+                if let Some(version) =
+                    crate::protocol::replayed_negotiated_version(&payload.missed_events)
+                {
+                    self.state.negotiated_protocol_version = version;
+                    // A replayed `ProtocolInfo` *was* observed; keep the flag
+                    // consistent with its name (moot while the guard
+                    // short-circuits on version >= 3, but preserves the
+                    // "seen implies a ProtocolInfo arrived" invariant).
+                    self.state.protocol_info_seen = true;
+                }
             }
             ServerMessage::SpectatorJoined(payload) => {
                 self.state.player_id = Some(payload.spectator_id);
@@ -662,6 +833,388 @@ mod tests {
             .expect("first sent message must be valid JSON");
         assert_eq!(sent_json["type"], "Authenticate");
         assert_eq!(sent_json["data"]["app_id"], "test_app_id");
+        // Relay floor on the client-produced path (polling client): no v3 keys.
+        assert!(sent_json["data"].get("protocol_version").is_none());
+        assert!(sent_json["data"].get("supported_transports").is_none());
+        assert!(sent_json["data"].get("supported_topologies").is_none());
+    }
+
+    #[test]
+    fn poll_with_enable_mesh_advertises_v3_on_the_wire() {
+        let transport = MockTransport::new();
+        let config = SignalFishConfig::new("mb_mesh").enable_mesh();
+        let mut client = SignalFishPollingClient::new(transport, config);
+
+        client.poll();
+
+        let sent_json: serde_json::Value = serde_json::from_str(&client.transport.sent[0])
+            .expect("first sent message must be valid JSON");
+        assert_eq!(sent_json["data"]["protocol_version"], 3);
+        assert_eq!(
+            sent_json["data"]["supported_transports"],
+            serde_json::json!(["webrtc", "relay"])
+        );
+        assert_eq!(
+            sent_json["data"]["supported_topologies"],
+            serde_json::json!(["mesh", "host", "relay"])
+        );
+    }
+
+    // ── Protocol v2/v3: start_game, signaling, negotiation guard ────
+
+    const PROTOCOL_INFO_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#;
+    // A v2 negotiation omits the version fields entirely (so the bytes stay
+    // identical to a v2 server), which deserializes to `protocol_version: None`.
+    const PROTOCOL_INFO_V2: &str =
+        r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[]}}"#;
+    const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
+
+    /// Parse every queued outgoing frame into a `ClientMessage`.
+    ///
+    /// Each frame MUST deserialize cleanly: silently dropping unparsable
+    /// frames would let assertions like "no `Signal` reached the wire" pass
+    /// against a malformed shape they never saw. A parse failure is a real
+    /// client bug, so surface it loudly.
+    fn last_sent(client: &SignalFishPollingClient<MockTransport>) -> Vec<ClientMessage> {
+        client
+            .transport
+            .sent
+            .iter()
+            .map(|m| {
+                serde_json::from_str::<ClientMessage>(m).unwrap_or_else(|e| {
+                    panic!("outgoing client message must deserialize: {e}\n{m}")
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn start_game_queues_start_game_message() {
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        client.start_game().expect("start_game");
+        client.poll();
+        assert!(last_sent(&client)
+            .iter()
+            .any(|m| matches!(m, ClientMessage::StartGame)));
+    }
+
+    #[test]
+    fn send_signal_before_v3_returns_protocol_unsupported() {
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.negotiated_protocol_version().is_none());
+        assert!(!client.supports_mesh());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        // Authenticated but no `ProtocolInfo` yet → negotiation in flight, so
+        // the guard reports "pre-negotiation" (NOT "relay-only", which requires
+        // an observed v2 `ProtocolInfo` — see `v2_protocol_info_is_relay_only`).
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported {
+                mode: "pre-negotiation"
+            })
+        ));
+        // Nothing v3 reached the wire (the guard runs before enqueue).
+        client.poll();
+        assert!(last_sent(&client)
+            .iter()
+            .all(|m| !matches!(m, ClientMessage::Signal { .. })));
+    }
+
+    #[test]
+    fn v2_protocol_info_is_relay_only() {
+        // A v2 `ProtocolInfo` (no version field) is a terminal relay floor: the
+        // guard reports "relay-only", distinct from the "pre-negotiation" state
+        // before any `ProtocolInfo` arrives.
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.negotiated_protocol_version().is_none());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+        ));
+    }
+
+    #[test]
+    fn disconnect_resets_protocol_info_seen_to_pre_negotiation() {
+        // Negotiate v3, then disconnect: the guard must fall all the way back to
+        // "pre-negotiation" (proving `protocol_info_seen` is cleared with the
+        // rest of the session state, not just the version).
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.supports_mesh());
+        client.close();
+        assert!(client.negotiated_protocol_version().is_none());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported {
+                mode: "pre-negotiation"
+            })
+        ));
+    }
+
+    #[test]
+    fn send_signal_before_authentication_is_pre_negotiation() {
+        // The `mode: "pre-negotiation"` branch: no poll/auth before the send.
+        let transport = MockTransport::new();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::ProtocolUnsupported {
+                mode: "pre-negotiation"
+            })
+        ));
+    }
+
+    #[test]
+    fn send_signal_after_v3_is_queued() {
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert_eq!(client.negotiated_protocol_version(), Some(3));
+        assert!(client.supports_mesh());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        client.send_offer(peer, "the-sdp").expect("send_offer");
+        client.poll();
+        let signal = last_sent(&client).into_iter().find_map(|m| match m {
+            ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+            _ => None,
+        });
+        assert_eq!(signal, Some(serde_json::json!({ "Offer": "the-sdp" })));
+    }
+
+    #[test]
+    fn send_answer_ice_and_raw_signal_wire_shapes() {
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        client.send_answer(peer, "ans").expect("send_answer");
+        client.send_ice_candidate(peer, "cand").expect("send_ice");
+        client
+            .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
+            .expect("send_raw_signal");
+        client.poll();
+        let signals: Vec<serde_json::Value> = last_sent(&client)
+            .into_iter()
+            .filter_map(|m| match m {
+                ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+                _ => None,
+            })
+            .collect();
+        assert!(signals.contains(&serde_json::json!({ "Answer": "ans" })));
+        assert!(signals.contains(&serde_json::json!({ "IceCandidate": "cand" })));
+        assert!(signals.contains(&serde_json::json!({ "Renegotiate": true })));
+    }
+
+    #[test]
+    fn report_transport_status_after_v3_is_queued() {
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        client
+            .report_transport_status(TransportKind::WebRtc, true)
+            .expect("report_transport_status");
+        client.poll();
+        assert!(last_sent(&client).iter().any(|m| matches!(
+            m,
+            ClientMessage::TransportStatus {
+                transport: TransportKind::WebRtc,
+                connected: true
+            }
+        )));
+    }
+
+    #[test]
+    fn negotiated_version_resets_on_disconnect() {
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert!(client.supports_mesh());
+        client.close();
+        assert_eq!(client.negotiated_protocol_version(), None);
+        assert!(!client.supports_mesh());
+    }
+
+    #[test]
+    fn reconnect_restores_negotiated_version_from_missed_events() {
+        use crate::protocol::{LobbyState, ReconnectedPayload};
+        let payload = ReconnectedPayload {
+            room_id: uuid::Uuid::from_u128(100),
+            room_code: "R".into(),
+            player_id: uuid::Uuid::from_u128(200),
+            game_name: "g".into(),
+            max_players: 4,
+            supports_authority: false,
+            current_players: vec![],
+            is_authority: false,
+            lobby_state: LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "tcp".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            missed_events: vec![ServerMessage::ProtocolInfo(protocol_info_v3())],
+        };
+        let reconnected =
+            serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap();
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(reconnected)),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert_eq!(client.negotiated_protocol_version(), Some(3));
+        assert!(client.supports_mesh());
+        // A v3 send now succeeds after the reconnect.
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        client
+            .send_offer(peer, "sdp")
+            .expect("send after reconnect");
+        client.poll();
+        assert!(last_sent(&client)
+            .iter()
+            .any(|m| matches!(m, ClientMessage::Signal { .. })));
+    }
+
+    #[test]
+    fn v4_negotiation_still_enables_mesh() {
+        // `>= 3` (not `== 3`): a future v4 negotiation must still enable mesh.
+        let pi_v4 = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":4,"min_protocol_version":2,"max_protocol_version":4}}"#;
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(pi_v4.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        assert_eq!(client.negotiated_protocol_version(), Some(4));
+        assert!(client.supports_mesh());
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        client.send_offer(peer, "sdp").expect("v4 must enable mesh");
+    }
+
+    /// A `ProtocolInfoPayload` negotiating v3 (for missed_events fixtures).
+    fn protocol_info_v3() -> crate::protocol::ProtocolInfoPayload {
+        crate::protocol::ProtocolInfoPayload {
+            platform: None,
+            sdk_version: None,
+            minimum_version: None,
+            recommended_version: None,
+            capabilities: vec![],
+            notes: None,
+            game_data_formats: vec![],
+            player_name_rules: None,
+            protocol_version: Some(3),
+            min_protocol_version: Some(2),
+            max_protocol_version: Some(3),
+        }
+    }
+
+    #[test]
+    fn poll_emits_session_plan_and_signal_events() {
+        let session_plan = format!(
+            r#"{{"type":"SessionPlan","data":{{"topology":"mesh","transport":"webrtc","peers":[{{"player_id":"{PEER_UUID}","player_name":"P","is_authority":false,"initiate":true}}],"fallback":"relay"}}}}"#
+        );
+        let signal = format!(
+            r#"{{"type":"Signal","data":{{"from":"{PEER_UUID}","signal":{{"Offer":"remote-sdp"}}}}}}"#
+        );
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+            Some(Ok(session_plan)),
+            Some(Ok(signal)),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let events = client.poll();
+
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            SignalFishEvent::SessionPlan { peers, .. }
+                if peers.len() == 1 && peers[0].player_id == peer && peers[0].initiate
+        )));
+        // Decode the received signal payload (not just match the variant).
+        let received = events.iter().find_map(|e| match e {
+            SignalFishEvent::SignalReceived { from, signal } if *from == peer => {
+                Some(PeerSignal::try_from(signal).expect("typed signal"))
+            }
+            _ => None,
+        });
+        assert_eq!(received, Some(PeerSignal::Offer("remote-sdp".into())));
+    }
+
+    #[test]
+    fn poll_emits_new_peer_and_peer_transport_status_events() {
+        let new_peer = format!(
+            r#"{{"type":"NewPeer","data":{{"peer_id":"{PEER_UUID}","you_initiate":true}}}}"#
+        );
+        let status = format!(
+            r#"{{"type":"PeerTransportStatus","data":{{"peer_id":"{PEER_UUID}","transport":"webrtc","connected":true}}}}"#
+        );
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(new_peer)),
+            Some(Ok(status)),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let events = client.poll();
+
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            SignalFishEvent::NewPeer { peer_id, you_initiate: true } if *peer_id == peer
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            SignalFishEvent::PeerTransportStatus { peer_id, transport: TransportKind::WebRtc, connected: true }
+                if *peer_id == peer
+        )));
+    }
+
+    #[test]
+    fn poll_skips_unknown_message_type_then_next_arrives() {
+        // A well-formed but unknown `type` is skipped (distinct from malformed
+        // JSON), and the following valid message still surfaces.
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
+            Some(Ok(r#"{"type":"Pong"}"#.to_string())),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let events = client.poll();
+        assert!(events.iter().any(|e| matches!(e, SignalFishEvent::Pong)));
+        assert!(client.is_connected());
+    }
+
+    fn authenticated_json_str() -> &'static str {
+        r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#
     }
 
     #[test]
@@ -1875,6 +2428,9 @@ mod tests {
                 notes: None,
                 game_data_formats: vec![crate::protocol::GameDataEncoding::Json],
                 player_name_rules: None,
+                protocol_version: None,
+                min_protocol_version: None,
+                max_protocol_version: None,
             },
         ))
         .expect("ProtocolInfo ServerMessage must serialize to JSON");
@@ -1978,6 +2534,7 @@ mod tests {
                 ready_players: vec![],
                 relay_type: "websocket".into(),
                 current_spectators: vec![],
+                ice_servers: vec![],
             },
         )))
         .expect("RoomJoined ServerMessage must serialize to JSON");
@@ -2023,6 +2580,7 @@ mod tests {
                 ready_players: vec![],
                 relay_type: "websocket".into(),
                 current_spectators: vec![],
+                ice_servers: vec![],
             },
         )))
         .expect("RoomJoined (first) ServerMessage must serialize to JSON");
@@ -2042,6 +2600,7 @@ mod tests {
                 ready_players: vec![],
                 relay_type: "tcp".into(),
                 current_spectators: vec![],
+                ice_servers: vec![],
             },
         )))
         .expect("RoomJoined (second) ServerMessage must serialize to JSON");

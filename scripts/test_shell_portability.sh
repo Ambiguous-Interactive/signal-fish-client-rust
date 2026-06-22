@@ -140,17 +140,19 @@ check_file() {
 # ── Main ──────────────────────────────────────────────────────────────
 
 echo "=== Shell portability check ==="
-echo "Scanning .sh files in: $REPO_ROOT/scripts/"
+echo "Scanning .sh files in:"
+echo "  $REPO_ROOT/scripts/"
+echo "  $REPO_ROOT/.devcontainer/scripts/"
 echo ""
 
-# Collect all .sh files in scripts/
+# Collect all committed shell scripts that run in CI, hooks, or devcontainers.
 SCRIPT_FILES=()
-for f in "$REPO_ROOT/scripts/"*.sh; do
+for f in "$REPO_ROOT/scripts/"*.sh "$REPO_ROOT/.devcontainer/scripts/"*.sh; do
     [ -f "$f" ] && SCRIPT_FILES+=("$f")
 done
 
 if [ "${#SCRIPT_FILES[@]}" -eq 0 ]; then
-    echo "No .sh files found in scripts/ — nothing to check."
+    echo "No .sh files found — nothing to check."
     exit 0
 fi
 

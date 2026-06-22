@@ -76,7 +76,7 @@ fi
 echo ""
 
 # ── Phase 3: shellcheck — lint shell scripts ─────────────────────────
-echo -e "${YELLOW}Phase 3: Running shellcheck on scripts/*.sh...${NC}"
+echo -e "${YELLOW}Phase 3: Running shellcheck on scripts/*.sh and .devcontainer/scripts/*.sh...${NC}"
 
 if ! command -v shellcheck &>/dev/null; then
     echo -e "${YELLOW}SKIP: shellcheck is not installed.${NC}"
@@ -84,15 +84,20 @@ if ! command -v shellcheck &>/dev/null; then
     echo "       or: brew install shellcheck"
 else
     # Guard: at least one .sh file must exist for shellcheck
-    if compgen -G "scripts/*.sh" > /dev/null; then
-        if shellcheck scripts/*.sh 2>&1; then
+    SHELL_FILES=()
+    for shell_file in scripts/*.sh .devcontainer/scripts/*.sh; do
+        [ -f "$shell_file" ] || continue
+        SHELL_FILES+=("$shell_file")
+    done
+    if [ "${#SHELL_FILES[@]}" -gt 0 ]; then
+        if shellcheck "${SHELL_FILES[@]}" 2>&1; then
             echo -e "${GREEN}Phase 3: PASS${NC}"
         else
             echo -e "${RED}Phase 3: FAIL${NC}"
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
     else
-        echo -e "${YELLOW}SKIP: No .sh files found in scripts/${NC}"
+        echo -e "${YELLOW}SKIP: No .sh files found in scripts/ or .devcontainer/scripts/${NC}"
     fi
 fi
 echo ""

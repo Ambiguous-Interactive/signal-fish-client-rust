@@ -97,9 +97,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Separated from Layer 1 so that base packages remain cached even when external
 # repo GPG keys or URLs change. The apt cache mounts are shared across layers.
 #
-# The entire external-repo setup and installation is wrapped in a single
-# conditional so that any network failure — including GPG key fetches — causes
-# a graceful WARNING rather than a hard build failure.
+# The external-repo setup is transactional: any network or repository failure
+# removes partially written source/keyring files before later apt-get update
+# layers run. Without that cleanup, an optional repo outage can poison the image
+# build after this best-effort layer has already continued.
 #
 # Note: GPG keys are verified via apt's signed-by mechanism during package
 # installation. We don't pin key checksums because upstream keys may rotate;
@@ -107,7 +108,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # this dev environment.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    if mkdir -p /etc/apt/keyrings \
+    optional_apt_files=( \
+    /tmp/eza.asc \
+    /etc/apt/keyrings/gierens.gpg \
+    /etc/apt/sources.list.d/gierens.list \
+    /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    /etc/apt/sources.list.d/github-cli.list \
+    ) \
+    && cleanup_optional_apt() { rm -f "${optional_apt_files[@]}"; } \
+    && if mkdir -p /etc/apt/keyrings \
     # Set up eza repository with GPG key verification
     && wget -qO /tmp/eza.asc https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
     && gpg --dearmor < /tmp/eza.asc > /etc/apt/keyrings/gierens.gpg \
@@ -124,9 +133,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # Update index for new repos and install
     && apt-get update \
     && apt-get install -y --no-install-recommends eza gh; then \
+    cleanup_optional_apt; \
     eza --version || true; \
     gh --version || true; \
     else \
+    cleanup_optional_apt; \
     echo "WARNING: optional tools (eza/gh) unavailable; continuing build"; \
     fi
 
@@ -160,12 +171,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # =============================================================================
 # Git Configuration (system-level, as root)
 # =============================================================================
-# Written to /etc/gitconfig (via --system) so it survives the read-only
-# ~/.gitconfig bind mount defined in devcontainer.json. Writing to --global
-# (i.e., ~/.gitconfig) during build would be pointless: devcontainer.json
-# completely replaces that file with the host's ~/.gitconfig at container start.
-# Note: user-level keys in ~/.gitconfig still take precedence over these system
-# defaults — users can override any setting in their own git config.
+# Written to /etc/gitconfig (via --system) so the defaults are available before
+# VS Code copies or overlays user-level Git config in the devcontainer session.
+# User-level keys still take precedence over these system defaults.
 RUN if command -v delta >/dev/null 2>&1; then \
     git config --system core.pager "delta" \
     && git config --system interactive.diffFilter "delta --color-only" \
