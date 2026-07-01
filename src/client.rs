@@ -640,6 +640,16 @@ impl SignalFishClient {
     /// is the recommended way to stream high-rate payloads (rollback input
     /// packets, state sync) without guessing at sleep durations.
     ///
+    /// # Keep draining events
+    ///
+    /// The command queue only drains while the transport loop runs, and the
+    /// transport loop pauses whenever the **event** channel is full (events
+    /// are never dropped). A task that awaits this method while it is also
+    /// the only consumer of the event receiver can therefore deadlock under
+    /// simultaneous send + receive pressure. Drain events concurrently (a
+    /// separate task, or `tokio::select!` over the event receiver and this
+    /// send) rather than strictly sequentially.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
