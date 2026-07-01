@@ -13,6 +13,26 @@
 //!   stays byte-identical to v2 (see [Protocol versions](#protocol-versions))
 //! - **WebSocket built-in** — default `transport-websocket` feature provides `WebSocketTransport`
 //! - **Event-driven** — receive typed `SignalFishEvent`s via a channel
+//! - **No silent loss** — events are delivered with backpressure and sends are
+//!   bounded with explicit congestion signals (see
+//!   [Delivery guarantees](client#delivery-guarantees))
+//!
+//! ## Choosing a client
+//!
+//! The crate ships two clients with identical protocol behavior; pick by how
+//! your application is driven:
+//!
+//! - [`SignalFishClient`] (async) — spawns a background transport loop with
+//!   [`tokio::spawn`]. Use it when a tokio runtime is *running* (a
+//!   `#[tokio::main]`/`block_on` application, multi-thread or
+//!   `current_thread`). It only makes progress while the runtime is driven —
+//!   manually "ticking" a runtime once per frame starves it (see
+//!   [the driving contract](client#driving-the-client-runtime-contract)).
+//! - [`SignalFishPollingClient`](polling_client::SignalFishPollingClient)
+//!   (sync, feature `polling-client`) — no background task, no runtime. You
+//!   call [`poll()`](polling_client::SignalFishPollingClient::poll) once per
+//!   frame from a game loop. This is the right client for frame-driven
+//!   engines (Godot, Bevy without tokio, Unity via FFI) and `wasm32` targets.
 //!
 //! ## Protocol versions
 //!

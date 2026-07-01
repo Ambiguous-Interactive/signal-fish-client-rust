@@ -478,6 +478,13 @@ impl SignalFishClient {
     /// The transport loop immediately sends an [`Authenticate`](ClientMessage::Authenticate)
     /// message using the provided [`SignalFishConfig`].
     ///
+    /// The loop is spawned with [`tokio::spawn`] and therefore only makes
+    /// progress while the tokio runtime is driven — see
+    /// [the driving contract](self#driving-the-client-runtime-contract). For
+    /// frame-driven or runtime-less environments use
+    /// [`SignalFishPollingClient`](crate::polling_client::SignalFishPollingClient)
+    /// instead.
+    ///
     /// # Arguments
     ///
     /// * `transport` — A connected [`Transport`] implementation.
@@ -1742,6 +1749,48 @@ mod tests {
             seqs, expected,
             "GameData must be delivered losslessly and in order"
         );
+
+        client.shutdown().await;
+    }
+
+    /// Issue #47, item 3 (driving contract): a `current_thread` runtime is
+    /// fully supported as long as it is actually *driven* — every await here
+    /// yields to the runtime, which is what lets the spawned transport loop
+    /// progress. No sleeps and no multi-thread runtime are required for a
+    /// complete authenticate → send → receive round-trip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_thread_runtime_completes_round_trip() {
+        let game_data_json = serde_json::to_string(&ServerMessage::GameData {
+            from_player: uuid::Uuid::from_u128(9),
+            data: serde_json::json!({ "seq": 0 }),
+        })
+        .unwrap();
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(game_data_json)),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Authenticated { .. }));
+
+        for seq in 0..3 {
+            client
+                .send_game_data_reliable(serde_json::json!({ "seq": seq }))
+                .await
+                .unwrap();
+        }
+
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::GameData { .. }));
+
+        // Authenticate + 3 GameData all reach the wire on a single thread.
+        wait_for_sent_len(&sent, 4).await;
+        wait_until(|| client.stats().game_data_sent == 3).await;
 
         client.shutdown().await;
     }

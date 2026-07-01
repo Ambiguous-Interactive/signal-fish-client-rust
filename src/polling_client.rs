@@ -1,9 +1,20 @@
 //! Synchronous, polling-based client for the Signal Fish signaling protocol.
 //!
-//! [`SignalFishPollingClient`] is designed for environments without an async
-//! runtime (e.g., Godot web builds via gdext on `wasm32-unknown-emscripten`).
-//! The caller drives the client by calling [`poll()`](SignalFishPollingClient::poll)
-//! once per frame from the game loop.
+//! [`SignalFishPollingClient`] is designed for environments without a
+//! continuously driven async runtime: frame-driven game engines (Godot,
+//! Unity via FFI, Bevy without tokio), `wasm32` targets (e.g. Godot web
+//! builds via gdext on `wasm32-unknown-emscripten`), and any application
+//! that would otherwise "tick" a tokio runtime once per frame — a pattern
+//! that starves [`SignalFishClient`](crate::SignalFishClient)'s spawned
+//! transport loop. The caller drives the client by calling
+//! [`poll()`](SignalFishPollingClient::poll) once per frame from the game
+//! loop; no background task or runtime is required.
+//!
+//! Delivery guarantees match the async client: incoming events are returned
+//! from `poll()` without loss, and outgoing commands go through a bounded
+//! queue that fails fast with
+//! [`SendBufferFull`](crate::error::SignalFishError::SendBufferFull) instead
+//! of growing without bound when the transport is congested.
 
 use std::collections::VecDeque;
 
