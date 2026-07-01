@@ -115,11 +115,13 @@ pub struct SignalFishConfig {
     pub supported_topologies: Option<Vec<Topology>>,
     /// Capacity of the bounded event channel.
     ///
-    /// When the consumer cannot keep up with incoming server messages, events
-    /// are dropped (with a warning logged) to avoid blocking the transport loop.
-    /// The `Disconnected` event uses a blocking send so it will not be dropped
-    /// due to a full channel, but it may be missed if the receiver is dropped
-    /// or if [`SignalFishClient::shutdown`] times out and aborts the transport task.
+    /// Events are **never dropped**. When the consumer cannot keep up with
+    /// incoming server messages, the transport loop pauses until the consumer
+    /// drains the channel, propagating backpressure to the server instead of
+    /// losing data. The capacity only controls how much buffering the consumer
+    /// gets before that backpressure kicks in. An event can only be missed if
+    /// the receiver is dropped or if [`SignalFishClient::shutdown`] times out
+    /// and aborts the transport task.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
@@ -1012,31 +1014,26 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
     }
 }
 
-/// Emit an event to the event channel. If the channel is full, log a warning
-/// and drop the event to avoid blocking the transport loop.
+/// Emit an event to the event channel, waiting for capacity if it is full.
+///
+/// Events are **never dropped**: when the consumer lags, the transport loop
+/// pauses here, which stops reading from the transport and propagates
+/// backpressure to the server (e.g. via TCP receive windows). Delivery only
+/// fails if the receiver has been dropped, or if
+/// [`SignalFishClient::shutdown`] aborts the transport task while this send
+/// is still waiting.
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishEvent) {
-    match event_tx.try_send(event) {
-        Ok(()) => {}
-        Err(mpsc::error::TrySendError::Full(dropped)) => {
-            warn!(
-                "event channel full, dropping event: {:?}",
-                std::mem::discriminant(&dropped)
-            );
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            debug!("event channel closed, receiver dropped");
-        }
+    if event_tx.send(event).await.is_err() {
+        debug!("event channel closed, receiver dropped");
     }
 }
 
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
-/// Uses `send().await` (blocking) instead of `try_send` so that `Disconnected`
-/// is not dropped due to channel backpressure. However, delivery is not
-/// unconditional: the event will be lost if the receiver has been dropped, or
-/// if [`SignalFishClient::shutdown`] aborts the transport task before this
-/// function completes.
+/// Like every event, `Disconnected` is delivered with backpressure (see
+/// [`emit_event`]); it can only be missed if the receiver has been dropped or
+/// if [`SignalFishClient::shutdown`] aborts the transport task first.
 #[cfg(feature = "tokio-runtime")]
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
@@ -1045,10 +1042,7 @@ async fn emit_disconnected(
 ) {
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
-    let event = SignalFishEvent::Disconnected { reason };
-    if event_tx.send(event).await.is_err() {
-        debug!("event channel closed, receiver dropped");
-    }
+    emit_event(event_tx, SignalFishEvent::Disconnected { reason }).await;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1452,8 +1446,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn small_event_channel_capacity_triggers_backpressure() {
-        // Use a capacity of 1 and send multiple messages — events should be dropped.
+    async fn small_event_channel_capacity_delivers_all_events_losslessly() {
+        // Capacity 1 forces maximum backpressure: the transport loop must wait
+        // for the consumer on every event instead of dropping any.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
@@ -1467,23 +1462,62 @@ mod tests {
         let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(1);
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        // Let the channel fill up and events get dropped.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Give the transport loop time to run ahead; it must block, not drop.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let mut count = 0;
-        while let Some(_event) = events.recv().await {
-            count += 1;
+        let mut received = Vec::new();
+        while let Some(event) = events.recv().await {
+            received.push(event);
         }
-        // With capacity 1, we should receive fewer events than were sent.
-        // At minimum we get Connected (first try_send succeeds) and Disconnected
-        // (delivered via blocking send, not dropped due to backpressure).
-        // Authenticated and Pong events may be dropped when the single-slot
-        // channel is full.
-        assert!(count >= 2, "expected at least 2 events, got {count}");
-        // But fewer than the total sent (2 synthetic + 1 auth + 20 pongs = 23 possible).
-        assert!(
-            count < 23,
-            "expected backpressure to drop some events, but got all {count}"
+        // Connected + Authenticated + 20 Pongs + Disconnected — nothing dropped.
+        assert_eq!(
+            received.len(),
+            23,
+            "every event must be delivered, got {}",
+            received.len()
+        );
+        assert!(matches!(received[0], SignalFishEvent::Connected));
+        assert!(matches!(received[1], SignalFishEvent::Authenticated { .. }));
+        assert!(matches!(
+            received.last(),
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn game_data_events_are_never_dropped_and_stay_ordered() {
+        // Data-driven regression for issue #47: a burst of sequenced GameData
+        // far larger than the event buffer must arrive complete and in order.
+        const MESSAGES: u64 = 500;
+        let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
+        incoming.push(Some(Ok(authenticated_json())));
+        for seq in 0..MESSAGES {
+            let msg = ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(7),
+                data: serde_json::json!({ "seq": seq }),
+            };
+            incoming.push(Some(Ok(serde_json::to_string(&msg).unwrap())));
+        }
+        incoming.push(None);
+
+        let (transport, _sent, _closed) = MockTransport::new(incoming);
+
+        // Tiny event buffer: correctness must not depend on channel capacity.
+        let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(2);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let mut seqs = Vec::new();
+        while let Some(event) = events.recv().await {
+            if let SignalFishEvent::GameData { data, .. } = event {
+                seqs.push(data["seq"].as_u64().unwrap());
+            }
+        }
+        let expected: Vec<u64> = (0..MESSAGES).collect();
+        assert_eq!(
+            seqs, expected,
+            "GameData must be delivered losslessly and in order"
         );
 
         client.shutdown().await;
@@ -1737,13 +1771,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_channel_backpressure_does_not_block() {
+    async fn event_channel_overflow_backpressures_without_loss() {
         // Create a transport with more messages than the event channel capacity.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
         // Fill more than DEFAULT_EVENT_CHANNEL_CAPACITY pong messages.
+        let pongs = DEFAULT_EVENT_CHANNEL_CAPACITY + 50;
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
-        for _ in 0..(DEFAULT_EVENT_CHANNEL_CAPACITY + 50) {
+        for _ in 0..pongs {
             incoming.push(Some(Ok(pong_json.clone())));
         }
         // End with a clean close.
@@ -1754,17 +1789,21 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        // Don't read events immediately — let the channel fill up.
+        // Don't read events immediately — let the channel fill up. The
+        // transport loop must pause on the full channel, not drop events.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Now drain events. The loop should have completed (possibly
-        // dropping some events due to backpressure) without blocking.
+        // Now drain events: every single one must have survived the overflow.
         let mut count = 0;
         while let Some(_event) = events.recv().await {
             count += 1;
         }
-        // We should have received at least some events.
-        assert!(count > 0, "expected to receive at least some events");
+        // Connected + Authenticated + pongs + Disconnected.
+        assert_eq!(
+            count,
+            pongs + 3,
+            "backpressure must preserve every event, got {count}"
+        );
 
         client.shutdown().await;
     }
