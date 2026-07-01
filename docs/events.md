@@ -19,6 +19,15 @@ descriptions and usage examples.
     `PlayerId` is an alias for `uuid::Uuid`.
     `RoomId` is an alias for `uuid::Uuid`.
 
+!!! note "Lossless delivery"
+    Events are **never dropped on overflow**. The event channel is bounded
+    (default **256**, via `SignalFishConfig::event_channel_capacity`), and a
+    consumer that falls behind pauses the transport loop until the channel
+    has room — backpressure propagates to the server instead of losing
+    events. There are exactly two ways an event can be missed: the event
+    receiver is dropped, or a [`shutdown()`](client.md#shutdown) timeout
+    aborts the transport task.
+
 ---
 
 ## Connection Events
@@ -31,9 +40,10 @@ Use these to track the raw connection lifecycle.
 | `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>` | The transport connection was closed or errored. |
 
-!!! note "Best-effort delivery"
-    `Disconnected` uses a blocking send so it will not be dropped due to channel
-    backpressure, but it may be missed if the event receiver is dropped or if
+!!! note "Best-effort delivery on shutdown"
+    Like every event, `Disconnected` is never dropped due to channel
+    backpressure. It is delivered best-effort only in the sense that it may
+    be missed if the event receiver is dropped or if
     [`shutdown()`](client.md#shutdown) times out and aborts the transport task.
 
 ```rust,ignore

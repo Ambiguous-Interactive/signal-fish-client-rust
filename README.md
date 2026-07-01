@@ -46,25 +46,26 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **Protocol support: v2 relay + v3 mesh** — v3 (opt-in, backward-compatible) adds WebRTC mesh signaling; a default client stays byte-identical to v2 (the "relay-floor guarantee"). Enable with `SignalFishConfig::enable_mesh()`.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
-- **Structured errors** — `SignalFishError` (10 variants) and `ErrorCode` (48 variants) for precise error handling
+- **Structured errors** — `SignalFishError` (11 variants) and `ErrorCode` (48 variants) for precise error handling
 - **Full protocol coverage** — 14 client message types, 28 server message types, 30 event variants
-- **Configurable** — tune event channel capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
+- **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
+- **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
 - **Emscripten WebSocket transport** — the `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` with raw FFI to Emscripten's C API
-- **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for Godot 4.5 web exports
+- **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for frame-driven engines and wasm targets (e.g. Godot 4.5 web exports)
 
 ## Installation
 
 ```toml
 [dependencies]
-signal-fish-client = "0.5.0"
+signal-fish-client = "0.6.0"
 ```
 
 Without the built-in WebSocket transport (bring your own):
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.5.0", default-features = false }
+signal-fish-client = { version = "0.6.0", default-features = false }
 ```
 
 ## Quick Start
@@ -124,7 +125,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `client`      | `SignalFishClient` handle, `SignalFishConfig`, `JoinRoomParams`   |
 | `event`       | `SignalFishEvent` enum (28 server + 2 synthetic variants)         |
 | `protocol`    | Wire-compatible `ClientMessage` (14) / `ServerMessage` (28) types |
-| `error`       | `SignalFishError` unified error type (10 variants)                |
+| `error`       | `SignalFishError` unified error type (11 variants)                |
 | `error_codes` | `ErrorCode` enum (48 server error code variants)                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
 | `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
@@ -205,6 +206,8 @@ The SDK supports two WASM targets:
 | --- | --- | --- | --- |
 | `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
 | `wasm32-unknown-emscripten` | Godot 4.5 web exports (gdext) | `EmscriptenWebSocketTransport` | `SignalFishPollingClient` |
+
+The async `SignalFishClient` needs a *driven* tokio runtime (its transport loop runs under `tokio::spawn`); manually "ticking" a runtime once per frame starves it. Frame-driven or single-threaded environments — game loops on native as well as wasm — should use `SignalFishPollingClient` (feature `polling-client`), a synchronous pump you call once per frame.
 
 ### Emscripten Quick Start
 

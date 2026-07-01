@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.5.0
+- **Version:** 0.6.0
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -29,10 +29,10 @@ Run this before every commit. All three steps must pass with zero warnings.
 
 Use version tags in workflow `uses:` references, not commit hashes.
 
-- Prefer: `owner/action@vN.N.N` (patch-level pin — immutable tag)
-- Acceptable: `owner/action@vN` (major-only pin — mutable, flagged by Phase 7 warning)
-- Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
-- Exception: `mymindstorm/setup-emsdk@vN` (no patch releases available)
+- Prefer: `owner/action@vN.N.N` (immutable tag); `owner/action@vN` acceptable
+  (mutable major pin, flagged by Phase 7 warning)
+- Exceptions: `dtolnay/rust-toolchain@stable|nightly|beta`,
+  `mymindstorm/setup-emsdk@vN` (no patch releases available)
 - Avoid commit-SHA refs unless a workflow has an explicit unavoidable requirement
 
 ## Changelog Policy
@@ -102,7 +102,6 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
             _ => {}
         }
     }
-
     // 5. Shut down gracefully
     client.shutdown().await;
     Ok(())
@@ -121,12 +120,14 @@ pub struct SignalFishConfig {
     pub sdk_version: Option<String>,          // defaults to crate version
     pub platform: Option<String>,             // e.g. "unity", "godot", "rust"
     pub game_data_format: Option<GameDataEncoding>,
-    pub event_channel_capacity: usize,        // defaults to 256
+    pub event_channel_capacity: usize,        // defaults to 256 (buffer before backpressure)
+    pub command_channel_capacity: usize,      // defaults to 1024 (bounded send queue)
     pub shutdown_timeout: std::time::Duration, // defaults to 1 second
 }
 
 let config = SignalFishConfig::new("mb_app_abc123")
     .with_event_channel_capacity(512)
+    .with_command_channel_capacity(2048)
     .with_shutdown_timeout(std::time::Duration::from_secs(5));
 ```
 
@@ -144,12 +145,13 @@ client.join_room(params)?;
 
 ### Key Client Methods
 
-All methods except `shutdown` are synchronous (they queue a message, no round-trip):
+All methods except `shutdown` and the `*_reliable` sends are synchronous (they queue a message on the bounded command channel, no round-trip):
 
 ```rust,ignore
 client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
 client.send_game_data(data: serde_json::Value) -> Result<()>
+client.send_game_data_reliable(data).await   // waits for queue space (pacing)
 client.set_ready() -> Result<()>
 client.start_game() -> Result<()>           // protocol v2: explicit game start
 client.request_authority(become_authority: bool) -> Result<()>
@@ -158,11 +160,18 @@ client.reconnect(player_id, room_id, auth_token) -> Result<()>
 client.join_as_spectator(game_name, room_code, spectator_name) -> Result<()>
 client.leave_spectator() -> Result<()>
 client.ping() -> Result<()>
+client.send_signal_reliable(to, signal).await // v3 only; waiting send_signal
+client.send_capacity() / client.max_send_capacity() -> usize // queue diagnostics
+client.stats() -> ClientStats  // cumulative game_data_sent/received counters
 client.shutdown().await      // async, graceful
 ```
 
-All `Result<()>` methods return `Err(SignalFishError::NotConnected)` when the
-transport is closed.
+Sync sends return `SignalFishError::NotConnected` when the transport is closed
+and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
+full (message refused, never silently dropped). Events are also never dropped:
+a full event channel pauses the transport loop (backpressure); events are
+missed only on receiver drop or shutdown-timeout abort.
+`SignalFishPollingClient` shares the queue bound, capacity accessors, and `stats()`.
 
 ## Feature Flags
 
@@ -191,10 +200,7 @@ transport is closed.
 
 ### Dev
 
-| Crate | Purpose |
-|-------|---------|
-| `tokio` (full) | Full runtime for tests |
-| `tracing-subscriber` | Log output during tests |
+`tokio` (full features, for tests) and `tracing-subscriber` (test log output).
 
 ## Key Design Decisions
 
@@ -220,9 +226,8 @@ breaking change.
 
 ### No Heavy Dependencies
 
-- No `chrono` — timestamps remain `String` from the server
-- No `bytes` — binary payloads are `Vec<u8>` with `serde_bytes`
-- No `reqwest` — HTTP is out of scope
+No `chrono` (timestamps remain `String` from the server), no `bytes` (binary
+payloads are `Vec<u8>` with `serde_bytes`), no `reqwest` (HTTP is out of scope).
 
 ### UUID Convention
 
@@ -261,10 +266,8 @@ for the v2/v3 deltas.
 ## `.llm/` Structure
 
 - `.llm/context.md` -- this file (canonical source of truth)
-- `.llm/skills/index.md` -- auto-regenerated skill index (do not edit)
+- `.llm/skills/index.md` -- auto-regenerated skill index (do not edit); summarizes each skill
 - `.llm/skills/*.md` -- focused reference guides for common tasks
-
-See `skills/index.md` for a summary of each skill.
 
 ## Documentation Rendering (MkDocs)
 
@@ -285,15 +288,13 @@ A pre-commit hook enforces:
 4. `cargo clippy --all-targets --all-features -- -D warnings` passes
 5. Workflow guard checks pass (`scripts/check-workflows.sh`), including explicit step names (`- name: ...`) in workflow steps and MSRV/toolchain policy validation
 6. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
-7. FFI safety check passes (`scripts/check-ffi-safety.sh`)
-8. FFI safety script tests pass (`scripts/test_check_ffi_safety.sh`)
-9. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
-10. Devcontainer compatibility check passes (`scripts/check-devcontainer-compat.sh`) — catches non-portable host lifecycle commands and required host-home credential bind mounts
-11. Devcontainer compatibility script tests pass (`scripts/test_check_devcontainer_compat.sh`)
-12. Devcontainer Dockerfile static check passes when Docker buildx is available (`docker buildx build --check -f .devcontainer/Dockerfile .`)
-13. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`, self-tested by `scripts/test_check_admonitions.py`) — no embedded double quotes that silently break title rendering
+7. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`, `scripts/test_check_ffi_safety.sh`)
+8. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
+9. Devcontainer compatibility check and its script tests pass (`scripts/check-devcontainer-compat.sh`, `scripts/test_check_devcontainer_compat.sh`) — catches non-portable host lifecycle commands and required host-home credential bind mounts
+10. Devcontainer Dockerfile static check passes when Docker buildx is available (`docker buildx build --check -f .devcontainer/Dockerfile .`)
+11. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`, self-tested by `scripts/test_check_admonitions.py`) — no embedded double quotes that silently break title rendering
 
-`cargo test` is part of the mandatory workflow but runs on push, not every commit
-(too slow for a blocking hook). Run it manually before opening a PR.
+`cargo test` runs on push, not every commit (too slow for a blocking hook) —
+run it manually before opening a PR.
 
 Install hooks with: `bash scripts/install-hooks.sh`

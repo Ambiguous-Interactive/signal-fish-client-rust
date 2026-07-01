@@ -30,7 +30,8 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
-| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Values below 1 are clamped to 1. |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
+| `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
 | `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
 
 ### Builder Methods
@@ -40,6 +41,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | Method | Parameter Type | Description |
 |---|---|---|
 | `.with_event_channel_capacity(n)` | `usize` | Set the bounded event channel capacity (default 256). |
+| `.with_command_channel_capacity(n)` | `usize` | Set the bounded outgoing command queue capacity (default 1024). |
 | `.with_shutdown_timeout(d)` | `Duration` | Set the graceful shutdown timeout (default 1 second). |
 
 ### Full Example
@@ -50,6 +52,7 @@ use std::time::Duration;
 
 let config = SignalFishConfig::new("mb_app_abc123")
     .with_event_channel_capacity(512)
+    .with_command_channel_capacity(2048)
     .with_shutdown_timeout(Duration::from_secs(5));
 ```
 
@@ -60,7 +63,7 @@ use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.5.0".into()),
+    sdk_version: Some("0.6.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")
@@ -113,12 +116,19 @@ Async client handle for the Signal Fish signaling protocol. Created via
 and returns this handle together with an event receiver.
 
 All command methods serialize a `ClientMessage` and queue it to the transport
-loop over an unbounded channel — they return immediately without awaiting a
-round-trip.
+loop over a **bounded** channel (default 1024, via
+[`SignalFishConfig::command_channel_capacity`](#fields)) — they return
+immediately without awaiting a round-trip.
 
 !!! info "Error convention"
-    All `Result<()>` methods return `Err(SignalFishError::NotConnected)` when the
-    transport is closed.
+    All synchronous `Result<()>` methods return
+    `Err(SignalFishError::NotConnected)` when the transport is closed, and
+    `Err(SignalFishError::SendBufferFull { capacity })` when the outgoing
+    command queue is full (the message is **not** queued; nothing is silently
+    dropped). The async `*_reliable` variants
+    ([`send_game_data_reliable`](#send_game_data_reliable),
+    [`send_signal_reliable`](mesh-guide.md)) wait for queue capacity instead
+    of failing fast.
 
 !!! info "ID types"
     `PlayerId` and `RoomId` are both type aliases for `uuid::Uuid`.
@@ -273,6 +283,73 @@ client.send_game_data(serde_json::json!({
 
 The data is forwarded to all other players (and spectators) in the room.
 
+`send_game_data` returns as soon as the message is queued; when the bounded
+command queue is full it fails fast with
+`SignalFishError::SendBufferFull` — the message is not queued.
+
+---
+
+#### `send_game_data_reliable`
+
+Send arbitrary JSON game data, waiting for space in the outgoing command
+queue when it is full.
+
+```rust,ignore
+async fn send_game_data_reliable(&self, data: serde_json::Value) -> Result<()>
+```
+
+```rust,ignore
+client.send_game_data_reliable(serde_json::json!({
+    "input": { "frame": 1042, "buttons": 0b0110 },
+})).await?;
+```
+
+The backpressure-aware counterpart to [`send_game_data`](#send_game_data):
+instead of failing fast with `SendBufferFull`, it pauses until the transport
+drains a slot, pacing the caller to actual transport throughput. This is the
+recommended way to stream high-rate payloads (rollback input packets, state
+sync) without guessing at sleep durations. It only errors with
+`NotConnected` when the transport has closed.
+
+The WebRTC-signaling counterpart is `send_signal_reliable(to, signal)`
+(protocol v3 only — see the [Mesh Guide](mesh-guide.md)); a lost
+offer/answer/ICE candidate stalls a handshake, so waiting beats failing when
+the queue is congested.
+
+---
+
+### Send Queue & Traffic Stats
+
+Synchronous diagnostics for the outgoing command queue and game-data traffic:
+
+| Method | Signature | Description |
+|---|---|---|
+| `send_capacity()` | `fn send_capacity(&self) -> usize` | Messages that can currently be queued before the fail-fast sends return `SendBufferFull`. A shrinking value is the congestion signal; `0` means the next fail-fast send is refused. |
+| `max_send_capacity()` | `fn max_send_capacity(&self) -> usize` | Configured capacity of the outgoing command queue (`command_channel_capacity`). |
+| `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
+
+`ClientStats` (re-exported at the crate root) carries `game_data_sent` (
+`GameData` messages written to the transport) and `game_data_received`
+(`GameData`/`GameDataBinary` events received). The counters are cumulative
+for the lifetime of the client — they survive room changes and disconnects.
+
+Because the client itself never drops game data (events are delivered with
+backpressure; refused sends return `SendBufferFull`), these counters make
+loss *elsewhere* observable: exchange or log them across peers, and a
+persistent sent-vs-received deficit points at the relay path or a peer — not
+at this client.
+
+```rust,ignore
+let stats = client.stats();
+println!(
+    "sent {} / received {} (queue {}/{} free)",
+    stats.game_data_sent,
+    stats.game_data_received,
+    client.send_capacity(),
+    client.max_send_capacity(),
+);
+```
+
 ---
 
 ### Authority
@@ -424,6 +501,13 @@ Originally created for WebAssembly targets (specifically
 `wasm32-unknown-emscripten` and Godot 4.5 web exports via gdext), but usable
 in any single-threaded context with any `Transport` implementation.
 
+This is the right client whenever your application is **frame-driven** —
+native game loops as much as wasm. The async `SignalFishClient` only makes
+progress while its tokio runtime is being driven; manually "ticking" a
+runtime once per frame starves its transport loop (see
+[Driving the Client](concepts.md#driving-the-client-runtime-contract)). The
+polling client has no background task and no runtime — you pump it yourself.
+
 !!! note "Feature gate"
     `SignalFishPollingClient` requires the `polling-client` feature.
     This feature is automatically enabled by `transport-websocket-emscripten`.
@@ -510,6 +594,13 @@ for event in events {
 All command methods are synchronous. They queue an outgoing message that is
 flushed on the next `poll()` call. All return `Result<(), SignalFishError>`.
 
+The outgoing queue is bounded by the same
+[`SignalFishConfig::command_channel_capacity`](#fields) (default 1024): if
+the transport stalls long enough for the queue to fill, further queueing
+methods return `SignalFishError::SendBufferFull` (the message is not
+queued). `send_capacity()` / `max_send_capacity()` report the remaining and
+configured capacity.
+
 | Method | Description |
 |---|---|
 | `join_room(params: JoinRoomParams)` | Join or create a room. |
@@ -539,6 +630,9 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
+| `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
+| `max_send_capacity()` | `usize` | Configured command-queue capacity. |
+| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue & Traffic Stats](#send-queue--traffic-stats)). |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

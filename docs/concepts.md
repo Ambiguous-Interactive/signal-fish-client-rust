@@ -178,15 +178,16 @@ generated locally by the transport layer:
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
 | `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Last event (best-effort). |
 
-!!! warning "Channel capacity"
-    The event channel has a default capacity of **256** (configurable via
-    `SignalFishConfig::event_channel_capacity`). If your consumer falls behind,
-    events are **dropped** (with a warning logged) to avoid blocking the
-    transport loop. The `Disconnected` event is the exception — it uses a
-    blocking send so it will not be dropped due to backpressure, but it may be
-    missed if the receiver is dropped or shutdown times out (see
-    [Events](events.md)). Design your event loop to stay responsive to avoid
-    losing events.
+!!! note "Lossless delivery with backpressure"
+    Events are **never dropped**. The event channel has a default capacity of
+    **256** (configurable via `SignalFishConfig::event_channel_capacity`); if
+    your consumer falls behind, the transport loop pauses reading from the
+    transport until the channel has room, so backpressure propagates to the
+    server instead of losing events. The capacity only controls how much
+    buffering the consumer gets before that backpressure kicks in. An event
+    can only be missed if the receiver is dropped or a shutdown timeout
+    aborts the transport task (see [Events](events.md)). A responsive event
+    loop keeps the connection flowing; a stalled one stalls the transport.
 
 ---
 
@@ -195,8 +196,10 @@ generated locally by the transport layer:
 All client command methods — `join_room`, `leave_room`, `send_game_data`,
 `set_ready`, `request_authority`, `provide_connection_info`, `reconnect`,
 `join_as_spectator`, `leave_spectator`, `ping` — are **synchronous**. They
-serialize a `ClientMessage`, queue it on an internal unbounded channel, and
-return `Result<()>` immediately. There is no `.await`.
+serialize a `ClientMessage`, queue it on an internal **bounded** channel
+(default capacity **1024**, configurable via
+`SignalFishConfig::command_channel_capacity`), and return `Result<()>`
+immediately. There is no `.await`.
 
 ```rust,ignore
 // These return instantly — no network round-trip
@@ -210,11 +213,66 @@ client.send_game_data(serde_json::json!({ "action": "move", "x": 10 }))?;
 client.set_ready()?;
 ```
 
-Besides the state accessors, the **only** async method on the client is `shutdown()`:
+When the queue is full — the caller is producing faster than the transport
+can drain — these methods **fail fast** with
+[`SignalFishError::SendBufferFull`](errors.md): the message is *not* queued,
+and nothing is silently dropped. For high-rate payloads, use the
+backpressure-aware async variants instead, which wait for a free slot rather
+than failing:
+
+```rust,ignore
+// Waits for queue capacity — paces the caller to actual transport throughput.
+client.send_game_data_reliable(serde_json::json!({ "input": frame_input })).await?;
+
+// Same for WebRTC signals (protocol v3 only) — a lost signal stalls a handshake.
+client.send_signal_reliable(peer_id, PeerSignal::Offer(sdp)).await?;
+```
+
+`send_capacity()` (remaining slots) and `max_send_capacity()` (configured
+capacity) expose the queue state for pacing and diagnostics.
+
+Besides the state accessors and the `*_reliable` sends, the only other async
+method on the client is `shutdown()`:
 
 ```rust,ignore
 client.shutdown().await;
 ```
+
+### Reliability & Flow Control
+
+Putting the two halves together, the client **never silently drops data** in
+either direction:
+
+- **Inbound:** events are delivered with backpressure — a lagging consumer
+  pauses the transport loop; nothing is lost.
+- **Outbound:** the command queue is bounded — congestion surfaces as
+  `SendBufferFull` (fail-fast methods) or as waiting (`*_reliable` methods),
+  never as an unbounded backlog or a silent drop.
+
+Because the client is lossless, loss elsewhere becomes observable. `stats()`
+returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
+`game_data_received` counters (they survive disconnects): exchange or log
+them across peers, and a persistent sent-vs-received deficit points at the
+relay path or a peer — not at this client. Pace high-rate streams with
+`send_game_data_reliable` instead of guessing at sleep durations.
+
+---
+
+## Driving the Client (Runtime Contract)
+
+`SignalFishClient::start` spawns the background transport loop with
+`tokio::spawn`. That loop only makes progress while the tokio runtime is
+**driven** — some task is being awaited (`#[tokio::main]`, `block_on`, worker
+threads). Both multi-thread and `current_thread` runtimes work, as long as
+the runtime is actually running.
+
+What does **not** work is "ticking" a runtime manually — e.g. calling one
+`yield_now().await` per game frame: the transport loop starves and messages
+appear to vanish. For frame-driven or single-threaded environments (game
+engines, `wasm32` targets), use `SignalFishPollingClient` (feature
+`polling-client`) instead: a synchronous pump you call once per frame, with
+no background task and no runtime at all. See the
+[WebAssembly Guide](wasm.md) and [Client API](client.md#signalfishpollingclient).
 
 ### State Accessors
 
@@ -311,6 +369,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `TransportClosed` | The transport connection closed unexpectedly. |
 | `Serialization(serde_json::Error)` | JSON serialization / deserialization failed. |
 | `NotConnected` | Attempted an operation without an active connection. |
+| `SendBufferFull { capacity }` | The bounded outgoing command queue is full; the message was refused, not queued. See [Non-Blocking Command Sending](#non-blocking-command-sending). |
 | `NotInRoom` | Attempted a room operation without being in a room. |
 | `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
 | `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning & topology](#protocol-versioning--topology). |

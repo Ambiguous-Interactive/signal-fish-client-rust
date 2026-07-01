@@ -1851,6 +1851,7 @@ mod tests {
     }
 
     impl GatedSendTransport {
+        #[allow(clippy::type_complexity)]
         fn new(
             initial_permits: usize,
         ) -> (
@@ -1959,7 +1960,7 @@ mod tests {
         let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
 
         let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
-        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        let (client, mut events) = SignalFishClient::start(transport, config);
 
         let _ = events.recv().await; // Connected
         wait_until(|| entered_send.load(Ordering::Acquire)).await;
