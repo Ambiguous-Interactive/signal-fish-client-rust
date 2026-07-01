@@ -54,7 +54,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -364,6 +364,30 @@ impl JoinRoomParams {
     }
 }
 
+// ── Traffic statistics ──────────────────────────────────────────────
+
+/// Snapshot of a client's game-data traffic counters.
+///
+/// Returned by [`SignalFishClient::stats`] and
+/// [`SignalFishPollingClient::stats`](crate::polling_client::SignalFishPollingClient::stats).
+///
+/// The client itself never drops game data (events are delivered with
+/// backpressure and refused sends return
+/// [`SendBufferFull`](crate::SignalFishError::SendBufferFull)), so these
+/// counters make loss *elsewhere* observable: exchange or log them across
+/// peers, and a persistent sent-vs-received deficit points at the relay
+/// path or a peer — not at this client.
+///
+/// Counters are cumulative for the lifetime of the client (they survive
+/// room changes and disconnection).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientStats {
+    /// `GameData` messages successfully written to the transport.
+    pub game_data_sent: u64,
+    /// `GameData`/`GameDataBinary` events received from the server.
+    pub game_data_received: u64,
+}
+
 // ── Shared state ────────────────────────────────────────────────────
 
 /// Internal shared state between the client handle and the transport loop.
@@ -382,6 +406,12 @@ struct ClientState {
     player_id: Mutex<Option<PlayerId>>,
     room_id: Mutex<Option<RoomId>>,
     room_code: Mutex<Option<String>>,
+    /// `GameData` messages successfully written to the transport.
+    /// Cumulative — intentionally not reset by `clear_session_state`.
+    game_data_sent: AtomicU64,
+    /// `GameData`/`GameDataBinary` events received from the server.
+    /// Cumulative — intentionally not reset by `clear_session_state`.
+    game_data_received: AtomicU64,
 }
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
@@ -395,6 +425,8 @@ impl ClientState {
             player_id: Mutex::new(None),
             room_id: Mutex::new(None),
             room_code: Mutex::new(None),
+            game_data_sent: AtomicU64::new(0),
+            game_data_received: AtomicU64::new(0),
         }
     }
 
@@ -914,6 +946,14 @@ impl SignalFishClient {
         self.cmd_tx.max_capacity()
     }
 
+    /// Cumulative game-data traffic counters (see [`ClientStats`]).
+    pub fn stats(&self) -> ClientStats {
+        ClientStats {
+            game_data_sent: self.state.game_data_sent.load(Ordering::Relaxed),
+            game_data_received: self.state.game_data_received.load(Ordering::Relaxed),
+        }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     /// Guard for protocol-v3-only operations: returns an error unless the
@@ -1035,6 +1075,9 @@ async fn transport_loop(
                                         Some(format!("transport send error: {e}")),
                                     ).await;
                                     break;
+                                }
+                                if matches!(msg, ClientMessage::GameData { .. }) {
+                                    state.game_data_sent.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             Err(e) => {
@@ -1177,6 +1220,9 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             *state.room_id.lock().await = None;
             *state.room_code.lock().await = None;
             debug!("state: left spectator mode");
+        }
+        ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
+            state.game_data_received.fetch_add(1, Ordering::Relaxed);
         }
         _ => {}
     }
@@ -1695,6 +1741,51 @@ mod tests {
         assert_eq!(
             seqs, expected,
             "GameData must be delivered losslessly and in order"
+        );
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stats_count_game_data_sent_and_received() {
+        let game_data_json = |seq: u64| {
+            serde_json::to_string(&ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(9),
+                data: serde_json::json!({ "seq": seq }),
+            })
+            .unwrap()
+        };
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(game_data_json(0))),
+            Some(Ok(game_data_json(1))),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert_eq!(client.stats(), ClientStats::default());
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // GameData 0
+        let _ = events.recv().await; // GameData 1
+
+        for seq in 0..3 {
+            client
+                .send_game_data(serde_json::json!({ "seq": seq }))
+                .unwrap();
+        }
+        // Authenticate + 3 GameData on the wire; only GameData is counted.
+        wait_for_sent_len(&sent, 4).await;
+        wait_until(|| client.stats().game_data_sent == 3).await;
+
+        assert_eq!(
+            client.stats(),
+            ClientStats {
+                game_data_sent: 3,
+                game_data_received: 2,
+            }
         );
 
         client.shutdown().await;

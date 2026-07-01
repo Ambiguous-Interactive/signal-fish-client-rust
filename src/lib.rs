@@ -101,7 +101,7 @@ pub mod transports;
 pub const PROTOCOL_VERSION: u16 = 3;
 
 // Re-export primary types for ergonomic imports.
-pub use client::{JoinRoomParams, SignalFishClient, SignalFishConfig};
+pub use client::{ClientStats, JoinRoomParams, SignalFishClient, SignalFishConfig};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
 pub use event::SignalFishEvent;

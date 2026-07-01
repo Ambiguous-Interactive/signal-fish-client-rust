@@ -35,6 +35,12 @@ struct PollingClientState {
     player_id: Option<PlayerId>,
     room_id: Option<RoomId>,
     room_code: Option<String>,
+    /// `GameData` messages successfully written to the transport.
+    /// Cumulative — intentionally not reset by `clear_session`.
+    game_data_sent: u64,
+    /// `GameData`/`GameDataBinary` events received from the server.
+    /// Cumulative — intentionally not reset by `clear_session`.
+    game_data_received: u64,
 }
 
 impl PollingClientState {
@@ -49,6 +55,8 @@ impl PollingClientState {
             player_id: None,
             room_id: None,
             room_code: None,
+            game_data_sent: 0,
+            game_data_received: 0,
         }
     }
 
@@ -208,7 +216,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
             };
 
             match send_result {
-                std::task::Poll::Ready(Ok(())) => {}
+                std::task::Poll::Ready(Ok(())) => {
+                    if matches!(msg, ClientMessage::GameData { .. }) {
+                        self.state.game_data_sent += 1;
+                    }
+                }
                 std::task::Poll::Ready(Err(e)) => {
                     error!("transport send error: {e}");
                     self.handle_disconnect(&mut events, Some(format!("transport send error: {e}")));
@@ -572,6 +584,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.command_capacity
     }
 
+    /// Cumulative game-data traffic counters
+    /// (see [`ClientStats`](crate::client::ClientStats)).
+    pub fn stats(&self) -> crate::client::ClientStats {
+        crate::client::ClientStats {
+            game_data_sent: self.state.game_data_sent,
+            game_data_received: self.state.game_data_received,
+        }
+    }
+
     // ── Close ───────────────────────────────────────────────────────
 
     /// Close the transport and mark the client as disconnected.
@@ -692,6 +713,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             ServerMessage::SpectatorLeft { .. } => {
                 self.state.room_id = None;
                 self.state.room_code = None;
+            }
+            ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
+                self.state.game_data_received += 1;
             }
             _ => {}
         }
@@ -1268,6 +1292,41 @@ mod tests {
 
     fn authenticated_json_str() -> &'static str {
         r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#
+    }
+
+    #[test]
+    fn stats_count_game_data_sent_and_received() {
+        let game_data_json = |seq: u64| {
+            serde_json::to_string(&ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(9),
+                data: serde_json::json!({ "seq": seq }),
+            })
+            .expect("GameData serializes")
+        };
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(game_data_json(0))),
+            Some(Ok(game_data_json(1))),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        assert_eq!(client.stats(), crate::client::ClientStats::default());
+
+        for seq in 0..3 {
+            client
+                .send_game_data(serde_json::json!({ "seq": seq }))
+                .unwrap();
+        }
+        let _ = client.poll();
+
+        // Authenticate + 3 GameData flushed; only GameData counts as sent.
+        assert_eq!(
+            client.stats(),
+            crate::client::ClientStats {
+                game_data_sent: 3,
+                game_data_received: 2,
+            }
+        );
     }
 
     #[test]
