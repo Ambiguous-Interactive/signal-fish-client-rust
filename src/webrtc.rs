@@ -278,7 +278,7 @@ mod controller {
             loop {
                 // Surface any pending driver output first (relaying signals /
                 // reporting status as side effects).
-                if let Some(event) = self.drain_driver() {
+                if let Some(event) = self.drain_driver().await {
                     return Some(event);
                 }
 
@@ -451,12 +451,15 @@ mod controller {
 
         /// Drain one surfacing driver output, performing the signaling side
         /// effects (relay signal / report status) for non-surfacing outputs.
-        fn drain_driver(&mut self) -> Option<MeshEvent> {
+        async fn drain_driver(&mut self) -> Option<MeshEvent> {
             while let Some(driver_event) = self.driver.poll() {
                 match driver_event {
                     DriverEvent::Signal { peer, signal } => {
                         // Relay the offer/answer/ICE to the peer via the server.
-                        if let Err(e) = self.client.send_signal(peer, signal) {
+                        // Reliably: a lost signal stalls the WebRTC handshake, so
+                        // wait for command-queue capacity instead of dropping when
+                        // the queue is congested (e.g. by game-data bursts).
+                        if let Err(e) = self.client.send_signal_reliable(peer, signal).await {
                             debug!("could not relay signal to {peer}: {e}");
                         }
                     }
@@ -483,10 +486,15 @@ mod controller {
             let was_empty = self.connected_peers.is_empty();
             self.connected_peers.push(peer);
             if was_empty {
-                // First live P2P channel: tell the server WebRTC is up.
-                let _ = self
+                // First live P2P channel: tell the server WebRTC is up. The
+                // report is informational and idempotent, so a refusal (e.g.
+                // NotConnected during teardown) is logged, not retried.
+                if let Err(e) = self
                     .client
-                    .report_transport_status(TransportKind::WebRtc, true);
+                    .report_transport_status(TransportKind::WebRtc, true)
+                {
+                    debug!("could not report WebRTC transport up: {e}");
+                }
             }
         }
 
@@ -495,9 +503,13 @@ mod controller {
             self.connected_peers.retain(|p| *p != peer);
             if self.connected_peers.is_empty() && before > 0 {
                 // Last live P2P channel closed: we are back on the relay floor.
-                let _ = self
+                // Informational and idempotent — a refusal is logged, not retried.
+                if let Err(e) = self
                     .client
-                    .report_transport_status(TransportKind::WebRtc, false);
+                    .report_transport_status(TransportKind::WebRtc, false)
+                {
+                    debug!("could not report WebRTC transport down: {e}");
+                }
             }
         }
 
