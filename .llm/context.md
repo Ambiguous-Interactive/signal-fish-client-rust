@@ -244,8 +244,8 @@ strings to match server expectations.
    is ready (`SignalFishClient`: at the start of the transport loop;
    `SignalFishPollingClient`: once `Transport::is_ready()` returns `true`).
    `SignalFishEvent::Disconnected` is emitted when the transport closes
-   (best-effort; delivery may be missed if the receiver is dropped or shutdown
-   times out).
+   (best-effort; missed only if the receiver is dropped, shutdown times out,
+   or the handle is dropped without `shutdown()`).
 
 ## Protocol Overview
 

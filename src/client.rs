@@ -821,9 +821,9 @@ impl SignalFishClient {
     /// a lost offer/answer/ICE candidate stalls a WebRTC handshake, so waiting
     /// beats failing when the queue is congested (e.g. by game-data bursts).
     ///
-    /// The same caveat as
-    /// [`send_game_data_reliable`](Self::send_game_data_reliable#keep-draining-events)
-    /// applies: keep draining events from another task while awaiting this.
+    /// The "Keep draining events" caveat on
+    /// [`send_game_data_reliable`](Self::send_game_data_reliable)
+    /// applies here too: drain events from another task while awaiting this.
     ///
     /// # Errors
     ///

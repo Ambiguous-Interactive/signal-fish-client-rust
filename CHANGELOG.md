@@ -64,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once a stalled transport fills it (#47).
 - `MeshController` no longer drops a driver signal the command queue refuses:
   the signal is buffered in the controller and retried (in order, ahead of
-  further driver output) until the queue accepts it, and `recv()` is
+  further driver output) until the queue accepts it or the connection ends,
+  and `recv()` is
   documented cancel-safe — a buffered signal survives cancellation. Refused
   transport-status reports are now debug-logged instead of silently
   discarded (#47).

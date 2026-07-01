@@ -185,8 +185,9 @@ generated locally by the transport layer:
     transport until the channel has room, so backpressure propagates to the
     server instead of losing events. The capacity only controls how much
     buffering the consumer gets before that backpressure kicks in. An event
-    can only be missed if the receiver is dropped or a shutdown timeout
-    aborts the transport task (see [Events](events.md)). A responsive event
+    can only be missed if the receiver is dropped, a shutdown timeout aborts
+    the transport task, or the client handle is dropped without calling
+    `shutdown()` (see [Events](events.md)). A responsive event
     loop keeps the connection flowing; a stalled one stalls the transport.
 
 ---
