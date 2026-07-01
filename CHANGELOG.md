@@ -62,9 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SignalFishPollingClient` applies the same bound to its command queue
   (via `command_channel_capacity`); queueing methods return `SendBufferFull`
   once a stalled transport fills it (#47).
-- `MeshController` now relays driver signals via `send_signal_reliable`, so
-  mesh signals are never dropped under command-queue congestion, and
-  debug-logs transport-status reports the client refuses (#47).
+- `MeshController` no longer drops a driver signal the command queue refuses:
+  the signal is buffered in the controller and retried (in order, ahead of
+  further driver output) until the queue accepts it, and `recv()` is
+  documented cancel-safe — a buffered signal survives cancellation. Refused
+  transport-status reports are now debug-logged instead of silently
+  discarded (#47).
 - Documented the runtime driving contract: `SignalFishClient::start` spawns
   the transport loop with `tokio::spawn` and works on any *driven* runtime
   (including `current_thread`), but manually "ticking" a runtime starves it —

@@ -245,18 +245,37 @@ either direction:
 
 - **Inbound:** events are delivered with backpressure — a lagging consumer
   pauses the transport loop; nothing is lost.
-- **Outbound:** the command queue is bounded — congestion surfaces as
+- **Outbound:** queue admission is never silent — congestion surfaces as
   `SendBufferFull` (fail-fast methods) or as waiting (`*_reliable` methods),
-  never as an unbounded backlog or a silent drop.
+  never as an unbounded backlog. Note that *queued* is not *delivered*:
+  commands still in the queue when the connection ends are discarded with
+  it, surfaced by the `Disconnected` event.
 
 Because the client is lossless, loss elsewhere becomes observable. `stats()`
 returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
 `game_data_received` counters (they survive disconnects): exchange or log
 them across peers, and a persistent sent-vs-received deficit points at the
 relay path or a peer — not at this client. Pace high-rate streams with
-`send_game_data_reliable` instead of guessing at sleep durations.
+`send_game_data_reliable` instead of guessing at sleep durations — but drain
+events from a separate task while awaiting it: the queue only drains while
+the transport loop runs, and the loop pauses when the event channel is full,
+so a lone task doing both strictly sequentially can deadlock under
+simultaneous send + receive pressure.
 
 ---
+
+### State Accessors
+
+| Accessor | Async? | Returns |
+|----------|--------|---------|
+| `is_connected()` | No | `bool` |
+| `is_authenticated()` | No | `bool` |
+| `current_player_id()` | Yes (`async`) | `Option<PlayerId>` |
+| `current_room_id()` | Yes (`async`) | `Option<RoomId>` |
+| `current_room_code()` | Yes (`async`) | `Option<String>` |
+
+The synchronous accessors use `AtomicBool` internally. The async accessors use
+a `tokio::sync::Mutex` because they guard heap-allocated optional state.
 
 ## Driving the Client (Runtime Contract)
 
@@ -273,19 +292,6 @@ engines, `wasm32` targets), use `SignalFishPollingClient` (feature
 `polling-client`) instead: a synchronous pump you call once per frame, with
 no background task and no runtime at all. See the
 [WebAssembly Guide](wasm.md) and [Client API](client.md#signalfishpollingclient).
-
-### State Accessors
-
-| Accessor | Async? | Returns |
-|----------|--------|---------|
-| `is_connected()` | No | `bool` |
-| `is_authenticated()` | No | `bool` |
-| `current_player_id()` | Yes (`async`) | `Option<PlayerId>` |
-| `current_room_id()` | Yes (`async`) | `Option<RoomId>` |
-| `current_room_code()` | Yes (`async`) | `Option<String>` |
-
-The synchronous accessors use `AtomicBool` internally. The async accessors use
-a `tokio::sync::Mutex` because they guard heap-allocated optional state.
 
 ---
 

@@ -28,8 +28,8 @@
 //!   `current_thread`). It only makes progress while the runtime is driven —
 //!   manually "ticking" a runtime once per frame starves it (see
 //!   [the driving contract](client#driving-the-client-runtime-contract)).
-//! - [`SignalFishPollingClient`](polling_client::SignalFishPollingClient)
-//!   (sync, feature `polling-client`) — no background task, no runtime. You
+//! - [`SignalFishPollingClient`] (sync, feature `polling-client`) — no
+//!   background task, no runtime. You
 //!   call [`poll()`](polling_client::SignalFishPollingClient::poll) once per
 //!   frame from a game loop. This is the right client for frame-driven
 //!   engines (Godot, Bevy without tokio, Unity via FFI) and `wasm32` targets.

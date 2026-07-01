@@ -286,13 +286,11 @@ A pre-commit hook enforces:
 2. `skills/index.md` is auto-regenerated from skill file headings
 3. `cargo fmt --all -- --check` passes
 4. `cargo clippy --all-targets --all-features -- -D warnings` passes
-5. Workflow guard checks pass (`scripts/check-workflows.sh`), including explicit step names (`- name: ...`) in workflow steps and MSRV/toolchain policy validation
-6. Fenced YAML workflow snippets keep step-key alignment (`name`/`uses`/`with`/`run`) to prevent malformed docs examples
-7. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`, `scripts/test_check_ffi_safety.sh`)
-8. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
-9. Devcontainer compatibility check and its script tests pass (`scripts/check-devcontainer-compat.sh`, `scripts/test_check_devcontainer_compat.sh`) — catches non-portable host lifecycle commands and required host-home credential bind mounts
-10. Devcontainer Dockerfile static check passes when Docker buildx is available (`docker buildx build --check -f .devcontainer/Dockerfile .`)
-11. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`, self-tested by `scripts/test_check_admonitions.py`) — no embedded double quotes that silently break title rendering
+5. Workflow guard checks pass (`scripts/check-workflows.sh`): explicit step names, MSRV/toolchain policy, fenced-YAML step-key alignment
+6. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`)
+7. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
+8. Devcontainer compatibility checks pass (`scripts/check-devcontainer-compat.sh`, plus a Dockerfile `docker buildx build --check` when buildx is available)
+9. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`) — no embedded double quotes
 
 `cargo test` runs on push, not every commit (too slow for a blocking hook) —
 run it manually before opening a PR.

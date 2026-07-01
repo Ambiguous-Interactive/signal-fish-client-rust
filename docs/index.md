@@ -20,13 +20,13 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 ## Key Features
 
 - :material-swap-horizontal: **Transport-Agnostic** — Plug in any transport that implements the `Transport` trait; swap WebSocket for TCP, QUIC, or a test loopback without changing your game code.
-- :material-lightning-bolt: **Async / Await** — Built on Tokio with a fully non-blocking API. Command methods return immediately; events arrive on an async channel.
+- :material-lightning-bolt: **Async / Await** — Built on Tokio with a fully non-blocking API. Command methods return immediately (failing fast with `SendBufferFull` under congestion); events arrive on an async channel.
 - :material-message-flash: **Event-Driven Architecture** — All server responses are delivered as strongly-typed `SignalFishEvent` variants on a bounded `mpsc` channel — just `match` in a loop.
 - :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and backward-compatible; a default client stays byte-identical to v2. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
 - :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
-- :material-shield-check: **No Silent Loss** — Events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion explicitly. See [Core Concepts](concepts.md#reliability--flow-control).
+- :material-shield-check: **No Silent Loss** — Events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion explicitly. See [Core Concepts](concepts.md#reliability-flow-control).
 - :material-tune-variant: **Configurable** — Tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods.
 
 ---

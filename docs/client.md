@@ -311,6 +311,15 @@ recommended way to stream high-rate payloads (rollback input packets, state
 sync) without guessing at sleep durations. It only errors with
 `NotConnected` when the transport has closed.
 
+!!! warning "Keep draining events"
+    The command queue only drains while the transport loop runs, and the
+    loop pauses whenever the *event* channel is full (events are never
+    dropped). A task that awaits this method while it is also the only
+    consumer of the event receiver can deadlock under simultaneous
+    send + receive pressure — drain events from a separate task rather than
+    strictly sequentially. (Do **not** race this send against the event
+    receiver in a `tokio::select!`: a cancelled send discards its payload.)
+
 The WebRTC-signaling counterpart is `send_signal_reliable(to, signal)`
 (protocol v3 only — see the [Mesh Guide](mesh-guide.md)); a lost
 offer/answer/ICE candidate stalls a handshake, so waiting beats failing when
@@ -632,7 +641,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
-| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue & Traffic Stats](#send-queue--traffic-stats)). |
+| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue & Traffic Stats](#send-queue-traffic-stats)). |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

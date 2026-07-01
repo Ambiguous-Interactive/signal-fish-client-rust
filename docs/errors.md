@@ -323,6 +323,15 @@ async fn stream_input(client: &SignalFishClient, input: serde_json::Value) {
 }
 ```
 
+!!! warning "Keep draining events while awaiting a reliable send"
+    The command queue only drains while the transport loop runs, and the
+    loop pauses whenever the *event* channel is full (events are never
+    dropped). A task that awaits `send_game_data_reliable` while it is also
+    the only consumer of the event receiver can deadlock under simultaneous
+    send + receive pressure — drain events from a separate task. See the
+    [`send_game_data_reliable` rustdoc](https://docs.rs/signal-fish-client)
+    for details.
+
 ### Distinguishing transport errors from server errors
 
 Transport errors are returned by client methods via `SignalFishError`, while

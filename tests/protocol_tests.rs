@@ -1214,7 +1214,7 @@ fn authenticate_relay_floor_omits_v3_fields() {
     // to v2 — none of the negotiation keys appear.
     let msg = ClientMessage::Authenticate {
         app_id: "mb_app".into(),
-        sdk_version: Some("0.5.0".into()),
+        sdk_version: Some("0.6.0".into()),
         platform: None,
         game_data_format: None,
         protocol_version: None,

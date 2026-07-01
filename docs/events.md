@@ -24,9 +24,11 @@ descriptions and usage examples.
     (default **256**, via `SignalFishConfig::event_channel_capacity`), and a
     consumer that falls behind pauses the transport loop until the channel
     has room — backpressure propagates to the server instead of losing
-    events. There are exactly two ways an event can be missed: the event
-    receiver is dropped, or a [`shutdown()`](client.md#shutdown) timeout
-    aborts the transport task.
+    events. There are exactly three ways an event can be missed — each one
+    stops delivery entirely; there is never selective loss: the event
+    receiver is dropped, a [`shutdown()`](client.md#shutdown) timeout aborts
+    the transport task, or the client handle is dropped without calling
+    `shutdown()` (which aborts the loop immediately).
 
 ---
 

@@ -12,12 +12,19 @@
 //! - **Events** are delivered with backpressure. If the consumer lags, the
 //!   transport loop pauses reading from the transport until the event channel
 //!   has room — backpressure propagates to the server instead of losing
-//!   events. An event can only be missed if the receiver is dropped or a
-//!   [`shutdown`](SignalFishClient::shutdown) timeout aborts the loop.
-//! - **Commands** go through a bounded queue. The synchronous send methods
-//!   fail fast with [`SignalFishError::SendBufferFull`] when it is full; the
+//!   events. An event can only be missed when the loop stops delivering
+//!   entirely: the receiver was dropped, a
+//!   [`shutdown`](SignalFishClient::shutdown) timeout aborted the loop, or
+//!   the client handle was dropped without calling `shutdown` (which aborts
+//!   immediately).
+//! - **Commands** go through a bounded queue and queue admission is never
+//!   silent: the synchronous send methods fail fast with
+//!   [`SignalFishError::SendBufferFull`] when it is full, and the
 //!   `*_reliable` async variants wait for capacity instead. Congestion is
-//!   always surfaced, never buffered without bound.
+//!   always surfaced, never buffered without bound. Note that *queued* is
+//!   not *delivered*: commands still in the queue when the connection ends
+//!   (transport error, shutdown, handle drop) are discarded with the
+//!   connection, which is surfaced by the `Disconnected` event.
 //!
 //! # Driving the client (runtime contract)
 //!
@@ -150,21 +157,23 @@ pub struct SignalFishConfig {
     /// incoming server messages, the transport loop pauses until the consumer
     /// drains the channel, propagating backpressure to the server instead of
     /// losing data. The capacity only controls how much buffering the consumer
-    /// gets before that backpressure kicks in. An event can only be missed if
-    /// the receiver is dropped or if [`SignalFishClient::shutdown`] times out
-    /// and aborts the transport task.
+    /// gets before that backpressure kicks in. An event can only be missed
+    /// when delivery stops entirely: the receiver is dropped,
+    /// [`SignalFishClient::shutdown`] times out and aborts the transport
+    /// task, or the client handle is dropped without calling `shutdown`.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
     /// Capacity of the bounded outgoing command queue.
     ///
-    /// Commands (including game data) are **never silently dropped**. When the
-    /// queue is full, the synchronous send methods fail fast with
-    /// [`SignalFishError::SendBufferFull`](crate::SignalFishError::SendBufferFull),
-    /// and the waiting variants (e.g.
+    /// Queue admission is **never silent**. When the queue is full, the
+    /// synchronous send methods fail fast with
+    /// [`SignalFishError::SendBufferFull`], and the waiting variants (e.g.
     /// [`SignalFishClient::send_game_data_reliable`]) pause until the
     /// transport drains a slot. Either way the caller gets a deterministic
-    /// congestion signal instead of an unbounded backlog.
+    /// congestion signal instead of an unbounded backlog. Commands still
+    /// queued when the connection ends are discarded with it (surfaced by
+    /// the `Disconnected` event); *queued* is not *delivered*.
     ///
     /// Defaults to **1024**. Values below 1 are clamped to 1.
     pub command_channel_capacity: usize,
@@ -646,9 +655,10 @@ impl SignalFishClient {
     /// transport loop pauses whenever the **event** channel is full (events
     /// are never dropped). A task that awaits this method while it is also
     /// the only consumer of the event receiver can therefore deadlock under
-    /// simultaneous send + receive pressure. Drain events concurrently (a
-    /// separate task, or `tokio::select!` over the event receiver and this
-    /// send) rather than strictly sequentially.
+    /// simultaneous send + receive pressure. Drain events from a separate
+    /// task rather than strictly sequentially. (Do **not** race this send
+    /// against the event receiver in a `tokio::select!`: if the event arm
+    /// wins, the cancelled send future discards the payload.)
     ///
     /// # Errors
     ///
@@ -810,6 +820,10 @@ impl SignalFishClient {
     /// The backpressure-aware counterpart to [`send_signal`](Self::send_signal):
     /// a lost offer/answer/ICE candidate stalls a WebRTC handshake, so waiting
     /// beats failing when the queue is congested (e.g. by game-data bursts).
+    ///
+    /// The same caveat as
+    /// [`send_game_data_reliable`](Self::send_game_data_reliable#keep-draining-events)
+    /// applies: keep draining events from another task while awaiting this.
     ///
     /// # Errors
     ///
@@ -1250,9 +1264,10 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
 /// Events are **never dropped**: when the consumer lags, the transport loop
 /// pauses here, which stops reading from the transport and propagates
 /// backpressure to the server (e.g. via TCP receive windows). Delivery only
-/// fails if the receiver has been dropped, or if
-/// [`SignalFishClient::shutdown`] aborts the transport task while this send
-/// is still waiting.
+/// fails if the receiver has been dropped, or if the transport task is
+/// aborted while this send is still waiting (a
+/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
+/// without `shutdown`).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishEvent) {
     if event_tx.send(event).await.is_err() {
@@ -1350,7 +1365,7 @@ mod tests {
     // ── Helper ──────────────────────────────────────────────────────
 
     async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if sent.lock().unwrap().len() >= expected_len {
                     break;
@@ -1574,6 +1589,11 @@ mod tests {
         client.shutdown().await;
 
         let result = client.ping();
+        assert!(matches!(result, Err(SignalFishError::NotConnected)));
+        // The waiting variant refuses just the same after shutdown.
+        let result = client
+            .send_game_data_reliable(serde_json::json!({ "seq": 0 }))
+            .await;
         assert!(matches!(result, Err(SignalFishError::NotConnected)));
     }
 
@@ -1912,7 +1932,7 @@ mod tests {
     }
 
     async fn wait_until(condition: impl Fn() -> bool) {
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !condition() {
                 tokio::task::yield_now().await;
             }
@@ -2010,6 +2030,93 @@ mod tests {
         wait_for_sent_len(&sent, 3).await;
 
         let mut client = Arc::into_inner(client).expect("all clones dropped");
+        client.shutdown().await;
+    }
+
+    fn protocol_info_v3_json() -> String {
+        use crate::protocol::ProtocolInfoPayload;
+        serde_json::to_string(&ServerMessage::ProtocolInfo(ProtocolInfoPayload {
+            platform: None,
+            sdk_version: None,
+            minimum_version: None,
+            recommended_version: None,
+            capabilities: vec![],
+            notes: None,
+            game_data_formats: vec![],
+            player_name_rules: None,
+            protocol_version: Some(3),
+            min_protocol_version: Some(2),
+            max_protocol_version: Some(3),
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn send_signal_reliable_fails_fast_pre_negotiation_even_when_queue_full() {
+        // Saturate the capacity-1 command queue behind a stalled transport.
+        let (transport, entered_send, permits, _sent) = GatedSendTransport::new(0);
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+        client
+            .send_game_data(serde_json::json!({ "seq": 0 }))
+            .unwrap();
+        assert_eq!(client.send_capacity(), 0);
+
+        // The v3 guard must be evaluated BEFORE waiting for queue capacity:
+        // pre-negotiation, this returns immediately (nothing is queued)
+        // instead of blocking on the full queue.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.send_signal_reliable(uuid::Uuid::from_u128(5), PeerSignal::Offer("sdp".into())),
+        )
+        .await
+        .expect("guard must fail fast, not wait for capacity");
+        assert!(
+            matches!(
+                result,
+                Err(SignalFishError::ProtocolUnsupported {
+                    mode: "pre-negotiation"
+                })
+            ),
+            "expected ProtocolUnsupported, got {result:?}"
+        );
+
+        permits.add_permits(16);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn send_signal_reliable_reaches_wire_after_v3() {
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test").enable_mesh();
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo (negotiates v3)
+
+        client
+            .send_signal_reliable(uuid::Uuid::from_u128(5), PeerSignal::Offer("sdp".into()))
+            .await
+            .unwrap();
+
+        wait_for_sent_len(&sent, 2).await;
+        {
+            let messages = sent.lock().unwrap();
+            let last: ClientMessage = serde_json::from_str(messages.last().unwrap()).unwrap();
+            assert!(
+                matches!(last, ClientMessage::Signal { .. }),
+                "expected Signal on the wire, got {last:?}"
+            );
+        }
+
         client.shutdown().await;
     }
 
