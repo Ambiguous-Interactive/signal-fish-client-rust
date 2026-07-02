@@ -87,6 +87,10 @@ required-features = ["tokio-runtime"]
 name = "mesh_session"
 required-features = ["mesh", "tokio-runtime"]
 
+[[example]]
+name = "load_lab"
+required-features = ["transport-websocket"]
+
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
 
