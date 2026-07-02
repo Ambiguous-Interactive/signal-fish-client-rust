@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Minimum supported `tokio` is now declared as `1.21` (previously `1`): the
+  new queue-capacity diagnostics use `mpsc::Sender::capacity` (tokio 1.5)
+  and `mpsc::Sender::max_capacity` (tokio 1.21). Any lockfile from the last
+  few years already satisfies this; the requirement is now honest (#47).
 - **Breaking (behavior): events are never dropped.** The transport loop now
   delivers every event with `send().await`; a lagging consumer pauses the
   loop and backpressure propagates to the server instead of losing events.
