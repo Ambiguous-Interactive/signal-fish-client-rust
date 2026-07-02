@@ -239,7 +239,7 @@ method on the client is `shutdown()`:
 client.shutdown().await;
 ```
 
-### Reliability & Flow Control
+### Reliability and Flow Control
 
 Putting the two halves together, the client **never silently drops data** in
 either direction:

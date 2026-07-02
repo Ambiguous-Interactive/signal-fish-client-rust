@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queue is full. Adding a variant to `SignalFishError` is breaking for
   exhaustive matches (#47).
 - `SignalFishPollingClient` applies the same bound to its command queue
-  (via `command_channel_capacity`); queueing methods return `SendBufferFull`
+  (via `command_channel_capacity`); queuing methods return `SendBufferFull`
   once a stalled transport fills it (#47).
 - `MeshController` no longer drops a driver signal the command queue refuses:
   the signal is buffered in the controller and retried (in order, ahead of

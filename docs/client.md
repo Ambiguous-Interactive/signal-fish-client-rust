@@ -327,7 +327,7 @@ the queue is congested.
 
 ---
 
-### Send Queue & Traffic Stats
+### Send Queue and Traffic Stats
 
 Synchronous diagnostics for the outgoing command queue and game-data traffic:
 
@@ -605,7 +605,7 @@ flushed on the next `poll()` call. All return `Result<(), SignalFishError>`.
 
 The outgoing queue is bounded by the same
 [`SignalFishConfig::command_channel_capacity`](#fields) (default 1024): if
-the transport stalls long enough for the queue to fill, further queueing
+the transport stalls long enough for the queue to fill, further queuing
 methods return `SignalFishError::SendBufferFull` (the message is not
 queued). `send_capacity()` / `max_send_capacity()` report the remaining and
 configured capacity.
@@ -641,7 +641,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
-| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue & Traffic Stats](#send-queue-traffic-stats)). |
+| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

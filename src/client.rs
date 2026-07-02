@@ -2028,7 +2028,7 @@ mod tests {
             .expect("task must not panic");
         assert!(result.is_ok(), "reliable send should succeed: {result:?}");
 
-        // All three messages reach the wire: Authenticate + both game datas.
+        // All three messages reach the wire: Authenticate + both game data payloads.
         wait_for_sent_len(&sent, 3).await;
 
         let mut client = Arc::into_inner(client).expect("all clones dropped");
