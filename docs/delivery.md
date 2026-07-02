@@ -36,10 +36,11 @@ Every hop is bounded, and no hop drops silently:
   is disconnected with a best-effort `SLOW_CONSUMER` error frame. The
   server never drops a relayed message except together with the connection
   itself.
-- **Receive side (this SDK):** events are delivered losslessly with
-  backpressure; a consumer that stops draining stops the socket being read
-  (the server then sees *you* as the slow consumer). Undecodable frames
-  surface as [`DecodeFailed`](events.md#decodefailed) events.
+- **Receive side (this SDK):** events are delivered with backpressure (never
+  dropped merely because the consumer is behind); a consumer that stops
+  draining stops the socket being read (the server then sees *you* as the slow
+  consumer). Undecodable frames surface as
+  [`DecodeFailed`](events.md#decodefailed) events.
 
 ## What a slow-consumer eviction looks like from here
 

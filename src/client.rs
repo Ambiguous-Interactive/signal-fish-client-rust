@@ -158,14 +158,15 @@ pub struct SignalFishConfig {
     pub supported_topologies: Option<Vec<Topology>>,
     /// Capacity of the bounded event channel.
     ///
-    /// Events are **never dropped**. When the consumer cannot keep up with
-    /// incoming server messages, the transport loop pauses until the consumer
-    /// drains the channel, propagating backpressure to the server instead of
-    /// losing data. The capacity only controls how much buffering the consumer
-    /// gets before that backpressure kicks in. An event can only be missed
-    /// when delivery stops entirely: the receiver is dropped,
-    /// [`SignalFishClient::shutdown`] times out and aborts the transport
-    /// task, or the client handle is dropped without calling `shutdown`.
+    /// Events are **never dropped on overflow**. When the consumer cannot keep
+    /// up with incoming server messages, the transport loop pauses until the
+    /// consumer drains the channel, propagating backpressure to the server
+    /// instead of losing data. The capacity only controls how much buffering
+    /// the consumer gets before that backpressure kicks in. An event can only
+    /// be missed when delivery stops entirely: the receiver is dropped, the
+    /// client handle is dropped without calling [`SignalFishClient::shutdown`],
+    /// or on `shutdown` — which abandons at most one in-flight event and
+    /// delivers the terminal `Disconnected` best-effort.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
@@ -405,7 +406,8 @@ pub struct ClientStats {
     /// the relay-path deficit diagnostic needs — it measures the wire, so a
     /// consumer that stops draining events (or a terminal abort racing the
     /// last deliveries) cannot masquerade as relay loss. In steady state
-    /// receipt and delivery are identical because events are never dropped.
+    /// receipt and delivery are identical because events are not dropped on
+    /// overflow.
     pub game_data_received: u64,
     /// Inbound frames that failed to decode into a `ServerMessage`.
     ///
@@ -684,7 +686,8 @@ impl SignalFishClient {
     ///
     /// The command queue only drains while the transport loop runs, and the
     /// transport loop pauses whenever the **event** channel is full (events
-    /// are never dropped). A task that awaits this method while it is also
+    /// are never dropped on overflow — the loop pauses instead). A task that
+    /// awaits this method while it is also
     /// the only consumer of the event receiver can therefore deadlock under
     /// simultaneous send + receive pressure. Drain events from a separate
     /// task rather than strictly sequentially. (Do **not** race this send
@@ -1443,12 +1446,12 @@ async fn finish_shutdown(
 /// handshake.
 ///
 /// The break-paths (transport send/receive error, clean server close, dropped
-/// handle) want `Disconnected` delivered losslessly with backpressure — the
-/// normal, never-drop case. But if the consumer has wedged (event channel
+/// handle) want `Disconnected` delivered with backpressure — the normal,
+/// never-drop case. But if the consumer has wedged (event channel
 /// full) *and* a shutdown is pending, a plain blocking send would starve the
 /// shutdown signal and force `shutdown()` down its timeout/abort path (the
 /// same starvation [`emit_event_or_shutdown`] fixes for per-message events).
-/// So this races the lossless send against the shutdown signal, `biased`
+/// So this races the backpressured send against the shutdown signal, `biased`
 /// toward delivery; on preemption it re-sends best-effort via `try_send` so
 /// the event is still likely delivered and the loop exits promptly.
 ///

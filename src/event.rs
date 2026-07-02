@@ -93,7 +93,9 @@ pub enum SignalFishEvent {
     /// or payload corruption.
     ///
     /// Every undecodable frame produces exactly one `DecodeFailed` event
-    /// (no coalescing), delivered losslessly like any other event, and
+    /// (no coalescing), delivered with backpressure like any other event
+    /// (never dropped merely because the consumer is behind; see the delivery
+    /// guarantees on [`SignalFishClient`](crate::SignalFishClient)), and
     /// increments the `messages_undecodable` counter in
     /// [`ClientStats`](crate::ClientStats). Steady growth of that counter
     /// means protocol drift (upgrade this SDK) or a corrupting middlebox.

@@ -180,7 +180,7 @@ are generated locally by the transport layer:
 | `SignalFishEvent::DecodeFailed { .. }` | Emitted when an inbound frame fails to decode; the connection stays open. See [Events](events.md#decodefailed). |
 
 !!! note "Lossless delivery with backpressure"
-    Events are **never dropped**. The event channel has a default capacity of
+    Events are **never dropped on overflow**. The event channel has a default capacity of
     **256** (configurable via `SignalFishConfig::event_channel_capacity`); if
     your consumer falls behind, the transport loop pauses reading from the
     transport until the channel has room, so backpressure propagates to the
@@ -263,7 +263,8 @@ guarantee, backpressure toward senders, slow-consumer eviction, and the
 measured capacity envelope — is documented in
 [Delivery Contract & Backpressure](delivery.md).
 
-Because the client is lossless, loss elsewhere becomes observable. `stats()`
+Because the client applies backpressure instead of dropping events on
+overflow, loss elsewhere becomes observable. `stats()`
 returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
 `game_data_received` / `messages_undecodable` counters (they survive
 disconnects): exchange or log them across peers, and a persistent

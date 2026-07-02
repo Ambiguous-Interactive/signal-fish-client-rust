@@ -30,7 +30,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
-| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
 | `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
 
@@ -342,7 +342,7 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 (`GameData`/`GameDataBinary` messages read off the transport and parsed —
 counted at **receipt**, not at delivery to your event loop, so a consumer
 that stops draining events cannot masquerade as relay loss; in steady state
-the two are identical because events are never dropped), and
+the two are identical because events are not dropped on overflow), and
 `messages_undecodable` (inbound frames that failed to decode — each also
 surfaces as a [`DecodeFailed`](events.md#decodefailed) event; steady growth
 means protocol drift or a corrupting middlebox). The counters are
