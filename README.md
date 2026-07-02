@@ -46,7 +46,7 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **Protocol support: v2 relay + v3 mesh** — v3 (opt-in, backward-compatible) adds WebRTC mesh signaling; a default client stays byte-identical to v2 (the "relay-floor guarantee"). Enable with `SignalFishConfig::enable_mesh()`.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
-- **Structured errors** — `SignalFishError` (11 variants) and `ErrorCode` (48 variants) for precise error handling
+- **Structured errors** — `SignalFishError` (11 variants) and `ErrorCode` (50 variants) for precise error handling
 - **Full protocol coverage** — 14 client message types, 28 server message types, 30 event variants
 - **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
@@ -126,7 +126,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `event`       | `SignalFishEvent` enum (28 server + 2 synthetic variants)         |
 | `protocol`    | Wire-compatible `ClientMessage` (14) / `ServerMessage` (28) types |
 | `error`       | `SignalFishError` unified error type (11 variants)                |
-| `error_codes` | `ErrorCode` enum (48 server error code variants)                  |
+| `error_codes` | `ErrorCode` enum (50 server error code variants)                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
 | `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
 | `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |

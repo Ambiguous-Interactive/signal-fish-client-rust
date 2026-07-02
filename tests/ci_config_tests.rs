@@ -7793,6 +7793,8 @@ mod protocol_wire_conformance_policy {
             "SIGNAL_RATE_LIMITED",
             "SIGNAL_TOO_LARGE",
             "CONNECTION_IDLE_TIMEOUT",
+            "SLOW_CONSUMER",
+            "ACTIVITY_TIMEOUT",
         ] {
             assert!(
                 changelog.contains(code),
@@ -7819,5 +7821,109 @@ mod protocol_wire_conformance_policy {
                 "skill not referenced in the auto-generated index: {skill}"
             );
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Vendored server AsyncAPI spec (tests/server-spec/) — same provenance
+    // discipline as the wire samples above. The spec backs the error-code
+    // conformance suite (tests/error_code_conformance_tests.rs).
+    // ────────────────────────────────────────────────────────────────────
+
+    const SERVER_SPEC_FILE: &str = "signal-fish-protocol.asyncapi.yaml";
+
+    fn server_spec_path(name: &str) -> String {
+        format!("tests/server-spec/{name}")
+    }
+
+    #[test]
+    fn server_spec_files_exist_and_are_non_empty() {
+        let rel = server_spec_path(SERVER_SPEC_FILE);
+        assert!(project_file_exists(&rel), "missing vendored spec: {rel}");
+        let content = read_project_file(&rel);
+        assert!(
+            content.lines().any(|l| !l.trim().is_empty()),
+            "vendored spec is empty: {rel}"
+        );
+        assert!(
+            project_file_exists("tests/server-spec/PROVENANCE.toml"),
+            "tests/server-spec/PROVENANCE.toml is required"
+        );
+        assert!(
+            project_file_exists("tests/server-spec/README.md"),
+            "tests/server-spec/README.md is required"
+        );
+    }
+
+    #[test]
+    fn server_spec_provenance_marker_is_valid() {
+        let toml_str = read_project_file("tests/server-spec/PROVENANCE.toml");
+        let parsed: toml::Value =
+            toml::from_str(&toml_str).expect("PROVENANCE.toml must be valid TOML");
+
+        let upstream = parsed.get("upstream").expect("[upstream] table required");
+        let commit = upstream
+            .get("commit")
+            .and_then(toml::Value::as_str)
+            .expect("[upstream].commit required");
+        assert_eq!(
+            commit.len(),
+            40,
+            "commit must be a 40-char git SHA: {commit}"
+        );
+        assert!(
+            commit.chars().all(|c| c.is_ascii_hexdigit()),
+            "commit must be hexadecimal: {commit}"
+        );
+        assert!(
+            upstream
+                .get("synced")
+                .and_then(toml::Value::as_str)
+                .is_some(),
+            "[upstream].synced date required"
+        );
+
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table required");
+        let sum = files
+            .get(SERVER_SPEC_FILE)
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("[files] missing checksum for {SERVER_SPEC_FILE}"));
+        assert_eq!(
+            sum.len(),
+            64,
+            "{SERVER_SPEC_FILE}: checksum must be 64 hex chars"
+        );
+        assert!(
+            sum.chars().all(|c| c.is_ascii_hexdigit()),
+            "{SERVER_SPEC_FILE}: checksum must be hexadecimal"
+        );
+    }
+
+    #[test]
+    fn server_spec_provenance_checksum_matches_vendored_file() {
+        // Guards against editing the spec without updating the marker (or vice
+        // versa) — the provenance stays honest.
+        let toml_str = read_project_file("tests/server-spec/PROVENANCE.toml");
+        let parsed: toml::Value = toml::from_str(&toml_str).expect("valid TOML");
+        let files = parsed
+            .get("files")
+            .and_then(toml::Value::as_table)
+            .expect("[files] table");
+
+        let expected = files
+            .get(SERVER_SPEC_FILE)
+            .and_then(toml::Value::as_str)
+            .expect("checksum entry");
+        let bytes = std::fs::read(project_root().join(server_spec_path(SERVER_SPEC_FILE)))
+            .unwrap_or_else(|e| panic!("read {SERVER_SPEC_FILE}: {e}"));
+        let actual = hex_encode(&Sha256::digest(&bytes));
+        assert_eq!(
+            actual, expected,
+            "{SERVER_SPEC_FILE}: SHA-256 differs from PROVENANCE.toml — the spec was \
+             edited but the marker was not updated (or vice versa). See \
+             .llm/skills/protocol-wire-conformance.md."
+        );
     }
 }

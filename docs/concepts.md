@@ -385,7 +385,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 48-variant enum that arrives inside events. The server sends
+`ErrorCode` is a 50-variant enum that arrives inside events. The server sends
 these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore

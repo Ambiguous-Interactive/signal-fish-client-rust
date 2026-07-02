@@ -58,3 +58,18 @@ jobs:
             exit 1
           fi
           echo "Vendored wire samples are in sync with upstream."
+
+      - name: Compare vendored AsyncAPI spec to upstream and fail on drift
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/Ambiguous-Interactive/signal-fish-server/main/spec/signal-fish-protocol.asyncapi.yaml"
+          curl -fsS "$url" -o /tmp/signal-fish-protocol.asyncapi.yaml
+          if ! diff -q tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml >/dev/null 2>&1; then
+            echo "::error::server AsyncAPI spec drift detected — upstream changed (new error codes or messages?)"
+            diff tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml || true
+            echo "Refresh per .llm/skills/protocol-wire-conformance.md: re-vendor the spec, update"
+            echo "tests/server-spec/PROVENANCE.toml, and run cargo test --test error_code_conformance_tests"
+            echo "to surface any ErrorCode variants the client must add."
+            exit 1
+          fi
+          echo "Vendored AsyncAPI spec is in sync with upstream."

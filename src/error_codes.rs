@@ -84,6 +84,20 @@ pub enum ErrorCode {
 
     // Connection lifecycle (protocol v3)
     ConnectionIdleTimeout,
+
+    // Delivery & liveness
+    /// The server evicted this connection because its outbound queue stayed
+    /// full past the slow-consumer grace window (5 seconds by default): the
+    /// client was not draining messages fast enough.
+    ///
+    /// The farewell `Error` frame carrying this code is written best-effort
+    /// into an already-congested socket, so it may never arrive; a bare
+    /// disconnect can be the only observable signal. Wire: `"SLOW_CONSUMER"`.
+    SlowConsumer,
+    /// The server closed the connection after prolonged protocol inactivity
+    /// (no messages received within the activity window). Wire:
+    /// `"ACTIVITY_TIMEOUT"`.
+    ActivityTimeout,
 }
 
 impl ErrorCode {
@@ -257,6 +271,14 @@ impl ErrorCode {
             // Connection lifecycle (protocol v3)
             Self::ConnectionIdleTimeout => {
                 "The connection was closed by the server after being idle for too long."
+            }
+
+            // Delivery & liveness
+            Self::SlowConsumer => {
+                "The server closed this connection because the client was not reading messages fast enough. Drain events promptly, or reduce inbound volume."
+            }
+            Self::ActivityTimeout => {
+                "The connection was closed by the server due to prolonged inactivity. Send periodic pings to keep the connection alive."
             }
         }
     }

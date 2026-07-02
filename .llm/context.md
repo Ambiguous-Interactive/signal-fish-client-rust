@@ -49,7 +49,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/transport.rs` | `Transport` trait — async bidirectional text messages |
 | `src/protocol.rs` | Wire-compatible protocol types (`ClientMessage`, `ServerMessage`, v3 `Topology`/`TransportKind`/`SessionPlanPayload`) |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 48 variants from server |
+| `src/error_codes.rs` | `ErrorCode` enum — 50 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client.rs` | `SignalFishClient` async client + `SignalFishConfig` + `JoinRoomParams` |

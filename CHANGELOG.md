@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-07-02
 
+### Added
+
+- `ErrorCode::SlowConsumer` (wire `"SLOW_CONSUMER"`) and
+  `ErrorCode::ActivityTimeout` (wire `"ACTIVITY_TIMEOUT"`) — the delivery &
+  liveness codes the server introduced with its no-silent-drop relay
+  overhaul (server 851c446). Before this release an `Error` frame carrying
+  either code failed to deserialize and was **silently discarded**, so a
+  slow-consumer eviction looked like a bare disconnect with no reason.
+- Error-code-space conformance suite
+  (`tests/error_code_conformance_tests.rs`): the server's AsyncAPI spec is
+  vendored under `tests/server-spec/` with SHA-pinned provenance, and tests
+  assert every server error-code token deserializes into a client
+  `ErrorCode` variant (and vice versa). The weekly `protocol-sync` workflow
+  now also diffs the vendored spec against the server's `main`, closing the
+  drift blind spot where new server codes passed the wire-sample golden
+  tests unnoticed.
+
+### Changed
+
+- **Breaking:** `ErrorCode` gained the two variants above; exhaustive
+  `match`es over `ErrorCode` must add arms.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
