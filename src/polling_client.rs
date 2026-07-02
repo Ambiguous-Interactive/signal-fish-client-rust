@@ -276,8 +276,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
                         }
                         Err(e) => {
                             // Never a silent drop: surface the frame as a
-                            // typed DecodeFailed event and count it.
-                            warn!("failed to deserialize server message: {e} — raw: {text}");
+                            // typed DecodeFailed event and count it. Log the
+                            // error and frame size only — not the raw content,
+                            // which is untrusted, unbounded, and may carry
+                            // application payloads (the DecodeFailed event
+                            // carries a bounded prefix for diagnostics).
+                            warn!(
+                                "failed to deserialize server message ({} bytes): {e}",
+                                text.len()
+                            );
                             self.state.messages_undecodable += 1;
                             events.push(SignalFishEvent::decode_failed(&text, &e));
                         }

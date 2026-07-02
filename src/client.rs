@@ -1225,8 +1225,15 @@ async fn transport_loop(
                             }
                             Err(e) => {
                                 // Never a silent drop: surface the frame as a
-                                // typed DecodeFailed event and count it.
-                                warn!("failed to deserialize server message: {e} — raw: {text}");
+                                // typed DecodeFailed event and count it. Log the
+                                // error and frame size only — not the raw
+                                // content, which is untrusted, unbounded, and may
+                                // carry application payloads (the DecodeFailed
+                                // event carries a bounded prefix for diagnostics).
+                                warn!(
+                                    "failed to deserialize server message ({} bytes): {e}",
+                                    text.len()
+                                );
                                 state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
                                 let event = SignalFishEvent::decode_failed(&text, &e);
                                 if matches!(
