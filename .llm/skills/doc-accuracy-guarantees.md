@@ -61,8 +61,9 @@ cancellation, channel drops, etc.
 /// Events are **never dropped**: when the consumer lags, the transport loop
 /// pauses here, which stops reading from the transport and propagates
 /// backpressure to the server (e.g. via TCP receive windows). Delivery only
-/// fails if the receiver has been dropped, or if `shutdown` aborts the
-/// transport task while this send is still waiting.
+/// fails if the receiver has been dropped, or if the transport task is
+/// aborted while this send is still waiting (a `shutdown` timeout, or the
+/// client handle dropped without `shutdown`).
 ```
 
 ### `shutdown_timeout` — Documenting abort consequences

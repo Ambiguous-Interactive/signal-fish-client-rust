@@ -1278,8 +1278,10 @@ async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishE
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
 /// Like every event, `Disconnected` is delivered with backpressure (see
-/// [`emit_event`]); it can only be missed if the receiver has been dropped or
-/// if [`SignalFishClient::shutdown`] aborts the transport task first.
+/// [`emit_event`]); it can only be missed if the receiver has been dropped
+/// or if the transport task is aborted first (a
+/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
+/// without `shutdown`).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,

@@ -137,7 +137,8 @@ You interact with the server by calling methods on the `SignalFishClient` handle
     Events are **never dropped**. If your event-processing loop cannot keep up
     with the server, the transport loop pauses until the channel has room —
     backpressure propagates to the server instead of losing events. An event
-    can only be missed if the receiver is dropped or
+    can only be missed if the receiver is dropped, the client handle is
+    dropped without calling `shutdown()`, or
     [`shutdown()`](client.md#shutdown) times out. Keep your handler responsive
     so the connection keeps flowing; `event_channel_capacity` on your
     `SignalFishConfig` controls how much buffering you get before

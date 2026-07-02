@@ -513,9 +513,7 @@ mod controller {
                 if !self.relay_pending_signal() {
                     return None;
                 }
-                let Some(driver_event) = self.driver.poll() else {
-                    return None;
-                };
+                let driver_event = self.driver.poll()?;
                 match driver_event {
                     DriverEvent::Signal { peer, signal } => {
                         // Buffer, then immediately attempt the relay on the

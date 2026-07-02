@@ -170,7 +170,8 @@ Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
 full (message refused, never silently dropped). Events are also never dropped:
 a full event channel pauses the transport loop (backpressure); events are
-missed only on receiver drop or shutdown-timeout abort.
+missed only on receiver drop, shutdown-timeout abort, or handle drop without
+`shutdown()`.
 `SignalFishPollingClient` shares the queue bound, capacity accessors, and `stats()`.
 
 ## Feature Flags
