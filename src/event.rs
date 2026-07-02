@@ -467,6 +467,7 @@ impl SignalFishEvent {
     /// Shared by the async and polling clients so both surface identical
     /// diagnostics: the wire `type` tag when the frame was valid JSON, the
     /// serde error text, and a bounded raw prefix.
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
     pub(crate) fn decode_failed(raw: &str, error: &serde_json::Error) -> Self {
         let message_type = serde_json::from_str::<serde_json::Value>(raw)
             .ok()
@@ -481,6 +482,7 @@ impl SignalFishEvent {
 
 /// Returns the longest prefix of `s` that is at most `max_bytes` long and
 /// ends on a UTF-8 character boundary.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
