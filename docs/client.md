@@ -338,11 +338,14 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
-(`GameData` messages written to the transport) and `game_data_received`
+(`GameData` messages written to the transport), `game_data_received`
 (`GameData`/`GameDataBinary` messages read off the transport and parsed —
 counted at **receipt**, not at delivery to your event loop, so a consumer
 that stops draining events cannot masquerade as relay loss; in steady state
-the two are identical because events are never dropped). The counters are
+the two are identical because events are never dropped), and
+`messages_undecodable` (inbound frames that failed to decode — each also
+surfaces as a [`DecodeFailed`](events.md#decodefailed) event; steady growth
+means protocol drift or a corrupting middlebox). The counters are
 cumulative for the lifetime of the client — they survive room changes and
 disconnects.
 
@@ -645,7 +648,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
-| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
+| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

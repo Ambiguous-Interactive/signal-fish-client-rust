@@ -1,17 +1,17 @@
 # Events Reference
 
-Every message from the Signal Fish server — plus two synthetic transport-layer
-signals — is delivered as a [`SignalFishEvent`] variant through the event
-receiver returned by [`SignalFishClient::start`].
+Every message from the Signal Fish server — plus three synthetic
+transport-layer signals — is delivered as a [`SignalFishEvent`] variant
+through the event receiver returned by [`SignalFishClient::start`].
 
-This page documents all **30 variants** grouped by category, with field
+This page documents all **31 variants** grouped by category, with field
 descriptions and usage examples.
 
 !!! info "Protocol v2 relay + v3 mesh"
     Four variants — [`SessionPlan`](#mesh-events-protocol-v3),
     `NewPeer`, `SignalReceived`, and `PeerTransportStatus` — only arrive on a
     **v3-negotiated** connection (opt in with `SignalFishConfig::enable_mesh()`).
-    The other 26 are available on every connection, including the v2 relay floor.
+    The other 27 are available on every connection, including the v2 relay floor.
     See [Protocol Versioning](protocol-versioning.md) and the
     [Mesh Guide](mesh-guide.md).
 
@@ -24,11 +24,16 @@ descriptions and usage examples.
     (default **256**, via `SignalFishConfig::event_channel_capacity`), and a
     consumer that falls behind pauses the transport loop until the channel
     has room — backpressure propagates to the server instead of losing
-    events. There are exactly three ways an event can be missed — each one
-    stops delivery entirely; there is never selective loss: the event
-    receiver is dropped, a [`shutdown()`](client.md#shutdown) timeout aborts
-    the transport task, or the client handle is dropped without calling
-    `shutdown()` (which aborts the loop immediately).
+    events. Inbound frames that fail to decode surface as
+    [`DecodeFailed`](#decodefailed) events rather than being skipped. There
+    are exactly three ways an event can be missed — each one stops delivery
+    entirely; there is never selective loss: the event receiver is dropped,
+    the client handle is dropped without calling
+    [`shutdown()`](client.md#shutdown) (which aborts the loop immediately),
+    or `shutdown()` is invoked — a shutdown abandons at most the one event
+    delivery it interrupted, closes the transport gracefully, and delivers
+    the terminal `Disconnected` best-effort (the event channel closing is
+    the authoritative end-of-stream signal).
 
 ---
 
@@ -40,22 +45,54 @@ Use these to track the raw connection lifecycle.
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
-| `Disconnected` | `reason: Option<String>` | The transport connection was closed or errored. |
+| `Disconnected` | `reason: Option<String>`, `last_server_error: Option<ServerErrorInfo>` | The transport connection was closed or errored. |
+| `DecodeFailed` | `message_type: Option<String>`, `error: String`, `raw_prefix: String` | An inbound frame could not be decoded into a `ServerMessage`; the connection stays open. |
+
+### `Disconnected`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reason` | `Option<String>` | Human-readable close explanation. When the transport captured a WebSocket Close frame with a reason, it appears as `"closed by server: …"`. The current server closes bare, so this is usually `None` for server-initiated closes. |
+| `last_server_error` | `Option<ServerErrorInfo>` | The most recent `Error`/`AuthenticationError` received on this connection — a correlation aid for attributing the disconnect. A server that evicts a slow consumer writes a best-effort `Error { error_code: SlowConsumer }` farewell before closing; when that frame arrives, it shows up here. See the [Delivery Contract](delivery.md). |
 
 !!! note "Best-effort delivery on shutdown"
     Like every event, `Disconnected` is never dropped due to channel
     backpressure. It is delivered best-effort only in the sense that it may
-    be missed if the event receiver is dropped, if
-    [`shutdown()`](client.md#shutdown) times out and aborts the transport
-    task, or if the client handle is dropped without calling `shutdown()`.
+    be missed if the event receiver is dropped, if the client handle is
+    dropped without calling `shutdown()`, or if the event channel happens to
+    be full at the instant an explicit [`shutdown()`](client.md#shutdown)
+    completes — the channel closing then signals the end of the stream.
+
+### `DecodeFailed`
+
+Emitted when an inbound frame fails to deserialize — an unknown message
+`type` from a newer server, an unknown `error_code` string inside a known
+message, a proxy injecting non-protocol frames, or corruption. The
+connection stays open and later frames are unaffected; each occurrence also
+increments [`ClientStats::messages_undecodable`](client.md#send-queue-and-traffic-stats).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message_type` | `Option<String>` | The wire `type` tag when the frame was valid JSON. `Some("Error")` plus a decode failure strongly implies an unknown `error_code`; `None` means the frame was not valid JSON at all. |
+| `error` | `String` | The deserialization error text. |
+| `raw_prefix` | `String` | The raw frame, truncated to `DECODE_FAILED_RAW_PREFIX_MAX` (512) bytes on a UTF-8 boundary. |
+
+Steady growth of `messages_undecodable` means protocol drift (upgrade this
+SDK) or a corrupting middlebox — log `DecodeFailed` in production builds.
 
 ```rust,ignore
 match event {
     SignalFishEvent::Connected => {
         println!("Transport connected — waiting for authentication…");
     }
-    SignalFishEvent::Disconnected { reason } => {
-        println!("Disconnected: {}", reason.as_deref().unwrap_or("unknown"));
+    SignalFishEvent::Disconnected { reason, last_server_error } => {
+        println!(
+            "Disconnected: {} (last server error: {last_server_error:?})",
+            reason.as_deref().unwrap_or("unknown"),
+        );
+    }
+    SignalFishEvent::DecodeFailed { message_type, error, .. } => {
+        eprintln!("undecodable frame (type {message_type:?}): {error}");
     }
     _ => {}
 }

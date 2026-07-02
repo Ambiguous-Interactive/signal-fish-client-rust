@@ -82,7 +82,7 @@ pub enum GameDataEncoding {
 |---------|-----------|-------------|
 | `Json` | `"json"` | JSON payloads delivered over text frames (default). |
 | `MessagePack` | `"message_pack"` | MessagePack binary payloads delivered over binary frames. |
-| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format for maximum performance. |
+| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** the current server never negotiates rkyv — requesting it silently downgrades to JSON. |
 
 ---
 

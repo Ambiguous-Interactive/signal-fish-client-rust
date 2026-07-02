@@ -670,3 +670,34 @@ cargo +nightly build -Zbuild-std \
 ```
 
 The resulting `.wasm` file is used by Godot's HTML5 export template.
+
+---
+
+## Load Lab (measurement harness)
+
+[`examples/load_lab.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/load_lab.rs)
+is a CSV-emitting measurement harness for running controlled relay
+experiments against a **local** Signal Fish server — the tool behind the
+numbers in [Delivery Contract & Backpressure](delivery.md).
+
+```sh
+# Run a local server in open lab mode first:
+#   SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+#   SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+#   SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+#   signal-fish-server
+
+cargo run --example load_lab --features transport-websocket -- ping
+cargo run --example load_lab --features transport-websocket -- \
+    throughput rates=50,100,200,400 payload=1024 recipients=3
+cargo run --example load_lab --features transport-websocket -- \
+    slow-consumer rate=120 drain_ms=100
+cargo run --example load_lab --features transport-websocket -- \
+    control-starvation drain_ms=5
+```
+
+Four modes: `ping` (baseline RTT), `throughput` (offered-rate sweep with
+latency percentiles), `slow-consumer` (one slow-draining room member —
+measures how much it paces the sender and the healthy recipients), and
+`control-starvation` (Pong RTT at a backlogged recipient). Never point it
+at a production deployment you don't own.

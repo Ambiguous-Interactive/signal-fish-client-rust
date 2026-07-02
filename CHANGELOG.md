@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now also diffs the vendored spec against the server's `main`, closing the
   drift blind spot where new server codes passed the wire-sample golden
   tests unnoticed.
+- `examples/load_lab.rs` — a CSV-emitting measurement harness (ping /
+  throughput / slow-consumer / control-starvation modes) for running
+  controlled relay experiments against a local server, plus
+  `tests/real_server_e2e.rs`, env-gated end-to-end tests against a real
+  server binary (ignored by default).
+- New docs page **Delivery Contract & Backpressure** (`docs/delivery.md`)
+  documenting the end-to-end delivery pipeline with measured numbers: what
+  a slow-consumer eviction looks like from the client, the reconnect
+  contract (no token is obtainable today), relay capacity, and the
+  wedged-consumer hazard.
+
+### Fixed
+
+- README no longer overclaims byte-exact wire parity (the protocol is
+  conformance-tested; undecodable frames surface as `DecodeFailed`), and
+  `GameDataEncoding::Rkyv` docs now state the server never negotiates rkyv
+  today (silent JSON downgrade) instead of recommending it for
+  performance.
 
 ### Changed
 

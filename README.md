@@ -42,12 +42,12 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 ## Features
 
 - **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
-- **Wire-compatible** — all protocol types match the Signal Fish server's JSON format exactly
+- **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
 - **Protocol support: v2 relay + v3 mesh** — v3 (opt-in, backward-compatible) adds WebRTC mesh signaling; a default client stays byte-identical to v2 (the "relay-floor guarantee"). Enable with `SignalFishConfig::enable_mesh()`.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
 - **Structured errors** — `SignalFishError` (11 variants) and `ErrorCode` (50 variants) for precise error handling
-- **Full protocol coverage** — 14 client message types, 28 server message types, 30 event variants
+- **Full protocol coverage** — 14 client message types, 28 server message types, 31 event variants
 - **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics

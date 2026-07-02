@@ -245,18 +245,27 @@ Putting the two halves together, the client **never silently drops data** in
 either direction:
 
 - **Inbound:** events are delivered with backpressure — a lagging consumer
-  pauses the transport loop; nothing is lost.
+  pauses the transport loop; nothing is lost. Frames that fail to decode
+  (an unknown message type or error code from a newer server, malformed
+  JSON) surface as [`DecodeFailed`](events.md#decodefailed) events instead
+  of being skipped.
 - **Outbound:** queue admission is never silent — congestion surfaces as
   `SendBufferFull` (fail-fast methods) or as waiting (`*_reliable` methods),
   never as an unbounded backlog. Note that *queued* is not *delivered*:
   commands still in the queue when the connection ends are discarded with
   it, surfaced by the `Disconnected` event.
 
+The server's half of the story — the relay's reliable-and-ordered
+guarantee, backpressure toward senders, slow-consumer eviction, and the
+measured capacity envelope — is documented in
+[Delivery Contract & Backpressure](delivery.md).
+
 Because the client is lossless, loss elsewhere becomes observable. `stats()`
 returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
-`game_data_received` counters (they survive disconnects): exchange or log
-them across peers, and a persistent sent-vs-received deficit points at the
-relay path or a peer — not at this client. Pace high-rate streams with
+`game_data_received` / `messages_undecodable` counters (they survive
+disconnects): exchange or log them across peers, and a persistent
+sent-vs-received deficit points at the relay path or a peer — not at this
+client. Pace high-rate streams with
 `send_game_data_reliable` instead of guessing at sleep durations — but drain
 events from a separate task while awaiting it: the queue only drains while
 the transport loop runs, and the loop pauses when the event channel is full,
