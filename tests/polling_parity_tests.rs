@@ -362,3 +362,111 @@ async fn parity_disconnect_resets_negotiated_version() {
     assert!(saw_disconnect, "async should have disconnected");
     assert_eq!(client.negotiated_protocol_version(), None);
 }
+
+// ── PARITY 9: DecodeFailed surfacing is identical ─────────────────────
+
+#[tokio::test]
+async fn parity_decode_failed_async_vs_polling() {
+    const BAD_FRAME: &str =
+        r#"{"type":"Error","data":{"message":"x","error_code":"FUTURE_CODE_XYZ"}}"#;
+
+    // Async client.
+    let async_mock = SharedMock::new(vec![AUTH, BAD_FRAME]);
+    let (async_client, mut events) =
+        SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
+    let mut async_decode_failed = None;
+    for _ in 0..6 {
+        match tokio::time::timeout(std::time::Duration::from_millis(150), events.recv()).await {
+            Ok(Some(ev @ SignalFishEvent::DecodeFailed { .. })) => {
+                async_decode_failed = Some(ev);
+                break;
+            }
+            Ok(Some(_)) => {}
+            _ => break,
+        }
+    }
+
+    // Polling client.
+    let poll_mock = SharedMock::new(vec![AUTH, BAD_FRAME]);
+    let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    let poll_events = poll_client.poll();
+    let poll_decode_failed = poll_events
+        .into_iter()
+        .find(|e| matches!(e, SignalFishEvent::DecodeFailed { .. }));
+
+    // Both must surface the event, with identical fields.
+    let (
+        Some(SignalFishEvent::DecodeFailed {
+            message_type: a_type,
+            error: a_err,
+            raw_prefix: a_raw,
+        }),
+        Some(SignalFishEvent::DecodeFailed {
+            message_type: p_type,
+            error: p_err,
+            raw_prefix: p_raw,
+        }),
+    ) = (async_decode_failed, poll_decode_failed)
+    else {
+        panic!("both clients must surface DecodeFailed for the same frame");
+    };
+    assert_eq!(a_type, p_type);
+    assert_eq!(a_err, p_err);
+    assert_eq!(a_raw, p_raw);
+    assert_eq!(a_type.as_deref(), Some("Error"));
+
+    // And identical stats accounting.
+    assert_eq!(async_client.stats().messages_undecodable, 1);
+    assert_eq!(poll_client.stats().messages_undecodable, 1);
+}
+
+// ── PARITY 10: Disconnected carries last_server_error identically ─────
+
+#[tokio::test]
+async fn parity_disconnected_carries_last_server_error() {
+    const FAREWELL: &str = r#"{"type":"Error","data":{"message":"Disconnected as a slow consumer","error_code":"SLOW_CONSUMER"}}"#;
+
+    // Async: farewell then clean close.
+    let async_mock = SharedMock::from_msgs(vec![
+        Some(Ok(AUTH.to_string())),
+        Some(Ok(FAREWELL.to_string())),
+        None,
+    ]);
+    let (_client, mut events) = SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
+    let mut async_info = None;
+    for _ in 0..8 {
+        match tokio::time::timeout(std::time::Duration::from_millis(150), events.recv()).await {
+            Ok(Some(SignalFishEvent::Disconnected {
+                last_server_error, ..
+            })) => {
+                async_info = last_server_error;
+                break;
+            }
+            Ok(Some(_)) => {}
+            _ => break,
+        }
+    }
+
+    // Polling: same script.
+    let poll_mock = SharedMock::from_msgs(vec![
+        Some(Ok(AUTH.to_string())),
+        Some(Ok(FAREWELL.to_string())),
+        None,
+    ]);
+    let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    let poll_events = poll_client.poll();
+    let poll_info = poll_events.into_iter().find_map(|e| match e {
+        SignalFishEvent::Disconnected {
+            last_server_error, ..
+        } => last_server_error,
+        _ => None,
+    });
+
+    let async_info = async_info.expect("async Disconnected must carry the farewell");
+    let poll_info = poll_info.expect("polling Disconnected must carry the farewell");
+    assert_eq!(async_info, poll_info);
+    assert_eq!(
+        async_info.error_code,
+        Some(signal_fish_client::ErrorCode::SlowConsumer)
+    );
+}

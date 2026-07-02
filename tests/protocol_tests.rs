@@ -1371,7 +1371,8 @@ fn server_message_tolerates_unknown_fields_forward_compat() {
 
 #[test]
 fn server_message_unknown_type_fails_to_deserialize() {
-    // The transport loop logs+skips an un-deserializable message; we document the
+    // The transport loop surfaces an un-deserializable message as a
+    // `DecodeFailed` event; here we document the
     // hard-fail contract here (no silent catch-all variant).
     let json = r#"{"type":"SomeFutureV4Message","data":{}}"#;
     assert!(serde_json::from_str::<ServerMessage>(json).is_err());

@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SignalFishEvent::Authenticated { app_name, .. } => {
                 tracing::info!("Event: Authenticated — app_name={app_name}");
             }
-            SignalFishEvent::Disconnected { reason } => {
+            SignalFishEvent::Disconnected { reason, .. } => {
                 tracing::info!(
                     "Event: Disconnected — {}",
                     reason.as_deref().unwrap_or("clean")

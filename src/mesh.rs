@@ -450,7 +450,10 @@ mod tests {
     #[test]
     fn reset_on_disconnect_and_room_left() {
         for terminal in [
-            SignalFishEvent::Disconnected { reason: None },
+            SignalFishEvent::Disconnected {
+                reason: None,
+                last_server_error: None,
+            },
             SignalFishEvent::RoomLeft,
         ] {
             let mut s = MeshSession::new();
@@ -660,7 +663,10 @@ mod tests {
             vec![
                 plan(Topology::Mesh, None, vec![peer(1, true)], vec![]),
                 SignalFishEvent::RoomLeft,
-                SignalFishEvent::Disconnected { reason: None },
+                SignalFishEvent::Disconnected {
+                    reason: None,
+                    last_server_error: None,
+                },
             ],
         ));
         assert!(changed);

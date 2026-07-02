@@ -17,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overhaul (server 851c446). Before this release an `Error` frame carrying
   either code failed to deserialize and was **silently discarded**, so a
   slow-consumer eviction looked like a bare disconnect with no reason.
+- `SignalFishEvent::DecodeFailed { message_type, error, raw_prefix }` — an
+  inbound frame that fails to decode into a `ServerMessage` (unknown message
+  type, unknown error-code string, malformed JSON) now surfaces as a typed
+  event instead of a log-only silent drop. The raw frame text is preserved
+  up to `DECODE_FAILED_RAW_PREFIX_MAX` (512) bytes. Emitted by both
+  `SignalFishClient` and `SignalFishPollingClient` with identical fields.
+- `ClientStats::messages_undecodable` — cumulative count of inbound frames
+  that failed to decode, on both clients.
+- `SignalFishEvent::Disconnected` now carries
+  `last_server_error: Option<ServerErrorInfo>` — the most recent
+  `Error`/`AuthenticationError` received on the connection — so a
+  disconnect that follows a server farewell (e.g. the best-effort
+  `SLOW_CONSUMER` eviction notice) can be attributed programmatically.
+- `Transport::close_reason()` (defaulted, non-breaking for implementors):
+  transports can expose a close explanation; `WebSocketTransport` now
+  captures the peer's Close frame text, and both clients include it in
+  `Disconnected::reason` as `"closed by server: …"`.
 - Error-code-space conformance suite
   (`tests/error_code_conformance_tests.rs`): the server's AsyncAPI spec is
   vendored under `tests/server-spec/` with SHA-pinned provenance, and tests
@@ -30,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** `ErrorCode` gained the two variants above; exhaustive
   `match`es over `ErrorCode` must add arms.
+- **Breaking:** `SignalFishEvent` gained the `DecodeFailed` variant and
+  `Disconnected` gained the `last_server_error` field; exhaustive matches
+  and struct patterns must be updated (`Disconnected { reason, .. }`).
+- **Breaking:** `ClientStats` gained `messages_undecodable`; struct-literal
+  construction must add the field.
+- Graceful [`shutdown`] now preempts a transport loop wedged on a full event
+  channel (a consumer that stopped draining): the loop abandons at most the
+  one in-flight event delivery, **closes the transport cleanly** (previously
+  the abort left the connection dangling), and delivers the terminal
+  `Disconnected` best-effort. The event channel closing remains the
+  authoritative end-of-stream signal.
 
 ## [0.6.0] - 2026-07-01
 

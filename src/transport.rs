@@ -130,4 +130,23 @@ pub trait Transport: Send + 'static {
     fn is_ready(&self) -> bool {
         true
     }
+
+    /// A human-readable close explanation captured by the transport, if the
+    /// peer supplied one (e.g. a WebSocket Close frame's reason and code).
+    ///
+    /// Consulted by the clients after [`recv`](Transport::recv) returns
+    /// `None` to enrich the
+    /// [`Disconnected`](crate::SignalFishEvent::Disconnected) event's
+    /// `reason`. The default implementation returns `None`, which is correct
+    /// for transports that have no close metadata; custom transports should
+    /// override this if their protocol carries a close reason.
+    ///
+    /// The Signal Fish server today closes with a *bare* WebSocket Close
+    /// frame (no code/reason), so even
+    /// [`WebSocketTransport`](crate::WebSocketTransport) usually returns
+    /// `None`; the override exists so richer close signals surface as soon
+    /// as a peer sends them.
+    fn close_reason(&self) -> Option<String> {
+        None
+    }
 }

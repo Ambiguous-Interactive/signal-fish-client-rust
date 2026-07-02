@@ -12,11 +12,16 @@
 //! - **Events** are delivered with backpressure. If the consumer lags, the
 //!   transport loop pauses reading from the transport until the event channel
 //!   has room — backpressure propagates to the server instead of losing
-//!   events. An event can only be missed when the loop stops delivering
-//!   entirely: the receiver was dropped, a
-//!   [`shutdown`](SignalFishClient::shutdown) timeout aborted the loop, or
-//!   the client handle was dropped without calling `shutdown` (which aborts
-//!   immediately).
+//!   events. Inbound frames that fail to decode are surfaced as
+//!   [`DecodeFailed`](SignalFishEvent::DecodeFailed) events (and counted in
+//!   [`ClientStats::messages_undecodable`]) rather than dropped. An event can
+//!   only be missed when the loop stops delivering entirely: the receiver was
+//!   dropped, the client handle was dropped without calling
+//!   [`shutdown`](SignalFishClient::shutdown) (which aborts immediately), or
+//!   `shutdown` was requested — a shutdown abandons at most the one event
+//!   delivery it interrupted, closes the transport gracefully, and delivers
+//!   the terminal `Disconnected` best-effort (a receiver that outlives the
+//!   loop also observes the event channel closing).
 //! - **Commands** go through a bounded queue and queue admission is never
 //!   silent: the synchronous send methods fail fast with
 //!   [`SignalFishError::SendBufferFull`] when it is full, and the
@@ -79,7 +84,7 @@ use tracing::{debug, error, warn};
 
 use crate::error::{Result, SignalFishError};
 #[cfg(feature = "tokio-runtime")]
-use crate::event::SignalFishEvent;
+use crate::event::{ServerErrorInfo, SignalFishEvent};
 #[cfg(feature = "tokio-runtime")]
 use crate::protocol::ServerMessage;
 use crate::protocol::{
@@ -402,6 +407,14 @@ pub struct ClientStats {
     /// last deliveries) cannot masquerade as relay loss. In steady state
     /// receipt and delivery are identical because events are never dropped.
     pub game_data_received: u64,
+    /// Inbound frames that failed to decode into a `ServerMessage`.
+    ///
+    /// Counted when a frame is read off the transport and fails to parse;
+    /// each one also surfaces as a
+    /// [`DecodeFailed`](crate::SignalFishEvent::DecodeFailed) event. Steady
+    /// growth means protocol drift (a server newer than this SDK) or a
+    /// corrupting middlebox.
+    pub messages_undecodable: u64,
 }
 
 // ── Shared state ────────────────────────────────────────────────────
@@ -429,6 +442,10 @@ struct ClientState {
     /// counted at receipt (see [`ClientStats::game_data_received`]).
     /// Cumulative — intentionally not reset by `clear_session_state`.
     game_data_received: AtomicU64,
+    /// Inbound frames that failed to decode into a `ServerMessage`
+    /// (see [`ClientStats::messages_undecodable`]).
+    /// Cumulative — intentionally not reset by `clear_session_state`.
+    messages_undecodable: AtomicU64,
 }
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
@@ -444,6 +461,7 @@ impl ClientState {
             room_code: Mutex::new(None),
             game_data_sent: AtomicU64::new(0),
             game_data_received: AtomicU64::new(0),
+            messages_undecodable: AtomicU64::new(0),
         }
     }
 
@@ -562,11 +580,16 @@ impl SignalFishClient {
 
     /// Shut down the client, closing the transport and stopping the background task.
     ///
-    /// The transport loop is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
-    /// to close cleanly and emit a [`Disconnected`](SignalFishEvent::Disconnected)
-    /// event. If the timeout expires, the task is aborted and the `Disconnected`
-    /// event may not be delivered. After shutdown completes, the event receiver
-    /// will yield `None`.
+    /// The shutdown signal preempts even a transport loop blocked on a full
+    /// event channel (a consumer that stopped draining): the loop abandons at
+    /// most the one event delivery it was waiting on, closes the transport
+    /// gracefully, and delivers a terminal
+    /// [`Disconnected`](SignalFishEvent::Disconnected) best-effort. The loop
+    /// is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) to
+    /// finish; if the timeout expires (e.g. a transport whose `close()`
+    /// hangs), the task is aborted. After shutdown completes, the event
+    /// receiver yields the remaining buffered events and then `None` — treat
+    /// the channel closing as the authoritative end-of-stream signal.
     pub async fn shutdown(&mut self) {
         debug!("SignalFishClient: shutdown requested");
 
@@ -990,6 +1013,7 @@ impl SignalFishClient {
         ClientStats {
             game_data_sent: self.state.game_data_sent.load(Ordering::Relaxed),
             game_data_received: self.state.game_data_received.load(Ordering::Relaxed),
+            messages_undecodable: self.state.messages_undecodable.load(Ordering::Relaxed),
         }
     }
 
@@ -1094,8 +1118,20 @@ async fn transport_loop(
 ) {
     debug!("transport loop started");
 
+    // The most recent Error/AuthenticationError received on this connection,
+    // remembered so a subsequent disconnect can be attributed (e.g. a
+    // best-effort SLOW_CONSUMER farewell followed by a bare close).
+    let mut last_server_error: Option<ServerErrorInfo> = None;
+
     // Emit the synthetic Connected event before entering the select loop.
-    emit_event(&event_tx, SignalFishEvent::Connected).await;
+    if matches!(
+        emit_event_or_shutdown(&event_tx, &mut shutdown_rx, SignalFishEvent::Connected).await,
+        EmitOutcome::ShutdownRequested
+    ) {
+        finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+        debug!("transport loop exited");
+        return;
+    }
 
     loop {
         tokio::select! {
@@ -1112,6 +1148,7 @@ async fn transport_loop(
                                         &event_tx,
                                         &state,
                                         Some(format!("transport send error: {e}")),
+                                        last_server_error.take(),
                                     ).await;
                                     break;
                                 }
@@ -1129,7 +1166,12 @@ async fn transport_loop(
                     None => {
                         debug!("command channel closed, shutting down transport loop");
                         let _ = transport.close().await;
-                        emit_disconnected(&event_tx, &state, Some("client shut down".into())).await;
+                        emit_disconnected(
+                            &event_tx,
+                            &state,
+                            Some("client shut down".into()),
+                            last_server_error.take(),
+                        ).await;
                         break;
                     }
                 }
@@ -1138,8 +1180,7 @@ async fn transport_loop(
             // Branch 2: shutdown signal
             _ = &mut shutdown_rx => {
                 debug!("shutdown signal received");
-                let _ = transport.close().await;
-                emit_disconnected(&event_tx, &state, Some("client shut down".into())).await;
+                finish_shutdown(&mut transport, &event_tx, &state, last_server_error.take()).await;
                 break;
             }
 
@@ -1149,15 +1190,49 @@ async fn transport_loop(
                     Some(Ok(text)) => {
                         match serde_json::from_str::<ServerMessage>(&text) {
                             Ok(server_msg) => {
+                                // Remember server errors for disconnect attribution.
+                                match &server_msg {
+                                    ServerMessage::Error { message, error_code } => {
+                                        last_server_error = Some(ServerErrorInfo {
+                                            message: message.clone(),
+                                            error_code: error_code.clone(),
+                                        });
+                                    }
+                                    ServerMessage::AuthenticationError { error, error_code } => {
+                                        last_server_error = Some(ServerErrorInfo {
+                                            message: error.clone(),
+                                            error_code: Some(error_code.clone()),
+                                        });
+                                    }
+                                    _ => {}
+                                }
+
                                 // Update shared state based on the message.
                                 update_state(&state, &server_msg).await;
 
                                 // Convert to event and forward to the event channel.
                                 let event = SignalFishEvent::from(server_msg);
-                                emit_event(&event_tx, event).await;
+                                if matches!(
+                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                    EmitOutcome::ShutdownRequested
+                                ) {
+                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                    break;
+                                }
                             }
                             Err(e) => {
+                                // Never a silent drop: surface the frame as a
+                                // typed DecodeFailed event and count it.
                                 warn!("failed to deserialize server message: {e} — raw: {text}");
+                                state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
+                                let event = SignalFishEvent::decode_failed(&text, &e);
+                                if matches!(
+                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                    EmitOutcome::ShutdownRequested
+                                ) {
+                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1167,13 +1242,17 @@ async fn transport_loop(
                             &event_tx,
                             &state,
                             Some(format!("transport receive error: {e}")),
+                            last_server_error.take(),
                         ).await;
                         break;
                     }
                     // Transport closed cleanly.
                     None => {
                         debug!("transport closed by server");
-                        emit_disconnected(&event_tx, &state, None).await;
+                        let reason = transport
+                            .close_reason()
+                            .map(|r| format!("closed by server: {r}"));
+                        emit_disconnected(&event_tx, &state, reason, last_server_error.take()).await;
                         break;
                     }
                 }
@@ -1267,6 +1346,17 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
     }
 }
 
+/// Result of racing an event delivery against the shutdown signal.
+#[cfg(feature = "tokio-runtime")]
+enum EmitOutcome {
+    /// The event was handed to the channel (or the receiver is gone — the
+    /// loop keeps running either way, matching pre-0.7.0 behavior).
+    Delivered,
+    /// The shutdown signal fired while the delivery was still waiting for
+    /// channel capacity; the in-flight event is abandoned.
+    ShutdownRequested,
+}
+
 /// Emit an event to the event channel, waiting for capacity if it is full.
 ///
 /// Events are **never dropped**: when the consumer lags, the transport loop
@@ -1283,6 +1373,60 @@ async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishE
     }
 }
 
+/// Emit an event with backpressure, but let a shutdown request preempt the
+/// wait.
+///
+/// `biased` polls the delivery arm first, so when both are ready the event is
+/// still delivered; only a genuinely blocked delivery (consumer not draining)
+/// lets shutdown win. On [`EmitOutcome::ShutdownRequested`] exactly the one
+/// in-flight event is abandoned — the caller must then run
+/// [`finish_shutdown`] and exit the loop **without polling `shutdown_rx`
+/// again** (a completed `oneshot::Receiver` panics if re-polled).
+#[cfg(feature = "tokio-runtime")]
+async fn emit_event_or_shutdown(
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    event: SignalFishEvent,
+) -> EmitOutcome {
+    tokio::select! {
+        biased;
+        res = event_tx.send(event) => {
+            if res.is_err() {
+                debug!("event channel closed, receiver dropped");
+            }
+            EmitOutcome::Delivered
+        }
+        _ = &mut *shutdown_rx => EmitOutcome::ShutdownRequested,
+    }
+}
+
+/// Terminal sequence for a shutdown request: close the transport gracefully,
+/// then deliver `Disconnected` best-effort.
+///
+/// Closing **before** the final event delivery is the point: pre-0.7.0 a
+/// wedged consumer starved the shutdown signal entirely, so the abort tore
+/// the task down with the connection dangling. The final `Disconnected` uses
+/// `try_send` rather than backpressure: the caller *initiated* this shutdown,
+/// so the event is confirmatory, and a receiver that outlives the loop
+/// observes termination anyway when the event channel closes (`recv()`
+/// returns `None`). Blocking here would force every wedged-consumer shutdown
+/// through the timeout/abort path for no information gain.
+#[cfg(feature = "tokio-runtime")]
+async fn finish_shutdown(
+    transport: &mut impl Transport,
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    state: &ClientState,
+    last_server_error: Option<ServerErrorInfo>,
+) {
+    let _ = transport.close().await;
+    state.connected.store(false, Ordering::Release);
+    state.clear_session_state().await;
+    let _ = event_tx.try_send(SignalFishEvent::Disconnected {
+        reason: Some("client shut down".into()),
+        last_server_error,
+    });
+}
+
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
 /// Like every event, `Disconnected` is delivered with backpressure (see
@@ -1295,10 +1439,18 @@ async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
     state: &ClientState,
     reason: Option<String>,
+    last_server_error: Option<ServerErrorInfo>,
 ) {
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
-    emit_event(event_tx, SignalFishEvent::Disconnected { reason }).await;
+    emit_event(
+        event_tx,
+        SignalFishEvent::Disconnected {
+            reason,
+            last_server_error,
+        },
+    )
+    .await;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1874,6 +2026,7 @@ mod tests {
             ClientStats {
                 game_data_sent: 3,
                 game_data_received: 2,
+                messages_undecodable: 0,
             }
         );
 
@@ -2274,7 +2427,7 @@ mod tests {
         let _ = events.recv().await; // Connected
         let event = events.recv().await.unwrap();
         assert!(matches!(event, SignalFishEvent::Disconnected { .. }));
-        if let SignalFishEvent::Disconnected { reason } = event {
+        if let SignalFishEvent::Disconnected { reason, .. } = event {
             assert!(reason.unwrap().contains("boom"));
         }
 
@@ -2447,7 +2600,7 @@ mod tests {
         // After shutdown, a Disconnected event should have been emitted.
         let event = events.recv().await.unwrap();
         assert!(matches!(event, SignalFishEvent::Disconnected { .. }));
-        if let SignalFishEvent::Disconnected { reason } = event {
+        if let SignalFishEvent::Disconnected { reason, .. } = event {
             assert_eq!(reason.as_deref(), Some("client shut down"));
         }
 

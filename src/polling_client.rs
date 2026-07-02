@@ -22,7 +22,7 @@ use tracing::{debug, error, warn};
 
 use crate::client::{JoinRoomParams, SignalFishConfig};
 use crate::error::{Result, SignalFishError};
-use crate::event::SignalFishEvent;
+use crate::event::{ServerErrorInfo, SignalFishEvent};
 use crate::protocol::{
     ClientMessage, ConnectionInfo, PlayerId, RoomId, ServerMessage, TransportKind,
 };
@@ -54,6 +54,15 @@ struct PollingClientState {
     /// [`ClientStats::game_data_received`](crate::client::ClientStats)).
     /// Cumulative — intentionally not reset by `clear_session`.
     game_data_received: u64,
+    /// Inbound frames that failed to decode into a `ServerMessage` (see
+    /// [`ClientStats::messages_undecodable`](crate::client::ClientStats)).
+    /// Cumulative — intentionally not reset by `clear_session`.
+    messages_undecodable: u64,
+    /// The most recent `Error`/`AuthenticationError` received on this
+    /// connection, remembered for disconnect attribution (surfaced via
+    /// `Disconnected::last_server_error`). Intentionally not reset by
+    /// `clear_session` — it must survive into the terminal `Disconnected`.
+    last_server_error: Option<ServerErrorInfo>,
 }
 
 impl PollingClientState {
@@ -70,6 +79,8 @@ impl PollingClientState {
             room_code: None,
             game_data_sent: 0,
             game_data_received: 0,
+            messages_undecodable: 0,
+            last_server_error: None,
         }
     }
 
@@ -264,7 +275,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                             events.push(SignalFishEvent::from(server_msg));
                         }
                         Err(e) => {
+                            // Never a silent drop: surface the frame as a
+                            // typed DecodeFailed event and count it.
                             warn!("failed to deserialize server message: {e} — raw: {text}");
+                            self.state.messages_undecodable += 1;
+                            events.push(SignalFishEvent::decode_failed(&text, &e));
                         }
                     }
                 }
@@ -278,7 +293,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 }
                 std::task::Poll::Ready(None) => {
                     debug!("transport closed by server");
-                    self.handle_disconnect(&mut events, None);
+                    let reason = self
+                        .transport
+                        .close_reason()
+                        .map(|r| format!("closed by server: {r}"));
+                    self.handle_disconnect(&mut events, reason);
                     break;
                 }
                 std::task::Poll::Pending => {
@@ -603,6 +622,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         crate::client::ClientStats {
             game_data_sent: self.state.game_data_sent,
             game_data_received: self.state.game_data_received,
+            messages_undecodable: self.state.messages_undecodable,
         }
     }
 
@@ -676,13 +696,32 @@ impl<T: Transport> SignalFishPollingClient<T> {
     fn handle_disconnect(&mut self, events: &mut Vec<SignalFishEvent>, reason: Option<String>) {
         self.state.connected = false;
         self.state.clear_session();
-        events.push(SignalFishEvent::Disconnected { reason });
+        events.push(SignalFishEvent::Disconnected {
+            reason,
+            last_server_error: self.state.last_server_error.take(),
+        });
     }
 
     fn update_state(&mut self, msg: &ServerMessage) {
         match msg {
             ServerMessage::Authenticated { .. } => {
                 self.state.authenticated = true;
+            }
+            // Remember server errors for disconnect attribution.
+            ServerMessage::Error {
+                message,
+                error_code,
+            } => {
+                self.state.last_server_error = Some(ServerErrorInfo {
+                    message: message.clone(),
+                    error_code: error_code.clone(),
+                });
+            }
+            ServerMessage::AuthenticationError { error, error_code } => {
+                self.state.last_server_error = Some(ServerErrorInfo {
+                    message: error.clone(),
+                    error_code: Some(error_code.clone()),
+                });
             }
             ServerMessage::ProtocolInfo(payload) => {
                 self.state.negotiated_protocol_version = payload.protocol_version.unwrap_or(0);
@@ -1289,9 +1328,10 @@ mod tests {
     }
 
     #[test]
-    fn poll_skips_unknown_message_type_then_next_arrives() {
-        // A well-formed but unknown `type` is skipped (distinct from malformed
-        // JSON), and the following valid message still surfaces.
+    fn poll_surfaces_unknown_message_type_then_next_arrives() {
+        // A well-formed but unknown `type` surfaces as DecodeFailed carrying
+        // the wire tag (distinct from malformed JSON, whose tag is None), and
+        // the following valid message still arrives.
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
@@ -1299,7 +1339,26 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
-        assert!(events.iter().any(|e| matches!(e, SignalFishEvent::Pong)));
+        let decode_failed_at = events.iter().position(|e| {
+            matches!(
+                e,
+                SignalFishEvent::DecodeFailed { message_type, .. }
+                    if message_type.as_deref() == Some("SomeFutureV4Message")
+            )
+        });
+        let pong_at = events
+            .iter()
+            .position(|e| matches!(e, SignalFishEvent::Pong));
+        assert!(
+            decode_failed_at.is_some(),
+            "expected DecodeFailed with the wire tag, got: {events:?}"
+        );
+        assert!(pong_at.is_some(), "expected Pong, got: {events:?}");
+        assert!(
+            decode_failed_at < pong_at,
+            "DecodeFailed must precede the following Pong"
+        );
+        assert_eq!(client.stats().messages_undecodable, 1);
         assert!(client.is_connected());
     }
 
@@ -1338,6 +1397,7 @@ mod tests {
             crate::client::ClientStats {
                 game_data_sent: 3,
                 game_data_received: 2,
+                messages_undecodable: 0,
             }
         );
     }
@@ -1697,10 +1757,24 @@ mod tests {
 
         let events = client.poll();
 
-        // Should contain Connected and Authenticated (malformed message skipped).
-        assert_eq!(events.len(), 2, "expected 2 events, got: {events:?}");
+        // Connected, then the malformed frame surfaced as DecodeFailed (never
+        // a silent skip), then Authenticated.
+        assert_eq!(events.len(), 3, "expected 3 events, got: {events:?}");
         assert!(matches!(events[0], SignalFishEvent::Connected));
-        assert!(matches!(events[1], SignalFishEvent::Authenticated { .. }));
+        match &events[1] {
+            SignalFishEvent::DecodeFailed {
+                message_type,
+                raw_prefix,
+                ..
+            } => {
+                // Not valid JSON at all → no wire `type` tag recoverable.
+                assert_eq!(message_type.as_deref(), None);
+                assert_eq!(raw_prefix, malformed_json);
+            }
+            other => panic!("expected DecodeFailed, got: {other:?}"),
+        }
+        assert!(matches!(events[2], SignalFishEvent::Authenticated { .. }));
+        assert_eq!(client.stats().messages_undecodable, 1);
 
         // Should NOT contain a Disconnected event.
         assert!(
@@ -2593,8 +2667,9 @@ mod tests {
             disconnected.is_some(),
             "expected Disconnected event, got: {events:?}"
         );
-        if let SignalFishEvent::Disconnected { reason: Some(r) } =
-            disconnected.expect("Disconnected event must exist (verified by preceding assert)")
+        if let SignalFishEvent::Disconnected {
+            reason: Some(r), ..
+        } = disconnected.expect("Disconnected event must exist (verified by preceding assert)")
         {
             assert!(
                 r.contains("transport send error"),

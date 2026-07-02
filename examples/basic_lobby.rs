@@ -198,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     // ── Disconnect ───────────────────────────────────
-                    SignalFishEvent::Disconnected { reason } => {
+                    SignalFishEvent::Disconnected { reason, .. } => {
                         tracing::warn!("Disconnected: {}", reason.as_deref().unwrap_or("unknown"));
                         break;
                     }
