@@ -393,7 +393,14 @@ impl JoinRoomParams {
 pub struct ClientStats {
     /// `GameData` messages successfully written to the transport.
     pub game_data_sent: u64,
-    /// `GameData`/`GameDataBinary` events received from the server.
+    /// `GameData`/`GameDataBinary` messages received from the server.
+    ///
+    /// Counted at **receipt** (when the message is read off the transport
+    /// and parsed), not at delivery to your event loop. That is the number
+    /// the relay-path deficit diagnostic needs — it measures the wire, so a
+    /// consumer that stops draining events (or a terminal abort racing the
+    /// last deliveries) cannot masquerade as relay loss. In steady state
+    /// receipt and delivery are identical because events are never dropped.
     pub game_data_received: u64,
 }
 
@@ -418,7 +425,8 @@ struct ClientState {
     /// `GameData` messages successfully written to the transport.
     /// Cumulative — intentionally not reset by `clear_session_state`.
     game_data_sent: AtomicU64,
-    /// `GameData`/`GameDataBinary` events received from the server.
+    /// `GameData`/`GameDataBinary` messages received from the server,
+    /// counted at receipt (see [`ClientStats::game_data_received`]).
     /// Cumulative — intentionally not reset by `clear_session_state`.
     game_data_received: AtomicU64,
 }

@@ -337,10 +337,14 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `max_send_capacity()` | `fn max_send_capacity(&self) -> usize` | Configured capacity of the outgoing command queue (`command_channel_capacity`). |
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
 
-`ClientStats` (re-exported at the crate root) carries `game_data_sent` (
-`GameData` messages written to the transport) and `game_data_received`
-(`GameData`/`GameDataBinary` events received). The counters are cumulative
-for the lifetime of the client — they survive room changes and disconnects.
+`ClientStats` (re-exported at the crate root) carries `game_data_sent`
+(`GameData` messages written to the transport) and `game_data_received`
+(`GameData`/`GameDataBinary` messages read off the transport and parsed —
+counted at **receipt**, not at delivery to your event loop, so a consumer
+that stops draining events cannot masquerade as relay loss; in steady state
+the two are identical because events are never dropped). The counters are
+cumulative for the lifetime of the client — they survive room changes and
+disconnects.
 
 Because the client itself never drops game data (events are delivered with
 backpressure; refused sends return `SendBufferFull`), these counters make

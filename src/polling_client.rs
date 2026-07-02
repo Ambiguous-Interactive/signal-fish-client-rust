@@ -49,7 +49,9 @@ struct PollingClientState {
     /// `GameData` messages successfully written to the transport.
     /// Cumulative — intentionally not reset by `clear_session`.
     game_data_sent: u64,
-    /// `GameData`/`GameDataBinary` events received from the server.
+    /// `GameData`/`GameDataBinary` messages received from the server,
+    /// counted at receipt (see
+    /// [`ClientStats::game_data_received`](crate::client::ClientStats)).
     /// Cumulative — intentionally not reset by `clear_session`.
     game_data_received: u64,
 }
