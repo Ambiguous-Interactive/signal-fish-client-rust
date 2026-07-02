@@ -71,11 +71,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `ClientStats` gained `messages_undecodable`; struct-literal
   construction must add the field.
 - Graceful [`shutdown`] now preempts a transport loop wedged on a full event
-  channel (a consumer that stopped draining): the loop abandons at most the
-  one in-flight event delivery, **closes the transport cleanly** (previously
-  the abort left the connection dangling), and delivers the terminal
-  `Disconnected` best-effort. The event channel closing remains the
-  authoritative end-of-stream signal.
+  channel (a consumer that stopped draining) on **every** path — the
+  per-message event path *and* the terminal `Disconnected` emitted on a
+  transport error, a clean server close, or a dropped handle. Each path races
+  the shutdown signal, so `shutdown()` completes promptly and **closes the
+  transport cleanly** instead of stalling until the timeout aborts the task
+  (which previously left the connection dangling). The terminal `Disconnected`
+  is delivered best-effort (it may be dropped if the channel is full at that
+  instant); the event channel closing remains the authoritative
+  end-of-stream signal.
 
 ## [0.6.0] - 2026-07-01
 

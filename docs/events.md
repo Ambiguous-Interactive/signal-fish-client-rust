@@ -55,13 +55,17 @@ Use these to track the raw connection lifecycle.
 | `reason` | `Option<String>` | Human-readable close explanation. When the transport captured a WebSocket Close frame with a reason, it appears as `"closed by server: …"`. The current server closes bare, so this is usually `None` for server-initiated closes. |
 | `last_server_error` | `Option<ServerErrorInfo>` | The most recent `Error`/`AuthenticationError` received on this connection — a correlation aid for attributing the disconnect. A server that evicts a slow consumer writes a best-effort `Error { error_code: SlowConsumer }` farewell before closing; when that frame arrives, it shows up here. See the [Delivery Contract](delivery.md). |
 
-!!! note "Best-effort delivery on shutdown"
-    Like every event, `Disconnected` is never dropped due to channel
-    backpressure. It is delivered best-effort only in the sense that it may
-    be missed if the event receiver is dropped, if the client handle is
-    dropped without calling `shutdown()`, or if the event channel happens to
-    be full at the instant an explicit [`shutdown()`](client.md#shutdown)
-    completes — the channel closing then signals the end of the stream.
+!!! note "Delivery of the terminal `Disconnected`"
+    During normal operation `Disconnected` is delivered with backpressure
+    like every other event — it is not dropped merely because the consumer
+    is briefly behind. When the connection ends while a
+    [`shutdown()`](client.md#shutdown) is pending (or the handle is dropped),
+    the terminal `Disconnected` is delivered **best-effort**: the transport
+    loop races the shutdown signal so it can exit promptly, and if the event
+    channel is full at that moment the event **may be dropped** (it is sent
+    with a non-blocking `try_send`). The event channel closing (`recv()`
+    returns `None`) is the guaranteed end-of-stream signal — rely on it, not
+    on always observing a final `Disconnected`.
 
 ### `DecodeFailed`
 

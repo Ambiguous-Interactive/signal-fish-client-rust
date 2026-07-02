@@ -1653,6 +1653,38 @@ async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
 }
 
+#[tokio::test]
+async fn shutdown_races_wedged_terminal_disconnect() {
+    // The *terminal* Disconnected — emitted on a transport error, a clean
+    // server close, or a dropped handle — must race the shutdown signal too,
+    // not just the normal per-message event path. The four break-paths share
+    // one helper; this exercises it via a transport receive error that fires
+    // while the event channel is full (cap 1, undrained Connected), so the
+    // terminal delivery blocks. Pre-fix those paths used a blocking emit that
+    // ignored shutdown, pinning shutdown() to its full timeout/abort. A
+    // generous timeout makes the racing path (ms) unmistakable vs blocking (s).
+    let (transport, _sent, _closed) = MockTransport::new(vec![Some(Err(
+        SignalFishError::TransportReceive("boom".into()),
+    ))]);
+    let config = SignalFishConfig::new("mb_test_integration")
+        .with_event_channel_capacity(1)
+        .with_shutdown_timeout(std::time::Duration::from_secs(10));
+    // `_events` is bound (not `_`) so the channel stays open and full — that
+    // is what wedges the terminal delivery.
+    let (mut client, _events) = SignalFishClient::start(transport, config);
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let started = std::time::Instant::now();
+    client.shutdown().await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "terminal Disconnected must race shutdown, not block until the abort \
+         timeout; took {elapsed:?}"
+    );
+}
+
 // ════════════════════════════════════════════════════════════════════
 // PlayerJoined with ConnectionInfo::Direct
 // ════════════════════════════════════════════════════════════════════

@@ -1144,8 +1144,9 @@ async fn transport_loop(
                             Ok(json) => {
                                 if let Err(e) = transport.send(json).await {
                                     error!("transport send error: {e}");
-                                    emit_disconnected(
+                                    emit_disconnected_or_shutdown(
                                         &event_tx,
+                                        &mut shutdown_rx,
                                         &state,
                                         Some(format!("transport send error: {e}")),
                                         last_server_error.take(),
@@ -1166,8 +1167,9 @@ async fn transport_loop(
                     None => {
                         debug!("command channel closed, shutting down transport loop");
                         let _ = transport.close().await;
-                        emit_disconnected(
+                        emit_disconnected_or_shutdown(
                             &event_tx,
+                            &mut shutdown_rx,
                             &state,
                             Some("client shut down".into()),
                             last_server_error.take(),
@@ -1238,8 +1240,9 @@ async fn transport_loop(
                     }
                     Some(Err(e)) => {
                         error!("transport receive error: {e}");
-                        emit_disconnected(
+                        emit_disconnected_or_shutdown(
                             &event_tx,
+                            &mut shutdown_rx,
                             &state,
                             Some(format!("transport receive error: {e}")),
                             last_server_error.take(),
@@ -1252,7 +1255,13 @@ async fn transport_loop(
                         let reason = transport
                             .close_reason()
                             .map(|r| format!("closed by server: {r}"));
-                        emit_disconnected(&event_tx, &state, reason, last_server_error.take()).await;
+                        emit_disconnected_or_shutdown(
+                            &event_tx,
+                            &mut shutdown_rx,
+                            &state,
+                            reason,
+                            last_server_error.take(),
+                        ).await;
                         break;
                     }
                 }
@@ -1357,22 +1366,6 @@ enum EmitOutcome {
     ShutdownRequested,
 }
 
-/// Emit an event to the event channel, waiting for capacity if it is full.
-///
-/// Events are **never dropped**: when the consumer lags, the transport loop
-/// pauses here, which stops reading from the transport and propagates
-/// backpressure to the server (e.g. via TCP receive windows). Delivery only
-/// fails if the receiver has been dropped, or if the transport task is
-/// aborted while this send is still waiting (a
-/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
-/// without `shutdown`).
-#[cfg(feature = "tokio-runtime")]
-async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishEvent) {
-    if event_tx.send(event).await.is_err() {
-        debug!("event channel closed, receiver dropped");
-    }
-}
-
 /// Emit an event with backpressure, but let a shutdown request preempt the
 /// wait.
 ///
@@ -1427,30 +1420,49 @@ async fn finish_shutdown(
     });
 }
 
-/// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
+/// Deliver the terminal [`Disconnected`](SignalFishEvent::Disconnected) on a
+/// loop break-path, letting a pending `shutdown()` preempt a blocked delivery.
 ///
-/// Like every event, `Disconnected` is delivered with backpressure (see
-/// [`emit_event`]); it can only be missed if the receiver has been dropped
-/// or if the transport task is aborted first (a
-/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
-/// without `shutdown`).
+/// The break-paths (transport send/receive error, clean server close, dropped
+/// handle) want `Disconnected` delivered losslessly with backpressure — the
+/// normal, never-drop case. But if the consumer has wedged (event channel
+/// full) *and* a shutdown is pending, a plain blocking send would starve the
+/// shutdown signal and force `shutdown()` down its timeout/abort path (the
+/// same starvation [`emit_event_or_shutdown`] fixes for per-message events).
+/// So this races the lossless send against the shutdown signal, `biased`
+/// toward delivery; on preemption it re-sends best-effort via `try_send` so
+/// the event is still likely delivered and the loop exits promptly.
+///
+/// Terminal: every caller `break`s immediately afterwards, so `shutdown_rx` is
+/// never polled again (a completed `oneshot::Receiver` panics if re-polled).
 #[cfg(feature = "tokio-runtime")]
-async fn emit_disconnected(
+async fn emit_disconnected_or_shutdown(
     event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
     state: &ClientState,
     reason: Option<String>,
     last_server_error: Option<ServerErrorInfo>,
 ) {
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
-    emit_event(
-        event_tx,
-        SignalFishEvent::Disconnected {
-            reason,
-            last_server_error,
-        },
-    )
-    .await;
+    let event = SignalFishEvent::Disconnected {
+        reason,
+        last_server_error,
+    };
+    tokio::select! {
+        biased;
+        res = event_tx.send(event.clone()) => {
+            if res.is_err() {
+                debug!("event channel closed, receiver dropped");
+            }
+        }
+        _ = &mut *shutdown_rx => {
+            // Consumer wedged and a shutdown is pending: preempt the blocked
+            // delivery and re-send best-effort so shutdown() completes promptly
+            // instead of waiting out the abort timeout.
+            let _ = event_tx.try_send(event);
+        }
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
