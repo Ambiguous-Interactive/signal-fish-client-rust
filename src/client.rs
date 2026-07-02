@@ -1145,6 +1145,7 @@ async fn transport_loop(
                                 if let Err(e) = transport.send(json).await {
                                     error!("transport send error: {e}");
                                     emit_disconnected_or_shutdown(
+                                        &mut transport,
                                         &event_tx,
                                         &mut shutdown_rx,
                                         &state,
@@ -1166,8 +1167,8 @@ async fn transport_loop(
                     // Command channel closed — client handle dropped.
                     None => {
                         debug!("command channel closed, shutting down transport loop");
-                        let _ = transport.close().await;
                         emit_disconnected_or_shutdown(
+                            &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
@@ -1241,6 +1242,7 @@ async fn transport_loop(
                     Some(Err(e)) => {
                         error!("transport receive error: {e}");
                         emit_disconnected_or_shutdown(
+                            &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
@@ -1256,6 +1258,7 @@ async fn transport_loop(
                             .close_reason()
                             .map(|r| format!("closed by server: {r}"));
                         emit_disconnected_or_shutdown(
+                            &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
@@ -1421,7 +1424,16 @@ async fn finish_shutdown(
 }
 
 /// Deliver the terminal [`Disconnected`](SignalFishEvent::Disconnected) on a
-/// loop break-path, letting a pending `shutdown()` preempt a blocked delivery.
+/// loop break-path, closing the transport and letting a pending `shutdown()`
+/// preempt a blocked delivery.
+///
+/// The transport is closed **first** (best-effort), exactly like
+/// [`finish_shutdown`]: graceful shutdown always releases the connection, so
+/// closing must not depend on the event delivery completing — otherwise a
+/// wedged consumer that lets the shutdown branch win would leave the socket
+/// open until the task is dropped. Closing an already-errored or
+/// server-closed transport is a harmless no-op / completes the close
+/// handshake.
 ///
 /// The break-paths (transport send/receive error, clean server close, dropped
 /// handle) want `Disconnected` delivered losslessly with backpressure — the
@@ -1437,12 +1449,14 @@ async fn finish_shutdown(
 /// never polled again (a completed `oneshot::Receiver` panics if re-polled).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_disconnected_or_shutdown(
+    transport: &mut impl Transport,
     event_tx: &mpsc::Sender<SignalFishEvent>,
     shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
     state: &ClientState,
     reason: Option<String>,
     last_server_error: Option<ServerErrorInfo>,
 ) {
+    let _ = transport.close().await;
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
     let event = SignalFishEvent::Disconnected {

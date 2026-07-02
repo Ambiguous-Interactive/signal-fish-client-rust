@@ -1663,7 +1663,7 @@ async fn shutdown_races_wedged_terminal_disconnect() {
     // terminal delivery blocks. Pre-fix those paths used a blocking emit that
     // ignored shutdown, pinning shutdown() to its full timeout/abort. A
     // generous timeout makes the racing path (ms) unmistakable vs blocking (s).
-    let (transport, _sent, _closed) = MockTransport::new(vec![Some(Err(
+    let (transport, _sent, closed) = MockTransport::new(vec![Some(Err(
         SignalFishError::TransportReceive("boom".into()),
     ))]);
     let config = SignalFishConfig::new("mb_test_integration")
@@ -1682,6 +1682,13 @@ async fn shutdown_races_wedged_terminal_disconnect() {
         elapsed < std::time::Duration::from_secs(3),
         "terminal Disconnected must race shutdown, not block until the abort \
          timeout; took {elapsed:?}"
+    );
+    // Graceful shutdown always releases the connection: the transport must be
+    // closed even when shutdown wins the race against the wedged delivery.
+    assert!(
+        closed.load(std::sync::atomic::Ordering::Relaxed),
+        "the transport must be closed on the terminal break-path, not left \
+         open until the task is dropped"
     );
 }
 
