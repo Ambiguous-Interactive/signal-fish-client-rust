@@ -113,7 +113,7 @@ Enable the `transport-websocket-emscripten` feature to access
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.5.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
 ### Building
@@ -232,6 +232,17 @@ A synchronous, polling-based alternative to `SignalFishClient`. It does **not**
 spawn a background task or require an async runtime. Instead, the caller drives
 the client by calling `poll()` once per frame from the game loop.
 
+!!! tip "Not just for wasm"
+    The polling client is the right choice for **any frame-driven
+    environment**, native game loops included. `SignalFishClient::start`
+    spawns its transport loop with `tokio::spawn`, so it needs a *driven*
+    tokio runtime (`#[tokio::main]`, `block_on`, worker threads — a
+    `current_thread` runtime is fine as long as it is actually running).
+    Manually "ticking" a runtime once per frame starves the loop and makes
+    messages appear to vanish. If you cannot keep a runtime driven, pump
+    `SignalFishPollingClient` instead — see
+    [Driving the Client](concepts.md#driving-the-client-runtime-contract).
+
 ### Construction
 
 ```rust,ignore
@@ -345,7 +356,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.5.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 

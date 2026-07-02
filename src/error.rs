@@ -26,6 +26,26 @@ pub enum SignalFishError {
     #[error("not connected to server")]
     NotConnected,
 
+    /// The bounded outgoing command queue is full — the caller is producing
+    /// messages faster than the transport can drain them.
+    ///
+    /// This is the client's send-side backpressure signal: nothing was lost,
+    /// the message was simply refused. Either retry later (e.g. next frame),
+    /// pace high-rate payloads with a waiting `*_reliable` variant
+    /// ([`SignalFishClient::send_game_data_reliable`](crate::SignalFishClient::send_game_data_reliable),
+    /// [`SignalFishClient::send_signal_reliable`](crate::SignalFishClient::send_signal_reliable)),
+    /// or raise
+    /// [`SignalFishConfig::command_channel_capacity`](crate::SignalFishConfig::command_channel_capacity).
+    #[error(
+        "outgoing command queue full (capacity {capacity}): the transport cannot keep up; \
+         retry later, pace high-rate sends with a waiting *_reliable variant, or increase \
+         command_channel_capacity"
+    )]
+    SendBufferFull {
+        /// Configured capacity of the outgoing command queue.
+        capacity: usize,
+    },
+
     /// Attempted a room operation but the client is not in a room.
     #[error("not in a room")]
     NotInRoom,

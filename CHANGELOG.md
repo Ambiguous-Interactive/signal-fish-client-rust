@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-01
+
 ### Added
 
+- `SignalFishClient::send_game_data_reliable(data)` — backpressure-aware
+  counterpart to `send_game_data` that waits for space in the outgoing command
+  queue instead of failing fast, pacing the caller to actual transport
+  throughput; the recommended way to stream high-rate payloads such as
+  rollback input packets (#47).
+- `SignalFishClient::send_signal_reliable(to, signal)` — waiting counterpart
+  to `send_signal` for WebRTC signaling (protocol v3 only), so congestion
+  never loses an offer/answer/ICE candidate (#47).
+- `SignalFishConfig::command_channel_capacity` field (default `1024`, values
+  below 1 clamped to 1) and the
+  `SignalFishConfig::with_command_channel_capacity(n)` builder for tuning the
+  bounded outgoing command queue (#47).
+- `SignalFishError::SendBufferFull { capacity }` — returned by the fail-fast
+  send methods when the outgoing command queue is full; the message is not
+  queued and nothing is silently dropped (#47).
+- `send_capacity()` / `max_send_capacity()` on `SignalFishClient` and
+  `SignalFishPollingClient` — remaining/configured command-queue capacity for
+  send pacing and congestion diagnostics (#47).
+- `ClientStats` (re-exported at the crate root) with cumulative
+  `game_data_sent` / `game_data_received` counters, returned by `stats()` on
+  both clients. The counters survive disconnection and make relay-path loss
+  observable: the client itself never drops game data, so a cross-peer
+  sent-vs-received deficit points at the relay path or a peer, not at this
+  client (#47).
 - Optional low-latency mesh pump: `WebRtcDriver::set_ready_waker` (default no-op)
   hands the driver a `MeshWaker` it can `wake()` when it has output ready, so
   trickled ICE candidates and inbound data surface immediately instead of waiting
@@ -21,6 +47,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Minimum supported `tokio` is now declared as `1.21` (previously `1`): the
+  new queue-capacity diagnostics use `mpsc::Sender::capacity` (tokio 1.5)
+  and `mpsc::Sender::max_capacity` (tokio 1.21). Any lockfile from the last
+  few years already satisfies this; the requirement is now honest (#47).
+- **Breaking (behavior): events are never dropped.** The transport loop now
+  delivers every event with `send().await`; a lagging consumer pauses the
+  loop and backpressure propagates to the server instead of losing events.
+  Previously a full event channel dropped events with a warning (only
+  `Disconnected` was blocking). `SignalFishConfig::event_channel_capacity`
+  (default 256) now only controls how much buffering the consumer gets before
+  backpressure kicks in, not loss (#47).
+- **Breaking (API): the async client's command channel is now bounded.** All
+  synchronous send methods (`join_room`, `send_game_data`, `send_signal`,
+  `ping`, …) fail fast with the new `SendBufferFull` error variant when the
+  queue is full. Adding a variant to `SignalFishError` is breaking for
+  exhaustive matches (#47).
+- `SignalFishPollingClient` applies the same bound to its command queue
+  (via `command_channel_capacity`); queuing methods return `SendBufferFull`
+  once a stalled transport fills it (#47).
+- `MeshController` no longer drops a driver signal the command queue refuses:
+  the signal is buffered in the controller and retried (in order, ahead of
+  further driver output) until the queue accepts it — or discarded if the
+  connection ends or the target peer's handshake is torn down first (a
+  stale signal is never relayed) — and `recv()` is
+  documented cancel-safe — a buffered signal survives cancellation. Refused
+  transport-status reports are now debug-logged instead of silently
+  discarded (#47).
+- Documented the runtime driving contract: `SignalFishClient::start` spawns
+  the transport loop with `tokio::spawn` and works on any *driven* runtime
+  (including `current_thread`), but manually "ticking" a runtime starves it —
+  frame-driven or wasm environments should use `SignalFishPollingClient`
+  (feature `polling-client`) (#47).
 - `MeshSession` and `MeshController` now defensively replay any mesh events a
   server batches into a reconnect's `missed_events` (in addition to handling a
   re-sent live `SessionPlan`), so a mesh session is rebuilt correctly after a

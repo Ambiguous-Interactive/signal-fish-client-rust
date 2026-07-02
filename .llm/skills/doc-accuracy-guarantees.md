@@ -19,15 +19,19 @@ cancellation, channel drops, etc.
    - Receiver dropped — `send().await` returns `Err`
    - Task aborted (timeout, cancellation) — code after the abort point never
      runs
-   - Channel full — `try_send` drops the message
+   - Channel full — a `try_send` path refuses or drops the message. (This
+     SDK's event path uses `send().await`, so a full channel *blocks* the
+     transport loop instead of dropping; its command path is bounded and
+     refuses with `SendBufferFull` rather than dropping.)
    - Panic in spawned task — subsequent code in that task is skipped
 
 2. **Qualify delivery semantics** — Describe what the mechanism prevents AND
    what it does not prevent.
-   - BAD: "The Disconnected event is always delivered regardless of capacity."
-   - GOOD: "The Disconnected event uses a blocking send so it will not be
-     dropped due to a full channel, but it may be missed if the receiver is
-     dropped or if shutdown times out and aborts the transport task."
+   - BAD: "Events are always delivered regardless of capacity."
+   - GOOD: "Events are never dropped on overflow — a full channel pauses the
+     transport loop and backpressure propagates to the server — but an event
+     may be missed if the receiver is dropped, shutdown times out and aborts
+     the transport task, or the handle is dropped without shutdown."
 
 3. **Document timeout/abort consequences** — If a function has a timeout that
    aborts work, document what events or side effects may be skipped when the
@@ -51,13 +55,15 @@ cancellation, channel drops, etc.
 
 ## Examples from This Codebase
 
-### `emit_disconnected` — Qualified guarantee
+### `emit_event` — Qualified guarantee
 
 ```rust
-/// Uses `send().await` (blocking) instead of `try_send` so that `Disconnected`
-/// is not dropped due to channel backpressure. However, delivery is not
-/// unconditional: the event will be lost if the receiver has been dropped, or
-/// if `shutdown` aborts the transport task before this function completes.
+/// Events are **never dropped**: when the consumer lags, the transport loop
+/// pauses here, which stops reading from the transport and propagates
+/// backpressure to the server (e.g. via TCP receive windows). Delivery only
+/// fails if the receiver has been dropped, or if the transport task is
+/// aborted while this send is still waiting (a `shutdown` timeout, or the
+/// client handle dropped without `shutdown`).
 ```
 
 ### `shutdown_timeout` — Documenting abort consequences

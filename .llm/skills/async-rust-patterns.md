@@ -139,6 +139,11 @@ tx.try_send(event)?;         // non-blocking, returns Err if full
 while let Some(event) = rx.recv().await { /* ... */ }
 ```
 
+The event channel uses `send().await` exclusively: events are **never
+dropped** — a full channel pauses the transport loop and backpressure
+propagates to the server. Never introduce a `try_send`-and-drop path for
+events.
+
 ### oneshot — single message
 
 ```rust
@@ -149,13 +154,33 @@ tokio::spawn(async move { tx.send(()).ok(); });
 rx.await?; // RecvError if sender dropped
 ```
 
-### unbounded — for command channels
+### Bounded command channel — fail fast or wait, never drop
+
+`SignalFishClient` uses a *bounded* channel for client→transport commands
+(default 1024, `SignalFishConfig::command_channel_capacity`). Sync methods
+fail fast; the `*_reliable` async variants wait for capacity:
 
 ```rust
-// SignalFishClient uses unbounded for client→transport commands
-let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ClientMessage>();
-cmd_tx.send(msg).ok(); // never blocks — used in sync client methods
+let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientMessage>(1024);
+
+// Sync client methods (send_game_data, join_room, …): refuse, don't drop.
+match cmd_tx.try_send(msg) {
+    Ok(()) => Ok(()),
+    Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
+        capacity: cmd_tx.max_capacity(),
+    }),
+    Err(mpsc::error::TrySendError::Closed(_)) => Err(SignalFishError::NotConnected),
+}
+
+// `*_reliable` variants (send_game_data_reliable, send_signal_reliable):
+// wait for a slot — paces the caller to transport throughput.
+cmd_tx.send(msg).await.map_err(|_| SignalFishError::NotConnected)?;
 ```
+
+Congestion must always surface (`SendBufferFull` or waiting) — never an
+unbounded backlog and never a silent drop. `send_capacity()` /
+`max_send_capacity()` expose `cmd_tx.capacity()` / `max_capacity()` for
+diagnostics.
 
 ## Timeouts
 

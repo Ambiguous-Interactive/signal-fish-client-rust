@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **10
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **11
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -29,6 +29,7 @@ variants**:
 | `TransportClosed` | — | The transport connection was closed unexpectedly. |
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
+| `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md). |
@@ -283,6 +284,53 @@ async fn handle_event(event: SignalFishEvent) {
     The `RateLimitInfo` provided in the `Authenticated` event tells you the
     per-minute, per-hour, and per-day limits for your application. Proactively
     throttling requests avoids `RateLimitExceeded` errors entirely.
+
+### Handling `SendBufferFull`
+
+The synchronous send methods (`send_game_data`, `send_signal`, `join_room`, …)
+fail fast with `SignalFishError::SendBufferFull` when the bounded outgoing
+command queue (default **1024**, set via
+`SignalFishConfig::command_channel_capacity`) is full. The message is refused,
+not queued — congestion is surfaced, never hidden. Three remedies, in order of
+preference:
+
+1. **Pace with the waiting variants.** `send_game_data_reliable` /
+   `send_signal_reliable` are async and wait for a free slot instead of
+   failing — the right tool for high-rate streams (rollback inputs, state
+   sync).
+2. **Retry later.** Treat the error as "try again next frame"; watch
+   `send_capacity()` to see the queue drain.
+3. **Raise the capacity.** `SignalFishConfig::with_command_channel_capacity(n)`
+   buys more burst headroom, at the cost of more queued latency when the
+   transport truly cannot keep up.
+
+```rust,ignore
+use signal_fish_client::{SignalFishClient, SignalFishError};
+
+async fn stream_input(client: &SignalFishClient, input: serde_json::Value) {
+    match client.send_game_data(input.clone()) {
+        Ok(()) => {}
+        Err(SignalFishError::SendBufferFull { capacity }) => {
+            // Transport can't keep up with our send rate (queue of `capacity`
+            // is full). Switch to the pacing variant instead of dropping.
+            eprintln!("send queue full ({capacity}); pacing");
+            if let Err(e) = client.send_game_data_reliable(input).await {
+                eprintln!("send failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("send failed: {e}"),
+    }
+}
+```
+
+!!! warning "Keep draining events while awaiting a reliable send"
+    The command queue only drains while the transport loop runs, and the
+    loop pauses whenever the *event* channel is full (events are never
+    dropped). A task that awaits `send_game_data_reliable` while it is also
+    the only consumer of the event receiver can deadlock under simultaneous
+    send + receive pressure — drain events from a separate task. See the
+    [`send_game_data_reliable` rustdoc](https://docs.rs/signal-fish-client)
+    for details.
 
 ### Distinguishing transport errors from server errors
 

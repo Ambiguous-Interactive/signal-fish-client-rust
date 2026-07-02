@@ -11,7 +11,7 @@ drive the whole handshake for you.
     `tokio-runtime` feature.
 
     ```toml
-    signal-fish-client = { version = "0.5.0", features = ["mesh"] }
+    signal-fish-client = { version = "0.6.0", features = ["mesh"] }
     ```
 
 ---
@@ -145,9 +145,13 @@ timer.
 `MeshController` drives the **entire** v3 handshake against your driver on top of
 a `SignalFishClient`. On `SessionPlan`/`NewPeer` it calls `connect(peer,
 initiate)` and `set_ice_servers`; on a received signal it feeds `on_signal`; it
-relays the driver's outbound signals via the client, reports `TransportStatus` on
-the 0↔1 connected boundary, tears down peers on re-election / `PlayerLeft` /
-`RoomLeft` / `Disconnected`, and surfaces a clean `MeshEvent` stream.
+relays the driver's outbound signals via the client (a signal the command
+queue refuses is buffered and retried, in order, until the queue accepts it —
+congestion never drops a signal, and a buffered signal survives `recv()`
+cancellation; it is discarded only if the connection ends or its target
+peer's handshake is torn down first, so nothing stale is relayed), reports `TransportStatus` on the 0↔1 connected boundary, tears
+down peers on re-election / `PlayerLeft` / `RoomLeft` / `Disconnected`, and
+surfaces a clean `MeshEvent` stream.
 
 ```rust,ignore
 use signal_fish_client::webrtc::{MeshController, MeshEvent};

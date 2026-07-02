@@ -1,9 +1,20 @@
 //! Synchronous, polling-based client for the Signal Fish signaling protocol.
 //!
-//! [`SignalFishPollingClient`] is designed for environments without an async
-//! runtime (e.g., Godot web builds via gdext on `wasm32-unknown-emscripten`).
-//! The caller drives the client by calling [`poll()`](SignalFishPollingClient::poll)
-//! once per frame from the game loop.
+//! [`SignalFishPollingClient`] is designed for environments without a
+//! continuously driven async runtime: frame-driven game engines (Godot,
+//! Unity via FFI, Bevy without tokio), `wasm32` targets (e.g. Godot web
+//! builds via gdext on `wasm32-unknown-emscripten`), and any application
+//! that would otherwise "tick" a tokio runtime once per frame — a pattern
+//! that starves [`SignalFishClient`](crate::SignalFishClient)'s spawned
+//! transport loop. The caller drives the client by calling
+//! [`poll()`](SignalFishPollingClient::poll) once per frame from the game
+//! loop; no background task or runtime is required.
+//!
+//! Delivery guarantees match the async client: incoming events are returned
+//! from `poll()` without loss, and outgoing commands go through a bounded
+//! queue that fails fast with
+//! [`SendBufferFull`](crate::error::SignalFishError::SendBufferFull) instead
+//! of growing without bound when the transport is congested.
 
 use std::collections::VecDeque;
 
@@ -35,6 +46,14 @@ struct PollingClientState {
     player_id: Option<PlayerId>,
     room_id: Option<RoomId>,
     room_code: Option<String>,
+    /// `GameData` messages successfully written to the transport.
+    /// Cumulative — intentionally not reset by `clear_session`.
+    game_data_sent: u64,
+    /// `GameData`/`GameDataBinary` messages received from the server,
+    /// counted at receipt (see
+    /// [`ClientStats::game_data_received`](crate::client::ClientStats)).
+    /// Cumulative — intentionally not reset by `clear_session`.
+    game_data_received: u64,
 }
 
 impl PollingClientState {
@@ -49,6 +68,8 @@ impl PollingClientState {
             player_id: None,
             room_id: None,
             room_code: None,
+            game_data_sent: 0,
+            game_data_received: 0,
         }
     }
 
@@ -112,6 +133,10 @@ impl PollingClientState {
 pub struct SignalFishPollingClient<T: Transport> {
     transport: T,
     cmd_queue: VecDeque<ClientMessage>,
+    /// Maximum number of queued commands before sends fail fast with
+    /// [`SignalFishError::SendBufferFull`]. Mirrors the async client's
+    /// bounded command channel.
+    command_capacity: usize,
     state: PollingClientState,
     started: bool,
 }
@@ -141,6 +166,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         Self {
             transport,
             cmd_queue,
+            command_capacity: config.command_channel_capacity.max(1),
             state: PollingClientState::new(),
             started: false,
         }
@@ -203,7 +229,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
             };
 
             match send_result {
-                std::task::Poll::Ready(Ok(())) => {}
+                std::task::Poll::Ready(Ok(())) => {
+                    if matches!(msg, ClientMessage::GameData { .. }) {
+                        self.state.game_data_sent += 1;
+                    }
+                }
                 std::task::Poll::Ready(Err(e)) => {
                     error!("transport send error: {e}");
                     self.handle_disconnect(&mut events, Some(format!("transport send error: {e}")));
@@ -278,7 +308,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
         self.queue_cmd(ClientMessage::JoinRoom {
             game_name: params.game_name,
@@ -294,7 +326,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_room(&mut self) -> Result<()> {
         self.queue_cmd(ClientMessage::LeaveRoom)
     }
@@ -303,7 +337,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
         self.queue_cmd(ClientMessage::GameData { data })
     }
@@ -312,7 +348,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn set_ready(&mut self) -> Result<()> {
         self.queue_cmd(ClientMessage::PlayerReady)
     }
@@ -321,7 +359,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn request_authority(&mut self, become_authority: bool) -> Result<()> {
         self.queue_cmd(ClientMessage::AuthorityRequest { become_authority })
     }
@@ -330,7 +370,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
         self.queue_cmd(ClientMessage::ProvideConnectionInfo { connection_info })
     }
@@ -339,7 +381,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn reconnect(
         &mut self,
         player_id: PlayerId,
@@ -357,7 +401,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_as_spectator(
         &mut self,
         game_name: String,
@@ -375,7 +421,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_spectator(&mut self) -> Result<()> {
         self.queue_cmd(ClientMessage::LeaveSpectator)
     }
@@ -384,7 +432,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn ping(&mut self) -> Result<()> {
         self.queue_cmd(ClientMessage::Ping)
     }
@@ -399,7 +449,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn start_game(&mut self) -> Result<()> {
         self.queue_cmd(ClientMessage::StartGame)
     }
@@ -415,8 +467,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
-    /// transport has closed.
+    /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
+    /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
+    /// outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
         self.ensure_v3()?;
         self.queue_cmd(ClientMessage::Signal {
@@ -472,8 +525,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
-    /// transport has closed.
+    /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
+    /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
+    /// outgoing command queue is full.
     pub fn report_transport_status(
         &mut self,
         transport: TransportKind,
@@ -526,6 +580,30 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// The current room code, set after joining a room.
     pub fn current_room_code(&self) -> Option<&str> {
         self.state.room_code.as_deref()
+    }
+
+    /// Number of messages that can currently be queued before send methods
+    /// return [`SignalFishError::SendBufferFull`].
+    ///
+    /// The queue drains on every [`poll()`](Self::poll) while the transport
+    /// accepts writes, so a shrinking value means the transport is congested.
+    pub fn send_capacity(&self) -> usize {
+        self.command_capacity.saturating_sub(self.cmd_queue.len())
+    }
+
+    /// Configured capacity of the outgoing command queue
+    /// (see [`SignalFishConfig::command_channel_capacity`]).
+    pub fn max_send_capacity(&self) -> usize {
+        self.command_capacity
+    }
+
+    /// Cumulative game-data traffic counters
+    /// (see [`ClientStats`](crate::client::ClientStats)).
+    pub fn stats(&self) -> crate::client::ClientStats {
+        crate::client::ClientStats {
+            game_data_sent: self.state.game_data_sent,
+            game_data_received: self.state.game_data_received,
+        }
     }
 
     // ── Close ───────────────────────────────────────────────────────
@@ -581,6 +659,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
     fn queue_cmd(&mut self, msg: ClientMessage) -> Result<()> {
         if !self.state.connected {
             return Err(SignalFishError::NotConnected);
+        }
+        // The queue only backs up while the transport reports Pending across
+        // polls; refusing (rather than growing without bound) surfaces the
+        // congestion to the caller, mirroring the async client's bounded
+        // command channel.
+        if self.cmd_queue.len() >= self.command_capacity {
+            return Err(SignalFishError::SendBufferFull {
+                capacity: self.command_capacity,
+            });
         }
         self.cmd_queue.push_back(msg);
         Ok(())
@@ -639,6 +726,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             ServerMessage::SpectatorLeft { .. } => {
                 self.state.room_id = None;
                 self.state.room_code = None;
+            }
+            ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
+                self.state.game_data_received += 1;
             }
             _ => {}
         }
@@ -1215,6 +1305,41 @@ mod tests {
 
     fn authenticated_json_str() -> &'static str {
         r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#
+    }
+
+    #[test]
+    fn stats_count_game_data_sent_and_received() {
+        let game_data_json = |seq: u64| {
+            serde_json::to_string(&ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(9),
+                data: serde_json::json!({ "seq": seq }),
+            })
+            .expect("GameData serializes")
+        };
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(game_data_json(0))),
+            Some(Ok(game_data_json(1))),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        assert_eq!(client.stats(), crate::client::ClientStats::default());
+
+        for seq in 0..3 {
+            client
+                .send_game_data(serde_json::json!({ "seq": seq }))
+                .unwrap();
+        }
+        let _ = client.poll();
+
+        // Authenticate + 3 GameData flushed; only GameData counts as sent.
+        assert_eq!(
+            client.stats(),
+            crate::client::ClientStats {
+                game_data_sent: 3,
+                game_data_received: 2,
+            }
+        );
     }
 
     #[test]
@@ -2477,6 +2602,81 @@ mod tests {
             );
         }
         assert!(!client.is_connected());
+    }
+
+    /// Transport whose `send()` stays `Pending` until `allow` is set, so tests
+    /// can saturate and then drain the bounded command queue deterministically.
+    struct TogglePendingSendTransport {
+        allow: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        sent: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Transport for TogglePendingSendTransport {
+        async fn send(&mut self, message: String) -> std::result::Result<(), SignalFishError> {
+            if !self.allow.load(std::sync::atomic::Ordering::Acquire) {
+                // Simulates a congested transport: pending() never completes,
+                // so the single noop-waker poll observes Pending and requeues.
+                std::future::pending::<()>().await;
+            }
+            self.sent.push(message);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            // No scripted messages — pending() never completes; the noop-waker
+            // poll observes Pending and stops the recv drain for this frame.
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queue_cmd_fails_fast_when_command_queue_is_full() {
+        let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport = TogglePendingSendTransport {
+            allow: std::sync::Arc::clone(&allow),
+            sent: Vec::new(),
+        };
+        let config = default_config().with_command_channel_capacity(3);
+        let mut client = SignalFishPollingClient::new(transport, config);
+
+        // Authenticate occupies one of the three slots.
+        assert_eq!(client.max_send_capacity(), 3);
+        assert_eq!(client.send_capacity(), 2);
+
+        client
+            .send_game_data(serde_json::json!({ "seq": 0 }))
+            .unwrap();
+        client
+            .send_game_data(serde_json::json!({ "seq": 1 }))
+            .unwrap();
+        assert_eq!(client.send_capacity(), 0);
+        let err = client
+            .send_game_data(serde_json::json!({ "seq": 2 }))
+            .unwrap_err();
+        assert!(
+            matches!(err, SignalFishError::SendBufferFull { capacity: 3 }),
+            "expected SendBufferFull, got {err:?}"
+        );
+
+        // A stalled transport keeps the queue full across polls — nothing is
+        // lost and nothing grows without bound.
+        let _ = client.poll();
+        assert_eq!(client.send_capacity(), 0);
+        assert!(client.is_connected());
+
+        // Once the transport accepts writes again, one poll drains everything.
+        allow.store(true, std::sync::atomic::Ordering::Release);
+        let _ = client.poll();
+        assert_eq!(client.send_capacity(), 3);
+        assert_eq!(client.transport.sent.len(), 3);
+        client
+            .send_game_data(serde_json::json!({ "seq": 3 }))
+            .unwrap();
     }
 
     #[test]

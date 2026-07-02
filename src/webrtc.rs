@@ -219,6 +219,14 @@ mod controller {
         /// Signaled by the driver (via its [`MeshWaker`]) when it has output
         /// ready, so `recv` pumps on demand instead of waiting for the timer.
         ready: std::sync::Arc<tokio::sync::Notify>,
+        /// An outbound signal the command queue refused (`SendBufferFull`),
+        /// held for retry so congestion never drops it. Driver output is not
+        /// popped past a pending signal, preserving signal order, and `recv`
+        /// stays cancel-safe because the signal lives here rather than in a
+        /// cancellable future. Cleared when the controller tears down the
+        /// target peer (see `disconnect_peer`) — an abandoned handshake's
+        /// signal must not be relayed stale.
+        pending_signal: Option<(PlayerId, PeerSignal)>,
     }
 
     impl<D: WebRtcDriver> MeshController<D> {
@@ -250,6 +258,7 @@ mod controller {
                 connected_peers: Vec::new(),
                 pump_interval: DEFAULT_PUMP_INTERVAL,
                 ready,
+                pending_signal: None,
             }
         }
 
@@ -274,10 +283,25 @@ mod controller {
 
         /// Receive the next high-level mesh event. Returns `None` once the
         /// underlying transport closes.
+        ///
+        /// # Cancel safety
+        ///
+        /// This method is cancel-safe: it never holds a popped driver output
+        /// across an await point. An outbound signal the command queue cannot
+        /// accept yet is buffered in the controller and relayed on a later
+        /// iteration (or a later `recv` call), so cancelling `recv` — e.g.
+        /// with `tokio::time::timeout` in a frame-budgeted game loop — never
+        /// loses a signal.
         pub async fn recv(&mut self) -> Option<MeshEvent> {
             loop {
                 // Surface any pending driver output first (relaying signals /
-                // reporting status as side effects).
+                // reporting status as side effects). This is deliberately
+                // synchronous: it must not await while the controller — the
+                // sole consumer of `self.events` — is not draining events,
+                // or a full command queue + full event channel would
+                // deadlock. A refused signal stays buffered; draining events
+                // below is exactly what lets the transport loop make
+                // progress and free queue capacity for the retry.
                 if let Some(event) = self.drain_driver() {
                     return Some(event);
                 }
@@ -333,8 +357,7 @@ mod controller {
                         .filter(|id| !new_ids.contains(id))
                         .collect();
                     for old in dropped {
-                        self.driver.disconnect(old);
-                        self.mark_disconnected(old);
+                        self.disconnect_peer(old);
                     }
                     self.known_peers.retain(|k| new_ids.contains(&k.id));
                     // Connect peers newly named by this plan; a survivor whose
@@ -357,8 +380,7 @@ mod controller {
                     }
                 }
                 SignalFishEvent::PlayerLeft { player_id } => {
-                    self.driver.disconnect(*player_id);
-                    self.mark_disconnected(*player_id);
+                    self.disconnect_peer(*player_id);
                     self.known_peers.retain(|k| k.id != *player_id);
                 }
                 // The session ended: tear down every peer connection. Route each
@@ -369,8 +391,7 @@ mod controller {
                 // `mark_disconnected` empties `connected_peers` as it goes.
                 SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
                     for peer in std::mem::take(&mut self.known_peers) {
-                        self.driver.disconnect(peer.id);
-                        self.mark_disconnected(peer.id);
+                        self.disconnect_peer(peer.id);
                     }
                 }
                 SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
@@ -407,6 +428,25 @@ mod controller {
             }
         }
 
+        /// Tear down `peer`'s driver connection, dropping any buffered
+        /// outbound signal addressed to it: the signal belongs to the
+        /// handshake being abandoned and would be stale (wrong role, or a
+        /// peer no longer in the session) if relayed later. Used for every
+        /// controller-initiated teardown; a driver-reported channel drop
+        /// (`DriverEvent::Disconnected`) does not clear the buffer, because
+        /// the handshake context is still live there.
+        fn disconnect_peer(&mut self, peer: PlayerId) {
+            self.driver.disconnect(peer);
+            if self
+                .pending_signal
+                .as_ref()
+                .is_some_and(|(to, _)| *to == peer)
+            {
+                self.pending_signal = None;
+            }
+            self.mark_disconnected(peer);
+        }
+
         /// Ensure the driver holds the server's current offerer role for `peer`.
         ///
         /// A peer the controller has not connected yet is connected fresh. A
@@ -438,8 +478,7 @@ mod controller {
                         initiate,
                         "server reassigned the offerer role; restarting handshake"
                     );
-                    self.driver.disconnect(peer);
-                    self.mark_disconnected(peer);
+                    self.disconnect_peer(peer);
                     self.driver.connect(peer, initiate);
                     if let Some(k) = self.known_peers.iter_mut().find(|k| k.id == peer) {
                         k.initiate = initiate;
@@ -449,16 +488,54 @@ mod controller {
             }
         }
 
+        /// Attempt to relay the buffered outbound signal, if any.
+        ///
+        /// Returns `true` when the buffer is clear — the signal was relayed,
+        /// there was nothing to relay, or the refusal was terminal
+        /// (`NotConnected` / `ProtocolUnsupported`, logged and discarded
+        /// because retrying cannot succeed). Returns `false` when the
+        /// command queue is full and the signal must be retried later: a
+        /// lost offer/answer/ICE candidate stalls the WebRTC handshake, so
+        /// congestion buffers the signal instead of dropping it.
+        fn relay_pending_signal(&mut self) -> bool {
+            let Some((peer, signal)) = self.pending_signal.take() else {
+                return true;
+            };
+            match self.client.send_signal(peer, signal.clone()) {
+                Ok(()) => true,
+                Err(crate::error::SignalFishError::SendBufferFull { .. }) => {
+                    self.pending_signal = Some((peer, signal));
+                    false
+                }
+                Err(e) => {
+                    debug!("could not relay signal to {peer}: {e}");
+                    true
+                }
+            }
+        }
+
         /// Drain one surfacing driver output, performing the signaling side
         /// effects (relay signal / report status) for non-surfacing outputs.
+        ///
+        /// Synchronous by design (see [`recv`](Self::recv)): a signal the
+        /// command queue refuses is buffered in `pending_signal` — and driver
+        /// output is not popped past it, preserving signal order — rather
+        /// than awaited on, so this never blocks event draining and never
+        /// holds a popped signal across a cancellation point.
         fn drain_driver(&mut self) -> Option<MeshEvent> {
-            while let Some(driver_event) = self.driver.poll() {
+            loop {
+                // A buffered signal must go out before any further driver
+                // output is popped; if the queue is still full, return to
+                // the select loop and retry on the next wake.
+                if !self.relay_pending_signal() {
+                    return None;
+                }
+                let driver_event = self.driver.poll()?;
                 match driver_event {
                     DriverEvent::Signal { peer, signal } => {
-                        // Relay the offer/answer/ICE to the peer via the server.
-                        if let Err(e) = self.client.send_signal(peer, signal) {
-                            debug!("could not relay signal to {peer}: {e}");
-                        }
+                        // Buffer, then immediately attempt the relay on the
+                        // next loop iteration.
+                        self.pending_signal = Some((peer, signal));
                     }
                     DriverEvent::Connected { peer } => {
                         self.mark_connected(peer);
@@ -473,7 +550,6 @@ mod controller {
                     }
                 }
             }
-            None
         }
 
         fn mark_connected(&mut self, peer: PlayerId) {
@@ -483,10 +559,15 @@ mod controller {
             let was_empty = self.connected_peers.is_empty();
             self.connected_peers.push(peer);
             if was_empty {
-                // First live P2P channel: tell the server WebRTC is up.
-                let _ = self
+                // First live P2P channel: tell the server WebRTC is up. The
+                // report is informational and idempotent, so a refusal (e.g.
+                // NotConnected during teardown) is logged, not retried.
+                if let Err(e) = self
                     .client
-                    .report_transport_status(TransportKind::WebRtc, true);
+                    .report_transport_status(TransportKind::WebRtc, true)
+                {
+                    debug!("could not report WebRTC transport up: {e}");
+                }
             }
         }
 
@@ -495,9 +576,13 @@ mod controller {
             self.connected_peers.retain(|p| *p != peer);
             if self.connected_peers.is_empty() && before > 0 {
                 // Last live P2P channel closed: we are back on the relay floor.
-                let _ = self
+                // Informational and idempotent — a refusal is logged, not retried.
+                if let Err(e) = self
                     .client
-                    .report_transport_status(TransportKind::WebRtc, false);
+                    .report_transport_status(TransportKind::WebRtc, false)
+                {
+                    debug!("could not report WebRTC transport down: {e}");
+                }
             }
         }
 
@@ -744,6 +829,7 @@ mod tests {
         }
     }
 
+    use crate::event::SignalFishEvent;
     use crate::protocol::ServerMessage;
     use crate::transport::Transport;
 
@@ -919,6 +1005,216 @@ mod tests {
                 return Some(p);
             }
         }
+    }
+
+    /// Transport whose sends each require a semaphore permit, so a test can
+    /// hold the client's bounded command queue full deterministically.
+    struct GatedTransport {
+        incoming: VecDeque<Option<Result<String, crate::error::SignalFishError>>>,
+        sent: Arc<Mutex<Vec<String>>>,
+        permits: Arc<tokio::sync::Semaphore>,
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for GatedTransport {
+        async fn send(&mut self, message: String) -> Result<(), crate::error::SignalFishError> {
+            self.entered
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            let permit = self
+                .permits
+                .acquire()
+                .await
+                .map_err(|_| crate::error::SignalFishError::TransportClosed)?;
+            permit.forget();
+            self.sent.lock().unwrap().push(message);
+            Ok(())
+        }
+        async fn recv(&mut self) -> Option<Result<String, crate::error::SignalFishError>> {
+            if let Some(item) = self.incoming.pop_front() {
+                item
+            } else {
+                // No scripted messages remain — pending() never completes,
+                // keeping the transport loop alive until shutdown aborts it.
+                std::future::pending().await
+            }
+        }
+        async fn close(&mut self) -> Result<(), crate::error::SignalFishError> {
+            Ok(())
+        }
+    }
+
+    /// Regression test for the two #47-class hazards in the controller's
+    /// signal relay: a driver signal refused by a full command queue must be
+    /// buffered (not dropped), survive `recv()` cancellation, and go out
+    /// exactly once when the congestion clears.
+    #[tokio::test]
+    async fn congestion_buffers_driver_signal_and_relays_exactly_once() {
+        let peer = uuid(9);
+        // One permit: exactly the Authenticate send is allowed through.
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = GatedTransport {
+            incoming: VecDeque::from(vec![
+                Some(Ok(authed())),
+                Some(Ok(protocol_info_v3())),
+                Some(Ok(session_plan(peer, true))),
+            ]),
+            sent: Arc::clone(&sent),
+            permits: Arc::clone(&permits),
+            entered: Arc::clone(&entered),
+        };
+        let driver = SharedDriver::default();
+        let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
+        let mut mesh = MeshController::start(transport, config, driver.clone());
+
+        // Pump until the SessionPlan is folded: the driver has been told to
+        // connect and holds an Offer ready to relay (not yet drained).
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .iter()
+                .any(|c| matches!(c, DriverCall::Connect(p, true) if *p == peer)))
+            .await,
+            "driver never told to connect"
+        );
+
+        // Saturate the capacity-1 command queue: the first filler is pulled
+        // by the loop, which then parks inside the permit-less transport
+        // send; the second filler occupies the queue's single slot.
+        mesh.client()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the gated send");
+        mesh.client()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .unwrap();
+
+        // Pump once (cancelled by timeout): the Offer is popped, refused by
+        // the full queue, and buffered — cancellation must not lose it.
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(80), mesh.recv()).await;
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#]),
+            0,
+            "signal must not reach the wire while the queue is congested"
+        );
+
+        // Clear the congestion: the buffered signal must be relayed.
+        permits.add_permits(64);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while sent_count(&sent, &[r#""type":"Signal""#]) == 0 {
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_millis(40), mesh.recv()).await;
+            }
+        })
+        .await
+        .expect("buffered signal was never relayed after congestion cleared");
+
+        // A few extra pumps must not re-relay it.
+        drain(&mut mesh, 3).await;
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#]),
+            1,
+            "the buffered signal must be relayed exactly once"
+        );
+
+        mesh.shutdown().await;
+    }
+
+    /// A buffered signal whose target peer is torn down (here: `PlayerLeft`
+    /// while the command queue is congested) must be discarded, not relayed
+    /// stale after the congestion clears.
+    #[tokio::test]
+    async fn peer_teardown_discards_buffered_signal_for_that_peer() {
+        let peer = uuid(9);
+        let player_left = serde_json::to_string(&ServerMessage::PlayerLeft { player_id: peer })
+            .expect("PlayerLeft serializes");
+        // One permit: exactly the Authenticate send is allowed through.
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = GatedTransport {
+            incoming: VecDeque::from(vec![
+                Some(Ok(authed())),
+                Some(Ok(protocol_info_v3())),
+                Some(Ok(session_plan(peer, true))),
+                // Queued in the event channel behind the SessionPlan; the
+                // controller folds it while the Offer sits buffered below.
+                Some(Ok(player_left)),
+            ]),
+            sent: Arc::clone(&sent),
+            permits: Arc::clone(&permits),
+            entered: Arc::clone(&entered),
+        };
+        let driver = SharedDriver::default();
+        let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
+        let mut mesh = MeshController::start(transport, config, driver.clone());
+
+        // Fold the SessionPlan (driver told to connect; Offer queued in the
+        // driver, not yet drained). The PlayerLeft event is still undelivered.
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .iter()
+                .any(|c| matches!(c, DriverCall::Connect(p, true) if *p == peer)))
+            .await,
+            "driver never told to connect"
+        );
+
+        // Saturate the capacity-1 command queue (loop parks in the gated
+        // send; the second filler occupies the queue slot).
+        mesh.client()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the gated send");
+        mesh.client()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .unwrap();
+
+        // Pump: the Offer is popped, refused (queue full), and buffered; the
+        // select then delivers PlayerLeft, whose teardown must clear the
+        // buffered signal for that peer.
+        let saw_player_left = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(MeshEvent::Signaling(ev)) = mesh.recv().await {
+                    if matches!(*ev, SignalFishEvent::PlayerLeft { .. }) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(saw_player_left.is_ok(), "never surfaced PlayerLeft");
+        assert!(
+            driver
+                .calls()
+                .iter()
+                .any(|c| matches!(c, DriverCall::Disconnect(p) if *p == peer)),
+            "driver never told to disconnect the departed peer"
+        );
+
+        // Clear the congestion and keep pumping: the stale Offer must never
+        // reach the wire.
+        permits.add_permits(64);
+        drain(&mut mesh, 5).await;
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#]),
+            0,
+            "a buffered signal for a torn-down peer must be discarded, not relayed"
+        );
+
+        mesh.shutdown().await;
     }
 
     #[tokio::test]

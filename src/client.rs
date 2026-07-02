@@ -1,9 +1,44 @@
 //! Async client for the Signal Fish signaling protocol.
 //!
 //! [`SignalFishClient`] is a thin handle that communicates with a background
-//! transport loop task via an unbounded MPSC channel. Events are emitted on a
-//! bounded channel ([`tokio::sync::mpsc::Receiver<SignalFishEvent>`]) returned
-//! from [`SignalFishClient::start`].
+//! transport loop task via a bounded MPSC command channel. Events are emitted
+//! on a bounded channel ([`tokio::sync::mpsc::Receiver<SignalFishEvent>`])
+//! returned from [`SignalFishClient::start`].
+//!
+//! # Delivery guarantees
+//!
+//! Neither direction silently drops data:
+//!
+//! - **Events** are delivered with backpressure. If the consumer lags, the
+//!   transport loop pauses reading from the transport until the event channel
+//!   has room — backpressure propagates to the server instead of losing
+//!   events. An event can only be missed when the loop stops delivering
+//!   entirely: the receiver was dropped, a
+//!   [`shutdown`](SignalFishClient::shutdown) timeout aborted the loop, or
+//!   the client handle was dropped without calling `shutdown` (which aborts
+//!   immediately).
+//! - **Commands** go through a bounded queue and queue admission is never
+//!   silent: the synchronous send methods fail fast with
+//!   [`SignalFishError::SendBufferFull`] when it is full, and the
+//!   `*_reliable` async variants wait for capacity instead. Congestion is
+//!   always surfaced, never buffered without bound. Note that *queued* is
+//!   not *delivered*: commands still in the queue when the connection ends
+//!   (transport error, shutdown, handle drop) are discarded with the
+//!   connection, which is surfaced by the `Disconnected` event.
+//!
+//! # Driving the client (runtime contract)
+//!
+//! [`SignalFishClient::start`] spawns the transport loop with
+//! [`tokio::spawn`], so the loop only makes progress while the tokio runtime
+//! is **driven** — i.e. some task is being awaited (`block_on`, `#[tokio::main]`,
+//! worker threads). Both multi-thread and `current_thread` runtimes work, as
+//! long as the runtime is actually running. What does *not* work is "ticking"
+//! a runtime manually (e.g. one `yield_now().await` per game frame): the loop
+//! starves and messages appear to vanish. For frame-driven or single-threaded
+//! environments (game engines, `wasm32`), use
+//! [`SignalFishPollingClient`](crate::polling_client::SignalFishPollingClient)
+//! (feature `polling-client`), which is a synchronous pump you call once per
+//! frame and needs no runtime at all.
 //!
 //! # Example
 //!
@@ -26,7 +61,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +92,9 @@ use crate::transport::Transport;
 
 /// Default capacity of the bounded event channel.
 const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
+
+/// Default capacity of the bounded outgoing command queue.
+const DEFAULT_COMMAND_CHANNEL_CAPACITY: usize = 1024;
 
 /// Default timeout for the graceful shutdown.
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
@@ -115,14 +153,30 @@ pub struct SignalFishConfig {
     pub supported_topologies: Option<Vec<Topology>>,
     /// Capacity of the bounded event channel.
     ///
-    /// When the consumer cannot keep up with incoming server messages, events
-    /// are dropped (with a warning logged) to avoid blocking the transport loop.
-    /// The `Disconnected` event uses a blocking send so it will not be dropped
-    /// due to a full channel, but it may be missed if the receiver is dropped
-    /// or if [`SignalFishClient::shutdown`] times out and aborts the transport task.
+    /// Events are **never dropped**. When the consumer cannot keep up with
+    /// incoming server messages, the transport loop pauses until the consumer
+    /// drains the channel, propagating backpressure to the server instead of
+    /// losing data. The capacity only controls how much buffering the consumer
+    /// gets before that backpressure kicks in. An event can only be missed
+    /// when delivery stops entirely: the receiver is dropped,
+    /// [`SignalFishClient::shutdown`] times out and aborts the transport
+    /// task, or the client handle is dropped without calling `shutdown`.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
+    /// Capacity of the bounded outgoing command queue.
+    ///
+    /// Queue admission is **never silent**. When the queue is full, the
+    /// synchronous send methods fail fast with
+    /// [`SignalFishError::SendBufferFull`], and the waiting variants (e.g.
+    /// [`SignalFishClient::send_game_data_reliable`]) pause until the
+    /// transport drains a slot. Either way the caller gets a deterministic
+    /// congestion signal instead of an unbounded backlog. Commands still
+    /// queued when the connection ends are discarded with it (surfaced by
+    /// the `Disconnected` event); *queued* is not *delivered*.
+    ///
+    /// Defaults to **1024**. Values below 1 are clamped to 1.
+    pub command_channel_capacity: usize,
     /// Timeout for the graceful shutdown.
     ///
     /// When [`SignalFishClient::shutdown`] is called, the background transport
@@ -148,6 +202,7 @@ impl SignalFishConfig {
             supported_transports: None,
             supported_topologies: None,
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
+            command_channel_capacity: DEFAULT_COMMAND_CHANNEL_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
         }
     }
@@ -158,6 +213,18 @@ impl SignalFishConfig {
     #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
         self.event_channel_capacity = capacity.max(1);
+        self
+    }
+
+    /// Set the capacity of the bounded outgoing command queue.
+    ///
+    /// See [`command_channel_capacity`](Self::command_channel_capacity) for
+    /// the backpressure semantics.
+    ///
+    /// Defaults to **1024**. Values below 1 are clamped to 1.
+    #[must_use]
+    pub fn with_command_channel_capacity(mut self, capacity: usize) -> Self {
+        self.command_channel_capacity = capacity.max(1);
         self
     }
 
@@ -306,6 +373,37 @@ impl JoinRoomParams {
     }
 }
 
+// ── Traffic statistics ──────────────────────────────────────────────
+
+/// Snapshot of a client's game-data traffic counters.
+///
+/// Returned by [`SignalFishClient::stats`] and
+/// [`SignalFishPollingClient::stats`](crate::polling_client::SignalFishPollingClient::stats).
+///
+/// The client itself never drops game data (events are delivered with
+/// backpressure and refused sends return
+/// [`SendBufferFull`](crate::SignalFishError::SendBufferFull)), so these
+/// counters make loss *elsewhere* observable: exchange or log them across
+/// peers, and a persistent sent-vs-received deficit points at the relay
+/// path or a peer — not at this client.
+///
+/// Counters are cumulative for the lifetime of the client (they survive
+/// room changes and disconnection).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientStats {
+    /// `GameData` messages successfully written to the transport.
+    pub game_data_sent: u64,
+    /// `GameData`/`GameDataBinary` messages received from the server.
+    ///
+    /// Counted at **receipt** (when the message is read off the transport
+    /// and parsed), not at delivery to your event loop. That is the number
+    /// the relay-path deficit diagnostic needs — it measures the wire, so a
+    /// consumer that stops draining events (or a terminal abort racing the
+    /// last deliveries) cannot masquerade as relay loss. In steady state
+    /// receipt and delivery are identical because events are never dropped.
+    pub game_data_received: u64,
+}
+
 // ── Shared state ────────────────────────────────────────────────────
 
 /// Internal shared state between the client handle and the transport loop.
@@ -324,6 +422,13 @@ struct ClientState {
     player_id: Mutex<Option<PlayerId>>,
     room_id: Mutex<Option<RoomId>>,
     room_code: Mutex<Option<String>>,
+    /// `GameData` messages successfully written to the transport.
+    /// Cumulative — intentionally not reset by `clear_session_state`.
+    game_data_sent: AtomicU64,
+    /// `GameData`/`GameDataBinary` messages received from the server,
+    /// counted at receipt (see [`ClientStats::game_data_received`]).
+    /// Cumulative — intentionally not reset by `clear_session_state`.
+    game_data_received: AtomicU64,
 }
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
@@ -337,6 +442,8 @@ impl ClientState {
             player_id: Mutex::new(None),
             room_id: Mutex::new(None),
             room_code: Mutex::new(None),
+            game_data_sent: AtomicU64::new(0),
+            game_data_received: AtomicU64::new(0),
         }
     }
 
@@ -357,13 +464,17 @@ impl ClientState {
 /// Created via [`SignalFishClient::start`], which spawns a background transport
 /// loop and returns this handle together with an event receiver.
 ///
-/// All public methods serialize a [`ClientMessage`] and send it to the
-/// transport loop over an unbounded channel. They return immediately once the
-/// message is queued (no round-trip await).
+/// All synchronous public methods serialize a [`ClientMessage`] and queue it
+/// to the transport loop over a **bounded** channel, returning immediately
+/// once the message is queued (no round-trip await). When the queue is full
+/// they fail fast with [`SignalFishError::SendBufferFull`]; the waiting
+/// variants ([`send_game_data_reliable`](Self::send_game_data_reliable),
+/// [`send_signal_reliable`](Self::send_signal_reliable)) instead await
+/// capacity, pacing the caller to actual transport throughput.
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub struct SignalFishClient {
-    /// Sender half of the command channel to the transport loop.
-    cmd_tx: mpsc::UnboundedSender<ClientMessage>,
+    /// Sender half of the bounded command channel to the transport loop.
+    cmd_tx: mpsc::Sender<ClientMessage>,
     /// Shared state updated by the transport loop.
     state: Arc<ClientState>,
     /// Handle to the background transport loop task.
@@ -384,6 +495,13 @@ impl SignalFishClient {
     /// The transport loop immediately sends an [`Authenticate`](ClientMessage::Authenticate)
     /// message using the provided [`SignalFishConfig`].
     ///
+    /// The loop is spawned with [`tokio::spawn`] and therefore only makes
+    /// progress while the tokio runtime is driven — see
+    /// [the driving contract](self#driving-the-client-runtime-contract). For
+    /// frame-driven or runtime-less environments use
+    /// [`SignalFishPollingClient`](crate::polling_client::SignalFishPollingClient)
+    /// instead.
+    ///
     /// # Arguments
     ///
     /// * `transport` — A connected [`Transport`] implementation.
@@ -398,8 +516,9 @@ impl SignalFishClient {
         transport: impl Transport,
         config: SignalFishConfig,
     ) -> (Self, mpsc::Receiver<SignalFishEvent>) {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ClientMessage>();
-        // Clamp capacity to at least 1 (tokio panics on 0).
+        // Clamp capacities to at least 1 (tokio panics on 0).
+        let cmd_capacity = config.command_channel_capacity.max(1);
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ClientMessage>(cmd_capacity);
         let capacity = config.event_channel_capacity.max(1);
         let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -418,8 +537,9 @@ impl SignalFishClient {
             supported_transports: config.supported_transports,
             supported_topologies: config.supported_topologies,
         };
-        // This cannot fail because we just created the channel.
-        let _ = cmd_tx.send(auth_msg);
+        // This cannot fail: the channel was just created empty and its
+        // capacity is clamped to at least 1.
+        let _ = cmd_tx.try_send(auth_msg);
 
         let task = tokio::spawn(transport_loop(
             transport,
@@ -486,7 +606,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_room(&self, params: JoinRoomParams) -> Result<()> {
         self.send(ClientMessage::JoinRoom {
             game_name: params.game_name,
@@ -502,25 +624,64 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_room(&self) -> Result<()> {
         self.send(ClientMessage::LeaveRoom)
     }
 
     /// Send arbitrary JSON game data to other players in the room.
     ///
+    /// Returns as soon as the message is queued. For high-rate payloads
+    /// (e.g. per-frame input packets), prefer
+    /// [`send_game_data_reliable`](Self::send_game_data_reliable), which
+    /// waits for queue capacity instead of failing fast under congestion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
+    pub fn send_game_data(&self, data: serde_json::Value) -> Result<()> {
+        self.send(ClientMessage::GameData { data })
+    }
+
+    /// Send arbitrary JSON game data, waiting for space in the outgoing
+    /// command queue when it is full.
+    ///
+    /// This is the backpressure-aware counterpart to
+    /// [`send_game_data`](Self::send_game_data): instead of failing fast with
+    /// [`SignalFishError::SendBufferFull`], it pauses until the transport
+    /// drains a slot, pacing the caller to actual transport throughput. This
+    /// is the recommended way to stream high-rate payloads (rollback input
+    /// packets, state sync) without guessing at sleep durations.
+    ///
+    /// # Keep draining events
+    ///
+    /// The command queue only drains while the transport loop runs, and the
+    /// transport loop pauses whenever the **event** channel is full (events
+    /// are never dropped). A task that awaits this method while it is also
+    /// the only consumer of the event receiver can therefore deadlock under
+    /// simultaneous send + receive pressure. Drain events from a separate
+    /// task rather than strictly sequentially. (Do **not** race this send
+    /// against the event receiver in a `tokio::select!`: if the event arm
+    /// wins, the cancelled send future discards the payload.)
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
-    pub fn send_game_data(&self, data: serde_json::Value) -> Result<()> {
-        self.send(ClientMessage::GameData { data })
+    pub async fn send_game_data_reliable(&self, data: serde_json::Value) -> Result<()> {
+        self.send_reliable(ClientMessage::GameData { data }).await
     }
 
     /// Signal readiness to start the game in the lobby.
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn set_ready(&self) -> Result<()> {
         self.send(ClientMessage::PlayerReady)
     }
@@ -529,7 +690,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn request_authority(&self, become_authority: bool) -> Result<()> {
         self.send(ClientMessage::AuthorityRequest { become_authority })
     }
@@ -538,7 +701,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn provide_connection_info(&self, connection_info: ConnectionInfo) -> Result<()> {
         self.send(ClientMessage::ProvideConnectionInfo { connection_info })
     }
@@ -547,7 +712,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn reconnect(
         &self,
         player_id: PlayerId,
@@ -565,7 +732,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_as_spectator(
         &self,
         game_name: String,
@@ -583,7 +752,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_spectator(&self) -> Result<()> {
         self.send(ClientMessage::LeaveSpectator)
     }
@@ -592,7 +763,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn ping(&self) -> Result<()> {
         self.send(ClientMessage::Ping)
     }
@@ -613,7 +786,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
+    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
+    /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn start_game(&self) -> Result<()> {
         self.send(ClientMessage::StartGame)
     }
@@ -635,13 +810,45 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
     /// negotiated protocol v3 (fail-fast — the server would otherwise reject it),
-    /// or [`SignalFishError::NotConnected`] if the transport has closed.
+    /// [`SignalFishError::NotConnected`] if the transport has closed, or
+    /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is
+    /// full (see [`send_signal_reliable`](Self::send_signal_reliable) for a
+    /// waiting variant).
     pub fn send_signal(&self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
         self.ensure_v3()?;
         self.send(ClientMessage::Signal {
             to,
             signal: signal.into().into(),
         })
+    }
+
+    /// Send a typed WebRTC signal, waiting for space in the outgoing command
+    /// queue when it is full. **Protocol v3 only.**
+    ///
+    /// The backpressure-aware counterpart to [`send_signal`](Self::send_signal):
+    /// a lost offer/answer/ICE candidate stalls a WebRTC handshake, so waiting
+    /// beats failing when the queue is congested (e.g. by game-data bursts).
+    ///
+    /// The "Keep draining events" caveat on
+    /// [`send_game_data_reliable`](Self::send_game_data_reliable)
+    /// applies here too: drain events from another task while awaiting this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has
+    /// not negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
+    /// transport has closed.
+    pub async fn send_signal_reliable(
+        &self,
+        to: PlayerId,
+        signal: impl Into<PeerSignal>,
+    ) -> Result<()> {
+        self.ensure_v3()?;
+        self.send_reliable(ClientMessage::Signal {
+            to,
+            signal: signal.into().into(),
+        })
+        .await
     }
 
     /// Send an SDP offer to a peer. **Protocol v3 only.**
@@ -699,8 +906,9 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
-    /// transport has closed.
+    /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
+    /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
+    /// outgoing command queue is full.
     pub fn report_transport_status(&self, transport: TransportKind, connected: bool) -> Result<()> {
         self.ensure_v3()?;
         self.send(ClientMessage::TransportStatus {
@@ -761,6 +969,30 @@ impl SignalFishClient {
         self.state.room_code.lock().await.clone()
     }
 
+    /// Number of messages that can currently be queued before the synchronous
+    /// send methods return [`SignalFishError::SendBufferFull`].
+    ///
+    /// A shrinking value is the congestion signal: the caller is producing
+    /// faster than the transport drains. `0` means the next fail-fast send
+    /// will be refused.
+    pub fn send_capacity(&self) -> usize {
+        self.cmd_tx.capacity()
+    }
+
+    /// Configured capacity of the outgoing command queue
+    /// (see [`SignalFishConfig::command_channel_capacity`]).
+    pub fn max_send_capacity(&self) -> usize {
+        self.cmd_tx.max_capacity()
+    }
+
+    /// Cumulative game-data traffic counters (see [`ClientStats`]).
+    pub fn stats(&self) -> ClientStats {
+        ClientStats {
+            game_data_sent: self.state.game_data_sent.load(Ordering::Relaxed),
+            game_data_received: self.state.game_data_received.load(Ordering::Relaxed),
+        }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     /// Guard for protocol-v3-only operations: returns an error unless the
@@ -789,13 +1021,30 @@ impl SignalFishClient {
         Err(SignalFishError::ProtocolUnsupported { mode })
     }
 
-    /// Queue a `ClientMessage` to the transport loop.
+    /// Queue a `ClientMessage` to the transport loop, failing fast when the
+    /// bounded command queue is full.
     fn send(&self, msg: ClientMessage) -> Result<()> {
+        if !self.state.connected.load(Ordering::Acquire) {
+            return Err(SignalFishError::NotConnected);
+        }
+        match self.cmd_tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
+                capacity: self.cmd_tx.max_capacity(),
+            }),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(SignalFishError::NotConnected),
+        }
+    }
+
+    /// Queue a `ClientMessage` to the transport loop, waiting for capacity
+    /// when the bounded command queue is full.
+    async fn send_reliable(&self, msg: ClientMessage) -> Result<()> {
         if !self.state.connected.load(Ordering::Acquire) {
             return Err(SignalFishError::NotConnected);
         }
         self.cmd_tx
             .send(msg)
+            .await
             .map_err(|_| SignalFishError::NotConnected)
     }
 }
@@ -838,7 +1087,7 @@ impl Drop for SignalFishClient {
 #[cfg(feature = "tokio-runtime")]
 async fn transport_loop(
     mut transport: impl Transport,
-    mut cmd_rx: mpsc::UnboundedReceiver<ClientMessage>,
+    mut cmd_rx: mpsc::Receiver<ClientMessage>,
     event_tx: mpsc::Sender<SignalFishEvent>,
     state: Arc<ClientState>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
@@ -865,6 +1114,9 @@ async fn transport_loop(
                                         Some(format!("transport send error: {e}")),
                                     ).await;
                                     break;
+                                }
+                                if matches!(msg, ClientMessage::GameData { .. }) {
+                                    state.game_data_sent.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                             Err(e) => {
@@ -1008,35 +1260,36 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             *state.room_code.lock().await = None;
             debug!("state: left spectator mode");
         }
+        ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
+            state.game_data_received.fetch_add(1, Ordering::Relaxed);
+        }
         _ => {}
     }
 }
 
-/// Emit an event to the event channel. If the channel is full, log a warning
-/// and drop the event to avoid blocking the transport loop.
+/// Emit an event to the event channel, waiting for capacity if it is full.
+///
+/// Events are **never dropped**: when the consumer lags, the transport loop
+/// pauses here, which stops reading from the transport and propagates
+/// backpressure to the server (e.g. via TCP receive windows). Delivery only
+/// fails if the receiver has been dropped, or if the transport task is
+/// aborted while this send is still waiting (a
+/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
+/// without `shutdown`).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event(event_tx: &mpsc::Sender<SignalFishEvent>, event: SignalFishEvent) {
-    match event_tx.try_send(event) {
-        Ok(()) => {}
-        Err(mpsc::error::TrySendError::Full(dropped)) => {
-            warn!(
-                "event channel full, dropping event: {:?}",
-                std::mem::discriminant(&dropped)
-            );
-        }
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            debug!("event channel closed, receiver dropped");
-        }
+    if event_tx.send(event).await.is_err() {
+        debug!("event channel closed, receiver dropped");
     }
 }
 
 /// Emit a [`Disconnected`](SignalFishEvent::Disconnected) event and update state.
 ///
-/// Uses `send().await` (blocking) instead of `try_send` so that `Disconnected`
-/// is not dropped due to channel backpressure. However, delivery is not
-/// unconditional: the event will be lost if the receiver has been dropped, or
-/// if [`SignalFishClient::shutdown`] aborts the transport task before this
-/// function completes.
+/// Like every event, `Disconnected` is delivered with backpressure (see
+/// [`emit_event`]); it can only be missed if the receiver has been dropped
+/// or if the transport task is aborted first (a
+/// [`SignalFishClient::shutdown`] timeout, or the client handle dropped
+/// without `shutdown`).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_disconnected(
     event_tx: &mpsc::Sender<SignalFishEvent>,
@@ -1045,10 +1298,7 @@ async fn emit_disconnected(
 ) {
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
-    let event = SignalFishEvent::Disconnected { reason };
-    if event_tx.send(event).await.is_err() {
-        debug!("event channel closed, receiver dropped");
-    }
+    emit_event(event_tx, SignalFishEvent::Disconnected { reason }).await;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1125,7 +1375,7 @@ mod tests {
     // ── Helper ──────────────────────────────────────────────────────
 
     async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if sent.lock().unwrap().len() >= expected_len {
                     break;
@@ -1350,6 +1600,11 @@ mod tests {
 
         let result = client.ping();
         assert!(matches!(result, Err(SignalFishError::NotConnected)));
+        // The waiting variant refuses just the same after shutdown.
+        let result = client
+            .send_game_data_reliable(serde_json::json!({ "seq": 0 }))
+            .await;
+        assert!(matches!(result, Err(SignalFishError::NotConnected)));
     }
 
     #[tokio::test]
@@ -1386,6 +1641,7 @@ mod tests {
         assert!(config.supported_transports.is_none());
         assert!(config.supported_topologies.is_none());
         assert_eq!(config.event_channel_capacity, 256);
+        assert_eq!(config.command_channel_capacity, 1024);
         assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(1));
     }
 
@@ -1393,8 +1649,10 @@ mod tests {
     async fn config_builder_methods() {
         let config = SignalFishConfig::new("mb_test")
             .with_event_channel_capacity(512)
+            .with_command_channel_capacity(64)
             .with_shutdown_timeout(std::time::Duration::from_secs(5));
         assert_eq!(config.event_channel_capacity, 512);
+        assert_eq!(config.command_channel_capacity, 64);
         assert_eq!(config.shutdown_timeout, std::time::Duration::from_secs(5));
     }
 
@@ -1436,6 +1694,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_channel_capacity_is_clamped_to_one() {
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(0);
+        assert_eq!(config.command_channel_capacity, 1);
+    }
+
+    #[tokio::test]
     async fn zero_event_channel_capacity_does_not_panic() {
         let (transport, _sent, _closed) = MockTransport::new(vec![]);
 
@@ -1452,8 +1716,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn small_event_channel_capacity_triggers_backpressure() {
-        // Use a capacity of 1 and send multiple messages — events should be dropped.
+    async fn small_event_channel_capacity_delivers_all_events_losslessly() {
+        // Capacity 1 forces maximum backpressure: the transport loop must wait
+        // for the consumer on every event instead of dropping any.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
@@ -1467,24 +1732,400 @@ mod tests {
         let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(1);
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        // Let the channel fill up and events get dropped.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Give the transport loop time to run ahead; it must block, not drop.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let mut count = 0;
-        while let Some(_event) = events.recv().await {
-            count += 1;
+        let mut received = Vec::new();
+        while let Some(event) = events.recv().await {
+            received.push(event);
         }
-        // With capacity 1, we should receive fewer events than were sent.
-        // At minimum we get Connected (first try_send succeeds) and Disconnected
-        // (delivered via blocking send, not dropped due to backpressure).
-        // Authenticated and Pong events may be dropped when the single-slot
-        // channel is full.
-        assert!(count >= 2, "expected at least 2 events, got {count}");
-        // But fewer than the total sent (2 synthetic + 1 auth + 20 pongs = 23 possible).
-        assert!(
-            count < 23,
-            "expected backpressure to drop some events, but got all {count}"
+        // Connected + Authenticated + 20 Pongs + Disconnected — nothing dropped.
+        assert_eq!(
+            received.len(),
+            23,
+            "every event must be delivered, got {}",
+            received.len()
         );
+        assert!(matches!(received[0], SignalFishEvent::Connected));
+        assert!(matches!(received[1], SignalFishEvent::Authenticated { .. }));
+        assert!(matches!(
+            received.last(),
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn game_data_events_are_never_dropped_and_stay_ordered() {
+        // Data-driven regression for issue #47: a burst of sequenced GameData
+        // far larger than the event buffer must arrive complete and in order.
+        const MESSAGES: u64 = 500;
+        let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
+        incoming.push(Some(Ok(authenticated_json())));
+        for seq in 0..MESSAGES {
+            let msg = ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(7),
+                data: serde_json::json!({ "seq": seq }),
+            };
+            incoming.push(Some(Ok(serde_json::to_string(&msg).unwrap())));
+        }
+        incoming.push(None);
+
+        let (transport, _sent, _closed) = MockTransport::new(incoming);
+
+        // Tiny event buffer: correctness must not depend on channel capacity.
+        let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(2);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let mut seqs = Vec::new();
+        while let Some(event) = events.recv().await {
+            if let SignalFishEvent::GameData { data, .. } = event {
+                seqs.push(data["seq"].as_u64().unwrap());
+            }
+        }
+        let expected: Vec<u64> = (0..MESSAGES).collect();
+        assert_eq!(
+            seqs, expected,
+            "GameData must be delivered losslessly and in order"
+        );
+
+        client.shutdown().await;
+    }
+
+    /// Issue #47, item 3 (driving contract): a `current_thread` runtime is
+    /// fully supported as long as it is actually *driven* — every await here
+    /// yields to the runtime, which is what lets the spawned transport loop
+    /// progress. No sleeps and no multi-thread runtime are required for a
+    /// complete authenticate → send → receive round-trip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn current_thread_runtime_completes_round_trip() {
+        let game_data_json = serde_json::to_string(&ServerMessage::GameData {
+            from_player: uuid::Uuid::from_u128(9),
+            data: serde_json::json!({ "seq": 0 }),
+        })
+        .unwrap();
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(game_data_json)),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Connected));
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::Authenticated { .. }));
+
+        for seq in 0..3 {
+            client
+                .send_game_data_reliable(serde_json::json!({ "seq": seq }))
+                .await
+                .unwrap();
+        }
+
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::GameData { .. }));
+
+        // Authenticate + 3 GameData all reach the wire on a single thread.
+        wait_for_sent_len(&sent, 4).await;
+        wait_until(|| client.stats().game_data_sent == 3).await;
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stats_count_game_data_sent_and_received() {
+        let game_data_json = |seq: u64| {
+            serde_json::to_string(&ServerMessage::GameData {
+                from_player: uuid::Uuid::from_u128(9),
+                data: serde_json::json!({ "seq": seq }),
+            })
+            .unwrap()
+        };
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(game_data_json(0))),
+            Some(Ok(game_data_json(1))),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert_eq!(client.stats(), ClientStats::default());
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // GameData 0
+        let _ = events.recv().await; // GameData 1
+
+        for seq in 0..3 {
+            client
+                .send_game_data(serde_json::json!({ "seq": seq }))
+                .unwrap();
+        }
+        // Authenticate + 3 GameData on the wire; only GameData is counted.
+        wait_for_sent_len(&sent, 4).await;
+        wait_until(|| client.stats().game_data_sent == 3).await;
+
+        assert_eq!(
+            client.stats(),
+            ClientStats {
+                game_data_sent: 3,
+                game_data_received: 2,
+            }
+        );
+
+        client.shutdown().await;
+    }
+
+    // ── Send-side backpressure (issue #47, item 2) ──────────────────
+
+    /// Transport whose `send()` requires a semaphore permit per message, so
+    /// tests can stall the outgoing path deterministically.
+    struct GatedSendTransport {
+        entered_send: Arc<AtomicBool>,
+        permits: Arc<tokio::sync::Semaphore>,
+        sent: Arc<StdMutex<Vec<String>>>,
+    }
+
+    impl GatedSendTransport {
+        #[allow(clippy::type_complexity)]
+        fn new(
+            initial_permits: usize,
+        ) -> (
+            Self,
+            Arc<AtomicBool>,
+            Arc<tokio::sync::Semaphore>,
+            Arc<StdMutex<Vec<String>>>,
+        ) {
+            let entered_send = Arc::new(AtomicBool::new(false));
+            let permits = Arc::new(tokio::sync::Semaphore::new(initial_permits));
+            let sent = Arc::new(StdMutex::new(Vec::new()));
+            (
+                Self {
+                    entered_send: Arc::clone(&entered_send),
+                    permits: Arc::clone(&permits),
+                    sent: Arc::clone(&sent),
+                },
+                entered_send,
+                permits,
+                sent,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl Transport for GatedSendTransport {
+        async fn send(&mut self, message: String) -> std::result::Result<(), SignalFishError> {
+            self.entered_send.store(true, Ordering::Release);
+            let permit = self
+                .permits
+                .acquire()
+                .await
+                .map_err(|_| SignalFishError::TransportClosed)?;
+            permit.forget();
+            self.sent.lock().unwrap().push(message);
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+            // No scripted messages — pending() never completes, keeping the
+            // transport loop alive until shutdown aborts it.
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+            Ok(())
+        }
+    }
+
+    async fn wait_until(condition: impl Fn() -> bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for condition"));
+    }
+
+    #[tokio::test]
+    async fn sync_send_fails_fast_when_command_queue_is_full() {
+        // No permits: the transport loop stalls inside send(Authenticate),
+        // leaving exactly `capacity` free slots in the command channel.
+        let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
+
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(2);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+
+        // Wait until the loop has pulled Authenticate and stalled in send().
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+        assert_eq!(client.max_send_capacity(), 2);
+
+        // Fill the queue to capacity, then observe the loud refusal.
+        client
+            .send_game_data(serde_json::json!({ "seq": 0 }))
+            .unwrap();
+        client
+            .send_game_data(serde_json::json!({ "seq": 1 }))
+            .unwrap();
+        assert_eq!(client.send_capacity(), 0);
+        let err = client
+            .send_game_data(serde_json::json!({ "seq": 2 }))
+            .unwrap_err();
+        assert!(
+            matches!(err, SignalFishError::SendBufferFull { capacity: 2 }),
+            "expected SendBufferFull, got {err:?}"
+        );
+
+        // Unblock the transport: the queue drains and sends succeed again.
+        permits.add_permits(16);
+        wait_for_sent_len(&sent, 3).await;
+        wait_until(|| client.send_capacity() > 0).await;
+        client
+            .send_game_data(serde_json::json!({ "seq": 3 }))
+            .unwrap();
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn send_game_data_reliable_waits_for_capacity_instead_of_failing() {
+        // No permits: Authenticate stalls in send(), then one queued message
+        // saturates the capacity-1 command channel.
+        let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
+
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+
+        client
+            .send_game_data(serde_json::json!({ "seq": 0 }))
+            .unwrap();
+        assert!(matches!(
+            client.send_game_data(serde_json::json!({ "nope": true })),
+            Err(SignalFishError::SendBufferFull { .. })
+        ));
+
+        // The reliable variant must wait (not fail) while the queue is full…
+        let client = Arc::new(client);
+        let sender = Arc::clone(&client);
+        let mut reliable = tokio::spawn(async move {
+            sender
+                .send_game_data_reliable(serde_json::json!({ "seq": 1 }))
+                .await
+        });
+        let still_waiting =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut reliable).await;
+        assert!(
+            still_waiting.is_err(),
+            "reliable send must wait while the queue is full"
+        );
+
+        // …and complete once the transport drains the queue.
+        permits.add_permits(16);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), reliable)
+            .await
+            .expect("reliable send should complete once capacity frees")
+            .expect("task must not panic");
+        assert!(result.is_ok(), "reliable send should succeed: {result:?}");
+
+        // All three messages reach the wire: Authenticate + both game data payloads.
+        wait_for_sent_len(&sent, 3).await;
+
+        let mut client = Arc::into_inner(client).expect("all clones dropped");
+        client.shutdown().await;
+    }
+
+    fn protocol_info_v3_json() -> String {
+        use crate::protocol::ProtocolInfoPayload;
+        serde_json::to_string(&ServerMessage::ProtocolInfo(ProtocolInfoPayload {
+            platform: None,
+            sdk_version: None,
+            minimum_version: None,
+            recommended_version: None,
+            capabilities: vec![],
+            notes: None,
+            game_data_formats: vec![],
+            player_name_rules: None,
+            protocol_version: Some(3),
+            min_protocol_version: Some(2),
+            max_protocol_version: Some(3),
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn send_signal_reliable_fails_fast_pre_negotiation_even_when_queue_full() {
+        // Saturate the capacity-1 command queue behind a stalled transport.
+        let (transport, entered_send, permits, _sent) = GatedSendTransport::new(0);
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+        client
+            .send_game_data(serde_json::json!({ "seq": 0 }))
+            .unwrap();
+        assert_eq!(client.send_capacity(), 0);
+
+        // The v3 guard must be evaluated BEFORE waiting for queue capacity:
+        // pre-negotiation, this returns immediately (nothing is queued)
+        // instead of blocking on the full queue.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.send_signal_reliable(uuid::Uuid::from_u128(5), PeerSignal::Offer("sdp".into())),
+        )
+        .await
+        .expect("guard must fail fast, not wait for capacity");
+        assert!(
+            matches!(
+                result,
+                Err(SignalFishError::ProtocolUnsupported {
+                    mode: "pre-negotiation"
+                })
+            ),
+            "expected ProtocolUnsupported, got {result:?}"
+        );
+
+        permits.add_permits(16);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn send_signal_reliable_reaches_wire_after_v3() {
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
+
+        let config = SignalFishConfig::new("mb_test").enable_mesh();
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo (negotiates v3)
+
+        client
+            .send_signal_reliable(uuid::Uuid::from_u128(5), PeerSignal::Offer("sdp".into()))
+            .await
+            .unwrap();
+
+        wait_for_sent_len(&sent, 2).await;
+        {
+            let messages = sent.lock().unwrap();
+            let last: ClientMessage = serde_json::from_str(messages.last().unwrap()).unwrap();
+            assert!(
+                matches!(last, ClientMessage::Signal { .. }),
+                "expected Signal on the wire, got {last:?}"
+            );
+        }
 
         client.shutdown().await;
     }
@@ -1737,13 +2378,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_channel_backpressure_does_not_block() {
+    async fn event_channel_overflow_backpressures_without_loss() {
         // Create a transport with more messages than the event channel capacity.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
         // Fill more than DEFAULT_EVENT_CHANNEL_CAPACITY pong messages.
+        let pongs = DEFAULT_EVENT_CHANNEL_CAPACITY + 50;
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
-        for _ in 0..(DEFAULT_EVENT_CHANNEL_CAPACITY + 50) {
+        for _ in 0..pongs {
             incoming.push(Some(Ok(pong_json.clone())));
         }
         // End with a clean close.
@@ -1754,17 +2396,21 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        // Don't read events immediately — let the channel fill up.
+        // Don't read events immediately — let the channel fill up. The
+        // transport loop must pause on the full channel, not drop events.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Now drain events. The loop should have completed (possibly
-        // dropping some events due to backpressure) without blocking.
+        // Now drain events: every single one must have survived the overflow.
         let mut count = 0;
         while let Some(_event) = events.recv().await {
             count += 1;
         }
-        // We should have received at least some events.
-        assert!(count > 0, "expected to receive at least some events");
+        // Connected + Authenticated + pongs + Disconnected.
+        assert_eq!(
+            count,
+            pongs + 3,
+            "backpressure must preserve every event, got {count}"
+        );
 
         client.shutdown().await;
     }

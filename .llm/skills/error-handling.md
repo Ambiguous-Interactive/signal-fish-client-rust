@@ -32,6 +32,13 @@ pub enum SignalFishError {
     #[error("not connected to server")]
     NotConnected,
 
+    /// The bounded outgoing command queue is full. Fail-fast send-side
+    /// backpressure: the message was refused, not queued, nothing dropped.
+    /// Callers retry, pace via send_game_data_reliable / send_signal_reliable,
+    /// or raise SignalFishConfig::command_channel_capacity.
+    #[error("outgoing command queue full (capacity {capacity}): ...")]
+    SendBufferFull { capacity: usize },
+
     /// Not in a room.
     #[error("not in a room")]
     NotInRoom,
@@ -42,6 +49,11 @@ pub enum SignalFishError {
         message: String,
         error_code: Option<ErrorCode>,
     },
+
+    /// A protocol-v3-only operation attempted before v3 was negotiated.
+    /// mode is "relay-only" (negotiated below v3) or "pre-negotiation".
+    #[error("operation requires a negotiated protocol v3 session ...")]
+    ProtocolUnsupported { mode: &'static str },
 
     /// An operation timed out.
     #[error("operation timed out")]
@@ -98,7 +110,7 @@ async fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-Defined in `src/error_codes.rs`. This enum is exhaustive. 40 variants:
+Defined in `src/error_codes.rs`. This enum is exhaustive. 48 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +144,16 @@ pub enum ErrorCode {
 
     // Server (3)
     InternalError, StorageError, ServiceUnavailable,
+
+    // Game start, protocol v2 (2)
+    GameStartNotReady, GameStartForbidden,
+
+    // Signaling, protocol v3 (5)
+    CrossRoomSignal, UnsupportedTransport, SignalTargetNotFound,
+    SignalRateLimited, SignalTooLarge,
+
+    // Connection lifecycle, protocol v3 (1)
+    ConnectionIdleTimeout,
 }
 ```
 

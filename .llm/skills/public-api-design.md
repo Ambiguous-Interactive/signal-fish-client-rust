@@ -248,3 +248,18 @@ let (client, events) = SignalFishClient::start(transport, config);
 - **The mesh surface is feature-gated** behind `mesh` (and the async controller
   additionally behind `tokio-runtime`), keeping the default build minimal. See
   [webrtc-mesh-signaling](webrtc-mesh-signaling.md).
+
+## Send-Path Conventions (0.6.0)
+
+- **Fail-fast / waiting pairs.** The sync send methods queue on a bounded
+  channel and fail fast with `SignalFishError::SendBufferFull { capacity }`
+  when full; each high-rate send has an async waiting counterpart named
+  `*_reliable` (`send_game_data_reliable`, `send_signal_reliable`). Follow
+  this naming and pairing for any future send-style API: congestion must
+  surface as an error or as waiting — never as a silent drop or an unbounded
+  backlog.
+- **Diagnostics are plain accessors.** `send_capacity()`,
+  `max_send_capacity()`, and `stats()` (returning the plain-data
+  `ClientStats`) exist on both clients; keep the two client APIs mirrored.
+- Adding `SendBufferFull` to the exhaustive `SignalFishError` is breaking
+  (MINOR for 0.x) — the `0.5.0 → 0.6.0` bump.
