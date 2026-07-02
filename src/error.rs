@@ -30,14 +30,16 @@ pub enum SignalFishError {
     /// messages faster than the transport can drain them.
     ///
     /// This is the client's send-side backpressure signal: nothing was lost,
-    /// the message was simply refused. Either retry later, pace high-rate
-    /// payloads with the waiting variant
-    /// [`SignalFishClient::send_game_data_reliable`](crate::SignalFishClient::send_game_data_reliable),
+    /// the message was simply refused. Either retry later (e.g. next frame),
+    /// pace high-rate payloads with a waiting `*_reliable` variant
+    /// ([`SignalFishClient::send_game_data_reliable`](crate::SignalFishClient::send_game_data_reliable),
+    /// [`SignalFishClient::send_signal_reliable`](crate::SignalFishClient::send_signal_reliable)),
     /// or raise
     /// [`SignalFishConfig::command_channel_capacity`](crate::SignalFishConfig::command_channel_capacity).
     #[error(
         "outgoing command queue full (capacity {capacity}): the transport cannot keep up; \
-         pace sends (e.g. send_game_data_reliable) or increase command_channel_capacity"
+         retry later, pace high-rate sends with a waiting *_reliable variant, or increase \
+         command_channel_capacity"
     )]
     SendBufferFull {
         /// Configured capacity of the outgoing command queue.
