@@ -138,4 +138,4 @@ including the eviction farewell) arrive, followed by `Disconnected`.
 | Knob | Default | Raise it when… |
 |------|---------|----------------|
 | `event_channel_capacity` | 256 | your consumer has bursty frame times (GC pauses, loading screens) and you want more absorption before socket-read backpressure engages. Capacity does not fix a consumer that is *sustainably* slower than the room's send rate — nothing client-side can. |
-| `command_channel_capacity` | 1024 | you emit large synchronized bursts and prefer queueing to `SendBufferFull` refusals. The queue only drains at socket speed; deeper queues mean staler data, not more throughput. |
+| `command_channel_capacity` | 1024 | you emit large synchronized bursts and prefer queuing to `SendBufferFull` refusals. The queue only drains at socket speed; deeper queues mean staler data, not more throughput. |

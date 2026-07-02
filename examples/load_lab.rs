@@ -265,7 +265,7 @@ async fn mode_throughput(opts: &Options) -> Result<(), Box<dyn Error>> {
     );
     for &rate in &opts.rates {
         let suffix = format!("{}-{rate}", std::process::id());
-        let game = format!("lab-thr-{suffix}");
+        let game = format!("lab-throughput-{suffix}");
 
         let (sender, mut sender_events) = connect(opts, "sender", 1024).await?;
         let room_code = join(&sender, &mut sender_events, &game, "sender", None).await?;
@@ -433,7 +433,7 @@ async fn mode_control_starvation(opts: &Options) -> Result<(), Box<dyn Error>> {
     });
 
     // Victim: drains slowly (drain_ms per GameData) and pings periodically.
-    // Pong RTT includes both the server-side queueing behind relayed
+    // Pong RTT includes both the server-side queuing behind relayed
     // GameData and the victim's own backlog — the end-to-end control-plane
     // delay a slow-but-alive client actually experiences.
     let mut pong_rtts: Vec<f64> = Vec::new();
