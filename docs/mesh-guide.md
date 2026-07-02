@@ -146,9 +146,10 @@ timer.
 a `SignalFishClient`. On `SessionPlan`/`NewPeer` it calls `connect(peer,
 initiate)` and `set_ice_servers`; on a received signal it feeds `on_signal`; it
 relays the driver's outbound signals via the client (a signal the command
-queue refuses is buffered and retried, in order, until the queue accepts it
-or the connection ends — congestion never drops a signal, and a buffered
-signal survives `recv()` cancellation), reports `TransportStatus` on the 0↔1 connected boundary, tears
+queue refuses is buffered and retried, in order, until the queue accepts it —
+congestion never drops a signal, and a buffered signal survives `recv()`
+cancellation; it is discarded only if the connection ends or its target
+peer's handshake is torn down first, so nothing stale is relayed), reports `TransportStatus` on the 0↔1 connected boundary, tears
 down peers on re-election / `PlayerLeft` / `RoomLeft` / `Disconnected`, and
 surfaces a clean `MeshEvent` stream.
 
