@@ -469,13 +469,28 @@ impl SignalFishEvent {
     /// serde error text, and a bounded raw prefix.
     #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
     pub(crate) fn decode_failed(raw: &str, error: &serde_json::Error) -> Self {
-        let message_type = serde_json::from_str::<serde_json::Value>(raw)
-            .ok()
-            .and_then(|v| v.get("type")?.as_str().map(str::to_string));
+        // Compute the bounded prefix once and reuse it for both the type-tag
+        // recovery and the stored `raw_prefix`, so work stays bounded on large
+        // or hostile input.
+        let prefix = truncate_on_char_boundary(raw, DECODE_FAILED_RAW_PREFIX_MAX);
+        // Only recover the wire `type` tag when the frame was well-formed JSON
+        // that simply didn't match our types (a `Data` error — e.g. an unknown
+        // message type or error-code token). Malformed JSON (`Syntax`/`Eof`)
+        // has no recoverable tag, so skip the re-parse entirely rather than
+        // re-scanning untrusted garbage. Parsing only the bounded prefix caps
+        // the secondary parse; a frame larger than the cap yields `None`
+        // (its `type` is still visible in `raw_prefix`).
+        let message_type = if error.classify() == serde_json::error::Category::Data {
+            serde_json::from_str::<serde_json::Value>(prefix)
+                .ok()
+                .and_then(|v| v.get("type")?.as_str().map(str::to_string))
+        } else {
+            None
+        };
         Self::DecodeFailed {
             message_type,
             error: error.to_string(),
-            raw_prefix: truncate_on_char_boundary(raw, DECODE_FAILED_RAW_PREFIX_MAX).to_string(),
+            raw_prefix: prefix.to_string(),
         }
     }
 }
@@ -894,6 +909,70 @@ mod tests {
             assert_eq!(error_code, ErrorCode::InvalidAppId);
         } else {
             panic!("expected AuthenticationError variant");
+        }
+    }
+
+    /// `decode_failed` bounds its work: the wire `type` tag is recovered only
+    /// from well-formed JSON within the prefix cap, never by re-parsing a full
+    /// oversized or malformed frame.
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    #[test]
+    fn decode_failed_recovers_type_only_for_bounded_well_formed_frames() {
+        // 1. Small, well-formed frame, unknown type (a serde `Data` error) →
+        //    type recovered; the whole frame fits in the prefix.
+        let small = r#"{"type":"SomeFutureMessage","data":{}}"#;
+        let err = serde_json::from_str::<ServerMessage>(small).unwrap_err();
+        assert_eq!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(small, &err) {
+            SignalFishEvent::DecodeFailed {
+                message_type,
+                raw_prefix,
+                ..
+            } => {
+                assert_eq!(message_type.as_deref(), Some("SomeFutureMessage"));
+                assert_eq!(raw_prefix, small);
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+
+        // 2. Malformed JSON (a `Syntax` error) → the re-parse is skipped
+        //    entirely, so no `type` is recovered.
+        let garbage = "not valid json {{{";
+        let err = serde_json::from_str::<ServerMessage>(garbage).unwrap_err();
+        assert_ne!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(garbage, &err) {
+            SignalFishEvent::DecodeFailed { message_type, .. } => {
+                assert_eq!(message_type, None);
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+
+        // 3. Well-formed unknown-type frame larger than the prefix cap → work
+        //    stays bounded: `message_type` is None (the full frame is never
+        //    re-parsed), while the type is still visible in the capped prefix.
+        let big = format!(
+            r#"{{"type":"SomeFutureMessage","data":{{"pad":"{}"}}}}"#,
+            "x".repeat(DECODE_FAILED_RAW_PREFIX_MAX)
+        );
+        let err = serde_json::from_str::<ServerMessage>(&big).unwrap_err();
+        assert_eq!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(&big, &err) {
+            SignalFishEvent::DecodeFailed {
+                message_type,
+                raw_prefix,
+                ..
+            } => {
+                assert_eq!(
+                    message_type, None,
+                    "an oversized frame must not be re-parsed to recover its type"
+                );
+                assert!(raw_prefix.len() <= DECODE_FAILED_RAW_PREFIX_MAX);
+                assert!(
+                    raw_prefix.contains("SomeFutureMessage"),
+                    "the type remains visible in the bounded prefix"
+                );
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
         }
     }
 }
