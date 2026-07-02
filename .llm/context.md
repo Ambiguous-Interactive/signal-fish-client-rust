@@ -168,10 +168,10 @@ client.shutdown().await      // async, graceful
 
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
-full (message refused, never silently dropped). Events are also never dropped:
-a full event channel pauses the transport loop (backpressure); events are
-missed only on receiver drop, shutdown-timeout abort, or handle drop without
-`shutdown()`.
+full (message refused, never silently dropped). Events are never dropped either:
+a full event channel pauses the transport loop (backpressure); undecodable
+frames surface as `DecodeFailed` events; events are missed only on receiver
+drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 `SignalFishPollingClient` shares the queue bound, capacity accessors, and `stats()`.
 
 ## Feature Flags

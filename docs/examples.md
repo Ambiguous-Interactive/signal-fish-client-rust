@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SignalFishEvent::Error { message, error_code } => {
                         tracing::error!("Server error [{error_code:?}]: {message}");
                     }
-                    SignalFishEvent::Disconnected { reason } => {
+                    SignalFishEvent::Disconnected { reason, .. } => {
                         tracing::warn!("Disconnected: {}", reason.as_deref().unwrap_or("unknown"));
                         break;
                     }
@@ -285,7 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SignalFishEvent::Authenticated { app_name, .. } => {
                 println!("Event: Authenticated — app_name={app_name}");
             }
-            SignalFishEvent::Disconnected { reason } => {
+            SignalFishEvent::Disconnected { reason, .. } => {
                 println!("Event: Disconnected — {}", reason.as_deref().unwrap_or("clean"));
                 break;
             }
@@ -597,7 +597,7 @@ impl INode for SignalFishNode {
                 SignalFishEvent::GameData { data, from_player, .. } => {
                     godot_print!("Game data from {}: {}", from_player, data);
                 }
-                SignalFishEvent::Disconnected { reason } => {
+                SignalFishEvent::Disconnected { reason, .. } => {
                     godot_print!(
                         "Disconnected: {}",
                         reason.as_deref().unwrap_or("unknown")

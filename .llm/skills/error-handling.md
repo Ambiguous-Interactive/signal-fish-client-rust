@@ -248,7 +248,7 @@ async fn test_transport_receive_error() {
     let _ = events.recv().await; // Connected
     let event = events.recv().await.unwrap();
     // Transport errors emit Disconnected with the error message as reason
-    if let SignalFishEvent::Disconnected { reason } = event {
+    if let SignalFishEvent::Disconnected { reason, .. } = event {
         assert!(reason.unwrap().contains("boom"));
     }
     client.shutdown().await;

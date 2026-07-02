@@ -423,7 +423,7 @@ impl INode for SignalFishNode {
                 SignalFishEvent::GameStarting { peer_connections } => {
                     godot_print!("Game starting with {} peers", peer_connections.len());
                 }
-                SignalFishEvent::Disconnected { reason } => {
+                SignalFishEvent::Disconnected { reason, .. } => {
                     godot_print!(
                         "Disconnected: {}",
                         reason.as_deref().unwrap_or("unknown")

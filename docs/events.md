@@ -623,7 +623,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // ── Disconnection ───────────────────────────────────
-            SignalFishEvent::Disconnected { reason } => {
+            SignalFishEvent::Disconnected { reason, .. } => {
                 println!("Disconnected: {}",
                     reason.as_deref().unwrap_or("unknown"));
                 break;

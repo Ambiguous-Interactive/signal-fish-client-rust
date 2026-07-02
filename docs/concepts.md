@@ -159,7 +159,7 @@ while let Some(event) = events.recv().await {
         SignalFishEvent::RoomJoined { room_code, current_players, .. } => {
             println!("Joined room {room_code} with {} players", current_players.len());
         }
-        SignalFishEvent::Disconnected { reason } => {
+        SignalFishEvent::Disconnected { reason, .. } => {
             println!("Disconnected: {reason:?}");
             break;
         }
@@ -170,13 +170,14 @@ while let Some(event) = events.recv().await {
 
 ### Synthetic vs. Server Events
 
-Most events correspond 1:1 to a server message. Two **synthetic** events are
-generated locally by the transport layer:
+Most events correspond 1:1 to a server message. Three **synthetic** events
+are generated locally by the transport layer:
 
 | Event | Origin |
 |-------|--------|
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
-| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Last event (best-effort). |
+| `SignalFishEvent::Disconnected { reason, .. }` | Emitted when the transport closes or errors. Last event (best-effort). |
+| `SignalFishEvent::DecodeFailed { .. }` | Emitted when an inbound frame fails to decode; the connection stays open. See [Events](events.md#decodefailed). |
 
 !!! note "Lossless delivery with backpressure"
     Events are **never dropped**. The event channel has a default capacity of
