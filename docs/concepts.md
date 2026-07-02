@@ -159,7 +159,7 @@ while let Some(event) = events.recv().await {
         SignalFishEvent::RoomJoined { room_code, current_players, .. } => {
             println!("Joined room {room_code} with {} players", current_players.len());
         }
-        SignalFishEvent::Disconnected { reason } => {
+        SignalFishEvent::Disconnected { reason, .. } => {
             println!("Disconnected: {reason:?}");
             break;
         }
@@ -170,25 +170,28 @@ while let Some(event) = events.recv().await {
 
 ### Synthetic vs. Server Events
 
-Most events correspond 1:1 to a server message. Two **synthetic** events are
-generated locally by the transport layer:
+Most events correspond 1:1 to a server message. Three **synthetic** events
+are generated locally by the transport layer:
 
 | Event | Origin |
 |-------|--------|
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
-| `SignalFishEvent::Disconnected { reason }` | Emitted when the transport closes or errors. Last event (best-effort). |
+| `SignalFishEvent::Disconnected { reason, .. }` | Emitted when the transport closes or errors. Last event (best-effort). |
+| `SignalFishEvent::DecodeFailed { .. }` | Emitted when an inbound frame fails to decode; the connection stays open. See [Events](events.md#decodefailed). |
 
 !!! note "Lossless delivery with backpressure"
-    Events are **never dropped**. The event channel has a default capacity of
+    Events are **never dropped on overflow**. The event channel has a default capacity of
     **256** (configurable via `SignalFishConfig::event_channel_capacity`); if
     your consumer falls behind, the transport loop pauses reading from the
     transport until the channel has room, so backpressure propagates to the
     server instead of losing events. The capacity only controls how much
     buffering the consumer gets before that backpressure kicks in. An event
-    can only be missed if the receiver is dropped, a shutdown timeout aborts
-    the transport task, or the client handle is dropped without calling
-    `shutdown()` (see [Events](events.md)). A responsive event
-    loop keeps the connection flowing; a stalled one stalls the transport.
+    can only be missed if the receiver is dropped, if the client handle is
+    dropped without calling `shutdown()`, or on `shutdown()` — which delivers
+    the terminal `Disconnected` best-effort and may drop it if the channel is
+    full (see [Events](events.md); the channel closing is the guaranteed
+    end-of-stream signal). A responsive event loop keeps the connection
+    flowing; a stalled one stalls the transport.
 
 ---
 
@@ -245,18 +248,28 @@ Putting the two halves together, the client **never silently drops data** in
 either direction:
 
 - **Inbound:** events are delivered with backpressure — a lagging consumer
-  pauses the transport loop; nothing is lost.
+  pauses the transport loop; nothing is lost. Frames that fail to decode
+  (an unknown message type or error code from a newer server, malformed
+  JSON) surface as [`DecodeFailed`](events.md#decodefailed) events instead
+  of being skipped.
 - **Outbound:** queue admission is never silent — congestion surfaces as
   `SendBufferFull` (fail-fast methods) or as waiting (`*_reliable` methods),
   never as an unbounded backlog. Note that *queued* is not *delivered*:
   commands still in the queue when the connection ends are discarded with
   it, surfaced by the `Disconnected` event.
 
-Because the client is lossless, loss elsewhere becomes observable. `stats()`
+The server's half of the story — the relay's reliable-and-ordered
+guarantee, backpressure toward senders, slow-consumer eviction, and the
+measured capacity envelope — is documented in
+[Delivery Contract & Backpressure](delivery.md).
+
+Because the client applies backpressure instead of dropping events on
+overflow, loss elsewhere becomes observable. `stats()`
 returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
-`game_data_received` counters (they survive disconnects): exchange or log
-them across peers, and a persistent sent-vs-received deficit points at the
-relay path or a peer — not at this client. Pace high-rate streams with
+`game_data_received` / `messages_undecodable` counters (they survive
+disconnects): exchange or log them across peers, and a persistent
+sent-vs-received deficit points at the relay path or a peer — not at this
+client. Pace high-rate streams with
 `send_game_data_reliable` instead of guessing at sleep durations — but drain
 events from a separate task while awaiting it: the queue only drains while
 the transport loop runs, and the loop pauses when the event channel is full,
@@ -385,7 +398,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 48-variant enum that arrives inside events. The server sends
+`ErrorCode` is a 50-variant enum that arrives inside events. The server sends
 these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore

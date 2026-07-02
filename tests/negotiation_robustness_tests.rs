@@ -295,7 +295,7 @@ async fn send_error_midflight_disconnects_and_clears_state() {
     let mut saw_disconnect = false;
     loop {
         match events.recv().await {
-            Some(SignalFishEvent::Disconnected { reason }) => {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
                 assert!(
                     reason.as_deref().unwrap_or("").contains("send"),
                     "reason should mention the send error: {reason:?}"

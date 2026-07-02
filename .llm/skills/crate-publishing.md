@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.85.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -218,7 +218,7 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 - Initial release
 - `SignalFishClient` with WebSocket transport
 - 26-variant `SignalFishEvent` enum
-- 40-variant `ErrorCode` enum
+- 50-variant `ErrorCode` enum
 
 [Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.1.0...v0.2.0

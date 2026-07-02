@@ -113,7 +113,7 @@ Enable the `transport-websocket-emscripten` feature to access
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
 ### Building
@@ -356,7 +356,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -423,7 +423,7 @@ impl INode for SignalFishNode {
                 SignalFishEvent::GameStarting { peer_connections } => {
                     godot_print!("Game starting with {} peers", peer_connections.len());
                 }
-                SignalFishEvent::Disconnected { reason } => {
+                SignalFishEvent::Disconnected { reason, .. } => {
                     godot_print!(
                         "Disconnected: {}",
                         reason.as_deref().unwrap_or("unknown")

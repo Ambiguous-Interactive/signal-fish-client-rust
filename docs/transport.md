@@ -8,7 +8,8 @@ of the SDK — and the built-in `WebSocketTransport` that ships with the crate.
 ## The `Transport` Trait
 
 Every transport used by `SignalFishClient` must implement the `Transport` trait.
-It defines three async methods for bidirectional text messaging:
+It defines three async methods for bidirectional text messaging, plus two
+defaulted introspection methods:
 
 ```rust,ignore
 #[async_trait]
@@ -16,6 +17,10 @@ pub trait Transport: Send + 'static {
     async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
     async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
     async fn close(&mut self) -> Result<(), SignalFishError>;
+
+    // Defaulted — override when your transport can do better.
+    fn is_ready(&self) -> bool { true }
+    fn close_reason(&self) -> Option<String> { None }
 }
 ```
 
@@ -44,6 +49,17 @@ outcomes are:
 
 The client's internal event loop uses `None` to detect a graceful server
 shutdown and emit a `SignalFishEvent::Disconnected` event.
+
+### `close_reason()`
+
+After `recv()` returns `None`, the clients consult
+`close_reason()` to enrich `Disconnected::reason` (as
+`"closed by server: …"`). The default implementation returns `None` —
+correct for transports with no close metadata. `WebSocketTransport`
+overrides it to expose the peer's Close frame text (code + reason) when one
+was received; a bare close (what the Signal Fish server sends today)
+still yields `None`. Custom transports whose protocol carries a close
+explanation should override this so disconnects stay attributable.
 
 ### Cancel Safety
 

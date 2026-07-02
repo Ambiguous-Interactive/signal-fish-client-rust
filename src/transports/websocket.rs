@@ -72,6 +72,9 @@ pub type WsStream =
 pub struct WebSocketTransport {
     stream: WsStream,
     closed: bool,
+    /// Close-frame text captured from the peer (`"{reason} ({code})"`),
+    /// surfaced via [`Transport::close_reason`]. `None` for a bare close.
+    close_reason: Option<String>,
 }
 
 impl WebSocketTransport {
@@ -102,6 +105,7 @@ impl WebSocketTransport {
         Ok(Self {
             stream,
             closed: false,
+            close_reason: None,
         })
     }
 
@@ -113,6 +117,7 @@ impl WebSocketTransport {
         Self {
             stream,
             closed: false,
+            close_reason: None,
         }
     }
 
@@ -164,6 +169,9 @@ impl Transport for WebSocketTransport {
                 Message::Text(text) => return Some(Ok(text.to_string())),
                 Message::Close(frame) => {
                     tracing::debug!(?frame, "received WebSocket close frame");
+                    // Remember the close explanation (if any) so the client
+                    // can attribute the disconnect via `close_reason()`.
+                    self.close_reason = frame.map(|f| f.to_string());
                     return None;
                 }
                 Message::Ping(_) => {
@@ -198,6 +206,10 @@ impl Transport for WebSocketTransport {
             .close(None)
             .await
             .map_err(|e| SignalFishError::TransportSend(e.to_string()))
+    }
+
+    fn close_reason(&self) -> Option<String> {
+        self.close_reason.clone()
     }
 }
 
@@ -320,6 +332,38 @@ mod tests {
             .expect("WebSocket connect must succeed");
         let result = transport.recv().await;
         assert!(result.is_none());
+        // A bare close (today's server behavior) carries no explanation.
+        assert_eq!(transport.close_reason(), None);
+    }
+
+    #[tokio::test]
+    async fn close_frame_reason_is_captured() {
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+
+        let url = start_mock_server(|mut ws| async move {
+            ws.close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "slow consumer".into(),
+            }))
+            .await
+            .expect("server must close with a frame");
+        })
+        .await;
+
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        let result = transport.recv().await;
+        assert!(result.is_none());
+
+        let reason = transport
+            .close_reason()
+            .expect("close frame explanation must be captured");
+        assert!(
+            reason.contains("slow consumer"),
+            "captured reason should include the frame text: {reason}"
+        );
     }
 
     #[tokio::test]

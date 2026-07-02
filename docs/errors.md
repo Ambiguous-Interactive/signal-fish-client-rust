@@ -72,7 +72,7 @@ fn try_join(client: &SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **48 variants** representing
+`ErrorCode` is a protocol-level enum with **50 variants** representing
 structured error codes returned by the Signal Fish server. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
@@ -198,6 +198,13 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 | Variant | Description |
 |---------|-------------|
 | `ConnectionIdleTimeout` | The connection was closed by the server after being idle for too long. |
+
+### Delivery & Liveness (2)
+
+| Variant | Description |
+|---------|-------------|
+| `SlowConsumer` | The server evicted this connection because its outbound queue stayed full past the slow-consumer grace window (5 s by default): the client was not draining messages fast enough. The farewell frame carrying this code is written best-effort into an already-congested socket, so it may never arrive — a bare disconnect can be the only observable signal. |
+| `ActivityTimeout` | The server closed the connection after prolonged protocol inactivity. Send periodic pings to keep the connection alive. |
 
 !!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five `Signal*` codes plus `ConnectionIdleTimeout` are **server-sent**

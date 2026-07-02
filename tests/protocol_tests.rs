@@ -811,6 +811,8 @@ fn error_code_round_trip_all_variants() {
         ErrorCode::SignalRateLimited,
         ErrorCode::SignalTooLarge,
         ErrorCode::ConnectionIdleTimeout,
+        ErrorCode::SlowConsumer,
+        ErrorCode::ActivityTimeout,
     ];
     for variant in &variants {
         let json = serde_json::to_string(variant).expect("serialize");
@@ -852,6 +854,43 @@ fn new_v3_error_codes_serialize_exact_strings() {
             !code.description().is_empty(),
             "{code:?} needs a description"
         );
+    }
+}
+
+#[test]
+fn delivery_liveness_error_codes_serialize_exact_strings() {
+    let cases = [
+        (ErrorCode::SlowConsumer, "SLOW_CONSUMER"),
+        (ErrorCode::ActivityTimeout, "ACTIVITY_TIMEOUT"),
+    ];
+    for (code, expected) in cases {
+        let json = serde_json::to_string(&code).expect("serialize");
+        assert_eq!(json, format!("\"{expected}\""), "wire string for {code:?}");
+        let deser: ErrorCode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deser, code);
+        assert!(
+            !code.description().is_empty(),
+            "{code:?} needs a description"
+        );
+    }
+}
+
+#[test]
+fn fixture_error_with_slow_consumer_code_from_server() {
+    // The exact farewell frame the server (851c446) writes best-effort before
+    // evicting a slow consumer. Prior to 0.7.0 this failed to deserialize
+    // (unknown error_code) and was silently dropped by the transport loop.
+    let json = r#"{"type":"Error","data":{"message":"Disconnected as a slow consumer: this connection's outbound queue stayed full for more than 5000 ms","error_code":"SLOW_CONSUMER"}}"#;
+    let msg: ServerMessage = serde_json::from_str(json).expect("deserialize server farewell");
+    match msg {
+        ServerMessage::Error {
+            message,
+            error_code,
+        } => {
+            assert!(message.contains("slow consumer"));
+            assert_eq!(error_code, Some(ErrorCode::SlowConsumer));
+        }
+        other => panic!("expected ServerMessage::Error, got {other:?}"),
     }
 }
 
@@ -1214,7 +1253,7 @@ fn authenticate_relay_floor_omits_v3_fields() {
     // to v2 — none of the negotiation keys appear.
     let msg = ClientMessage::Authenticate {
         app_id: "mb_app".into(),
-        sdk_version: Some("0.6.0".into()),
+        sdk_version: Some("0.7.0".into()),
         platform: None,
         game_data_format: None,
         protocol_version: None,
@@ -1332,7 +1371,8 @@ fn server_message_tolerates_unknown_fields_forward_compat() {
 
 #[test]
 fn server_message_unknown_type_fails_to_deserialize() {
-    // The transport loop logs+skips an un-deserializable message; we document the
+    // The transport loop surfaces an un-deserializable message as a
+    // `DecodeFailed` event; here we document the
     // hard-fail contract here (no silent catch-all variant).
     let json = r#"{"type":"SomeFutureV4Message","data":{}}"#;
     assert!(serde_json::from_str::<ServerMessage>(json).is_err());

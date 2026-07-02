@@ -30,8 +30,9 @@ cancellation, channel drops, etc.
    - BAD: "Events are always delivered regardless of capacity."
    - GOOD: "Events are never dropped on overflow — a full channel pauses the
      transport loop and backpressure propagates to the server — but an event
-     may be missed if the receiver is dropped, shutdown times out and aborts
-     the transport task, or the handle is dropped without shutdown."
+     may be missed if the receiver is dropped, on shutdown (which abandons at
+     most one in-flight event and delivers the terminal `Disconnected`
+     best-effort), or if the handle is dropped without shutdown."
 
 3. **Document timeout/abort consequences** — If a function has a timeout that
    aborts work, document what events or side effects may be skipped when the
@@ -55,15 +56,16 @@ cancellation, channel drops, etc.
 
 ## Examples from This Codebase
 
-### `emit_event` — Qualified guarantee
+### `emit_event_or_shutdown` — Qualified guarantee
+
+The transport loop delivers events with backpressure but lets a shutdown
+request preempt a blocked delivery, so the guarantee is scoped precisely:
 
 ```rust
-/// Events are **never dropped**: when the consumer lags, the transport loop
-/// pauses here, which stops reading from the transport and propagates
-/// backpressure to the server (e.g. via TCP receive windows). Delivery only
-/// fails if the receiver has been dropped, or if the transport task is
-/// aborted while this send is still waiting (a `shutdown` timeout, or the
-/// client handle dropped without `shutdown`).
+/// Emit an event with backpressure, but let a shutdown request preempt the
+/// wait. `biased` polls the delivery arm first, so when both are ready the
+/// event is still delivered; only a genuinely blocked delivery (consumer not
+/// draining) lets shutdown win, abandoning that one in-flight event.
 ```
 
 ### `shutdown_timeout` — Documenting abort consequences

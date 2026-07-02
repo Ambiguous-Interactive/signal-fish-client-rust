@@ -124,7 +124,7 @@ pub const PROTOCOL_VERSION: u16 = 3;
 pub use client::{ClientStats, JoinRoomParams, SignalFishClient, SignalFishConfig};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
-pub use event::SignalFishEvent;
+pub use event::{ServerErrorInfo, SignalFishEvent, DECODE_FAILED_RAW_PREFIX_MAX};
 pub use protocol::{
     ClientMessage, IceServer, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
     TransportKind,

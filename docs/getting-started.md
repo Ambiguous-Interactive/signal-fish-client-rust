@@ -31,14 +31,14 @@ cargo add signal-fish-client
 
 ```toml
 [dependencies]
-signal-fish-client = "0.6.0"
+signal-fish-client = "0.7.0"
 ```
 
 #### Without default features (bring your own transport)
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.6.0", default-features = false }
+signal-fish-client = { version = "0.7.0", default-features = false }
 ```
 
 !!! tip
@@ -48,7 +48,7 @@ signal-fish-client = { version = "0.6.0", default-features = false }
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
 !!! tip
@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 !!! note
     `WebSocketTransport` requires the `transport-websocket` feature, which is enabled by default. If you disabled default features you will need to re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket"] }
     ```
 
 ## What Happens Under the Hood
@@ -134,15 +134,16 @@ When you call `SignalFishClient::start`, the SDK:
 You interact with the server by calling methods on the `SignalFishClient` handle (e.g., `join_room`, `send_game_data`). These enqueue outgoing messages on a bounded queue that the background task drains over the transport; if you outpace the transport, sends fail fast with `SendBufferFull` instead of silently dropping (see [Core Concepts](concepts.md#non-blocking-command-sending)).
 
 !!! note
-    Events are **never dropped**. If your event-processing loop cannot keep up
-    with the server, the transport loop pauses until the channel has room —
-    backpressure propagates to the server instead of losing events. An event
-    can only be missed if the receiver is dropped, the client handle is
-    dropped without calling `shutdown()`, or
-    [`shutdown()`](client.md#shutdown) times out. Keep your handler responsive
-    so the connection keeps flowing; `event_channel_capacity` on your
-    `SignalFishConfig` controls how much buffering you get before
-    backpressure kicks in.
+    Events are **never dropped on overflow**. If your event-processing loop
+    cannot keep up with the server, the transport loop pauses until the channel
+    has room — backpressure propagates to the server instead of losing events.
+    An event can only be missed if the receiver is dropped, the client handle
+    is dropped without calling `shutdown()`, or on
+    [`shutdown()`](client.md#shutdown) — which delivers the terminal
+    `Disconnected` best-effort and may drop at most one in-flight event. Keep
+    your handler responsive so the connection keeps flowing;
+    `event_channel_capacity` on your `SignalFishConfig` controls how much
+    buffering you get before backpressure kicks in.
 
 ## Next Steps
 

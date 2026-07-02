@@ -640,7 +640,7 @@ async fn disconnect_on_transport_error() {
     assert!(matches!(ev, SignalFishEvent::Connected));
 
     let ev = events.recv().await.expect("event");
-    if let SignalFishEvent::Disconnected { reason } = ev {
+    if let SignalFishEvent::Disconnected { reason, .. } = ev {
         let r = reason.expect("reason should be present");
         assert!(r.contains("network failure"), "reason was: {r}");
     } else {
@@ -1410,9 +1410,10 @@ async fn leave_room_sends_leave_room_message() {
 // ════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn malformed_json_does_not_crash_and_next_message_arrives() {
-    // Send garbled text followed by a valid message.
-    // The transport loop should warn on the invalid JSON and continue.
+async fn malformed_json_emits_decode_failed_then_next_message_arrives() {
+    // Send garbled text followed by a valid message. The transport loop
+    // surfaces the invalid frame as a DecodeFailed event (never a silent
+    // drop) and continues.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok("{{not valid json at all!!!".into())),
@@ -1421,17 +1422,274 @@ async fn malformed_json_does_not_crash_and_next_message_arrives() {
 
     drain_until_authenticated(&mut events).await;
 
-    // The invalid JSON is silently dropped. The next valid message should arrive.
     let ev = events
         .recv()
         .await
-        .expect("expected Pong after malformed JSON");
+        .expect("expected DecodeFailed after malformed JSON");
+    match ev {
+        SignalFishEvent::DecodeFailed {
+            message_type,
+            raw_prefix,
+            ..
+        } => {
+            // Not valid JSON at all → no wire `type` tag recoverable.
+            assert_eq!(message_type.as_deref(), None);
+            assert_eq!(raw_prefix, "{{not valid json at all!!!");
+        }
+        other => panic!("expected DecodeFailed, got {other:?}"),
+    }
+
+    let ev = events
+        .recv()
+        .await
+        .expect("expected Pong after DecodeFailed");
     assert!(
         matches!(ev, SignalFishEvent::Pong),
         "expected Pong event after malformed JSON, got {ev:?}"
     );
+    assert_eq!(client.stats().messages_undecodable, 1);
 
     client.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_error_code_string_surfaces_decode_failed_not_silent_drop() {
+    // The core #131-follow-up regression: a server newer than this SDK sends
+    // an Error frame with an error_code string the exhaustive ErrorCode enum
+    // does not know. The whole ServerMessage fails to parse — before 0.7.0 it
+    // was silently dropped (warn! only); now it must surface as DecodeFailed
+    // carrying the wire tag, and the connection must stay open.
+    let unknown_code_frame =
+        r#"{"type":"Error","data":{"message":"evicted","error_code":"FUTURE_CODE_XYZ"}}"#;
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(unknown_code_frame.to_string())),
+        Some(Ok(pong_json())),
+    ]);
+
+    drain_until_authenticated(&mut events).await;
+
+    let ev = events.recv().await.expect("event after unknown error code");
+    match ev {
+        SignalFishEvent::DecodeFailed {
+            message_type,
+            error,
+            raw_prefix,
+        } => {
+            assert_eq!(
+                message_type.as_deref(),
+                Some("Error"),
+                "the wire tag must identify which message type failed"
+            );
+            assert!(
+                error.contains("FUTURE_CODE_XYZ") || error.contains("variant"),
+                "serde error should mention the unknown token: {error}"
+            );
+            assert_eq!(raw_prefix, unknown_code_frame);
+        }
+        other => panic!("expected DecodeFailed, got {other:?}"),
+    }
+
+    // Connection unaffected: the next frame still arrives.
+    let ev = events.recv().await.expect("Pong after DecodeFailed");
+    assert!(matches!(ev, SignalFishEvent::Pong));
+    assert!(client.is_connected());
+    assert_eq!(client.stats().messages_undecodable, 1);
+
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn decode_failed_raw_prefix_is_capped_on_utf8_boundary() {
+    use signal_fish_client::DECODE_FAILED_RAW_PREFIX_MAX;
+
+    // Garbage longer than the cap, with multi-byte characters positioned so a
+    // naive byte cut would split one.
+    let garbage = format!("ここは{}", "é".repeat(600));
+    assert!(garbage.len() > DECODE_FAILED_RAW_PREFIX_MAX);
+
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(garbage.clone())),
+    ]);
+    drain_until_authenticated(&mut events).await;
+
+    let ev = events.recv().await.expect("DecodeFailed for garbage");
+    match ev {
+        SignalFishEvent::DecodeFailed { raw_prefix, .. } => {
+            assert!(raw_prefix.len() <= DECODE_FAILED_RAW_PREFIX_MAX);
+            assert!(
+                garbage.starts_with(&raw_prefix),
+                "prefix must be a true prefix of the input"
+            );
+            // String integrity (valid UTF-8) is implied by the type; the cut
+            // landing on a boundary is what this asserts.
+            assert!(!raw_prefix.is_empty());
+        }
+        other => panic!("expected DecodeFailed, got {other:?}"),
+    }
+    client.shutdown().await;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Disconnected enrichment: last_server_error
+// ════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn disconnected_carries_last_server_error_after_server_close() {
+    // The server's slow-consumer eviction shape: a best-effort Error farewell
+    // followed by a close. The terminal Disconnected must carry the farewell
+    // so the disconnect can be attributed.
+    let (_client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(error_json(
+            "Disconnected as a slow consumer",
+            Some(ErrorCode::SlowConsumer),
+        ))),
+        None, // server closes
+    ]);
+
+    drain_until_authenticated(&mut events).await;
+
+    let ev = events.recv().await.expect("Error event");
+    assert!(matches!(ev, SignalFishEvent::Error { .. }));
+
+    let ev = events.recv().await.expect("Disconnected event");
+    match ev {
+        SignalFishEvent::Disconnected {
+            last_server_error, ..
+        } => {
+            let info = last_server_error.expect("farewell must be attributed");
+            assert_eq!(info.error_code, Some(ErrorCode::SlowConsumer));
+            assert!(info.message.contains("slow consumer"));
+        }
+        other => panic!("expected Disconnected, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn disconnected_last_server_error_is_none_without_prior_error() {
+    let (_client, mut events, _sent, _closed) =
+        start_client(vec![Some(Ok(authenticated_json())), None]);
+
+    drain_until_authenticated(&mut events).await;
+
+    let ev = events.recv().await.expect("Disconnected event");
+    match ev {
+        SignalFishEvent::Disconnected {
+            reason,
+            last_server_error,
+        } => {
+            assert_eq!(reason, None, "bare close has no reason");
+            assert_eq!(last_server_error, None);
+        }
+        other => panic!("expected Disconnected, got {other:?}"),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Wedged-consumer shutdown: graceful close instead of abort-only
+// ════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn shutdown_completes_gracefully_with_wedged_consumer() {
+    // A consumer that stops draining wedges the transport loop in the event
+    // send. Pre-0.7.0 the shutdown oneshot was starved too, so shutdown()
+    // could only abort the task, leaving the transport unclosed. Now the
+    // event send races the shutdown signal: the loop unblocks, closes the
+    // transport, and shutdown() completes without reaching the abort.
+    let (transport, _sent, closed) = MockTransport::new(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(pong_json())),
+        Some(Ok(pong_json())),
+    ]);
+    let config = SignalFishConfig::new("mb_test_integration")
+        .with_event_channel_capacity(1)
+        .with_shutdown_timeout(std::time::Duration::from_secs(5));
+    let (mut client, events) = SignalFishClient::start(transport, config);
+
+    // Never drain `events`; give the loop time to wedge on a full channel.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let started = std::time::Instant::now();
+    client.shutdown().await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        closed.load(std::sync::atomic::Ordering::Relaxed),
+        "transport must be closed gracefully even with a wedged consumer"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "shutdown must not need the timeout/abort path; took {elapsed:?}"
+    );
+    drop(events);
+}
+
+#[tokio::test]
+async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
+    // Guards against over-eager abandonment: a consumer that resumes draining
+    // BEFORE shutdown still receives every event, and shutdown then delivers
+    // the terminal Disconnected.
+    let (transport, _sent, closed) =
+        MockTransport::new(vec![Some(Ok(authenticated_json())), Some(Ok(pong_json()))]);
+    let config = SignalFishConfig::new("mb_test_integration").with_event_channel_capacity(1);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+    // Let the loop wedge against the capacity-1 channel.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Resume draining: everything must arrive in order.
+    let ev = events.recv().await.expect("Connected");
+    assert!(matches!(ev, SignalFishEvent::Connected));
+    let ev = events.recv().await.expect("Authenticated");
+    assert!(matches!(ev, SignalFishEvent::Authenticated { .. }));
+    let ev = events.recv().await.expect("Pong");
+    assert!(matches!(ev, SignalFishEvent::Pong));
+
+    client.shutdown().await;
+    let ev = events.recv().await.expect("Disconnected");
+    assert!(matches!(ev, SignalFishEvent::Disconnected { .. }));
+    assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn shutdown_races_wedged_terminal_disconnect() {
+    // The *terminal* Disconnected — emitted on a transport error, a clean
+    // server close, or a dropped handle — must race the shutdown signal too,
+    // not just the normal per-message event path. The four break-paths share
+    // one helper; this exercises it via a transport receive error that fires
+    // while the event channel is full (cap 1, undrained Connected), so the
+    // terminal delivery blocks. Pre-fix those paths used a blocking emit that
+    // ignored shutdown, pinning shutdown() to its full timeout/abort. A
+    // generous timeout makes the racing path (ms) unmistakable vs blocking (s).
+    let (transport, _sent, closed) = MockTransport::new(vec![Some(Err(
+        SignalFishError::TransportReceive("boom".into()),
+    ))]);
+    let config = SignalFishConfig::new("mb_test_integration")
+        .with_event_channel_capacity(1)
+        .with_shutdown_timeout(std::time::Duration::from_secs(10));
+    // `_events` is bound (not `_`) so the channel stays open and full — that
+    // is what wedges the terminal delivery.
+    let (mut client, _events) = SignalFishClient::start(transport, config);
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let started = std::time::Instant::now();
+    client.shutdown().await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "terminal Disconnected must race shutdown, not block until the abort \
+         timeout; took {elapsed:?}"
+    );
+    // Graceful shutdown always releases the connection: the transport must be
+    // closed even when shutdown wins the race against the wedged delivery.
+    assert!(
+        closed.load(std::sync::atomic::Ordering::Relaxed),
+        "the transport must be closed on the terminal break-path, not left \
+         open until the task is dropped"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1740,9 +1998,10 @@ async fn new_peer_and_peer_transport_status_events_are_emitted() {
 }
 
 #[tokio::test]
-async fn unknown_server_message_type_is_skipped_then_next_arrives() {
-    // Forward-compat: a well-formed but unknown `type` is logged+skipped, and the
-    // following valid message still surfaces.
+async fn unknown_server_message_type_surfaces_decode_failed_then_next_arrives() {
+    // Forward-compat: a well-formed but unknown `type` surfaces as a
+    // DecodeFailed event carrying the wire tag, and the following valid
+    // message still arrives.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
@@ -1750,6 +2009,13 @@ async fn unknown_server_message_type_is_skipped_then_next_arrives() {
     ]);
     drain_until_authenticated(&mut events).await;
     let ev = events.recv().await.expect("event after unknown type");
+    match ev {
+        SignalFishEvent::DecodeFailed { message_type, .. } => {
+            assert_eq!(message_type.as_deref(), Some("SomeFutureV4Message"));
+        }
+        other => panic!("expected DecodeFailed, got {other:?}"),
+    }
+    let ev = events.recv().await.expect("event after DecodeFailed");
     assert!(matches!(ev, SignalFishEvent::Pong));
     assert!(client.is_connected());
     client.shutdown().await;

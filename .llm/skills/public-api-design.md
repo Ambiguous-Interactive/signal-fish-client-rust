@@ -23,7 +23,7 @@ for newly added variants:
 ```rust
 match event {
     SignalFishEvent::RoomJoined { room_code, .. } => { /* ... */ }
-    SignalFishEvent::Disconnected { reason } => { /* ... */ }
+    SignalFishEvent::Disconnected { reason, .. } => { /* ... */ }
     // Avoid wildcard arms in enum matches so missing variants are compile
     // errors during upgrades.
     SignalFishEvent::Connected => {}

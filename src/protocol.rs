@@ -51,8 +51,12 @@ pub enum GameDataEncoding {
     /// MessagePack payloads delivered over binary frames.
     #[serde(rename = "message_pack")]
     MessagePack,
-    /// Rkyv zero-copy binary format for maximum performance.
-    /// Recommended for: High-frequency updates, large player counts, latency-sensitive games.
+    /// Rkyv zero-copy binary format.
+    ///
+    /// **Caveat:** the current server never advertises or negotiates rkyv —
+    /// requesting it does not fail, it silently downgrades to JSON (the
+    /// server's `game_data_formats` will not include `"rkyv"`). Treat this
+    /// variant as reserved until the server ships rkyv negotiation.
     #[serde(rename = "rkyv")]
     Rkyv,
 }

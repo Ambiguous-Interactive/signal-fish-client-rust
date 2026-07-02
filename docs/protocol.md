@@ -82,7 +82,7 @@ pub enum GameDataEncoding {
 |---------|-----------|-------------|
 | `Json` | `"json"` | JSON payloads delivered over text frames (default). |
 | `MessagePack` | `"message_pack"` | MessagePack binary payloads delivered over binary frames. |
-| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format for maximum performance. |
+| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** the current server never negotiates rkyv — requesting it silently downgrades to JSON. |
 
 ---
 
@@ -649,7 +649,7 @@ Every message on the wire is a JSON object with two top-level keys:
         "type": "Authenticate",
         "data": {
             "app_id": "mb_app_abc123",
-            "sdk_version": "0.6.0"
+            "sdk_version": "0.7.0"
         }
     }
     ```

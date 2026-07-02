@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.6.0
+- **Version:** 0.7.0
 - **Edition:** 2021
 - **MSRV:** 1.85.0
 - **License:** MIT
@@ -49,7 +49,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/transport.rs` | `Transport` trait — async bidirectional text messages |
 | `src/protocol.rs` | Wire-compatible protocol types (`ClientMessage`, `ServerMessage`, v3 `Topology`/`TransportKind`/`SessionPlanPayload`) |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 48 variants from server |
+| `src/error_codes.rs` | `ErrorCode` enum — 50 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client.rs` | `SignalFishClient` async client + `SignalFishConfig` + `JoinRoomParams` |
@@ -168,10 +168,10 @@ client.shutdown().await      // async, graceful
 
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
-full (message refused, never silently dropped). Events are also never dropped:
-a full event channel pauses the transport loop (backpressure); events are
-missed only on receiver drop, shutdown-timeout abort, or handle drop without
-`shutdown()`.
+full (message refused, never silently dropped). Events are never dropped either:
+a full event channel pauses the transport loop (backpressure); undecodable
+frames surface as `DecodeFailed` events; events are missed only on receiver
+drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 `SignalFishPollingClient` shares the queue bound, capacity accessors, and `stats()`.
 
 ## Feature Flags

@@ -30,7 +30,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
-| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
 | `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
 
@@ -63,7 +63,7 @@ use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.6.0".into()),
+    sdk_version: Some("0.7.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")
@@ -338,11 +338,14 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
-(`GameData` messages written to the transport) and `game_data_received`
+(`GameData` messages written to the transport), `game_data_received`
 (`GameData`/`GameDataBinary` messages read off the transport and parsed —
 counted at **receipt**, not at delivery to your event loop, so a consumer
 that stops draining events cannot masquerade as relay loss; in steady state
-the two are identical because events are never dropped). The counters are
+the two are identical because events are not dropped on overflow), and
+`messages_undecodable` (inbound frames that failed to decode — each also
+surfaces as a [`DecodeFailed`](events.md#decodefailed) event; steady growth
+means protocol drift or a corrupting middlebox). The counters are
 cumulative for the lifetime of the client — they survive room changes and
 disconnects.
 
@@ -645,7 +648,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
-| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
+| `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

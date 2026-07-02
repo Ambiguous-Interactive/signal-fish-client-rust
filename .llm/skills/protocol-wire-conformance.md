@@ -20,6 +20,14 @@ vendored verbatim into `tests/wire-samples/` and consumed by
 `tests/wire-samples/PROVENANCE.toml` records the upstream commit, the protocol
 version range, the sync date, and a SHA-256 per file.
 
+The server's machine-readable AsyncAPI spec
+(`spec/signal-fish-protocol.asyncapi.yaml`) is vendored the same way into
+`tests/server-spec/` (own `PROVENANCE.toml`) and consumed by
+`tests/error_code_conformance_tests.rs`, which asserts the client `ErrorCode`
+enum covers the spec's error-code token space in both directions. This closes
+the blind spot where a server-side error-code addition passes the wire-sample
+golden tests (they pin message *shapes*, not the error-code value space).
+
 ## The Refresh Procedure
 
 When the server protocol changes, refresh the vendored corpus:
@@ -35,6 +43,13 @@ When the server protocol changes, refresh the vendored corpus:
    if a pre-existing v2 field changed). Bump the version per
    [crate-publishing](crate-publishing.md).
 
+For the AsyncAPI spec the procedure is the same shape: copy
+`spec/signal-fish-protocol.asyncapi.yaml` into `tests/server-spec/`, update that
+directory's `PROVENANCE.toml` (commit, `synced`, SHA-256), then run
+`cargo test --test error_code_conformance_tests` — if red, add the missing
+variants to `src/error_codes.rs` (never edit the spec to pass) and document the
+new codes in `CHANGELOG.md` (a guard test enforces this).
+
 ## Guard Tests
 
 In `tests/ci_config_tests.rs` (`protocol_wire_conformance_policy`):
@@ -46,11 +61,14 @@ In `tests/ci_config_tests.rs` (`protocol_wire_conformance_policy`):
   sample cannot be edited without updating the marker (keeps provenance honest).
 - `no_protocol_type_uses_deny_unknown_fields` — protocol types must stay
   forward-compatible with additive server fields.
+- `server_spec_files_exist_and_are_non_empty`, `server_spec_provenance_marker_is_valid`,
+  `server_spec_provenance_checksum_matches_vendored_file` — the same discipline
+  for the vendored AsyncAPI spec in `tests/server-spec/`.
 
 ## Drift Detection
 
 `.github/workflows/protocol-sync.yml` runs weekly: it re-fetches the upstream
-samples and **fails loudly** if the vendored copies have drifted from the recorded
+samples **and the AsyncAPI spec** and **fails loudly** if the vendored copies have drifted from the recorded
 commit (fail-closed, no auto-PR). When it fails, follow the refresh procedure
 above. This catches the "upstream changed but nobody refreshed us" case that the
 offline checksum test cannot.

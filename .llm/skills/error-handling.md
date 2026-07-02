@@ -110,7 +110,7 @@ async fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-Defined in `src/error_codes.rs`. This enum is exhaustive. 48 variants:
+Defined in `src/error_codes.rs`. This enum is exhaustive. 50 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +154,9 @@ pub enum ErrorCode {
 
     // Connection lifecycle, protocol v3 (1)
     ConnectionIdleTimeout,
+
+    // Delivery & liveness (2)
+    SlowConsumer, ActivityTimeout,
 }
 ```
 
@@ -245,7 +248,7 @@ async fn test_transport_receive_error() {
     let _ = events.recv().await; // Connected
     let event = events.recv().await.unwrap();
     // Transport errors emit Disconnected with the error message as reason
-    if let SignalFishEvent::Disconnected { reason } = event {
+    if let SignalFishEvent::Disconnected { reason, .. } = event {
         assert!(reason.unwrap().contains("boom"));
     }
     client.shutdown().await;

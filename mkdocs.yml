@@ -141,6 +141,7 @@ nav:
       - Errors: errors.md
       - Protocol Types: protocol.md
   - Guides:
+      - Delivery Contract & Backpressure: delivery.md
       - Mesh (v3): mesh-guide.md
       - WebAssembly: wasm.md
   - Examples:

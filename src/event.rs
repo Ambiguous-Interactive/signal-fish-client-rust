@@ -1,8 +1,8 @@
 //! High-level events emitted by the Signal Fish client.
 //!
 //! [`SignalFishEvent`] provides a 1:1 mapping from every [`ServerMessage`] variant
-//! plus two synthetic events (`Connected` and `Disconnected`) that originate from
-//! the transport layer rather than the server.
+//! plus three synthetic events (`Connected`, `Disconnected`, and `DecodeFailed`)
+//! that originate from the transport layer rather than the server.
 //!
 //! Boxed payload types ([`RoomJoinedPayload`], [`ReconnectedPayload`],
 //! [`SpectatorJoinedPayload`]) are flattened into inline fields so callers can
@@ -31,6 +31,7 @@ use crate::protocol::{
 /// |---|---|
 /// | [`Connected`](Self::Connected) | Transport layer opened successfully |
 /// | [`Disconnected`](Self::Disconnected) | Transport layer closed or errored |
+/// | [`DecodeFailed`](Self::DecodeFailed) | An inbound frame could not be decoded |
 ///
 /// # Example
 ///
@@ -39,7 +40,7 @@ use crate::protocol::{
 /// match event {
 ///     SignalFishEvent::RoomJoined { room_code, current_players, .. } => { /* … */ }
 ///     SignalFishEvent::PlayerJoined { player } => { /* … */ }
-///     SignalFishEvent::Disconnected { reason } => { /* … */ }
+///     SignalFishEvent::Disconnected { reason, .. } => { /* … */ }
 ///     _ => {}
 /// }
 /// ```
@@ -65,7 +66,52 @@ pub enum SignalFishEvent {
     /// The transport connection was closed.
     Disconnected {
         /// Human-readable reason for the disconnection, if available.
+        ///
+        /// When the transport captured a WebSocket Close frame with a reason
+        /// (see [`Transport::close_reason`](crate::Transport::close_reason)),
+        /// it is included here as `"closed by server: …"`.
         reason: Option<String>,
+        /// The most recent `Error`/`AuthenticationError` received on this
+        /// connection, if any.
+        ///
+        /// This is a correlation aid, not a server-attributed close reason:
+        /// a server that evicts a slow consumer writes a best-effort
+        /// `Error { error_code: SlowConsumer }` farewell before closing, and
+        /// when that frame arrives it is surfaced here so the disconnect can
+        /// be attributed. The farewell may never arrive (the socket is
+        /// congested by definition), in which case this is `None`.
+        last_server_error: Option<ServerErrorInfo>,
+    },
+
+    /// An inbound server frame could not be decoded into a
+    /// [`ServerMessage`].
+    ///
+    /// This is a **synthetic event**. The connection stays open and later
+    /// frames are unaffected. Typical causes: a server newer than this SDK
+    /// (an unknown message `type`, or an unknown `error_code` string inside
+    /// an otherwise-known message), a proxy injecting non-protocol frames,
+    /// or payload corruption.
+    ///
+    /// Every undecodable frame produces exactly one `DecodeFailed` event
+    /// (no coalescing), delivered with backpressure like any other event
+    /// (never dropped merely because the consumer is behind; see the delivery
+    /// guarantees on [`SignalFishClient`](crate::SignalFishClient)), and
+    /// increments the `messages_undecodable` counter in
+    /// [`ClientStats`](crate::ClientStats). Steady growth of that counter
+    /// means protocol drift (upgrade this SDK) or a corrupting middlebox.
+    DecodeFailed {
+        /// The wire `type` tag, when the frame was valid JSON with one.
+        ///
+        /// `Some("Error")` plus a decode failure strongly implies an
+        /// `error_code` string this SDK does not know; any other
+        /// `Some(...)` implies an unknown or malformed message type;
+        /// `None` implies the frame was not valid JSON at all.
+        message_type: Option<String>,
+        /// The deserialization error text.
+        error: String,
+        /// The raw frame text, truncated to at most
+        /// [`DECODE_FAILED_RAW_PREFIX_MAX`] bytes on a UTF-8 boundary.
+        raw_prefix: String,
     },
 
     // ── Authentication ──────────────────────────────────────────────
@@ -397,6 +443,74 @@ pub enum SignalFishEvent {
     },
 }
 
+/// Maximum number of bytes of raw frame text preserved in
+/// [`SignalFishEvent::DecodeFailed::raw_prefix`].
+///
+/// Truncation always lands on a UTF-8 character boundary, so the prefix may
+/// be a few bytes shorter than this cap.
+pub const DECODE_FAILED_RAW_PREFIX_MAX: usize = 512;
+
+/// A server-sent error remembered for disconnect attribution.
+///
+/// Carried by [`SignalFishEvent::Disconnected::last_server_error`]: the most
+/// recent `Error` or `AuthenticationError` frame received on the connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerErrorInfo {
+    /// Human-readable error message from the server.
+    pub message: String,
+    /// Structured error code, if the server provided one.
+    pub error_code: Option<ErrorCode>,
+}
+
+impl SignalFishEvent {
+    /// Builds the [`DecodeFailed`](Self::DecodeFailed) event for a frame that
+    /// failed to deserialize.
+    ///
+    /// Shared by the async and polling clients so both surface identical
+    /// diagnostics: the wire `type` tag when the frame was valid JSON, the
+    /// serde error text, and a bounded raw prefix.
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    pub(crate) fn decode_failed(raw: &str, error: &serde_json::Error) -> Self {
+        // Compute the bounded prefix once and reuse it for both the type-tag
+        // recovery and the stored `raw_prefix`, so work stays bounded on large
+        // or hostile input.
+        let prefix = truncate_on_char_boundary(raw, DECODE_FAILED_RAW_PREFIX_MAX);
+        // Only recover the wire `type` tag when the frame was well-formed JSON
+        // that simply didn't match our types (a `Data` error — e.g. an unknown
+        // message type or error-code token). Malformed JSON (`Syntax`/`Eof`)
+        // has no recoverable tag, so skip the re-parse entirely rather than
+        // re-scanning untrusted garbage. Parsing only the bounded prefix caps
+        // the secondary parse; a frame larger than the cap yields `None`
+        // (its `type` is still visible in `raw_prefix`).
+        let message_type = if error.classify() == serde_json::error::Category::Data {
+            serde_json::from_str::<serde_json::Value>(prefix)
+                .ok()
+                .and_then(|v| v.get("type")?.as_str().map(str::to_string))
+        } else {
+            None
+        };
+        Self::DecodeFailed {
+            message_type,
+            error: error.to_string(),
+            raw_prefix: prefix.to_string(),
+        }
+    }
+}
+
+/// Returns the longest prefix of `s` that is at most `max_bytes` long and
+/// ends on a UTF-8 character boundary.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.get(..end).unwrap_or_default()
+}
+
 // ── Conversion ──────────────────────────────────────────────────────
 
 impl From<ServerMessage> for SignalFishEvent {
@@ -615,8 +729,9 @@ mod tests {
     fn disconnected_event_contains_reason() {
         let event = SignalFishEvent::Disconnected {
             reason: Some("server shutdown".into()),
+            last_server_error: None,
         };
-        if let SignalFishEvent::Disconnected { reason } = event {
+        if let SignalFishEvent::Disconnected { reason, .. } = event {
             assert_eq!(reason.as_deref(), Some("server shutdown"));
         } else {
             panic!("expected Disconnected variant");
@@ -796,6 +911,70 @@ mod tests {
             assert_eq!(error_code, ErrorCode::InvalidAppId);
         } else {
             panic!("expected AuthenticationError variant");
+        }
+    }
+
+    /// `decode_failed` bounds its work: the wire `type` tag is recovered only
+    /// from well-formed JSON within the prefix cap, never by re-parsing a full
+    /// oversized or malformed frame.
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    #[test]
+    fn decode_failed_recovers_type_only_for_bounded_well_formed_frames() {
+        // 1. Small, well-formed frame, unknown type (a serde `Data` error) →
+        //    type recovered; the whole frame fits in the prefix.
+        let small = r#"{"type":"SomeFutureMessage","data":{}}"#;
+        let err = serde_json::from_str::<ServerMessage>(small).unwrap_err();
+        assert_eq!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(small, &err) {
+            SignalFishEvent::DecodeFailed {
+                message_type,
+                raw_prefix,
+                ..
+            } => {
+                assert_eq!(message_type.as_deref(), Some("SomeFutureMessage"));
+                assert_eq!(raw_prefix, small);
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+
+        // 2. Malformed JSON (a `Syntax` error) → the re-parse is skipped
+        //    entirely, so no `type` is recovered.
+        let garbage = "not valid json {{{";
+        let err = serde_json::from_str::<ServerMessage>(garbage).unwrap_err();
+        assert_ne!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(garbage, &err) {
+            SignalFishEvent::DecodeFailed { message_type, .. } => {
+                assert_eq!(message_type, None);
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+
+        // 3. Well-formed unknown-type frame larger than the prefix cap → work
+        //    stays bounded: `message_type` is None (the full frame is never
+        //    re-parsed), while the type is still visible in the capped prefix.
+        let big = format!(
+            r#"{{"type":"SomeFutureMessage","data":{{"pad":"{}"}}}}"#,
+            "x".repeat(DECODE_FAILED_RAW_PREFIX_MAX)
+        );
+        let err = serde_json::from_str::<ServerMessage>(&big).unwrap_err();
+        assert_eq!(err.classify(), serde_json::error::Category::Data);
+        match SignalFishEvent::decode_failed(&big, &err) {
+            SignalFishEvent::DecodeFailed {
+                message_type,
+                raw_prefix,
+                ..
+            } => {
+                assert_eq!(
+                    message_type, None,
+                    "an oversized frame must not be re-parsed to recover its type"
+                );
+                assert!(raw_prefix.len() <= DECODE_FAILED_RAW_PREFIX_MAX);
+                assert!(
+                    raw_prefix.contains("SomeFutureMessage"),
+                    "the type remains visible in the bounded prefix"
+                );
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
         }
     }
 }

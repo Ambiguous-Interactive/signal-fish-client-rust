@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SignalFishEvent::Error { message, error_code } => {
                         tracing::error!("Server error [{error_code:?}]: {message}");
                     }
-                    SignalFishEvent::Disconnected { reason } => {
+                    SignalFishEvent::Disconnected { reason, .. } => {
                         tracing::warn!("Disconnected: {}", reason.as_deref().unwrap_or("unknown"));
                         break;
                     }
@@ -285,7 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SignalFishEvent::Authenticated { app_name, .. } => {
                 println!("Event: Authenticated — app_name={app_name}");
             }
-            SignalFishEvent::Disconnected { reason } => {
+            SignalFishEvent::Disconnected { reason, .. } => {
                 println!("Event: Disconnected — {}", reason.as_deref().unwrap_or("clean"));
                 break;
             }
@@ -536,7 +536,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.3"
-signal-fish-client = { version = "0.6.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -597,7 +597,7 @@ impl INode for SignalFishNode {
                 SignalFishEvent::GameData { data, from_player, .. } => {
                     godot_print!("Game data from {}: {}", from_player, data);
                 }
-                SignalFishEvent::Disconnected { reason } => {
+                SignalFishEvent::Disconnected { reason, .. } => {
                     godot_print!(
                         "Disconnected: {}",
                         reason.as_deref().unwrap_or("unknown")
@@ -670,3 +670,34 @@ cargo +nightly build -Zbuild-std \
 ```
 
 The resulting `.wasm` file is used by Godot's HTML5 export template.
+
+---
+
+## Load Lab (measurement harness)
+
+[`examples/load_lab.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/load_lab.rs)
+is a CSV-emitting measurement harness for running controlled relay
+experiments against a **local** Signal Fish server — the tool behind the
+numbers in [Delivery Contract & Backpressure](delivery.md).
+
+```sh
+# Run a local server in open lab mode first:
+#   SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+#   SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+#   SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+#   signal-fish-server
+
+cargo run --example load_lab --features transport-websocket -- ping
+cargo run --example load_lab --features transport-websocket -- \
+    throughput rates=50,100,200,400 payload=1024 recipients=3
+cargo run --example load_lab --features transport-websocket -- \
+    slow-consumer rate=120 drain_ms=100
+cargo run --example load_lab --features transport-websocket -- \
+    control-starvation drain_ms=5
+```
+
+Four modes: `ping` (baseline RTT), `throughput` (offered-rate sweep with
+latency percentiles), `slow-consumer` (one slow-draining room member —
+measures how much it paces the sender and the healthy recipients), and
+`control-starvation` (Pong RTT at a backlogged recipient). Never point it
+at a production deployment you don't own.

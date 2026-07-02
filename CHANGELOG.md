@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-02
+
+### Added
+
+- `ErrorCode::SlowConsumer` (wire `"SLOW_CONSUMER"`) and
+  `ErrorCode::ActivityTimeout` (wire `"ACTIVITY_TIMEOUT"`) — the delivery &
+  liveness codes the server introduced with its no-silent-drop relay
+  overhaul (server 851c446). Before this release an `Error` frame carrying
+  either code failed to deserialize and was **silently discarded**, so a
+  slow-consumer eviction looked like a bare disconnect with no reason.
+- `SignalFishEvent::DecodeFailed { message_type, error, raw_prefix }` — an
+  inbound frame that fails to decode into a `ServerMessage` (unknown message
+  type, unknown error-code string, malformed JSON) now surfaces as a typed
+  event instead of a log-only silent drop. The raw frame text is preserved
+  up to `DECODE_FAILED_RAW_PREFIX_MAX` (512) bytes. Emitted by both
+  `SignalFishClient` and `SignalFishPollingClient` with identical fields.
+- `ClientStats::messages_undecodable` — cumulative count of inbound frames
+  that failed to decode, on both clients.
+- `SignalFishEvent::Disconnected` now carries
+  `last_server_error: Option<ServerErrorInfo>` — the most recent
+  `Error`/`AuthenticationError` received on the connection — so a
+  disconnect that follows a server farewell (e.g. the best-effort
+  `SLOW_CONSUMER` eviction notice) can be attributed programmatically.
+- `Transport::close_reason()` (defaulted, non-breaking for implementors):
+  transports can expose a close explanation; `WebSocketTransport` now
+  captures the peer's Close frame text, and both clients include it in
+  `Disconnected::reason` as `"closed by server: …"`.
+- Error-code-space conformance suite
+  (`tests/error_code_conformance_tests.rs`): the server's AsyncAPI spec is
+  vendored under `tests/server-spec/` with SHA-pinned provenance, and tests
+  assert every server error-code token deserializes into a client
+  `ErrorCode` variant (and vice versa). The weekly `protocol-sync` workflow
+  now also diffs the vendored spec against the server's `main`, closing the
+  drift blind spot where new server codes passed the wire-sample golden
+  tests unnoticed.
+- `examples/load_lab.rs` — a CSV-emitting measurement harness (ping /
+  throughput / slow-consumer / control-starvation modes) for running
+  controlled relay experiments against a local server, plus
+  `tests/real_server_e2e.rs`, env-gated end-to-end tests against a real
+  server binary (ignored by default).
+- New docs page **Delivery Contract & Backpressure** (`docs/delivery.md`)
+  documenting the end-to-end delivery pipeline with measured numbers: what
+  a slow-consumer eviction looks like from the client, the reconnect
+  contract (no token is obtainable today), relay capacity, and the
+  wedged-consumer hazard.
+
+### Fixed
+
+- README no longer overclaims byte-exact wire parity (the protocol is
+  conformance-tested; undecodable frames surface as `DecodeFailed`), and
+  `GameDataEncoding::Rkyv` docs now state the server never negotiates rkyv
+  today (silent JSON downgrade) instead of recommending it for
+  performance.
+
+### Changed
+
+- **Breaking:** `ErrorCode` gained the two variants above; exhaustive
+  `match`es over `ErrorCode` must add arms.
+- **Breaking:** `SignalFishEvent` gained the `DecodeFailed` variant and
+  `Disconnected` gained the `last_server_error` field; exhaustive matches
+  and struct patterns must be updated (`Disconnected { reason, .. }`).
+- **Breaking:** `ClientStats` gained `messages_undecodable`; struct-literal
+  construction must add the field.
+- Graceful [`shutdown`] now preempts a transport loop wedged on a full event
+  channel (a consumer that stopped draining) on **every** path — the
+  per-message event path *and* the terminal `Disconnected` emitted on a
+  transport error, a clean server close, or a dropped handle. Each path races
+  the shutdown signal, so `shutdown()` completes promptly and **closes the
+  transport cleanly** instead of stalling until the timeout aborts the task
+  (which previously left the connection dangling). The terminal `Disconnected`
+  is delivered best-effort (it may be dropped if the channel is full at that
+  instant); the event channel closing remains the authoritative
+  end-of-stream signal.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
