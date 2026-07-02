@@ -30,8 +30,8 @@ cancellation, channel drops, etc.
    - BAD: "Events are always delivered regardless of capacity."
    - GOOD: "Events are never dropped on overflow — a full channel pauses the
      transport loop and backpressure propagates to the server — but an event
-     may be missed if the receiver is dropped or if shutdown times out and
-     aborts the transport task."
+     may be missed if the receiver is dropped, shutdown times out and aborts
+     the transport task, or the handle is dropped without shutdown."
 
 3. **Document timeout/abort consequences** — If a function has a timeout that
    aborts work, document what events or side effects may be skipped when the

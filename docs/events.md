@@ -45,8 +45,9 @@ Use these to track the raw connection lifecycle.
 !!! note "Best-effort delivery on shutdown"
     Like every event, `Disconnected` is never dropped due to channel
     backpressure. It is delivered best-effort only in the sense that it may
-    be missed if the event receiver is dropped or if
-    [`shutdown()`](client.md#shutdown) times out and aborts the transport task.
+    be missed if the event receiver is dropped, if
+    [`shutdown()`](client.md#shutdown) times out and aborts the transport
+    task, or if the client handle is dropped without calling `shutdown()`.
 
 ```rust,ignore
 match event {
