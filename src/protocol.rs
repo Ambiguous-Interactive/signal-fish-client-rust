@@ -369,7 +369,11 @@ pub struct ProtocolInfoPayload {
     )]
     pub max_protocol_version: Option<u16>,
     /// Server message transports available to this connection (v3 only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
     pub transports: Option<Vec<MessageTransport>>,
 }
 

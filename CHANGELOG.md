@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Enforce negotiated JSON-vs-binary frame representation on inbound and
-  outbound game data, reject explicit-null protocol-version fields, preserve
+  outbound game data, reject explicit-null negotiation fields, preserve
   accountability baselines transactionally, and clear room tokens/quarantine
   on room or spectator exit.
 - Polling disconnect policy now closes the physical transport, pending polling

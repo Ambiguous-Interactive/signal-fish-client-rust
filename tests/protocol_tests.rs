@@ -1390,11 +1390,12 @@ fn protocol_info_v3_negotiation_surfaces_versions() {
 }
 
 #[test]
-fn protocol_info_rejects_explicit_null_version_fields() {
+fn protocol_info_rejects_explicit_null_optional_negotiation_fields() {
     for field in [
         "protocol_version",
         "min_protocol_version",
         "max_protocol_version",
+        "transports",
     ] {
         let json = format!(r#"{{"capabilities":[],"game_data_formats":[],"{field}":null}}"#);
         assert!(
