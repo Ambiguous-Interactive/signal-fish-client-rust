@@ -256,6 +256,10 @@ pub struct EmscriptenWebSocketTransport {
     close_info: Option<TransportCloseInfo>,
     #[cfg(debug_assertions)]
     reported_non_noop_waker: bool,
+    /// Explicit `!Send` marker. The raw `callback_state` pointer already prevents
+    /// auto-`Send`, but this field documents the intent and prevents it from being
+    /// accidentally removed if the implementation ever changes.
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -389,6 +393,7 @@ impl EmscriptenWebSocketTransport {
             close_info: None,
             #[cfg(debug_assertions)]
             reported_non_noop_waker: false,
+            _not_send: std::marker::PhantomData,
         })
     }
 }
