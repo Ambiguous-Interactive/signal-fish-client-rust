@@ -225,7 +225,11 @@ impl Transport for GodotWebSocketTransport {
     ) -> Poll<Result<(), SignalFishError>> {
         match self.advance() {
             PeerState::Connecting => return Poll::Pending,
-            PeerState::Closing | PeerState::Closed => {
+            PeerState::Closing => {
+                self.send_in_flight = false;
+                return Poll::Ready(Err(SignalFishError::TransportClosed));
+            }
+            PeerState::Closed => {
                 self.record_close();
                 self.terminal = true;
                 self.send_in_flight = false;
@@ -356,6 +360,7 @@ mod tests {
         send_error: Option<String>,
         close_calls: usize,
         close_code: i32,
+        close_codes_after_poll: VecDeque<i32>,
         close_reason: String,
     }
 
@@ -371,6 +376,7 @@ mod tests {
                 send_error: None,
                 close_calls: 0,
                 close_code: -1,
+                close_codes_after_poll: VecDeque::new(),
                 close_reason: String::new(),
             }
         }
@@ -383,6 +389,9 @@ mod tests {
             }
             if let Some(buffered) = self.buffered_after_poll.pop_front() {
                 self.buffered = buffered;
+            }
+            if let Some(close_code) = self.close_codes_after_poll.pop_front() {
+                self.close_code = close_code;
             }
         }
 
@@ -557,6 +566,39 @@ mod tests {
         assert_eq!(
             transport.close_info().and_then(|info| info.clean),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn closing_does_not_freeze_incomplete_close_metadata() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend
+            .states
+            .extend([PeerState::Closing, PeerState::Closed]);
+        backend.close_codes_after_poll.extend([-1, 4000]);
+        backend.close_reason = "server draining".to_string();
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("unsent".to_string()));
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Err(SignalFishError::TransportClosed))
+        ));
+        assert!(frame.is_some());
+        assert_eq!(transport.close_info(), None);
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(
+            transport.close_info(),
+            Some(TransportCloseInfo {
+                code: Some(4000),
+                reason: Some("server draining".to_string()),
+                clean: Some(true),
+                initiated_by_peer: true,
+            })
         );
     }
 
