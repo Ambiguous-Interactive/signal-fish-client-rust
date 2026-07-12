@@ -15,9 +15,10 @@
 
 use crate::error_codes::ErrorCode;
 use crate::protocol::{
-    GameDataEncoding, IceServer, LobbyState, PeerConnectionInfo, PlayerId, PlayerInfo,
-    ProtocolInfoPayload, RateLimitInfo, RoomId, ServerMessage, SessionPeer, SpectatorInfo,
-    SpectatorStateChangeReason, Topology, TransportKind,
+    DeliveryClass, DeliveryReportPayload, GameDataEncoding, IceServer, LobbyState,
+    PeerConnectionInfo, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReplayStatus,
+    RoomId, SenderWatermark, ServerMessage, SessionPeer, SpectatorInfo, SpectatorStateChangeReason,
+    Topology, TransportKind,
 };
 
 /// Events emitted by the Signal Fish client.
@@ -44,7 +45,7 @@ use crate::protocol::{
 ///     _ => {}
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SignalFishEvent {
     // ── Synthetic events ────────────────────────────────────────────
     /// The client has started and will begin communicating with the server.
@@ -68,7 +69,7 @@ pub enum SignalFishEvent {
         /// Human-readable reason for the disconnection, if available.
         ///
         /// When the transport captured a WebSocket Close frame with a reason
-        /// (see [`Transport::close_reason`](crate::Transport::close_reason)),
+        /// (see [`Transport::close_info`](crate::Transport::close_info)),
         /// it is included here as `"closed by server: …"`.
         reason: Option<String>,
         /// The most recent `Error`/`AuthenticationError` received on this
@@ -112,6 +113,14 @@ pub enum SignalFishEvent {
         /// The raw frame text, truncated to at most
         /// [`DECODE_FAILED_RAW_PREFIX_MAX`] bytes on a UTF-8 boundary.
         raw_prefix: String,
+    },
+
+    /// The server violated protocol-v3 delivery-accountability invariants.
+    ProtocolViolation {
+        /// Stable category suitable for metrics and policy handling.
+        kind: ProtocolViolationKind,
+        /// Detailed diagnostic retaining sender/epoch/sequence context.
+        diagnostic: String,
     },
 
     // ── Authentication ──────────────────────────────────────────────
@@ -172,6 +181,8 @@ pub enum SignalFishEvent {
         /// (protocol v3 "pre-gather"). Empty unless the server opted this
         /// connection into ICE pre-gather.
         ice_servers: Vec<IceServer>,
+        /// Server-issued token to retain for an unexpected disconnect.
+        reconnection_token: Option<String>,
     },
 
     /// Failed to join a room.
@@ -196,6 +207,10 @@ pub enum SignalFishEvent {
     PlayerLeft {
         /// Identifier of the player who left.
         player_id: PlayerId,
+        /// Departed incarnation epoch (protocol v3 only).
+        epoch: Option<u32>,
+        /// Terminal relay watermark (protocol v3 only).
+        final_seq: Option<u64>,
     },
 
     // ── Game data ───────────────────────────────────────────────────
@@ -205,6 +220,14 @@ pub enum SignalFishEvent {
         from_player: PlayerId,
         /// Arbitrary JSON payload.
         data: serde_json::Value,
+        /// Server-stamped sequence number (protocol v3 only).
+        seq: Option<u64>,
+        /// Server-tracked sender incarnation (protocol v3 only).
+        epoch: Option<u32>,
+        /// Echoed delivery class (protocol v3 only).
+        class: Option<DeliveryClass>,
+        /// Coalescing key for latest delivery (protocol v3 only).
+        key: Option<u32>,
     },
 
     /// Binary game data received from another player.
@@ -215,6 +238,10 @@ pub enum SignalFishEvent {
         encoding: GameDataEncoding,
         /// Raw binary payload.
         payload: Vec<u8>,
+        /// Mandatory non-zero server sequence for a v3 binary envelope.
+        seq: Option<u64>,
+        /// Mandatory non-zero sender incarnation for a v3 binary envelope.
+        epoch: Option<u32>,
     },
 
     // ── Authority ───────────────────────────────────────────────────
@@ -314,6 +341,23 @@ pub enum SignalFishEvent {
         connected: bool,
     },
 
+    /// Cumulative relay-delivery diagnostics (protocol v3 only).
+    RelayStats {
+        interval_ms: u64,
+        sent_to_you: u64,
+        dropped_for_you: u64,
+        backpressure_events: u64,
+    },
+
+    /// Graceful server-shutdown advisory (protocol v3 only).
+    GoingAway {
+        deadline_ms: u64,
+        retry_after_secs: Option<u64>,
+    },
+
+    /// Exact delivery-accountability report (protocol v3 only).
+    DeliveryReport(DeliveryReportPayload),
+
     // ── Heartbeat ───────────────────────────────────────────────────
     /// Pong response to a ping.
     Pong,
@@ -353,6 +397,12 @@ pub enum SignalFishEvent {
         ice_servers: Vec<IceServer>,
         /// Events that occurred while the client was disconnected.
         missed_events: Vec<SignalFishEvent>,
+        /// Completeness of the replayed control-event suffix.
+        replay: Option<ReplayStatus>,
+        /// Authoritative relay baselines for current senders.
+        sender_watermarks: Vec<SenderWatermark>,
+        /// Fresh token replacing the consumed reconnect token.
+        reconnection_token: Option<String>,
     },
 
     /// Reconnection failed.
@@ -367,6 +417,8 @@ pub enum SignalFishEvent {
     PlayerReconnected {
         /// Identifier of the player who reconnected.
         player_id: PlayerId,
+        /// New incarnation epoch (protocol v3 only).
+        epoch: Option<u32>,
     },
 
     // ── Spectator ───────────────────────────────────────────────────
@@ -441,6 +493,90 @@ pub enum SignalFishEvent {
         /// Structured error code, if provided.
         error_code: Option<ErrorCode>,
     },
+}
+
+impl std::fmt::Debug for SignalFishEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Events can carry reconnect credentials and arbitrary application
+        // payloads. Keep the ubiquitous `Debug` path safe for production logs;
+        // callers can explicitly inspect fields after pattern matching.
+        f.write_str(match self {
+            Self::Connected => "Connected",
+            Self::Disconnected { .. } => "Disconnected",
+            Self::DecodeFailed { .. } => "DecodeFailed",
+            Self::ProtocolViolation { .. } => "ProtocolViolation",
+            Self::Authenticated { .. } => "Authenticated",
+            Self::ProtocolInfo(_) => "ProtocolInfo",
+            Self::AuthenticationError { .. } => "AuthenticationError",
+            Self::RoomJoined { .. } => "RoomJoined",
+            Self::RoomJoinFailed { .. } => "RoomJoinFailed",
+            Self::RoomLeft => "RoomLeft",
+            Self::PlayerJoined { .. } => "PlayerJoined",
+            Self::PlayerLeft { .. } => "PlayerLeft",
+            Self::GameData { .. } => "GameData",
+            Self::GameDataBinary { .. } => "GameDataBinary",
+            Self::AuthorityChanged { .. } => "AuthorityChanged",
+            Self::AuthorityResponse { .. } => "AuthorityResponse",
+            Self::LobbyStateChanged { .. } => "LobbyStateChanged",
+            Self::GameStarting { .. } => "GameStarting",
+            Self::SessionPlan { .. } => "SessionPlan",
+            Self::NewPeer { .. } => "NewPeer",
+            Self::SignalReceived { .. } => "SignalReceived",
+            Self::PeerTransportStatus { .. } => "PeerTransportStatus",
+            Self::RelayStats { .. } => "RelayStats",
+            Self::GoingAway { .. } => "GoingAway",
+            Self::DeliveryReport(_) => "DeliveryReport",
+            Self::Pong => "Pong",
+            Self::Reconnected { .. } => "Reconnected",
+            Self::ReconnectionFailed { .. } => "ReconnectionFailed",
+            Self::PlayerReconnected { .. } => "PlayerReconnected",
+            Self::SpectatorJoined { .. } => "SpectatorJoined",
+            Self::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
+            Self::SpectatorLeft { .. } => "SpectatorLeft",
+            Self::NewSpectatorJoined { .. } => "NewSpectatorJoined",
+            Self::SpectatorDisconnected { .. } => "SpectatorDisconnected",
+            Self::Error { .. } => "Error",
+        })
+    }
+}
+
+/// Category of a delivery-accountability protocol violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolViolationKind {
+    Snapshot,
+    Lifecycle,
+    DeliveryGap,
+    Counters,
+    Causality,
+    Stamp,
+    UnexpectedMetadata,
+}
+
+impl ProtocolViolationKind {
+    #[cfg(any(test, feature = "tokio-runtime", feature = "polling-client"))]
+    pub(crate) fn from_diagnostic(diagnostic: &str) -> Self {
+        if diagnostic.contains("immediately followed") || diagnostic.contains("preceding causal") {
+            Self::Causality
+        } else if diagnostic.contains("PlayerLeft")
+            || diagnostic.contains("PlayerReconnected")
+            || diagnostic.contains("announced epoch")
+        {
+            Self::Lifecycle
+        } else if diagnostic.contains("snapshot") || diagnostic.contains("watermark") {
+            Self::Snapshot
+        } else if diagnostic.contains("counter") || diagnostic.contains("RelayStats") {
+            Self::Counters
+        } else if diagnostic.contains("gap") || diagnostic.contains("DeliveryReport") {
+            Self::DeliveryGap
+        } else if diagnostic.contains("v2")
+            || diagnostic.contains("class/key")
+            || diagnostic.contains("frame representation")
+        {
+            Self::UnexpectedMetadata
+        } else {
+            Self::Stamp
+        }
+    }
 }
 
 /// Maximum number of bytes of raw frame text preserved in
@@ -545,6 +681,7 @@ impl From<ServerMessage> for SignalFishEvent {
                     relay_type: p.relay_type,
                     current_spectators: p.current_spectators,
                     ice_servers: p.ice_servers,
+                    reconnection_token: p.reconnection_token,
                 }
             }
             ServerMessage::RoomJoinFailed { reason, error_code } => {
@@ -552,16 +689,42 @@ impl From<ServerMessage> for SignalFishEvent {
             }
             ServerMessage::RoomLeft => Self::RoomLeft,
             ServerMessage::PlayerJoined { player } => Self::PlayerJoined { player },
-            ServerMessage::PlayerLeft { player_id } => Self::PlayerLeft { player_id },
-            ServerMessage::GameData { from_player, data } => Self::GameData { from_player, data },
+            ServerMessage::PlayerLeft {
+                player_id,
+                epoch,
+                final_seq,
+            } => Self::PlayerLeft {
+                player_id,
+                epoch,
+                final_seq,
+            },
+            ServerMessage::GameData {
+                from_player,
+                data,
+                seq,
+                epoch,
+                class,
+                key,
+            } => Self::GameData {
+                from_player,
+                data,
+                seq,
+                epoch,
+                class,
+                key,
+            },
             ServerMessage::GameDataBinary {
                 from_player,
                 encoding,
                 payload,
+                seq,
+                epoch,
             } => Self::GameDataBinary {
                 from_player,
                 encoding,
                 payload,
+                seq,
+                epoch,
             },
             ServerMessage::AuthorityChanged {
                 authority_player,
@@ -613,12 +776,17 @@ impl From<ServerMessage> for SignalFishEvent {
                         .into_iter()
                         .map(SignalFishEvent::from)
                         .collect(),
+                    replay: p.replay,
+                    sender_watermarks: p.sender_watermarks,
+                    reconnection_token: p.reconnection_token,
                 }
             }
             ServerMessage::ReconnectionFailed { reason, error_code } => {
                 Self::ReconnectionFailed { reason, error_code }
             }
-            ServerMessage::PlayerReconnected { player_id } => Self::PlayerReconnected { player_id },
+            ServerMessage::PlayerReconnected { player_id, epoch } => {
+                Self::PlayerReconnected { player_id, epoch }
+            }
             ServerMessage::SpectatorJoined(payload) => {
                 let p = *payload;
                 Self::SpectatorJoined {
@@ -699,6 +867,25 @@ impl From<ServerMessage> for SignalFishEvent {
                 transport,
                 connected,
             },
+            ServerMessage::RelayStats {
+                interval_ms,
+                sent_to_you,
+                dropped_for_you,
+                backpressure_events,
+            } => Self::RelayStats {
+                interval_ms,
+                sent_to_you,
+                dropped_for_you,
+                backpressure_events,
+            },
+            ServerMessage::GoingAway {
+                deadline_ms,
+                retry_after_secs,
+            } => Self::GoingAway {
+                deadline_ms,
+                retry_after_secs,
+            },
+            ServerMessage::DeliveryReport(payload) => Self::DeliveryReport(*payload),
         }
     }
 }
@@ -723,6 +910,60 @@ mod tests {
         let event = SignalFishEvent::Connected;
         let debug = format!("{event:?}");
         assert!(debug.contains("Connected"));
+    }
+
+    #[test]
+    fn debug_never_exposes_reconnection_tokens_or_application_payloads() {
+        let event = SignalFishEvent::RoomJoined {
+            room_id: uuid::Uuid::nil(),
+            room_code: "ROOM".into(),
+            player_id: uuid::Uuid::nil(),
+            game_name: "game".into(),
+            max_players: 2,
+            supports_authority: false,
+            current_players: vec![],
+            is_authority: false,
+            lobby_state: LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: Some("top-secret-token".into()),
+        };
+        let debug = format!("{event:?}");
+        assert_eq!(debug, "RoomJoined");
+        assert!(!debug.contains("top-secret-token"));
+    }
+
+    #[test]
+    fn violation_diagnostics_are_classified_by_semantic_precedence() {
+        let cases = [
+            (
+                "PlayerLeft final_seq disagreed with terminal watermark",
+                ProtocolViolationKind::Lifecycle,
+            ),
+            (
+                "DeliveryReport was not immediately followed by Error",
+                ProtocolViolationKind::Causality,
+            ),
+            (
+                "reconnect snapshot watermark mismatch",
+                ProtocolViolationKind::Snapshot,
+            ),
+            (
+                "cumulative counter moved backward",
+                ProtocolViolationKind::Counters,
+            ),
+            ("uncovered delivery gap", ProtocolViolationKind::DeliveryGap),
+            (
+                "v2 exposed class/key",
+                ProtocolViolationKind::UnexpectedMetadata,
+            ),
+            ("sequence stamp was zero", ProtocolViolationKind::Stamp),
+        ];
+        for (diagnostic, expected) in cases {
+            assert_eq!(ProtocolViolationKind::from_diagnostic(diagnostic), expected);
+        }
     }
 
     #[test]
@@ -766,6 +1007,7 @@ mod tests {
             relay_type: "auto".into(),
             current_spectators: vec![],
             ice_servers: vec![],
+            reconnection_token: None,
         };
         let msg = ServerMessage::RoomJoined(Box::new(payload));
         let event = SignalFishEvent::from(msg);
@@ -827,6 +1069,9 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events: vec![ServerMessage::Pong],
+            replay: None,
+            sender_watermarks: vec![],
+            reconnection_token: None,
         };
         let msg = ServerMessage::Reconnected(Box::new(payload));
         let event = SignalFishEvent::from(msg);
@@ -883,17 +1128,23 @@ mod tests {
             from_player: uuid::Uuid::nil(),
             encoding: GameDataEncoding::MessagePack,
             payload: vec![0xDE, 0xAD],
+            seq: None,
+            epoch: None,
         };
         let event = SignalFishEvent::from(msg);
         if let SignalFishEvent::GameDataBinary {
             from_player,
             encoding,
             payload,
+            seq,
+            epoch,
         } = event
         {
             assert_eq!(from_player, uuid::Uuid::nil());
             assert!(matches!(encoding, GameDataEncoding::MessagePack));
             assert_eq!(payload, vec![0xDE, 0xAD]);
+            assert!(seq.is_none());
+            assert!(epoch.is_none());
         } else {
             panic!("expected GameDataBinary variant");
         }

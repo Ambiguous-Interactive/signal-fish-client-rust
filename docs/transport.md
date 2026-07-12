@@ -1,372 +1,245 @@
 # Transport Trait & WebSocket
 
-This page covers the `Transport` trait — the networking abstraction at the heart
-of the SDK — and the built-in `WebSocketTransport` that ships with the crate.
+`Transport` is the framed networking boundary between the client protocol and
+an I/O backend. The same object-safe polling contract works in both the Tokio
+client and the game-loop-driven polling client.
 
----
-
-## The `Transport` Trait
-
-Every transport used by `SignalFishClient` must implement the `Transport` trait.
-It defines three async methods for bidirectional text messaging, plus two
-defaulted introspection methods:
+## The `Transport` contract
 
 ```rust,ignore
-#[async_trait]
-pub trait Transport: Send + 'static {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
-    async fn close(&mut self) -> Result<(), SignalFishError>;
+use std::task::{Context, Poll};
 
-    // Defaulted — override when your transport can do better.
+pub trait Transport {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>>;
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
+
+    fn poll_close(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SignalFishError>>;
+
     fn is_ready(&self) -> bool { true }
-    fn close_reason(&self) -> Option<String> { None }
+    fn close_info(&self) -> Option<TransportCloseInfo> { None }
 }
 ```
 
-### Trait Bounds
+There is no `async-trait` macro and no trait-level `Send` bound. The trait is
+object-safe, so `Box<dyn Transport>` is valid.
 
-The trait requires **`Send + 'static`** (but *not* `Sync`). This is because
-`SignalFishClient::start` moves the transport into a background Tokio task that
-runs for the lifetime of the client. `Send` allows the value to cross the thread
-boundary into the spawned task; `'static` ensures it owns all its data (no
-borrowed references).
+`SignalFishClient::start` moves its transport into a spawned Tokio task and
+therefore requires `Transport + Send + 'static`. `SignalFishPollingClient`
+does not spawn a task and accepts non-`Send`, main-thread-only transports.
 
-The trait also uses `#[async_trait]` from the `async-trait` crate, which
-desugars the `async fn` methods into `Pin<Box<dyn Future>>` return types. You
-must add `#[async_trait]` to your `impl` block as well.
+Connection setup is intentionally outside the trait. Construct or connect the
+backend first, then give it to a client.
 
-### Return Type of `recv()`
-
-`recv()` returns `Option<Result<String, SignalFishError>>`. The three possible
-outcomes are:
-
-| Return value | Meaning |
-|---|---|
-| `Some(Ok(text))` | A complete JSON message was received from the server. |
-| `Some(Err(e))` | A transport-level error occurred (e.g., `SignalFishError::TransportReceive`). |
-| `None` | The connection was closed cleanly by the server. This is **not** an error. |
-
-The client's internal event loop uses `None` to detect a graceful server
-shutdown and emit a `SignalFishEvent::Disconnected` event.
-
-### `close_reason()`
-
-After `recv()` returns `None`, the clients consult
-`close_reason()` to enrich `Disconnected::reason` (as
-`"closed by server: …"`). The default implementation returns `None` —
-correct for transports with no close metadata. `WebSocketTransport`
-overrides it to expose the peer's Close frame text (code + reason) when one
-was received; a bare close (what the Signal Fish server sends today)
-still yields `None`. Custom transports whose protocol carries a close
-explanation should override this so disconnects stay attributable.
-
-### Cancel Safety
-
-!!! warning "recv() must be cancel-safe"
-    The `recv()` method is called inside `tokio::select!` in the client's event
-    loop. If the `select!` branch is not chosen, the future returned by `recv()`
-    is **dropped** before it completes.
-
-    **Cancel-safe** means: if the future is dropped mid-await, calling `recv()`
-    again must not lose any data. No message may be partially consumed or
-    silently discarded.
-
-    Channel-based implementations (e.g., wrapping `tokio::sync::mpsc::Receiver`)
-    are **naturally cancel-safe** because the channel stores messages
-    independently of the receive future. The built-in `WebSocketTransport` is
-    also cancel-safe.
-
-    If your transport buffers data internally during `recv()`, you must ensure
-    that a dropped future does not leave the buffer in an inconsistent state.
-
-### Connection Setup
-
-Connection setup is intentionally **not** part of the trait. Different
-transports have fundamentally different connection parameters — URLs for
-WebSocket, host:port for TCP, QUIC endpoints, etc. Construct a connected
-transport externally, then hand it to `SignalFishClient::start`.
-
----
-
-## `WebSocketTransport`
-
-The crate ships with a ready-made WebSocket transport behind the
-**`transport-websocket`** feature flag (enabled by default).
+## Text and binary frames
 
 ```rust,ignore
-use signal_fish_client::WebSocketTransport;
+pub enum TransportFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
 ```
 
-It wraps a `tokio-tungstenite` `WebSocketStream` and supports both `ws://` and
-`wss://` URLs. TLS is handled transparently.
+Text frames carry JSON protocol messages. Binary frames carry opaque
+protocol-v3 binary game data. A transport must preserve frame boundaries and
+must not silently discard either kind.
 
-### `connect(url)`
+## Sending and ownership across `Pending`
 
-Establish a new WebSocket connection:
+The `Option<TransportFrame>` argument is an ownership slot shared by the caller
+and transport:
+
+1. Before the transport takes the value, the caller still owns it.
+2. A transport that cannot accept it yet returns `Pending` and leaves the slot
+   unchanged.
+3. Once the transport calls `frame.take()`, it has accepted responsibility for
+   that exact frame.
+4. If it then returns `Pending`, it must retain the accepted frame/write state
+   internally and continue it on the next poll.
+5. It returns `Ready` only after the frame is fully flushed or the send fails.
+
+Never take a frame, forget it on `Pending`, and ask the caller to retry. Never
+repeat a partially completed write: either mistake can lose or duplicate an
+application message.
+
+## Receiving
+
+| Result | Meaning |
+|---|---|
+| `Pending` | No complete frame is available yet. |
+| `Ready(Some(Ok(frame)))` | One complete text or binary frame arrived. |
+| `Ready(Some(Err(error)))` | The transport failed while receiving. |
+| `Ready(None)` | The connection reached a terminal clean/peer close. |
+
+If an implementation consumes partial input before returning `Pending`, it
+must retain that partial input. A future poll continues from the saved state.
+
+When an async-runtime waker is supplied, the transport must register or forward
+it so readiness wakes the client task. The polling client supplies a noop waker
+and polls again on the next application tick.
+
+## Closing and close metadata
+
+`poll_close` may need multiple calls. It is idempotent: it starts at most one
+close handshake, retains progress across `Pending`, and returns
+`Ready(Ok(()))` on every call after successful completion.
+
+After a peer close, `close_info()` may return:
+
+```rust,ignore
+pub struct TransportCloseInfo {
+    pub code: Option<u16>,
+    pub reason: Option<String>,
+    pub clean: Option<bool>,
+    pub initiated_by_peer: bool,
+}
+```
+
+Capture this metadata before `poll_recv` returns `Ready(None)`. The clients use
+it to attribute `SignalFishEvent::Disconnected`.
+
+`is_ready()` defaults to `true`, which is correct for transports connected by
+their constructor. An asynchronous-handshake transport returns `false` until
+ready; the polling client defers its synthetic `Connected` event accordingly.
+
+## Built-in `WebSocketTransport`
+
+The default `transport-websocket` feature provides `WebSocketTransport`, backed
+by `tokio-tungstenite` with `ws://` and `wss://` support.
 
 ```rust,ignore
 let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
-```
-
-Returns `Result<WebSocketTransport, SignalFishError>`. On failure the error is
-`SignalFishError::Io` with the underlying I/O error kind preserved when
-available.
-
-### `connect_with_timeout(url, timeout)`
-
-Same as `connect`, but fails with `SignalFishError::Timeout` if the connection
-is not established within the given duration:
-
-```rust,ignore
-use std::time::Duration;
 
 let transport = WebSocketTransport::connect_with_timeout(
     "wss://example.com/signal",
-    Duration::from_secs(5),
+    std::time::Duration::from_secs(5),
 )
 .await?;
 ```
 
-### `from_stream(stream)`
+`from_stream` wraps an already-established `WsStream` for custom TLS, proxy,
+headers, or cookie setup.
 
-Wrap an already-established `WebSocketStream` for advanced use cases such as
-custom TLS configuration, proxy headers, or authentication cookies:
+The WebSocket mapping is direct:
 
-```rust,ignore
-use signal_fish_client::transports::websocket::WsStream;
+| WebSocket frame | SDK frame/outcome |
+|---|---|
+| Text | `TransportFrame::Text` |
+| Binary | `TransportFrame::Binary` |
+| Close | `Ready(None)` and structured `close_info` |
+| Ping/Pong | Transparent control traffic |
 
-// WsStream is a type alias for:
-// tokio_tungstenite::WebSocketStream<
-//     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>
-// >
+Outbound frames are accepted with `poll_ready`/`start_send` and retained until
+`poll_flush` completes. Inbound binary messages are application traffic, not
+ignored frames.
 
-// Construct `my_stream: WsStream` using tokio-tungstenite directly…
-let transport = WebSocketTransport::from_stream(my_stream);
-```
+Tungstenite automatically queues a Pong while reading Ping. The transport
+explicitly drives `poll_flush` before reading further frames, ensuring that the
+automatic RFC 6455 response reaches the peer even when the application has no
+outbound message to send.
 
-### Connecting and Starting the Client
+Peer Close code and reason are copied into `TransportCloseInfo`; a bare Close
+still records that the peer initiated termination. WebSocket close polling is
+idempotent.
 
-A complete example that connects via WebSocket and processes events:
+## Implementing a channel transport
 
-```rust
-use signal_fish_client::{
-    SignalFishClient, SignalFishConfig, JoinRoomParams,
-    SignalFishEvent, WebSocketTransport,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), signal_fish_client::SignalFishError> {
-    // 1. Connect the transport
-    let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
-
-    // 2. Build config with your App ID
-    let config = SignalFishConfig::new("mb_app_abc123");
-
-    // 3. start() returns (client_handle, event_receiver)
-    let (mut client, mut events) = SignalFishClient::start(transport, config);
-
-    // 4. Process events
-    while let Some(event) = events.recv().await {
-        match event {
-            SignalFishEvent::Authenticated { app_name, .. } => {
-                println!("Authenticated as {app_name}");
-                client.join_room(JoinRoomParams::new("my-room", "Alice"))?;
-            }
-            SignalFishEvent::RoomJoined { room_code, .. } => {
-                println!("Joined room {room_code}");
-            }
-            SignalFishEvent::Disconnected { .. } => break,
-            _ => {}
-        }
-    }
-
-    // 5. Shut down gracefully
-    client.shutdown().await;
-    Ok(())
-}
-```
-
----
-
-## `EmscriptenWebSocketTransport`
-
-A `Transport` implementation that uses Emscripten's built-in WebSocket C API
-via raw FFI. Available behind the **`transport-websocket-emscripten`** feature
-flag.
+This complete skeleton passes both text and binary frames through in-process
+channels:
 
 ```rust,ignore
-use signal_fish_client::EmscriptenWebSocketTransport;
-```
-
-This transport is designed exclusively for the `wasm32-unknown-emscripten`
-target — used by Godot 4.5 web exports via gdext (godot-rust).
-
-!!! warning "Polling client only"
-    `EmscriptenWebSocketTransport` is **not** compatible with
-    `SignalFishClient::start()`. It must be used with
-    [`SignalFishPollingClient`](client.md#signalfishpollingclient), which drives
-    the transport synchronously from a game loop. See the
-    [WebAssembly Guide](wasm.md) for details.
-
-### `connect(url)`
-
-Create a new WebSocket connection:
-
-```rust,ignore
-let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
-```
-
-Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. The WebSocket
-is created immediately but the connection handshake completes asynchronously in
-the browser. Messages sent before the connection opens are buffered by the
-browser's WebSocket implementation.
-
-On failure the error is `SignalFishError::Io` (e.g., if the URL contains
-interior NUL bytes or `emscripten_websocket_new` returns an error code).
-
-### How It Works
-
-Emscripten's C WebSocket API uses **callbacks** to deliver events (open,
-message, error, close). The transport registers four C-compatible callback
-functions that push events onto a `std::sync::mpsc` channel. When `recv()` is
-called by the polling client, it drains this channel via `try_recv()`.
-
-```mermaid
-sequenceDiagram
-    participant G as Game Loop
-    participant P as SignalFishPollingClient
-    participant T as EmscriptenWebSocketTransport
-    participant C as std::sync::mpsc
-    participant E as Emscripten C API
-    participant B as Browser WebSocket
-
-    B->>E: WebSocket event fires
-    E->>C: C callback pushes IncomingEvent
-    G->>P: poll()
-    P->>T: recv() (via noop waker)
-    T->>C: try_recv()
-    C-->>T: IncomingEvent::Message(text)
-    T-->>P: Some(Ok(text))
-    P-->>G: Vec<SignalFishEvent>
-```
-
-### Threading Model
-
-On `wasm32-unknown-emscripten`, everything runs on a **single thread**.
-Emscripten WebSocket callbacks fire synchronously on the main thread. The
-`std::sync::mpsc` channel is used as a simple buffer — not for cross-thread
-communication.
-
-### Cleanup
-
-When the transport is dropped, it:
-
-1. Calls `emscripten_websocket_close` (if not already closed)
-2. Calls `emscripten_websocket_delete` to unregister all callbacks
-3. Reclaims the callback state via `Box::from_raw`
-
-This sequence ensures no dangling pointers remain in the Emscripten event loop.
-
----
-
-## Implementing a Custom Transport
-
-You can implement `Transport` for any bidirectional text channel — raw TCP,
-QUIC, WebRTC data channels, Unix sockets, or even an in-memory loopback for
-testing.
-
-!!! tip "When to write a custom transport"
-    - **Testing** — unit-test game logic without a real server by using
-      in-process channels.
-    - **Custom protocols** — adapt a non-WebSocket I/O layer (TCP, QUIC, WebRTC
-      data channels).
-    - **Unity / FFI interop** — bridge messages from a game engine's networking
-      layer into the SDK.
-    - **Emscripten / Godot web** — use the built-in
-      `EmscriptenWebSocketTransport` (enable `transport-websocket-emscripten`), or
-      write a custom transport for other WASM environments.
-
-### Step 1: Define the Struct
-
-Use `tokio::sync::mpsc` channels as the backing store. This gives you natural
-cancel safety for free:
-
-```rust,ignore
+use std::task::{Context, Poll};
+use signal_fish_client::error::SignalFishError;
+use signal_fish_client::transport::{Transport, TransportFrame};
 use tokio::sync::mpsc;
 
 pub struct LoopbackTransport {
-    /// Messages the client sends go here.
-    tx: mpsc::UnboundedSender<String>,
-    /// Messages the client receives arrive here.
-    rx: mpsc::UnboundedReceiver<String>,
+    tx: mpsc::UnboundedSender<TransportFrame>,
+    rx: mpsc::UnboundedReceiver<TransportFrame>,
 }
-```
 
-### Step 2: Implement `Transport`
-
-```rust,ignore
-use async_trait::async_trait;
-use signal_fish_client::{SignalFishError, Transport};
-
-#[async_trait]
 impl Transport for LoopbackTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.tx
-            .send(message)
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
+    fn poll_send(
+        &mut self,
+        _cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        let result = match frame.take() {
+            Some(frame) => self.tx.send(frame).map_err(|error| {
+                SignalFishError::TransportSend(error.to_string())
+            }),
+            None => Ok(()),
+        };
+        Poll::Ready(result)
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        self.rx.recv().await.map(Ok)
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        self.rx.poll_recv(cx).map(|frame| frame.map(Ok))
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        Poll::Ready(Ok(()))
     }
 }
 ```
 
-Key points:
+The channel send completes synchronously, so it can take the frame and return
+`Ready` in the same call. A socket that remains pending after acceptance needs
+an internal outbound slot or equivalent state machine.
 
-- **`send`** — push the message into the channel. Map the `SendError` to
-  `SignalFishError::TransportSend`.
-- **`recv`** — await the next message. `mpsc::UnboundedReceiver::recv()` returns
-  `None` when all senders are dropped, which the client interprets as a clean
-  close. Wrapping with `.map(Ok)` converts `Option<String>` into the required
-  `Option<Result<String, SignalFishError>>`.
-- **`close`** — for channels, dropping is sufficient. A no-op `Ok(())` works.
-
-### Step 3: Wire into `SignalFishClient::start()`
+Use it with the async client only when the transport is `Send + 'static`:
 
 ```rust,ignore
-use signal_fish_client::{SignalFishClient, SignalFishConfig, SignalFishEvent};
-
-// Create the loopback pair (client ↔ server channels)
-let (client_tx, server_rx) = tokio::sync::mpsc::unbounded_channel();
-let (server_tx, client_rx) = tokio::sync::mpsc::unbounded_channel();
-
-let transport = LoopbackTransport {
-    tx: client_tx,
-    rx: client_rx,
-};
-
-let config = SignalFishConfig::new("mb_app_test");
 let (mut client, mut events) = SignalFishClient::start(transport, config);
-
-// Process events as usual
 while let Some(event) = events.recv().await {
-    match event {
-        SignalFishEvent::Authenticated { app_name, .. } => {
-            println!("Authenticated: {app_name}");
-        }
-        SignalFishEvent::Disconnected { .. } => break,
-        _ => {}
-    }
+    // Handle events.
 }
-
 client.shutdown().await;
 ```
 
-The SDK does not care *how* the transport is connected — it only calls `send`,
-`recv`, and `close`. Your custom transport is a first-class citizen.
+Or use any `Transport`, including a non-`Send` one, with the polling client:
+
+```rust,ignore
+let mut client = SignalFishPollingClient::new(transport, config);
+for event in client.poll() {
+    // Handle this tick's events.
+}
+```
+
+## Emscripten transport
+
+`EmscriptenWebSocketTransport` implements the same framed polling contract on
+`wasm32-unknown-emscripten`. Its browser callbacks buffer readiness, text,
+binary, error, and close events; `SignalFishPollingClient::poll` drains them on
+the main thread. It exposes structured close metadata and drives idempotent
+cleanup through `poll_close`.
+
+It is intended for the polling client, not the Tokio-spawned async client. See
+the [WebAssembly guide](wasm.md) for target and linker requirements.
+
+## Custom transport checklist
+
+- Preserve both text and binary frame boundaries.
+- Do not take the caller frame before the backend accepts it.
+- Retain accepted sends and partial receives across `Pending`.
+- Register the supplied waker when async progress depends on readiness.
+- Make close multi-poll and idempotent.
+- Record close code/reason/initiator before returning `None`.
+- Keep `is_ready` cheap and monotonic for one physical connection.
+- Put connection-specific construction outside the trait.

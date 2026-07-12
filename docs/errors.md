@@ -33,6 +33,7 @@ variants**:
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md). |
+| `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 
@@ -199,12 +200,14 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 |---------|-------------|
 | `ConnectionIdleTimeout` | The connection was closed by the server after being idle for too long. |
 
-### Delivery & Liveness (2)
+### Delivery & Liveness (4)
 
 | Variant | Description |
 |---------|-------------|
 | `SlowConsumer` | The server evicted this connection because its outbound queue stayed full past the slow-consumer grace window (5 s by default): the client was not draining messages fast enough. The farewell frame carrying this code is written best-effort into an already-congested socket, so it may never arrive — a bare disconnect can be the only observable signal. |
 | `ActivityTimeout` | The server closed the connection after prolonged protocol inactivity. Send periodic pings to keep the connection alive. |
+| `ServerDraining` | The server is draining and will close the connection; preserve the current reconnect snapshot and honor retry guidance. |
+| `InvalidDeliveryClass` | A classified `GameData` request used an invalid class/key shape or unsupported delivery token. Prefer the invalid-state-proof `GameDataDelivery` API. |
 
 !!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five `Signal*` codes plus `ConnectionIdleTimeout` are **server-sent**

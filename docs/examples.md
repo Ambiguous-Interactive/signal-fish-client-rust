@@ -222,9 +222,9 @@ network**.
     The actual [`examples/custom_transport.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/custom_transport.rs) uses the `tracing` crate for structured logging. The version below uses `println!` for simplicity.
 
 ```rust
-use async_trait::async_trait;
 use signal_fish_client::{
-    SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
+    SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent,
+    Transport, TransportFrame,
 };
 use tokio::sync::mpsc;
 
@@ -246,16 +246,34 @@ fn loopback_pair() -> (LoopbackTransport, LoopbackServer) {
     (transport, server)
 }
 
-#[async_trait]
 impl Transport for LoopbackTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.tx.send(message).map_err(|e| SignalFishError::TransportSend(e.to_string()))
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let result = match frame.take() {
+            Some(TransportFrame::Text(message)) => self.tx.send(message)
+                .map_err(|e| SignalFishError::TransportSend(e.to_string())),
+            Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
+                "text-only loopback does not accept binary frames".into(),
+            )),
+            None => Ok(()),
+        };
+        std::task::Poll::Ready(result)
     }
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        self.rx.recv().await.map(Ok)
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        self.rx.poll_recv(cx)
+            .map(|message| message.map(|text| Ok(TransportFrame::Text(text))))
     }
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -321,27 +339,45 @@ the other side's `rx`.
 #### 2. Implement the `Transport` trait
 
 ```rust,ignore
-#[async_trait]
 impl Transport for LoopbackTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.tx.send(message).map_err(|e| SignalFishError::TransportSend(e.to_string()))
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let result = match frame.take() {
+            Some(TransportFrame::Text(message)) => self.tx.send(message)
+                .map_err(|e| SignalFishError::TransportSend(e.to_string())),
+            Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
+                "text-only loopback does not accept binary frames".into(),
+            )),
+            None => Ok(()),
+        };
+        std::task::Poll::Ready(result)
     }
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        self.rx.recv().await.map(Ok)
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        self.rx.poll_recv(cx)
+            .map(|message| message.map(|text| Ok(TransportFrame::Text(text))))
     }
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 ```
 
-Only three methods are required:
+Only three polling methods are required:
 
 | Method | Purpose |
 |---|---|
-| `send` | Push a serialized message toward the server. |
-| `recv` | Await the next message from the server (returns `None` on close). |
-| `close` | Perform any cleanup (no-op here). |
+| `poll_send` | Accept and progress a text or binary frame. |
+| `poll_recv` | Poll the next frame (returns `Ready(None)` on close). |
+| `poll_close` | Progress cleanup idempotently (immediately ready here). |
 
 #### 3. Create a fake server that injects responses
 
@@ -511,10 +547,15 @@ cargo run --example mesh_session --features mesh,tokio-runtime
 
 ## Godot Web Export (Polling Client)
 
-Demonstrates how to use `SignalFishPollingClient` with
-`EmscriptenWebSocketTransport` in a Godot 4.5 web export via gdext
-(godot-rust). This is the recommended pattern for browser-based multiplayer
-in Godot.
+Demonstrates the advanced `SignalFishPollingClient` integration with
+`EmscriptenWebSocketTransport`. This requires a custom Godot web export template
+that links Emscripten's WebSocket library; standard Godot export templates do
+not provide that link dependency.
+
+!!! warning "Not the standard Godot export path"
+    Do not use this example unchanged with an official Godot web template.
+    For standard templates, implement `Transport` around the engine's
+    `WebSocketPeer` and drive it with `SignalFishPollingClient`.
 
 !!! note "Feature gate"
     This example requires the `transport-websocket-emscripten` feature and

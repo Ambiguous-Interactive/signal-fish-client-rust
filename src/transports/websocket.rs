@@ -14,26 +14,22 @@
 //!
 //! ```rust,no_run
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
-//! use signal_fish_client::{WebSocketTransport, Transport};
+//! use signal_fish_client::WebSocketTransport;
 //!
-//! let mut transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
-//! transport.send("hello".to_string()).await?;
-//!
-//! if let Some(Ok(msg)) = transport.recv().await {
-//!     println!("received: {msg}");
-//! }
-//!
-//! transport.close().await?;
+//! let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//! let _transport = transport; // pass it to SignalFishClient::start
 //! # Ok(())
 //! # }
 //! ```
 
-use async_trait::async_trait;
-use futures_util::{SinkExt, StreamExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures_util::{Sink, Stream};
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::error::SignalFishError;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
 
 /// Type alias for the underlying WebSocket stream.
 ///
@@ -63,18 +59,18 @@ pub type WsStream =
 /// For advanced use-cases (custom TLS, proxy, headers) construct the stream
 /// yourself and use [`WebSocketTransport::from_stream`].
 ///
-/// # Cancel Safety
+/// # Polling Safety
 ///
-/// The [`recv`](Transport::recv) method is cancel-safe. Dropping the future
-/// returned by `recv` before it completes will not consume or lose any messages,
-/// making it safe to use inside `tokio::select!`.
+/// [`poll_recv`](Transport::poll_recv) preserves the WebSocket stream's partial
+/// receive state across `Poll::Pending` and registers the supplied waker.
 #[derive(Debug)]
 pub struct WebSocketTransport {
     stream: WsStream,
     closed: bool,
-    /// Close-frame text captured from the peer (`"{reason} ({code})"`),
-    /// surfaced via [`Transport::close_reason`]. `None` for a bare close.
-    close_reason: Option<String>,
+    close_info: Option<TransportCloseInfo>,
+    send_started: bool,
+    control_flush_pending: bool,
+    peer_close_pending: bool,
 }
 
 impl WebSocketTransport {
@@ -105,7 +101,10 @@ impl WebSocketTransport {
         Ok(Self {
             stream,
             closed: false,
-            close_reason: None,
+            close_info: None,
+            send_started: false,
+            control_flush_pending: false,
+            peer_close_pending: false,
         })
     }
 
@@ -117,7 +116,10 @@ impl WebSocketTransport {
         Self {
             stream,
             closed: false,
-            close_reason: None,
+            close_info: None,
+            send_started: false,
+            control_flush_pending: false,
+            peer_close_pending: false,
         }
     }
 
@@ -141,49 +143,126 @@ impl WebSocketTransport {
     }
 }
 
-#[async_trait]
 impl Transport for WebSocketTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        if self.closed {
-            return Err(SignalFishError::TransportClosed);
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        if self.closed || self.peer_close_pending {
+            return Poll::Ready(Err(SignalFishError::TransportClosed));
         }
-        self.stream
-            .send(Message::Text(message.into()))
-            .await
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
+        if !self.send_started {
+            match Pin::new(&mut self.stream).poll_ready(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                }
+                Poll::Ready(Ok(())) => {}
+            }
+            let Some(frame) = frame.take() else {
+                return Poll::Ready(Ok(()));
+            };
+            let message = match frame {
+                TransportFrame::Text(text) => Message::Text(text.into()),
+                TransportFrame::Binary(bytes) => Message::Binary(bytes.into()),
+            };
+            if let Err(error) = Pin::new(&mut self.stream).start_send(message) {
+                return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
+            }
+            self.send_started = true;
+        }
+        match Pin::new(&mut self.stream).poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                self.send_started = false;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => {
+                self.send_started = false;
+                Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
         loop {
-            let msg = match self.stream.next().await {
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
-                    return Some(Err(SignalFishError::TransportReceive(e.to_string())));
+            if self.control_flush_pending {
+                match Pin::new(&mut self.stream).poll_flush(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(error)) => {
+                        self.control_flush_pending = false;
+                        self.peer_close_pending = false;
+                        self.closed = true;
+                        return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
+                            error.to_string(),
+                        ))));
+                    }
+                    Poll::Ready(Ok(())) => {
+                        self.control_flush_pending = false;
+                        if self.peer_close_pending {
+                            self.peer_close_pending = false;
+                            self.closed = true;
+                            return Poll::Ready(None);
+                        }
+                    }
                 }
-                None => return None,
+            }
+            let msg = match Pin::new(&mut self.stream).poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(value) => match value {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(e)) => {
+                        return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
+                            e.to_string(),
+                        ))));
+                    }
+                    None => return Poll::Ready(None),
+                },
             };
 
             match msg {
                 // `Utf8Bytes::to_string()` copies the payload into a new `String`
                 // because `Utf8Bytes` does not expose the inner buffer by value.
-                Message::Text(text) => return Some(Ok(text.to_string())),
+                Message::Text(text) => {
+                    return Poll::Ready(Some(Ok(TransportFrame::Text(text.to_string()))))
+                }
+                Message::Binary(bytes) => {
+                    return Poll::Ready(Some(Ok(TransportFrame::Binary(bytes.to_vec()))))
+                }
                 Message::Close(frame) => {
                     tracing::debug!(?frame, "received WebSocket close frame");
-                    // Remember the close explanation (if any) so the client
-                    // can attribute the disconnect via `close_reason()`.
-                    self.close_reason = frame.map(|f| f.to_string());
-                    return None;
+                    // Remember structured close metadata so the client can
+                    // attribute the disconnect via `close_info()`.
+                    if let Some(frame) = frame {
+                        self.close_info = Some(TransportCloseInfo {
+                            code: Some(frame.code.into()),
+                            reason: (!frame.reason.is_empty()).then(|| frame.reason.to_string()),
+                            clean: None,
+                            initiated_by_peer: true,
+                        });
+                    } else {
+                        self.close_info = Some(TransportCloseInfo {
+                            initiated_by_peer: true,
+                            ..TransportCloseInfo::default()
+                        });
+                    }
+                    // Tungstenite has queued the mandatory close response. Drive
+                    // its flush before reporting the terminal receive state so a
+                    // polling client cannot strand the handshake after seeing
+                    // `None` and ceasing to poll the transport.
+                    self.peer_close_pending = true;
+                    self.control_flush_pending = true;
                 }
                 Message::Ping(_) => {
                     tracing::debug!("received WebSocket ping (auto-pong handled by tungstenite)");
-                    // tungstenite auto-queues a Pong reply; no manual response needed.
+                    self.control_flush_pending = true;
                 }
                 Message::Pong(_) => {
                     tracing::debug!("received WebSocket pong (ignored)");
-                    // Continue the loop.
-                }
-                Message::Binary(_) => {
-                    tracing::warn!("received unexpected binary WebSocket frame, skipping");
                     // Continue the loop.
                 }
                 Message::Frame(_) => {
@@ -197,19 +276,42 @@ impl Transport for WebSocketTransport {
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
         if self.closed {
-            return Ok(());
+            return Poll::Ready(Ok(()));
         }
-        self.closed = true;
-        self.stream
-            .close(None)
-            .await
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
+        if self.peer_close_pending {
+            return match Pin::new(&mut self.stream).poll_flush(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(())) => {
+                    self.control_flush_pending = false;
+                    self.peer_close_pending = false;
+                    self.closed = true;
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Ready(Err(error)) => {
+                    self.control_flush_pending = false;
+                    self.peer_close_pending = false;
+                    self.closed = true;
+                    Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                }
+            };
+        }
+        match Pin::new(&mut self.stream).poll_close(cx) {
+            Poll::Ready(Ok(())) => {
+                self.closed = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => {
+                self.closed = true;
+                Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
-    fn close_reason(&self) -> Option<String> {
-        self.close_reason.clone()
+    fn close_info(&self) -> Option<TransportCloseInfo> {
+        self.close_info.clone()
     }
 }
 
@@ -225,6 +327,7 @@ impl Transport for WebSocketTransport {
 )]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
 
     #[test]
     fn websocket_transport_is_send() {
@@ -305,19 +408,17 @@ mod tests {
             .await
             .expect("WebSocket connect must succeed");
 
-        let msg1 = transport
-            .recv()
+        let msg1 = crate::transport::recv_frame(&mut transport)
             .await
             .expect("recv must return Some")
             .expect("recv must return Ok");
-        assert_eq!(msg1, "hello");
+        assert_eq!(msg1, TransportFrame::Text("hello".into()));
 
-        let msg2 = transport
-            .recv()
+        let msg2 = crate::transport::recv_frame(&mut transport)
             .await
             .expect("recv must return Some")
             .expect("recv must return Ok");
-        assert_eq!(msg2, "world");
+        assert_eq!(msg2, TransportFrame::Text("world".into()));
     }
 
     #[tokio::test]
@@ -330,10 +431,10 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        let result = transport.recv().await;
+        let result = crate::transport::recv_frame(&mut transport).await;
         assert!(result.is_none());
         // A bare close (today's server behavior) carries no explanation.
-        assert_eq!(transport.close_reason(), None);
+        assert_eq!(transport.close_info().and_then(|info| info.reason), None);
     }
 
     #[tokio::test]
@@ -354,11 +455,12 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        let result = transport.recv().await;
+        let result = crate::transport::recv_frame(&mut transport).await;
         assert!(result.is_none());
 
         let reason = transport
-            .close_reason()
+            .close_info()
+            .and_then(|info| info.reason)
             .expect("close frame explanation must be captured");
         assert!(
             reason.contains("slow consumer"),
@@ -367,7 +469,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recv_skips_binary_frames() {
+    async fn peer_close_response_is_flushed_before_recv_finishes() {
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+        use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let url = start_mock_server(move |mut ws| async move {
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Away,
+                reason: "server draining".into(),
+            })))
+            .await
+            .expect("server must send a peer close frame");
+
+            let response = tokio::time::timeout(std::time::Duration::from_secs(1), ws.next()).await;
+            let observed_close_response = matches!(
+                response,
+                Ok(Some(Ok(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Away,
+                    ..
+                })))))
+            );
+            let _ = response_tx.send(observed_close_response);
+        })
+        .await;
+
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            crate::transport::recv_frame(&mut transport),
+        )
+        .await
+        .expect("receiving a peer close must make progress");
+
+        assert!(result.is_none());
+        assert!(
+            response_rx
+                .await
+                .expect("server task must report whether it received the response"),
+            "client must flush a matching close response before recv returns None"
+        );
+        assert!(transport.closed);
+        assert!(!transport.peer_close_pending);
+    }
+
+    #[tokio::test]
+    async fn recv_passes_binary_frames_through() {
         let url = start_mock_server(|mut ws| async move {
             ws.send(Message::Binary(vec![0xDE, 0xAD].into()))
                 .await
@@ -383,13 +532,16 @@ mod tests {
             .await
             .expect("WebSocket connect must succeed");
 
-        // The binary frame should be silently skipped.
-        let msg = transport
-            .recv()
+        let msg = crate::transport::recv_frame(&mut transport)
             .await
             .expect("recv must return Some")
             .expect("recv must return Ok");
-        assert_eq!(msg, "after_binary");
+        assert_eq!(msg, TransportFrame::Binary(vec![0xDE, 0xAD]));
+        let next = crate::transport::recv_frame(&mut transport)
+            .await
+            .expect("recv must return Some")
+            .expect("recv must return Ok");
+        assert_eq!(next, TransportFrame::Text("after_binary".into()));
     }
 
     #[tokio::test]
@@ -403,9 +555,13 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        transport.close().await.expect("close must succeed");
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close must succeed");
 
-        let err = transport.send("oops".to_string()).await.unwrap_err();
+        let err = crate::transport::send_frame(&mut transport, TransportFrame::Text("oops".into()))
+            .await
+            .unwrap_err();
         assert!(matches!(err, SignalFishError::TransportClosed));
     }
 
@@ -418,10 +574,11 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        transport.close().await.expect("first close must succeed");
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("first close must succeed");
         // Second close should also succeed.
-        transport
-            .close()
+        crate::transport::close_transport(&mut transport)
             .await
             .expect("second close must succeed (idempotent)");
     }
@@ -455,12 +612,11 @@ mod tests {
             .expect("raw WebSocket connect must succeed");
         let mut transport = WebSocketTransport::from_stream(ws_stream);
 
-        let msg = transport
-            .recv()
+        let msg = crate::transport::recv_frame(&mut transport)
             .await
             .expect("recv must return Some")
             .expect("recv must return Ok");
-        assert_eq!(msg, "from_stream_msg");
+        assert_eq!(msg, TransportFrame::Text("from_stream_msg".into()));
     }
 
     #[tokio::test]
@@ -479,17 +635,15 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        transport
-            .send("ping_echo".to_string())
+        crate::transport::send_frame(&mut transport, TransportFrame::Text("ping_echo".into()))
             .await
             .expect("send must succeed");
 
-        let msg = transport
-            .recv()
+        let msg = crate::transport::recv_frame(&mut transport)
             .await
             .expect("recv must return Some")
             .expect("recv must return Ok");
-        assert_eq!(msg, "ping_echo");
+        assert_eq!(msg, TransportFrame::Text("ping_echo".into()));
     }
 
     #[tokio::test]
@@ -501,10 +655,12 @@ mod tests {
         let mut transport = WebSocketTransport::connect(&url)
             .await
             .expect("WebSocket connect must succeed");
-        transport.close().await.expect("close must succeed");
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close must succeed");
 
         // After closing, recv must not hang — it should return None or an error.
-        let result = transport.recv().await;
+        let result = crate::transport::recv_frame(&mut transport).await;
         match result {
             None => {}         // stream ended — expected
             Some(Err(_)) => {} // transport error — also acceptable

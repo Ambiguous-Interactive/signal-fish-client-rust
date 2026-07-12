@@ -235,7 +235,11 @@ mod controller {
         /// If `config` has not opted into the mesh, this enables it (so the
         /// server can form a P2P session). The driver is engaged automatically as
         /// the server's `SessionPlan`/`NewPeer` directives arrive.
-        pub fn start(transport: impl Transport, config: SignalFishConfig, driver: D) -> Self {
+        pub fn start(
+            transport: impl Transport + Send + 'static,
+            config: SignalFishConfig,
+            driver: D,
+        ) -> Self {
             let config = if config.protocol_version.is_none() {
                 config.enable_mesh()
             } else {
@@ -344,9 +348,8 @@ mod controller {
                 SignalFishEvent::SessionPlan {
                     peers, ice_servers, ..
                 } => {
-                    if !ice_servers.is_empty() {
-                        self.driver.set_ice_servers(ice_servers);
-                    }
+                    // The plan is authoritative even when empty (relay reset).
+                    self.driver.set_ice_servers(ice_servers);
                     let new_ids: Vec<PlayerId> = peers.iter().map(|p| p.player_id).collect();
                     // Disconnect peers dropped from the new plan (host re-election
                     // or topology change), then forget them.
@@ -379,7 +382,7 @@ mod controller {
                         Err(_) => warn!("dropping unrecognized signal shape from {from}"),
                     }
                 }
-                SignalFishEvent::PlayerLeft { player_id } => {
+                SignalFishEvent::PlayerLeft { player_id, .. } => {
                     self.disconnect_peer(*player_id);
                     self.known_peers.retain(|k| k.id != *player_id);
                 }
@@ -644,7 +647,8 @@ mod controller {
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::type_complexity
 )]
 mod tests {
     use super::*;
@@ -808,24 +812,40 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl Transport for MockTransport {
-        async fn send(&mut self, message: String) -> Result<(), crate::error::SignalFishError> {
-            self.sent.lock().unwrap().push(message);
-            Ok(())
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<crate::transport::TransportFrame>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
+            if let Some(frame) = frame.take() {
+                let crate::transport::TransportFrame::Text(message) = frame else {
+                    panic!("test mock expected an outbound text frame");
+                };
+                self.sent.lock().unwrap().push(message);
+            }
+            std::task::Poll::Ready(Ok(()))
         }
-        async fn recv(&mut self) -> Option<Result<String, crate::error::SignalFishError>> {
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<
+            Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
+        > {
             if let Some(item) = self.incoming.pop_front() {
-                item
+                std::task::Poll::Ready(
+                    item.map(|result| result.map(crate::transport::TransportFrame::Text)),
+                )
             } else {
-                // No scripted messages remain — pending() never completes,
-                // keeping the controller's task alive until shutdown aborts it.
-                std::future::pending().await
+                std::task::Poll::Pending
             }
         }
-        async fn close(&mut self) -> Result<(), crate::error::SignalFishError> {
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
             self.closed.store(true, Ordering::Relaxed);
-            Ok(())
+            std::task::Poll::Ready(Ok(()))
         }
     }
 
@@ -874,6 +894,35 @@ mod tests {
             fallback: TransportKind::Relay,
         };
         serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload))).unwrap()
+    }
+
+    fn room_baseline(peer: PlayerId) -> String {
+        let payload = crate::protocol::RoomJoinedPayload {
+            room_id: uuid(100),
+            room_code: "ROOM".into(),
+            player_id: uuid(1),
+            game_name: "test".into(),
+            max_players: 4,
+            supports_authority: false,
+            current_players: vec![crate::protocol::PlayerInfo {
+                id: peer,
+                name: "P".into(),
+                is_authority: false,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            }],
+            is_authority: false,
+            lobby_state: crate::protocol::LobbyState::Lobby,
+            ready_players: vec![],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        };
+        serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload))).unwrap()
     }
 
     fn signal_from(peer: PlayerId, signal: serde_json::Value) -> String {
@@ -937,6 +986,9 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events: missed,
+            replay: None,
+            sender_watermarks: vec![],
+            reconnection_token: None,
         };
         serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
     }
@@ -1014,33 +1066,77 @@ mod tests {
         sent: Arc<Mutex<Vec<String>>>,
         permits: Arc<tokio::sync::Semaphore>,
         entered: Arc<std::sync::atomic::AtomicUsize>,
+        pending_acquire: Option<
+            std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<
+                                tokio::sync::OwnedSemaphorePermit,
+                                tokio::sync::AcquireError,
+                            >,
+                        > + Send,
+                >,
+            >,
+        >,
     }
 
-    #[async_trait::async_trait]
     impl Transport for GatedTransport {
-        async fn send(&mut self, message: String) -> Result<(), crate::error::SignalFishError> {
-            self.entered
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            let permit = self
-                .permits
-                .acquire()
-                .await
-                .map_err(|_| crate::error::SignalFishError::TransportClosed)?;
+        fn poll_send(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+            frame: &mut Option<crate::transport::TransportFrame>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
+            if self.pending_acquire.is_none() {
+                self.entered
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                self.pending_acquire = Some(Box::pin(Arc::clone(&self.permits).acquire_owned()));
+            }
+            let poll = std::future::Future::poll(
+                self.pending_acquire
+                    .as_mut()
+                    .expect("acquire future was just installed")
+                    .as_mut(),
+                cx,
+            );
+            let permit = match poll {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(Ok(permit)) => permit,
+                std::task::Poll::Ready(Err(_)) => {
+                    self.pending_acquire = None;
+                    return std::task::Poll::Ready(Err(
+                        crate::error::SignalFishError::TransportClosed,
+                    ));
+                }
+            };
+            self.pending_acquire = None;
             permit.forget();
-            self.sent.lock().unwrap().push(message);
-            Ok(())
+            if let Some(frame) = frame.take() {
+                let crate::transport::TransportFrame::Text(message) = frame else {
+                    panic!("test mock expected an outbound text frame");
+                };
+                self.sent.lock().unwrap().push(message);
+            }
+            std::task::Poll::Ready(Ok(()))
         }
-        async fn recv(&mut self) -> Option<Result<String, crate::error::SignalFishError>> {
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<
+            Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
+        > {
             if let Some(item) = self.incoming.pop_front() {
-                item
+                std::task::Poll::Ready(
+                    item.map(|result| result.map(crate::transport::TransportFrame::Text)),
+                )
             } else {
-                // No scripted messages remain — pending() never completes,
-                // keeping the transport loop alive until shutdown aborts it.
-                std::future::pending().await
+                std::task::Poll::Pending
             }
         }
-        async fn close(&mut self) -> Result<(), crate::error::SignalFishError> {
-            Ok(())
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
+            std::task::Poll::Ready(Ok(()))
         }
     }
 
@@ -1064,6 +1160,7 @@ mod tests {
             sent: Arc::clone(&sent),
             permits: Arc::clone(&permits),
             entered: Arc::clone(&entered),
+            pending_acquire: None,
         };
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
@@ -1133,8 +1230,12 @@ mod tests {
     #[tokio::test]
     async fn peer_teardown_discards_buffered_signal_for_that_peer() {
         let peer = uuid(9);
-        let player_left = serde_json::to_string(&ServerMessage::PlayerLeft { player_id: peer })
-            .expect("PlayerLeft serializes");
+        let player_left = serde_json::to_string(&ServerMessage::PlayerLeft {
+            player_id: peer,
+            epoch: Some(1),
+            final_seq: Some(0),
+        })
+        .expect("PlayerLeft serializes");
         // One permit: exactly the Authenticate send is allowed through.
         let permits = Arc::new(tokio::sync::Semaphore::new(1));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1143,6 +1244,7 @@ mod tests {
             incoming: VecDeque::from(vec![
                 Some(Ok(authed())),
                 Some(Ok(protocol_info_v3())),
+                Some(Ok(room_baseline(peer))),
                 Some(Ok(session_plan(peer, true))),
                 // Queued in the event channel behind the SessionPlan; the
                 // controller folds it while the Offer sits buffered below.
@@ -1151,6 +1253,7 @@ mod tests {
             sent: Arc::clone(&sent),
             permits: Arc::clone(&permits),
             entered: Arc::clone(&entered),
+            pending_acquire: None,
         };
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
@@ -1324,11 +1427,16 @@ mod tests {
     async fn player_left_disconnects_driver() {
         let peer = uuid(7);
         let driver = SharedDriver::default();
-        let player_left =
-            serde_json::to_string(&ServerMessage::PlayerLeft { player_id: peer }).unwrap();
+        let player_left = serde_json::to_string(&ServerMessage::PlayerLeft {
+            player_id: peer,
+            epoch: Some(1),
+            final_seq: Some(0),
+        })
+        .unwrap();
         let (transport, _sent) = MockTransport::new(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
+            Some(Ok(room_baseline(peer))),
             Some(Ok(session_plan(peer, false))),
             Some(Ok(player_left)),
         ]);
@@ -1998,9 +2106,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_ice_in_later_plan_does_not_push_empty_set_to_driver() {
-        // A non-empty ICE set is applied once; a later plan with an EMPTY ICE list
-        // must NOT push an empty set to the driver (it preserves the prior set).
+    async fn empty_ice_in_later_plan_resets_driver_ice() {
+        // A later authoritative plan with an empty ICE list clears prior state.
         let p = uuid(9);
         let q = uuid(99);
         let driver = SharedDriver::default();
@@ -2018,8 +2125,8 @@ mod tests {
         .await;
         assert_eq!(
             count_calls(&driver, |c| matches!(c, DriverCall::SetIceServers(0))),
-            0,
-            "controller must not push an empty ICE set to the driver"
+            1,
+            "controller must push one authoritative empty ICE reset"
         );
         assert_eq!(
             count_calls(&driver, |c| matches!(c, DriverCall::SetIceServers(1))),

@@ -277,12 +277,12 @@ async fn e2e_slow_consumer_eviction_is_observable() {
     }
 }
 
-/// Documents the reconnect contract end-to-end: the server never surfaces a
-/// reconnect token on the wire, so `reconnect()` cannot legitimately
-/// succeed; a fresh `join_room` is the working recovery path.
+/// Exercises the complete v3 reconnect-token lifecycle against server 0.4.0:
+/// capture the issued token, reconnect after an unexpected disconnect, and
+/// observe the rotated replacement token and sender watermarks.
 #[tokio::test]
 #[ignore = "requires a live signal-fish server; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
-async fn e2e_reconnect_after_disconnect_requires_unobtainable_token() {
+async fn e2e_reconnect_after_disconnect_uses_server_token() {
     let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
         Some(url) => (None, url),
         None => match spawn_server(&[]).await {
@@ -294,8 +294,10 @@ async fn e2e_reconnect_after_disconnect_requires_unobtainable_token() {
         },
     };
 
-    // Join a room, then drop the connection abruptly (no LeaveRoom).
-    let (mut a, mut a_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
+    // Join a v3 room, retain the server-issued token, then drop the connection
+    // abruptly (no LeaveRoom and no graceful shutdown).
+    let (a, mut a_events) =
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
     a.join_room(JoinRoomParams::new("e2e-reconnect", "alpha"))
         .expect("join_room");
     let joined = wait_for_event(&mut a_events, "RoomJoined", Duration::from_secs(5), |e| {
@@ -308,13 +310,17 @@ async fn e2e_reconnect_after_disconnect_requires_unobtainable_token() {
     else {
         unreachable!()
     };
-    a.shutdown().await;
+    let first_token = a
+        .snapshot()
+        .reconnection_token
+        .expect("v3 RoomJoined must issue a reconnection token");
+    drop(a);
     drop(a_events);
 
-    // Fresh connection: attempt Reconnect with the only token a client can
-    // produce — none. (No server payload ever carries a reconnect token.)
-    let (mut b, mut b_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
-    b.reconnect(player_id, room_id, String::new())
+    // Fresh v3 connection consumes the token.
+    let (mut b, mut b_events) =
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+    b.reconnect(player_id, room_id, first_token.clone())
         .expect("queue Reconnect");
 
     let response = wait_for_event(
@@ -332,25 +338,27 @@ async fn e2e_reconnect_after_disconnect_requires_unobtainable_token() {
     )
     .await;
 
-    // Experiment record (E5).
-    println!("E5 DATA: reconnect-with-empty-token outcome: {response:?}");
+    let SignalFishEvent::Reconnected {
+        reconnection_token,
+        sender_watermarks,
+        ..
+    } = response
+    else {
+        panic!("server 0.4.0 must accept its issued reconnect token")
+    };
+    let rotated_token = reconnection_token.expect("Reconnected must rotate the token");
+    assert_ne!(rotated_token, first_token, "reconnect token must rotate");
     assert!(
-        !matches!(response, SignalFishEvent::Reconnected { .. }),
-        "reconnect must NOT succeed without a token — if this fails, the \
-         server started accepting empty tokens (security hole) or began \
-         surfacing tokens (update the docs + this test)"
+        sender_watermarks
+            .iter()
+            .any(|watermark| watermark.player_id == player_id),
+        "Reconnected must carry the reconnecting player's watermark"
     );
-
-    // The working recovery path: a fresh join.
-    b.join_room(JoinRoomParams::new("e2e-reconnect", "alpha-again"))
-        .expect("fallback join_room");
-    wait_for_event(
-        &mut b_events,
-        "fallback RoomJoined",
-        Duration::from_secs(5),
-        |e| matches!(e, SignalFishEvent::RoomJoined { .. }),
-    )
-    .await;
+    assert_eq!(
+        b.snapshot().reconnection_token.as_deref(),
+        Some(rotated_token.as_str()),
+        "snapshot must expose the replacement token"
+    );
     b.shutdown().await;
 }
 

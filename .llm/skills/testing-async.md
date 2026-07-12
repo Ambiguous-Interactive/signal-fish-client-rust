@@ -24,15 +24,15 @@ The `#[tokio::test]` attribute macro is provided by the **`tokio`** crate itself
 
 ## Mock Transport Pattern (actual pattern in this codebase)
 
-Tests use a `VecDeque`-based `MockTransport` that replays scripted server
-responses. This is the real implementation in `tests/common/mod.rs`:
+Tests use the `VecDeque`-based `MockTransport` in `tests/common/mod.rs`:
 
 ```rust
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use async_trait::async_trait;
-use signal_fish_client::{Transport, SignalFishError};
+use std::task::{Context, Poll};
+use signal_fish_client::transport::TransportFrame;
+use signal_fish_client::{SignalFishError, Transport};
 
 pub struct MockTransport {
     incoming: VecDeque<Option<Result<String, SignalFishError>>>,
@@ -55,32 +55,43 @@ impl MockTransport {
     }
 }
 
-#[async_trait]
 impl Transport for MockTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.sent.lock().unwrap().push(message);
-        Ok(())
+    fn poll_send(
+        &mut self,
+        _cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        if let Some(frame) = frame.take() {
+            let TransportFrame::Text(message) = frame else {
+                panic!("test expected an outbound text frame");
+            };
+            self.sent.lock().unwrap().push(message);
+        }
+        Poll::Ready(Ok(()))
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
         if let Some(item) = self.incoming.pop_front() {
-            item   // None = clean close; Some(Ok(s)) = message; Some(Err(e)) = error
+            Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
         } else {
-            // All scripted responses consumed — pending() never
-            // completes (yields `Poll::Pending` without registering a
-            // waker). The tokio runtime keeps this task alive until
-            // `client.shutdown()` aborts it. Missing mock responses
-            // surface as test timeouts rather than silent successes.
-            std::future::pending().await
+            // No waker: stays pending until shutdown aborts the async driver.
+            Poll::Pending
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
+    fn poll_close(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
         self.closed.store(true, Ordering::Relaxed);
-        Ok(())
+        Poll::Ready(Ok(()))
     }
 }
 ```
+
+For binary-path tests, script and record `TransportFrame` values directly.
+A `poll_send` implementation may take the frame only after accepting it;
+if it returns `Pending`, retain that frame internally until a later `Ready`.
 
 ## Starting a Mock Client
 
@@ -164,11 +175,12 @@ task is aborted), always assert client state accessors are reset even if the
 
 ```rust
 client.shutdown().await;
-assert!(!client.is_connected());
-assert!(!client.is_authenticated());
-assert!(client.current_player_id().await.is_none());
-assert!(client.current_room_id().await.is_none());
-assert!(client.current_room_code().await.is_none());
+let snapshot = client.snapshot();
+assert!(!snapshot.connected);
+assert!(!snapshot.authenticated);
+assert!(snapshot.player_id.is_none());
+assert!(snapshot.room_id.is_none());
+assert!(snapshot.room_code.is_none());
 ```
 
 This prevents regressions where aborted tasks skip the normal disconnect event
@@ -176,23 +188,10 @@ path and leave stale authenticated/room/player state visible to callers.
 
 ## Test Organization
 
-```text
-tests/
-  client_tests.rs     ← integration tests (public API only)
-  common/
-    mod.rs            ← MockTransport + JSON helper fns
-
-src/
-  client.rs
-  #[cfg(test)] mod tests { ... }  ← unit tests (access private items)
-```
-
-Helper functions in `tests/common/mod.rs` produce JSON strings for common
-server messages: `authenticated_json()`, `room_joined_json()`,
-`room_left_json()`, `pong_json()`, `reconnected_json()`, `spectator_joined_json()`,
-`spectator_left_json()`, `player_joined_json(name, id)`, `player_left_json(id)`,
-`error_json(msg, code)`, `authority_response_json(granted, reason)`,
-`game_data_json(player, data)`, `game_data_binary_json(player, enc, bytes)`.
+Public-API integration tests live in `tests/client_tests.rs`; their frame-aware
+mock and JSON helpers live in `tests/common/mod.rs`. Private unit tests remain
+in each source module's `#[cfg(test)]` module. Reuse the common helpers for
+authentication, room/spectator lifecycle, errors, and text/binary game data.
 
 ## Cargo Test Commands
 
@@ -215,12 +214,9 @@ cargo test --test client_tests --all-features
 - All tests use the default `current_thread` runtime (deterministic ordering)
 - Avoid `tokio::time::sleep` in tests where possible; prefer scripted responses
 - For outbound mock sends, wait for the mock's `sent` buffer to reach the expected length with a bounded timeout; fixed sleeps are CI-flaky.
-- `std::future::pending()` in `MockTransport::recv`: this future **never
-  wakes** (it registers no waker). The tokio task stays alive because the
-  runtime keeps the task until `client.shutdown()` aborts it. Each call to
-  `recv` must create a new `pending()` future — never re-poll the same one.
-  If a test is missing a scripted response, the `recv` call hangs and the
-  test surfaces this as a timeout, not a panic
+- Returning `Poll::Pending` without using `cx.waker()` deliberately never
+  wakes the async driver. Use this only for mocks meant to stay idle until
+  shutdown; transports with later input or send capacity must register/wake.
 
 ## Custom Code Scanners in Tests
 
@@ -294,6 +290,9 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
 - **Negotiation**: script `protocol_info_json(Some(3))` after `authenticated_json()`
   through `MockTransport`, then assert `negotiated_protocol_version()`/`supports_mesh()`
   and that v3 sends succeed; assert `ProtocolUnsupported` before negotiation.
+- **Frames/accountability**: keep text and binary frames in one scripted order;
+  assert malformed binary becomes `DecodeFailed`, while valid accountability
+  failures become `ProtocolViolation` and follow the configured policy.
 - **`MeshController`**: test the choreography with a recording `WebRtcDriver` mock
   (see `src/webrtc.rs` tests) — drive the handshake, assert `connect(peer, initiate)`
   obeys the server, signals are relayed, and `PeerConnected`/`PeerDisconnected`

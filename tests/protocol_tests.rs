@@ -121,10 +121,21 @@ fn client_message_leave_room_round_trip() {
 #[test]
 fn client_message_game_data_round_trip() {
     let data = serde_json::json!({ "action": "move", "x": 10 });
-    let msg = ClientMessage::GameData { data: data.clone() };
+    let msg = ClientMessage::GameData {
+        data: data.clone(),
+        class: None,
+        key: None,
+    };
     let deser = round_trip(&msg);
-    if let ClientMessage::GameData { data: d } = deser {
+    if let ClientMessage::GameData {
+        data: d,
+        class,
+        key,
+    } = deser
+    {
         assert_eq!(d, data);
+        assert!(class.is_none());
+        assert!(key.is_none());
     } else {
         panic!("expected GameData variant");
     }
@@ -288,6 +299,7 @@ fn server_message_protocol_info_round_trip() {
         protocol_version: None,
         min_protocol_version: None,
         max_protocol_version: None,
+        transports: None,
     });
     let deser = round_trip(&msg);
     if let ServerMessage::ProtocolInfo(payload) = deser {
@@ -333,6 +345,8 @@ fn server_message_room_joined_round_trip() {
             is_ready: true,
             connected_at: "2026-01-01T00:00:00Z".into(),
             connection_info: None,
+            epoch: None,
+            seq: None,
         }],
         is_authority: false,
         lobby_state: LobbyState::Lobby,
@@ -340,6 +354,7 @@ fn server_message_room_joined_round_trip() {
         relay_type: "tcp".into(),
         current_spectators: vec![],
         ice_servers: vec![],
+        reconnection_token: None,
     };
     let msg = ServerMessage::RoomJoined(Box::new(payload));
     let deser = round_trip(&msg);
@@ -386,6 +401,8 @@ fn server_message_player_joined_round_trip() {
             is_ready: false,
             connected_at: "2026-02-15T10:30:00Z".into(),
             connection_info: None,
+            epoch: None,
+            seq: None,
         },
     };
     let deser = round_trip(&msg);
@@ -402,10 +419,19 @@ fn server_message_player_joined_round_trip() {
 fn server_message_player_left_round_trip() {
     let msg = ServerMessage::PlayerLeft {
         player_id: test_uuid(99),
+        epoch: None,
+        final_seq: None,
     };
     let deser = round_trip(&msg);
-    if let ServerMessage::PlayerLeft { player_id } = deser {
+    if let ServerMessage::PlayerLeft {
+        player_id,
+        epoch,
+        final_seq,
+    } = deser
+    {
         assert_eq!(player_id, test_uuid(99));
+        assert!(epoch.is_none());
+        assert!(final_seq.is_none());
     } else {
         panic!("expected PlayerLeft variant");
     }
@@ -416,11 +442,27 @@ fn server_message_game_data_round_trip() {
     let msg = ServerMessage::GameData {
         from_player: test_uuid(7),
         data: serde_json::json!({"hp": 100}),
+        seq: None,
+        epoch: None,
+        class: None,
+        key: None,
     };
     let deser = round_trip(&msg);
-    if let ServerMessage::GameData { from_player, data } = deser {
+    if let ServerMessage::GameData {
+        from_player,
+        data,
+        seq,
+        epoch,
+        class,
+        key,
+    } = deser
+    {
         assert_eq!(from_player, test_uuid(7));
         assert_eq!(data["hp"], 100);
+        assert!(seq.is_none());
+        assert!(epoch.is_none());
+        assert!(class.is_none());
+        assert!(key.is_none());
     } else {
         panic!("expected GameData variant");
     }
@@ -432,17 +474,23 @@ fn server_message_game_data_binary_round_trip() {
         from_player: test_uuid(8),
         encoding: GameDataEncoding::MessagePack,
         payload: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        seq: None,
+        epoch: None,
     };
     let deser = round_trip(&msg);
     if let ServerMessage::GameDataBinary {
         from_player,
         encoding,
         payload,
+        seq,
+        epoch,
     } = deser
     {
         assert_eq!(from_player, test_uuid(8));
         assert!(matches!(encoding, GameDataEncoding::MessagePack));
         assert_eq!(payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(seq.is_none());
+        assert!(epoch.is_none());
     } else {
         panic!("expected GameDataBinary variant");
     }
@@ -561,6 +609,9 @@ fn server_message_reconnected_round_trip() {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: vec![ServerMessage::Pong],
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     let msg = ServerMessage::Reconnected(Box::new(payload));
     let deser = round_trip(&msg);
@@ -593,10 +644,12 @@ fn server_message_reconnection_failed_round_trip() {
 fn server_message_player_reconnected_round_trip() {
     let msg = ServerMessage::PlayerReconnected {
         player_id: test_uuid(60),
+        epoch: None,
     };
     let deser = round_trip(&msg);
-    if let ServerMessage::PlayerReconnected { player_id } = deser {
+    if let ServerMessage::PlayerReconnected { player_id, epoch } = deser {
         assert_eq!(player_id, test_uuid(60));
+        assert!(epoch.is_none());
     } else {
         panic!("expected PlayerReconnected variant");
     }
@@ -1108,6 +1161,9 @@ fn reconnected_missed_events_carry_v3_messages() {
                 signal: serde_json::json!({ "Offer": "SDP" }),
             },
         ],
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     let msg = ServerMessage::Reconnected(Box::new(payload));
     if let ServerMessage::Reconnected(p) = round_trip(&msg) {
@@ -1307,6 +1363,7 @@ fn protocol_info_v2_negotiation_omits_version_fields() {
         protocol_version: None,
         min_protocol_version: None,
         max_protocol_version: None,
+        transports: None,
     };
     let json = serde_json::to_string(&payload).expect("ser");
     assert!(!json.contains("protocol_version"), "{json}");
@@ -1333,6 +1390,21 @@ fn protocol_info_v3_negotiation_surfaces_versions() {
 }
 
 #[test]
+fn protocol_info_rejects_explicit_null_version_fields() {
+    for field in [
+        "protocol_version",
+        "min_protocol_version",
+        "max_protocol_version",
+    ] {
+        let json = format!(r#"{{"capabilities":[],"game_data_formats":[],"{field}":null}}"#);
+        assert!(
+            serde_json::from_str::<ProtocolInfoPayload>(&json).is_err(),
+            "explicit null must be rejected for {field}"
+        );
+    }
+}
+
+#[test]
 fn room_joined_omits_ice_servers_when_empty() {
     let payload = RoomJoinedPayload {
         room_id: nil_uuid(),
@@ -1348,6 +1420,7 @@ fn room_joined_omits_ice_servers_when_empty() {
         relay_type: "auto".into(),
         current_spectators: vec![],
         ice_servers: vec![],
+        reconnection_token: None,
     };
     let json = serde_json::to_string(&payload).expect("ser");
     assert!(!json.contains("ice_servers"), "{json}");
@@ -1526,7 +1599,10 @@ fn fixture_game_data_from_server() {
         }}"#
     );
     let msg: ServerMessage = serde_json::from_str(&json).expect("deserialize");
-    if let ServerMessage::GameData { from_player, data } = msg {
+    if let ServerMessage::GameData {
+        from_player, data, ..
+    } = msg
+    {
         assert_eq!(from_player, pid);
         assert_eq!(data["action"], "fire");
     } else {
@@ -1613,7 +1689,7 @@ fn fixture_reconnected_from_server() {
         assert_eq!(p.missed_events.len(), 1);
         assert!(matches!(
             &p.missed_events[0],
-            ServerMessage::PlayerLeft { player_id: pid } if *pid == missed_player_id
+            ServerMessage::PlayerLeft { player_id: pid, .. } if *pid == missed_player_id
         ));
     } else {
         panic!("expected Reconnected");
@@ -1880,15 +1956,23 @@ fn game_data_binary_payload_serde_bytes_round_trip() {
         from_player: test_uuid(42),
         encoding: GameDataEncoding::Rkyv,
         payload: original_payload.clone(),
+        seq: None,
+        epoch: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let deser: ServerMessage = serde_json::from_str(&json).expect("deserialize");
     if let ServerMessage::GameDataBinary {
-        payload, encoding, ..
+        payload,
+        encoding,
+        seq,
+        epoch,
+        ..
     } = deser
     {
         assert_eq!(payload, original_payload);
         assert!(matches!(encoding, GameDataEncoding::Rkyv));
+        assert!(seq.is_none());
+        assert!(epoch.is_none());
     } else {
         panic!("expected GameDataBinary variant");
     }
@@ -1900,10 +1984,20 @@ fn game_data_binary_empty_payload() {
         from_player: nil_uuid(),
         encoding: GameDataEncoding::Json,
         payload: vec![],
+        seq: None,
+        epoch: None,
     };
     let deser = round_trip(&msg);
-    if let ServerMessage::GameDataBinary { payload, .. } = deser {
+    if let ServerMessage::GameDataBinary {
+        payload,
+        seq,
+        epoch,
+        ..
+    } = deser
+    {
         assert!(payload.is_empty());
+        assert!(seq.is_none());
+        assert!(epoch.is_none());
     } else {
         panic!("expected GameDataBinary variant");
     }
@@ -2043,6 +2137,8 @@ fn player_info_round_trip() {
             host: "10.0.0.5".into(),
             port: 5555,
         }),
+        epoch: None,
+        seq: None,
     };
     let deser = round_trip(&info);
     assert_eq!(deser.name, "TestPlayer");
@@ -2060,6 +2156,8 @@ fn player_info_no_connection_info_skipped() {
         is_ready: true,
         connected_at: "2026-01-01T00:00:00Z".into(),
         connection_info: None,
+        epoch: None,
+        seq: None,
     };
     let json = serde_json::to_string(&info).expect("serialize");
     // The "connection_info" field should be absent (skip_serializing_if).
@@ -2316,6 +2414,7 @@ fn protocol_info_payload_round_trip_minimal() {
         protocol_version: None,
         min_protocol_version: None,
         max_protocol_version: None,
+        transports: None,
     };
     let deser = round_trip(&payload);
     assert!(deser.platform.is_none());

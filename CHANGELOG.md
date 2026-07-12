@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Signal Fish Server 0.4.0 protocol surface: delivery classes and exact gap
+  reports, relay statistics, graceful-drain advisories, reconnect replay
+  status/watermarks and rotating reconnection tokens.
+- `SignalFishConfig::enable_v3()` for v3 relay/accountability without WebRTC,
+  plus invalid-state-proof `GameDataDelivery` classified JSON sends.
+- Strict protocol-v2/v3 MessagePack binary-envelope decoding and binary game-data
+  sends through both async and polling clients.
+- `ClientSnapshot`, `ProtocolViolationPolicy`, and typed
+  `SignalFishEvent::ProtocolViolation` diagnostics with quarantine as the
+  default accountability response.
+- `ErrorCode::ServerDraining` and `ErrorCode::InvalidDeliveryClass`.
+- `SignalFishError::BinaryFormatNotNegotiated` for binary sends attempted on
+  JSON-format connections.
+
+### Changed
+
+- **Breaking:** `Transport` is now a frame-capable, object-safe polling trait
+  over `TransportFrame::Text` and `TransportFrame::Binary`; it no longer
+  requires `Send`. The async client applies `Send + 'static` only at its task
+  boundary, while the polling client accepts main-thread-only transports.
+- **Breaking:** protocol and event types expose v3 sequence, epoch, delivery,
+  reconnect, shutdown, and accountability metadata. Exhaustive matches must
+  handle the new variants and fields.
+- `WebSocketTransport` now passes binary frames through, retains structured
+  close metadata, and explicitly flushes automatic Pong responses.
+- Event and snapshot debug formatting no longer prints
+  reconnect credentials or arbitrary application payloads.
+
+### Fixed
+
+- Enforce negotiated JSON-vs-binary frame representation on inbound and
+  outbound game data, reject explicit-null protocol-version fields, preserve
+  accountability baselines transactionally, and clear room tokens/quarantine
+  on room or spectator exit.
+- Polling disconnect policy now closes the physical transport, pending polling
+  closes remain driven across `poll()` calls, peer WebSocket Close responses
+  are flushed, and Emscripten callback payload handling matches its C ABI.
+
 ## [0.7.0] - 2026-07-02
 
 ### Added

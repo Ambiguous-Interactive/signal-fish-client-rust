@@ -12,7 +12,7 @@
 //! cargo run --example custom_transport
 //! ```
 
-use async_trait::async_trait;
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
 };
@@ -67,13 +67,24 @@ fn loopback_pair() -> (LoopbackTransport, LoopbackServer) {
 // Step 2: Implement the Transport trait
 // ─────────────────────────────────────────────────────────────────────
 
-#[async_trait]
 impl Transport for LoopbackTransport {
     /// Send a JSON message to the "server" side of the loopback.
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.tx
-            .send(message)
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let result = match frame.take() {
+            Some(TransportFrame::Text(message)) => self
+                .tx
+                .send(message)
+                .map_err(|e| SignalFishError::TransportSend(e.to_string())),
+            Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
+                "this text-only loopback does not accept binary frames".into(),
+            )),
+            None => Ok(()),
+        };
+        std::task::Poll::Ready(result)
     }
 
     /// Receive the next message from the "server" side.
@@ -81,15 +92,21 @@ impl Transport for LoopbackTransport {
     /// Returns `None` when the server channel is closed — this is how the
     /// client discovers that the connection has ended.
     ///
-    /// This method is **cancel-safe** because `mpsc::UnboundedReceiver::recv`
-    /// is cancel-safe.
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        self.rx.recv().await.map(Ok)
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        self.rx
+            .poll_recv(cx)
+            .map(|message| message.map(|message| Ok(TransportFrame::Text(message))))
     }
 
     /// Close is a no-op for channels — dropping is sufficient.
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 

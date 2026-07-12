@@ -4,20 +4,21 @@ Reference for writing correct and safe FFI bindings, with emphasis on C type map
 
 ## C Type Mapping
 
-Emscripten (and many C APIs) use integer-sized types where Rust has narrower equivalents. Always match the C type exactly.
+Match the upstream header exactly: Emscripten `websocket.h` uses one-byte C
+`bool` struct fields, while callback returns use integer-sized `EM_BOOL`.
 
-### EM_BOOL Is `c_int`, Not `bool`
+### WebSocket struct bools and callback `EM_BOOL` are distinct
 
-Emscripten's `EM_BOOL` is defined as `int` (4 bytes) in the C header. Rust's `bool` is 1 byte. Using the wrong type in FFI bindings silently corrupts struct layout.
+The callback alias shifts one-byte fields; bare Rust `bool` is unsupported, so use an explicit integer field alias.
 
 ```rust
 use std::os::raw::c_int;
 
-// CORRECT: matches the C typedef
+// Callback return value in this binding.
 type EM_BOOL = c_int;
 
-// WRONG: 1 byte instead of 4, corrupts all subsequent fields
-// type EM_BOOL = bool;
+// Fields declared as bool in websocket.h on wasm32-unknown-emscripten.
+type C_BOOL = u8;
 ```
 
 ### Common Emscripten Type Aliases
@@ -41,22 +42,25 @@ Before writing any `#[repr(C)]` binding, open the upstream C header and verify e
 A `#[repr(C)]` struct lays out fields sequentially with C alignment rules. A single wrong-sized field shifts ALL subsequent field offsets, causing every read after the mistake to return garbage.
 
 ```rust
-// C header:
-// struct EmscriptenWebSocketOpenEvent {
-//     int socket;             // 4 bytes
-//     EM_BOOL isSecure;       // 4 bytes (int, NOT bool)
-//     const char *url;        // pointer-sized
+// websocket.h:
+// struct EmscriptenWebSocketMessageEvent {
+//     int socket;
+//     uint8_t *data;
+//     uint32_t numBytes;
+//     bool isText;
 // };
 
 #[repr(C)]
-pub struct EmscriptenWebSocketOpenEvent {
-    pub socket: c_int,        // 4 bytes - correct
-    pub is_secure: EM_BOOL,   // 4 bytes - correct (c_int)
-    pub url: *const c_char,   // pointer - correct
+pub struct EmscriptenWebSocketMessageEvent {
+    pub socket: c_int,
+    pub data: *const u8,
+    pub num_bytes: u32,
+    pub is_text: C_BOOL,
 }
 ```
 
-If `is_secure` were declared as `bool` (1 byte + 3 bytes padding on some targets, or no padding on others), the `url` pointer would read from the wrong offset, producing an invalid address and likely a segfault or silent data corruption.
+Using `EM_BOOL` for `is_text`, `was_clean`, or `create_on_main_thread`
+corrupts the layout by widening a one-byte field to four bytes.
 
 ### Alignment Checklist
 
@@ -267,7 +271,7 @@ compile_error!(
 
 Use this checklist when adding or reviewing any FFI binding:
 
-- [ ] All `#[repr(C)]` struct fields match the C header types exactly (`EM_BOOL` = `c_int`, not `bool`)
+- [ ] All `#[repr(C)]` struct fields match the C header exactly (WebSocket C `bool` fields use one-byte `C_BOOL`; callback returns use `EM_BOOL = c_int`)
 - [ ] Field order matches the C header exactly
 - [ ] All return values from FFI functions are checked
 - [ ] Error paths follow the **same cleanup sequence** as `close()` + `Drop`
@@ -284,7 +288,8 @@ Use this checklist when adding or reviewing any FFI binding:
 
 | Mistake | Symptom | Fix |
 |---------|---------|-----|
-| `bool` for `EM_BOOL` | All fields after the `bool` read garbage | Use `c_int` |
+| `EM_BOOL` for a WebSocket C `bool` field | Following fields read at the wrong offsets | Use the one-byte `C_BOOL` alias |
+| Bare Rust `bool` in a repr(C) binding | Unsupported FFI field ABI | Use the verified integer alias for the header type |
 | Missing return value check | Silent callback registration failure | Check every FFI return value |
 | Double `Box::from_raw` | Double-free crash or UB | Track ownership, reclaim exactly once |
 | Wrong cleanup order | Use-after-free in callbacks | Close socket before reclaiming state |

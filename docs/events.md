@@ -4,14 +4,14 @@ Every message from the Signal Fish server — plus three synthetic
 transport-layer signals — is delivered as a [`SignalFishEvent`] variant
 through the event receiver returned by [`SignalFishClient::start`].
 
-This page documents all **31 variants** grouped by category, with field
+This page documents all **34 variants** grouped by category, with field
 descriptions and usage examples.
 
 !!! info "Protocol v2 relay + v3 mesh"
-    Four variants — [`SessionPlan`](#mesh-events-protocol-v3),
-    `NewPeer`, `SignalReceived`, and `PeerTransportStatus` — only arrive on a
-    **v3-negotiated** connection (opt in with `SignalFishConfig::enable_mesh()`).
-    The other 27 are available on every connection, including the v2 relay floor.
+    Delivery-accountability, relay diagnostics, graceful drain, and mesh events
+    only arrive on a **v3-negotiated** connection. Use
+    `SignalFishConfig::enable_v3()` for relay/accountability or
+    `enable_mesh()` when a WebRTC driver is also available.
     See [Protocol Versioning](protocol-versioning.md) and the
     [Mesh Guide](mesh-guide.md).
 
@@ -47,12 +47,13 @@ Use these to track the raw connection lifecycle.
 | `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>`, `last_server_error: Option<ServerErrorInfo>` | The transport connection was closed or errored. |
 | `DecodeFailed` | `message_type: Option<String>`, `error: String`, `raw_prefix: String` | An inbound frame could not be decoded into a `ServerMessage`; the connection stays open. |
+| `ProtocolViolation` | `kind: ProtocolViolationKind`, `diagnostic: String` | A decoded v3 message violated delivery-accountability invariants; configured policy decides quarantine, disconnect, or observation. |
 
 ### `Disconnected`
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reason` | `Option<String>` | Human-readable close explanation. When the transport captured a WebSocket Close frame with a reason, it appears as `"closed by server: …"`. The current server closes bare, so this is usually `None` for server-initiated closes. |
+| `reason` | `Option<String>` | Human-readable close explanation with structured transport code/reason when available. Server 0.4.0 uses semantic codes such as `4000 server_shutdown` and `4002 slow_consumer`. |
 | `last_server_error` | `Option<ServerErrorInfo>` | The most recent `Error`/`AuthenticationError` received on this connection — a correlation aid for attributing the disconnect. A server that evicts a slow consumer writes a best-effort `Error { error_code: SlowConsumer }` farewell before closing; when that frame arrives, it shows up here. See the [Delivery Contract](delivery.md). |
 
 !!! note "Delivery of the terminal `Disconnected`"
@@ -83,6 +84,12 @@ increments [`ClientStats::messages_undecodable`](client.md#send-queue-and-traffi
 
 Steady growth of `messages_undecodable` means protocol drift (upgrade this
 SDK) or a corrupting middlebox — log `DecodeFailed` in production builds.
+
+`ProtocolViolation` is distinct from `DecodeFailed`: its frame decoded, but
+its sequence, epoch, lifecycle, gap, counter, or causal state contradicted the
+negotiated protocol. The default quarantine policy suppresses subsequent room
+game data until an authoritative snapshot resets the baseline. See the
+[Delivery Contract](delivery.md#protocol-v3-delivery-classes-and-accountability).
 
 ```rust,ignore
 match event {
@@ -181,6 +188,7 @@ Events related to joining, failing to join, or leaving a room.
 | `ready_players` | `Vec<PlayerId>` | Players that have signaled readiness. |
 | `relay_type` | `String` | Relay transport type label (e.g., `"auto"`, `"tcp"`). |
 | `current_spectators` | `Vec<SpectatorInfo>` | Spectators currently watching. |
+| `reconnection_token` | `Option<String>` | Server-issued v3 secret retained by `ClientSnapshot` for unexpected-disconnect recovery. |
 
 ### `RoomJoinFailed`
 
@@ -214,7 +222,7 @@ Notifications about other players joining or leaving the room you are in.
 | Variant | Fields | Description |
 |---------|--------|-------------|
 | `PlayerJoined` | `player: PlayerInfo` | Another player joined the room. |
-| `PlayerLeft` | `player_id: PlayerId` | Another player left the room. |
+| `PlayerLeft` | `player_id: PlayerId`, `epoch: Option<u32>`, `final_seq: Option<u64>` | Another player left; v3 fields identify the incarnation and terminal relay watermark. |
 
 `PlayerInfo` contains `id`, `name`, `is_authority`, `is_ready`,
 `connected_at`, and an optional `connection_info`.
@@ -224,7 +232,7 @@ match event {
     SignalFishEvent::PlayerJoined { player } => {
         println!("{} joined (id: {})", player.name, player.id);
     }
-    SignalFishEvent::PlayerLeft { player_id } => {
+    SignalFishEvent::PlayerLeft { player_id, .. } => {
         println!("Player {player_id} left");
     }
     _ => {}
@@ -241,17 +249,21 @@ Carry arbitrary payloads between players. JSON payloads arrive as
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
-| `GameData` | `from_player: PlayerId`, `data: serde_json::Value` | JSON game data from another player. |
-| `GameDataBinary` | `from_player: PlayerId`, `encoding: GameDataEncoding`, `payload: Vec<u8>` | Binary game data from another player. |
+| `GameData` | `from_player`, `data`, `seq`, `epoch`, `class`, `key` | JSON game data plus optional v3 delivery stamp and classification. |
+| `GameDataBinary` | `from_player`, `encoding`, `payload`, `seq`, `epoch` | Binary data from a strict physical envelope; v2 has no stamps, while v3 requires both. |
 
 `GameDataEncoding` is one of `Json`, `MessagePack`, or `Rkyv`.
 
+`Debug` formatting for `SignalFishEvent` intentionally prints only the variant
+name. Events can contain reconnect credentials and arbitrary application data;
+pattern-match fields explicitly instead of logging the whole event.
+
 ```rust,ignore
 match event {
-    SignalFishEvent::GameData { from_player, data } => {
+    SignalFishEvent::GameData { from_player, data, .. } => {
         println!("JSON data from {from_player}: {data}");
     }
-    SignalFishEvent::GameDataBinary { from_player, encoding, payload } => {
+    SignalFishEvent::GameDataBinary { from_player, encoding, payload, .. } => {
         println!(
             "Binary data from {from_player}: {encoding:?}, {} bytes",
             payload.len()
@@ -405,6 +417,20 @@ match event {
 
 ---
 
+## Delivery and Drain Events (protocol v3)
+
+| Variant | Fields | Description |
+|---|---|---|
+| `DeliveryReport(payload)` | `DeliveryReportPayload` | Cumulative per-class outcomes and exact omitted sequence ranges. Exact ranges are the only authorization for continuing-connection gaps. |
+| `RelayStats` | `interval_ms`, `sent_to_you`, `dropped_for_you`, `backpressure_events` | Optional cumulative connection diagnostics; never gap authorization. |
+| `GoingAway` | `deadline_ms`, `retry_after_secs` | Best-effort graceful-drain advisory. The subsequent structured transport close remains authoritative. |
+
+Applications normally let the SDK consume these for accountability and also
+record the typed events for telemetry. `GoingAway` is a cue to preserve the
+current reconnect snapshot and prepare a retry after the advertised delay.
+
+---
+
 ## Heartbeat Events
 
 Call `client.ping()` to send a heartbeat message that keeps the connection alive.
@@ -434,7 +460,7 @@ On success the server replays any events that were missed.
 |---------|------------|-------------|
 | `Reconnected` | `room_id`, `room_code`, `player_id`, `missed_events`, … | Reconnection succeeded; state is restored. |
 | `ReconnectionFailed` | `reason: String`, `error_code: ErrorCode` | Reconnection failed. |
-| `PlayerReconnected` | `player_id: PlayerId` | Another player reconnected to the room. |
+| `PlayerReconnected` | `player_id: PlayerId`, `epoch: Option<u32>` | Another player reconnected; v3 carries the new incarnation epoch. |
 
 ### `Reconnected`
 
@@ -443,6 +469,9 @@ Carries the same room-state fields as `RoomJoined` plus:
 | Field | Type | Description |
 |-------|------|-------------|
 | `missed_events` | `Vec<SignalFishEvent>` | Events that occurred while the client was disconnected. |
+| `replay` | `Option<ReplayStatus>` | Whether the replayed control-event suffix is complete or truncated. |
+| `sender_watermarks` | `Vec<SenderWatermark>` | Authoritative per-sender epoch/sequence baselines for resumed delivery. |
+| `reconnection_token` | `Option<String>` | Fresh secret replacing the consumed token; also stored in `ClientSnapshot`. |
 
 ### `ReconnectionFailed`
 

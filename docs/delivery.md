@@ -5,9 +5,9 @@ client and the event receiver on another — including what happens when a
 consumer falls behind. This page documents the **end-to-end** contract
 (client + server), not just this SDK's half of it.
 
-Numbers on this page were measured against a local signal-fish-server
-built from commit `851c446` (the "never silently drop relayed messages"
-delivery rework) with the repository's
+Numbers on this page were originally measured against the reliable v2 relay.
+Protocol-v3 behavior and accountability were verified against Signal Fish
+Server 0.4.0 at commit `50b28a9`. The repository's
 [`load_lab`](examples.md#load-lab-measurement-harness) example. Localhost figures are lower bounds —
 real networks add RTT — but the *shapes* (where queues form, who waits,
 who gets evicted) are configuration-driven and transfer directly.
@@ -29,13 +29,11 @@ Every hop is bounded, and no hop drops silently:
   queue is full; `send_game_data_reliable` waits for space. *Queued is not
   delivered* — commands still in the queue when the connection ends are
   discarded with it (surfaced by `Disconnected`).
-- **Relay (server):** relayed messages are delivered **reliably and in
-  order per connection**. A recipient whose queue is full applies
-  backpressure to senders; a recipient that cannot absorb a single message
-  for the whole `slow_consumer_timeout_ms` grace window (default **5000**)
-  is disconnected with a best-effort `SLOW_CONSUMER` error frame. The
-  server never drops a relayed message except together with the connection
-  itself.
+- **Relay (server):** v2 and `GameDataDelivery::Reliable` preserve reliable,
+  ordered delivery per connection. Protocol v3 additionally offers keyed
+  `Latest` and loss-tolerant `Volatile`; every intentional omission is named
+  by a causally prior exact `DeliveryReport` range. A reliable recipient that
+  remains blocked through `slow_consumer_timeout_ms` is disconnected loudly.
 - **Receive side (this SDK):** events are delivered with backpressure (never
   dropped merely because the consumer is behind); a consumer that stops
   draining stops the socket being read (the server then sees *you* as the slow
@@ -44,16 +42,16 @@ Every hop is bounded, and no hop drops silently:
 
 ## What a slow-consumer eviction looks like from here
 
-When the server evicts this client, it writes a best-effort
-`Error { error_code: SlowConsumer }` farewell and then closes the socket
-**bare** — no WebSocket close code. Measured outcomes (queue=8,
-timeout=500ms, 8 KiB payloads; wedged consumer resumed after eviction):
+When server 0.4.0 evicts this client, it writes a best-effort
+`Error { error_code: SlowConsumer }` farewell and closes with semantic code
+`4002 slow_consumer`. Measured outcomes (queue=8, timeout=500ms, 8 KiB
+payloads; wedged consumer resumed after eviction):
 
 | Signal | Observed |
 |--------|----------|
 | `Error { SlowConsumer }` event | **Arrived** — the farewell sat in the kernel receive buffer and surfaced once draining resumed. It may be lost when buffers are truly full; treat it as best-effort. |
 | `Disconnected.last_server_error` | Carried the farewell (`SlowConsumer` + message) whenever the farewell arrived. |
-| `Disconnected.reason` | `None` — the server sends no close code today, so a bare stream end is all the transport sees. |
+| `Disconnected.reason` | Carries structured close code `4002` and reason `slow_consumer` when the close frame arrives. |
 
 Handle it like this:
 
@@ -70,16 +68,43 @@ SignalFishEvent::Disconnected { reason, last_server_error } => {
 }
 ```
 
-## Reconnect: what survives, what doesn't
+## Protocol-v3 delivery classes and accountability
 
-The server keeps a reconnection record (room membership snapshot) for
-`reconnection_window` (default 300 s) after an unexpected disconnect —
-**but no wire message ever carries the reconnection token**, so
-`reconnect(player_id, room_id, token)` cannot legitimately succeed today
-(measured: an empty token is rejected with `RECONNECTION_TOKEN_INVALID`),
-and `Reconnected.missed_events` is always empty on this server. Treat a
-disconnect as a fresh session: connect, authenticate, `join_room` with the
-same room code, and resynchronize state at the application level.
+Use `SignalFishConfig::enable_v3()` to opt into stamped relay delivery without
+advertising WebRTC. Existing `send_game_data` calls remain reliable and
+v2-byte-compatible. `send_game_data_with_delivery` accepts:
+
+| Class | Queue behavior | Intended use |
+|---|---|---|
+| `Reliable` | Preserve every message or disconnect the blocked recipient. | Control/state transitions that must not vanish. |
+| `Latest { key }` | Keep the newest undelivered value for each sender-defined key. | Replaceable state such as position or aim. |
+| `Volatile` | Drop under pressure rather than building stale backlog. | Ephemeral effects and frequent samples. |
+
+Every v3 room payload is stamped with sender `epoch` and `seq`. The SDK ports
+the server 0.4.0 reference accountability algorithm and validates snapshots,
+lifecycle epochs, exact gap coverage, reports, terminal watermarks, and
+reconnect baselines. A sequence hole is authorized only by the union of prior
+exact `DeliveryReport` ranges for that sender and epoch; aggregate
+`RelayStats` and counter deltas are diagnostics, not authorization.
+
+On a violation the SDK emits `SignalFishEvent::ProtocolViolation`. The default
+`ProtocolViolationPolicy::Quarantine` suppresses subsequent room game data
+until `RoomJoined`, `SpectatorJoined`, or `Reconnected` establishes a fresh
+authoritative baseline. `Disconnect` closes the signaling connection;
+`Observe` reports the violation and still delivers the offending data, leaving
+the application to decide whether and how to recover.
+Inspect `client.snapshot().quarantined` when application state recovery matters.
+
+## Reconnect token lifecycle
+
+Server 0.4.0 issues a secret token in v3 `RoomJoined` and rotates it after a
+successful `Reconnected`. The client stores the latest value in the coherent
+`ClientSnapshot`; persist `snapshot().reconnection_token` together with the
+room/player IDs before an unexpected disconnect. Reconnect on a fresh,
+authenticated v3 connection, then replace the consumed token with the rotated
+one from the new snapshot. `sender_watermarks` provide the authoritative
+per-sender baseline, while `replay` describes completeness of replayed control
+events. Never log reconnect tokens.
 
 ## Capacity: what the relay sustains (measured)
 

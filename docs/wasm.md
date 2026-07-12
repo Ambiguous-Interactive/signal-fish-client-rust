@@ -11,13 +11,13 @@ compilation, transport selection, game-loop integration, and Godot gdext usage.
 | Target | Runtime | Transport | Client | Use Case |
 |--------|---------|-----------|--------|----------|
 | `wasm32-unknown-unknown` | Browser sandbox / wasm-pack | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) | Generic browser apps, Bevy, wasm-bindgen projects |
-| `wasm32-unknown-emscripten` | Emscripten C runtime | `EmscriptenWebSocketTransport` (built-in) | `SignalFishPollingClient` | Godot 4.5 web exports via gdext (godot-rust) |
+| `wasm32-unknown-emscripten` | Emscripten C runtime | Engine transport, or `EmscriptenWebSocketTransport` with a custom link-enabled template | `SignalFishPollingClient` | Engine-hosted web exports |
 
 The two targets differ in what the compiled WASM module can access at runtime.
 `wasm32-unknown-unknown` runs inside a pure sandbox with no OS — you must bridge
 all I/O through JavaScript. `wasm32-unknown-emscripten` links against
-Emscripten's C sysroot, giving native access to browser WebSocket APIs through
-Emscripten's C headers.
+Emscripten's C sysroot. Access to an Emscripten C API still depends on the final
+host linking the corresponding JavaScript library; headers alone are not enough.
 
 ```mermaid
 graph TD
@@ -72,7 +72,7 @@ cargo build --target wasm32-unknown-unknown --no-default-features
 
 Implement the `Transport` trait using a browser-compatible WebSocket binding
 (e.g., `web-sys`, `gloo-net`, or `wasm-bindgen`). The trait requires three
-async methods — `send`, `recv`, and `close` — as documented on the
+object-safe polling methods — `poll_send`, `poll_recv`, and `poll_close` — as documented on the
 [Transport](transport.md) page.
 
 ### Compatibility
@@ -87,10 +87,16 @@ This target is compatible with:
 
 ## Target: `wasm32-unknown-emscripten`
 
-This target provides **full built-in WebSocket support** through the
-`EmscriptenWebSocketTransport` and a synchronous polling client
-(`SignalFishPollingClient`). It is the recommended path for **Godot 4.5 web
-exports via gdext** (godot-rust).
+This target supports a synchronous polling client. The bundled
+`EmscriptenWebSocketTransport` is an advanced integration for hosts or custom
+export templates that explicitly link Emscripten's WebSocket library.
+
+!!! warning "Official Godot templates"
+    Standard Godot web export templates do not link that Emscripten library,
+    so merely enabling `transport-websocket-emscripten` does not make a
+    loadable GDExtension. With official templates, implement `Transport`
+    around Godot's own `WebSocketPeer` and drive it with
+    `SignalFishPollingClient`.
 
 ### What you get
 
@@ -136,7 +142,7 @@ cargo +nightly build -Zbuild-std \
 A `Transport` implementation backed by Emscripten's built-in
 `<emscripten/websocket.h>` C API. It uses raw FFI calls to create a browser
 WebSocket and a `std::sync::mpsc` channel to bridge asynchronous C callbacks
-into the transport's `recv()` method.
+into the transport's `poll_recv()` method.
 
 ### Construction
 
@@ -190,10 +196,11 @@ The callback bridge pattern works as follows:
 
 ### Threading model
 
-On `wasm32-unknown-emscripten`, everything runs on a **single thread**.
-Emscripten WebSocket callbacks fire synchronously on the main thread between
-frames. The `Send` bound required by the `Transport` trait is vacuously
-satisfied because there are no other threads.
+On the supported single-threaded Emscripten configuration, WebSocket callbacks
+fire on the main thread between frames. `Transport` deliberately has no `Send`
+bound; this transport is therefore usable by `SignalFishPollingClient` without
+an unsafe thread-safety claim. The async client adds its own `Send + 'static`
+bound and does not accept this main-thread transport.
 
 ### Compatibility
 
@@ -201,9 +208,8 @@ satisfied because there are no other threads.
     `EmscriptenWebSocketTransport` is designed exclusively for use with
     `SignalFishPollingClient`. It is **not** compatible with
     `SignalFishClient::start()`, which requires a Tokio runtime to spawn a
-    background task. The transport's `recv()` uses `std::future::pending()`
-    when no messages are buffered — a real async runtime would hang forever
-    waiting for a waker that never fires.
+    background task and requires `Send + 'static`. This transport is driven by
+    the engine's frame loop through the polling methods.
 
 ### Connection timing
 

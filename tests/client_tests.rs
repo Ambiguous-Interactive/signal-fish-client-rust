@@ -17,21 +17,20 @@ mod common;
 
 use std::collections::VecDeque;
 
-use async_trait::async_trait;
 use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage, TransportKind,
 };
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
     ErrorCode, JoinRoomParams, PeerSignal, SignalFishClient, SignalFishConfig, SignalFishError,
     SignalFishEvent, Transport,
 };
 
 use common::{
-    authenticated_json, authority_response_json, error_json, game_data_binary_json, game_data_json,
-    new_peer_json, peer_transport_status_json, player_left_json, pong_json, protocol_info_json,
-    reconnected_json, reconnected_with_protocol_info_json, room_joined_json, room_left_json,
-    session_plan_json, signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len,
-    MockTransport,
+    authenticated_json, authority_response_json, error_json, game_data_json, new_peer_json,
+    peer_transport_status_json, player_left_json, pong_json, protocol_info_json, reconnected_json,
+    reconnected_with_protocol_info_json, room_joined_json, room_left_json, session_plan_json,
+    signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len, MockTransport,
 };
 
 // ════════════════════════════════════════════════════════════════════
@@ -70,6 +69,36 @@ async fn drain_until_authenticated(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
     );
 }
 
+fn v3_room_baseline_json(peer: uuid::Uuid) -> String {
+    let message =
+        ServerMessage::RoomJoined(Box::new(signal_fish_client::protocol::RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(100),
+            room_code: "BINARY".into(),
+            player_id: uuid::Uuid::from_u128(1),
+            game_name: "test".into(),
+            max_players: 2,
+            supports_authority: false,
+            current_players: vec![signal_fish_client::protocol::PlayerInfo {
+                id: peer,
+                name: "peer".into(),
+                is_authority: false,
+                is_ready: false,
+                connection_info: None,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                epoch: Some(1),
+                seq: Some(0),
+            }],
+            is_authority: false,
+            lobby_state: signal_fish_client::protocol::LobbyState::Lobby,
+            ready_players: vec![],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        }));
+    serde_json::to_string(&message).expect("serialize room baseline")
+}
+
 /// Transport that can script incoming messages but hangs forever in `close()`.
 struct HangingCloseTransport {
     incoming: VecDeque<Option<Result<String, SignalFishError>>>,
@@ -83,25 +112,32 @@ impl HangingCloseTransport {
     }
 }
 
-#[async_trait]
 impl Transport for HangingCloseTransport {
-    async fn send(&mut self, _message: String) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        frame.take();
+        std::task::Poll::Ready(Ok(()))
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
         if let Some(item) = self.incoming.pop_front() {
-            item
+            std::task::Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
         } else {
-            // No more scripted messages — pending() never completes,
-            // keeping the task alive until shutdown aborts it.
-            std::future::pending().await
+            std::task::Poll::Pending
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        // Simulate a transport that never completes close().
-        std::future::pending().await
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Pending
     }
 }
 
@@ -689,11 +725,19 @@ async fn game_data_event_received() {
     if let SignalFishEvent::GameData {
         from_player,
         data: d,
+        seq,
+        epoch,
+        class,
+        key,
     } = ev
     {
         assert_eq!(from_player, player);
         assert_eq!(d["score"], 100);
         assert_eq!(d["level"], 5);
+        assert!(seq.is_none());
+        assert!(epoch.is_none());
+        assert!(class.is_none());
+        assert!(key.is_none());
     } else {
         panic!("expected GameData event, got {ev:?}");
     }
@@ -705,31 +749,189 @@ async fn game_data_event_received() {
 async fn game_data_binary_event_received() {
     let player = uuid::Uuid::from_u128(99);
     let payload = vec![0xCA, 0xFE, 0xBA, 0xBE];
-    let (mut client, mut events, _sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(game_data_binary_json(
-            player,
-            GameDataEncoding::MessagePack,
-            payload.clone(),
+    let binary = signal_fish_client::protocol::V3BinaryGameDataFrame {
+        from_player: player,
+        encoding: GameDataEncoding::MessagePack,
+        payload: payload.clone(),
+        seq: 1,
+        epoch: 1,
+    };
+    let (transport, _sent, _closed) = MockTransport::new_frames(vec![
+        Some(Ok(TransportFrame::Text(authenticated_json()))),
+        Some(Ok(TransportFrame::Text(protocol_info_json(Some(3))))),
+        Some(Ok(TransportFrame::Text(v3_room_baseline_json(player)))),
+        Some(Ok(TransportFrame::Binary(
+            rmp_serde::to_vec_named(&binary).expect("serialize binary frame"),
         ))),
     ]);
+    let mut config = SignalFishConfig::new("mb_test_integration").enable_v3();
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
 
     drain_until_authenticated(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::ProtocolInfo(_))
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::GameDataBinary {
         from_player,
         encoding,
         payload: p,
+        seq,
+        epoch,
     } = ev
     {
         assert_eq!(from_player, player);
         assert!(matches!(encoding, GameDataEncoding::MessagePack));
         assert_eq!(p, payload);
+        assert_eq!(seq, Some(1));
+        assert_eq!(epoch, Some(1));
     } else {
         panic!("expected GameDataBinary event, got {ev:?}");
     }
 
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn v2_message_pack_binary_event_received() {
+    let player = uuid::Uuid::from_u128(98);
+    let frame = signal_fish_client::protocol::V2BinaryGameDataFrame {
+        from_player: player,
+        encoding: GameDataEncoding::MessagePack,
+        payload: vec![4, 5, 6],
+    };
+    let (transport, _sent, _closed) = MockTransport::new_frames(vec![
+        Some(Ok(TransportFrame::Text(authenticated_json()))),
+        Some(Ok(TransportFrame::Text(protocol_info_json(None)))),
+        Some(Ok(TransportFrame::Binary(
+            rmp_serde::to_vec_named(&frame).expect("serialize v2 binary frame"),
+        ))),
+    ]);
+    let mut config = SignalFishConfig::new("mb_test_integration");
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+    drain_until_authenticated(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::ProtocolInfo(_))
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::GameDataBinary {
+            from_player,
+            seq: None,
+            epoch: None,
+            ..
+        }) if from_player == player
+    ));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn json_mode_physical_binary_policy_matches_polling_client() {
+    for (policy, connected, quarantined) in [
+        (
+            signal_fish_client::ProtocolViolationPolicy::Quarantine,
+            true,
+            true,
+        ),
+        (
+            signal_fish_client::ProtocolViolationPolicy::Disconnect,
+            false,
+            false,
+        ),
+        (
+            signal_fish_client::ProtocolViolationPolicy::Observe,
+            true,
+            false,
+        ),
+    ] {
+        let (transport, _sent, _closed) =
+            MockTransport::new_frames(vec![Some(Ok(TransportFrame::Binary(vec![0xff, 0x00])))]);
+        let config =
+            SignalFishConfig::new("mb_test_integration").with_protocol_violation_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolViolation { .. })
+        ));
+        if policy == signal_fish_client::ProtocolViolationPolicy::Disconnect {
+            assert!(matches!(
+                events.recv().await,
+                Some(SignalFishEvent::Disconnected { .. })
+            ));
+        }
+        assert_eq!(client.is_connected(), connected);
+        assert_eq!(client.snapshot().quarantined, quarantined);
+        client.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn async_observe_advances_valid_wrong_representation_sequence() {
+    let player = uuid::Uuid::from_u128(97);
+    let binary = signal_fish_client::protocol::V3BinaryGameDataFrame {
+        from_player: player,
+        encoding: GameDataEncoding::MessagePack,
+        payload: vec![1, 2, 3],
+        seq: 1,
+        epoch: 1,
+    };
+    let following = ServerMessage::GameData {
+        from_player: player,
+        data: serde_json::json!({"seq": 2}),
+        seq: Some(2),
+        epoch: Some(1),
+        class: Some(signal_fish_client::protocol::DeliveryClass::Reliable),
+        key: None,
+    };
+    let (transport, _sent, _closed) = MockTransport::new_frames(vec![
+        Some(Ok(TransportFrame::Text(authenticated_json()))),
+        Some(Ok(TransportFrame::Text(protocol_info_json(Some(3))))),
+        Some(Ok(TransportFrame::Text(v3_room_baseline_json(player)))),
+        Some(Ok(TransportFrame::Binary(
+            rmp_serde::to_vec_named(&binary).expect("serialize binary fixture"),
+        ))),
+        Some(Ok(TransportFrame::Text(
+            serde_json::to_string(&following).expect("serialize following JSON fixture"),
+        ))),
+    ]);
+    let config = SignalFishConfig::new("mb_test_integration")
+        .enable_v3()
+        .with_protocol_violation_policy(signal_fish_client::ProtocolViolationPolicy::Observe);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+    drain_until_authenticated(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::ProtocolInfo(_))
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::ProtocolViolation { .. })
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::GameDataBinary { seq: Some(1), .. })
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::GameData { seq: Some(2), .. })
+    ));
     client.shutdown().await;
 }
 
@@ -753,15 +955,22 @@ async fn send_game_data_produces_correct_json() {
         let messages = sent.lock().unwrap();
         let gd_msg = messages.iter().find_map(|m| {
             let cm: ClientMessage = serde_json::from_str(m).ok()?;
-            if let ClientMessage::GameData { data: d } = cm {
-                Some(d)
+            if let ClientMessage::GameData {
+                data: d,
+                class,
+                key,
+            } = cm
+            {
+                Some((d, class, key))
             } else {
                 None
             }
         });
-        let d = gd_msg.expect("GameData message not found");
+        let (d, class, key) = gd_msg.expect("GameData message not found");
         assert_eq!(d["type"], "chat");
         assert_eq!(d["msg"], "hello");
+        assert!(class.is_none());
+        assert!(key.is_none());
     }
 
     client.shutdown().await;
@@ -979,8 +1188,15 @@ async fn player_left_event_received() {
     let _rj = events.recv().await; // RoomJoined
 
     let ev = events.recv().await.expect("event");
-    if let SignalFishEvent::PlayerLeft { player_id } = ev {
+    if let SignalFishEvent::PlayerLeft {
+        player_id,
+        epoch,
+        final_seq,
+    } = ev
+    {
         assert_eq!(player_id, left_player);
+        assert!(epoch.is_none());
+        assert!(final_seq.is_none());
     } else {
         panic!("expected PlayerLeft event, got {ev:?}");
     }
@@ -1195,6 +1411,7 @@ async fn reconnection_failed_event() {
 async fn player_reconnected_event() {
     let pr_json = serde_json::to_string(&ServerMessage::PlayerReconnected {
         player_id: uuid::Uuid::from_u128(700),
+        epoch: None,
     })
     .expect("serialize");
 
@@ -1204,8 +1421,9 @@ async fn player_reconnected_event() {
     drain_until_authenticated(&mut events).await;
 
     let ev = events.recv().await.expect("event");
-    if let SignalFishEvent::PlayerReconnected { player_id } = ev {
+    if let SignalFishEvent::PlayerReconnected { player_id, epoch } = ev {
         assert_eq!(player_id, uuid::Uuid::from_u128(700));
+        assert!(epoch.is_none());
     } else {
         panic!("expected PlayerReconnected event, got {ev:?}");
     }
@@ -1313,6 +1531,7 @@ async fn protocol_info_event() {
             protocol_version: None,
             min_protocol_version: None,
             max_protocol_version: None,
+            transports: None,
         },
     ))
     .expect("serialize");
@@ -1712,6 +1931,8 @@ async fn player_joined_with_connection_info_direct() {
                 host: "10.0.0.5".into(),
                 port: 5555,
             }),
+            epoch: None,
+            seq: None,
         },
     })
     .expect("serialize");

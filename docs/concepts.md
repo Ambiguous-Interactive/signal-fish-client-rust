@@ -18,22 +18,28 @@ graph LR
     B --> C["SignalFishEvent (mpsc channel)"]
 ```
 
-The `Transport` trait defines three async methods — send, receive, and close:
+The object-safe `Transport` trait defines three polling methods over text or
+binary frames:
 
 ```rust,ignore
-#[async_trait]
-pub trait Transport: Send + 'static {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
-    async fn close(&mut self) -> Result<(), SignalFishError>;
+pub trait Transport {
+    fn poll_send(&mut self, cx: &mut Context<'_>, frame: &mut Option<TransportFrame>)
+        -> Poll<Result<(), SignalFishError>>;
+    fn poll_recv(&mut self, cx: &mut Context<'_>)
+        -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
+    fn poll_close(&mut self, cx: &mut Context<'_>)
+        -> Poll<Result<(), SignalFishError>>;
 }
 ```
 
 | Method | Purpose |
 |--------|---------|
-| `send` | Transmit one serialized JSON message to the server. |
-| `recv` | Receive the next JSON message. Returns `None` on clean close. **Must be cancel-safe.** |
-| `close` | Gracefully shut down the underlying connection. |
+| `poll_send` | Accept and progress one `TransportFrame`; preserve ownership correctly across `Pending`. |
+| `poll_recv` | Poll the next text/binary frame; `Ready(None)` is a clean close. |
+| `poll_close` | Progress idempotent graceful shutdown across calls. |
+
+The trait has no `Send` bound, allowing engine-owned main-thread transports.
+The async client adds `Send + 'static` at `start`; the polling client does not.
 
 !!! tip "Bring your own transport"
     Connection setup is intentionally **not** part of the trait. Different
