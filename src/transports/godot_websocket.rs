@@ -66,7 +66,10 @@ impl GodotWebSocketBackend for Gd<WebSocketPeer> {
     }
 
     fn send_binary(&mut self, bytes: Vec<u8>) -> Result<(), String> {
-        let result = std::ops::DerefMut::deref_mut(self).send(&PackedByteArray::from(bytes));
+        let result = std::ops::DerefMut::deref_mut(self)
+            .send_ex(&PackedByteArray::from(bytes))
+            .write_mode(web_socket_peer::WriteMode::BINARY)
+            .done();
         godot_result(result, "send binary")
     }
 
@@ -315,7 +318,7 @@ impl Transport for GodotWebSocketTransport {
             }
             self.send_in_flight = false;
         }
-        if !self.close_started {
+        if !self.close_started && state != PeerState::Closing {
             self.backend.close();
             self.close_started = true;
         }
@@ -659,6 +662,26 @@ mod tests {
         assert_eq!(
             transport.close_info().map(|info| info.initiated_by_peer),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn close_does_not_claim_an_already_peer_initiated_handshake() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend
+            .states
+            .extend([PeerState::Closing, PeerState::Closed]);
+        backend.close_code = 1000;
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(!transport.close_started);
+        assert_eq!(
+            transport.close_info().map(|info| info.initiated_by_peer),
+            Some(true)
         );
     }
 
