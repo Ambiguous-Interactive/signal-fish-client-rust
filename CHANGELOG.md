@@ -45,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on room or spectator exit.
 - Polling disconnect policy now closes the physical transport, pending polling
   closes remain driven across `poll()` calls, peer WebSocket Close responses
-  are flushed, and Emscripten callback payload handling matches its C ABI.
+  are flushed, Emscripten callback payload handling matches its C ABI, and
+  debug builds diagnose wake-driven misuse of its polling-only receive path.
 
 ## [0.7.0] - 2026-07-02
 

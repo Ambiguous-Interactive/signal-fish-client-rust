@@ -5150,6 +5150,26 @@ mod ffi_safety_documentation {
         );
     }
 
+    /// The Emscripten callback channel has no wake integration. Debug builds
+    /// must diagnose accidental wake-driven polling instead of hanging silently.
+    #[test]
+    fn emscripten_pending_recv_diagnoses_non_noop_waker() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        assert!(
+            contents.contains("will_wake(std::task::Waker::noop())"),
+            "Emscripten poll_recv must distinguish the polling client's noop waker"
+        );
+        assert!(
+            contents.contains("reported_non_noop_waker"),
+            "Emscripten poll_recv must report wake-driven misuse only once"
+        );
+        assert!(
+            contents.contains("SignalFishPollingClient with a noop waker"),
+            "Emscripten poll_recv must emit an actionable misuse diagnostic"
+        );
+    }
+
     /// Every `unsafe {` block in the Emscripten WebSocket transport must have
     /// a SAFETY comment within the preceding 15 lines. This ensures that all
     /// unsafe code has documented safety justification.

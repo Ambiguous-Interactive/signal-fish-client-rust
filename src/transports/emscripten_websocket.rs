@@ -17,7 +17,7 @@
 //! On `wasm32-unknown-emscripten`, everything runs on a single thread.
 //! Emscripten WebSocket callbacks are invoked synchronously on the main
 //! thread. A `std::sync::mpsc` channel bridges callback events into the
-//! transport's `recv()` method.
+//! transport's `poll_recv()` method.
 //!
 //! # Compatibility
 //!
@@ -25,38 +25,31 @@
 //! [`SignalFishPollingClient`](crate::SignalFishPollingClient) and a noop-waker
 //! polling model. It is **not** compatible with
 //! [`SignalFishClient::start()`](crate::SignalFishClient::start) or any real
-//! async runtime, because `recv()` uses [`std::future::pending()`] when no
-//! messages are buffered (it will never wake).
+//! async runtime, because `poll_recv()` does not register a waker when no
+//! messages are buffered.
 //!
-//! # `recv()` caller contract
+//! # `poll_recv()` caller contract
 //!
-//! The `recv()` method uses [`std::future::pending()`] when the internal
-//! channel is empty. This means the returned future will **never wake** --
-//! it permanently suspends without registering any waker. This is
+//! The `poll_recv()` method returns [`std::task::Poll::Pending`] when the
+//! internal channel is empty without registering the supplied waker. This is
 //! intentional and correct under the noop-waker polling model used by
 //! [`SignalFishPollingClient`](crate::SignalFishPollingClient):
 //!
-//! - **Callers must create a new future on every call.** Each invocation
-//!   of `recv()` must produce a fresh future that is polled exactly once.
-//!   Never store and re-poll a future returned by `recv()` -- doing so
-//!   will hang forever because the pending future has no waker to trigger
-//!   progress.
-//!
-//! - **`std::future::pending().await` intentionally never wakes.** When
+//! - **`Poll::Pending` intentionally does not register a waker.** When
 //!   no messages are buffered, the transport signals "nothing yet" by
-//!   returning `Poll::Pending` via `std::future::pending()`. The polling
+//!   returning `Poll::Pending`. The polling
 //!   client discards this result and retries on the next tick, which
-//!   creates a new future that can observe newly arrived messages.
+//!   can observe newly arrived messages.
 //!
 //! - **Only compatible with `SignalFishPollingClient`.** Standard async
 //!   runtimes (Tokio, async-std, etc.) expect futures to register a
 //!   waker so they can be re-polled when progress is possible. Since
-//!   `pending()` never registers a waker, using this transport with
+//!   this transport does not register a waker, using it with
 //!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
-//!   any real executor will cause `recv()` to hang indefinitely.
+//!   any real executor will cause `poll_recv()` to remain pending indefinitely.
 //!
 //! - **Debug-build misuse detection.** In `cfg(debug_assertions)` builds,
-//!   `recv()` will emit a `tracing::error!` if it detects a non-noop waker,
+//!   `poll_recv()` emits a `tracing::error!` once if it detects a non-noop waker,
 //!   which indicates the transport is being driven by a real async runtime
 //!   instead of `SignalFishPollingClient`. This makes misuse visible
 //!   during development rather than manifesting as a silent hang.
@@ -64,16 +57,14 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use signal_fish_client::{EmscriptenWebSocketTransport, Transport};
+//! use signal_fish_client::{
+//!     EmscriptenWebSocketTransport, SignalFishConfig, SignalFishPollingClient,
+//! };
 //!
-//! let mut transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
-//! transport.send("hello".to_string()).await?;
-//!
-//! if let Some(Ok(msg)) = transport.recv().await {
-//!     // handle message
-//! }
-//!
-//! transport.close().await?;
+//! let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
+//! let config = SignalFishConfig::new("mb_app_abc123");
+//! let mut client = SignalFishPollingClient::new(transport, config);
+//! let events = client.poll();
 //! ```
 
 // Compile-time guard: this module requires the wasm32-unknown-emscripten target.
@@ -233,7 +224,7 @@ struct CallbackState {
 /// A [`Transport`] implementation backed by Emscripten's built-in WebSocket API.
 ///
 /// Uses raw FFI calls to `<emscripten/websocket.h>` and a `std::sync::mpsc`
-/// channel to bridge asynchronous C callbacks into the transport's `recv()`
+/// channel to bridge asynchronous C callbacks into the transport's `poll_recv()`
 /// method.
 ///
 /// # Construction
@@ -249,8 +240,8 @@ struct CallbackState {
 /// # Threading
 ///
 /// This type is only intended for use on `wasm32-unknown-emscripten`, which
-/// is single-threaded. The `Send` implementation is safe because there are
-/// no other threads.
+/// is single-threaded. It deliberately does not implement `Send` and must be
+/// driven by [`SignalFishPollingClient`](crate::SignalFishPollingClient).
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,
@@ -263,6 +254,8 @@ pub struct EmscriptenWebSocketTransport {
     /// does not double-delete the socket handle.
     deleted: bool,
     close_info: Option<TransportCloseInfo>,
+    #[cfg(debug_assertions)]
+    reported_non_noop_waker: bool,
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -394,6 +387,8 @@ impl EmscriptenWebSocketTransport {
             opened: false,
             deleted: false,
             close_info: None,
+            #[cfg(debug_assertions)]
+            reported_non_noop_waker: false,
         })
     }
 }
@@ -524,8 +519,6 @@ extern "C" fn on_close_callback(
     1 // EM_TRUE
 }
 
-// ── Debug-Only Misuse Detection ─────────────────────────────────────────────
-
 // ── Transport Trait Implementation ──────────────────────────────────────────
 
 impl Transport for EmscriptenWebSocketTransport {
@@ -583,8 +576,20 @@ impl Transport for EmscriptenWebSocketTransport {
 
     fn poll_recv(
         &mut self,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        // Keep release builds warning-free when the debug-only diagnostic below
+        // is compiled out.
+        let _ = cx;
+        #[cfg(debug_assertions)]
+        if !self.reported_non_noop_waker && !cx.waker().will_wake(std::task::Waker::noop()) {
+            self.reported_non_noop_waker = true;
+            tracing::error!(
+                "EmscriptenWebSocketTransport must be driven by \
+                 SignalFishPollingClient with a noop waker; a wake-driven \
+                 executor can remain pending indefinitely"
+            );
+        }
         if self.closed {
             return std::task::Poll::Ready(None);
         }

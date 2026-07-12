@@ -174,10 +174,10 @@ sequenceDiagram
     EM-->>T: std::sync::mpsc::Sender::send(IncomingEvent)
 
     App->>PC: poll()
-    PC->>T: transport.recv() [polled with noop waker]
+    PC->>T: transport.poll_recv() [noop waker]
     T->>T: mpsc::Receiver::try_recv()
     T-->>PC: Poll::Ready(Some(Ok(message))) or Poll::Pending
-    PC->>T: transport.send(json) [polled with noop waker]
+    PC->>T: transport.poll_send(json) [noop waker]
     T->>EM: emscripten_websocket_send_utf8_text()
     EM->>WS: WebSocket.send()
     PC-->>App: Vec<SignalFishEvent>
@@ -189,10 +189,10 @@ The callback bridge pattern works as follows:
    `emscripten_websocket_set_on*_callback_on_thread()` — for open, message,
    error, and close events.
 2. Each callback pushes an `IncomingEvent` onto a `std::sync::mpsc::Sender`.
-3. When `recv()` is polled, it calls `try_recv()` on the channel receiver:
+3. When `poll_recv()` is called, it calls `try_recv()` on the channel receiver:
     - If a message is available, it returns `Poll::Ready(Some(Ok(text)))`.
-    - If no messages are buffered, it returns `std::future::pending()`, which
-      yields `Poll::Pending` when polled (it never resolves).
+    - If no messages are buffered, it returns `Poll::Pending` without
+      registering the supplied waker.
 
 ### Threading model
 
@@ -618,19 +618,20 @@ let events = client.poll();
 
 ---
 
-### `recv()` never returns on Emscripten
+### `poll_recv()` remains pending on Emscripten
 
-**Symptom:** Awaiting `transport.recv()` from a real async executor hangs
-indefinitely.
+**Symptom:** Driving `transport.poll_recv()` from a wake-driven executor hangs
+indefinitely when the callback queue is empty.
 
-**Explanation:** When no messages are buffered, `EmscriptenWebSocketTransport::recv()`
-returns `std::future::pending()`. This future never resolves because there is no
-waker to notify — Emscripten callbacks push to a `std::sync::mpsc` channel that
-has no waker integration.
+**Explanation:** When no messages are buffered,
+`EmscriptenWebSocketTransport::poll_recv()` returns `Poll::Pending` without
+registering the supplied waker. Emscripten callbacks push to a
+`std::sync::mpsc` channel that has no waker integration. Debug builds log this
+misuse once when they observe a non-noop waker.
 
-**Solution:** Use `SignalFishPollingClient::poll()`, which polls the future with
-a noop waker and correctly handles the `Pending` result by breaking out of the
-receive loop until the next frame.
+**Solution:** Use `SignalFishPollingClient::poll()`, which calls the transport
+with a noop waker and correctly handles `Pending` by breaking out of the receive
+loop until the next frame.
 
 ---
 
