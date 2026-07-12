@@ -302,6 +302,12 @@ impl Transport for GodotWebSocketTransport {
             self.send_in_flight = false;
             return Poll::Ready(Ok(()));
         }
+        if self.send_in_flight {
+            if self.backend.outbound_buffered_amount() != 0 {
+                return Poll::Pending;
+            }
+            self.send_in_flight = false;
+        }
         if !self.close_started {
             self.backend.close();
             self.close_started = true;
@@ -578,5 +584,45 @@ mod tests {
             transport.close_info().map(|info| info.initiated_by_peer),
             Some(false)
         );
+    }
+
+    #[test]
+    fn close_waits_for_an_accepted_frame_to_drain() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.states.extend([
+            PeerState::Open,
+            PeerState::Open,
+            PeerState::Open,
+            PeerState::Closing,
+            PeerState::Closed,
+        ]);
+        backend.buffered_after_poll.extend([7, 7, 0, 0, 0]);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("final frame".to_string()));
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert!(transport.send_in_flight);
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Pending
+        ));
+        assert!(!transport.close_started);
+        assert!(transport.send_in_flight);
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Pending
+        ));
+        assert!(transport.close_started);
+        assert!(!transport.send_in_flight);
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Ready(Ok(()))
+        ));
     }
 }
