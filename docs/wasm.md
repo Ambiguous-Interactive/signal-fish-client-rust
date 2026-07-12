@@ -339,8 +339,9 @@ environment).
 
 !!! tip "Comparison with `SignalFishClient`"
     `SignalFishPollingClient` mirrors the same API surface as `SignalFishClient`
-    but all methods take `&mut self` instead of `&self`, and state accessors are
-    synchronous (no `async`). There is no `shutdown()` — use `close()` instead.
+    for common synchronous commands: both use `&mut self`, and state accessors
+    use `&self`. The polling client has no asynchronous waiting sends or
+    `shutdown()` — drive it with `poll()` and use `close()` instead.
 
 ---
 

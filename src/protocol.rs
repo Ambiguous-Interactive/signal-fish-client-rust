@@ -872,8 +872,8 @@ where
 ///
 /// Gated to its consumers (the async client needs `tokio-runtime`; the polling
 /// client needs `polling-client`) so it is not dead code in a build with neither.
-#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 #[must_use]
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 pub(crate) fn replayed_negotiated_version(missed_events: &[ServerMessage]) -> Option<u16> {
     missed_events.iter().rev().find_map(|msg| match msg {
         ServerMessage::ProtocolInfo(info) => info.protocol_version,

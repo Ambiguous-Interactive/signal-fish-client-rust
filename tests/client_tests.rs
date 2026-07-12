@@ -26,6 +26,13 @@ use signal_fish_client::{
     SignalFishEvent, Transport,
 };
 
+type StartedClient = (
+    SignalFishClient,
+    tokio::sync::mpsc::Receiver<SignalFishEvent>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
+
 use common::{
     authenticated_json, authority_response_json, error_json, game_data_json, new_peer_json,
     peer_transport_status_json, player_left_json, pong_json, protocol_info_json, reconnected_json,
@@ -40,16 +47,15 @@ use common::{
 /// Start a client with the given scripted server responses. The first item
 /// is typically `authenticated_json()` so the auth handshake succeeds.
 #[allow(clippy::type_complexity)]
-fn start_client(
+fn start_client(incoming: Vec<Option<Result<String, SignalFishError>>>) -> StartedClient {
+    start_client_with_config(incoming, SignalFishConfig::new("mb_test_integration"))
+}
+
+fn start_client_with_config(
     incoming: Vec<Option<Result<String, SignalFishError>>>,
-) -> (
-    SignalFishClient,
-    tokio::sync::mpsc::Receiver<SignalFishEvent>,
-    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
+    config: SignalFishConfig,
+) -> StartedClient {
     let (transport, sent, closed) = MockTransport::new(incoming);
-    let config = SignalFishConfig::new("mb_test_integration");
     let (client, events) = SignalFishClient::start(transport, config);
     (client, events, sent, closed)
 }
@@ -2293,10 +2299,13 @@ async fn negotiated_version_resets_on_disconnect() {
 #[tokio::test]
 async fn reconnect_restores_negotiated_version_from_missed_events() {
     let peer = uuid::Uuid::from_u128(2);
-    let (mut client, mut events, sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(reconnected_with_protocol_info_json(Some(3)))),
-    ]);
+    let (mut client, mut events, sent, _closed) = start_client_with_config(
+        vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(reconnected_with_protocol_info_json(Some(3)))),
+        ],
+        SignalFishConfig::new("mb_test_integration").enable_mesh(),
+    );
     drain_until_authenticated(&mut events).await;
     // Drain until the Reconnected event (state updated by then).
     loop {
@@ -2323,10 +2332,13 @@ async fn reconnect_restores_negotiated_version_from_missed_events() {
 #[tokio::test]
 async fn v4_negotiation_still_enables_mesh() {
     // `>= 3` (not `== 3`) semantics: a future v4 negotiation must still enable mesh.
-    let (mut client, mut events, _sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(protocol_info_json(Some(4)))),
-    ]);
+    let (mut client, mut events, _sent, _closed) = start_client_with_config(
+        vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_json(Some(4)))),
+        ],
+        SignalFishConfig::new("mb_test_integration").enable_mesh(),
+    );
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     assert_eq!(client.negotiated_protocol_version(), Some(4));

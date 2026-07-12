@@ -31,8 +31,8 @@ MUST be `Option` + `skip_serializing_if` (or `Vec` + `default` + `skip_if-empty`
    keeps the room on the relay floor and emits no v3 messages.
 
 The client tracks the negotiated version from `ProtocolInfo`:
-`SignalFishClient::negotiated_protocol_version()` and `supports_mesh()` (true when
-the negotiated version is ≥ 3).
+`SignalFishClient::negotiated_protocol_version()` and `supports_mesh()` (true
+when WebRTC mesh was advertised and the negotiated version is ≥ 3).
 
 ## Never Advertise What You Cannot Fulfill
 

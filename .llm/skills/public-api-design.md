@@ -210,7 +210,7 @@ Every public item should have a doc comment:
 /// # Errors
 ///
 /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
-pub fn join_room(&self, params: JoinRoomParams) -> Result<()> {
+pub fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
     // ...
 }
 ```

@@ -288,8 +288,9 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
 - **Golden-wire conformance**: `tests/wire_golden_tests.rs` round-trips the real
   server samples — see [protocol-wire-conformance](protocol-wire-conformance.md).
 - **Negotiation**: script `protocol_info_json(Some(3))` after `authenticated_json()`
-  through `MockTransport`, then assert `negotiated_protocol_version()`/`supports_mesh()`
-  and that v3 sends succeed; assert `ProtocolUnsupported` before negotiation.
+  through `MockTransport`; assert the negotiated version, v3 sends, and the
+  pre-negotiation error. Assert `supports_mesh()` only with `enable_mesh()`;
+  relay-only `enable_v3()` must remain false.
 - **Frames/accountability**: keep text and binary frames in one scripted order;
   assert malformed binary becomes `DecodeFailed`, while valid accountability
   failures become `ProtocolViolation` and follow the configured policy.

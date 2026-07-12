@@ -169,7 +169,7 @@ async fn connect(
 }
 
 async fn join(
-    client: &SignalFishClient,
+    client: &mut SignalFishClient,
     events: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>,
     game: &str,
     name: &str,
@@ -236,7 +236,7 @@ async fn drain_role(
 // ── Modes ───────────────────────────────────────────────────────────
 
 async fn mode_ping(opts: &Options) -> Result<(), Box<dyn Error>> {
-    let (client, mut events) = connect(opts, "pinger", 256).await?;
+    let (mut client, mut events) = connect(opts, "pinger", 256).await?;
     let mut rtts = Vec::new();
     for _ in 0..20 {
         let sent = Instant::now();
@@ -267,14 +267,14 @@ async fn mode_throughput(opts: &Options) -> Result<(), Box<dyn Error>> {
         let suffix = format!("{}-{rate}", std::process::id());
         let game = format!("lab-throughput-{suffix}");
 
-        let (sender, mut sender_events) = connect(opts, "sender", 1024).await?;
-        let room_code = join(&sender, &mut sender_events, &game, "sender", None).await?;
+        let (mut sender, mut sender_events) = connect(opts, "sender", 1024).await?;
+        let room_code = join(&mut sender, &mut sender_events, &game, "sender", None).await?;
 
         let mut receiver_handles = Vec::new();
         for i in 0..opts.recipients {
-            let (rx_client, mut rx_events) = connect(opts, "receiver", 4096).await?;
+            let (mut rx_client, mut rx_events) = connect(opts, "receiver", 4096).await?;
             join(
-                &rx_client,
+                &mut rx_client,
                 &mut rx_events,
                 &game,
                 &format!("rx{i}"),
@@ -331,21 +331,28 @@ async fn mode_slow_consumer(opts: &Options) -> Result<(), Box<dyn Error>> {
     let suffix = std::process::id();
     let game = format!("lab-slow-{suffix}");
 
-    let (sender, mut sender_events) = connect(opts, "sender", 1024).await?;
-    let room_code = join(&sender, &mut sender_events, &game, "sender", None).await?;
+    let (mut sender, mut sender_events) = connect(opts, "sender", 1024).await?;
+    let room_code = join(&mut sender, &mut sender_events, &game, "sender", None).await?;
 
     // Two healthy receivers + one slow one (event capacity 1 so its
     // backpressure reaches the socket quickly).
     let mut healthy = Vec::new();
     for i in 0..2 {
-        let (c, mut e) = connect(opts, "healthy", 4096).await?;
-        join(&c, &mut e, &game, &format!("healthy{i}"), Some(&room_code)).await?;
+        let (mut c, mut e) = connect(opts, "healthy", 4096).await?;
+        join(
+            &mut c,
+            &mut e,
+            &game,
+            &format!("healthy{i}"),
+            Some(&room_code),
+        )
+        .await?;
         let secs = opts.secs;
         healthy.push((c, tokio::spawn(async move { drain_role(e, secs, 0).await })));
     }
-    let (slow_client, mut slow_events) = connect(opts, "slow", 1).await?;
+    let (mut slow_client, mut slow_events) = connect(opts, "slow", 1).await?;
     join(
-        &slow_client,
+        &mut slow_client,
         &mut slow_events,
         &game,
         "slow",
@@ -400,11 +407,11 @@ async fn mode_control_starvation(opts: &Options) -> Result<(), Box<dyn Error>> {
     let game = format!("lab-ctrl-{suffix}");
 
     // Victim joins first (owns the room), then the flooder.
-    let (victim, mut victim_events) = connect(opts, "victim", 256).await?;
-    let room_code = join(&victim, &mut victim_events, &game, "victim", None).await?;
-    let (flooder, mut flooder_events) = connect(opts, "flooder", 1024).await?;
+    let (mut victim, mut victim_events) = connect(opts, "victim", 256).await?;
+    let room_code = join(&mut victim, &mut victim_events, &game, "victim", None).await?;
+    let (mut flooder, mut flooder_events) = connect(opts, "flooder", 1024).await?;
     join(
-        &flooder,
+        &mut flooder,
         &mut flooder_events,
         &game,
         "flooder",

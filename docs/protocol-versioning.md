@@ -117,14 +117,14 @@ match client.negotiated_protocol_version() {
 }
 
 if client.supports_mesh() {
-    // negotiated >= 3: send_signal / report_transport_status are available.
+    // enable_mesh() advertised WebRTC and protocol v3 was negotiated.
 }
 ```
 
 | Accessor | Returns |
 |----------|---------|
 | `negotiated_protocol_version()` | `Option<u16>` — `None` before `ProtocolInfo`, or for a v2 negotiation. |
-| `supports_mesh()` | `bool` — `true` once the negotiated version is ≥ 3. |
+| `supports_mesh()` | `bool` — `true` when WebRTC mesh was advertised and the negotiated version is ≥ 3. |
 
 ---
 
