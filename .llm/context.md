@@ -15,7 +15,7 @@
 
 ## Purpose
 
-Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol. Enables game clients to join rooms, exchange game data, and receive server-pushed events over any bidirectional text transport.
+Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol. Enables game clients to join rooms, exchange JSON or binary game data, and receive server-pushed events over any bidirectional frame transport.
 
 ## Mandatory Workflow
 
@@ -46,8 +46,10 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 
 | File | Purpose |
 |------|---------|
-| `src/transport.rs` | `Transport` trait — async bidirectional text messages |
-| `src/protocol.rs` | Wire-compatible protocol types (`ClientMessage`, `ServerMessage`, v3 `Topology`/`TransportKind`/`SessionPlanPayload`) |
+| `src/transport.rs` | Object-safe polling `Transport` trait over text/binary `TransportFrame`s |
+| `src/protocol.rs` | Wire-compatible protocol types, including v3 delivery/accountability and mesh |
+| `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
+| `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
 | `src/error_codes.rs` | `ErrorCode` enum — 50 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
@@ -60,59 +62,39 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 ### Transport Trait
 
 ```rust,ignore
-#[async_trait]
-pub trait Transport: Send + 'static {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
-    async fn close(&mut self) -> Result<(), SignalFishError>;
+pub trait Transport {
+    fn poll_send(&mut self, cx: &mut Context<'_>, frame: &mut Option<TransportFrame>)
+        -> Poll<Result<(), SignalFishError>>;
+    fn poll_recv(&mut self, cx: &mut Context<'_>)
+        -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
+    fn poll_close(&mut self, cx: &mut Context<'_>)
+        -> Poll<Result<(), SignalFishError>>;
+    fn is_ready(&self) -> bool { true }
+    fn close_info(&self) -> Option<TransportCloseInfo> { None }
 }
 ```
 
-Note the bound is `Send + 'static` (not `Sync`). The `recv` method returns
-`Option<Result<...>>` — `None` signals a clean server close, not an error.
-`recv` MUST be cancel-safe because it is used inside `tokio::select!`.
+The trait itself has no `Send` bound, so main-thread transports work with the
+polling client. `SignalFishClient::start` separately requires
+`Transport + Send + 'static`. A `poll_send` implementation may take the frame
+only when it accepts ownership and must retain it internally until completion;
+`Pending` before acceptance leaves the caller's `Option` intact. Close polling
+is idempotent. See `skills/transport-abstraction.md`.
 
 ### Client Usage Pattern
 
-```rust
-use signal_fish_client::{
-    SignalFishClient, SignalFishConfig, JoinRoomParams, SignalFishEvent,
-    WebSocketTransport,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), signal_fish_client::SignalFishError> {
-    // 1. Connect transport
-    let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
-    // 2. Build config with your App ID
-    let config = SignalFishConfig::new("mb_app_abc123");
-    // 3. start() returns (client, events); Authenticate is sent automatically
-    let (mut client, mut events) = SignalFishClient::start(transport, config);
-    // 4. Process events
-    while let Some(event) = events.recv().await {
-        match event {
-            SignalFishEvent::Authenticated { app_name, .. } => {
-                // Now safe to join a room
-                client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
-            }
-            SignalFishEvent::RoomJoined { room_code, .. } => {
-                println!("Joined room {room_code}");
-            }
-            SignalFishEvent::Disconnected { .. } => break,
-            _ => {}
-        }
-    }
-    // 5. Shut down gracefully
-    client.shutdown().await;
-    Ok(())
-}
-```
+Connect a transport, construct `SignalFishConfig`, and pass both to
+`SignalFishClient::start`, which returns the handle and event receiver and
+queues `Authenticate`. Wait for `Authenticated` before room commands; drain
+events continuously and call `shutdown().await` for graceful teardown. The
+complete compiling example is `examples/basic_lobby.rs`.
 
 ### SignalFishConfig
 
 Required second argument to `SignalFishClient::start`. Only `app_id` is required.
-Opt into the protocol v3 mesh with `.enable_mesh()` (advertises `protocol_version`/
-`supported_transports`/`supported_topologies`); see `skills/webrtc-mesh-signaling.md`.
+Opt into protocol v3 relay/accountability with `.enable_v3()`. Use
+`.enable_mesh()` only when a WebRTC driver is present; it calls `enable_v3()`
+and additionally advertises WebRTC mesh/host support.
 
 ```rust,ignore
 pub struct SignalFishConfig {
@@ -123,6 +105,7 @@ pub struct SignalFishConfig {
     pub event_channel_capacity: usize,        // defaults to 256 (buffer before backpressure)
     pub command_channel_capacity: usize,      // defaults to 1024 (bounded send queue)
     pub shutdown_timeout: std::time::Duration, // defaults to 1 second
+    pub protocol_violation_policy: ProtocolViolationPolicy, // Quarantine
 }
 
 let config = SignalFishConfig::new("mb_app_abc123")
@@ -152,6 +135,8 @@ client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
 client.send_game_data(data: serde_json::Value) -> Result<()>
 client.send_game_data_reliable(data).await   // waits for queue space (pacing)
+client.send_game_data_with_delivery(data, GameDataDelivery::Latest { key: 7 })
+client.send_binary_game_data(payload: Vec<u8>) -> Result<()> // v3 physical binary frame
 client.set_ready() -> Result<()>
 client.start_game() -> Result<()>           // protocol v2: explicit game start
 client.request_authority(become_authority: bool) -> Result<()>
@@ -163,6 +148,7 @@ client.ping() -> Result<()>
 client.send_signal_reliable(to, signal).await // v3 only; waiting send_signal
 client.send_capacity() / client.max_send_capacity() -> usize // queue diagnostics
 client.stats() -> ClientStats  // cumulative game_data_sent/received counters
+client.snapshot() -> ClientSnapshot // coherent state/token/quarantine view
 client.shutdown().await      // async, graceful
 ```
 
@@ -172,7 +158,8 @@ full (message refused, never silently dropped). Events are never dropped either:
 a full event channel pauses the transport loop (backpressure); undecodable
 frames surface as `DecodeFailed` events; events are missed only on receiver
 drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
-`SignalFishPollingClient` shares the queue bound, capacity accessors, and `stats()`.
+`SignalFishPollingClient` shares the classified/binary sends, queue bound,
+capacity accessors, `stats()`, and coherent `snapshot()`.
 
 ## Feature Flags
 
@@ -191,8 +178,8 @@ drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 | Crate | Purpose |
 |-------|---------|
 | `tokio` | Async runtime (sync, macros, rt, time features) |
-| `async-trait` | Async methods in traits (pre-AFIT, MSRV 1.75) |
 | `serde` + `serde_json` + `serde_bytes` | JSON serialization of protocol messages |
+| `rmp` + `rmp-serde` | Strict protocol-v3 MessagePack envelope decoding |
 | `uuid` | Player/room IDs matching server format |
 | `thiserror` | Derive macro for `SignalFishError` |
 | `tracing` | Structured logging and diagnostics |
@@ -209,7 +196,8 @@ drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 
 The `Transport` trait decouples protocol logic from network I/O. Tests use
 in-memory `VecDeque`-backed transports. Production code uses WebSocket. Custom
-transports (QUIC, raw TCP, etc.) need only implement three async methods.
+transports (QUIC, raw TCP, engine WebSockets, etc.) implement three object-safe
+polling methods and can preserve structured close metadata.
 
 ### Wire Compatibility
 
@@ -224,6 +212,15 @@ Public enums and protocol payload structs are exhaustive. `SignalFishEvent`,
 `ErrorCode`, `SignalFishError`, and protocol payload types all require explicit
 handling of their known variants. Adding variants to these enums is a semver
 breaking change.
+
+### Delivery Accountability
+
+Negotiated v3 delivery carries per-sender epoch/sequence stamps. The SDK ports
+the server 0.4.0 native reference state machine and validates snapshots,
+lifecycle transitions, prior exact gap coverage, cumulative counters, terminal
+and reconnect watermarks, and unsupported-format causality. Stale payloads are
+suppressed. Violations emit `ProtocolViolation`; policy defaults to quarantine
+until a new authoritative room/reconnect snapshot.
 
 ### No Heavy Dependencies
 

@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::info!("Player joined: {} ({})", player.name, player.id);
                     }
 
-                    SignalFishEvent::PlayerLeft { player_id } => {
+                    SignalFishEvent::PlayerLeft { player_id, .. } => {
                         tracing::info!("Player left: {player_id}");
                     }
 

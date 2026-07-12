@@ -565,9 +565,9 @@ pub enum ClientMessage { /* ... */ }
 
 ## `ServerMessage`
 
-Messages received from the server. There are **28 variants**. You don't parse
+Messages received from the server. There are **31 variants**. You don't parse
 these manually — they arrive as `SignalFishEvent` variants through the event
-channel. The last four are protocol-v3 additions, sent only on a v3-negotiated
+channel. The mesh, delivery, and drain additions are sent only on a v3-negotiated
 connection.
 
 ```rust,ignore
@@ -606,6 +606,9 @@ pub enum ServerMessage { /* ... */ }
 | `NewPeer` | **(v3)** A late-joining peer to connect to after the session was finalized. |
 | `SessionPlan` | **(v3)** The per-recipient session plan for a finalized non-relay room. |
 | `PeerTransportStatus` | **(v3)** A peer's data-path transport state changed (informational). |
+| `DeliveryReport` | **(v3)** Cumulative per-class outcomes plus exact omitted sequence ranges. |
+| `RelayStats` | **(v3)** Optional cumulative connection-level relay diagnostics. |
+| `GoingAway` | **(v3)** Best-effort server drain advisory preceding a structured close. |
 
 !!! note
     You don't parse `ServerMessage` directly. The `SignalFishClient` run loop

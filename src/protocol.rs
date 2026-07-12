@@ -7,10 +7,16 @@
 //! - `chrono::DateTime<Utc>` → `String` (ISO 8601)
 //! - No `rkyv` derives (server-only concern)
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use crate::error_codes::ErrorCode;
+
+pub mod binary;
+pub use binary::{
+    decode_v2_binary_game_data, decode_v3_binary_game_data, V2BinaryGameDataFrame,
+    V3BinaryGameDataFrame,
+};
 
 // ── Type aliases ────────────────────────────────────────────────────
 
@@ -61,6 +67,102 @@ pub enum GameDataEncoding {
     Rkyv,
 }
 
+/// Protocol-v3 delivery policy for relayed game data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryClass {
+    /// Preserve every message or disconnect the recipient loudly.
+    #[default]
+    Reliable,
+    /// Retain only the newest undelivered value for a sender-defined key.
+    Latest,
+    /// Deliver opportunistically without sender backpressure.
+    Volatile,
+}
+
+/// Why an exact server-stamped sequence range was omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryGapReason {
+    LatestSuperseded,
+    LatestDroppedFull,
+    VolatileDropped,
+    UnsupportedFormat,
+}
+
+/// Exact inclusive sequence range omitted for one recipient.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryGap {
+    pub from_player: PlayerId,
+    pub epoch: u32,
+    pub from_seq: u64,
+    pub to_seq: u64,
+    pub reason: DeliveryGapReason,
+}
+
+/// Cumulative reliable-delivery outcomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReliableDeliveryCounters {
+    pub delivered: u64,
+    pub abandoned: u64,
+    pub unsupported_format: u64,
+}
+
+/// Cumulative keyed-latest delivery outcomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatestDeliveryCounters {
+    pub delivered: u64,
+    pub superseded: u64,
+    pub dropped_full: u64,
+    pub abandoned: u64,
+    pub unsupported_format: u64,
+}
+
+/// Cumulative volatile-delivery outcomes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolatileDeliveryCounters {
+    pub delivered: u64,
+    pub dropped: u64,
+    pub abandoned: u64,
+    pub unsupported_format: u64,
+}
+
+/// Cumulative delivery outcomes partitioned by delivery class.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryCountersByClass {
+    pub reliable: ReliableDeliveryCounters,
+    pub latest: LatestDeliveryCounters,
+    pub volatile: VolatileDeliveryCounters,
+}
+
+/// Exact protocol-v3 accountability report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryReportPayload {
+    pub per_class: DeliveryCountersByClass,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<DeliveryGap>,
+}
+
+/// Maximum exact omission ranges carried in one delivery report.
+pub const DELIVERY_REPORT_MAX_GAPS: usize = 256;
+
+/// Completeness of the control-event replay on reconnect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayStatus {
+    Complete,
+    Truncated,
+    Unavailable,
+}
+
+/// Authoritative per-sender relay baseline supplied on reconnect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SenderWatermark {
+    pub player_id: PlayerId,
+    pub epoch: u32,
+    pub seq: u64,
+}
+
 /// Session topology selected by the server for a finalized room (protocol v3).
 ///
 /// The server is authoritative: it chooses the topology and communicates the
@@ -96,6 +198,14 @@ pub enum TransportKind {
     /// deliberately matches [`ConnectionInfo::WebRTC`]'s `#[serde(rename = "webrtc")]`.
     #[serde(rename = "webrtc")]
     WebRtc,
+}
+
+/// Signaling-message transport exposed by the server for this connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageTransport {
+    /// RFC 6455 WebSocket text/binary frames.
+    Websocket,
 }
 
 /// Connection information for P2P establishment.
@@ -176,6 +286,12 @@ pub struct PlayerInfo {
     /// Connection info for P2P establishment (provided when player is ready).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_info: Option<ConnectionInfo>,
+    /// Current server-tracked incarnation epoch (protocol v3 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u32>,
+    /// Relay tail represented by this snapshot (protocol v3 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 /// Information about a spectator watching a room.
@@ -232,14 +348,33 @@ pub struct ProtocolInfoPayload {
     ///
     /// `None` for a negotiated v2 connection, keeping the v2 wire contract
     /// byte-identical.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
     pub protocol_version: Option<u16>,
     /// Lowest protocol version this deployment accepts (protocol v3+ only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
     pub min_protocol_version: Option<u16>,
     /// Highest protocol version this deployment speaks (protocol v3+ only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
     pub max_protocol_version: Option<u16>,
+    /// Server message transports available to this connection (v3 only).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
+    pub transports: Option<Vec<MessageTransport>>,
 }
 
 /// Describes the characters a deployment allows inside `player_name`.
@@ -314,6 +449,9 @@ pub struct RoomJoinedPayload {
     /// JSON byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ice_servers: Vec<IceServer>,
+    /// Server-issued token for a later unexpected-disconnect reconnect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnection_token: Option<String>,
 }
 
 /// Payload for the `Reconnected` server message.
@@ -340,6 +478,15 @@ pub struct ReconnectedPayload {
     pub ice_servers: Vec<IceServer>,
     /// Events that occurred while disconnected.
     pub missed_events: Vec<ServerMessage>,
+    /// Completeness of `missed_events` (protocol v3 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplayStatus>,
+    /// Authoritative relay baselines for every current player (v3 only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_watermarks: Vec<SenderWatermark>,
+    /// Fresh token replacing the consumed reconnect token (v3 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnection_token: Option<String>,
 }
 
 /// Payload for the `SpectatorJoined` server message.
@@ -430,7 +577,21 @@ pub enum ClientMessage {
     /// Leave the current room.
     LeaveRoom,
     /// Send game data to other players in the room.
-    GameData { data: serde_json::Value },
+    GameData {
+        data: serde_json::Value,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present_optional",
+            skip_serializing_if = "Option::is_none"
+        )]
+        class: Option<DeliveryClass>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present_optional",
+            skip_serializing_if = "Option::is_none"
+        )]
+        key: Option<u32>,
+    },
     /// Request to become or connect to authoritative server.
     AuthorityRequest { become_authority: bool },
     /// Signal readiness to start the game in lobby.
@@ -524,11 +685,25 @@ pub enum ServerMessage {
     /// Another player joined the room.
     PlayerJoined { player: PlayerInfo },
     /// Another player left the room.
-    PlayerLeft { player_id: PlayerId },
+    PlayerLeft {
+        player_id: PlayerId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_seq: Option<u64>,
+    },
     /// Game data from another player.
     GameData {
         from_player: PlayerId,
         data: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        class: Option<DeliveryClass>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<u32>,
     },
     /// Binary game data payload from another player.
     /// Uses `Vec<u8>` with `serde_bytes` for efficient serialization.
@@ -537,6 +712,10 @@ pub enum ServerMessage {
         encoding: GameDataEncoding,
         #[serde(with = "serde_bytes")]
         payload: Vec<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u32>,
     },
     /// Authority status changed.
     AuthorityChanged {
@@ -570,7 +749,11 @@ pub enum ServerMessage {
         error_code: ErrorCode,
     },
     /// Another player reconnected to the room.
-    PlayerReconnected { player_id: PlayerId },
+    PlayerReconnected {
+        player_id: PlayerId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        epoch: Option<u32>,
+    },
     /// Successfully joined a room as spectator (boxed to reduce enum size).
     SpectatorJoined(Box<SpectatorJoinedPayload>),
     /// Failed to join as spectator.
@@ -652,6 +835,30 @@ pub enum ServerMessage {
         /// Whether that transport is currently connected for the peer.
         connected: bool,
     },
+    /// Periodic cumulative relay-delivery diagnostics (protocol v3 only).
+    RelayStats {
+        interval_ms: u64,
+        sent_to_you: u64,
+        dropped_for_you: u64,
+        backpressure_events: u64,
+    },
+    /// Graceful server-shutdown advisory (protocol v3 only).
+    GoingAway {
+        deadline_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_secs: Option<u64>,
+    },
+    /// Exact delivery accountability (protocol v3 only).
+    DeliveryReport(Box<DeliveryReportPayload>),
+}
+
+/// Preserve omission as `None` while rejecting explicit `null`.
+fn deserialize_present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// The negotiated protocol version to restore from a reconnect's `missed_events`,

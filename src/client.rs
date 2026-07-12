@@ -66,7 +66,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,15 +85,15 @@ use tracing::{debug, error, warn};
 use crate::error::{Result, SignalFishError};
 #[cfg(feature = "tokio-runtime")]
 use crate::event::{ServerErrorInfo, SignalFishEvent};
-#[cfg(feature = "tokio-runtime")]
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 use crate::protocol::ServerMessage;
 use crate::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, PlayerId, RelayTransport, RoomId, Topology,
-    TransportKind,
+    ClientMessage, ConnectionInfo, DeliveryClass, GameDataEncoding, PlayerId, RelayTransport,
+    RoomId, Topology, TransportKind,
 };
 use crate::signal::PeerSignal;
 #[cfg(feature = "tokio-runtime")]
-use crate::transport::Transport;
+use crate::transport::{close_transport, recv_frame, send_frame, Transport, TransportFrame};
 
 /// Default capacity of the bounded event channel.
 const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -103,6 +103,42 @@ const DEFAULT_COMMAND_CHANNEL_CAPACITY: usize = 1024;
 
 /// Default timeout for the graceful shutdown.
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+pub(crate) fn bounded_binary_preview(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut preview = String::with_capacity(128);
+    for byte in bytes.iter().take(64) {
+        let _ = write!(&mut preview, "{byte:02x}");
+    }
+    preview
+}
+
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+pub(crate) fn decode_binary_server_message(
+    bytes: &[u8],
+    protocol_v3: bool,
+) -> std::result::Result<ServerMessage, String> {
+    if protocol_v3 {
+        let frame = crate::protocol::decode_v3_binary_game_data(bytes)?;
+        Ok(ServerMessage::GameDataBinary {
+            from_player: frame.from_player,
+            encoding: frame.encoding,
+            payload: frame.payload,
+            seq: Some(frame.seq),
+            epoch: Some(frame.epoch),
+        })
+    } else {
+        let frame = crate::protocol::decode_v2_binary_game_data(bytes)?;
+        Ok(ServerMessage::GameDataBinary {
+            from_player: frame.from_player,
+            encoding: frame.encoding,
+            payload: frame.payload,
+            seq: None,
+            epoch: None,
+        })
+    }
+}
 
 // ── Configuration ───────────────────────────────────────────────────
 
@@ -194,6 +230,8 @@ pub struct SignalFishConfig {
     /// immediately without waiting for graceful shutdown, meaning the
     /// `Disconnected` event will likely not be emitted.
     pub shutdown_timeout: Duration,
+    /// Response to a protocol-v3 delivery-accountability violation.
+    pub protocol_violation_policy: ProtocolViolationPolicy,
 }
 
 impl SignalFishConfig {
@@ -210,6 +248,7 @@ impl SignalFishConfig {
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
             command_channel_capacity: DEFAULT_COMMAND_CHANNEL_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+            protocol_violation_policy: ProtocolViolationPolicy::Quarantine,
         }
     }
 
@@ -244,6 +283,13 @@ impl SignalFishConfig {
         self
     }
 
+    /// Select how delivery-accountability violations affect the connection.
+    #[must_use]
+    pub fn with_protocol_violation_policy(mut self, policy: ProtocolViolationPolicy) -> Self {
+        self.protocol_violation_policy = policy;
+        self
+    }
+
     /// Opt into the protocol v3 P2P mesh.
     ///
     /// This is the one-liner for "I have a WebRTC stack — give me mesh with relay
@@ -264,9 +310,22 @@ impl SignalFishConfig {
     /// silently fail.
     #[must_use]
     pub fn enable_mesh(mut self) -> Self {
-        self.protocol_version = Some(crate::PROTOCOL_VERSION);
+        self = self.enable_v3();
         self.supported_transports = Some(vec![TransportKind::WebRtc, TransportKind::Relay]);
         self.supported_topologies = Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]);
+        self
+    }
+
+    /// Opt into protocol-v3 relay features without advertising WebRTC.
+    ///
+    /// This enables delivery classes, accountability, reconnect snapshots, and
+    /// binary relay while keeping both transport and topology on the universal
+    /// server-relay floor.
+    #[must_use]
+    pub fn enable_v3(mut self) -> Self {
+        self.protocol_version = Some(crate::PROTOCOL_VERSION);
+        self.supported_transports = Some(vec![TransportKind::Relay]);
+        self.supported_topologies = Some(vec![Topology::Relay]);
         self
     }
 
@@ -301,6 +360,33 @@ impl SignalFishConfig {
         self.supported_topologies = Some(topologies.into_iter().collect());
         self
     }
+}
+
+/// Valid protocol-v3 delivery choices for a JSON game-data send.
+///
+/// The enum makes invalid class/key combinations unrepresentable: only
+/// [`Latest`](Self::Latest) carries the required coalescing key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GameDataDelivery {
+    /// Preserve every message or disconnect the recipient loudly.
+    #[default]
+    Reliable,
+    /// Retain only the newest undelivered value for this sender-defined key.
+    Latest { key: u32 },
+    /// Deliver opportunistically without sender backpressure.
+    Volatile,
+}
+
+/// Runtime response to a validated protocol-accountability violation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProtocolViolationPolicy {
+    /// Emit a violation and suppress subsequent room game data until a fresh snapshot.
+    #[default]
+    Quarantine,
+    /// Emit a violation and close the signaling connection.
+    Disconnect,
+    /// Emit a violation but continue delivering validated application data.
+    Observe,
 }
 
 // ── JoinRoomParams ──────────────────────────────────────────────────
@@ -419,6 +505,42 @@ pub struct ClientStats {
     pub messages_undecodable: u64,
 }
 
+/// Coherent synchronous view of client/session state.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ClientSnapshot {
+    pub connected: bool,
+    pub authenticated: bool,
+    pub negotiated_protocol_version: Option<u16>,
+    pub player_id: Option<PlayerId>,
+    pub room_id: Option<RoomId>,
+    pub room_code: Option<String>,
+    /// Latest server-issued room reconnection token.
+    pub reconnection_token: Option<String>,
+    /// Whether accountability policy currently suppresses room game data.
+    pub quarantined: bool,
+}
+
+impl std::fmt::Debug for ClientSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientSnapshot")
+            .field("connected", &self.connected)
+            .field("authenticated", &self.authenticated)
+            .field(
+                "negotiated_protocol_version",
+                &self.negotiated_protocol_version,
+            )
+            .field("player_id", &self.player_id)
+            .field("room_id", &self.room_id)
+            .field("room_code", &self.room_code)
+            .field(
+                "reconnection_token",
+                &self.reconnection_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("quarantined", &self.quarantined)
+            .finish()
+    }
+}
+
 // ── Shared state ────────────────────────────────────────────────────
 
 /// Internal shared state between the client handle and the transport loop.
@@ -434,9 +556,12 @@ struct ClientState {
     /// `negotiated_protocol_version` at `0`, but only the latter is terminal.
     /// Drives the `ProtocolUnsupported { mode }` diagnostic.
     protocol_info_seen: AtomicBool,
+    /// Requested format, updated to JSON if the server reports a fallback.
+    game_data_encoding: AtomicU8,
     player_id: Mutex<Option<PlayerId>>,
     room_id: Mutex<Option<RoomId>>,
     room_code: Mutex<Option<String>>,
+    snapshot: std::sync::RwLock<ClientSnapshot>,
     /// `GameData` messages successfully written to the transport.
     /// Cumulative — intentionally not reset by `clear_session_state`.
     game_data_sent: AtomicU64,
@@ -450,17 +575,29 @@ struct ClientState {
     messages_undecodable: AtomicU64,
 }
 
+#[derive(Debug)]
+#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+enum ClientCommand {
+    Message(ClientMessage),
+    Binary(Vec<u8>),
+}
+
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 impl ClientState {
-    fn new() -> Self {
+    fn new(game_data_encoding: GameDataEncoding) -> Self {
         Self {
             connected: AtomicBool::new(true),
             authenticated: AtomicBool::new(false),
             negotiated_protocol_version: AtomicU16::new(0),
             protocol_info_seen: AtomicBool::new(false),
+            game_data_encoding: AtomicU8::new(game_data_encoding as u8),
             player_id: Mutex::new(None),
             room_id: Mutex::new(None),
             room_code: Mutex::new(None),
+            snapshot: std::sync::RwLock::new(ClientSnapshot {
+                connected: true,
+                ..ClientSnapshot::default()
+            }),
             game_data_sent: AtomicU64::new(0),
             game_data_received: AtomicU64::new(0),
             messages_undecodable: AtomicU64::new(0),
@@ -474,6 +611,18 @@ impl ClientState {
         *self.player_id.lock().await = None;
         *self.room_id.lock().await = None;
         *self.room_code.lock().await = None;
+        let mut snapshot = match self.snapshot.write() {
+            Ok(snapshot) => snapshot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        snapshot.connected = self.connected.load(Ordering::Acquire);
+        snapshot.authenticated = false;
+        snapshot.negotiated_protocol_version = None;
+        snapshot.player_id = None;
+        snapshot.room_id = None;
+        snapshot.room_code = None;
+        snapshot.reconnection_token = None;
+        snapshot.quarantined = false;
     }
 }
 
@@ -494,7 +643,7 @@ impl ClientState {
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub struct SignalFishClient {
     /// Sender half of the bounded command channel to the transport loop.
-    cmd_tx: mpsc::Sender<ClientMessage>,
+    cmd_tx: mpsc::Sender<ClientCommand>,
     /// Shared state updated by the transport loop.
     state: Arc<ClientState>,
     /// Handle to the background transport loop task.
@@ -533,18 +682,20 @@ impl SignalFishClient {
     /// [`SignalFishEvent`]s until the transport closes or the client shuts down.
     #[must_use = "the event receiver must be used to receive events"]
     pub fn start(
-        transport: impl Transport,
+        transport: impl Transport + Send + 'static,
         config: SignalFishConfig,
     ) -> (Self, mpsc::Receiver<SignalFishEvent>) {
         // Clamp capacities to at least 1 (tokio panics on 0).
         let cmd_capacity = config.command_channel_capacity.max(1);
-        let (cmd_tx, cmd_rx) = mpsc::channel::<ClientMessage>(cmd_capacity);
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCommand>(cmd_capacity);
         let capacity = config.event_channel_capacity.max(1);
         let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let state = Arc::new(ClientState::new());
+        let requested_game_data_encoding = config.game_data_format.unwrap_or_default();
+        let state = Arc::new(ClientState::new(requested_game_data_encoding));
         let loop_state = Arc::clone(&state);
+        let violation_policy = config.protocol_violation_policy;
 
         // Send the Authenticate message through the command channel so the
         // transport loop picks it up as the very first outgoing message.
@@ -559,7 +710,7 @@ impl SignalFishClient {
         };
         // This cannot fail: the channel was just created empty and its
         // capacity is clamped to at least 1.
-        let _ = cmd_tx.try_send(auth_msg);
+        let _ = cmd_tx.try_send(ClientCommand::Message(auth_msg));
 
         let task = tokio::spawn(transport_loop(
             transport,
@@ -567,6 +718,7 @@ impl SignalFishClient {
             event_tx,
             loop_state,
             shutdown_rx,
+            violation_policy,
         ));
 
         let client = Self {
@@ -669,7 +821,38 @@ impl SignalFishClient {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn send_game_data(&self, data: serde_json::Value) -> Result<()> {
-        self.send(ClientMessage::GameData { data })
+        self.send(ClientMessage::GameData {
+            data,
+            class: None,
+            key: None,
+        })
+    }
+
+    /// Send JSON game data with an explicit protocol-v3 delivery policy.
+    pub fn send_game_data_with_delivery(
+        &self,
+        data: serde_json::Value,
+        delivery: GameDataDelivery,
+    ) -> Result<()> {
+        match delivery {
+            GameDataDelivery::Reliable => self.send_game_data(data),
+            GameDataDelivery::Latest { key } => {
+                self.ensure_v3()?;
+                self.send(ClientMessage::GameData {
+                    data,
+                    class: Some(DeliveryClass::Latest),
+                    key: Some(key),
+                })
+            }
+            GameDataDelivery::Volatile => {
+                self.ensure_v3()?;
+                self.send(ClientMessage::GameData {
+                    data,
+                    class: Some(DeliveryClass::Volatile),
+                    key: None,
+                })
+            }
+        }
     }
 
     /// Send arbitrary JSON game data, waiting for space in the outgoing
@@ -698,7 +881,48 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
     pub async fn send_game_data_reliable(&self, data: serde_json::Value) -> Result<()> {
-        self.send_reliable(ClientMessage::GameData { data }).await
+        self.send_reliable(ClientMessage::GameData {
+            data,
+            class: None,
+            key: None,
+        })
+        .await
+    }
+
+    /// Waiting counterpart to [`send_game_data_with_delivery`](Self::send_game_data_with_delivery).
+    pub async fn send_game_data_with_delivery_reliable(
+        &self,
+        data: serde_json::Value,
+        delivery: GameDataDelivery,
+    ) -> Result<()> {
+        let (class, key) = match delivery {
+            GameDataDelivery::Reliable => (None, None),
+            GameDataDelivery::Latest { key } => {
+                self.ensure_v3()?;
+                (Some(DeliveryClass::Latest), Some(key))
+            }
+            GameDataDelivery::Volatile => {
+                self.ensure_v3()?;
+                (Some(DeliveryClass::Volatile), None)
+            }
+        };
+        self.send_reliable(ClientMessage::GameData { data, class, key })
+            .await
+    }
+
+    /// Send opaque binary game data over the negotiated protocol-v3 relay.
+    pub fn send_binary_game_data(&self, payload: Vec<u8>) -> Result<()> {
+        self.ensure_v3()?;
+        self.ensure_binary_format()?;
+        self.send_command(ClientCommand::Binary(payload))
+    }
+
+    /// Waiting binary send that paces on command-queue capacity.
+    pub async fn send_binary_game_data_reliable(&self, payload: Vec<u8>) -> Result<()> {
+        self.ensure_v3()?;
+        self.ensure_binary_format()?;
+        self.send_command_reliable(ClientCommand::Binary(payload))
+            .await
     }
 
     /// Signal readiness to start the game in the lobby.
@@ -1020,6 +1244,14 @@ impl SignalFishClient {
         }
     }
 
+    /// Return a coherent synchronous snapshot of connection and room state.
+    pub fn snapshot(&self) -> ClientSnapshot {
+        match self.state.snapshot.read() {
+            Ok(snapshot) => snapshot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     /// Guard for protocol-v3-only operations: returns an error unless the
@@ -1048,13 +1280,24 @@ impl SignalFishClient {
         Err(SignalFishError::ProtocolUnsupported { mode })
     }
 
+    fn ensure_binary_format(&self) -> Result<()> {
+        if self.state.game_data_encoding.load(Ordering::Acquire) == GameDataEncoding::Json as u8 {
+            return Err(SignalFishError::BinaryFormatNotNegotiated);
+        }
+        Ok(())
+    }
+
     /// Queue a `ClientMessage` to the transport loop, failing fast when the
     /// bounded command queue is full.
     fn send(&self, msg: ClientMessage) -> Result<()> {
+        self.send_command(ClientCommand::Message(msg))
+    }
+
+    fn send_command(&self, command: ClientCommand) -> Result<()> {
         if !self.state.connected.load(Ordering::Acquire) {
             return Err(SignalFishError::NotConnected);
         }
-        match self.cmd_tx.try_send(msg) {
+        match self.cmd_tx.try_send(command) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
                 capacity: self.cmd_tx.max_capacity(),
@@ -1066,11 +1309,16 @@ impl SignalFishClient {
     /// Queue a `ClientMessage` to the transport loop, waiting for capacity
     /// when the bounded command queue is full.
     async fn send_reliable(&self, msg: ClientMessage) -> Result<()> {
+        self.send_command_reliable(ClientCommand::Message(msg))
+            .await
+    }
+
+    async fn send_command_reliable(&self, command: ClientCommand) -> Result<()> {
         if !self.state.connected.load(Ordering::Acquire) {
             return Err(SignalFishError::NotConnected);
         }
         self.cmd_tx
-            .send(msg)
+            .send(command)
             .await
             .map_err(|_| SignalFishError::NotConnected)
     }
@@ -1113,11 +1361,12 @@ impl Drop for SignalFishClient {
 /// - A transport error occurs
 #[cfg(feature = "tokio-runtime")]
 async fn transport_loop(
-    mut transport: impl Transport,
-    mut cmd_rx: mpsc::Receiver<ClientMessage>,
+    mut transport: impl Transport + Send + 'static,
+    mut cmd_rx: mpsc::Receiver<ClientCommand>,
     event_tx: mpsc::Sender<SignalFishEvent>,
     state: Arc<ClientState>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    violation_policy: ProtocolViolationPolicy,
 ) {
     debug!("transport loop started");
 
@@ -1125,6 +1374,8 @@ async fn transport_loop(
     // remembered so a subsequent disconnect can be attributed (e.g. a
     // best-effort SLOW_CONSUMER farewell followed by a bare close).
     let mut last_server_error: Option<ServerErrorInfo> = None;
+    let mut accountability = crate::accountability::DeliveryAccountability::new(false);
+    let mut quarantined = false;
 
     // Emit the synthetic Connected event before entering the select loop.
     if matches!(
@@ -1141,11 +1392,25 @@ async fn transport_loop(
             // Branch 1: outgoing command from the client handle
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(msg) => {
-                        debug!("sending client message: {:?}", std::mem::discriminant(&msg));
-                        match serde_json::to_string(&msg) {
-                            Ok(json) => {
-                                if let Err(e) = transport.send(json).await {
+                    Some(command) => {
+                        debug!("sending client command: {:?}", std::mem::discriminant(&command));
+                        let (frame, is_game_data) = match command {
+                            ClientCommand::Message(msg) => match serde_json::to_string(&msg) {
+                                Ok(json) => (
+                                    Some(TransportFrame::Text(json)),
+                                    matches!(msg, ClientMessage::GameData { .. }),
+                                ),
+                                Err(e) => {
+                                    error!("failed to serialize ClientMessage: {e}");
+                                    (None, false)
+                                }
+                            },
+                            ClientCommand::Binary(payload) => {
+                                (Some(TransportFrame::Binary(payload)), true)
+                            }
+                        };
+                        if let Some(frame) = frame {
+                                if let Err(e) = send_frame(&mut transport, frame).await {
                                     error!("transport send error: {e}");
                                     emit_disconnected_or_shutdown(
                                         &mut transport,
@@ -1157,14 +1422,9 @@ async fn transport_loop(
                                     ).await;
                                     break;
                                 }
-                                if matches!(msg, ClientMessage::GameData { .. }) {
+                                if is_game_data {
                                     state.game_data_sent.fetch_add(1, Ordering::Relaxed);
                                 }
-                            }
-                            Err(e) => {
-                                error!("failed to serialize ClientMessage: {e}");
-                                // Serialization errors are programming bugs; don't kill the loop.
-                            }
                         }
                     }
                     // Command channel closed — client handle dropped.
@@ -1191,11 +1451,107 @@ async fn transport_loop(
             }
 
             // Branch 3: incoming message from the server
-            incoming = transport.recv() => {
+            incoming = recv_frame(&mut transport) => {
                 match incoming {
-                    Some(Ok(text)) => {
+                    Some(Ok(TransportFrame::Text(text))) => {
                         match serde_json::from_str::<ServerMessage>(&text) {
                             Ok(server_msg) => {
+                                let duplicate_protocol_info = matches!(server_msg, ServerMessage::ProtocolInfo(_))
+                                    && state.protocol_info_seen.load(Ordering::Acquire);
+                                if let ServerMessage::ProtocolInfo(payload) = &server_msg {
+                                    if !duplicate_protocol_info {
+                                        accountability = crate::accountability::DeliveryAccountability::new(
+                                            payload.protocol_version.is_some_and(|version| version >= 3),
+                                        );
+                                    }
+                                }
+                                let authoritative_baseline = matches!(
+                                    server_msg,
+                                    ServerMessage::RoomJoined(_)
+                                        | ServerMessage::SpectatorJoined(_)
+                                        | ServerMessage::Reconnected(_)
+                                );
+                                let negotiated_encoding = match state.game_data_encoding.load(Ordering::Acquire) {
+                                    value if value == GameDataEncoding::MessagePack as u8 => GameDataEncoding::MessagePack,
+                                    value if value == GameDataEncoding::Rkyv as u8 => GameDataEncoding::Rkyv,
+                                    _ => GameDataEncoding::Json,
+                                };
+                                let validation = if duplicate_protocol_info {
+                                    accountability.observe_server_message(false).map(|()| {
+                                        crate::accountability::GameDataDisposition::Apply
+                                    })
+                                } else {
+                                    crate::accountability::validate_server_frame(
+                                        &mut accountability,
+                                        &server_msg,
+                                        negotiated_encoding,
+                                        false,
+                                    )
+                                };
+                                let (disposition, validation_failed) = match validation {
+                                    Ok(disposition) => {
+                                        if authoritative_baseline {
+                                            quarantined = false;
+                                        }
+                                        (disposition, false)
+                                    }
+                                    Err(diagnostic) => {
+                                        let event = SignalFishEvent::ProtocolViolation {
+                                            kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
+                                            diagnostic,
+                                        };
+                                        if matches!(
+                                            emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                            EmitOutcome::ShutdownRequested
+                                        ) {
+                                            finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                            break;
+                                        }
+                                        match violation_policy {
+                                            ProtocolViolationPolicy::Quarantine => {
+                                                quarantined = true;
+                                                match state.snapshot.write() {
+                                                    Ok(mut snapshot) => snapshot.quarantined = true,
+                                                    Err(poisoned) => poisoned.into_inner().quarantined = true,
+                                                }
+                                            }
+                                            ProtocolViolationPolicy::Disconnect => {
+                                                accountability.observe_terminal();
+                                                emit_disconnected_or_shutdown(
+                                                    &mut transport,
+                                                    &event_tx,
+                                                    &mut shutdown_rx,
+                                                    &state,
+                                                    Some("protocol accountability violation".into()),
+                                                    last_server_error.take(),
+                                                ).await;
+                                                break;
+                                            }
+                                            ProtocolViolationPolicy::Observe => {}
+                                        }
+                                        let disposition = if violation_policy == ProtocolViolationPolicy::Observe {
+                                            crate::accountability::GameDataDisposition::Apply
+                                        } else {
+                                            crate::accountability::GameDataDisposition::Stale
+                                        };
+                                        (disposition, true)
+                                    }
+                                };
+                                if validation_failed
+                                    && violation_policy == ProtocolViolationPolicy::Quarantine
+                                {
+                                    continue;
+                                }
+                                if duplicate_protocol_info {
+                                    continue;
+                                }
+                                let is_game_data = matches!(server_msg, ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. });
+                                if is_game_data
+                                    && (disposition == crate::accountability::GameDataDisposition::Stale
+                                        || (quarantined && violation_policy == ProtocolViolationPolicy::Quarantine))
+                                {
+                                    continue;
+                                }
                                 // Remember server errors for disconnect attribution.
                                 match &server_msg {
                                     ServerMessage::Error { message, error_code } => {
@@ -1237,6 +1593,50 @@ async fn transport_loop(
                                     "failed to deserialize server message ({} bytes): {e}",
                                     text.len()
                                 );
+                                let mut disconnect_for_violation = false;
+                                if let Err(diagnostic) =
+                                    accountability.observe_server_message(false)
+                                {
+                                    let event = SignalFishEvent::ProtocolViolation {
+                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
+                                            &diagnostic,
+                                        ),
+                                        diagnostic,
+                                    };
+                                    if matches!(
+                                        emit_event_or_shutdown(
+                                            &event_tx,
+                                            &mut shutdown_rx,
+                                            event
+                                        )
+                                        .await,
+                                        EmitOutcome::ShutdownRequested
+                                    ) {
+                                        finish_shutdown(
+                                            &mut transport,
+                                            &event_tx,
+                                            &state,
+                                            last_server_error,
+                                        )
+                                        .await;
+                                        break;
+                                    }
+                                    match violation_policy {
+                                        ProtocolViolationPolicy::Quarantine => {
+                                            quarantined = true;
+                                            match state.snapshot.write() {
+                                                Ok(mut snapshot) => snapshot.quarantined = true,
+                                                Err(poisoned) => {
+                                                    poisoned.into_inner().quarantined = true
+                                                }
+                                            }
+                                        }
+                                        ProtocolViolationPolicy::Disconnect => {
+                                            disconnect_for_violation = true;
+                                        }
+                                        ProtocolViolationPolicy::Observe => {}
+                                    }
+                                }
                                 state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
                                 let event = SignalFishEvent::decode_failed(&text, &e);
                                 if matches!(
@@ -1244,6 +1644,216 @@ async fn transport_loop(
                                     EmitOutcome::ShutdownRequested
                                 ) {
                                     finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                    break;
+                                }
+                                if disconnect_for_violation {
+                                    accountability.observe_terminal();
+                                    emit_disconnected_or_shutdown(
+                                        &mut transport,
+                                        &event_tx,
+                                        &mut shutdown_rx,
+                                        &state,
+                                        Some("protocol accountability violation".into()),
+                                        last_server_error.take(),
+                                    )
+                                    .await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(TransportFrame::Binary(bytes))) => {
+                        let negotiated_encoding = match state.game_data_encoding.load(Ordering::Acquire) {
+                            value if value == GameDataEncoding::MessagePack as u8 => GameDataEncoding::MessagePack,
+                            value if value == GameDataEncoding::Rkyv as u8 => GameDataEncoding::Rkyv,
+                            _ => GameDataEncoding::Json,
+                        };
+                        let mut observe_representation_violation = false;
+                        if let Err(diagnostic) = crate::accountability::validate_physical_binary_allowed(
+                            &mut accountability,
+                            negotiated_encoding,
+                        ) {
+                            let event = SignalFishEvent::ProtocolViolation {
+                                kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
+                                diagnostic,
+                            };
+                            if matches!(
+                                emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                EmitOutcome::ShutdownRequested
+                            ) {
+                                finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                break;
+                            }
+                            match violation_policy {
+                                ProtocolViolationPolicy::Quarantine => {
+                                    quarantined = true;
+                                    match state.snapshot.write() {
+                                        Ok(mut snapshot) => snapshot.quarantined = true,
+                                        Err(poisoned) => poisoned.into_inner().quarantined = true,
+                                    }
+                                    continue;
+                                }
+                                ProtocolViolationPolicy::Disconnect => {
+                                    accountability.observe_terminal();
+                                    emit_disconnected_or_shutdown(
+                                        &mut transport,
+                                        &event_tx,
+                                        &mut shutdown_rx,
+                                        &state,
+                                        Some("protocol accountability violation".into()),
+                                        last_server_error.take(),
+                                    ).await;
+                                    break;
+                                }
+                                ProtocolViolationPolicy::Observe => {
+                                    observe_representation_violation = true;
+                                }
+                            }
+                        }
+                        let protocol_v3 = state.negotiated_protocol_version.load(Ordering::Acquire) >= 3;
+                        match decode_binary_server_message(&bytes, protocol_v3) {
+                            Ok(server_msg) => {
+                                let validation = if observe_representation_violation {
+                                    crate::accountability::validate_server_message(
+                                        &mut accountability,
+                                        &server_msg,
+                                    )
+                                } else {
+                                    crate::accountability::validate_server_frame(
+                                        &mut accountability,
+                                        &server_msg,
+                                        negotiated_encoding,
+                                        true,
+                                    )
+                                };
+                                let disposition = match validation {
+                                    Ok(disposition) => disposition,
+                                    Err(diagnostic) => {
+                                        let event = SignalFishEvent::ProtocolViolation {
+                                            kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
+                                            diagnostic,
+                                        };
+                                        if matches!(
+                                            emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                            EmitOutcome::ShutdownRequested
+                                        ) {
+                                            finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                            break;
+                                        }
+                                        match violation_policy {
+                                            ProtocolViolationPolicy::Quarantine => {
+                                                quarantined = true;
+                                                match state.snapshot.write() {
+                                                    Ok(mut snapshot) => snapshot.quarantined = true,
+                                                    Err(poisoned) => poisoned.into_inner().quarantined = true,
+                                                }
+                                            }
+                                            ProtocolViolationPolicy::Disconnect => {
+                                                accountability.observe_terminal();
+                                                emit_disconnected_or_shutdown(
+                                                    &mut transport,
+                                                    &event_tx,
+                                                    &mut shutdown_rx,
+                                                    &state,
+                                                    Some("protocol accountability violation".into()),
+                                                    last_server_error.take(),
+                                                ).await;
+                                                break;
+                                            }
+                                            ProtocolViolationPolicy::Observe => {}
+                                        }
+                                        if violation_policy == ProtocolViolationPolicy::Observe {
+                                            crate::accountability::GameDataDisposition::Apply
+                                        } else {
+                                            crate::accountability::GameDataDisposition::Stale
+                                        }
+                                    }
+                                };
+                                if disposition == crate::accountability::GameDataDisposition::Stale
+                                    || (quarantined
+                                        && violation_policy == ProtocolViolationPolicy::Quarantine)
+                                {
+                                    continue;
+                                }
+                                update_state(&state, &server_msg).await;
+                                let event = SignalFishEvent::from(server_msg);
+                                if matches!(
+                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                    EmitOutcome::ShutdownRequested
+                                ) {
+                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let mut disconnect_for_violation = false;
+                                if let Err(diagnostic) =
+                                    accountability.observe_server_message(false)
+                                {
+                                    let event = SignalFishEvent::ProtocolViolation {
+                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
+                                            &diagnostic,
+                                        ),
+                                        diagnostic,
+                                    };
+                                    if matches!(
+                                        emit_event_or_shutdown(
+                                            &event_tx,
+                                            &mut shutdown_rx,
+                                            event
+                                        )
+                                        .await,
+                                        EmitOutcome::ShutdownRequested
+                                    ) {
+                                        finish_shutdown(
+                                            &mut transport,
+                                            &event_tx,
+                                            &state,
+                                            last_server_error,
+                                        )
+                                        .await;
+                                        break;
+                                    }
+                                    match violation_policy {
+                                        ProtocolViolationPolicy::Quarantine => {
+                                            quarantined = true;
+                                            match state.snapshot.write() {
+                                                Ok(mut snapshot) => snapshot.quarantined = true,
+                                                Err(poisoned) => {
+                                                    poisoned.into_inner().quarantined = true
+                                                }
+                                            }
+                                        }
+                                        ProtocolViolationPolicy::Disconnect => {
+                                            disconnect_for_violation = true;
+                                        }
+                                        ProtocolViolationPolicy::Observe => {}
+                                    }
+                                }
+                                state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
+                                let event = SignalFishEvent::DecodeFailed {
+                                    message_type: Some("BinaryGameData".into()),
+                                    error,
+                                    raw_prefix: bounded_binary_preview(&bytes),
+                                };
+                                if matches!(
+                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
+                                    EmitOutcome::ShutdownRequested
+                                ) {
+                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                    break;
+                                }
+                                if disconnect_for_violation {
+                                    accountability.observe_terminal();
+                                    emit_disconnected_or_shutdown(
+                                        &mut transport,
+                                        &event_tx,
+                                        &mut shutdown_rx,
+                                        &state,
+                                        Some("protocol accountability violation".into()),
+                                        last_server_error.take(),
+                                    )
+                                    .await;
                                     break;
                                 }
                             }
@@ -1264,9 +1874,10 @@ async fn transport_loop(
                     // Transport closed cleanly.
                     None => {
                         debug!("transport closed by server");
-                        let reason = transport
-                            .close_reason()
-                            .map(|r| format!("closed by server: {r}"));
+                        accountability.observe_terminal();
+                        let reason = transport.close_info().map(|info| {
+                            format!("closed by server: code={:?}, reason={:?}", info.code, info.reason)
+                        });
                         emit_disconnected_or_shutdown(
                             &mut transport,
                             &event_tx,
@@ -1291,6 +1902,10 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
     match msg {
         ServerMessage::Authenticated { .. } => {
             state.authenticated.store(true, Ordering::Release);
+            match state.snapshot.write() {
+                Ok(mut snapshot) => snapshot.authenticated = true,
+                Err(poisoned) => poisoned.into_inner().authenticated = true,
+            }
             debug!("state: authenticated");
         }
         ServerMessage::ProtocolInfo(payload) => {
@@ -1304,12 +1919,38 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             // Mark negotiation as observed even for a v2 floor (version 0): this
             // is what separates "relay-only" from "pre-negotiation" in the guard.
             state.protocol_info_seen.store(true, Ordering::Release);
+            match state.snapshot.write() {
+                Ok(mut snapshot) => {
+                    snapshot.negotiated_protocol_version = (version >= 3).then_some(version)
+                }
+                Err(poisoned) => {
+                    poisoned.into_inner().negotiated_protocol_version =
+                        (version >= 3).then_some(version)
+                }
+            }
             debug!("state: negotiated protocol version {version}");
+        }
+        ServerMessage::Error {
+            error_code: Some(crate::ErrorCode::UnsupportedGameDataFormat),
+            ..
+        } => {
+            state
+                .game_data_encoding
+                .store(GameDataEncoding::Json as u8, Ordering::Release);
         }
         ServerMessage::RoomJoined(payload) => {
             *state.player_id.lock().await = Some(payload.player_id);
             *state.room_id.lock().await = Some(payload.room_id);
             *state.room_code.lock().await = Some(payload.room_code.clone());
+            let mut snapshot = match state.snapshot.write() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            snapshot.player_id = Some(payload.player_id);
+            snapshot.room_id = Some(payload.room_id);
+            snapshot.room_code = Some(payload.room_code.clone());
+            snapshot.reconnection_token = payload.reconnection_token.clone();
+            snapshot.quarantined = false;
             debug!(
                 "state: joined room {} ({})",
                 payload.room_code, payload.room_id
@@ -1318,12 +1959,29 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
         ServerMessage::RoomLeft => {
             *state.room_id.lock().await = None;
             *state.room_code.lock().await = None;
+            let mut snapshot = match state.snapshot.write() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            snapshot.room_id = None;
+            snapshot.room_code = None;
+            snapshot.reconnection_token = None;
+            snapshot.quarantined = false;
             debug!("state: left room");
         }
         ServerMessage::Reconnected(payload) => {
             *state.player_id.lock().await = Some(payload.player_id);
             *state.room_id.lock().await = Some(payload.room_id);
             *state.room_code.lock().await = Some(payload.room_code.clone());
+            let mut snapshot = match state.snapshot.write() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            snapshot.player_id = Some(payload.player_id);
+            snapshot.room_id = Some(payload.room_id);
+            snapshot.room_code = Some(payload.room_code.clone());
+            snapshot.reconnection_token = payload.reconnection_token.clone();
+            snapshot.quarantined = false;
             // If the negotiated version was replayed via missed_events, restore
             // it so v3 sends aren't wrongly blocked after a reconnect. (A
             // top-level ProtocolInfo is already handled by its own arm.) Only a
@@ -1341,6 +1999,7 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
                 // "seen implies a ProtocolInfo arrived" invariant for any future
                 // reader.)
                 state.protocol_info_seen.store(true, Ordering::Release);
+                snapshot.negotiated_protocol_version = Some(version);
             }
             debug!(
                 "state: reconnected to room {} ({})",
@@ -1351,6 +2010,15 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
             *state.player_id.lock().await = Some(payload.spectator_id);
             *state.room_id.lock().await = Some(payload.room_id);
             *state.room_code.lock().await = Some(payload.room_code.clone());
+            let mut snapshot = match state.snapshot.write() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            snapshot.player_id = Some(payload.spectator_id);
+            snapshot.room_id = Some(payload.room_id);
+            snapshot.room_code = Some(payload.room_code.clone());
+            snapshot.reconnection_token = None;
+            snapshot.quarantined = false;
             debug!(
                 "state: spectator joined room {} ({})",
                 payload.room_code, payload.room_id
@@ -1359,6 +2027,14 @@ async fn update_state(state: &ClientState, msg: &ServerMessage) {
         ServerMessage::SpectatorLeft { .. } => {
             *state.room_id.lock().await = None;
             *state.room_code.lock().await = None;
+            let mut snapshot = match state.snapshot.write() {
+                Ok(snapshot) => snapshot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            snapshot.room_id = None;
+            snapshot.room_code = None;
+            snapshot.reconnection_token = None;
+            snapshot.quarantined = false;
             debug!("state: left spectator mode");
         }
         ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
@@ -1424,7 +2100,7 @@ async fn finish_shutdown(
     state: &ClientState,
     last_server_error: Option<ServerErrorInfo>,
 ) {
-    let _ = transport.close().await;
+    let _ = close_transport(transport).await;
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
     let _ = event_tx.try_send(SignalFishEvent::Disconnected {
@@ -1466,7 +2142,7 @@ async fn emit_disconnected_or_shutdown(
     reason: Option<String>,
     last_server_error: Option<ServerErrorInfo>,
 ) {
-    let _ = transport.close().await;
+    let _ = close_transport(transport).await;
     state.connected.store(false, Ordering::Release);
     state.clear_session_state().await;
     let event = SignalFishEvent::Disconnected {
@@ -1503,9 +2179,22 @@ async fn emit_disconnected_or_shutdown(
 mod tests {
     use super::*;
     use crate::protocol::{LobbyState, RateLimitInfo, RoomJoinedPayload};
-    use async_trait::async_trait;
     use std::collections::VecDeque;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Mutex as StdMutex;
+    use std::task::{Context, Poll};
+
+    #[test]
+    fn snapshot_debug_redacts_reconnection_token() {
+        let snapshot = ClientSnapshot {
+            reconnection_token: Some("top-secret-token".into()),
+            ..ClientSnapshot::default()
+        };
+        let debug = format!("{snapshot:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("top-secret-token"));
+    }
 
     // ── Mock transport ──────────────────────────────────────────────
 
@@ -1534,29 +2223,46 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl Transport for MockTransport {
-        async fn send(&mut self, message: String) -> std::result::Result<(), SignalFishError> {
-            self.sent.lock().unwrap().push(message);
-            Ok(())
-        }
-
-        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
-            if let Some(item) = self.incoming.pop_front() {
-                // An explicit `None` entry signals a clean transport close;
-                // `Some(result)` delivers the scripted message or error.
-                item
-            } else {
-                // All scripted messages have been delivered — pending()
-                // never completes, keeping the transport loop alive
-                // until shutdown aborts it.
-                std::future::pending().await
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            match frame.take() {
+                Some(TransportFrame::Text(message)) => {
+                    self.sent.lock().unwrap().push(message);
+                    Poll::Ready(Ok(()))
+                }
+                Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
+                    SignalFishError::TransportSend("mock expected a text frame".into()),
+                )),
+                None => Poll::Ready(Ok(())),
             }
         }
 
-        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            if let Some(item) = self.incoming.pop_front() {
+                // An explicit `None` entry signals a clean transport close;
+                // `Some(result)` delivers the scripted message or error.
+                Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
+            } else {
+                // All scripted messages have been delivered. No waker is
+                // registered, preserving the old never-completing recv until
+                // shutdown aborts the transport loop.
+                Poll::Pending
+            }
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
             self.closed.store(true, Ordering::Relaxed);
-            Ok(())
+            Poll::Ready(Ok(()))
         }
     }
 
@@ -1608,6 +2314,7 @@ mod tests {
             relay_type: "auto".into(),
             current_spectators: vec![],
             ice_servers: vec![],
+            reconnection_token: None,
         };
         serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload))).unwrap()
     }
@@ -1955,6 +2662,10 @@ mod tests {
             let msg = ServerMessage::GameData {
                 from_player: uuid::Uuid::from_u128(7),
                 data: serde_json::json!({ "seq": seq }),
+                seq: None,
+                epoch: None,
+                class: None,
+                key: None,
             };
             incoming.push(Some(Ok(serde_json::to_string(&msg).unwrap())));
         }
@@ -1991,6 +2702,10 @@ mod tests {
         let game_data_json = serde_json::to_string(&ServerMessage::GameData {
             from_player: uuid::Uuid::from_u128(9),
             data: serde_json::json!({ "seq": 0 }),
+            seq: None,
+            epoch: None,
+            class: None,
+            key: None,
         })
         .unwrap();
         let (transport, sent, _closed) = MockTransport::new(vec![
@@ -2029,6 +2744,10 @@ mod tests {
             serde_json::to_string(&ServerMessage::GameData {
                 from_player: uuid::Uuid::from_u128(9),
                 data: serde_json::json!({ "seq": seq }),
+                seq: None,
+                epoch: None,
+                class: None,
+                key: None,
             })
             .unwrap()
         };
@@ -2073,10 +2792,23 @@ mod tests {
 
     /// Transport whose `send()` requires a semaphore permit per message, so
     /// tests can stall the outgoing path deterministically.
+    type PermitWait = Pin<
+        Box<
+            dyn Future<
+                    Output = std::result::Result<
+                        tokio::sync::OwnedSemaphorePermit,
+                        tokio::sync::AcquireError,
+                    >,
+                > + Send,
+        >,
+    >;
+
     struct GatedSendTransport {
         entered_send: Arc<AtomicBool>,
         permits: Arc<tokio::sync::Semaphore>,
         sent: Arc<StdMutex<Vec<String>>>,
+        pending_frame: Option<TransportFrame>,
+        permit_wait: Option<PermitWait>,
     }
 
     impl GatedSendTransport {
@@ -2097,6 +2829,8 @@ mod tests {
                     entered_send: Arc::clone(&entered_send),
                     permits: Arc::clone(&permits),
                     sent: Arc::clone(&sent),
+                    pending_frame: None,
+                    permit_wait: None,
                 },
                 entered_send,
                 permits,
@@ -2105,28 +2839,61 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl Transport for GatedSendTransport {
-        async fn send(&mut self, message: String) -> std::result::Result<(), SignalFishError> {
-            self.entered_send.store(true, Ordering::Release);
-            let permit = self
-                .permits
-                .acquire()
-                .await
-                .map_err(|_| SignalFishError::TransportClosed)?;
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            if self.pending_frame.is_none() {
+                let Some(accepted) = frame.take() else {
+                    return Poll::Ready(Ok(()));
+                };
+                self.entered_send.store(true, Ordering::Release);
+                self.pending_frame = Some(accepted);
+                self.permit_wait = Some(Box::pin(Arc::clone(&self.permits).acquire_owned()));
+            }
+
+            let Some(permit_wait) = self.permit_wait.as_mut() else {
+                return Poll::Ready(Err(SignalFishError::TransportClosed));
+            };
+            let permit = match permit_wait.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(permit)) => permit,
+                Poll::Ready(Err(_)) => {
+                    self.pending_frame = None;
+                    self.permit_wait = None;
+                    return Poll::Ready(Err(SignalFishError::TransportClosed));
+                }
+            };
             permit.forget();
-            self.sent.lock().unwrap().push(message);
-            Ok(())
+            self.permit_wait = None;
+            match self.pending_frame.take() {
+                Some(TransportFrame::Text(message)) => {
+                    self.sent.lock().unwrap().push(message);
+                    Poll::Ready(Ok(()))
+                }
+                Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
+                    SignalFishError::TransportSend("gated mock expected a text frame".into()),
+                )),
+                None => Poll::Ready(Ok(())),
+            }
         }
 
-        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
-            // No scripted messages — pending() never completes, keeping the
-            // transport loop alive until shutdown aborts it.
-            std::future::pending().await
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            // No scripted messages and no registered waker: preserve the old
+            // never-completing recv until shutdown aborts the loop.
+            Poll::Pending
         }
 
-        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
-            Ok(())
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
         }
     }
 
@@ -2246,8 +3013,90 @@ mod tests {
             protocol_version: Some(3),
             min_protocol_version: Some(2),
             max_protocol_version: Some(3),
+            transports: None,
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn async_binary_send_requires_a_negotiated_binary_format() {
+        let (transport, _sent, _closed) =
+            MockTransport::new(vec![Some(Ok(protocol_info_v3_json()))]);
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // ProtocolInfo
+
+        assert!(matches!(
+            client.send_binary_game_data(vec![1, 2, 3]),
+            Err(SignalFishError::BinaryFormatNotNegotiated)
+        ));
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn async_quarantine_suppresses_invalid_lifecycle_event() {
+        let peer = uuid::Uuid::from_u128(400);
+        let room = ServerMessage::RoomJoined(Box::new(RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(401),
+            room_code: "ROOM".into(),
+            player_id: uuid::Uuid::from_u128(402),
+            game_name: "test".into(),
+            max_players: 2,
+            supports_authority: false,
+            current_players: vec![crate::protocol::PlayerInfo {
+                id: peer,
+                name: "peer".into(),
+                is_authority: false,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            }],
+            is_authority: false,
+            lobby_state: LobbyState::Lobby,
+            ready_players: vec![],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        }));
+        let invalid = ServerMessage::PlayerLeft {
+            player_id: peer,
+            epoch: None,
+            final_seq: None,
+        };
+        let (transport, _sent, _closed) = MockTransport::new(vec![
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(serde_json::to_string(&room).unwrap())),
+            Some(Ok(serde_json::to_string(&invalid).unwrap())),
+        ]);
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolViolation { .. })
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), events.recv())
+                .await
+                .is_err()
+        );
+        assert!(client.snapshot().quarantined);
+        client.shutdown().await;
     }
 
     #[tokio::test]
@@ -2370,27 +3219,37 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl Transport for HangingCloseTransport {
-        async fn send(&mut self, _message: String) -> std::result::Result<(), SignalFishError> {
-            Ok(())
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            let _ = frame.take();
+            Poll::Ready(Ok(()))
         }
 
-        async fn recv(&mut self) -> Option<std::result::Result<String, SignalFishError>> {
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
             if let Some(item) = self.incoming.pop_front() {
-                item
+                Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
             } else {
-                // No scripted messages — pending() never completes,
-                // keeping the task alive until shutdown aborts it.
-                std::future::pending().await
+                // No scripted messages and no registered waker: preserve the
+                // old never-completing recv until shutdown aborts the task.
+                Poll::Pending
             }
         }
 
-        async fn close(&mut self) -> std::result::Result<(), SignalFishError> {
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
             self.close_called.store(true, Ordering::Release);
-            // Simulate a close() that never completes, so the
+            // Simulate a close that never completes, so the
             // shutdown timeout/abort path can be exercised.
-            std::future::pending().await
+            Poll::Pending
         }
     }
 
@@ -2680,7 +3539,10 @@ mod tests {
             let messages = sent.lock().unwrap();
             assert!(messages.len() >= 2);
             let last: ClientMessage = serde_json::from_str(messages.last().unwrap()).unwrap();
-            if let ClientMessage::GameData { data: sent_data } = last {
+            if let ClientMessage::GameData {
+                data: sent_data, ..
+            } = last
+            {
                 assert_eq!(
                     sent_data,
                     serde_json::json!({ "action": "move", "x": 10, "y": 20 })
@@ -2751,6 +3613,9 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events: vec![],
+            replay: None,
+            sender_watermarks: vec![],
+            reconnection_token: None,
         };
         serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
     }

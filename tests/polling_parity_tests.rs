@@ -19,14 +19,13 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-
 use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
 use signal_fish_client::error::SignalFishError;
 use signal_fish_client::polling_client::SignalFishPollingClient;
 use signal_fish_client::protocol::{
     LobbyState, PlayerId, ProtocolInfoPayload, ReconnectedPayload, ServerMessage,
 };
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{SignalFishEvent, Transport};
 
 const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
@@ -61,23 +60,37 @@ impl SharedMock {
     }
 }
 
-#[async_trait]
 impl Transport for SharedMock {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.sent.lock().unwrap().push(message);
-        Ok(())
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        if let Some(frame) = frame.take() {
+            let TransportFrame::Text(message) = frame else {
+                panic!("parity mock expected an outbound text frame");
+            };
+            self.sent.lock().unwrap().push(message);
+        }
+        std::task::Poll::Ready(Ok(()))
     }
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
         let item = self.incoming.lock().unwrap().pop_front();
         match item {
-            Some(inner) => inner,
-            // No scripted messages remain — this future never completes, keeping
-            // the loop alive (noop waker for polling, awaited for async).
-            None => std::future::pending().await,
+            Some(inner) => {
+                std::task::Poll::Ready(inner.map(|result| result.map(TransportFrame::Text)))
+            }
+            None => std::task::Poll::Pending,
         }
     }
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -94,6 +107,7 @@ fn pi_v3_payload() -> ProtocolInfoPayload {
         protocol_version: Some(3),
         min_protocol_version: Some(2),
         max_protocol_version: Some(3),
+        transports: None,
     }
 }
 
@@ -121,6 +135,9 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: missed,
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }

@@ -17,7 +17,7 @@
 //! On `wasm32-unknown-emscripten`, everything runs on a single thread.
 //! Emscripten WebSocket callbacks are invoked synchronously on the main
 //! thread. A `std::sync::mpsc` channel bridges callback events into the
-//! transport's `recv()` method.
+//! transport's `poll_recv()` method.
 //!
 //! # Compatibility
 //!
@@ -25,38 +25,31 @@
 //! [`SignalFishPollingClient`](crate::SignalFishPollingClient) and a noop-waker
 //! polling model. It is **not** compatible with
 //! [`SignalFishClient::start()`](crate::SignalFishClient::start) or any real
-//! async runtime, because `recv()` uses [`std::future::pending()`] when no
-//! messages are buffered (it will never wake).
+//! async runtime, because `poll_recv()` does not register a waker when no
+//! messages are buffered.
 //!
-//! # `recv()` caller contract
+//! # `poll_recv()` caller contract
 //!
-//! The `recv()` method uses [`std::future::pending()`] when the internal
-//! channel is empty. This means the returned future will **never wake** --
-//! it permanently suspends without registering any waker. This is
+//! The `poll_recv()` method returns [`std::task::Poll::Pending`] when the
+//! internal channel is empty without registering the supplied waker. This is
 //! intentional and correct under the noop-waker polling model used by
 //! [`SignalFishPollingClient`](crate::SignalFishPollingClient):
 //!
-//! - **Callers must create a new future on every call.** Each invocation
-//!   of `recv()` must produce a fresh future that is polled exactly once.
-//!   Never store and re-poll a future returned by `recv()` -- doing so
-//!   will hang forever because the pending future has no waker to trigger
-//!   progress.
-//!
-//! - **`std::future::pending().await` intentionally never wakes.** When
+//! - **`Poll::Pending` intentionally does not register a waker.** When
 //!   no messages are buffered, the transport signals "nothing yet" by
-//!   returning `Poll::Pending` via `std::future::pending()`. The polling
+//!   returning `Poll::Pending`. The polling
 //!   client discards this result and retries on the next tick, which
-//!   creates a new future that can observe newly arrived messages.
+//!   can observe newly arrived messages.
 //!
 //! - **Only compatible with `SignalFishPollingClient`.** Standard async
 //!   runtimes (Tokio, async-std, etc.) expect futures to register a
 //!   waker so they can be re-polled when progress is possible. Since
-//!   `pending()` never registers a waker, using this transport with
+//!   this transport does not register a waker, using it with
 //!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
-//!   any real executor will cause `recv()` to hang indefinitely.
+//!   any real executor will cause `poll_recv()` to remain pending indefinitely.
 //!
 //! - **Debug-build misuse detection.** In `cfg(debug_assertions)` builds,
-//!   `recv()` will emit a `tracing::error!` if it detects a non-noop waker,
+//!   `poll_recv()` emits a `tracing::error!` once if it detects a non-noop waker,
 //!   which indicates the transport is being driven by a real async runtime
 //!   instead of `SignalFishPollingClient`. This makes misuse visible
 //!   during development rather than manifesting as a silent hang.
@@ -64,16 +57,14 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use signal_fish_client::{EmscriptenWebSocketTransport, Transport};
+//! use signal_fish_client::{
+//!     EmscriptenWebSocketTransport, SignalFishConfig, SignalFishPollingClient,
+//! };
 //!
-//! let mut transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
-//! transport.send("hello".to_string()).await?;
-//!
-//! if let Some(Ok(msg)) = transport.recv().await {
-//!     // handle message
-//! }
-//!
-//! transport.close().await?;
+//! let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
+//! let config = SignalFishConfig::new("mb_app_abc123");
+//! let mut client = SignalFishPollingClient::new(transport, config);
+//! let events = client.poll();
 //! ```
 
 // Compile-time guard: this module requires the wasm32-unknown-emscripten target.
@@ -89,10 +80,8 @@ compile_error!(
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::mpsc as std_mpsc;
 
-use async_trait::async_trait;
-
 use crate::error::SignalFishError;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
 
 // ── FFI Bindings ────────────────────────────────────────────────────────────
 
@@ -103,6 +92,13 @@ type EMSCRIPTEN_WEBSOCKET_T = c_int;
 #[allow(non_camel_case_types)]
 type EM_BOOL = c_int;
 
+// Verified against Emscripten 3.1.74 system/include/emscripten/websocket.h:
+// WebSocket event structs and creation attributes use C `bool` fields. On
+// wasm32-unknown-emscripten that ABI type is one byte. Callback return values
+// remain `EM_BOOL` (`c_int`) in this binding and must not use this field alias.
+#[allow(non_camel_case_types)]
+type C_BOOL = u8;
+
 /// Emscripten result code indicating success.
 const EMSCRIPTEN_RESULT_SUCCESS: c_int = 0;
 
@@ -110,7 +106,7 @@ const EMSCRIPTEN_RESULT_SUCCESS: c_int = 0;
 struct EmscriptenWebSocketCreateAttributes {
     url: *const c_char,
     protocols: *const c_char,
-    create_on_main_thread: EM_BOOL,
+    create_on_main_thread: C_BOOL,
 }
 
 #[repr(C)]
@@ -123,7 +119,7 @@ struct EmscriptenWebSocketMessageEvent {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     data: *const u8,
     num_bytes: u32,
-    is_text: EM_BOOL,
+    is_text: C_BOOL,
 }
 
 #[repr(C)]
@@ -134,7 +130,7 @@ struct EmscriptenWebSocketErrorEvent {
 #[repr(C)]
 struct EmscriptenWebSocketCloseEvent {
     socket: EMSCRIPTEN_WEBSOCKET_T,
-    was_clean: EM_BOOL,
+    was_clean: C_BOOL,
     code: u16,
     reason: [u8; 512],
 }
@@ -159,6 +155,12 @@ extern "C" {
     fn emscripten_websocket_send_utf8_text(
         socket: EMSCRIPTEN_WEBSOCKET_T,
         text: *const c_char,
+    ) -> c_int;
+
+    fn emscripten_websocket_send_binary(
+        socket: EMSCRIPTEN_WEBSOCKET_T,
+        data: *const c_void,
+        length: u32,
     ) -> c_int;
 
     fn emscripten_websocket_close(
@@ -203,13 +205,12 @@ extern "C" {
 /// Events received from Emscripten WebSocket callbacks.
 enum IncomingEvent {
     Open,
-    Message(String),
+    Message(TransportFrame),
     Error(String),
     Close {
-        #[allow(dead_code)]
         code: u16,
-        #[allow(dead_code)]
         was_clean: bool,
+        reason: Option<String>,
     },
 }
 
@@ -223,7 +224,7 @@ struct CallbackState {
 /// A [`Transport`] implementation backed by Emscripten's built-in WebSocket API.
 ///
 /// Uses raw FFI calls to `<emscripten/websocket.h>` and a `std::sync::mpsc`
-/// channel to bridge asynchronous C callbacks into the transport's `recv()`
+/// channel to bridge asynchronous C callbacks into the transport's `poll_recv()`
 /// method.
 ///
 /// # Construction
@@ -239,8 +240,8 @@ struct CallbackState {
 /// # Threading
 ///
 /// This type is only intended for use on `wasm32-unknown-emscripten`, which
-/// is single-threaded. The `Send` implementation is safe because there are
-/// no other threads.
+/// is single-threaded. It deliberately does not implement `Send` and must be
+/// driven by [`SignalFishPollingClient`](crate::SignalFishPollingClient).
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,
@@ -252,12 +253,14 @@ pub struct EmscriptenWebSocketTransport {
     /// Tracks whether `emscripten_websocket_delete` has been called, so `Drop`
     /// does not double-delete the socket handle.
     deleted: bool,
+    close_info: Option<TransportCloseInfo>,
+    #[cfg(debug_assertions)]
+    reported_non_noop_waker: bool,
+    /// Explicit `!Send` marker. The raw `callback_state` pointer already prevents
+    /// auto-`Send`, but this field documents the intent and prevents it from being
+    /// accidentally removed if the implementation ever changes.
+    _not_send: std::marker::PhantomData<*const ()>,
 }
-
-// SAFETY: On wasm32-unknown-emscripten, everything is single-threaded.
-// The Send bound is required by the Transport trait but is vacuously
-// satisfied since there are no other threads.
-unsafe impl Send for EmscriptenWebSocketTransport {}
 
 // ── Constructor ─────────────────────────────────────────────────────────────
 
@@ -387,6 +390,10 @@ impl EmscriptenWebSocketTransport {
             closed: false,
             opened: false,
             deleted: false,
+            close_info: None,
+            #[cfg(debug_assertions)]
+            reported_non_noop_waker: false,
+            _not_send: std::marker::PhantomData,
         })
     }
 }
@@ -403,6 +410,23 @@ impl EmscriptenWebSocketTransport {
 //   wasm32-unknown-emscripten execution model), so no data races are possible.
 // The `CallbackState` remains live until `emscripten_websocket_delete` unregisters
 // all callbacks, after which we reclaim it via `Box::from_raw` in `Drop`.
+
+/// Copy callback-owned payload bytes without constructing a slice from a null
+/// pointer for an empty WebSocket frame.
+///
+/// # Safety
+///
+/// When `len` is non-zero, `data` must point to at least `len` initialized bytes
+/// that remain valid for the duration of this call.
+unsafe fn copy_event_payload(data: *const u8, len: usize) -> Vec<u8> {
+    if len == 0 {
+        return Vec::new();
+    }
+
+    // SAFETY: The caller guarantees a non-null pointer to `len` initialized
+    // bytes. The zero-length case returned above before constructing a slice.
+    unsafe { std::slice::from_raw_parts(data, len).to_vec() }
+}
 
 // SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_open_callback(
@@ -432,25 +456,30 @@ extern "C" fn on_message_callback(
         } else {
             0
         };
-        // SAFETY: Emscripten guarantees `event.data` points to `event.num_bytes`
-        // valid bytes for the duration of this callback. `len` excludes the NUL
-        // terminator so the slice covers only the payload bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(event.data, len) };
-        match std::str::from_utf8(bytes) {
+        // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
+        // points to `event.num_bytes` valid bytes for this callback. `len`
+        // excludes the NUL terminator. Empty payloads do not dereference data.
+        let bytes = unsafe { copy_event_payload(event.data, len) };
+        match std::str::from_utf8(&bytes) {
             Ok(s) => {
-                let _ = state.tx.send(IncomingEvent::Message(s.to_owned()));
+                let _ = state
+                    .tx
+                    .send(IncomingEvent::Message(TransportFrame::Text(s.to_owned())));
             }
             Err(e) => {
                 tracing::warn!("received non-UTF-8 text message: {e}");
             }
         }
     } else {
-        // Binary message — the signal-fish protocol uses text/JSON only,
-        // so skip binary frames (matches WebSocketTransport behavior).
-        tracing::debug!(
-            "skipping binary WebSocket message ({} bytes)",
-            event.num_bytes
-        );
+        let len = event.num_bytes as usize;
+        // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
+        // points to `event.num_bytes` valid bytes for this callback. Empty
+        // binary frames may carry a null data pointer and are copied directly
+        // to an empty Vec without constructing a slice.
+        let bytes = unsafe { copy_event_payload(event.data, len) };
+        let _ = state
+            .tx
+            .send(IncomingEvent::Message(TransportFrame::Binary(bytes)));
     }
     1 // EM_TRUE
 }
@@ -476,134 +505,152 @@ extern "C" fn on_close_callback(
 ) -> EM_BOOL {
     let state = unsafe { &*(user_data as *const CallbackState) };
     let event = unsafe { &*event };
+    let reason_len = event
+        .reason
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(event.reason.len());
+    let reason = event
+        .reason
+        .get(..reason_len)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .filter(|reason| !reason.is_empty())
+        .map(str::to_owned);
     let _ = state.tx.send(IncomingEvent::Close {
         code: event.code,
         was_clean: event.was_clean != 0,
+        reason,
     });
     1 // EM_TRUE
 }
 
-// ── Debug-Only Misuse Detection ─────────────────────────────────────────────
-
-/// A future that yields `Poll::Pending` exactly once, like `std::future::pending()`,
-/// but in debug builds detects misuse with a real async runtime by checking
-/// whether the provided waker is a noop waker.
-///
-/// If a real waker is detected (one that is not the noop waker), this emits a
-/// `tracing::error!` diagnostic to help users identify that they are incorrectly
-/// using `EmscriptenWebSocketTransport` with `SignalFishClient::start()` or
-/// another real async executor instead of `SignalFishPollingClient`.
-struct NoopWakerPending;
-
-impl std::future::Future for NoopWakerPending {
-    type Output = std::convert::Infallible;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        #[cfg(debug_assertions)]
-        {
-            // Detect non-noop wakers via `Waker::will_wake`.
-            // `Waker::noop()` returns a waker whose `wake()` is a no-op.
-            // `will_wake` compares both the data pointer and vtable of
-            // the two wakers — a real runtime's waker will not match.
-            let noop = std::task::Waker::noop();
-            if !_cx.waker().will_wake(noop) {
-                tracing::error!(
-                    "EmscriptenWebSocketTransport::recv() is being polled with a real async \
-                     runtime waker. This transport is designed exclusively for use with \
-                     SignalFishPollingClient (noop-waker polling). Using it with \
-                     SignalFishClient::start() or any real async executor (Tokio, async-std, etc.) \
-                     will cause recv() to hang indefinitely. \
-                     See: https://docs.rs/signal-fish-client/latest/signal_fish_client/struct.SignalFishPollingClient.html"
-                );
-            }
-        }
-        std::task::Poll::Pending
-    }
-}
-
 // ── Transport Trait Implementation ──────────────────────────────────────────
 
-#[async_trait]
 impl Transport for EmscriptenWebSocketTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
         if self.closed {
-            return Err(SignalFishError::TransportClosed);
+            return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
         }
-        let c_msg = std::ffi::CString::new(message)
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
-        // SAFETY: `c_msg` is a valid NUL-terminated CString; `self.socket` is a
-        // valid handle obtained from `emscripten_websocket_new`.
-        let result = unsafe { emscripten_websocket_send_utf8_text(self.socket, c_msg.as_ptr()) };
-        if result != EMSCRIPTEN_RESULT_SUCCESS {
-            return Err(SignalFishError::TransportSend(format!(
-                "emscripten_websocket_send_utf8_text failed: {result}"
-            )));
+        let Some(frame) = frame.take() else {
+            return std::task::Poll::Ready(Ok(()));
+        };
+        let result = match frame {
+            TransportFrame::Text(message) => {
+                let c_msg = match std::ffi::CString::new(message) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                            error.to_string(),
+                        )));
+                    }
+                };
+                // SAFETY: `self.socket` is a live Emscripten WebSocket handle and
+                // `c_msg` remains allocated and NUL-terminated for the duration
+                // of this synchronous FFI call.
+                unsafe { emscripten_websocket_send_utf8_text(self.socket, c_msg.as_ptr()) }
+            }
+            TransportFrame::Binary(bytes) => {
+                let Ok(length) = u32::try_from(bytes.len()) else {
+                    return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                        "binary frame exceeds Emscripten u32 length".into(),
+                    )));
+                };
+                // SAFETY: `self.socket` is live, `bytes` remains allocated for
+                // this synchronous call, and `length` was checked to fit `u32`.
+                unsafe {
+                    emscripten_websocket_send_binary(
+                        self.socket,
+                        bytes.as_ptr().cast::<c_void>(),
+                        length,
+                    )
+                }
+            }
+        };
+        if result == EMSCRIPTEN_RESULT_SUCCESS {
+            std::task::Poll::Ready(Ok(()))
+        } else {
+            std::task::Poll::Ready(Err(SignalFishError::TransportSend(format!(
+                "Emscripten WebSocket send failed: {result}"
+            ))))
         }
-        Ok(())
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        // Keep release builds warning-free when the debug-only diagnostic below
+        // is compiled out.
+        let _ = cx;
+        #[cfg(debug_assertions)]
+        if !self.reported_non_noop_waker && !cx.waker().will_wake(std::task::Waker::noop()) {
+            self.reported_non_noop_waker = true;
+            tracing::error!(
+                "EmscriptenWebSocketTransport must be driven by \
+                 SignalFishPollingClient with a noop waker; a wake-driven \
+                 executor can remain pending indefinitely"
+            );
+        }
         if self.closed {
-            return None;
+            return std::task::Poll::Ready(None);
         }
         loop {
             match self.incoming_rx.try_recv() {
-                Ok(IncomingEvent::Message(text)) => return Some(Ok(text)),
+                Ok(IncomingEvent::Message(frame)) => {
+                    return std::task::Poll::Ready(Some(Ok(frame)));
+                }
                 Ok(IncomingEvent::Open) => {
                     self.opened = true;
-                    tracing::info!("WebSocket connection opened (onopen callback received)");
-                    continue;
                 }
-                Ok(IncomingEvent::Error(e)) => {
+                Ok(IncomingEvent::Error(error)) => {
                     self.closed = true;
-                    return Some(Err(SignalFishError::TransportReceive(e)));
+                    return std::task::Poll::Ready(Some(Err(SignalFishError::TransportReceive(
+                        error,
+                    ))));
                 }
-                Ok(IncomingEvent::Close { .. }) => {
+                Ok(IncomingEvent::Close {
+                    code,
+                    was_clean,
+                    reason,
+                }) => {
                     self.closed = true;
-                    return None;
+                    self.close_info = Some(TransportCloseInfo {
+                        code: Some(code),
+                        reason,
+                        clean: Some(was_clean),
+                        initiated_by_peer: true,
+                    });
+                    return std::task::Poll::Ready(None);
                 }
-                Err(std_mpsc::TryRecvError::Empty) => {
-                    // No messages buffered — yield `Poll::Pending` via
-                    // `NoopWakerPending`, which never registers a waker
-                    // and therefore never wakes. In debug builds, it
-                    // logs an error if a real (non-noop) waker is detected.
-                    // See the module-level "recv() caller contract" section
-                    // for the full rationale.
-                    match NoopWakerPending.await {}
-                }
+                Err(std_mpsc::TryRecvError::Empty) => return std::task::Poll::Pending,
                 Err(std_mpsc::TryRecvError::Disconnected) => {
                     self.closed = true;
-                    return None;
+                    return std::task::Poll::Ready(None);
                 }
             }
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
         if self.closed {
-            return Ok(());
+            return std::task::Poll::Ready(Ok(()));
         }
         self.closed = true;
-        // SAFETY: `self.socket` is a valid handle; `self.closed` prevents double-close.
-        // `emscripten_websocket_close` initiates the WebSocket close handshake. On the
-        // single-threaded Emscripten model, the onclose callback may fire synchronously
-        // during this call — `callback_state` is still valid at this point since we do
-        // not free it until `Drop`.
+        // SAFETY: `self.socket` is a live Emscripten WebSocket handle, and a null
+        // reason pointer is permitted when initiating a normal close.
         let result = unsafe { emscripten_websocket_close(self.socket, 1000, std::ptr::null()) };
         if result != EMSCRIPTEN_RESULT_SUCCESS {
             tracing::warn!("emscripten_websocket_close returned {result}");
         }
-        // SAFETY: `emscripten_websocket_delete` unregisters ALL callbacks from the
-        // socket handle. After this call returns, no further callback invocations can
-        // occur, so no code path will dereference `callback_state` again. Without this
-        // call, callbacks could still fire between `close()` returning and `Drop`
-        // running if a JavaScript event loop tick occurs in that window.
-        // `callback_state` is NOT freed here — it is reclaimed in `Drop` via
-        // `Box::from_raw`. This separation ensures the pointer remains valid for any
-        // synchronous callbacks that fire during the `close` call above.
+        // SAFETY: This is the sole deletion path for the live handle; `closed`
+        // prevents subsequent transport operations and `deleted` is set below.
         unsafe {
             let delete_result = emscripten_websocket_delete(self.socket);
             if delete_result != EMSCRIPTEN_RESULT_SUCCESS {
@@ -611,14 +658,17 @@ impl Transport for EmscriptenWebSocketTransport {
             }
         }
         self.deleted = true;
-        Ok(())
+        std::task::Poll::Ready(Ok(()))
     }
 
     fn is_ready(&self) -> bool {
         self.opened
     }
-}
 
+    fn close_info(&self) -> Option<TransportCloseInfo> {
+        self.close_info.clone()
+    }
+}
 // ── Drop Implementation ─────────────────────────────────────────────────────
 
 impl Drop for EmscriptenWebSocketTransport {

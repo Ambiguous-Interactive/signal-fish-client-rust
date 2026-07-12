@@ -28,3 +28,8 @@ doc = false
 name = "fuzz_client_message"
 path = "fuzz_targets/fuzz_client_message.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_binary_game_data"
+path = "fuzz_targets/fuzz_binary_game_data.rs"
+doc = false

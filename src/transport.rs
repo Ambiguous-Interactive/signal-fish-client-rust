@@ -1,152 +1,103 @@
-//! Transport abstraction for the Signal Fish signaling protocol.
+//! Frame-capable polling transport contract.
 //!
-//! The [`Transport`] trait defines a bidirectional text message channel between
-//! the client and server. The signaling protocol uses JSON text messages, so
-//! every transport implementation must handle message framing internally
-//! (e.g., WebSocket frames, length-prefixed TCP, QUIC streams, UDP datagrams).
-//!
-//! # Connection Setup
-//!
-//! Connection setup is intentionally NOT part of this trait — different
-//! transports have fundamentally different connection parameters (URLs for
-//! WebSocket, host:port for TCP, QUIC endpoints, etc.). Construct a connected
-//! transport externally, then pass it to `SignalFishClient::start`.
-//!
-//! # Implementing a Custom Transport
-//!
-//! ```rust,no_run
-//! use async_trait::async_trait;
-//! use signal_fish_client::error::SignalFishError;
-//! use signal_fish_client::transport::Transport;
-//!
-//! struct MyTransport { /* ... */ }
-//!
-//! #[async_trait]
-//! impl Transport for MyTransport {
-//!     async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-//!         // Send the JSON text message over your transport
-//!         todo!()
-//!     }
-//!
-//!     async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-//!         // Receive the next JSON text message
-//!         // Return None when the connection is closed cleanly
-//!         todo!()
-//!     }
-//!
-//!     async fn close(&mut self) -> Result<(), SignalFishError> {
-//!         // Gracefully shut down the connection
-//!         todo!()
-//!     }
-//! }
-//! ```
+//! A transport owns any frame it accepts from `poll_send` until that send
+//! completes. Polling makes the same implementation usable by an async runtime
+//! driver and by a main-thread game-loop driver without requiring `Send`.
 
-use async_trait::async_trait;
+use std::task::{Context, Poll};
 
 use crate::error::SignalFishError;
 
-/// A bidirectional text message transport for the Signal Fish signaling protocol.
-///
-/// Implementors shuttle serialized JSON strings between the client and server.
-/// Each call to [`send`](Transport::send) transmits one complete JSON message.
-/// Each call to [`recv`](Transport::recv) returns one complete JSON message.
-///
-/// Not to be confused with [`TransportKind`](crate::TransportKind): this trait is
-/// the *byte channel* to the signaling server, whereas `TransportKind` is a
-/// protocol *value* (`relay`/`direct`/`webrtc`) the server sends to describe how
-/// peers should exchange game data.
-///
-/// # Object Safety
-///
-/// This trait is object-safe, so `Box<dyn Transport>` works for dynamic dispatch.
-/// However, `SignalFishClient::start` accepts `impl Transport` (monomorphized)
-/// for the common case.
-///
-/// # Cancel Safety
-///
-/// The [`recv`](Transport::recv) method **MUST** be cancel-safe because it is used
-/// inside `tokio::select!`. If `recv` is cancelled before completion, calling it
-/// again must not lose data. Channel-based implementations (e.g., wrapping
-/// `mpsc::Receiver`) are naturally cancel-safe.
-#[async_trait]
-pub trait Transport: Send + 'static {
-    /// Send a JSON text message to the server.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SignalFishError::TransportSend`] if the message could not be sent
-    /// (e.g., connection broken, write buffer full).
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
+/// One complete signaling transport frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportFrame {
+    /// JSON protocol message.
+    Text(String),
+    /// Opaque protocol-v3 binary game-data frame.
+    Binary(Vec<u8>),
+}
 
-    /// Receive the next JSON text message from the server.
-    ///
-    /// Returns:
-    /// - `Some(Ok(text))` — a complete message was received
-    /// - `Some(Err(e))` — a transport error occurred (e.g., [`SignalFishError::TransportReceive`])
-    /// - `None` — the connection was closed cleanly by the server
-    ///
-    /// # Cancel Safety
-    ///
-    /// This method **MUST** be cancel-safe (see [trait documentation](Transport)).
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
+/// Structured metadata for a terminal transport close.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransportCloseInfo {
+    /// Protocol close code, when supplied by the peer.
+    pub code: Option<u16>,
+    /// Human-readable close reason, when supplied by the peer.
+    pub reason: Option<String>,
+    /// Whether the underlying transport reported a clean handshake.
+    pub clean: Option<bool>,
+    /// True when the peer initiated the close.
+    pub initiated_by_peer: bool,
+}
 
-    /// Close the transport connection gracefully.
-    ///
-    /// After calling this method, subsequent calls to [`send`](Transport::send) and
-    /// [`recv`](Transport::recv) may return errors or `None`.
-    ///
-    /// # Polling-Client Contract
-    ///
-    /// When used with `SignalFishPollingClient`, `close()` is polled exactly
-    /// once with a noop waker. Transports whose `close()` may return `Pending`
-    /// will not complete their shutdown sequence. If your transport targets the
-    /// polling client, ensure `close()` resolves to `Ready` immediately.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the graceful shutdown fails. Implementations should
-    /// still release resources even if the close handshake fails.
-    async fn close(&mut self) -> Result<(), SignalFishError>;
+/// Bidirectional framed transport for the Signal Fish signaling protocol.
+///
+/// The trait itself deliberately has no `Send` bound. The async client applies
+/// `Send + 'static` at its task-spawning boundary; the polling client can own a
+/// main-thread-only transport.
+///
+/// # Outbound ownership
+///
+/// `poll_send` receives the caller's pending frame slot. An implementation may
+/// take the frame only when it has accepted responsibility for preserving it.
+/// Once taken, it must retain the frame internally until the method returns
+/// `Ready`. The caller must keep polling with the same slot and must not replace
+/// it while the operation is pending.
+///
+/// # Close
+///
+/// `poll_close` is idempotent and may require multiple polls. Once it returns
+/// `Ready(Ok(()))`, later calls must also succeed without sending another close.
+pub trait Transport {
+    /// Advance one outbound frame.
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>>;
 
-    /// Whether the transport's connection handshake is complete.
-    ///
-    /// Returns `true` once the transport is fully connected and ready to
-    /// exchange messages. The default implementation returns `true`, which
-    /// is correct for transports that are already connected at construction
-    /// time (e.g., [`WebSocketTransport`](crate::WebSocketTransport), whose
-    /// async `connect().await` completes the handshake before returning).
-    ///
-    /// Transports with asynchronous handshakes (e.g.,
-    /// `EmscriptenWebSocketTransport`, whose browser WebSocket `onopen`
-    /// callback fires after construction) should override this to return
-    /// `false` until the handshake completes.
-    ///
-    /// # Usage
-    ///
-    /// [`SignalFishPollingClient`](crate::SignalFishPollingClient) calls this
-    /// method each [`poll()`](crate::SignalFishPollingClient::poll) cycle and
-    /// defers the synthetic [`Connected`](crate::SignalFishEvent::Connected)
-    /// event until `is_ready()` returns `true`.
+    /// Poll the next complete inbound frame.
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
+
+    /// Advance an idempotent graceful close.
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>>;
+
+    /// Whether the connection handshake has completed.
     fn is_ready(&self) -> bool {
         true
     }
 
-    /// A human-readable close explanation captured by the transport, if the
-    /// peer supplied one (e.g. a WebSocket Close frame's reason and code).
-    ///
-    /// Consulted by the clients after [`recv`](Transport::recv) returns
-    /// `None` to enrich the
-    /// [`Disconnected`](crate::SignalFishEvent::Disconnected) event's
-    /// `reason`. The default implementation returns `None`, which is correct
-    /// for transports that have no close metadata; custom transports should
-    /// override this if their protocol carries a close reason.
-    ///
-    /// The Signal Fish server today closes with a *bare* WebSocket Close
-    /// frame (no code/reason), so even
-    /// [`WebSocketTransport`](crate::WebSocketTransport) usually returns
-    /// `None`; the override exists so richer close signals surface as soon
-    /// as a peer sends them.
-    fn close_reason(&self) -> Option<String> {
+    /// Structured terminal close metadata, if available.
+    fn close_info(&self) -> Option<TransportCloseInfo> {
         None
     }
+}
+
+/// Drive one transport send to completion from an async runtime.
+#[cfg(feature = "tokio-runtime")]
+pub(crate) async fn send_frame<T: Transport + ?Sized>(
+    transport: &mut T,
+    frame: TransportFrame,
+) -> Result<(), SignalFishError> {
+    let mut pending = Some(frame);
+    std::future::poll_fn(|cx| transport.poll_send(cx, &mut pending)).await
+}
+
+/// Await one inbound transport frame.
+#[cfg(feature = "tokio-runtime")]
+pub(crate) async fn recv_frame<T: Transport + ?Sized>(
+    transport: &mut T,
+) -> Option<Result<TransportFrame, SignalFishError>> {
+    std::future::poll_fn(|cx| transport.poll_recv(cx)).await
+}
+
+/// Drive graceful transport close to completion.
+#[cfg(feature = "tokio-runtime")]
+pub(crate) async fn close_transport<T: Transport + ?Sized>(
+    transport: &mut T,
+) -> Result<(), SignalFishError> {
+    std::future::poll_fn(|cx| transport.poll_close(cx)).await
 }

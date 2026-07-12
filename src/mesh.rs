@@ -88,11 +88,9 @@ impl MeshSession {
                         connected: self.peer(p.player_id).is_some_and(|e| e.connected),
                     })
                     .collect();
-                // SessionPlan ICE supersedes any pre-gathered ICE; an empty list
-                // keeps the pre-gathered set.
-                if !ice_servers.is_empty() {
-                    self.ice_servers = ice_servers.clone();
-                }
+                // Every SessionPlan is authoritative. In particular, an
+                // explicit relay/relay plan clears stale WebRTC ICE state.
+                self.ice_servers = ice_servers.clone();
                 true
             }
             SignalFishEvent::NewPeer {
@@ -132,7 +130,7 @@ impl MeshSession {
             // advertises someone who has left (the server also re-plans on
             // membership change, but this closes the window in between).
             // Removal needs no server authority, so it is safe to fold here.
-            SignalFishEvent::PlayerLeft { player_id } => {
+            SignalFishEvent::PlayerLeft { player_id, .. } => {
                 let before = self.peers.len();
                 self.peers.retain(|p| p.player_id != *player_id);
                 self.peers.len() != before
@@ -417,9 +415,9 @@ mod tests {
         s.apply(&room_joined(vec![ice("stun:pre")]));
         assert_eq!(s.ice_servers(), &[ice("stun:pre")]);
         assert!(s.topology().is_none(), "pre-gather creates no plan/peers");
-        // A plan with EMPTY ice keeps the pre-gathered set.
+        // A plan with empty ICE authoritatively clears pre-gather state.
         s.apply(&plan(Topology::Mesh, None, vec![peer(1, true)], vec![]));
-        assert_eq!(s.ice_servers(), &[ice("stun:pre")]);
+        assert!(s.ice_servers().is_empty());
         // A plan with ICE overrides it.
         s.apply(&plan(
             Topology::Mesh,
@@ -492,14 +490,24 @@ mod tests {
             vec![],
         ));
         // A departing player is removed right away (no waiting for a re-plan).
-        let changed = s.apply(&SignalFishEvent::PlayerLeft { player_id: uuid(2) });
+        let changed = s.apply(&SignalFishEvent::PlayerLeft {
+            player_id: uuid(2),
+            epoch: None,
+            final_seq: None,
+        });
         assert!(changed);
         assert!(s.peer(uuid(2)).is_none());
         assert!(s.peer(uuid(1)).is_some());
         // PlayerLeft for an unknown / already-removed peer is a no-op.
-        assert!(!s.apply(&SignalFishEvent::PlayerLeft { player_id: uuid(2) }));
         assert!(!s.apply(&SignalFishEvent::PlayerLeft {
-            player_id: uuid(99)
+            player_id: uuid(2),
+            epoch: None,
+            final_seq: None,
+        }));
+        assert!(!s.apply(&SignalFishEvent::PlayerLeft {
+            player_id: uuid(99),
+            epoch: None,
+            final_seq: None,
         }));
     }
 
@@ -600,6 +608,7 @@ mod tests {
             relay_type: "auto".into(),
             current_spectators: vec![],
             ice_servers,
+            reconnection_token: None,
         }
     }
 
@@ -622,6 +631,9 @@ mod tests {
             current_spectators: vec![],
             ice_servers,
             missed_events,
+            replay: None,
+            sender_watermarks: vec![],
+            reconnection_token: None,
         }
     }
 

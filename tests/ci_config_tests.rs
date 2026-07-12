@@ -1111,6 +1111,22 @@ mod ci_workflow_policy {
     }
 
     #[test]
+    fn semver_workflow_requires_explicit_breaking_marker_for_major_policy() {
+        let contents = read_project_file(".github/workflows/semver-checks.yml");
+        assert!(
+            contents.contains("PR_TITLE: ${{ github.event.pull_request.title }}")
+                && contents.contains(r#"[[ "$PR_TITLE" == *"!:"* ]]"#),
+            "Semver CI must derive intentional breaking changes from the explicit conventional-commit `!:` marker"
+        );
+        assert!(
+            contents.contains("--release-type major")
+                && contents.contains("steps.pr-release-type.outputs.release-type == 'major'")
+                && contents.contains("steps.pr-release-type.outputs.release-type == 'auto'"),
+            "Semver CI must use major policy only for explicitly marked breaking PRs and retain inferred checks otherwise"
+        );
+    }
+
+    #[test]
     fn ci_has_concurrency_block() {
         let contents = ci_contents();
         assert!(
@@ -5075,6 +5091,92 @@ mod check_all_documentation_accuracy {
 
 mod ffi_safety_documentation {
     use super::*;
+
+    /// Emscripten's websocket header uses one-byte C `bool` fields in its
+    /// repr(C) structs, while callback return values use the binding's
+    /// integer-sized `EM_BOOL`. Keep these two ABI roles distinct.
+    #[test]
+    fn emscripten_websocket_bool_fields_match_header_layout() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        assert!(
+            contents.contains("type C_BOOL = u8;"),
+            "Emscripten websocket C bool fields must use the one-byte C_BOOL alias"
+        );
+        for field in [
+            "create_on_main_thread: C_BOOL",
+            "is_text: C_BOOL",
+            "was_clean: C_BOOL",
+        ] {
+            assert!(
+                contents.contains(field),
+                "Emscripten websocket repr(C) field must match websocket.h: {field}"
+            );
+        }
+        assert!(
+            contents.contains("type EM_BOOL = c_int;"),
+            "callback return EM_BOOL must remain c_int"
+        );
+        assert!(
+            contents.contains(") -> EM_BOOL;"),
+            "Emscripten websocket callback typedefs must return EM_BOOL"
+        );
+    }
+
+    /// `slice::from_raw_parts` requires a non-null pointer even for an empty
+    /// slice. Browser callbacks may represent an empty binary frame with a null
+    /// data pointer, so the helper must return before constructing a slice.
+    #[test]
+    fn emscripten_empty_payload_avoids_null_slice_construction() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+        let helper = contents
+            .find("unsafe fn copy_event_payload")
+            .map(|start| &contents[start..])
+            .and_then(|tail| {
+                tail.find("// SAFETY: See the callback")
+                    .map(|end| &tail[..end])
+            })
+            .expect("Emscripten transport must define copy_event_payload before callbacks");
+
+        let empty_guard = helper
+            .find("if len == 0")
+            .expect("copy_event_payload must guard zero-length payloads");
+        let slice_construction = helper
+            .find("std::slice::from_raw_parts")
+            .expect("copy_event_payload must copy non-empty callback bytes");
+        assert!(
+            empty_guard < slice_construction,
+            "zero-length payload guard must precede slice::from_raw_parts"
+        );
+    }
+
+    /// The Emscripten callback channel has no wake integration. Debug builds
+    /// must diagnose accidental wake-driven polling instead of hanging silently.
+    #[test]
+    fn emscripten_pending_recv_diagnoses_non_noop_waker() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+
+        assert!(
+            contents.contains("will_wake(std::task::Waker::noop())"),
+            "Emscripten poll_recv must distinguish the polling client's noop waker"
+        );
+        assert!(
+            contents.contains("reported_non_noop_waker"),
+            "Emscripten poll_recv must report wake-driven misuse only once"
+        );
+        assert!(
+            contents.contains("SignalFishPollingClient with a noop waker"),
+            "Emscripten poll_recv must emit an actionable misuse diagnostic"
+        );
+        assert!(
+            contents.contains("_not_send: std::marker::PhantomData<*const ()>"),
+            "Emscripten transport must remain explicitly non-Send"
+        );
+        assert!(
+            contents.contains("_not_send: std::marker::PhantomData,"),
+            "Emscripten constructor must initialize its non-Send marker"
+        );
+    }
 
     /// Every `unsafe {` block in the Emscripten WebSocket transport must have
     /// a SAFETY comment within the preceding 15 lines. This ensures that all

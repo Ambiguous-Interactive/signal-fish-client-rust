@@ -134,6 +134,8 @@ fn all_client_error_codes() -> Vec<ErrorCode> {
         ErrorCode::ConnectionIdleTimeout,
         ErrorCode::SlowConsumer,
         ErrorCode::ActivityTimeout,
+        ErrorCode::ServerDraining,
+        ErrorCode::InvalidDeliveryClass,
     ]
 }
 
@@ -192,13 +194,24 @@ fn exhaustiveness_guard(code: &ErrorCode) {
         | ErrorCode::SignalTooLarge
         | ErrorCode::ConnectionIdleTimeout
         | ErrorCode::SlowConsumer
-        | ErrorCode::ActivityTimeout => {}
+        | ErrorCode::ActivityTimeout
+        | ErrorCode::ServerDraining
+        | ErrorCode::InvalidDeliveryClass => {}
     }
 }
 
 fn wire_token(code: &ErrorCode) -> String {
     let json = serde_json::to_string(code).expect("ErrorCode must serialize");
     json.trim_matches('"').to_string()
+}
+
+#[test]
+fn server_0_4_error_codes_use_the_expected_wire_tokens() {
+    assert_eq!(wire_token(&ErrorCode::ServerDraining), "SERVER_DRAINING");
+    assert_eq!(
+        wire_token(&ErrorCode::InvalidDeliveryClass),
+        "INVALID_DELIVERY_CLASS"
+    );
 }
 
 #[test]

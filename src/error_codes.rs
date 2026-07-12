@@ -98,6 +98,11 @@ pub enum ErrorCode {
     /// (no messages received within the activity window). Wire:
     /// `"ACTIVITY_TIMEOUT"`.
     ActivityTimeout,
+    /// The server is draining for shutdown and rejecting new room creation.
+    /// Existing connections close with semantic code 4000 at the deadline.
+    ServerDraining,
+    /// The requested protocol-v3 delivery class/key combination is invalid.
+    InvalidDeliveryClass,
 }
 
 impl ErrorCode {
@@ -279,6 +284,12 @@ impl ErrorCode {
             }
             Self::ActivityTimeout => {
                 "The connection was closed by the server due to prolonged inactivity. Send periodic pings to keep the connection alive."
+            }
+            Self::ServerDraining => {
+                "The server is shutting down and is not accepting new rooms. Reconnect after the advertised drain deadline."
+            }
+            Self::InvalidDeliveryClass => {
+                "The requested game-data delivery class and key combination is invalid. Latest requires a key; reliable and volatile forbid one."
             }
         }
     }

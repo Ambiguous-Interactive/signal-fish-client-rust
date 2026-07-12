@@ -11,7 +11,8 @@ struct is exhaustive. This includes:
 - `ErrorCode` — exhaustive; adding variants is a semver breaking change
 - `SignalFishError` — exhaustive; variant set is controlled by this crate
 - `ClientMessage` / `ServerMessage` — wire protocol types; exhaustive
-- `SignalFishConfig`, `JoinRoomParams` — config structs; exhaustive
+- `SignalFishConfig`, `JoinRoomParams`, `ClientSnapshot` — exhaustive structs
+- `GameDataDelivery`, `ProtocolViolationPolicy`, `ProtocolViolationKind` — exhaustive
 - Protocol payload structs (`RoomJoinedPayload`, etc.) — exhaustive
 
 ### Consumer Impact
@@ -40,11 +41,14 @@ From `src/lib.rs` — these are the primary import surface:
 
 ```rust
 // Crate root re-exports
-pub use client::{JoinRoomParams, SignalFishClient, SignalFishConfig};
+pub use client::{
+    ClientSnapshot, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
+    SignalFishClient, SignalFishConfig,
+};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
-pub use event::SignalFishEvent;
-pub use protocol::{ClientMessage, ServerMessage};
+pub use event::{ProtocolViolationKind, SignalFishEvent};
+pub use protocol::{ClientMessage, DeliveryClass, ServerMessage};
 pub use transport::Transport;
 
 // Feature-gated
@@ -57,8 +61,9 @@ Users can write:
 ```rust
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, JoinRoomParams,
-    SignalFishEvent, SignalFishError, Transport,
+    GameDataDelivery, SignalFishEvent, SignalFishError, Transport,
 };
+use signal_fish_client::transport::{TransportCloseInfo, TransportFrame};
 ```
 
 ## Feature Flags
@@ -163,13 +168,12 @@ Current MSRV: **Rust 1.85.0**
 rust-version = "1.85.0"
 ```
 
-### MSRV Note on AFIT
+### Transport and async bounds
 
-Rust 1.75 stabilized async fn in traits (AFIT), but `async-trait` is still
-used in this crate for:
-
-- Object safety — AFIT methods are not object-safe without `dyn*` or boxing
-- The `Transport` trait uses `async-trait` so that `Box<dyn Transport>` works
+`Transport` uses object-safe `poll_send`/`poll_recv`/`poll_close` methods and
+has no trait-level `Send` bound. `SignalFishClient::start` adds
+`T: Transport + Send + 'static` where `tokio::spawn` requires it;
+`SignalFishPollingClient<T>` accepts non-`Send` main-thread transports.
 
 ### Testing MSRV in CI
 
@@ -226,8 +230,10 @@ let transport: Box<dyn Transport> = Box::new(my_transport);
 let (client, events) = SignalFishClient::start(transport, config);
 ```
 
-`async-trait` makes this work by boxing the returned futures. Without
-`async-trait`, `async fn` in traits is not object-safe.
+The polling methods are directly object-safe. `poll_send` receives an
+`Option<TransportFrame>` slot: once an implementation takes a frame, it owns and
+preserves it across `Pending`. `poll_close` is idempotent, and structured peer
+close details come from `Transport::close_info()`.
 
 ## Protocol v2/v3 Additions
 
@@ -236,15 +242,16 @@ let (client, events) = SignalFishClient::start(transport, config);
   collides with the `Transport` I/O *trait* (the byte channel to the server).
   Both are public and documented to cross-reference each other; never rename the
   trait, and never name the enum `Transport`.
-- **New exhaustive variants are breaking (MINOR for 0.x).** This release adds
-  variants to `ClientMessage` (`StartGame`, `Signal`, `TransportStatus`),
-  `ServerMessage` (`Signal`, `NewPeer`, `SessionPlan`, `PeerTransportStatus`),
-  `SignalFishEvent` (the matching events + `ice_servers` on `RoomJoined`/
-  `Reconnected`), `ErrorCode` (8 new), and `SignalFishError` (`ProtocolUnsupported`),
-  plus new public types (`Topology`, `TransportKind`, `IceServer`, `SessionPeer`,
-  `SessionPlanPayload`, `PeerSignal`) and the `mesh` types (`MeshSession`,
-  `MeshController`, `WebRtcDriver`, …). `cargo semver-checks` flags these as
-  breaking — expected for the `0.4.1 → 0.5.0` bump.
+- **Current v3 additions are exhaustive.** Delivery accountability adds
+  `DeliveryClass`, gap/counter/report types, `ReplayStatus`, `SenderWatermark`,
+  and `MessageTransport`; `ServerMessage`/`SignalFishEvent` add stamped game
+  data, `DeliveryReport`, `RelayStats`, and `GoingAway`. `ErrorCode` adds
+  `ServerDraining` and `InvalidDeliveryClass`.
+- **Client policy/state API.** `GameDataDelivery` makes class/key combinations
+  valid by construction; `ProtocolViolationPolicy` defaults to `Quarantine`;
+  `ProtocolViolationKind` categorizes the emitted event; `ClientSnapshot`
+  synchronously exposes negotiated/session/token/quarantine state on both
+  drivers. New exhaustive variants/fields require a MINOR bump for this 0.x crate.
 - **The mesh surface is feature-gated** behind `mesh` (and the async controller
   additionally behind `tokio-runtime`), keeping the default build minimal. See
   [webrtc-mesh-signaling](webrtc-mesh-signaling.md).
@@ -259,7 +266,9 @@ let (client, events) = SignalFishClient::start(transport, config);
   surface as an error or as waiting — never as a silent drop or an unbounded
   backlog.
 - **Diagnostics are plain accessors.** `send_capacity()`,
-  `max_send_capacity()`, and `stats()` (returning the plain-data
-  `ClientStats`) exist on both clients; keep the two client APIs mirrored.
+  `max_send_capacity()`, `stats()`, and `snapshot()` return plain data on both
+  clients; keep the common APIs mirrored.
+- `GameDataDelivery::Reliable` preserves the v2 wire by omitting class/key;
+  `Latest { key }` and `Volatile` require negotiated v3.
 - Adding `SendBufferFull` to the exhaustive `SignalFishError` is breaking
   (MINOR for 0.x) — the `0.5.0 → 0.6.0` bump.

@@ -15,12 +15,12 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use async_trait::async_trait;
 use signal_fish_client::protocol::SpectatorJoinedPayload;
 use signal_fish_client::protocol::{
     LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
     RoomJoinedPayload, ServerMessage, SessionPeer, SessionPlanPayload, Topology, TransportKind,
 };
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{SignalFishError, Transport};
 
 // ── MockTransport ───────────────────────────────────────────────────
@@ -31,7 +31,7 @@ use signal_fish_client::{SignalFishError, Transport};
 /// All messages sent by the client are recorded in `sent`.
 pub struct MockTransport {
     /// Scripted server responses (consumed in order by `recv`).
-    incoming: VecDeque<Option<Result<String, SignalFishError>>>,
+    incoming: VecDeque<Option<Result<TransportFrame, SignalFishError>>>,
     /// Recorded outgoing messages from the client.
     pub sent: Arc<StdMutex<Vec<String>>>,
     /// Whether `close()` has been called.
@@ -49,37 +49,66 @@ impl MockTransport {
         let sent = Arc::new(StdMutex::new(Vec::new()));
         let closed = Arc::new(AtomicBool::new(false));
         let transport = Self {
-            incoming: VecDeque::from(incoming),
+            incoming: incoming
+                .into_iter()
+                .map(|item| item.map(|result| result.map(TransportFrame::Text)))
+                .collect(),
             sent: Arc::clone(&sent),
             closed: Arc::clone(&closed),
         };
         (transport, sent, closed)
     }
+
+    /// Create a mock transport from physical text/binary frames.
+    pub fn new_frames(
+        incoming: Vec<Option<Result<TransportFrame, SignalFishError>>>,
+    ) -> (Self, Arc<StdMutex<Vec<String>>>, Arc<AtomicBool>) {
+        let sent = Arc::new(StdMutex::new(Vec::new()));
+        let closed = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                incoming: VecDeque::from(incoming),
+                sent: Arc::clone(&sent),
+                closed: Arc::clone(&closed),
+            },
+            sent,
+            closed,
+        )
+    }
 }
 
-#[async_trait]
 impl Transport for MockTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        self.sent.lock().unwrap().push(message);
-        Ok(())
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        if let Some(frame) = frame.take() {
+            let TransportFrame::Text(message) = frame else {
+                panic!("test mock expected an outbound text frame");
+            };
+            self.sent.lock().unwrap().push(message);
+        }
+        std::task::Poll::Ready(Ok(()))
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
         if let Some(item) = self.incoming.pop_front() {
-            item
+            std::task::Poll::Ready(item)
         } else {
-            // All scripted responses consumed — pending() never
-            // completes (yields `Poll::Pending` without registering a
-            // waker). The tokio runtime keeps this task alive until
-            // `client.shutdown()` aborts it. Missing mock responses
-            // surface as test timeouts rather than silent successes.
-            std::future::pending().await
+            std::task::Poll::Pending
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
         self.closed.store(true, Ordering::Relaxed);
-        Ok(())
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -120,6 +149,7 @@ pub fn room_joined_json_with(room_code: &str, game_name: &str, player_id: uuid::
         relay_type: "auto".into(),
         current_spectators: vec![],
         ice_servers: vec![],
+        reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload)))
         .expect("room_joined_json serialization")
@@ -147,6 +177,9 @@ pub fn reconnected_json() -> String {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: vec![],
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
         .expect("reconnected_json serialization")
@@ -194,6 +227,8 @@ pub fn player_joined_json(name: &str, player_id: uuid::Uuid) -> String {
             is_ready: false,
             connected_at: "2026-01-01T00:00:00Z".into(),
             connection_info: None,
+            epoch: None,
+            seq: None,
         },
     })
     .expect("player_joined_json serialization")
@@ -201,8 +236,12 @@ pub fn player_joined_json(name: &str, player_id: uuid::Uuid) -> String {
 
 /// Returns the JSON string for a `PlayerLeft` server message.
 pub fn player_left_json(player_id: uuid::Uuid) -> String {
-    serde_json::to_string(&ServerMessage::PlayerLeft { player_id })
-        .expect("player_left_json serialization")
+    serde_json::to_string(&ServerMessage::PlayerLeft {
+        player_id,
+        epoch: None,
+        final_seq: None,
+    })
+    .expect("player_left_json serialization")
 }
 
 /// Returns the JSON string for a server `Error` message.
@@ -226,22 +265,15 @@ pub fn authority_response_json(granted: bool, reason: Option<&str>) -> String {
 
 /// Returns the JSON string for a `GameData` server message.
 pub fn game_data_json(from_player: uuid::Uuid, data: serde_json::Value) -> String {
-    serde_json::to_string(&ServerMessage::GameData { from_player, data })
-        .expect("game_data_json serialization")
-}
-
-/// Returns the JSON string for a `GameDataBinary` server message.
-pub fn game_data_binary_json(
-    from_player: uuid::Uuid,
-    encoding: signal_fish_client::protocol::GameDataEncoding,
-    payload: Vec<u8>,
-) -> String {
-    serde_json::to_string(&ServerMessage::GameDataBinary {
+    serde_json::to_string(&ServerMessage::GameData {
         from_player,
-        encoding,
-        payload,
+        data,
+        seq: None,
+        epoch: None,
+        class: None,
+        key: None,
     })
-    .expect("game_data_binary_json serialization")
+    .expect("game_data_json serialization")
 }
 
 // ── Protocol v3 fixtures ────────────────────────────────────────────
@@ -261,6 +293,7 @@ pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPaylo
         protocol_version,
         min_protocol_version: protocol_version.map(|_| 2),
         max_protocol_version: protocol_version.map(|_| 3),
+        transports: None,
     }
 }
 
@@ -294,6 +327,9 @@ pub fn reconnected_with_protocol_info_json(protocol_version: Option<u16>) -> Str
         missed_events: vec![ServerMessage::ProtocolInfo(protocol_info_payload(
             protocol_version,
         ))],
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
         .expect("reconnected_with_protocol_info_json serialization")

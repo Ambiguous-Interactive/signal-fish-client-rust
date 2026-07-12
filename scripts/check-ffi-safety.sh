@@ -6,9 +6,10 @@
 # wasm32-unknown-emscripten target.
 #
 # Checks:
-#   1. #[repr(C)] structs must not contain bare `bool` fields — C ABI
-#      expects `int` (4 bytes), but Rust `bool` is 1 byte. Use `c_int`,
-#      `EM_BOOL`, or a similar integer type alias instead.
+#   1. #[repr(C)] structs must not contain bare Rust `bool` fields. Bind the
+#      header's exact ABI type explicitly: for example `C_BOOL = u8` for the
+#      one-byte bool fields in Emscripten websocket structs, or `c_int` for
+#      integer-sized `EM_BOOL` values.
 #   2. FFI callback-registration functions (`emscripten_websocket_set_*`)
 #      must have their return values checked. Ignoring a failed registration
 #      silently drops events.
@@ -107,8 +108,8 @@ else
                 if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
                     echo -e "${RED}VIOLATION:${NC} $file:$lineno: bare 'bool' in #[repr(C)] struct '$struct_name'"
                     echo "  $line"
-                    echo "  Use c_int, EM_BOOL, or another integer type instead of bool in C FFI structs."
-                    echo "  Rust bool is 1 byte, but C typically uses int (4 bytes) for boolean values."
+                    echo "  Use an explicit integer alias matching the upstream header (for example C_BOOL = u8 or EM_BOOL = c_int)."
+                    echo "  Bare Rust bool has no supported FFI ABI guarantee for repr(C) fields."
                     VIOLATIONS=$((VIOLATIONS + 1))
                 fi
 

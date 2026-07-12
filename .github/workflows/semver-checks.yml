@@ -77,11 +77,30 @@ jobs:
             echo "Skipping semver check: package does not exist on base branch (new crate)"
           fi
 
-      - name: Check semver compliance (PR — against base branch)
+      - name: Classify PR release type
+        id: pr-release-type
         if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$PR_TITLE" == *"!:"* ]]; then
+            echo "release-type=major" >> "$GITHUB_OUTPUT"
+            echo "Conventional breaking-change marker found; checking with major compatibility policy."
+          else
+            echo "release-type=auto" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check semver compliance (PR — against base branch)
+        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true' && steps.pr-release-type.outputs.release-type == 'auto'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: cargo semver-checks check-release --baseline-rev "$BASE_SHA"
+
+      - name: Check intentional breaking API change (PR — against base branch)
+        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true' && steps.pr-release-type.outputs.release-type == 'major'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: cargo semver-checks check-release --baseline-rev "$BASE_SHA" --release-type major
 
       - name: Check if crate is published on crates.io
         id: check-published

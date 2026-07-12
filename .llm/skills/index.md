@@ -10,7 +10,7 @@ Each skill is a focused, practical guide for a specific topic in this codebase.
 
 ### [Async Rust Patterns](async-rust-patterns.md)
 
-Practical reference for tokio, async/await, task spawning, select!, and channels as used in this codebase.
+Practical reference for Tokio, polling transports, task spawning, selection, and channels in this crate.
 
 ### [Changelog Discipline](changelog-discipline.md)
 
@@ -90,7 +90,11 @@ Reference for the tracing crate, #[instrument] macro, spans, events, and log lev
 
 ### [Transport Abstraction](transport-abstraction.md)
 
-Reference for the `Transport` trait design, writing mock transports for tests, and implementing custom transports.
+Reference for the frame-capable polling [`Transport`](../../src/transport.rs) contract, custom transports, and test...
+
+### [Protocol v3 Delivery Accountability](v3-delivery-accountability.md)
+
+Reference for Signal Fish Server 0.4.0 delivery classes, sequence validation, reconnect baselines, and client...
 
 ### [WebRTC Mesh Signaling](webrtc-mesh-signaling.md)
 
@@ -98,7 +102,7 @@ Reference for the matchbox-compatible `PeerSignal` shape, the `WebRtcDriver` sea
 
 ### [WebSocket Client](websocket-client.md)
 
-Reference for tokio-tungstenite usage, connection lifecycle, and reconnection patterns.
+Reference for the built-in `tokio-tungstenite` transport and its polling state machine.
 
 ---
 

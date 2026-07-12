@@ -1,257 +1,189 @@
 # Async Rust Patterns
 
-Practical reference for tokio, async/await, task spawning, select!, and channels as used in this codebase.
+Practical reference for Tokio, polling transports, task spawning, selection,
+and channels in this crate.
 
-## Tokio Runtime Setup
+The crate's current MSRV is Rust 1.85.0.
+
+## Runtime Setup
 
 ```rust
-// In tests — use the macro
 #[tokio::test]
 async fn my_test() { /* ... */ }
 
-// Multi-threaded test
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn my_mt_test() { /* ... */ }
-
-// In binaries
 #[tokio::main]
 async fn main() { /* ... */ }
 ```
 
-## Async Trait Methods
+The async client requires a continuously driven Tokio runtime. Frame-driven
+applications that do not drive one continuously use `SignalFishPollingClient`.
 
-MSRV is 1.85.0. AFIT (async fn in trait) is stabilized but `async-trait` is
-still used here for object safety and compatibility:
+## Poll-Based Transport, Async Driver
 
-```rust
-use async_trait::async_trait;
+`Transport` contains object-safe polling methods, not async trait methods:
 
-#[async_trait]
-pub trait Transport: Send + 'static {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError>;
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>>;
-    async fn close(&mut self) -> Result<(), SignalFishError>;
-}
+```rust,ignore
+pub trait Transport {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>>;
 
-#[async_trait]
-impl Transport for MyTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        // implementation
-    }
-    // ...
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
+
+    fn poll_close(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SignalFishError>>;
 }
 ```
 
-Note: `async_trait` boxes the futures. For I/O-bound transports this overhead
-is negligible.
+There is no trait-level `Send` bound and no `async-trait` usage. Internal async
+adapters use `std::future::poll_fn`:
+
+```rust,ignore
+let received = std::future::poll_fn(|cx| transport.poll_recv(cx)).await;
+```
+
+`SignalFishClient::start` requires `T: Transport + Send + 'static` at the
+spawn boundary. The polling client requires only `T: Transport`, allowing
+main-thread-only transports.
+
+When `poll_send` takes the caller's `Option<TransportFrame>`, the transport has
+accepted ownership. It must retain that exact send across `Pending` until it
+returns `Ready`; never restart it from a replacement frame. See
+[Transport Abstraction](transport-abstraction.md).
 
 ## Task Spawning
 
 ```rust
-// Spawn a task — must be 'static + Send
 let handle = tokio::spawn(async move {
-    // captured variables must be Send
     do_work().await
 });
-
-// Await the result
-let result = handle.await?; // JoinError if panicked
-
-// Detach (fire-and-forget) — store handle or it will be cancelled on drop
-let _handle = tokio::spawn(background_task());
+let result = handle.await?;
 ```
 
-### Transport Loop in SignalFishClient
+Everything held across an `.await` inside a spawned task must be `Send`.
+Dropping a `JoinHandle` detaches rather than cancels; abort explicitly when the
+task must stop.
 
-`SignalFishClient::start` spawns a background transport loop that multiplexes
-outgoing commands and incoming server messages:
+## Transport Loop Shape
 
-```rust
-// Simplified from src/client.rs
+The async driver adapts poll methods to futures and multiplexes them with
+commands and shutdown:
+
+```rust,ignore
 loop {
     tokio::select! {
-        cmd = cmd_rx.recv() => {
-            match cmd {
-                Some(msg) => {
-                    let json = serde_json::to_string(&msg)?;
-                    transport.send(json).await?;
-                }
-                None => { transport.close().await?; break; }
-            }
-        }
-        _ = &mut shutdown_rx => {
-            transport.close().await?;
-            break;
-        }
-        incoming = transport.recv() => {
+        command = command_rx.recv() => { /* encode and send frame */ }
+        incoming = std::future::poll_fn(|cx| transport.poll_recv(cx)) => {
             match incoming {
-                Some(Ok(text)) => { /* deserialize and emit event */ }
-                Some(Err(e)) => { /* emit Disconnected and break */ break; }
-                None => { /* clean close, emit Disconnected */ break; }
+                Some(Ok(TransportFrame::Text(text))) => { /* JSON decode */ }
+                Some(Ok(TransportFrame::Binary(bytes))) => { /* strict decode */ }
+                Some(Err(error)) => { /* disconnect */ }
+                None => { /* peer close */ }
             }
         }
+        _ = &mut shutdown_rx => { /* drive poll_close */ }
     }
 }
 ```
 
-`transport.recv()` MUST be cancel-safe because `select!` may cancel it.
+The transport object retains partial receive/send state, so cancellation of the
+temporary `poll_fn` future must not discard accepted bytes or frames.
 
-## tokio::select
+## `tokio::select!`
 
-Use `select!` to race multiple async operations:
+Branches are randomized by default. Use `biased;` only where priority is part
+of the behavior, such as preferring an already-ready event delivery over a
+simultaneous shutdown.
 
-```rust
-tokio::select! {
-    incoming = transport.recv() => {
-        match incoming {
-            Some(Ok(text)) => handle_message(text).await,
-            Some(Err(e)) => return Err(e),
-            None => break, // clean close
-        }
-    }
-    _ = shutdown_rx => {
-        transport.close().await?;
-        break;
-    }
-    _ = tokio::time::sleep(Duration::from_secs(30)) => {
-        client.ping()?;
-    }
-}
-```
-
-Important: branches are polled in random order by default. Use `biased;` at
-the top to poll top-to-bottom (useful for priority).
+Do not place a waiting send future in a `select!` unless cancellation semantics
+are explicitly safe. At the public client API level, cancellation before a
+bounded command-channel send completes means the command was not queued.
 
 ## Channels
 
-### mpsc — multiple producer, single consumer
+### Event channel
+
+Events use bounded `mpsc` and `send().await`. A full channel backpressures the
+transport loop; it is not a `try_send`-and-drop path. Shutdown may preempt one
+blocked event as documented by the client.
 
 ```rust
-use tokio::sync::mpsc;
-
-let (tx, mut rx) = mpsc::channel::<SignalFishEvent>(256); // buffer size
-
-// Sender (cloneable, can move into tasks)
-tx.send(event).await?;       // async, back-pressures when full
-tx.try_send(event)?;         // non-blocking, returns Err if full
-
-// Receiver
-while let Some(event) = rx.recv().await { /* ... */ }
+let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(256);
+event_tx.send(event).await?;
+while let Some(event) = event_rx.recv().await { /* handle */ }
 ```
 
-The event channel uses `send().await` exclusively: events are **never
-dropped** — a full channel pauses the transport loop and backpressure
-propagates to the server. Never introduce a `try_send`-and-drop path for
-events.
+### Command channel
 
-### oneshot — single message
+Synchronous commands use `try_send` and fail with `SendBufferFull` or
+`NotConnected`. Waiting variants use `send().await` to pace callers.
 
-```rust
-use tokio::sync::oneshot;
-
-let (tx, rx) = oneshot::channel::<()>();
-tokio::spawn(async move { tx.send(()).ok(); });
-rx.await?; // RecvError if sender dropped
-```
-
-### Bounded command channel — fail fast or wait, never drop
-
-`SignalFishClient` uses a *bounded* channel for client→transport commands
-(default 1024, `SignalFishConfig::command_channel_capacity`). Sync methods
-fail fast; the `*_reliable` async variants wait for capacity:
-
-```rust
-let (cmd_tx, mut cmd_rx) = mpsc::channel::<ClientMessage>(1024);
-
-// Sync client methods (send_game_data, join_room, …): refuse, don't drop.
-match cmd_tx.try_send(msg) {
+```rust,ignore
+match command_tx.try_send(command) {
     Ok(()) => Ok(()),
-    Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
-        capacity: cmd_tx.max_capacity(),
+    Err(TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
+        capacity: command_tx.max_capacity(),
     }),
-    Err(mpsc::error::TrySendError::Closed(_)) => Err(SignalFishError::NotConnected),
-}
-
-// `*_reliable` variants (send_game_data_reliable, send_signal_reliable):
-// wait for a slot — paces the caller to transport throughput.
-cmd_tx.send(msg).await.map_err(|_| SignalFishError::NotConnected)?;
-```
-
-Congestion must always surface (`SendBufferFull` or waiting) — never an
-unbounded backlog and never a silent drop. `send_capacity()` /
-`max_send_capacity()` expose `cmd_tx.capacity()` / `max_capacity()` for
-diagnostics.
-
-## Timeouts
-
-```rust
-use tokio::time::{timeout, Duration};
-
-match timeout(Duration::from_secs(5), transport.recv()).await {
-    Ok(Some(Ok(msg))) => handle(msg),
-    Ok(Some(Err(e))) => return Err(e),
-    Ok(None) => { /* closed */ }
-    Err(_elapsed) => return Err(SignalFishError::Timeout),
+    Err(TrySendError::Closed(_)) => Err(SignalFishError::NotConnected),
 }
 ```
 
-When timing out a `JoinHandle`, avoid consuming the handle with `timeout(..., handle)`.
-Use `&mut handle` so the handle is retained on timeout and can be aborted:
+Never introduce an unbounded command backlog or silent command drop.
+
+## Wakers and Polling
+
+A transport polled by the async driver receives a real runtime waker. If it
+returns `Pending`, it must arrange for that waker to be woken when progress is
+possible. Forwarding the waker into an underlying `Stream`/`Sink` poll usually
+does this automatically.
+
+The polling client uses a noop waker and calls the methods again on the next
+game-loop tick. A transport may therefore support both models with the same
+state machine.
+
+Do not create and immediately drop a readiness future on every poll: dropping
+it may unregister its waker. Retain the future/state across polls or poll the
+underlying primitive directly.
+
+## Timeouts and Shutdown
+
+Keep a `JoinHandle` by mutable reference when timing it out:
 
 ```rust
 let mut task = tokio::spawn(background_work());
-if timeout(Duration::from_secs(1), &mut task).await.is_err() {
+if tokio::time::timeout(Duration::from_secs(1), &mut task)
+    .await
+    .is_err()
+{
     task.abort();
-    let _ = task.await; // consume JoinError after abort
+    let _ = task.await;
 }
 ```
 
-## Mutex in Async
+Graceful transport shutdown is itself multi-poll. Internal code adapts
+`poll_close` with `poll_fn` and awaits it until ready; the client timeout may
+still abort a transport whose close never makes progress.
 
-Use `tokio::sync::Mutex` when holding the guard across `.await`:
+## Synchronization
 
-```rust
-use tokio::sync::Mutex;
-use std::sync::Arc;
-
-let shared = Arc::new(Mutex::new(State::default()));
-
-// In async context
-let mut guard = shared.lock().await;
-guard.do_thing();
-// guard released at end of scope
-```
-
-Use `std::sync::Mutex` only when the critical section has no `.await` calls.
-Use `std::sync::atomic::AtomicBool` for simple boolean flags (used for
-`connected` and `authenticated` in `ClientState`).
+Use `tokio::sync::Mutex` when holding a guard across `.await`. Use
+`std::sync::Mutex` for short, non-awaiting critical sections, and atomics for
+simple counters/flags. Never hold a blocking mutex guard across `.await`.
 
 ## Common Pitfalls
 
-- **Don't block in async**: avoid `std::thread::sleep`, blocking file I/O,
-  or CPU-heavy loops without `spawn_blocking`
-- **`Send` bounds**: types held across `.await` must be `Send` if using
-  multi-threaded runtime
-- **Cancellation safety**: if a future is dropped mid-await, partial work is
-  lost. `Transport::recv` must be cancel-safe.
-- **JoinHandle drops**: dropping a `JoinHandle` does NOT cancel the task.
-  `SignalFishClient::drop` calls `task.abort()` explicitly.
-- **Uninhabited future outputs (`Infallible`)**: when awaiting a future with
-  an uninhabited output type (e.g., `std::convert::Infallible`), use
-  `match future.await {}` instead of `future.await`. Nightly Rust can change
-  the inferred output type (e.g., from `()` to `Infallible`), and the
-  exhaustive empty match works for any uninhabited type.
-
-```rust
-// Graceful shutdown pattern used in SignalFishClient
-let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-// Signal shutdown
-shutdown_tx.send(()).ok();
-
-// Background loop exits via select! branch:
-_ = &mut shutdown_rx => {
-    transport.close().await?;
-    break;
-}
-```
+- Blocking the runtime thread with `std::thread::sleep` or blocking I/O.
+- Putting `Send` on `Transport` itself and excluding valid polling backends.
+- Taking an outbound frame, returning `Pending`, then forgetting it.
+- Replaying `start_send` after `Pending`, duplicating a frame.
+- Returning `Pending` under a real runtime without registering a waker.
+- Treating binary application frames as ignorable WebSocket control frames.
+- Starting close more than once or discarding pending close state.
+- Assuming dropping a `JoinHandle` cancels its task.

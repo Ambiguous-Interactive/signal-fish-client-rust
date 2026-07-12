@@ -20,8 +20,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use async_trait::async_trait;
 use signal_fish_client::protocol::{LobbyState, ReconnectedPayload, ServerMessage};
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
 };
@@ -95,6 +95,9 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: missed,
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }
@@ -240,30 +243,42 @@ impl SendErrorTransport {
     }
 }
 
-#[async_trait]
 impl Transport for SendErrorTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
         self.send_count += 1;
         if self.send_count == self.error_on_send {
-            return Err(SignalFishError::TransportSend("send boom".into()));
+            return std::task::Poll::Ready(Err(SignalFishError::TransportSend("send boom".into())));
         }
-        self.sent.lock().unwrap().push(message);
-        Ok(())
+        if let Some(frame) = frame.take() {
+            let TransportFrame::Text(message) = frame else {
+                panic!("test mock expected an outbound text frame");
+            };
+            self.sent.lock().unwrap().push(message);
+        }
+        std::task::Poll::Ready(Ok(()))
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
         if let Some(item) = self.incoming.pop_front() {
-            item
+            std::task::Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
         } else {
-            // No scripted messages remain — this future never completes, keeping
-            // the transport task alive until shutdown aborts it.
-            std::future::pending().await
+            std::task::Poll::Pending
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
         self.closed.store(true, Ordering::Relaxed);
-        Ok(())
+        std::task::Poll::Ready(Ok(()))
     }
 }
 

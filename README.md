@@ -43,11 +43,11 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 
 - **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
-- **Protocol support: v2 relay + v3 mesh** — v3 (opt-in, backward-compatible) adds WebRTC mesh signaling; a default client stays byte-identical to v2 (the "relay-floor guarantee"). Enable with `SignalFishConfig::enable_mesh()`.
+- **Protocol support: v2 relay + server 0.4.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and WebRTC mesh signaling; the default remains byte-identical to v2. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
-- **Structured errors** — `SignalFishError` (11 variants) and `ErrorCode` (50 variants) for precise error handling
-- **Full protocol coverage** — 14 client message types, 28 server message types, 31 event variants
+- **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
+- **Full protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
 - **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
@@ -123,10 +123,10 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Module        | Purpose                                                           |
 | ------------- | ----------------------------------------------------------------- |
 | `client`      | `SignalFishClient` handle, `SignalFishConfig`, `JoinRoomParams`   |
-| `event`       | `SignalFishEvent` enum (28 server + 2 synthetic variants)         |
-| `protocol`    | Wire-compatible `ClientMessage` (14) / `ServerMessage` (28) types |
-| `error`       | `SignalFishError` unified error type (11 variants)                |
-| `error_codes` | `ErrorCode` enum (50 server error code variants)                  |
+| `event`       | Typed application, transport, delivery, and violation events      |
+| `protocol`    | Wire-compatible v2/v3 client and server message types             |
+| `error`       | `SignalFishError` unified client/transport error type             |
+| `error_codes` | Typed server error-code registry                                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
 | `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
 | `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
@@ -167,26 +167,35 @@ The SDK compiles to WebAssembly. See the [WebAssembly Guide](docs/wasm.md) for G
 Implement the `Transport` trait to plug in any I/O backend:
 
 ```rust,ignore
-use async_trait::async_trait;
+use std::task::{Context, Poll};
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{SignalFishError, Transport};
 
 struct MyTransport { /* … */ }
 
-#[async_trait]
 impl Transport for MyTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        // Send the JSON text message over your transport.
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        // Leave `frame` in place until accepted. If you take it and return
+        // Pending, retain that exact send internally until it completes.
         todo!()
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        // Receive the next JSON text message.
-        // Return None when the connection is closed cleanly.
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
         todo!()
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        // Gracefully shut down the connection.
+    fn poll_close(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        // Drive one idempotent close handshake across as many polls as needed.
         todo!()
     }
 }
@@ -194,9 +203,13 @@ impl Transport for MyTransport {
 
 Key requirements:
 
-- `recv()` **must** be cancel-safe (it's used inside `tokio::select!`)
+- Preserve both `TransportFrame::Text` and `TransportFrame::Binary` boundaries
+- Retain accepted outbound frames and partial receives across `Poll::Pending`
+- Register the supplied waker when async progress becomes possible
+- Make `poll_close` idempotent and expose structured peer metadata via `close_info`
 - Connection setup happens *before* constructing the transport — the trait only covers message I/O
-- The transport must be `Send + 'static` (required by the async task boundary)
+- The trait has no `Send` bound; only `SignalFishClient::start` requires
+  `Send + 'static`, while `SignalFishPollingClient` accepts non-`Send` transports
 
 ## WebAssembly Support
 
@@ -205,11 +218,15 @@ The SDK supports two WASM targets:
 | Target | Use Case | Transport | Client |
 | --- | --- | --- | --- |
 | `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
-| `wasm32-unknown-emscripten` | Godot 4.5 web exports (gdext) | `EmscriptenWebSocketTransport` | `SignalFishPollingClient` |
+| `wasm32-unknown-emscripten` | Engine-hosted web exports | Engine transport; Emscripten transport only with custom link-enabled templates | `SignalFishPollingClient` |
 
 The async `SignalFishClient` needs a *driven* tokio runtime (its transport loop runs under `tokio::spawn`); manually "ticking" a runtime once per frame starves it. Frame-driven or single-threaded environments — game loops on native as well as wasm — should use `SignalFishPollingClient` (feature `polling-client`), a synchronous pump you call once per frame.
 
-### Emscripten Quick Start
+### Emscripten Quick Start (custom templates)
+
+`EmscriptenWebSocketTransport` requires the final host to link Emscripten's
+WebSocket JavaScript library. Official Godot web templates do not, so use an
+engine `WebSocketPeer` transport with those templates.
 
 ```rust,ignore
 use signal_fish_client::{

@@ -1,7 +1,7 @@
 # Protocol Versioning
 
 The Signal Fish Client SDK speaks two generations of the signaling protocol:
-**v2 relay** and **v3 mesh**. v3 is **additive, opt-in, and backward-compatible**
+**v2 relay** and **v3 delivery/mesh**. v3 is **additive, opt-in, and backward-compatible**
 — a client that opts into nothing behaves exactly like the old v2 client. This
 page explains what's new, how negotiation works, and how to migrate.
 
@@ -46,8 +46,13 @@ v3 is **purely additive** on v2. It introduces:
   [`PeerSignal`](protocol.md#peersignal-protocol-v3).
 - **New client messages:** `Signal`, `TransportStatus`.
 - **New server messages:** `Signal`, `NewPeer`, `SessionPlan`,
-  `PeerTransportStatus`.
-- **New events:** [`SignalReceived`, `NewPeer`, `SessionPlan`, `PeerTransportStatus`](events.md#mesh-events-protocol-v3).
+  `PeerTransportStatus`, `DeliveryReport`, `RelayStats`, and `GoingAway`.
+- **Classified relay delivery:** reliable, keyed-latest, and volatile JSON
+  messages with exact gap accountability; strict physical binary envelopes.
+- **Reconnect accountability:** rotating tokens, replay status, sender
+  watermarks, and lifecycle epoch/sequence metadata.
+- **New events:** mesh events plus typed delivery reports, relay statistics,
+  graceful-drain advisories, and categorized protocol violations.
 - **New optional fields** on existing messages: `Authenticate`
   (`protocol_version` / `supported_transports` / `supported_topologies`),
   `ProtocolInfo` (`protocol_version` / `min_protocol_version` /
@@ -64,14 +69,18 @@ without error.
 
 ## Opting in
 
-Opt into v3 with one call:
+Opt into the portion of v3 you can fulfill:
 
 ```rust,ignore
-// v3 mesh — advertises webrtc/relay transports and mesh/host/relay topologies.
-let config = SignalFishConfig::new("mb_app_abc123").enable_mesh();
+// v3 relay/accountability, without claiming WebRTC support.
+let relay_config = SignalFishConfig::new("mb_app_abc123").enable_v3();
+
+// v3 mesh — use only with a WebRTC driver.
+let mesh_config = SignalFishConfig::new("mb_app_abc123").enable_mesh();
 ```
 
-`enable_mesh()` sets the protocol version to [`PROTOCOL_VERSION`] and advertises
+`enable_v3()` sets the protocol version and advertises relay-only capability.
+`enable_mesh()` calls it and additionally advertises
 the `[WebRtc, Relay]` transports and `[Mesh, Host, Relay]` topologies.
 
 !!! warning "Never advertise what you can't fulfill"
@@ -121,7 +130,8 @@ if client.supports_mesh() {
 
 ## The fail-fast guard
 
-The v3-only send methods — `send_signal`, `send_offer`, `send_answer`,
+The v3-only send methods — classified non-reliable JSON sends, binary sends,
+`send_signal`, `send_offer`, `send_answer`,
 `send_ice_candidate`, `send_raw_signal`, and `report_transport_status` — check
 the negotiated version **before** sending. If v3 has not been negotiated, they
 return [`SignalFishError::ProtocolUnsupported`](errors.md) immediately rather
@@ -133,7 +143,7 @@ The `mode` field tells you why:
 | `mode` | Meaning |
 |--------|---------|
 | `"pre-negotiation"` | No `ProtocolInfo` has arrived yet — negotiation is still in flight; retry once it completes. |
-| `"relay-only"` | A `ProtocolInfo` arrived but negotiated v2 (the relay floor) — waiting will not help; enable the mesh and reconnect. |
+| `"relay-only"` | A `ProtocolInfo` arrived but negotiated v2 (the relay floor) — waiting will not help; enable v3 and reconnect. |
 
 ```rust,ignore
 match client.send_offer(peer, sdp) {
@@ -165,8 +175,10 @@ Migration is **purely additive** — there is nothing you must change:
 - **To adopt mesh,** add `.enable_mesh()`, wire a
   [`WebRtcDriver`](mesh-guide.md) (or use `MeshController`), and handle the four
   [mesh events](events.md#mesh-events-protocol-v3).
-
-[`PROTOCOL_VERSION`]: https://docs.rs/signal-fish-client/latest/signal_fish_client/constant.PROTOCOL_VERSION.html
+- **To adopt v3 relay only,** add `.enable_v3()`, choose delivery classes with
+  `GameDataDelivery`, persist `snapshot().reconnection_token`, and handle
+  `ProtocolViolation` according to your recovery policy. See
+  [Delivery Contract](delivery.md#protocol-v3-delivery-classes-and-accountability).
 
 ---
 

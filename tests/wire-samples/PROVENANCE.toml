@@ -7,17 +7,17 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
 # Exact server commit the .jsonl bytes were copied from.
-commit = "6820c696b4b7783e3d9b9c7e0de3394336239361"
+commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
 # ISO 8601 date of the last refresh.
-synced = "2026-06-20"
+synced = "2026-07-12"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so a sample
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
 "v2-server-messages.jsonl" = "9ca02863958bf8c388b36a7ab700fb01904c58c7181917e97c9d17d307120511"
-"v3-client-messages.jsonl" = "274cb0af451b86f6930b570bd3a48d2c34084c62f00760cf49016d3ead092ad1"
-"v3-server-messages.jsonl" = "f328457f39b2079af2503d3ebf1290e73dba880346851bd2d76af50dbfc6d289"
+"v3-client-messages.jsonl" = "ce5e9da99677ea867c1573113dad7a1ad5f2f1719ef7fa28221a750e2b92419c"
+"v3-server-messages.jsonl" = "43fab3a377739996f80a7747b5aab0886bc7a48b6efd55aba3821c69f2ab1340"

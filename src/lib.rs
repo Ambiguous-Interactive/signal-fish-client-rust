@@ -105,6 +105,8 @@
 //! }
 //! ```
 
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+mod accountability;
 pub mod client;
 pub mod error;
 pub mod error_codes;
@@ -121,16 +123,23 @@ pub mod transports;
 pub const PROTOCOL_VERSION: u16 = 3;
 
 // Re-export primary types for ergonomic imports.
-pub use client::{ClientStats, JoinRoomParams, SignalFishClient, SignalFishConfig};
+pub use client::{
+    ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
+    SignalFishClient, SignalFishConfig,
+};
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
-pub use event::{ServerErrorInfo, SignalFishEvent, DECODE_FAILED_RAW_PREFIX_MAX};
+pub use event::{
+    ProtocolViolationKind, ServerErrorInfo, SignalFishEvent, DECODE_FAILED_RAW_PREFIX_MAX,
+};
 pub use protocol::{
-    ClientMessage, IceServer, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
-    TransportKind,
+    decode_v3_binary_game_data, ClientMessage, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
+    DeliveryGapReason, DeliveryReportPayload, IceServer, LatestDeliveryCounters, MessageTransport,
+    ReliableDeliveryCounters, ReplayStatus, SenderWatermark, ServerMessage, SessionPeer,
+    SessionPlanPayload, Topology, TransportKind, V3BinaryGameDataFrame, VolatileDeliveryCounters,
 };
 pub use signal::PeerSignal;
-pub use transport::Transport;
+pub use transport::{Transport, TransportCloseInfo, TransportFrame};
 
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;

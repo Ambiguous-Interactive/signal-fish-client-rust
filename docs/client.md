@@ -33,6 +33,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
 | `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
+| `protocol_violation_policy` | `ProtocolViolationPolicy` | `Quarantine` | Response to invalid v3 delivery-accountability state: quarantine room data, disconnect, or observe. |
 
 ### Builder Methods
 
@@ -43,6 +44,9 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_event_channel_capacity(n)` | `usize` | Set the bounded event channel capacity (default 256). |
 | `.with_command_channel_capacity(n)` | `usize` | Set the bounded outgoing command queue capacity (default 1024). |
 | `.with_shutdown_timeout(d)` | `Duration` | Set the graceful shutdown timeout (default 1 second). |
+| `.enable_v3()` | — | Advertise protocol v3 relay/accountability support without opting into WebRTC. |
+| `.enable_mesh()` | — | Enable v3 and advertise WebRTC mesh/host support. Only use when a WebRTC driver is available. |
+| `.with_protocol_violation_policy(policy)` | `ProtocolViolationPolicy` | Select `Quarantine` (default), `Disconnect`, or `Observe`. |
 
 ### Full Example
 
@@ -325,6 +329,44 @@ The WebRTC-signaling counterpart is `send_signal_reliable(to, signal)`
 offer/answer/ICE candidate stalls a handshake, so waiting beats failing when
 the queue is congested.
 
+#### Classified JSON delivery (protocol v3)
+
+`send_game_data_with_delivery(data, delivery)` selects an explicit relay
+delivery class:
+
+```rust,ignore
+use signal_fish_client::GameDataDelivery;
+
+client.send_game_data_with_delivery(
+    serde_json::json!({ "position": [12, 8] }),
+    GameDataDelivery::Latest { key: 7 },
+)?;
+client.send_game_data_with_delivery(
+    serde_json::json!({ "spark": true }),
+    GameDataDelivery::Volatile,
+)?;
+```
+
+`GameDataDelivery::Reliable` preserves the existing v2-compatible wire shape.
+`Latest` and `Volatile` require a negotiated v3 connection and otherwise
+return `ProtocolUnsupported`. The async
+`send_game_data_with_delivery_reliable` counterpart waits for command-queue
+capacity; “reliable” in that method name describes local queue admission, not
+the selected server delivery class.
+
+#### Binary game data (protocol v3)
+
+`send_binary_game_data(payload)` queues a physical WebSocket binary
+frame; `send_binary_game_data_reliable` waits for local queue capacity. Binary
+frames use the protocol-reliable delivery path and require v3 negotiation.
+They also require a binary `game_data_format`; the default/JSON format returns
+`BinaryFormatNotNegotiated` before anything is queued. If the server reports an
+unsupported requested format and falls back to JSON, subsequent binary sends
+fail the same way.
+Inbound envelopes are decoded strictly; malformed maps, duplicate or missing
+fields, invalid UUID representation, zero stamps, and trailing bytes surface as
+bounded `DecodeFailed` events.
+
 ---
 
 ### Send Queue and Traffic Stats
@@ -435,8 +477,11 @@ fn reconnect(
 client.reconnect(player_id, room_id, auth_token)?;
 ```
 
-Use the `player_id` and `room_id` from the original `SignalFishEvent::RoomJoined`
-event, along with the `auth_token` provided by your application server.
+Use the `player_id` and `room_id` from the original `RoomJoined` event and the
+server-issued token from `client.snapshot().reconnection_token`. A successful
+`Reconnected` response rotates the token; read and persist the replacement
+snapshot before another unexpected disconnect. Tokens are connection secrets:
+do not log them.
 
 ---
 
@@ -458,12 +503,18 @@ Useful for keeping the connection alive through proxies or load balancers.
 
 ### State Accessors
 
+`snapshot()` synchronously returns one coherent `ClientSnapshot`, including
+connection/authentication state, room/player IDs, room code, the latest
+reconnection token, negotiated protocol version, and whether delivery is
+quarantined. Prefer it whenever multiple fields must describe the same instant.
+
 Synchronous accessors use atomics; async accessors acquire an internal mutex.
 
 | Method | Signature | Description |
 |---|---|---|
 | `is_connected()` | `fn is_connected(&self) -> bool` | Returns `true` if the transport is believed to be connected. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Returns `true` if the server has confirmed authentication. |
+| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Returns coherent session, reconnect-token, negotiation, and quarantine state. |
 | `current_room_id()` | `async fn current_room_id(&self) -> Option<RoomId>` | Returns the current room ID, if in a room. |
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |

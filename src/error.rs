@@ -79,6 +79,12 @@ pub enum SignalFishError {
         mode: &'static str,
     },
 
+    /// Binary game data was requested without negotiating a binary encoding.
+    #[error(
+        "binary game data requires game_data_format=message_pack or rkyv; this connection uses JSON"
+    )]
+    BinaryFormatNotNegotiated,
+
     /// An operation timed out.
     #[error("operation timed out")]
     Timeout,

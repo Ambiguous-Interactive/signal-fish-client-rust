@@ -1,207 +1,129 @@
 # WebSocket Client
 
-Reference for tokio-tungstenite usage, connection lifecycle, and reconnection patterns.
+Reference for the built-in `tokio-tungstenite` transport and its polling state
+machine.
 
-## Feature Flag
+## Feature and Construction
 
-The WebSocket transport is gated behind `transport-websocket` (enabled by default):
+`WebSocketTransport` is behind `transport-websocket` (enabled by default).
+Connection setup remains outside `Transport`:
 
-```toml
-[features]
-default = ["transport-websocket"]
-transport-websocket = ["dep:tokio-tungstenite", "dep:futures-util"]
+```rust,ignore
+let transport = WebSocketTransport::connect("wss://signal.example/ws").await?;
+let transport = WebSocketTransport::connect_with_timeout(url, timeout).await?;
 ```
 
-Guard with `#[cfg(feature = "transport-websocket")]` in code.
+`from_stream(WsStream)` wraps a stream built with custom TLS, proxy, headers,
+or cookies. Connection failures map to `SignalFishError::Io`, preserving an
+underlying I/O error kind when possible.
 
-## Connecting
+## Frame Mapping
 
-```rust
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
+The transport passes application frames through without loss:
 
-let url = "wss://signal.example.com/ws";
-let (ws_stream, _response) = connect_async(url).await
-    .map_err(|e| SignalFishError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-```
+| WebSocket message | `Transport` result |
+|---|---|
+| `Text` | `TransportFrame::Text(String)` |
+| `Binary` | `TransportFrame::Binary(Vec<u8>)` |
+| `Close` | `poll_recv -> Ready(None)` plus `close_info()` |
+| `Ping` | transparent; tungstenite queues Pong and transport flushes it |
+| `Pong` | transparent |
 
-## Sending Messages
+Binary frames are protocol-v3 application traffic. Never log-and-skip them.
+Raw `Message::Frame` is not expected from the read half and is ignored.
 
-```rust
-// Text frame (Signal Fish uses JSON text frames)
-sink.send(Message::Text(json_string)).await
-    .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
+## Outbound State Machine
 
-// Ping (for keepalive)
-sink.send(Message::Ping(vec![])).await?;
+`poll_send` uses the `Sink` primitives directly:
 
-// Close
-sink.send(Message::Close(None)).await?;
-```
+1. If no send is active, call `poll_ready`.
+2. On `Pending`, leave the caller's frame slot untouched.
+3. On readiness, take exactly one `TransportFrame` and translate it to
+   `Message::Text` or `Message::Binary`.
+4. Call `start_send` once and record that a send is active.
+5. Poll `poll_flush` until ready; do not take another frame while pending.
 
-## Receiving Messages
+This preserves an accepted frame across `Pending` and prevents duplicate
+`start_send` calls.
 
-```rust
-loop {
-    match stream.next().await {
-        Some(Ok(Message::Text(text))) => {
-            // Handle text frame
-            handle_message(text).await?;
-        }
-        Some(Ok(Message::Binary(_))) => {
-            // Signal Fish protocol uses text only; log and ignore
-            tracing::warn!("received unexpected binary frame");
-        }
-        Some(Ok(Message::Ping(data))) => {
-            // tungstenite auto-responds to Pings in most configs
-            // Explicit pong if needed:
-            sink.send(Message::Pong(data)).await?;
-        }
-        Some(Ok(Message::Pong(_))) => { /* ignore */ }
-        Some(Ok(Message::Close(_))) => {
-            tracing::info!("server closed WebSocket");
-            break;
-        }
-        Some(Ok(Message::Frame(_))) => { /* raw frame, ignore */ }
-        Some(Err(e)) => {
-            return Err(SignalFishError::TransportReceive(e.to_string()));
-        }
-        None => break, // stream exhausted
-    }
+```rust,ignore
+match frame {
+    TransportFrame::Text(text) => Message::Text(text.into()),
+    TransportFrame::Binary(bytes) => Message::Binary(bytes.into()),
 }
 ```
 
-## WebSocket Transport Implementation
+The async client wraps the poll method in `poll_fn`; the polling client invokes
+the same method once per tick.
 
-Key details from `src/transports/websocket.rs` (see source for full implementation):
+## Inbound Control Flush
 
-```rust
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
-    tungstenite::protocol::Message,
-};
-use tokio::net::TcpStream;
-use futures_util::{SinkExt, StreamExt};
+Tungstenite automatically queues a Pong when reading Ping, but queued control
+output still needs a flush. After Ping, `WebSocketTransport` sets a
+`control_flush_pending` flag and drives `poll_flush` before reading another
+application frame. If flushing is pending, it preserves the flag and returns
+`Pending` with the sink's waker registered.
 
-/// Type alias for the underlying WebSocket stream (not split).
-pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+Do not manually enqueue a second Pong. Do not continue reading indefinitely
+without flushing the automatically queued reply.
 
-pub struct WebSocketTransport {
-    stream: WsStream,  // unsplit — send and recv share the same stream
-    closed: bool,
-}
+## Close Metadata and Idempotency
 
-impl WebSocketTransport {
-    pub async fn connect(url: &str) -> Result<Self, SignalFishError> {
-        let (stream, _response) = tokio_tungstenite::connect_async(url).await
-            .map_err(|e| {
-                let kind = match &e {
-                    tokio_tungstenite::tungstenite::Error::Io(io) => io.kind(),
-                    _ => std::io::ErrorKind::Other,
-                };
-                SignalFishError::Io(std::io::Error::new(kind, e))  // NOT TransportSend
-            })?;
-        Ok(Self { stream, closed: false })
-    }
-}
+On peer Close, preserve structured metadata before returning `None`:
 
-#[async_trait]
-impl Transport for WebSocketTransport {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
-        if self.closed { return Err(SignalFishError::TransportClosed); }
-        self.stream.send(Message::Text(message.into())).await
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
-    }
-
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
-        loop {
-            match self.stream.next().await {
-                Some(Ok(Message::Text(t))) => return Some(Ok(t.to_string())),
-                Some(Ok(Message::Close(_))) | None => return None,
-                Some(Ok(_)) => continue, // skip ping/pong/binary/frame
-                Some(Err(e)) => return Some(Err(SignalFishError::TransportReceive(e.to_string()))),
-            }
-        }
-    }
-
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        if self.closed { return Ok(()); }
-        self.closed = true;
-        self.stream.close(None).await
-            .map_err(|e| SignalFishError::TransportSend(e.to_string()))
-    }
+```rust,ignore
+TransportCloseInfo {
+    code: Some(frame.code.into()),
+    reason: (!frame.reason.is_empty()).then(|| frame.reason.to_string()),
+    clean: None,
+    initiated_by_peer: true,
 }
 ```
 
-## TLS Configuration
+A bare peer close still records `initiated_by_peer: true`. The tungstenite API
+does not supply a separate clean-handshake boolean here, so `clean` remains
+`None`.
 
-`tokio-tungstenite` uses `native-tls` or `rustls` depending on features:
+`poll_close` calls the sink's `poll_close`, retains progress in the stream, and
+marks the transport closed on either terminal success or error. Once closed,
+later calls return `Ready(Ok(()))` without another close frame.
 
-```toml
-# Use rustls (recommended for cross-platform)
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+## Wakers
 
-# Use native-tls (OS certificate store)
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-```
+Always pass `cx` to `poll_ready`, `poll_flush`, `poll_next`, and `poll_close`.
+Those primitives register the runtime waker. Returning `Pending` without
+polling the blocked primitive can strand the async driver.
 
-For `wss://` URLs, TLS is applied automatically. For `ws://`, no TLS.
+## TLS
 
-## Reconnection Pattern
+The crate uses Tokio Tungstenite with Rustls roots for `wss://`; `ws://` is
+unencrypted. Keep TLS features aligned with `Cargo.toml` rather than duplicating
+an alternative stack in the transport.
 
-```rust
-async fn connect_with_retry(url: &str, max_attempts: u32) -> Result<WebSocketTransport, SignalFishError> {
-    let mut delay = Duration::from_millis(500);
-    for attempt in 1..=max_attempts {
-        match WebSocketTransport::connect(url).await {
-            Ok(t) => return Ok(t),
-            Err(e) if attempt < max_attempts => {
-                tracing::warn!(attempt, %e, "WebSocket connect failed, retrying");
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(30)); // exponential backoff
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!()
-}
-```
+## Reconnection
 
-## Connection Headers
+A closed `WebSocketTransport` is terminal. Reconnection creates a new transport
+and client physical connection. Protocol reconnection then uses the latest
+server-issued room token through the client API; do not attempt to reuse the
+closed WebSocket object.
 
-Pass custom headers (e.g., auth tokens):
+## Test Checklist
 
-```rust
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-
-let mut request = url.into_client_request()?;
-request.headers_mut().insert(
-    "Authorization",
-    HeaderValue::from_str(&format!("Bearer {token}"))?,
-);
-let (ws, _) = connect_async(request).await?;
-```
-
-## Keepalive / Ping
-
-Signal Fish server may close idle connections. Send periodic pings:
-
-```rust
-let ping_interval = tokio::time::interval(Duration::from_secs(20));
-tokio::select! {
-    msg = stream.next() => { /* handle */ }
-    _ = ping_interval.tick() => {
-        sink.send(Message::Ping(vec![])).await.ok();
-    }
-}
-```
+- Text and binary frames pass through exactly.
+- A pending flush does not consume a second caller frame.
+- Peer close code/reason and initiator are retained.
+- Bare peer close is distinguishable from missing metadata where applicable.
+- Repeated `poll_close` after completion is harmless.
+- Ping causes the automatically queued Pong to be flushed.
+- Transport send/receive errors map to the matching `SignalFishError` variant.
+- A real waker is notified when socket readiness changes.
 
 ## Common Errors
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `ConnectionRefused` | Server not running | Check URL and server status |
-| `HandshakeError` | TLS cert issue | Check TLS feature flag and cert validity |
-| `AlreadyClosed` | Sending after close | Check transport state before send |
-| `SendAfterClosing` | Race condition | Use shutdown signal to coordinate |
+| Symptom | Likely cause |
+|---|---|
+| Binary game data disappears | Binary `Message` was skipped instead of surfaced. |
+| Peer times out despite Ping | Auto-Pong was queued but not flushed. |
+| Duplicate application message | `start_send` was repeated after `Pending`. |
+| Async task never wakes | Blocked sink/stream was not polled with `cx`. |
+| Close code lost | Metadata was not copied before returning `None`. |

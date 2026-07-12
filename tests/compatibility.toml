@@ -1,0 +1,15 @@
+# Canonical client/server protocol compatibility binding.
+client_version = "0.8.0"
+server_version = "0.4.0"
+server_tag = "v0.4.0"
+server_commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
+synced = "2026-07-12"
+
+[wire_samples]
+"v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
+"v2-server-messages.jsonl" = "9ca02863958bf8c388b36a7ab700fb01904c58c7181917e97c9d17d307120511"
+"v3-client-messages.jsonl" = "ce5e9da99677ea867c1573113dad7a1ad5f2f1719ef7fa28221a750e2b92419c"
+"v3-server-messages.jsonl" = "43fab3a377739996f80a7747b5aab0886bc7a48b6efd55aba3821c69f2ab1340"
+
+[server_spec]
+"signal-fish-protocol.asyncapi.yaml" = "29886ec76f8bd38021ea78799655615188be7d6caba53c886568767a3f264df1"

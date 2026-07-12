@@ -22,8 +22,8 @@
 
 use std::collections::VecDeque;
 
-use async_trait::async_trait;
 use signal_fish_client::protocol::{IceServer, PlayerId};
+use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::webrtc::{DriverEvent, MeshController, MeshEvent, WebRtcDriver};
 use signal_fish_client::{
     JoinRoomParams, PeerSignal, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
@@ -104,9 +104,20 @@ struct ScriptedServer {
     started: bool,
 }
 
-#[async_trait]
 impl Transport for ScriptedServer {
-    async fn send(&mut self, message: String) -> Result<(), SignalFishError> {
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let Some(frame) = frame.take() else {
+            return std::task::Poll::Ready(Ok(()));
+        };
+        let TransportFrame::Text(message) = frame else {
+            return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                "scripted server does not accept binary frames".into(),
+            )));
+        };
         // The server reacts to the client's StartGame by finalizing the session.
         if message.contains("\"StartGame\"") && !self.started {
             self.started = true;
@@ -115,21 +126,25 @@ impl Transport for ScriptedServer {
             self.incoming
                 .push_back(signal_json(self.peer, r#"{"Answer":"<remote-sdp>"}"#));
         }
-        Ok(())
+        std::task::Poll::Ready(Ok(()))
     }
 
-    async fn recv(&mut self) -> Option<Result<String, SignalFishError>> {
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
         if let Some(msg) = self.incoming.pop_front() {
-            Some(Ok(msg))
+            std::task::Poll::Ready(Some(Ok(TransportFrame::Text(msg))))
         } else {
-            // No scripted messages remain — pending() never completes, keeping
-            // the controller alive until shutdown.
-            std::future::pending().await
+            std::task::Poll::Pending
         }
     }
 
-    async fn close(&mut self) -> Result<(), SignalFishError> {
-        Ok(())
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
     }
 }
 
