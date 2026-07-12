@@ -269,14 +269,17 @@ impl Transport for GodotWebSocketTransport {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        match self.advance() {
-            PeerState::Connecting | PeerState::Closing => return Poll::Pending,
-            PeerState::Closed => return self.closed_receive(),
-            PeerState::Open => {}
+        let state = self.advance();
+        if state == PeerState::Connecting {
+            return Poll::Pending;
         }
 
         if self.backend.available_packet_count() <= 0 {
-            return Poll::Pending;
+            return if state == PeerState::Closed {
+                self.closed_receive()
+            } else {
+                Poll::Pending
+            };
         }
         let (bytes, is_text) = match self.backend.receive_packet() {
             Ok(packet) => packet,
@@ -550,6 +553,37 @@ mod tests {
                 clean: Some(true),
                 initiated_by_peer: true,
             })
+        );
+    }
+
+    #[test]
+    fn closing_and_closed_states_drain_already_buffered_packets() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend
+            .states
+            .extend([PeerState::Closing, PeerState::Closed]);
+        backend.packets.push_back(Ok((b"last text".to_vec(), true)));
+        backend.packets.push_back(Ok((vec![1, 2, 3], false)));
+        backend.close_code = 4000;
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(Some(Ok(TransportFrame::Text(text)))) if text == "last text"
+        ));
+        assert_eq!(transport.close_info(), None);
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(Some(Ok(TransportFrame::Binary(bytes)))) if bytes == vec![1, 2, 3]
+        ));
+        assert_eq!(transport.close_info(), None);
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+        assert_eq!(
+            transport.close_info().and_then(|info| info.code),
+            Some(4000)
         );
     }
 
