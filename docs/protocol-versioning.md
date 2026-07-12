@@ -180,8 +180,6 @@ Migration is **purely additive** — there is nothing you must change:
   `ProtocolViolation` according to your recovery policy. See
   [Delivery Contract](delivery.md#protocol-v3-delivery-classes-and-accountability).
 
-[`PROTOCOL_VERSION`]: https://docs.rs/signal-fish-client/latest/signal_fish_client/constant.PROTOCOL_VERSION.html
-
 ---
 
 ## See also
