@@ -1111,6 +1111,22 @@ mod ci_workflow_policy {
     }
 
     #[test]
+    fn semver_workflow_requires_explicit_breaking_marker_for_major_policy() {
+        let contents = read_project_file(".github/workflows/semver-checks.yml");
+        assert!(
+            contents.contains("PR_TITLE: ${{ github.event.pull_request.title }}")
+                && contents.contains(r#"[[ "$PR_TITLE" == *"!:"* ]]"#),
+            "Semver CI must derive intentional breaking changes from the explicit conventional-commit `!:` marker"
+        );
+        assert!(
+            contents.contains("--release-type major")
+                && contents.contains("steps.pr-release-type.outputs.release-type == 'major'")
+                && contents.contains("steps.pr-release-type.outputs.release-type == 'auto'"),
+            "Semver CI must use major policy only for explicitly marked breaking PRs and retain inferred checks otherwise"
+        );
+    }
+
+    #[test]
     fn ci_has_concurrency_block() {
         let contents = ci_contents();
         assert!(
