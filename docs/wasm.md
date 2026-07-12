@@ -134,7 +134,7 @@ signal-fish-client = { version = "0.7.0", default-features = false, features = [
 ```sh
 export GODOT4_BIN=/path/to/Godot_v4.5-stable_linux.x86_64
 export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
-export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-args=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
+export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-arg=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
 cargo +nightly-2026-03-01 build -Zbuild-std=std \
     --target wasm32-unknown-emscripten --release
 ```
