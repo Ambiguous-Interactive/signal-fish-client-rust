@@ -119,11 +119,15 @@ impl SmokePair {
             SignalFishEvent::Authenticated { .. } => {
                 godot_print!("SIGNAL_FISH_SMOKE {label}-authenticated-first");
                 if let Some(client) = &mut self.first {
-                    let _ = client.ping();
-                    let _ = client.join_room(JoinRoomParams::new(
+                    if let Err(error) = client.ping() {
+                        godot_error!("SIGNAL_FISH_SMOKE {label}-ping-error {error}");
+                    }
+                    if let Err(error) = client.join_room(JoinRoomParams::new(
                         self.kind.game_name(),
                         format!("Godot-{label}-A"),
-                    ));
+                    )) {
+                        godot_error!("SIGNAL_FISH_SMOKE {label}-join-first-error {error}");
+                    }
                 }
             }
             SignalFishEvent::Pong => {
@@ -155,7 +159,9 @@ impl SmokePair {
                     let params =
                         JoinRoomParams::new(self.kind.game_name(), format!("Godot-{label}-B"))
                             .with_room_code(room_code);
-                    let _ = client.join_room(params);
+                    if let Err(error) = client.join_room(params) {
+                        godot_error!("SIGNAL_FISH_SMOKE {label}-join-second-error {error}");
+                    }
                 }
             }
             SignalFishEvent::RoomJoined { .. } if !self.relay_sent => {
