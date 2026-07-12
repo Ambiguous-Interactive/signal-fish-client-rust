@@ -43,6 +43,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 - Exclude: internal-only updates such as CI/script/pre-commit automation, refactors, tests, and non-behavioral maintenance.
 
 ## Architecture — Core Modules
+
 | File | Purpose |
 |------|---------|
 | `src/transport.rs` | Object-safe polling `Transport` trait over text/binary `TransportFrame`s |
@@ -77,8 +78,7 @@ pub trait Transport {
 }
 ```
 
-The trait itself has no `Send` bound, so main-thread transports work with the
-polling client. `SignalFishClient::start` separately requires
+The trait itself has no `Send` bound, so main-thread transports work with the polling client. `SignalFishClient::start` separately requires
 `Transport + Send + 'static`. A `poll_send` implementation may take the frame
 only when it accepts ownership and must retain it internally until completion;
 `Pending` before acceptance leaves the caller's `Option` intact. Close polling
@@ -86,8 +86,7 @@ is idempotent. See `skills/transport-abstraction.md`.
 
 ### Client Usage Pattern
 
-Connect a transport, construct `SignalFishConfig`, and pass both to
-`SignalFishClient::start`, which returns the handle and event receiver and
+Connect a transport, construct `SignalFishConfig`, and pass both to `SignalFishClient::start`, which returns the handle and event receiver and
 queues `Authenticate`. Wait for `Authenticated` before room commands; drain
 events continuously and call `shutdown().await` for graceful teardown. The
 complete compiling example is `examples/basic_lobby.rs`.
@@ -180,6 +179,7 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 | `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |
 
 ## Dependencies
+
 | Crate | Purpose |
 |-------|---------|
 | `tokio` | Async runtime (sync, macros, rt, time features) |
