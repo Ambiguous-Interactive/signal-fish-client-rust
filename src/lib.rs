@@ -108,6 +108,9 @@
 #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 mod accountability;
 pub mod client;
+pub mod client_api;
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+mod client_core;
 pub mod error;
 pub mod error_codes;
 pub mod event;
@@ -127,6 +130,7 @@ pub use client::{
     ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
     SignalFishClient, SignalFishConfig,
 };
+pub use client_api::SignalFishClientApi;
 pub use error::SignalFishError;
 pub use error_codes::ErrorCode;
 pub use event::{

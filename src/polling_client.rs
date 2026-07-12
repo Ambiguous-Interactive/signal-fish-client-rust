@@ -18,94 +18,17 @@
 
 use std::collections::VecDeque;
 
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::client::{ClientSnapshot, GameDataDelivery, JoinRoomParams, SignalFishConfig};
+use crate::client_core::{ClientCore, ClientOperation, CoreCommand as PollingCommand};
 use crate::error::{Result, SignalFishError};
-use crate::event::{ServerErrorInfo, SignalFishEvent};
-use crate::protocol::{
-    ClientMessage, ConnectionInfo, DeliveryClass, GameDataEncoding, PlayerId, RoomId,
-    ServerMessage, TransportKind,
-};
+use crate::event::SignalFishEvent;
+#[cfg(test)]
+use crate::protocol::GameDataEncoding;
+use crate::protocol::{ClientMessage, ConnectionInfo, PlayerId, RoomId, TransportKind};
 use crate::signal::PeerSignal;
 use crate::transport::{Transport, TransportFrame};
-
-#[derive(Debug)]
-enum PollingCommand {
-    Message(ClientMessage),
-    Binary(Vec<u8>),
-}
-
-// ── Internal state ──────────────────────────────────────────────────
-
-/// Internal state for the polling client. No `Arc`/`Mutex` needed — single-threaded.
-struct PollingClientState {
-    connected: bool,
-    authenticated: bool,
-    /// Protocol version negotiated by the server (from `ProtocolInfo`).
-    /// `0` means not-yet-negotiated or negotiated v2 — i.e. not v3-capable.
-    negotiated_protocol_version: u16,
-    /// Whether a `ProtocolInfo` has been observed on this connection. Separates
-    /// "negotiation hasn't happened yet" from "negotiation completed at the v2
-    /// relay floor" — both leave `negotiated_protocol_version` at `0`. Drives
-    /// the `ProtocolUnsupported { mode }` diagnostic.
-    protocol_info_seen: bool,
-    player_id: Option<PlayerId>,
-    room_id: Option<RoomId>,
-    room_code: Option<String>,
-    reconnection_token: Option<String>,
-    quarantined: bool,
-    /// `GameData` messages successfully written to the transport.
-    /// Cumulative — intentionally not reset by `clear_session`.
-    game_data_sent: u64,
-    /// `GameData`/`GameDataBinary` messages received from the server,
-    /// counted at receipt (see
-    /// [`ClientStats::game_data_received`](crate::client::ClientStats)).
-    /// Cumulative — intentionally not reset by `clear_session`.
-    game_data_received: u64,
-    /// Inbound frames that failed to decode into a `ServerMessage` (see
-    /// [`ClientStats::messages_undecodable`](crate::client::ClientStats)).
-    /// Cumulative — intentionally not reset by `clear_session`.
-    messages_undecodable: u64,
-    /// The most recent `Error`/`AuthenticationError` received on this
-    /// connection, remembered for disconnect attribution (surfaced via
-    /// `Disconnected::last_server_error`). Intentionally not reset by
-    /// `clear_session` — it must survive into the terminal `Disconnected`.
-    last_server_error: Option<ServerErrorInfo>,
-}
-
-impl PollingClientState {
-    fn new() -> Self {
-        Self {
-            // Tracks whether the client is active (not disconnected).
-            // Set true at construction; set false by handle_disconnect().
-            connected: true,
-            authenticated: false,
-            negotiated_protocol_version: 0,
-            protocol_info_seen: false,
-            player_id: None,
-            room_id: None,
-            room_code: None,
-            reconnection_token: None,
-            quarantined: false,
-            game_data_sent: 0,
-            game_data_received: 0,
-            messages_undecodable: 0,
-            last_server_error: None,
-        }
-    }
-
-    fn clear_session(&mut self) {
-        self.authenticated = false;
-        self.negotiated_protocol_version = 0;
-        self.protocol_info_seen = false;
-        self.player_id = None;
-        self.room_id = None;
-        self.room_code = None;
-        self.reconnection_token = None;
-        self.quarantined = false;
-    }
-}
 
 // ── Public client ───────────────────────────────────────────────────
 
@@ -161,14 +84,14 @@ pub struct SignalFishPollingClient<T: Transport> {
     /// [`SignalFishError::SendBufferFull`]. Mirrors the async client's
     /// bounded command channel.
     command_capacity: usize,
-    state: PollingClientState,
+    core: ClientCore,
     started: bool,
     pending_frame: Option<TransportFrame>,
+    /// The transport accepted the current frame and is still completing it.
+    /// While true, poll with `None` and do not dequeue a replacement frame.
+    send_in_flight: bool,
     pending_frame_is_game_data: bool,
-    protocol_violation_policy: crate::client::ProtocolViolationPolicy,
-    accountability: crate::accountability::DeliveryAccountability,
     closing: bool,
-    game_data_encoding: GameDataEncoding,
 }
 
 impl<T: Transport> SignalFishPollingClient<T> {
@@ -181,31 +104,29 @@ impl<T: Transport> SignalFishPollingClient<T> {
     #[must_use]
     pub fn new(transport: T, config: SignalFishConfig) -> Self {
         let requested_game_data_encoding = config.game_data_format.unwrap_or_default();
-        let auth_msg = ClientMessage::Authenticate {
-            app_id: config.app_id,
-            sdk_version: config.sdk_version,
-            platform: config.platform,
-            game_data_format: config.game_data_format,
-            protocol_version: config.protocol_version,
-            supported_transports: config.supported_transports,
-            supported_topologies: config.supported_topologies,
-        };
+        let mesh_enabled = config
+            .supported_transports
+            .as_ref()
+            .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
+        let auth_msg = ClientCore::authenticate(&config);
 
         let mut cmd_queue = VecDeque::new();
-        cmd_queue.push_back(PollingCommand::Message(auth_msg));
+        cmd_queue.push_back(auth_msg);
 
         Self {
             transport,
             cmd_queue,
             command_capacity: config.command_channel_capacity.max(1),
-            state: PollingClientState::new(),
+            core: ClientCore::new(
+                requested_game_data_encoding,
+                config.protocol_violation_policy,
+                mesh_enabled,
+            ),
             started: false,
             pending_frame: None,
+            send_in_flight: false,
             pending_frame_is_game_data: false,
-            protocol_violation_policy: config.protocol_violation_policy,
-            accountability: crate::accountability::DeliveryAccountability::new(false),
             closing: false,
-            game_data_encoding: requested_game_data_encoding,
         }
     }
 
@@ -253,7 +174,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return events;
         }
 
-        if !self.state.connected {
+        if !self.core.is_connected() {
             return events;
         }
 
@@ -263,7 +184,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
         // ── Flush outgoing commands ──
         loop {
-            if self.pending_frame.is_none() {
+            if self.pending_frame.is_none() && !self.send_in_flight {
                 let Some(command) = self.cmd_queue.pop_front() else {
                     break;
                 };
@@ -292,8 +213,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             match send_result {
                 std::task::Poll::Ready(Ok(())) => {
                     if self.pending_frame_is_game_data {
-                        self.state.game_data_sent += 1;
+                        self.core.record_game_data_sent();
                     }
+                    self.send_in_flight = false;
                     self.pending_frame_is_game_data = false;
                 }
                 std::task::Poll::Ready(Err(e)) => {
@@ -306,286 +228,27 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     return events;
                 }
                 std::task::Poll::Pending => {
+                    if self.pending_frame.is_none() {
+                        self.send_in_flight = true;
+                    }
                     break;
                 }
             }
         }
 
-        // ── Drain incoming messages ──
+        // ── Drain incoming messages through the shared protocol core ──
         loop {
-            // Poll transport.recv() and capture the result before using self again.
-            let recv_result = self.transport.poll_recv(&mut cx);
-
-            match recv_result {
-                std::task::Poll::Ready(Some(Ok(TransportFrame::Text(text)))) => {
-                    match serde_json::from_str::<ServerMessage>(&text) {
-                        Ok(server_msg) => {
-                            let duplicate_protocol_info =
-                                matches!(server_msg, ServerMessage::ProtocolInfo(_))
-                                    && self.state.protocol_info_seen;
-                            if let ServerMessage::ProtocolInfo(payload) = &server_msg {
-                                if !duplicate_protocol_info {
-                                    self.accountability =
-                                        crate::accountability::DeliveryAccountability::new(
-                                            payload
-                                                .protocol_version
-                                                .is_some_and(|version| version >= 3),
-                                        );
-                                }
-                            }
-                            let authoritative_baseline = matches!(
-                                server_msg,
-                                ServerMessage::RoomJoined(_)
-                                    | ServerMessage::SpectatorJoined(_)
-                                    | ServerMessage::Reconnected(_)
-                            );
-                            let validation = if duplicate_protocol_info {
-                                self.accountability
-                                    .observe_server_message(false)
-                                    .map(|()| crate::accountability::GameDataDisposition::Apply)
-                            } else {
-                                crate::accountability::validate_server_frame(
-                                    &mut self.accountability,
-                                    &server_msg,
-                                    self.game_data_encoding,
-                                    false,
-                                )
-                            };
-                            let (disposition, validation_failed) = match validation {
-                                Ok(disposition) => {
-                                    if authoritative_baseline {
-                                        self.state.quarantined = false;
-                                    }
-                                    (disposition, false)
-                                }
-                                Err(diagnostic) => {
-                                    events.push(SignalFishEvent::ProtocolViolation {
-                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                            &diagnostic,
-                                        ),
-                                        diagnostic,
-                                    });
-                                    match self.protocol_violation_policy {
-                                        crate::client::ProtocolViolationPolicy::Quarantine => {
-                                            self.state.quarantined = true;
-                                        }
-                                        crate::client::ProtocolViolationPolicy::Disconnect => {
-                                            self.accountability.observe_terminal();
-                                            self.handle_disconnect(
-                                                &mut events,
-                                                Some("protocol accountability violation".into()),
-                                                &mut cx,
-                                            );
-                                            return events;
-                                        }
-                                        crate::client::ProtocolViolationPolicy::Observe => {}
-                                    }
-                                    let disposition = if self.protocol_violation_policy
-                                        == crate::client::ProtocolViolationPolicy::Observe
-                                    {
-                                        crate::accountability::GameDataDisposition::Apply
-                                    } else {
-                                        crate::accountability::GameDataDisposition::Stale
-                                    };
-                                    (disposition, true)
-                                }
-                            };
-                            if validation_failed
-                                && self.protocol_violation_policy
-                                    == crate::client::ProtocolViolationPolicy::Quarantine
-                            {
-                                continue;
-                            }
-                            if duplicate_protocol_info {
-                                continue;
-                            }
-                            let is_game_data = matches!(
-                                server_msg,
-                                ServerMessage::GameData { .. }
-                                    | ServerMessage::GameDataBinary { .. }
-                            );
-                            if is_game_data
-                                && (disposition
-                                    == crate::accountability::GameDataDisposition::Stale
-                                    || (self.state.quarantined
-                                        && self.protocol_violation_policy
-                                            == crate::client::ProtocolViolationPolicy::Quarantine))
-                            {
-                                continue;
-                            }
-                            self.update_state(&server_msg);
-                            events.push(SignalFishEvent::from(server_msg));
-                        }
-                        Err(e) => {
-                            // Never a silent drop: surface the frame as a
-                            // typed DecodeFailed event and count it. Log the
-                            // error and frame size only — not the raw content,
-                            // which is untrusted, unbounded, and may carry
-                            // application payloads (the DecodeFailed event
-                            // carries a bounded prefix for diagnostics).
-                            warn!(
-                                "failed to deserialize server message ({} bytes): {e}",
-                                text.len()
-                            );
-                            let mut disconnect_for_violation = false;
-                            if let Err(diagnostic) =
-                                self.accountability.observe_server_message(false)
-                            {
-                                events.push(SignalFishEvent::ProtocolViolation {
-                                    kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                        &diagnostic,
-                                    ),
-                                    diagnostic,
-                                });
-                                match self.protocol_violation_policy {
-                                    crate::client::ProtocolViolationPolicy::Quarantine => {
-                                        self.state.quarantined = true;
-                                    }
-                                    crate::client::ProtocolViolationPolicy::Disconnect => {
-                                        disconnect_for_violation = true;
-                                    }
-                                    crate::client::ProtocolViolationPolicy::Observe => {}
-                                }
-                            }
-                            self.state.messages_undecodable += 1;
-                            events.push(SignalFishEvent::decode_failed(&text, &e));
-                            if disconnect_for_violation {
-                                self.accountability.observe_terminal();
-                                self.handle_disconnect(
-                                    &mut events,
-                                    Some("protocol accountability violation".into()),
-                                    &mut cx,
-                                );
-                                return events;
-                            }
-                        }
-                    }
-                }
-                std::task::Poll::Ready(Some(Ok(TransportFrame::Binary(bytes)))) => {
-                    let mut observe_representation_violation = false;
-                    if let Err(diagnostic) = crate::accountability::validate_physical_binary_allowed(
-                        &mut self.accountability,
-                        self.game_data_encoding,
-                    ) {
-                        events.push(SignalFishEvent::ProtocolViolation {
-                            kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
-                            diagnostic,
-                        });
-                        match self.protocol_violation_policy {
-                            crate::client::ProtocolViolationPolicy::Quarantine => {
-                                self.state.quarantined = true;
-                                continue;
-                            }
-                            crate::client::ProtocolViolationPolicy::Disconnect => {
-                                self.accountability.observe_terminal();
-                                self.handle_disconnect(
-                                    &mut events,
-                                    Some("protocol accountability violation".into()),
-                                    &mut cx,
-                                );
-                                return events;
-                            }
-                            crate::client::ProtocolViolationPolicy::Observe => {
-                                observe_representation_violation = true;
-                            }
-                        }
-                    }
-                    let protocol_v3 = self.state.negotiated_protocol_version >= 3;
-                    match crate::client::decode_binary_server_message(&bytes, protocol_v3) {
-                        Ok(server_msg) => {
-                            let validation = if observe_representation_violation {
-                                crate::accountability::validate_server_message(
-                                    &mut self.accountability,
-                                    &server_msg,
-                                )
-                            } else {
-                                crate::accountability::validate_server_frame(
-                                    &mut self.accountability,
-                                    &server_msg,
-                                    self.game_data_encoding,
-                                    true,
-                                )
-                            };
-                            let disposition = match validation {
-                                Ok(disposition) => disposition,
-                                Err(diagnostic) => {
-                                    events.push(SignalFishEvent::ProtocolViolation {
-                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                            &diagnostic,
-                                        ),
-                                        diagnostic,
-                                    });
-                                    match self.protocol_violation_policy {
-                                        crate::client::ProtocolViolationPolicy::Quarantine => {
-                                            self.state.quarantined = true;
-                                        }
-                                        crate::client::ProtocolViolationPolicy::Disconnect => {
-                                            self.accountability.observe_terminal();
-                                            self.handle_disconnect(
-                                                &mut events,
-                                                Some("protocol accountability violation".into()),
-                                                &mut cx,
-                                            );
-                                            return events;
-                                        }
-                                        crate::client::ProtocolViolationPolicy::Observe => {}
-                                    }
-                                    if self.protocol_violation_policy
-                                        == crate::client::ProtocolViolationPolicy::Observe
-                                    {
-                                        crate::accountability::GameDataDisposition::Apply
-                                    } else {
-                                        crate::accountability::GameDataDisposition::Stale
-                                    }
-                                }
-                            };
-                            if disposition == crate::accountability::GameDataDisposition::Stale
-                                || (self.state.quarantined
-                                    && self.protocol_violation_policy
-                                        == crate::client::ProtocolViolationPolicy::Quarantine)
-                            {
-                                continue;
-                            }
-                            self.update_state(&server_msg);
-                            events.push(SignalFishEvent::from(server_msg));
-                        }
-                        Err(error) => {
-                            let mut disconnect_for_violation = false;
-                            if let Err(diagnostic) =
-                                self.accountability.observe_server_message(false)
-                            {
-                                events.push(SignalFishEvent::ProtocolViolation {
-                                    kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                        &diagnostic,
-                                    ),
-                                    diagnostic,
-                                });
-                                match self.protocol_violation_policy {
-                                    crate::client::ProtocolViolationPolicy::Quarantine => {
-                                        self.state.quarantined = true;
-                                    }
-                                    crate::client::ProtocolViolationPolicy::Disconnect => {
-                                        disconnect_for_violation = true;
-                                    }
-                                    crate::client::ProtocolViolationPolicy::Observe => {}
-                                }
-                            }
-                            self.state.messages_undecodable += 1;
-                            events.push(SignalFishEvent::DecodeFailed {
-                                message_type: Some("BinaryGameData".into()),
-                                error,
-                                raw_prefix: crate::client::bounded_binary_preview(&bytes),
-                            });
-                            if disconnect_for_violation {
-                                self.accountability.observe_terminal();
-                                self.handle_disconnect(
-                                    &mut events,
-                                    Some("protocol accountability violation".into()),
-                                    &mut cx,
-                                );
-                                return events;
-                            }
-                        }
+            match self.transport.poll_recv(&mut cx) {
+                std::task::Poll::Ready(Some(Ok(frame))) => {
+                    let outcome = self.core.process_frame(frame);
+                    events.extend(outcome.events);
+                    if outcome.disconnect {
+                        self.handle_disconnect(
+                            &mut events,
+                            Some("protocol accountability violation".into()),
+                            &mut cx,
+                        );
+                        return events;
                     }
                 }
                 std::task::Poll::Ready(Some(Err(e))) => {
@@ -599,7 +262,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 }
                 std::task::Poll::Ready(None) => {
                     debug!("transport closed by server");
-                    self.accountability.observe_terminal();
                     let reason = self.transport.close_info().map(|info| {
                         format!(
                             "closed by server: code={:?}, reason={:?}",
@@ -640,14 +302,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
-        self.queue_cmd(ClientMessage::JoinRoom {
-            game_name: params.game_name,
-            room_code: params.room_code,
-            player_name: params.player_name,
-            max_players: params.max_players,
-            supports_authority: params.supports_authority,
-            relay_transport: params.relay_transport,
-        })
+        self.queue_operation(ClientOperation::JoinRoom(params))
     }
 
     /// Leave the current room.
@@ -658,7 +313,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_room(&mut self) -> Result<()> {
-        self.queue_cmd(ClientMessage::LeaveRoom)
+        self.queue_operation(ClientOperation::LeaveRoom)
     }
 
     /// Send game data to other players in the room.
@@ -669,11 +324,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
-        self.queue_cmd(ClientMessage::GameData {
-            data,
-            class: None,
-            key: None,
-        })
+        self.queue_operation(ClientOperation::GameData(data, GameDataDelivery::Reliable))
     }
 
     /// Send JSON game data with an explicit protocol-v3 delivery policy.
@@ -682,32 +333,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
         data: serde_json::Value,
         delivery: GameDataDelivery,
     ) -> Result<()> {
-        match delivery {
-            GameDataDelivery::Reliable => self.send_game_data(data),
-            GameDataDelivery::Latest { key } => {
-                self.ensure_v3()?;
-                self.queue_cmd(ClientMessage::GameData {
-                    data,
-                    class: Some(DeliveryClass::Latest),
-                    key: Some(key),
-                })
-            }
-            GameDataDelivery::Volatile => {
-                self.ensure_v3()?;
-                self.queue_cmd(ClientMessage::GameData {
-                    data,
-                    class: Some(DeliveryClass::Volatile),
-                    key: None,
-                })
-            }
-        }
+        self.queue_operation(ClientOperation::GameData(data, delivery))
     }
 
     /// Queue opaque binary game data for the negotiated protocol-v3 relay.
     pub fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()> {
-        self.ensure_v3()?;
-        self.ensure_binary_format()?;
-        self.queue_command(PollingCommand::Binary(payload))
+        self.queue_operation(ClientOperation::Binary(payload))
     }
 
     /// Signal readiness to start the game.
@@ -718,7 +349,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn set_ready(&mut self) -> Result<()> {
-        self.queue_cmd(ClientMessage::PlayerReady)
+        self.queue_operation(ClientOperation::SetReady)
     }
 
     /// Request or relinquish authority status.
@@ -729,7 +360,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn request_authority(&mut self, become_authority: bool) -> Result<()> {
-        self.queue_cmd(ClientMessage::AuthorityRequest { become_authority })
+        self.queue_operation(ClientOperation::RequestAuthority(become_authority))
     }
 
     /// Provide connection info for P2P establishment.
@@ -740,7 +371,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
-        self.queue_cmd(ClientMessage::ProvideConnectionInfo { connection_info })
+        self.queue_operation(ClientOperation::ProvideConnectionInfo(connection_info))
     }
 
     /// Reconnect to a room after disconnection.
@@ -756,11 +387,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         room_id: RoomId,
         auth_token: String,
     ) -> Result<()> {
-        self.queue_cmd(ClientMessage::Reconnect {
-            player_id,
-            room_id,
-            auth_token,
-        })
+        self.queue_operation(ClientOperation::Reconnect(player_id, room_id, auth_token))
     }
 
     /// Join a room as a spectator (read-only observer).
@@ -776,11 +403,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
         room_code: String,
         spectator_name: String,
     ) -> Result<()> {
-        self.queue_cmd(ClientMessage::JoinAsSpectator {
+        self.queue_operation(ClientOperation::JoinAsSpectator(
             game_name,
             room_code,
             spectator_name,
-        })
+        ))
     }
 
     /// Leave spectator mode.
@@ -791,7 +418,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_spectator(&mut self) -> Result<()> {
-        self.queue_cmd(ClientMessage::LeaveSpectator)
+        self.queue_operation(ClientOperation::LeaveSpectator)
     }
 
     /// Send a heartbeat ping.
@@ -802,7 +429,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn ping(&mut self) -> Result<()> {
-        self.queue_cmd(ClientMessage::Ping)
+        self.queue_operation(ClientOperation::Ping)
     }
 
     // ── Game start (protocol v2) ────────────────────────────────────
@@ -819,7 +446,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn start_game(&mut self) -> Result<()> {
-        self.queue_cmd(ClientMessage::StartGame)
+        self.queue_operation(ClientOperation::StartGame)
     }
 
     // ── Mesh signaling (protocol v3) ────────────────────────────────
@@ -837,11 +464,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
     /// outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
-        self.ensure_v3()?;
-        self.queue_cmd(ClientMessage::Signal {
-            to,
-            signal: signal.into().into(),
-        })
+        self.queue_operation(ClientOperation::Signal(to, signal.into()))
     }
 
     /// Send an SDP offer to a peer. **Protocol v3 only.**
@@ -880,8 +503,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// See [`send_signal`](Self::send_signal).
     pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
-        self.ensure_v3()?;
-        self.queue_cmd(ClientMessage::Signal { to, signal })
+        self.queue_operation(ClientOperation::RawSignal(to, signal))
     }
 
     /// Report whether a data-path transport is established. **Protocol v3 only.**
@@ -899,11 +521,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         transport: TransportKind,
         connected: bool,
     ) -> Result<()> {
-        self.ensure_v3()?;
-        self.queue_cmd(ClientMessage::TransportStatus {
-            transport,
-            connected,
-        })
+        self.queue_operation(ClientOperation::TransportStatus(transport, connected))
     }
 
     // ── State accessors ─────────────────────────────────────────────
@@ -911,21 +529,19 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// The protocol version negotiated with the server, or `None` if not yet
     /// negotiated or negotiated as v2 (the relay floor).
     pub fn negotiated_protocol_version(&self) -> Option<u16> {
-        match self.state.negotiated_protocol_version {
-            0 => None,
-            v => Some(v),
-        }
+        self.core.negotiated_protocol_version()
     }
 
-    /// Returns `true` once the connection has negotiated protocol v3 — i.e. mesh
-    /// signaling is available. The "am I in mesh mode?" check.
+    /// Returns `true` once the connection has negotiated protocol v3 and this
+    /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
+    /// This is the "am I in mesh mode?" check.
     pub fn supports_mesh(&self) -> bool {
-        self.negotiated_protocol_version().is_some_and(|v| v >= 3)
+        self.core.supports_mesh()
     }
 
     /// Whether the transport connection is still alive.
     pub fn is_connected(&self) -> bool {
-        self.state.connected
+        self.core.is_connected()
     }
 
     /// Whether a transport close handshake still needs to be driven by
@@ -936,22 +552,22 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     /// Whether the client has received an `Authenticated` response.
     pub fn is_authenticated(&self) -> bool {
-        self.state.authenticated
+        self.core.is_authenticated()
     }
 
     /// The local player's ID, set after joining a room.
     pub fn current_player_id(&self) -> Option<PlayerId> {
-        self.state.player_id
+        self.core.current_player_id()
     }
 
     /// The current room ID, set after joining a room.
     pub fn current_room_id(&self) -> Option<RoomId> {
-        self.state.room_id
+        self.core.current_room_id()
     }
 
     /// The current room code, set after joining a room.
     pub fn current_room_code(&self) -> Option<&str> {
-        self.state.room_code.as_deref()
+        self.core.current_room_code()
     }
 
     /// Number of messages that can currently be queued before send methods
@@ -960,8 +576,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// The queue drains on every [`poll()`](Self::poll) while the transport
     /// accepts writes, so a shrinking value means the transport is congested.
     pub fn send_capacity(&self) -> usize {
-        self.command_capacity
-            .saturating_sub(self.cmd_queue.len() + usize::from(self.pending_frame.is_some()))
+        self.command_capacity.saturating_sub(self.cmd_queue.len())
     }
 
     /// Configured capacity of the outgoing command queue
@@ -973,25 +588,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// Cumulative game-data traffic counters
     /// (see [`ClientStats`](crate::client::ClientStats)).
     pub fn stats(&self) -> crate::client::ClientStats {
-        crate::client::ClientStats {
-            game_data_sent: self.state.game_data_sent,
-            game_data_received: self.state.game_data_received,
-            messages_undecodable: self.state.messages_undecodable,
-        }
+        self.core.stats()
     }
 
     /// Return a coherent synchronous snapshot of connection and room state.
     pub fn snapshot(&self) -> ClientSnapshot {
-        ClientSnapshot {
-            connected: self.state.connected,
-            authenticated: self.state.authenticated,
-            negotiated_protocol_version: self.negotiated_protocol_version(),
-            player_id: self.state.player_id,
-            room_id: self.state.room_id,
-            room_code: self.state.room_code.clone(),
-            reconnection_token: self.state.reconnection_token.clone(),
-            quarantined: self.state.quarantined,
-        }
+        self.core.snapshot()
     }
 
     // ── Close ───────────────────────────────────────────────────────
@@ -1002,10 +604,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// `Pending`, subsequent [`poll()`](Self::poll) calls continue driving it;
     /// [`is_closing()`](Self::is_closing) becomes `false` when it completes.
     pub fn close(&mut self) {
-        if !self.state.connected && !self.closing {
+        if !self.core.is_connected() && !self.closing {
             return;
         }
-        self.state.connected = false;
         self.closing = true;
 
         // Poll transport.close() in a separate scope to avoid borrow conflicts.
@@ -1018,53 +619,25 @@ impl<T: Transport> SignalFishPollingClient<T> {
             self.closing = false;
         }
 
-        self.state.clear_session();
+        let _ = self.core.disconnect(Some("client closed".into()));
     }
 
     // ── Private helpers ─────────────────────────────────────────────
 
-    /// Guard for protocol-v3-only operations: returns an error unless the
-    /// connection negotiated v3, so signaling never goes out on a relay-floor
-    /// connection the server would reject.
-    fn ensure_v3(&self) -> Result<()> {
-        // Mesh signaling was introduced in protocol v3; any negotiated version
-        // >= 3 supports it.
-        if self.state.negotiated_protocol_version >= 3 {
-            return Ok(());
-        }
-        // A `ProtocolInfo` that resolved below v3 is a terminal relay floor;
-        // its absence means negotiation is still in flight. Keying off the
-        // observed `ProtocolInfo` (not authentication) keeps this diagnostic
-        // correct regardless of handshake message ordering.
-        let mode = if self.state.protocol_info_seen {
-            "relay-only"
-        } else {
-            "pre-negotiation"
-        };
-        Err(SignalFishError::ProtocolUnsupported { mode })
-    }
-
-    fn ensure_binary_format(&self) -> Result<()> {
-        if self.game_data_encoding == GameDataEncoding::Json {
-            return Err(SignalFishError::BinaryFormatNotNegotiated);
-        }
-        Ok(())
-    }
-
-    fn queue_cmd(&mut self, msg: ClientMessage) -> Result<()> {
-        self.queue_command(PollingCommand::Message(msg))
+    fn queue_operation(&mut self, operation: ClientOperation) -> Result<()> {
+        let command = self.core.prepare(operation)?;
+        self.queue_command(command)
     }
 
     fn queue_command(&mut self, command: PollingCommand) -> Result<()> {
-        if !self.state.connected {
+        if !self.core.is_connected() {
             return Err(SignalFishError::NotConnected);
         }
         // The queue only backs up while the transport reports Pending across
         // polls; refusing (rather than growing without bound) surfaces the
         // congestion to the caller, mirroring the async client's bounded
         // command channel.
-        if self.cmd_queue.len() + usize::from(self.pending_frame.is_some()) >= self.command_capacity
-        {
+        if self.cmd_queue.len() >= self.command_capacity {
             return Err(SignalFishError::SendBufferFull {
                 capacity: self.command_capacity,
             });
@@ -1083,96 +656,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         if matches!(self.transport.poll_close(cx), std::task::Poll::Ready(_)) {
             self.closing = false;
         }
-        self.state.connected = false;
-        self.state.clear_session();
-        events.push(SignalFishEvent::Disconnected {
-            reason,
-            last_server_error: self.state.last_server_error.take(),
-        });
-    }
-
-    fn update_state(&mut self, msg: &ServerMessage) {
-        match msg {
-            ServerMessage::Authenticated { .. } => {
-                self.state.authenticated = true;
-            }
-            // Remember server errors for disconnect attribution.
-            ServerMessage::Error {
-                message,
-                error_code,
-            } => {
-                if error_code.as_ref() == Some(&crate::ErrorCode::UnsupportedGameDataFormat) {
-                    self.game_data_encoding = GameDataEncoding::Json;
-                }
-                self.state.last_server_error = Some(ServerErrorInfo {
-                    message: message.clone(),
-                    error_code: error_code.clone(),
-                });
-            }
-            ServerMessage::AuthenticationError { error, error_code } => {
-                self.state.last_server_error = Some(ServerErrorInfo {
-                    message: error.clone(),
-                    error_code: Some(error_code.clone()),
-                });
-            }
-            ServerMessage::ProtocolInfo(payload) => {
-                self.state.negotiated_protocol_version = payload.protocol_version.unwrap_or(0);
-                // Mark negotiation as observed even for a v2 floor (version 0):
-                // this separates "relay-only" from "pre-negotiation" in the guard.
-                self.state.protocol_info_seen = true;
-            }
-            ServerMessage::RoomJoined(payload) => {
-                self.state.player_id = Some(payload.player_id);
-                self.state.room_id = Some(payload.room_id);
-                self.state.room_code = Some(payload.room_code.clone());
-                self.state.reconnection_token = payload.reconnection_token.clone();
-                self.state.quarantined = false;
-            }
-            ServerMessage::RoomLeft => {
-                self.state.room_id = None;
-                self.state.room_code = None;
-                self.state.reconnection_token = None;
-                self.state.quarantined = false;
-            }
-            ServerMessage::Reconnected(payload) => {
-                self.state.player_id = Some(payload.player_id);
-                self.state.room_id = Some(payload.room_id);
-                self.state.room_code = Some(payload.room_code.clone());
-                self.state.reconnection_token = payload.reconnection_token.clone();
-                self.state.quarantined = false;
-                // Restore the negotiated version if it was replayed via
-                // missed_events, so v3 sends aren't wrongly blocked after a
-                // reconnect. Only a versioned (v3+) ProtocolInfo restores — a
-                // replayed v2 one must not silently downgrade an active session.
-                if let Some(version) =
-                    crate::protocol::replayed_negotiated_version(&payload.missed_events)
-                {
-                    self.state.negotiated_protocol_version = version;
-                    // A replayed `ProtocolInfo` *was* observed; keep the flag
-                    // consistent with its name (moot while the guard
-                    // short-circuits on version >= 3, but preserves the
-                    // "seen implies a ProtocolInfo arrived" invariant).
-                    self.state.protocol_info_seen = true;
-                }
-            }
-            ServerMessage::SpectatorJoined(payload) => {
-                self.state.player_id = Some(payload.spectator_id);
-                self.state.room_id = Some(payload.room_id);
-                self.state.room_code = Some(payload.room_code.clone());
-                self.state.reconnection_token = None;
-                self.state.quarantined = false;
-            }
-            ServerMessage::SpectatorLeft { .. } => {
-                self.state.room_id = None;
-                self.state.room_code = None;
-                self.state.reconnection_token = None;
-                self.state.quarantined = false;
-            }
-            ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
-                self.state.game_data_received += 1;
-            }
-            _ => {}
-        }
+        events.push(self.core.disconnect(reason));
     }
 }
 
@@ -1181,11 +665,111 @@ impl<T: Transport> SignalFishPollingClient<T> {
 impl<T: Transport> std::fmt::Debug for SignalFishPollingClient<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalFishPollingClient")
-            .field("connected", &self.state.connected)
-            .field("authenticated", &self.state.authenticated)
+            .field("connected", &self.core.is_connected())
+            .field("authenticated", &self.core.is_authenticated())
             .field("started", &self.started)
             .field("queued_commands", &self.cmd_queue.len())
             .finish()
+    }
+}
+
+impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingClient<T> {
+    fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
+        SignalFishPollingClient::join_room(self, params)
+    }
+
+    fn leave_room(&mut self) -> Result<()> {
+        SignalFishPollingClient::leave_room(self)
+    }
+
+    fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
+        SignalFishPollingClient::send_game_data(self, data)
+    }
+
+    fn send_game_data_with_delivery(
+        &mut self,
+        data: serde_json::Value,
+        delivery: GameDataDelivery,
+    ) -> Result<()> {
+        SignalFishPollingClient::send_game_data_with_delivery(self, data, delivery)
+    }
+
+    fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()> {
+        SignalFishPollingClient::send_binary_game_data(self, payload)
+    }
+
+    fn set_ready(&mut self) -> Result<()> {
+        SignalFishPollingClient::set_ready(self)
+    }
+
+    fn start_game(&mut self) -> Result<()> {
+        SignalFishPollingClient::start_game(self)
+    }
+
+    fn request_authority(&mut self, become_authority: bool) -> Result<()> {
+        SignalFishPollingClient::request_authority(self, become_authority)
+    }
+
+    fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
+        SignalFishPollingClient::provide_connection_info(self, connection_info)
+    }
+
+    fn reconnect(
+        &mut self,
+        player_id: PlayerId,
+        room_id: RoomId,
+        auth_token: String,
+    ) -> Result<()> {
+        SignalFishPollingClient::reconnect(self, player_id, room_id, auth_token)
+    }
+
+    fn join_as_spectator(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+    ) -> Result<()> {
+        SignalFishPollingClient::join_as_spectator(self, game_name, room_code, spectator_name)
+    }
+
+    fn leave_spectator(&mut self) -> Result<()> {
+        SignalFishPollingClient::leave_spectator(self)
+    }
+
+    fn ping(&mut self) -> Result<()> {
+        SignalFishPollingClient::ping(self)
+    }
+
+    fn send_signal(&mut self, to: PlayerId, signal: PeerSignal) -> Result<()> {
+        SignalFishPollingClient::send_signal(self, to, signal)
+    }
+
+    fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
+        SignalFishPollingClient::send_raw_signal(self, to, signal)
+    }
+
+    fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()> {
+        SignalFishPollingClient::report_transport_status(self, transport, connected)
+    }
+
+    fn send_capacity(&self) -> usize {
+        SignalFishPollingClient::send_capacity(self)
+    }
+
+    fn max_send_capacity(&self) -> usize {
+        SignalFishPollingClient::max_send_capacity(self)
+    }
+
+    fn stats(&self) -> crate::client::ClientStats {
+        SignalFishPollingClient::stats(self)
+    }
+
+    fn snapshot(&self) -> ClientSnapshot {
+        SignalFishPollingClient::snapshot(self)
+    }
+
+    fn supports_mesh(&self) -> bool {
+        SignalFishPollingClient::supports_mesh(self)
     }
 }
 
@@ -1204,6 +788,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::protocol::ServerMessage;
     use crate::transport::TransportFrame;
 
     // ── Mock transport ──────────────────────────────────────────────
@@ -1507,7 +1092,11 @@ mod tests {
     fn binary_send_requires_a_negotiated_binary_format() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_v3());
-        client.state.negotiated_protocol_version = 3;
+        let protocol_info = serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_v3()))
+            .expect("serialize protocol negotiation fixture");
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(protocol_info));
         assert!(matches!(
             client.send_binary_game_data(vec![1, 2, 3]),
             Err(SignalFishError::BinaryFormatNotNegotiated)
@@ -1517,7 +1106,11 @@ mod tests {
         let mut config = default_config().enable_v3();
         config.game_data_format = Some(GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
-        client.state.negotiated_protocol_version = 3;
+        let protocol_info = serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_v3()))
+            .expect("serialize protocol negotiation fixture");
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(protocol_info));
         client
             .send_binary_game_data(vec![1, 2, 3])
             .expect("MessagePack negotiation permits binary sends");
@@ -1825,7 +1418,7 @@ mod tests {
     fn send_signal_before_v3_returns_protocol_unsupported() {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert!(client.negotiated_protocol_version().is_none());
         assert!(!client.supports_mesh());
@@ -1866,15 +1459,14 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_resets_protocol_info_seen_to_pre_negotiation() {
-        // Negotiate v3, then disconnect: the guard must fall all the way back to
-        // "pre-negotiation" (proving `protocol_info_seen` is cleared with the
-        // rest of the session state, not just the version).
+    fn disconnect_resets_negotiation_and_commands_return_not_connected() {
+        // A closed connection takes precedence over protocol guards while the
+        // cleared snapshot still proves negotiation state was reset.
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
         ]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert!(client.supports_mesh());
         client.close();
@@ -1882,9 +1474,7 @@ mod tests {
         let peer: PlayerId = PEER_UUID.parse().unwrap();
         assert!(matches!(
             client.send_offer(peer, "sdp"),
-            Err(SignalFishError::ProtocolUnsupported {
-                mode: "pre-negotiation"
-            })
+            Err(SignalFishError::NotConnected)
         ));
     }
 
@@ -1908,7 +1498,7 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
         ]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
@@ -1976,7 +1566,7 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
         ]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert!(client.supports_mesh());
         client.close();
@@ -2012,7 +1602,7 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(reconnected)),
         ]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
@@ -2035,7 +1625,7 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(pi_v4.to_string())),
         ]);
-        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(4));
         assert!(client.supports_mesh());
@@ -2623,6 +2213,47 @@ mod tests {
     impl PendingOnSendTransport {
         fn new() -> Self {
             Self
+        }
+    }
+
+    /// Accepts a frame before returning `Pending`, then completes it on the
+    /// next poll. A replacement frame during completion violates `Transport`.
+    struct AcceptedPendingSendTransport {
+        retained: Option<TransportFrame>,
+        sent: Vec<TransportFrame>,
+        replacement_seen: bool,
+    }
+
+    impl Transport for AcceptedPendingSendTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            if let Some(retained) = self.retained.take() {
+                self.replacement_seen |= frame.is_some();
+                self.sent.push(retained);
+                return std::task::Poll::Ready(Ok(()));
+            }
+            if let Some(accepted) = frame.take() {
+                self.retained = Some(accepted);
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            std::task::Poll::Ready(Ok(()))
         }
     }
 
@@ -3605,17 +3236,21 @@ mod tests {
             "expected SendBufferFull, got {err:?}"
         );
 
-        // A stalled transport keeps the queue full across polls — nothing is
-        // lost and nothing grows without bound.
+        // Once Authenticate leaves the queue for the transport, that queue
+        // slot is free, matching the async mpsc driver's capacity semantics.
         let _ = client.poll();
-        assert_eq!(client.send_capacity(), 0);
+        assert_eq!(client.send_capacity(), 1);
         assert!(client.is_connected());
+        client
+            .send_game_data(serde_json::json!({ "seq": 2 }))
+            .expect("one queue slot should be free behind the pending send");
+        assert_eq!(client.send_capacity(), 0);
 
         // Once the transport accepts writes again, one poll drains everything.
         allow.store(true, std::sync::atomic::Ordering::Release);
         let _ = client.poll();
         assert_eq!(client.send_capacity(), 3);
-        assert_eq!(client.transport.sent.len(), 3);
+        assert_eq!(client.transport.sent.len(), 4);
         client
             .send_game_data(serde_json::json!({ "seq": 3 }))
             .unwrap();
@@ -3642,6 +3277,41 @@ mod tests {
             client.pending_frame.is_some(),
             "expected pending frame to remain retained"
         );
+    }
+
+    #[test]
+    fn accepted_pending_send_completes_before_dequeuing_replacement() {
+        let transport = AcceptedPendingSendTransport {
+            retained: None,
+            sent: Vec::new(),
+            replacement_seen: false,
+        };
+        let mut client = SignalFishPollingClient::new(
+            transport,
+            default_config().with_command_channel_capacity(2),
+        );
+
+        let _ = client.poll();
+        assert!(client.send_in_flight, "Authenticate should be in flight");
+        client
+            .send_game_data(serde_json::json!({"frame": 1}))
+            .expect("one queued command should fit behind the in-flight send");
+
+        let _ = client.poll();
+        assert!(client.send_in_flight, "game data should now be in flight");
+        let _ = client.poll();
+
+        assert!(!client.transport.replacement_seen);
+        assert_eq!(client.transport.sent.len(), 2);
+        assert!(matches!(
+            client.transport.sent.first(),
+            Some(TransportFrame::Text(text)) if text.contains("Authenticate")
+        ));
+        assert!(matches!(
+            client.transport.sent.get(1),
+            Some(TransportFrame::Text(text)) if text.contains("GameData")
+        ));
+        assert_eq!(client.stats().game_data_sent, 1);
     }
 
     // ── E. Integration Scenarios ───────────────────────────────────

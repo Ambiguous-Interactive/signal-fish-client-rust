@@ -44,7 +44,7 @@ use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, JoinRoomParams,
 };
 
-fn try_join(client: &SignalFishClient) {
+fn try_join(client: &mut SignalFishClient) {
     let params = JoinRoomParams::new("my-game", "Alice");
     match client.join_room(params) {
         Ok(()) => println!("Join request sent"),
@@ -353,7 +353,7 @@ use signal_fish_client::{
     SignalFishClient, SignalFishError, SignalFishEvent, ErrorCode,
 };
 
-fn send_data(client: &SignalFishClient) {
+fn send_data(client: &mut SignalFishClient) {
     let payload = serde_json::json!({"action": "move", "x": 10, "y": 20});
     match client.send_game_data(payload) {
         Ok(()) => { /* sent successfully */ }

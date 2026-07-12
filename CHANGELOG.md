@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ErrorCode::ServerDraining` and `ErrorCode::InvalidDeliveryClass`.
 - `SignalFishError::BinaryFormatNotNegotiated` for binary sends attempted on
   JSON-format connections.
+- Object-safe `SignalFishClientApi` for writing synchronous room, signaling,
+  capacity, statistics, and snapshot logic that works with either client
+  driver.
 
 ### Changed
 
@@ -36,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   close metadata, and explicitly flushes automatic Pong responses.
 - Event and snapshot debug formatting no longer prints
   reconnect credentials or arbitrary application payloads.
+- **Breaking:** common synchronous commands on `SignalFishClient` now take
+  `&mut self`, matching `SignalFishPollingClient` and the shared
+  `SignalFishClientApi`. The matching `MeshController` room delegations now
+  take `&mut self` and `client_mut()` exposes other mutable commands. Async
+  waiting sends remain callable through `&self`.
 
 ### Fixed
 
@@ -47,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closes remain driven across `poll()` calls, peer WebSocket Close responses
   are flushed, Emscripten callback payload handling matches its C ABI, and
   debug builds diagnose wake-driven misuse of its polling-only receive path.
+- `supports_mesh()` now requires both local WebRTC advertisement through
+  `enable_mesh()` and negotiated protocol v3; relay-only `enable_v3()` clients
+  no longer report that mesh is available.
 
 ## [0.7.0] - 2026-07-02
 

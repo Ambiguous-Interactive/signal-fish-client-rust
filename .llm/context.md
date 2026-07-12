@@ -54,7 +54,10 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/error_codes.rs` | `ErrorCode` enum — 50 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
-| `src/client.rs` | `SignalFishClient` async client + `SignalFishConfig` + `JoinRoomParams` |
+| `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |
+| `src/client_api.rs` | Object-safe `SignalFishClientApi` common synchronous surface |
+| `src/client.rs` | Thin async driver + `SignalFishConfig` + `JoinRoomParams` |
+| `src/polling_client.rs` | Thin caller-driven polling transport driver (feature: `polling-client`) |
 | `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
@@ -130,6 +133,10 @@ client.join_room(params)?;
 
 All methods except `shutdown` and the `*_reliable` sends are synchronous (they queue a message on the bounded command channel, no round-trip):
 
+Common synchronous commands take `&mut self` through the object-safe
+`SignalFishClientApi`. Driver-specific lifecycle stays concrete; both drivers
+delegate protocol behavior and state to one `ClientCore`.
+
 ```rust,ignore
 client.join_room(params: JoinRoomParams) -> Result<()>
 client.leave_room() -> Result<()>
@@ -173,8 +180,6 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 
 ## Dependencies
 
-### Runtime
-
 | Crate | Purpose |
 |-------|---------|
 | `tokio` | Async runtime (sync, macros, rt, time features) |
@@ -185,8 +190,6 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 | `tracing` | Structured logging and diagnostics |
 | `tokio-tungstenite` | WebSocket transport (optional) |
 | `futures-util` | Stream/sink utilities for WebSocket (optional) |
-
-### Dev
 
 `tokio` (full features, for tests) and `tracing-subscriber` (test log output).
 

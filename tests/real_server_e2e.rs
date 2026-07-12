@@ -175,7 +175,7 @@ async fn e2e_slow_consumer_eviction_is_observable() {
     };
 
     // Sender A: normal config, joins and creates the room.
-    let (a, mut a_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
+    let (mut a, mut a_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
     a.join_room(JoinRoomParams::new("e2e-evict", "sender"))
         .expect("A join_room");
     let joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
@@ -187,7 +187,7 @@ async fn e2e_slow_consumer_eviction_is_observable() {
     };
 
     // Victim B: tiny event channel so it wedges as soon as it stops draining.
-    let (_b, mut b_events) = connect_authenticated(
+    let (mut _b, mut b_events) = connect_authenticated(
         &url,
         SignalFishConfig::new(app_id()).with_event_channel_capacity(1),
     )
@@ -296,7 +296,7 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
 
     // Join a v3 room, retain the server-issued token, then drop the connection
     // abruptly (no LeaveRoom and no graceful shutdown).
-    let (a, mut a_events) =
+    let (mut a, mut a_events) =
         connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
     a.join_room(JoinRoomParams::new("e2e-reconnect", "alpha"))
         .expect("join_room");

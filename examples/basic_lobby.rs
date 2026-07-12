@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &lobby_state,
                             &missed_events,
                         );
-                        lobby_start.maybe_start_game(&client)?;
+                        lobby_start.maybe_start_game(&mut client)?;
                     }
 
                     SignalFishEvent::PlayerJoined { player } => {
@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         tracing::info!("Lobby state → {lobby_state:?} (all_ready={ready})");
                         lobby_start.apply_lobby_state(&lobby_state, ready);
-                        lobby_start.maybe_start_game(&client)?;
+                        lobby_start.maybe_start_game(&mut client)?;
                     }
 
                     // ── Authority changes ────────────────────────────
@@ -174,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } => {
                         lobby_start.apply_authority_changed(you_are_authority);
                         tracing::info!("Authority changed (you_are_authority={you_are_authority})");
-                        lobby_start.maybe_start_game(&client)?;
+                        lobby_start.maybe_start_game(&mut client)?;
                     }
 
                     SignalFishEvent::GameStarting {
@@ -308,7 +308,7 @@ impl LobbyStartState {
     /// confirms the game is already starting or finalized.
     fn maybe_start_game(
         &mut self,
-        client: &SignalFishClient,
+        client: &mut SignalFishClient,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self.should_start_game() {
             client.start_game()?;

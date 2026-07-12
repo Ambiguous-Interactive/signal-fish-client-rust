@@ -30,4 +30,4 @@ For any user-visible change, update `CHANGELOG.md` in the same PR under
 
 Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
 
-Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `changelog-discipline`, `keep-a-changelog-format`.
+Key skills: `async-rust-patterns`, `shared-core-drivers`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `changelog-discipline`, `keep-a-changelog-format`.

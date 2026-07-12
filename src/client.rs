@@ -50,7 +50,7 @@
 //! ```rust,ignore
 //! let transport = connect_somehow().await;
 //! let config = SignalFishConfig::new("mb_app_abc123");
-//! let (client, mut events) = SignalFishClient::start(transport, config);
+//! let (mut client, mut events) = SignalFishClient::start(transport, config);
 //!
 //! client.join_room(
 //!     JoinRoomParams::new("my-game", "Alice")
@@ -66,31 +66,33 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+#[cfg(all(test, feature = "tokio-runtime"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "tokio-runtime")]
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-// tokio/sync is always available (not gated on `tokio-runtime`) because
-// `SignalFishClient` uses `mpsc` and `ClientState` uses `Mutex` unconditionally.
-// These types have no reachable usage path without `tokio-runtime` (the only
-// constructor, `SignalFishClient::start`, is feature-gated), so they are
-// effectively dead code in that configuration — suppressed by
-// `#[cfg_attr(..., allow(dead_code))]` on the struct. If a future refactoring
-// needs a different sync primitive for the no-runtime path, this import and
-// the struct fields would need feature-gating.
-use tokio::sync::{mpsc, Mutex};
+#[cfg(feature = "tokio-runtime")]
+use tokio::sync::mpsc;
 #[cfg(feature = "tokio-runtime")]
 use tracing::{debug, error, warn};
 
+#[cfg(feature = "tokio-runtime")]
+use crate::client_core::{ClientCore, ClientOperation, CoreCommand as ClientCommand};
+#[cfg(feature = "tokio-runtime")]
 use crate::error::{Result, SignalFishError};
 #[cfg(feature = "tokio-runtime")]
-use crate::event::{ServerErrorInfo, SignalFishEvent};
+use crate::event::SignalFishEvent;
+#[cfg(feature = "tokio-runtime")]
+use crate::protocol::ClientMessage;
+#[cfg(feature = "tokio-runtime")]
+use crate::protocol::ConnectionInfo;
 #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 use crate::protocol::ServerMessage;
 use crate::protocol::{
-    ClientMessage, ConnectionInfo, DeliveryClass, GameDataEncoding, PlayerId, RelayTransport,
-    RoomId, Topology, TransportKind,
+    GameDataEncoding, PlayerId, RelayTransport, RoomId, Topology, TransportKind,
 };
+#[cfg(feature = "tokio-runtime")]
 use crate::signal::PeerSignal;
 #[cfg(feature = "tokio-runtime")]
 use crate::transport::{close_transport, recv_frame, send_frame, Transport, TransportFrame};
@@ -541,91 +543,6 @@ impl std::fmt::Debug for ClientSnapshot {
     }
 }
 
-// ── Shared state ────────────────────────────────────────────────────
-
-/// Internal shared state between the client handle and the transport loop.
-struct ClientState {
-    connected: AtomicBool,
-    authenticated: AtomicBool,
-    /// Protocol version negotiated by the server (from `ProtocolInfo`).
-    /// `0` means "not yet negotiated, or negotiated v2" — i.e. not v3-capable.
-    negotiated_protocol_version: AtomicU16,
-    /// Whether a `ProtocolInfo` has been observed on this connection. This
-    /// distinguishes "negotiation hasn't happened yet" from "negotiation
-    /// completed at the v2 relay floor" — both leave
-    /// `negotiated_protocol_version` at `0`, but only the latter is terminal.
-    /// Drives the `ProtocolUnsupported { mode }` diagnostic.
-    protocol_info_seen: AtomicBool,
-    /// Requested format, updated to JSON if the server reports a fallback.
-    game_data_encoding: AtomicU8,
-    player_id: Mutex<Option<PlayerId>>,
-    room_id: Mutex<Option<RoomId>>,
-    room_code: Mutex<Option<String>>,
-    snapshot: std::sync::RwLock<ClientSnapshot>,
-    /// `GameData` messages successfully written to the transport.
-    /// Cumulative — intentionally not reset by `clear_session_state`.
-    game_data_sent: AtomicU64,
-    /// `GameData`/`GameDataBinary` messages received from the server,
-    /// counted at receipt (see [`ClientStats::game_data_received`]).
-    /// Cumulative — intentionally not reset by `clear_session_state`.
-    game_data_received: AtomicU64,
-    /// Inbound frames that failed to decode into a `ServerMessage`
-    /// (see [`ClientStats::messages_undecodable`]).
-    /// Cumulative — intentionally not reset by `clear_session_state`.
-    messages_undecodable: AtomicU64,
-}
-
-#[derive(Debug)]
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-enum ClientCommand {
-    Message(ClientMessage),
-    Binary(Vec<u8>),
-}
-
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-impl ClientState {
-    fn new(game_data_encoding: GameDataEncoding) -> Self {
-        Self {
-            connected: AtomicBool::new(true),
-            authenticated: AtomicBool::new(false),
-            negotiated_protocol_version: AtomicU16::new(0),
-            protocol_info_seen: AtomicBool::new(false),
-            game_data_encoding: AtomicU8::new(game_data_encoding as u8),
-            player_id: Mutex::new(None),
-            room_id: Mutex::new(None),
-            room_code: Mutex::new(None),
-            snapshot: std::sync::RwLock::new(ClientSnapshot {
-                connected: true,
-                ..ClientSnapshot::default()
-            }),
-            game_data_sent: AtomicU64::new(0),
-            game_data_received: AtomicU64::new(0),
-            messages_undecodable: AtomicU64::new(0),
-        }
-    }
-
-    async fn clear_session_state(&self) {
-        self.authenticated.store(false, Ordering::Release);
-        self.negotiated_protocol_version.store(0, Ordering::Release);
-        self.protocol_info_seen.store(false, Ordering::Release);
-        *self.player_id.lock().await = None;
-        *self.room_id.lock().await = None;
-        *self.room_code.lock().await = None;
-        let mut snapshot = match self.snapshot.write() {
-            Ok(snapshot) => snapshot,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        snapshot.connected = self.connected.load(Ordering::Acquire);
-        snapshot.authenticated = false;
-        snapshot.negotiated_protocol_version = None;
-        snapshot.player_id = None;
-        snapshot.room_id = None;
-        snapshot.room_code = None;
-        snapshot.reconnection_token = None;
-        snapshot.quarantined = false;
-    }
-}
-
 // ── Client handle ───────────────────────────────────────────────────
 
 /// Async client handle for the Signal Fish signaling protocol.
@@ -640,12 +557,12 @@ impl ClientState {
 /// variants ([`send_game_data_reliable`](Self::send_game_data_reliable),
 /// [`send_signal_reliable`](Self::send_signal_reliable)) instead await
 /// capacity, pacing the caller to actual transport throughput.
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(feature = "tokio-runtime")]
 pub struct SignalFishClient {
     /// Sender half of the bounded command channel to the transport loop.
     cmd_tx: mpsc::Sender<ClientCommand>,
     /// Shared state updated by the transport loop.
-    state: Arc<ClientState>,
+    state: Arc<Mutex<ClientCore>>,
     /// Handle to the background transport loop task.
     #[cfg(feature = "tokio-runtime")]
     task: Option<tokio::task::JoinHandle<()>>,
@@ -655,6 +572,12 @@ pub struct SignalFishClient {
     /// Timeout for the graceful shutdown.
     #[cfg(feature = "tokio-runtime")]
     shutdown_timeout: Duration,
+}
+
+/// Async client handle unavailable without the `tokio-runtime` feature.
+#[cfg(not(feature = "tokio-runtime"))]
+pub struct SignalFishClient {
+    _private: (),
 }
 
 #[cfg(feature = "tokio-runtime")]
@@ -693,24 +616,23 @@ impl SignalFishClient {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let requested_game_data_encoding = config.game_data_format.unwrap_or_default();
-        let state = Arc::new(ClientState::new(requested_game_data_encoding));
+        let mesh_enabled = config
+            .supported_transports
+            .as_ref()
+            .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
+        let state = Arc::new(Mutex::new(ClientCore::new(
+            requested_game_data_encoding,
+            config.protocol_violation_policy,
+            mesh_enabled,
+        )));
         let loop_state = Arc::clone(&state);
-        let violation_policy = config.protocol_violation_policy;
 
         // Send the Authenticate message through the command channel so the
         // transport loop picks it up as the very first outgoing message.
-        let auth_msg = ClientMessage::Authenticate {
-            app_id: config.app_id,
-            sdk_version: config.sdk_version,
-            platform: config.platform,
-            game_data_format: config.game_data_format,
-            protocol_version: config.protocol_version,
-            supported_transports: config.supported_transports,
-            supported_topologies: config.supported_topologies,
-        };
+        let auth_msg = ClientCore::authenticate(&config);
         // This cannot fail: the channel was just created empty and its
         // capacity is clamped to at least 1.
-        let _ = cmd_tx.try_send(ClientCommand::Message(auth_msg));
+        let _ = cmd_tx.try_send(auth_msg);
 
         let task = tokio::spawn(transport_loop(
             transport,
@@ -718,7 +640,6 @@ impl SignalFishClient {
             event_tx,
             loop_state,
             shutdown_rx,
-            violation_policy,
         ));
 
         let client = Self {
@@ -770,12 +691,14 @@ impl SignalFishClient {
             }
         }
 
-        self.state.connected.store(false, Ordering::Release);
-        self.state.clear_session_state().await;
+        let mut core = lock_core(&self.state);
+        if core.is_connected() {
+            let _ = core.disconnect(Some("client shut down".into()));
+        }
     }
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(feature = "tokio-runtime")]
 impl SignalFishClient {
     // ── Public API methods ──────────────────────────────────────────
 
@@ -786,15 +709,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn join_room(&self, params: JoinRoomParams) -> Result<()> {
-        self.send(ClientMessage::JoinRoom {
-            game_name: params.game_name,
-            room_code: params.room_code,
-            player_name: params.player_name,
-            max_players: params.max_players,
-            supports_authority: params.supports_authority,
-            relay_transport: params.relay_transport,
-        })
+    pub fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
+        self.send_operation(ClientOperation::JoinRoom(params))
     }
 
     /// Leave the current room.
@@ -804,8 +720,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn leave_room(&self) -> Result<()> {
-        self.send(ClientMessage::LeaveRoom)
+    pub fn leave_room(&mut self) -> Result<()> {
+        self.send_operation(ClientOperation::LeaveRoom)
     }
 
     /// Send arbitrary JSON game data to other players in the room.
@@ -820,39 +736,17 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn send_game_data(&self, data: serde_json::Value) -> Result<()> {
-        self.send(ClientMessage::GameData {
-            data,
-            class: None,
-            key: None,
-        })
+    pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
+        self.send_operation(ClientOperation::GameData(data, GameDataDelivery::Reliable))
     }
 
     /// Send JSON game data with an explicit protocol-v3 delivery policy.
     pub fn send_game_data_with_delivery(
-        &self,
+        &mut self,
         data: serde_json::Value,
         delivery: GameDataDelivery,
     ) -> Result<()> {
-        match delivery {
-            GameDataDelivery::Reliable => self.send_game_data(data),
-            GameDataDelivery::Latest { key } => {
-                self.ensure_v3()?;
-                self.send(ClientMessage::GameData {
-                    data,
-                    class: Some(DeliveryClass::Latest),
-                    key: Some(key),
-                })
-            }
-            GameDataDelivery::Volatile => {
-                self.ensure_v3()?;
-                self.send(ClientMessage::GameData {
-                    data,
-                    class: Some(DeliveryClass::Volatile),
-                    key: None,
-                })
-            }
-        }
+        self.send_operation(ClientOperation::GameData(data, delivery))
     }
 
     /// Send arbitrary JSON game data, waiting for space in the outgoing
@@ -881,12 +775,8 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed.
     pub async fn send_game_data_reliable(&self, data: serde_json::Value) -> Result<()> {
-        self.send_reliable(ClientMessage::GameData {
-            data,
-            class: None,
-            key: None,
-        })
-        .await
+        self.send_operation_reliable(ClientOperation::GameData(data, GameDataDelivery::Reliable))
+            .await
     }
 
     /// Waiting counterpart to [`send_game_data_with_delivery`](Self::send_game_data_with_delivery).
@@ -895,33 +785,18 @@ impl SignalFishClient {
         data: serde_json::Value,
         delivery: GameDataDelivery,
     ) -> Result<()> {
-        let (class, key) = match delivery {
-            GameDataDelivery::Reliable => (None, None),
-            GameDataDelivery::Latest { key } => {
-                self.ensure_v3()?;
-                (Some(DeliveryClass::Latest), Some(key))
-            }
-            GameDataDelivery::Volatile => {
-                self.ensure_v3()?;
-                (Some(DeliveryClass::Volatile), None)
-            }
-        };
-        self.send_reliable(ClientMessage::GameData { data, class, key })
+        self.send_operation_reliable(ClientOperation::GameData(data, delivery))
             .await
     }
 
     /// Send opaque binary game data over the negotiated protocol-v3 relay.
-    pub fn send_binary_game_data(&self, payload: Vec<u8>) -> Result<()> {
-        self.ensure_v3()?;
-        self.ensure_binary_format()?;
-        self.send_command(ClientCommand::Binary(payload))
+    pub fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()> {
+        self.send_operation(ClientOperation::Binary(payload))
     }
 
     /// Waiting binary send that paces on command-queue capacity.
     pub async fn send_binary_game_data_reliable(&self, payload: Vec<u8>) -> Result<()> {
-        self.ensure_v3()?;
-        self.ensure_binary_format()?;
-        self.send_command_reliable(ClientCommand::Binary(payload))
+        self.send_operation_reliable(ClientOperation::Binary(payload))
             .await
     }
 
@@ -932,8 +807,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn set_ready(&self) -> Result<()> {
-        self.send(ClientMessage::PlayerReady)
+    pub fn set_ready(&mut self) -> Result<()> {
+        self.send_operation(ClientOperation::SetReady)
     }
 
     /// Request to become (or relinquish) authority.
@@ -943,8 +818,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn request_authority(&self, become_authority: bool) -> Result<()> {
-        self.send(ClientMessage::AuthorityRequest { become_authority })
+    pub fn request_authority(&mut self, become_authority: bool) -> Result<()> {
+        self.send_operation(ClientOperation::RequestAuthority(become_authority))
     }
 
     /// Provide connection information for P2P establishment.
@@ -954,8 +829,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn provide_connection_info(&self, connection_info: ConnectionInfo) -> Result<()> {
-        self.send(ClientMessage::ProvideConnectionInfo { connection_info })
+    pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
+        self.send_operation(ClientOperation::ProvideConnectionInfo(connection_info))
     }
 
     /// Reconnect to a room after a disconnection.
@@ -966,16 +841,12 @@ impl SignalFishClient {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn reconnect(
-        &self,
+        &mut self,
         player_id: PlayerId,
         room_id: RoomId,
         auth_token: String,
     ) -> Result<()> {
-        self.send(ClientMessage::Reconnect {
-            player_id,
-            room_id,
-            auth_token,
-        })
+        self.send_operation(ClientOperation::Reconnect(player_id, room_id, auth_token))
     }
 
     /// Join a room as a read-only spectator.
@@ -986,16 +857,16 @@ impl SignalFishClient {
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_as_spectator(
-        &self,
+        &mut self,
         game_name: String,
         room_code: String,
         spectator_name: String,
     ) -> Result<()> {
-        self.send(ClientMessage::JoinAsSpectator {
+        self.send_operation(ClientOperation::JoinAsSpectator(
             game_name,
             room_code,
             spectator_name,
-        })
+        ))
     }
 
     /// Leave spectator mode.
@@ -1005,8 +876,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn leave_spectator(&self) -> Result<()> {
-        self.send(ClientMessage::LeaveSpectator)
+    pub fn leave_spectator(&mut self) -> Result<()> {
+        self.send_operation(ClientOperation::LeaveSpectator)
     }
 
     /// Send a heartbeat ping to the server.
@@ -1016,8 +887,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn ping(&self) -> Result<()> {
-        self.send(ClientMessage::Ping)
+    pub fn ping(&mut self) -> Result<()> {
+        self.send_operation(ClientOperation::Ping)
     }
 
     // ── Game start (protocol v2) ────────────────────────────────────
@@ -1039,8 +910,8 @@ impl SignalFishClient {
     /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
-    pub fn start_game(&self) -> Result<()> {
-        self.send(ClientMessage::StartGame)
+    pub fn start_game(&mut self) -> Result<()> {
+        self.send_operation(ClientOperation::StartGame)
     }
 
     // ── Mesh signaling (protocol v3) ────────────────────────────────
@@ -1064,12 +935,8 @@ impl SignalFishClient {
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is
     /// full (see [`send_signal_reliable`](Self::send_signal_reliable) for a
     /// waiting variant).
-    pub fn send_signal(&self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
-        self.ensure_v3()?;
-        self.send(ClientMessage::Signal {
-            to,
-            signal: signal.into().into(),
-        })
+    pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
+        self.send_operation(ClientOperation::Signal(to, signal.into()))
     }
 
     /// Send a typed WebRTC signal, waiting for space in the outgoing command
@@ -1093,12 +960,8 @@ impl SignalFishClient {
         to: PlayerId,
         signal: impl Into<PeerSignal>,
     ) -> Result<()> {
-        self.ensure_v3()?;
-        self.send_reliable(ClientMessage::Signal {
-            to,
-            signal: signal.into().into(),
-        })
-        .await
+        self.send_operation_reliable(ClientOperation::Signal(to, signal.into()))
+            .await
     }
 
     /// Send an SDP offer to a peer. **Protocol v3 only.**
@@ -1107,7 +970,7 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// See [`send_signal`](Self::send_signal).
-    pub fn send_offer(&self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+    pub fn send_offer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
         self.send_signal(to, PeerSignal::Offer(sdp.into()))
     }
 
@@ -1117,7 +980,7 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// See [`send_signal`](Self::send_signal).
-    pub fn send_answer(&self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
+    pub fn send_answer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()> {
         self.send_signal(to, PeerSignal::Answer(sdp.into()))
     }
 
@@ -1127,7 +990,7 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// See [`send_signal`](Self::send_signal).
-    pub fn send_ice_candidate(&self, to: PlayerId, candidate: impl Into<String>) -> Result<()> {
+    pub fn send_ice_candidate(&mut self, to: PlayerId, candidate: impl Into<String>) -> Result<()> {
         self.send_signal(to, PeerSignal::IceCandidate(candidate.into()))
     }
 
@@ -1141,9 +1004,8 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// See [`send_signal`](Self::send_signal).
-    pub fn send_raw_signal(&self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
-        self.ensure_v3()?;
-        self.send(ClientMessage::Signal { to, signal })
+    pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
+        self.send_operation(ClientOperation::RawSignal(to, signal))
     }
 
     /// Report to the server whether a data-path transport is established.
@@ -1159,12 +1021,12 @@ impl SignalFishClient {
     /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
     /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
     /// outgoing command queue is full.
-    pub fn report_transport_status(&self, transport: TransportKind, connected: bool) -> Result<()> {
-        self.ensure_v3()?;
-        self.send(ClientMessage::TransportStatus {
-            transport,
-            connected,
-        })
+    pub fn report_transport_status(
+        &mut self,
+        transport: TransportKind,
+        connected: bool,
+    ) -> Result<()> {
+        self.send_operation(ClientOperation::TransportStatus(transport, connected))
     }
 
     // ── State accessors ─────────────────────────────────────────────
@@ -1173,50 +1035,45 @@ impl SignalFishClient {
     /// negotiated or negotiated as v2 (the relay floor).
     ///
     /// Set from the server's [`ProtocolInfo`](SignalFishEvent::ProtocolInfo)
-    /// message. A value of `Some(3)` or higher means mesh signaling is available.
+    /// message. A value of `Some(3)` or higher means v3 was negotiated; mesh
+    /// availability additionally requires local [`SignalFishConfig::enable_mesh`]
+    /// advertisement and can be queried with [`Self::supports_mesh`].
     pub fn negotiated_protocol_version(&self) -> Option<u16> {
-        match self
-            .state
-            .negotiated_protocol_version
-            .load(Ordering::Acquire)
-        {
-            0 => None,
-            v => Some(v),
-        }
+        lock_core(&self.state).negotiated_protocol_version()
     }
 
-    /// Returns `true` once the connection has negotiated protocol v3 — i.e. mesh
-    /// signaling (`send_signal`/`report_transport_status`) is available.
+    /// Returns `true` once the connection has negotiated protocol v3 and this
+    /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
     ///
     /// This is the "am I in mesh mode?" check; it returns `false` both before
     /// negotiation completes and on a v2 relay-floor connection.
     pub fn supports_mesh(&self) -> bool {
-        self.negotiated_protocol_version().is_some_and(|v| v >= 3)
+        lock_core(&self.state).supports_mesh()
     }
 
     /// Returns `true` if the transport is believed to be connected.
     pub fn is_connected(&self) -> bool {
-        self.state.connected.load(Ordering::Acquire)
+        lock_core(&self.state).is_connected()
     }
 
     /// Returns `true` if the server has confirmed authentication.
     pub fn is_authenticated(&self) -> bool {
-        self.state.authenticated.load(Ordering::Acquire)
+        lock_core(&self.state).is_authenticated()
     }
 
     /// Returns the current room ID, if the client is in a room.
     pub async fn current_room_id(&self) -> Option<RoomId> {
-        *self.state.room_id.lock().await
+        lock_core(&self.state).snapshot().room_id
     }
 
     /// Returns the current player ID, if assigned by the server.
     pub async fn current_player_id(&self) -> Option<PlayerId> {
-        *self.state.player_id.lock().await
+        lock_core(&self.state).snapshot().player_id
     }
 
     /// Returns the current room code, if the client is in a room.
     pub async fn current_room_code(&self) -> Option<String> {
-        self.state.room_code.lock().await.clone()
+        lock_core(&self.state).snapshot().room_code
     }
 
     /// Number of messages that can currently be queued before the synchronous
@@ -1237,64 +1094,23 @@ impl SignalFishClient {
 
     /// Cumulative game-data traffic counters (see [`ClientStats`]).
     pub fn stats(&self) -> ClientStats {
-        ClientStats {
-            game_data_sent: self.state.game_data_sent.load(Ordering::Relaxed),
-            game_data_received: self.state.game_data_received.load(Ordering::Relaxed),
-            messages_undecodable: self.state.messages_undecodable.load(Ordering::Relaxed),
-        }
+        lock_core(&self.state).stats()
     }
 
     /// Return a coherent synchronous snapshot of connection and room state.
     pub fn snapshot(&self) -> ClientSnapshot {
-        match self.state.snapshot.read() {
-            Ok(snapshot) => snapshot.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
+        lock_core(&self.state).snapshot()
     }
 
     // ── Internal helpers ────────────────────────────────────────────
 
-    /// Guard for protocol-v3-only operations: returns an error unless the
-    /// connection negotiated v3, so signaling never goes out on a relay-floor
-    /// connection the server would reject.
-    fn ensure_v3(&self) -> Result<()> {
-        // Mesh signaling was introduced in protocol v3; any negotiated version
-        // >= 3 supports it (independent of the highest version this SDK speaks).
-        if self
-            .state
-            .negotiated_protocol_version
-            .load(Ordering::Acquire)
-            >= 3
-        {
-            return Ok(());
-        }
-        // A `ProtocolInfo` that resolved below v3 is a terminal relay floor;
-        // its absence means negotiation is still in flight. Keying off the
-        // observed `ProtocolInfo` (not authentication) keeps this diagnostic
-        // correct regardless of handshake message ordering.
-        let mode = if self.state.protocol_info_seen.load(Ordering::Acquire) {
-            "relay-only"
-        } else {
-            "pre-negotiation"
-        };
-        Err(SignalFishError::ProtocolUnsupported { mode })
-    }
-
-    fn ensure_binary_format(&self) -> Result<()> {
-        if self.state.game_data_encoding.load(Ordering::Acquire) == GameDataEncoding::Json as u8 {
-            return Err(SignalFishError::BinaryFormatNotNegotiated);
-        }
-        Ok(())
-    }
-
-    /// Queue a `ClientMessage` to the transport loop, failing fast when the
-    /// bounded command queue is full.
-    fn send(&self, msg: ClientMessage) -> Result<()> {
-        self.send_command(ClientCommand::Message(msg))
+    fn send_operation(&self, operation: ClientOperation) -> Result<()> {
+        let command = lock_core(&self.state).prepare(operation)?;
+        self.send_command(command)
     }
 
     fn send_command(&self, command: ClientCommand) -> Result<()> {
-        if !self.state.connected.load(Ordering::Acquire) {
+        if !lock_core(&self.state).is_connected() {
             return Err(SignalFishError::NotConnected);
         }
         match self.cmd_tx.try_send(command) {
@@ -1306,15 +1122,13 @@ impl SignalFishClient {
         }
     }
 
-    /// Queue a `ClientMessage` to the transport loop, waiting for capacity
-    /// when the bounded command queue is full.
-    async fn send_reliable(&self, msg: ClientMessage) -> Result<()> {
-        self.send_command_reliable(ClientCommand::Message(msg))
-            .await
+    async fn send_operation_reliable(&self, operation: ClientOperation) -> Result<()> {
+        let command = lock_core(&self.state).prepare(operation)?;
+        self.send_command_reliable(command).await
     }
 
     async fn send_command_reliable(&self, command: ClientCommand) -> Result<()> {
-        if !self.state.connected.load(Ordering::Acquire) {
+        if !lock_core(&self.state).is_connected() {
             return Err(SignalFishError::NotConnected);
         }
         self.cmd_tx
@@ -1324,7 +1138,7 @@ impl SignalFishClient {
     }
 }
 
-#[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
+#[cfg(feature = "tokio-runtime")]
 impl std::fmt::Debug for SignalFishClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("SignalFishClient");
@@ -1333,6 +1147,107 @@ impl std::fmt::Debug for SignalFishClient {
         #[cfg(feature = "tokio-runtime")]
         dbg.field("has_task", &self.task.is_some());
         dbg.finish()
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl crate::client_api::SignalFishClientApi for SignalFishClient {
+    fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
+        SignalFishClient::join_room(self, params)
+    }
+
+    fn leave_room(&mut self) -> Result<()> {
+        SignalFishClient::leave_room(self)
+    }
+
+    fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
+        SignalFishClient::send_game_data(self, data)
+    }
+
+    fn send_game_data_with_delivery(
+        &mut self,
+        data: serde_json::Value,
+        delivery: GameDataDelivery,
+    ) -> Result<()> {
+        SignalFishClient::send_game_data_with_delivery(self, data, delivery)
+    }
+
+    fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()> {
+        SignalFishClient::send_binary_game_data(self, payload)
+    }
+
+    fn set_ready(&mut self) -> Result<()> {
+        SignalFishClient::set_ready(self)
+    }
+
+    fn start_game(&mut self) -> Result<()> {
+        SignalFishClient::start_game(self)
+    }
+
+    fn request_authority(&mut self, become_authority: bool) -> Result<()> {
+        SignalFishClient::request_authority(self, become_authority)
+    }
+
+    fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
+        SignalFishClient::provide_connection_info(self, connection_info)
+    }
+
+    fn reconnect(
+        &mut self,
+        player_id: PlayerId,
+        room_id: RoomId,
+        auth_token: String,
+    ) -> Result<()> {
+        SignalFishClient::reconnect(self, player_id, room_id, auth_token)
+    }
+
+    fn join_as_spectator(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+    ) -> Result<()> {
+        SignalFishClient::join_as_spectator(self, game_name, room_code, spectator_name)
+    }
+
+    fn leave_spectator(&mut self) -> Result<()> {
+        SignalFishClient::leave_spectator(self)
+    }
+
+    fn ping(&mut self) -> Result<()> {
+        SignalFishClient::ping(self)
+    }
+
+    fn send_signal(&mut self, to: PlayerId, signal: PeerSignal) -> Result<()> {
+        SignalFishClient::send_signal(self, to, signal)
+    }
+
+    fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
+        SignalFishClient::send_raw_signal(self, to, signal)
+    }
+
+    fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()> {
+        SignalFishClient::report_transport_status(self, transport, connected)
+    }
+
+    fn send_capacity(&self) -> usize {
+        SignalFishClient::send_capacity(self)
+    }
+
+    fn max_send_capacity(&self) -> usize {
+        SignalFishClient::max_send_capacity(self)
+    }
+
+    fn stats(&self) -> ClientStats {
+        SignalFishClient::stats(self)
+    }
+
+    fn snapshot(&self) -> ClientSnapshot {
+        SignalFishClient::snapshot(self)
+    }
+
+    fn supports_mesh(&self) -> bool {
+        SignalFishClient::supports_mesh(self)
     }
 }
 
@@ -1353,6 +1268,48 @@ impl Drop for SignalFishClient {
 
 // ── Transport loop ──────────────────────────────────────────────────
 
+#[cfg(feature = "tokio-runtime")]
+fn lock_core(state: &Arc<Mutex<ClientCore>>) -> std::sync::MutexGuard<'_, ClientCore> {
+    match state.lock() {
+        Ok(core) => core,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+async fn finish_core_shutdown(
+    transport: &mut impl Transport,
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    state: &Arc<Mutex<ClientCore>>,
+) {
+    let _ = close_transport(transport).await;
+    let event = lock_core(state).disconnect(Some("client shut down".into()));
+    let _ = event_tx.try_send(event);
+}
+
+#[cfg(feature = "tokio-runtime")]
+async fn emit_core_disconnected_or_shutdown(
+    transport: &mut impl Transport,
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    state: &Arc<Mutex<ClientCore>>,
+    reason: Option<String>,
+) {
+    let _ = close_transport(transport).await;
+    let event = lock_core(state).disconnect(reason);
+    tokio::select! {
+        biased;
+        result = event_tx.send(event.clone()) => {
+            if result.is_err() {
+                debug!("event channel closed, receiver dropped");
+            }
+        }
+        _ = &mut *shutdown_rx => {
+            let _ = event_tx.try_send(event);
+        }
+    }
+}
+
 /// Background transport loop that multiplexes send/receive via `tokio::select!`.
 ///
 /// Exits when:
@@ -1364,527 +1321,121 @@ async fn transport_loop(
     mut transport: impl Transport + Send + 'static,
     mut cmd_rx: mpsc::Receiver<ClientCommand>,
     event_tx: mpsc::Sender<SignalFishEvent>,
-    state: Arc<ClientState>,
+    state: Arc<Mutex<ClientCore>>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-    violation_policy: ProtocolViolationPolicy,
 ) {
     debug!("transport loop started");
 
-    // The most recent Error/AuthenticationError received on this connection,
-    // remembered so a subsequent disconnect can be attributed (e.g. a
-    // best-effort SLOW_CONSUMER farewell followed by a bare close).
-    let mut last_server_error: Option<ServerErrorInfo> = None;
-    let mut accountability = crate::accountability::DeliveryAccountability::new(false);
-    let mut quarantined = false;
-
-    // Emit the synthetic Connected event before entering the select loop.
     if matches!(
         emit_event_or_shutdown(&event_tx, &mut shutdown_rx, SignalFishEvent::Connected).await,
         EmitOutcome::ShutdownRequested
     ) {
-        finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+        finish_core_shutdown(&mut transport, &event_tx, &state).await;
         debug!("transport loop exited");
         return;
     }
 
     loop {
         tokio::select! {
-            // Branch 1: outgoing command from the client handle
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(command) => {
-                        debug!("sending client command: {:?}", std::mem::discriminant(&command));
-                        let (frame, is_game_data) = match command {
-                            ClientCommand::Message(msg) => match serde_json::to_string(&msg) {
-                                Ok(json) => (
-                                    Some(TransportFrame::Text(json)),
-                                    matches!(msg, ClientMessage::GameData { .. }),
-                                ),
-                                Err(e) => {
-                                    error!("failed to serialize ClientMessage: {e}");
-                                    (None, false)
-                                }
-                            },
-                            ClientCommand::Binary(payload) => {
-                                (Some(TransportFrame::Binary(payload)), true)
-                            }
-                        };
-                        if let Some(frame) = frame {
-                                if let Err(e) = send_frame(&mut transport, frame).await {
-                                    error!("transport send error: {e}");
-                                    emit_disconnected_or_shutdown(
-                                        &mut transport,
-                                        &event_tx,
-                                        &mut shutdown_rx,
-                                        &state,
-                                        Some(format!("transport send error: {e}")),
-                                        last_server_error.take(),
-                                    ).await;
-                                    break;
-                                }
-                                if is_game_data {
-                                    state.game_data_sent.fetch_add(1, Ordering::Relaxed);
-                                }
+            command = cmd_rx.recv() => {
+                let Some(command) = command else {
+                    emit_core_disconnected_or_shutdown(
+                        &mut transport,
+                        &event_tx,
+                        &mut shutdown_rx,
+                        &state,
+                        Some("client shut down".into()),
+                    ).await;
+                    break;
+                };
+                let (frame, is_game_data) = match command {
+                    ClientCommand::Message(message) => match serde_json::to_string(&message) {
+                        Ok(json) => (
+                            Some(TransportFrame::Text(json)),
+                            matches!(message, ClientMessage::GameData { .. }),
+                        ),
+                        Err(error) => {
+                            error!("failed to serialize ClientMessage: {error}");
+                            (None, false)
                         }
+                    },
+                    ClientCommand::Binary(payload) => {
+                        (Some(TransportFrame::Binary(payload)), true)
                     }
-                    // Command channel closed — client handle dropped.
-                    None => {
-                        debug!("command channel closed, shutting down transport loop");
-                        emit_disconnected_or_shutdown(
+                };
+                if let Some(frame) = frame {
+                    if let Err(error) = send_frame(&mut transport, frame).await {
+                        emit_core_disconnected_or_shutdown(
                             &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
-                            Some("client shut down".into()),
-                            last_server_error.take(),
+                            Some(format!("transport send error: {error}")),
                         ).await;
                         break;
                     }
+                    if is_game_data {
+                        lock_core(&state).record_game_data_sent();
+                    }
                 }
             }
-
-            // Branch 2: shutdown signal
             _ = &mut shutdown_rx => {
-                debug!("shutdown signal received");
-                finish_shutdown(&mut transport, &event_tx, &state, last_server_error.take()).await;
+                finish_core_shutdown(&mut transport, &event_tx, &state).await;
                 break;
             }
-
-            // Branch 3: incoming message from the server
             incoming = recv_frame(&mut transport) => {
                 match incoming {
-                    Some(Ok(TransportFrame::Text(text))) => {
-                        match serde_json::from_str::<ServerMessage>(&text) {
-                            Ok(server_msg) => {
-                                let duplicate_protocol_info = matches!(server_msg, ServerMessage::ProtocolInfo(_))
-                                    && state.protocol_info_seen.load(Ordering::Acquire);
-                                if let ServerMessage::ProtocolInfo(payload) = &server_msg {
-                                    if !duplicate_protocol_info {
-                                        accountability = crate::accountability::DeliveryAccountability::new(
-                                            payload.protocol_version.is_some_and(|version| version >= 3),
-                                        );
-                                    }
-                                }
-                                let authoritative_baseline = matches!(
-                                    server_msg,
-                                    ServerMessage::RoomJoined(_)
-                                        | ServerMessage::SpectatorJoined(_)
-                                        | ServerMessage::Reconnected(_)
-                                );
-                                let negotiated_encoding = match state.game_data_encoding.load(Ordering::Acquire) {
-                                    value if value == GameDataEncoding::MessagePack as u8 => GameDataEncoding::MessagePack,
-                                    value if value == GameDataEncoding::Rkyv as u8 => GameDataEncoding::Rkyv,
-                                    _ => GameDataEncoding::Json,
-                                };
-                                let validation = if duplicate_protocol_info {
-                                    accountability.observe_server_message(false).map(|()| {
-                                        crate::accountability::GameDataDisposition::Apply
-                                    })
-                                } else {
-                                    crate::accountability::validate_server_frame(
-                                        &mut accountability,
-                                        &server_msg,
-                                        negotiated_encoding,
-                                        false,
-                                    )
-                                };
-                                let (disposition, validation_failed) = match validation {
-                                    Ok(disposition) => {
-                                        if authoritative_baseline {
-                                            quarantined = false;
-                                        }
-                                        (disposition, false)
-                                    }
-                                    Err(diagnostic) => {
-                                        let event = SignalFishEvent::ProtocolViolation {
-                                            kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
-                                            diagnostic,
-                                        };
-                                        if matches!(
-                                            emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                            EmitOutcome::ShutdownRequested
-                                        ) {
-                                            finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                            break;
-                                        }
-                                        match violation_policy {
-                                            ProtocolViolationPolicy::Quarantine => {
-                                                quarantined = true;
-                                                match state.snapshot.write() {
-                                                    Ok(mut snapshot) => snapshot.quarantined = true,
-                                                    Err(poisoned) => poisoned.into_inner().quarantined = true,
-                                                }
-                                            }
-                                            ProtocolViolationPolicy::Disconnect => {
-                                                accountability.observe_terminal();
-                                                emit_disconnected_or_shutdown(
-                                                    &mut transport,
-                                                    &event_tx,
-                                                    &mut shutdown_rx,
-                                                    &state,
-                                                    Some("protocol accountability violation".into()),
-                                                    last_server_error.take(),
-                                                ).await;
-                                                break;
-                                            }
-                                            ProtocolViolationPolicy::Observe => {}
-                                        }
-                                        let disposition = if violation_policy == ProtocolViolationPolicy::Observe {
-                                            crate::accountability::GameDataDisposition::Apply
-                                        } else {
-                                            crate::accountability::GameDataDisposition::Stale
-                                        };
-                                        (disposition, true)
-                                    }
-                                };
-                                if validation_failed
-                                    && violation_policy == ProtocolViolationPolicy::Quarantine
-                                {
-                                    continue;
-                                }
-                                if duplicate_protocol_info {
-                                    continue;
-                                }
-                                let is_game_data = matches!(server_msg, ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. });
-                                if is_game_data
-                                    && (disposition == crate::accountability::GameDataDisposition::Stale
-                                        || (quarantined && violation_policy == ProtocolViolationPolicy::Quarantine))
-                                {
-                                    continue;
-                                }
-                                // Remember server errors for disconnect attribution.
-                                match &server_msg {
-                                    ServerMessage::Error { message, error_code } => {
-                                        last_server_error = Some(ServerErrorInfo {
-                                            message: message.clone(),
-                                            error_code: error_code.clone(),
-                                        });
-                                    }
-                                    ServerMessage::AuthenticationError { error, error_code } => {
-                                        last_server_error = Some(ServerErrorInfo {
-                                            message: error.clone(),
-                                            error_code: Some(error_code.clone()),
-                                        });
-                                    }
-                                    _ => {}
-                                }
-
-                                // Update shared state based on the message.
-                                update_state(&state, &server_msg).await;
-
-                                // Convert to event and forward to the event channel.
-                                let event = SignalFishEvent::from(server_msg);
-                                if matches!(
-                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                    EmitOutcome::ShutdownRequested
-                                ) {
-                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                // Never a silent drop: surface the frame as a
-                                // typed DecodeFailed event and count it. Log the
-                                // error and frame size only — not the raw
-                                // content, which is untrusted, unbounded, and may
-                                // carry application payloads (the DecodeFailed
-                                // event carries a bounded prefix for diagnostics).
-                                warn!(
-                                    "failed to deserialize server message ({} bytes): {e}",
-                                    text.len()
-                                );
-                                let mut disconnect_for_violation = false;
-                                if let Err(diagnostic) =
-                                    accountability.observe_server_message(false)
-                                {
-                                    let event = SignalFishEvent::ProtocolViolation {
-                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                            &diagnostic,
-                                        ),
-                                        diagnostic,
-                                    };
-                                    if matches!(
-                                        emit_event_or_shutdown(
-                                            &event_tx,
-                                            &mut shutdown_rx,
-                                            event
-                                        )
-                                        .await,
-                                        EmitOutcome::ShutdownRequested
-                                    ) {
-                                        finish_shutdown(
-                                            &mut transport,
-                                            &event_tx,
-                                            &state,
-                                            last_server_error,
-                                        )
-                                        .await;
-                                        break;
-                                    }
-                                    match violation_policy {
-                                        ProtocolViolationPolicy::Quarantine => {
-                                            quarantined = true;
-                                            match state.snapshot.write() {
-                                                Ok(mut snapshot) => snapshot.quarantined = true,
-                                                Err(poisoned) => {
-                                                    poisoned.into_inner().quarantined = true
-                                                }
-                                            }
-                                        }
-                                        ProtocolViolationPolicy::Disconnect => {
-                                            disconnect_for_violation = true;
-                                        }
-                                        ProtocolViolationPolicy::Observe => {}
-                                    }
-                                }
-                                state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
-                                let event = SignalFishEvent::decode_failed(&text, &e);
-                                if matches!(
-                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                    EmitOutcome::ShutdownRequested
-                                ) {
-                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                    break;
-                                }
-                                if disconnect_for_violation {
-                                    accountability.observe_terminal();
-                                    emit_disconnected_or_shutdown(
-                                        &mut transport,
-                                        &event_tx,
-                                        &mut shutdown_rx,
-                                        &state,
-                                        Some("protocol accountability violation".into()),
-                                        last_server_error.take(),
-                                    )
-                                    .await;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Some(Ok(TransportFrame::Binary(bytes))) => {
-                        let negotiated_encoding = match state.game_data_encoding.load(Ordering::Acquire) {
-                            value if value == GameDataEncoding::MessagePack as u8 => GameDataEncoding::MessagePack,
-                            value if value == GameDataEncoding::Rkyv as u8 => GameDataEncoding::Rkyv,
-                            _ => GameDataEncoding::Json,
-                        };
-                        let mut observe_representation_violation = false;
-                        if let Err(diagnostic) = crate::accountability::validate_physical_binary_allowed(
-                            &mut accountability,
-                            negotiated_encoding,
-                        ) {
-                            let event = SignalFishEvent::ProtocolViolation {
-                                kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
-                                diagnostic,
-                            };
+                    Some(Ok(frame)) => {
+                        let outcome = lock_core(&state).process_frame(frame);
+                        let disconnect = outcome.disconnect;
+                        let mut shutdown_requested = false;
+                        for event in outcome.events {
                             if matches!(
                                 emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
                                 EmitOutcome::ShutdownRequested
                             ) {
-                                finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
+                                shutdown_requested = true;
                                 break;
                             }
-                            match violation_policy {
-                                ProtocolViolationPolicy::Quarantine => {
-                                    quarantined = true;
-                                    match state.snapshot.write() {
-                                        Ok(mut snapshot) => snapshot.quarantined = true,
-                                        Err(poisoned) => poisoned.into_inner().quarantined = true,
-                                    }
-                                    continue;
-                                }
-                                ProtocolViolationPolicy::Disconnect => {
-                                    accountability.observe_terminal();
-                                    emit_disconnected_or_shutdown(
-                                        &mut transport,
-                                        &event_tx,
-                                        &mut shutdown_rx,
-                                        &state,
-                                        Some("protocol accountability violation".into()),
-                                        last_server_error.take(),
-                                    ).await;
-                                    break;
-                                }
-                                ProtocolViolationPolicy::Observe => {
-                                    observe_representation_violation = true;
-                                }
-                            }
                         }
-                        let protocol_v3 = state.negotiated_protocol_version.load(Ordering::Acquire) >= 3;
-                        match decode_binary_server_message(&bytes, protocol_v3) {
-                            Ok(server_msg) => {
-                                let validation = if observe_representation_violation {
-                                    crate::accountability::validate_server_message(
-                                        &mut accountability,
-                                        &server_msg,
-                                    )
-                                } else {
-                                    crate::accountability::validate_server_frame(
-                                        &mut accountability,
-                                        &server_msg,
-                                        negotiated_encoding,
-                                        true,
-                                    )
-                                };
-                                let disposition = match validation {
-                                    Ok(disposition) => disposition,
-                                    Err(diagnostic) => {
-                                        let event = SignalFishEvent::ProtocolViolation {
-                                            kind: crate::event::ProtocolViolationKind::from_diagnostic(&diagnostic),
-                                            diagnostic,
-                                        };
-                                        if matches!(
-                                            emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                            EmitOutcome::ShutdownRequested
-                                        ) {
-                                            finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                            break;
-                                        }
-                                        match violation_policy {
-                                            ProtocolViolationPolicy::Quarantine => {
-                                                quarantined = true;
-                                                match state.snapshot.write() {
-                                                    Ok(mut snapshot) => snapshot.quarantined = true,
-                                                    Err(poisoned) => poisoned.into_inner().quarantined = true,
-                                                }
-                                            }
-                                            ProtocolViolationPolicy::Disconnect => {
-                                                accountability.observe_terminal();
-                                                emit_disconnected_or_shutdown(
-                                                    &mut transport,
-                                                    &event_tx,
-                                                    &mut shutdown_rx,
-                                                    &state,
-                                                    Some("protocol accountability violation".into()),
-                                                    last_server_error.take(),
-                                                ).await;
-                                                break;
-                                            }
-                                            ProtocolViolationPolicy::Observe => {}
-                                        }
-                                        if violation_policy == ProtocolViolationPolicy::Observe {
-                                            crate::accountability::GameDataDisposition::Apply
-                                        } else {
-                                            crate::accountability::GameDataDisposition::Stale
-                                        }
-                                    }
-                                };
-                                if disposition == crate::accountability::GameDataDisposition::Stale
-                                    || (quarantined
-                                        && violation_policy == ProtocolViolationPolicy::Quarantine)
-                                {
-                                    continue;
-                                }
-                                update_state(&state, &server_msg).await;
-                                let event = SignalFishEvent::from(server_msg);
-                                if matches!(
-                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                    EmitOutcome::ShutdownRequested
-                                ) {
-                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                    break;
-                                }
-                            }
-                            Err(error) => {
-                                let mut disconnect_for_violation = false;
-                                if let Err(diagnostic) =
-                                    accountability.observe_server_message(false)
-                                {
-                                    let event = SignalFishEvent::ProtocolViolation {
-                                        kind: crate::event::ProtocolViolationKind::from_diagnostic(
-                                            &diagnostic,
-                                        ),
-                                        diagnostic,
-                                    };
-                                    if matches!(
-                                        emit_event_or_shutdown(
-                                            &event_tx,
-                                            &mut shutdown_rx,
-                                            event
-                                        )
-                                        .await,
-                                        EmitOutcome::ShutdownRequested
-                                    ) {
-                                        finish_shutdown(
-                                            &mut transport,
-                                            &event_tx,
-                                            &state,
-                                            last_server_error,
-                                        )
-                                        .await;
-                                        break;
-                                    }
-                                    match violation_policy {
-                                        ProtocolViolationPolicy::Quarantine => {
-                                            quarantined = true;
-                                            match state.snapshot.write() {
-                                                Ok(mut snapshot) => snapshot.quarantined = true,
-                                                Err(poisoned) => {
-                                                    poisoned.into_inner().quarantined = true
-                                                }
-                                            }
-                                        }
-                                        ProtocolViolationPolicy::Disconnect => {
-                                            disconnect_for_violation = true;
-                                        }
-                                        ProtocolViolationPolicy::Observe => {}
-                                    }
-                                }
-                                state.messages_undecodable.fetch_add(1, Ordering::Relaxed);
-                                let event = SignalFishEvent::DecodeFailed {
-                                    message_type: Some("BinaryGameData".into()),
-                                    error,
-                                    raw_prefix: bounded_binary_preview(&bytes),
-                                };
-                                if matches!(
-                                    emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                    EmitOutcome::ShutdownRequested
-                                ) {
-                                    finish_shutdown(&mut transport, &event_tx, &state, last_server_error).await;
-                                    break;
-                                }
-                                if disconnect_for_violation {
-                                    accountability.observe_terminal();
-                                    emit_disconnected_or_shutdown(
-                                        &mut transport,
-                                        &event_tx,
-                                        &mut shutdown_rx,
-                                        &state,
-                                        Some("protocol accountability violation".into()),
-                                        last_server_error.take(),
-                                    )
-                                    .await;
-                                    break;
-                                }
-                            }
+                        if shutdown_requested {
+                            finish_core_shutdown(&mut transport, &event_tx, &state).await;
+                            break;
+                        }
+                        if disconnect {
+                            emit_core_disconnected_or_shutdown(
+                                &mut transport,
+                                &event_tx,
+                                &mut shutdown_rx,
+                                &state,
+                                Some("protocol accountability violation".into()),
+                            ).await;
+                            break;
                         }
                     }
-                    Some(Err(e)) => {
-                        error!("transport receive error: {e}");
-                        emit_disconnected_or_shutdown(
+                    Some(Err(error)) => {
+                        emit_core_disconnected_or_shutdown(
                             &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
-                            Some(format!("transport receive error: {e}")),
-                            last_server_error.take(),
+                            Some(format!("transport receive error: {error}")),
                         ).await;
                         break;
                     }
-                    // Transport closed cleanly.
                     None => {
-                        debug!("transport closed by server");
-                        accountability.observe_terminal();
                         let reason = transport.close_info().map(|info| {
-                            format!("closed by server: code={:?}, reason={:?}", info.code, info.reason)
+                            format!(
+                                "closed by server: code={:?}, reason={:?}",
+                                info.code, info.reason
+                            )
                         });
-                        emit_disconnected_or_shutdown(
+                        emit_core_disconnected_or_shutdown(
                             &mut transport,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
                             reason,
-                            last_server_error.take(),
                         ).await;
                         break;
                     }
@@ -1892,156 +1443,7 @@ async fn transport_loop(
             }
         }
     }
-
     debug!("transport loop exited");
-}
-
-/// Update shared [`ClientState`] based on a received [`ServerMessage`].
-#[cfg(feature = "tokio-runtime")]
-async fn update_state(state: &ClientState, msg: &ServerMessage) {
-    match msg {
-        ServerMessage::Authenticated { .. } => {
-            state.authenticated.store(true, Ordering::Release);
-            match state.snapshot.write() {
-                Ok(mut snapshot) => snapshot.authenticated = true,
-                Err(poisoned) => poisoned.into_inner().authenticated = true,
-            }
-            debug!("state: authenticated");
-        }
-        ServerMessage::ProtocolInfo(payload) => {
-            // Record the negotiated protocol version so v3-only sends can fail
-            // fast on a relay-floor connection. v2 negotiation omits the field
-            // (parses as None → 0 → not v3-capable).
-            let version = payload.protocol_version.unwrap_or(0);
-            state
-                .negotiated_protocol_version
-                .store(version, Ordering::Release);
-            // Mark negotiation as observed even for a v2 floor (version 0): this
-            // is what separates "relay-only" from "pre-negotiation" in the guard.
-            state.protocol_info_seen.store(true, Ordering::Release);
-            match state.snapshot.write() {
-                Ok(mut snapshot) => {
-                    snapshot.negotiated_protocol_version = (version >= 3).then_some(version)
-                }
-                Err(poisoned) => {
-                    poisoned.into_inner().negotiated_protocol_version =
-                        (version >= 3).then_some(version)
-                }
-            }
-            debug!("state: negotiated protocol version {version}");
-        }
-        ServerMessage::Error {
-            error_code: Some(crate::ErrorCode::UnsupportedGameDataFormat),
-            ..
-        } => {
-            state
-                .game_data_encoding
-                .store(GameDataEncoding::Json as u8, Ordering::Release);
-        }
-        ServerMessage::RoomJoined(payload) => {
-            *state.player_id.lock().await = Some(payload.player_id);
-            *state.room_id.lock().await = Some(payload.room_id);
-            *state.room_code.lock().await = Some(payload.room_code.clone());
-            let mut snapshot = match state.snapshot.write() {
-                Ok(snapshot) => snapshot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            snapshot.player_id = Some(payload.player_id);
-            snapshot.room_id = Some(payload.room_id);
-            snapshot.room_code = Some(payload.room_code.clone());
-            snapshot.reconnection_token = payload.reconnection_token.clone();
-            snapshot.quarantined = false;
-            debug!(
-                "state: joined room {} ({})",
-                payload.room_code, payload.room_id
-            );
-        }
-        ServerMessage::RoomLeft => {
-            *state.room_id.lock().await = None;
-            *state.room_code.lock().await = None;
-            let mut snapshot = match state.snapshot.write() {
-                Ok(snapshot) => snapshot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            snapshot.room_id = None;
-            snapshot.room_code = None;
-            snapshot.reconnection_token = None;
-            snapshot.quarantined = false;
-            debug!("state: left room");
-        }
-        ServerMessage::Reconnected(payload) => {
-            *state.player_id.lock().await = Some(payload.player_id);
-            *state.room_id.lock().await = Some(payload.room_id);
-            *state.room_code.lock().await = Some(payload.room_code.clone());
-            let mut snapshot = match state.snapshot.write() {
-                Ok(snapshot) => snapshot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            snapshot.player_id = Some(payload.player_id);
-            snapshot.room_id = Some(payload.room_id);
-            snapshot.room_code = Some(payload.room_code.clone());
-            snapshot.reconnection_token = payload.reconnection_token.clone();
-            snapshot.quarantined = false;
-            // If the negotiated version was replayed via missed_events, restore
-            // it so v3 sends aren't wrongly blocked after a reconnect. (A
-            // top-level ProtocolInfo is already handled by its own arm.) Only a
-            // versioned (v3+) ProtocolInfo restores — a replayed v2 one must not
-            // silently downgrade an active v3 session.
-            if let Some(version) =
-                crate::protocol::replayed_negotiated_version(&payload.missed_events)
-            {
-                state
-                    .negotiated_protocol_version
-                    .store(version, Ordering::Release);
-                // A replayed `ProtocolInfo` *was* observed, so keep the flag
-                // consistent with its name. (Behaviorally moot while the guard
-                // short-circuits on version >= 3, but it preserves the
-                // "seen implies a ProtocolInfo arrived" invariant for any future
-                // reader.)
-                state.protocol_info_seen.store(true, Ordering::Release);
-                snapshot.negotiated_protocol_version = Some(version);
-            }
-            debug!(
-                "state: reconnected to room {} ({})",
-                payload.room_code, payload.room_id
-            );
-        }
-        ServerMessage::SpectatorJoined(payload) => {
-            *state.player_id.lock().await = Some(payload.spectator_id);
-            *state.room_id.lock().await = Some(payload.room_id);
-            *state.room_code.lock().await = Some(payload.room_code.clone());
-            let mut snapshot = match state.snapshot.write() {
-                Ok(snapshot) => snapshot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            snapshot.player_id = Some(payload.spectator_id);
-            snapshot.room_id = Some(payload.room_id);
-            snapshot.room_code = Some(payload.room_code.clone());
-            snapshot.reconnection_token = None;
-            snapshot.quarantined = false;
-            debug!(
-                "state: spectator joined room {} ({})",
-                payload.room_code, payload.room_id
-            );
-        }
-        ServerMessage::SpectatorLeft { .. } => {
-            *state.room_id.lock().await = None;
-            *state.room_code.lock().await = None;
-            let mut snapshot = match state.snapshot.write() {
-                Ok(snapshot) => snapshot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            snapshot.room_id = None;
-            snapshot.room_code = None;
-            snapshot.reconnection_token = None;
-            snapshot.quarantined = false;
-            debug!("state: left spectator mode");
-        }
-        ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
-            state.game_data_received.fetch_add(1, Ordering::Relaxed);
-        }
-        _ => {}
-    }
 }
 
 /// Result of racing an event delivery against the shutdown signal.
@@ -2062,7 +1464,7 @@ enum EmitOutcome {
 /// still delivered; only a genuinely blocked delivery (consumer not draining)
 /// lets shutdown win. On [`EmitOutcome::ShutdownRequested`] exactly the one
 /// in-flight event is abandoned — the caller must then run
-/// [`finish_shutdown`] and exit the loop **without polling `shutdown_rx`
+/// [`finish_core_shutdown`] and exit the loop **without polling `shutdown_rx`
 /// again** (a completed `oneshot::Receiver` panics if re-polled).
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event_or_shutdown(
@@ -2079,89 +1481,6 @@ async fn emit_event_or_shutdown(
             EmitOutcome::Delivered
         }
         _ = &mut *shutdown_rx => EmitOutcome::ShutdownRequested,
-    }
-}
-
-/// Terminal sequence for a shutdown request: close the transport gracefully,
-/// then deliver `Disconnected` best-effort.
-///
-/// Closing **before** the final event delivery is the point: pre-0.7.0 a
-/// wedged consumer starved the shutdown signal entirely, so the abort tore
-/// the task down with the connection dangling. The final `Disconnected` uses
-/// `try_send` rather than backpressure: the caller *initiated* this shutdown,
-/// so the event is confirmatory, and a receiver that outlives the loop
-/// observes termination anyway when the event channel closes (`recv()`
-/// returns `None`). Blocking here would force every wedged-consumer shutdown
-/// through the timeout/abort path for no information gain.
-#[cfg(feature = "tokio-runtime")]
-async fn finish_shutdown(
-    transport: &mut impl Transport,
-    event_tx: &mpsc::Sender<SignalFishEvent>,
-    state: &ClientState,
-    last_server_error: Option<ServerErrorInfo>,
-) {
-    let _ = close_transport(transport).await;
-    state.connected.store(false, Ordering::Release);
-    state.clear_session_state().await;
-    let _ = event_tx.try_send(SignalFishEvent::Disconnected {
-        reason: Some("client shut down".into()),
-        last_server_error,
-    });
-}
-
-/// Deliver the terminal [`Disconnected`](SignalFishEvent::Disconnected) on a
-/// loop break-path, closing the transport and letting a pending `shutdown()`
-/// preempt a blocked delivery.
-///
-/// The transport is closed **first** (best-effort), exactly like
-/// [`finish_shutdown`]: graceful shutdown always releases the connection, so
-/// closing must not depend on the event delivery completing — otherwise a
-/// wedged consumer that lets the shutdown branch win would leave the socket
-/// open until the task is dropped. Closing an already-errored or
-/// server-closed transport is a harmless no-op / completes the close
-/// handshake.
-///
-/// The break-paths (transport send/receive error, clean server close, dropped
-/// handle) want `Disconnected` delivered with backpressure — the normal,
-/// never-drop case. But if the consumer has wedged (event channel
-/// full) *and* a shutdown is pending, a plain blocking send would starve the
-/// shutdown signal and force `shutdown()` down its timeout/abort path (the
-/// same starvation [`emit_event_or_shutdown`] fixes for per-message events).
-/// So this races the backpressured send against the shutdown signal, `biased`
-/// toward delivery; on preemption it re-sends best-effort via `try_send` so
-/// the event is still likely delivered and the loop exits promptly.
-///
-/// Terminal: every caller `break`s immediately afterwards, so `shutdown_rx` is
-/// never polled again (a completed `oneshot::Receiver` panics if re-polled).
-#[cfg(feature = "tokio-runtime")]
-async fn emit_disconnected_or_shutdown(
-    transport: &mut impl Transport,
-    event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
-    state: &ClientState,
-    reason: Option<String>,
-    last_server_error: Option<ServerErrorInfo>,
-) {
-    let _ = close_transport(transport).await;
-    state.connected.store(false, Ordering::Release);
-    state.clear_session_state().await;
-    let event = SignalFishEvent::Disconnected {
-        reason,
-        last_server_error,
-    };
-    tokio::select! {
-        biased;
-        res = event_tx.send(event.clone()) => {
-            if res.is_err() {
-                debug!("event channel closed, receiver dropped");
-            }
-        }
-        _ = &mut *shutdown_rx => {
-            // Consumer wedged and a shutdown is pending: preempt the blocked
-            // delivery and re-send best-effort so shutdown() completes promptly
-            // instead of waiting out the abort timeout.
-            let _ = event_tx.try_send(event);
-        }
     }
 }
 
@@ -2956,7 +2275,7 @@ mod tests {
         let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
 
         let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
-        let (client, mut events) = SignalFishClient::start(transport, config);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
 
         let _ = events.recv().await; // Connected
         wait_until(|| entered_send.load(Ordering::Acquire)).await;

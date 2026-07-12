@@ -596,7 +596,10 @@ mod controller {
         /// # Errors
         ///
         /// See [`SignalFishClient::join_room`].
-        pub fn join_room(&self, params: crate::client::JoinRoomParams) -> crate::error::Result<()> {
+        pub fn join_room(
+            &mut self,
+            params: crate::client::JoinRoomParams,
+        ) -> crate::error::Result<()> {
             self.client.join_room(params)
         }
 
@@ -605,7 +608,7 @@ mod controller {
         /// # Errors
         ///
         /// See [`SignalFishClient::set_ready`].
-        pub fn set_ready(&self) -> crate::error::Result<()> {
+        pub fn set_ready(&mut self) -> crate::error::Result<()> {
             self.client.set_ready()
         }
 
@@ -614,7 +617,7 @@ mod controller {
         /// # Errors
         ///
         /// See [`SignalFishClient::start_game`].
-        pub fn start_game(&self) -> crate::error::Result<()> {
+        pub fn start_game(&mut self) -> crate::error::Result<()> {
             self.client.start_game()
         }
 
@@ -623,7 +626,7 @@ mod controller {
         /// # Errors
         ///
         /// See [`SignalFishClient::leave_room`].
-        pub fn leave_room(&self) -> crate::error::Result<()> {
+        pub fn leave_room(&mut self) -> crate::error::Result<()> {
             self.client.leave_room()
         }
 
@@ -631,6 +634,11 @@ mod controller {
         #[must_use]
         pub fn client(&self) -> &SignalFishClient {
             &self.client
+        }
+
+        /// Mutably access the underlying client for synchronous commands.
+        pub fn client_mut(&mut self) -> &mut SignalFishClient {
+            &mut self.client
         }
 
         /// Gracefully shut down the controller and its client.
@@ -1179,7 +1187,7 @@ mod tests {
         // Saturate the capacity-1 command queue: the first filler is pulled
         // by the loop, which then parks inside the permit-less transport
         // send; the second filler occupies the queue's single slot.
-        mesh.client()
+        mesh.client_mut()
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1189,7 +1197,7 @@ mod tests {
         })
         .await
         .expect("transport loop never parked in the gated send");
-        mesh.client()
+        mesh.client_mut()
             .send_game_data(serde_json::json!({ "filler": 2 }))
             .unwrap();
 
@@ -1271,7 +1279,7 @@ mod tests {
 
         // Saturate the capacity-1 command queue (loop parks in the gated
         // send; the second filler occupies the queue slot).
-        mesh.client()
+        mesh.client_mut()
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1281,7 +1289,7 @@ mod tests {
         })
         .await
         .expect("transport loop never parked in the gated send");
-        mesh.client()
+        mesh.client_mut()
             .send_game_data(serde_json::json!({ "filler": 2 }))
             .unwrap();
 

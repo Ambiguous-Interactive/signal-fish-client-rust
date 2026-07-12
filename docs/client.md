@@ -166,7 +166,7 @@ use signal_fish_client::{
 
 let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
 let config = SignalFishConfig::new("mb_app_abc123");
-let (client, mut event_rx) = SignalFishClient::start(transport, config);
+let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
 
 !!! note
@@ -182,7 +182,7 @@ let (client, mut event_rx) = SignalFishClient::start(transport, config);
 Join or create a room with the given parameters.
 
 ```rust,ignore
-fn join_room(&self, params: JoinRoomParams) -> Result<()>
+fn join_room(&mut self, params: JoinRoomParams) -> Result<()>
 ```
 
 ```rust,ignore
@@ -201,7 +201,7 @@ Wait for `SignalFishEvent::RoomJoined` to confirm success.
 Leave the current room.
 
 ```rust,ignore
-fn leave_room(&self) -> Result<()>
+fn leave_room(&mut self) -> Result<()>
 ```
 
 ```rust,ignore
@@ -217,7 +217,7 @@ The server will broadcast a player-left event to remaining room members.
 Signal readiness to start the game in the lobby.
 
 ```rust,ignore
-fn set_ready(&self) -> Result<()>
+fn set_ready(&mut self) -> Result<()>
 ```
 
 ```rust,ignore
@@ -234,7 +234,7 @@ Join a room as a read-only spectator.
 
 ```rust,ignore
 fn join_as_spectator(
-    &self,
+    &mut self,
     game_name: String,
     room_code: String,
     spectator_name: String,
@@ -258,7 +258,7 @@ Spectators receive game events but cannot send game data or affect room state.
 Leave spectator mode.
 
 ```rust,ignore
-fn leave_spectator(&self) -> Result<()>
+fn leave_spectator(&mut self) -> Result<()>
 ```
 
 ```rust,ignore
@@ -274,7 +274,7 @@ client.leave_spectator()?;
 Send arbitrary JSON game data to other players in the room.
 
 ```rust,ignore
-fn send_game_data(&self, data: serde_json::Value) -> Result<()>
+fn send_game_data(&mut self, data: serde_json::Value) -> Result<()>
 ```
 
 ```rust,ignore
@@ -417,7 +417,7 @@ println!(
 Request to become (or relinquish) the room authority.
 
 ```rust,ignore
-fn request_authority(&self, become_authority: bool) -> Result<()>
+fn request_authority(&mut self, become_authority: bool) -> Result<()>
 ```
 
 ```rust,ignore
@@ -441,7 +441,7 @@ Provide P2P connection information to the server for relay/direct connection est
 
 ```rust,ignore
 fn provide_connection_info(
-    &self,
+    &mut self,
     connection_info: ConnectionInfo,
 ) -> Result<()>
 ```
@@ -466,7 +466,7 @@ Reconnect to a previous session after a disconnection.
 
 ```rust,ignore
 fn reconnect(
-    &self,
+    &mut self,
     player_id: PlayerId,
     room_id: RoomId,
     auth_token: String,
@@ -490,7 +490,7 @@ do not log them.
 Send a heartbeat ping to the server.
 
 ```rust,ignore
-fn ping(&self) -> Result<()>
+fn ping(&mut self) -> Result<()>
 ```
 
 ```rust,ignore

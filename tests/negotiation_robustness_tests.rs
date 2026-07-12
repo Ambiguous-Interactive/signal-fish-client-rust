@@ -40,7 +40,7 @@ fn start_client(
     Arc<AtomicBool>,
 ) {
     let (transport, sent, closed) = common::MockTransport::new(incoming);
-    let config = SignalFishConfig::new("mb_audit");
+    let config = SignalFishConfig::new("mb_audit").enable_mesh();
     let (client, events) = SignalFishClient::start(transport, config);
     (client, events, sent, closed)
 }
@@ -290,7 +290,7 @@ async fn send_error_midflight_disconnects_and_clears_state() {
         vec![Some(Ok(authenticated_json())), Some(Ok(room_joined_json()))],
         2,
     );
-    let config = SignalFishConfig::new("mb_audit");
+    let config = SignalFishConfig::new("mb_audit").enable_mesh();
     let (mut client, mut events) = SignalFishClient::start(transport, config);
 
     drain_until_authenticated(&mut events).await;
@@ -343,7 +343,7 @@ async fn v3_send_after_disconnect_does_not_panic() {
         ],
         2,
     );
-    let config = SignalFishConfig::new("mb_audit");
+    let config = SignalFishConfig::new("mb_audit").enable_mesh();
     let (mut client, mut events) = SignalFishClient::start(transport, config);
 
     drain_until_authenticated(&mut events).await;

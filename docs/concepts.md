@@ -109,7 +109,7 @@ new optional fields, messages, and events that a v2 connection never sees.
 2. The server clamps to its own range and echoes the negotiated
    `protocol_version` (plus min/max) back in `ProtocolInfo`.
 3. The client records it; read it via `negotiated_protocol_version()` and
-   `supports_mesh()` (true once the negotiated version is ≥ 3).
+   `supports_mesh()` (true after `enable_mesh()` and v3 negotiation).
 
 v3-only sends (`send_signal`, `report_transport_status`, …) **fail fast** with
 [`SignalFishError::ProtocolUnsupported`](errors.md) until v3 is negotiated —

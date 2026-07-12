@@ -134,6 +134,7 @@ nav:
       - Installation & Quick Start: getting-started.md
       - Core Concepts: concepts.md
       - Protocol Versioning: protocol-versioning.md
+      - Migrating 0.7 to 0.8: migration-0.8.md
   - API Reference:
       - Client: client.md
       - Transport: transport.md

@@ -61,7 +61,7 @@ Automatically creates a span around a function:
 use tracing::instrument;
 
 #[instrument(skip(self), fields(game_name = %game_name))]
-pub fn join_room(&self, params: JoinRoomParams) -> Result<(), SignalFishError> {
+pub fn join_room(&mut self, params: JoinRoomParams) -> Result<(), SignalFishError> {
     debug!("sending join_room request");
     // ...
     info!("join_room queued");
