@@ -6,8 +6,7 @@ path for Godot GDExtension consumers.
 ## Supported Path
 
 Enable `transport-godot`. It enables `polling-client` and the optional `godot`
-0.4.5 dependency with Godot 4.5 API generation and
-`experimental-wasm-nothreads`.
+0.4.5 dependency with no-thread WASM and lazy function-table support.
 
 ```toml
 signal-fish-client = {
@@ -90,13 +89,20 @@ must remain free of GDScript networking code. Browser automation should assert
 its stable `SIGNAL_FISH_SMOKE` log markers and retain browser/server logs on
 failure.
 
+Web builds must use `godot/api-custom` so bindgen generates 32-bit interface
+types. Point `GODOT4_BIN` at the 4.5 editor, point the target-specific bindgen
+arguments at Emscripten's sysroot, build `std` with the pinned nightly, and
+link the crate as `SIDE_MODULE=2`. Keep the negative-control fixture: calling
+the raw Emscripten transport under the official template must fail on the
+undefined `emscripten_websocket_new` symbol.
+
 ## Checklist
 
-- [ ] `transport-godot` enables `polling-client`.
-- [ ] Godot remains optional and pinned to the intended 4.5-compatible release.
-- [ ] Native all-feature Clippy and tests pass.
-- [ ] The fixture crate checks independently.
-- [ ] Official Godot 4.5 web templates export the fixture.
-- [ ] Browser E2E proves connect, authentication, room join, Ping/Pong, relay,
+- [x] `transport-godot` enables `polling-client`.
+- [x] Godot remains optional and pinned to the intended 4.5-compatible release.
+- [x] Native all-feature Clippy and tests pass.
+- [x] The fixture crate checks independently.
+- [x] Official Godot 4.5 web templates export the fixture.
+- [x] Browser E2E proves connect, authentication, room join, Ping/Pong, relay,
       close attribution, and graceful shutdown.
-- [ ] Docs recommend Godot transport, not raw Emscripten FFI.
+- [x] Docs recommend Godot transport, not raw Emscripten FFI.

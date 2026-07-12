@@ -67,6 +67,8 @@
 //! let events = client.poll();
 //! ```
 
+#![allow(deprecated)]
+
 // Compile-time guard: this module requires the wasm32-unknown-emscripten target.
 // The FFI functions (emscripten_websocket_new, etc.) are only available in
 // Emscripten's C runtime. Compiling on any other target will produce linker errors.

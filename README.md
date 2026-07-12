@@ -261,8 +261,12 @@ for event in client.poll() {
 Enable it in a Godot GDExtension crate with:
 
 ```toml
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 ```
+
+The custom Godot API binding is required for the 32-bit Emscripten ABI. Set
+`GODOT4_BIN` to the Godot 4.5 editor when compiling the web extension.
 
 `EmscriptenWebSocketTransport` is retained for advanced custom-template
 integrations. It requires the final host to link Emscripten's WebSocket

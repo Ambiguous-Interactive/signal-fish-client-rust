@@ -11,8 +11,8 @@
 # Target: wasm32-unknown-emscripten
 #   Used by Godot 4.5 web exports via gdext (godot-rust). Unlike
 #   wasm32-unknown-unknown, this target compiles against the Emscripten C
-#   runtime, giving access to Emscripten's C WebSocket API for browser
-#   networking. Because wasm32-unknown-emscripten is a Rust tier 3 target,
+#   runtime used by Godot web GDExtensions. Because
+#   wasm32-unknown-emscripten is a Rust tier 3 target,
 #   building requires:
 #     - Nightly toolchain (tier 3 targets are not available on stable)
 #     - `-Zbuild-std` flag (std must be built from source for this target)
@@ -23,9 +23,9 @@
 #   `transport-websocket` is excluded because it depends on tokio-tungstenite
 #   over TCP sockets, which are unavailable in the browser sandbox. Consumers
 #   targeting WASM can supply their own transport implementation via the
-#   Transport trait. The `transport-websocket-emscripten` feature provides a
-#   browser WebSocket transport using Emscripten's C API for the emscripten
-#   target.
+#   Transport trait. Godot consumers use `transport-godot`; the raw
+#   `transport-websocket-emscripten` feature is retained for custom hosts that
+#   explicitly link Emscripten's optional WebSocket library.
 
 name: WASM
 

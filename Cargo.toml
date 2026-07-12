@@ -68,7 +68,7 @@ futures-util = { version = "0.3", optional = true, features = ["sink"] }
 
 # Optional: Godot 4.5 native/web transport. Web exports use Godot's own
 # main-thread WebSocketPeer, so gdext's no-thread WASM mode is intentional.
-godot = { version = "0.4.5", optional = true, features = ["api-4-5", "experimental-wasm-nothreads"] }
+godot = { version = "0.4.5", optional = true, features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["v4", "serde", "js"] }

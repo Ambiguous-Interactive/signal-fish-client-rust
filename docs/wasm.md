@@ -107,7 +107,7 @@ export templates that explicitly link Emscripten's WebSocket library.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust nightly | latest | Tier 3 target requires nightly toolchain |
+| Rust nightly | 2026-03-01 | Pinned tier 3 toolchain used by CI |
 | `rust-src` component | (matches nightly) | Required by `-Zbuild-std` to build `std` from source |
 | Emscripten SDK | 3.1.74 | Provides the sysroot and system libraries |
 
@@ -117,6 +117,7 @@ For Godot 4.5 native and official web exports, enable the supported transport:
 
 ```toml
 [dependencies]
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 ```
 
@@ -131,17 +132,19 @@ signal-fish-client = { version = "0.7.0", default-features = false, features = [
 ### Building
 
 ```sh
-cargo +nightly build -Zbuild-std \
-    --target wasm32-unknown-emscripten \
-    --no-default-features \
-    --features transport-godot
+export GODOT4_BIN=/path/to/Godot_v4.5-stable_linux.x86_64
+export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
+export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-args=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
+cargo +nightly-2026-03-01 build -Zbuild-std=std \
+    --target wasm32-unknown-emscripten --release
 ```
 
 Substitute `transport-websocket-emscripten` only for the custom-host path.
 
 !!! note
-    The `-Zbuild-std` flag compiles `core`, `alloc`, and `std` from source for
-    this tier 3 target. This is why the `rust-src` component is required.
+    `api-custom` regenerates the GDExtension interface with the web target's
+    32-bit pointer layout. The Emscripten sysroot keeps bindgen from selecting
+    host C headers, and `-Zbuild-std=std` is why `rust-src` is required.
 
 ---
 
@@ -371,7 +374,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = { version = "0.4.5", features = ["api-4-5", "experimental-wasm-nothreads"] }
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```

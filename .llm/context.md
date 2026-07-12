@@ -174,7 +174,7 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
-| `transport-godot` | off | Godot 4.5 `WebSocketPeer` transport for native/no-thread web exports; enables `polling-client` |
+| `transport-godot` | off | Godot 4.5 `WebSocketPeer` transport for native/no-thread web exports; web GDExtensions use `api-custom`; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
 | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
 | `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |

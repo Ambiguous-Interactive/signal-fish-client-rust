@@ -48,4 +48,5 @@ pub use godot_websocket::GodotWebSocketTransport;
 pub mod emscripten_websocket;
 
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
+#[allow(deprecated)]
 pub use emscripten_websocket::EmscriptenWebSocketTransport;

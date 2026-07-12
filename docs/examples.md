@@ -570,7 +570,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = { version = "0.4.5", features = ["api-4-5", "experimental-wasm-nothreads"] }
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
@@ -697,12 +697,12 @@ When idle, `poll()` returns an empty vec — it is designed to be cheap.
 
 #### 4. Build for web export
 
+After setting the `GODOT4_BIN`, bindgen, and side-module environment variables
+from the [WebAssembly Guide](wasm.md#building):
+
 ```sh
-cargo +nightly build -Zbuild-std \
-    --target wasm32-unknown-emscripten \
-    --no-default-features \
-    --features transport-godot \
-    --release
+cargo +nightly-2026-03-01 build -Zbuild-std=std \
+    --target wasm32-unknown-emscripten --release
 ```
 
 The resulting `.wasm` file is used by Godot's HTML5 export template.
