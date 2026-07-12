@@ -8,7 +8,7 @@
 //! |------------------------|------------------------|
 //! | `transport-websocket`  | [`WebSocketTransport`] |
 //! | `transport-websocket-emscripten` | `EmscriptenWebSocketTransport` |
-//! | `transport-godot` | [`GodotWebSocketTransport`] |
+//! | `transport-godot` | `GodotWebSocketTransport` |
 //!
 //! # Example
 //!
