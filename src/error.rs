@@ -70,7 +70,7 @@ pub enum SignalFishError {
     /// [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh).
     #[error(
         "operation requires a negotiated protocol v3 session (current mode: {mode}); \
-         opt into v3 with SignalFishConfig::enable_v3() or enable_mesh()"
+         opt into v3 with SignalFishConfig::enable_v3() or SignalFishConfig::enable_mesh()"
     )]
     ProtocolUnsupported {
         /// Why v3 is unavailable:
