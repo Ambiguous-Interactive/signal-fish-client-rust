@@ -226,7 +226,7 @@ A common MSRV breakage pattern: a transitive dependency publishes a new version 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
   with:
-    toolchain: 1.85.0
+    toolchain: 1.87.0
 - uses: Swatinem/rust-cache@v2.9.1
 - run: bash scripts/cargo-retry.sh generate-lockfile
 - run: cargo build --locked --all-features && cargo test --locked --all-features

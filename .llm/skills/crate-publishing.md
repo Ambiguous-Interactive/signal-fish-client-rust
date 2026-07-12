@@ -9,7 +9,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 name = "signal-fish-client"
 version = "0.7.0"
 edition = "2021"
-rust-version = "1.85.0"          # MSRV — enforced by cargo
+rust-version = "1.87.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
 authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
 description = "Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol"
@@ -232,7 +232,7 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 | `package.include` too broad | Use `cargo package --list` to verify |
 | Private types in public API | Run `cargo doc` and check for `warning: public item not documented` |
 | Feature not gated properly | Run `cargo check --no-default-features` |
-| MSRV violation | Run `cargo +1.85.0 check --all-features` |
+| MSRV violation | Run `cargo +1.87.0 check --all-features` |
 | Yanked dependency | Update in Cargo.toml, run `cargo update` |
 | License mismatch | Run `cargo deny check licenses` |
 

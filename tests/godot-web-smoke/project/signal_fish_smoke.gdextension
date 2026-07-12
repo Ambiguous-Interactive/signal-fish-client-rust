@@ -1,0 +1,12 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = "4.5"
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 = "res://bin/libsignal_fish_godot_smoke.so"
+linux.release.x86_64 = "res://bin/libsignal_fish_godot_smoke.so"
+linux.debug.arm64 = "res://bin/libsignal_fish_godot_smoke.so"
+linux.release.arm64 = "res://bin/libsignal_fish_godot_smoke.so"
+web.debug.wasm32 = "res://bin/signal_fish_godot_smoke.wasm"
+web.release.wasm32 = "res://bin/signal_fish_godot_smoke.wasm"

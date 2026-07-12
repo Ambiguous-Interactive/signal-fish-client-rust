@@ -564,9 +564,9 @@ Shutdown proceeds in three stages:
 ## `SignalFishPollingClient`
 
 Synchronous, polling-based client for environments without an async runtime.
-Originally created for WebAssembly targets (specifically
-`wasm32-unknown-emscripten` and Godot 4.5 web exports via gdext), but usable
-in any single-threaded context with any `Transport` implementation.
+Originally created for WebAssembly targets (including Godot 4.5 native and
+web exports via gdext), but usable in any single-threaded context with any
+`Transport` implementation.
 
 This is the right client whenever your application is **frame-driven** —
 native game loops as much as wasm. The async `SignalFishClient` only makes
@@ -577,7 +577,8 @@ polling client has no background task and no runtime — you pump it yourself.
 
 !!! note "Feature gate"
     `SignalFishPollingClient` requires the `polling-client` feature.
-    This feature is automatically enabled by `transport-websocket-emscripten`.
+    This feature is automatically enabled by `transport-godot` and
+    `transport-websocket-emscripten`.
 
 Unlike `SignalFishClient`, the polling client does **not** spawn background
 tasks. Instead, the caller drives the protocol by calling
@@ -598,10 +599,10 @@ fn new(transport: impl Transport, config: SignalFishConfig) -> Self
 
 ```rust,ignore
 use signal_fish_client::{
-    EmscriptenWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
+    GodotWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
 };
 
-let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+let transport = GodotWebSocketTransport::connect("wss://server/ws")
     .expect("connection failed");
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
@@ -722,11 +723,9 @@ fn close(&mut self)
 client.close();
 ```
 
-Calls `transport.close()` via a single noop-waker poll and clears session
-state. If the transport's `close()` future returns `Pending`, the result is
-silently discarded — only transports whose `close()` resolves to `Ready`
-immediately are guaranteed a clean shutdown. The primary transport
-(`EmscriptenWebSocketTransport`) always completes `close()` synchronously.
+Starts `transport.poll_close()` and clears session state. If the close is
+pending, subsequent `poll()` calls continue driving it until completion;
+`is_closing()` reports whether more polls are required.
 After calling `close()`, `is_connected()` returns `false` and all command
 methods return `Err(SignalFishError::NotConnected)`.
 
@@ -734,5 +733,5 @@ methods return `Err(SignalFishError::NotConnected)`.
     Unlike `SignalFishClient`, the polling client does **not** abort a
     background task on drop (there is no background task). However, the
     underlying transport's `Drop` implementation will still clean up
-    resources (e.g., `EmscriptenWebSocketTransport` calls
-    `emscripten_websocket_close` and `emscripten_websocket_delete`).
+    resources. Call `close()` and continue polling while `is_closing()` for a
+    graceful WebSocket close handshake.

@@ -8,6 +8,7 @@
 //! |------------------------|------------------------|
 //! | `transport-websocket`  | [`WebSocketTransport`] |
 //! | `transport-websocket-emscripten` | `EmscriptenWebSocketTransport` |
+//! | `transport-godot` | [`GodotWebSocketTransport`] |
 //!
 //! # Example
 //!
@@ -32,6 +33,12 @@ pub mod websocket;
 
 #[cfg(feature = "transport-websocket")]
 pub use websocket::WebSocketTransport;
+
+#[cfg(feature = "transport-godot")]
+pub mod godot_websocket;
+
+#[cfg(feature = "transport-godot")]
+pub use godot_websocket::GodotWebSocketTransport;
 
 // Gated on both feature and target: this module uses Emscripten's C WebSocket API,
 // which only exists on wasm32-unknown-emscripten. The dual gate keeps `--all-features`

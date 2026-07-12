@@ -242,6 +242,10 @@ struct CallbackState {
 /// This type is only intended for use on `wasm32-unknown-emscripten`, which
 /// is single-threaded. It deliberately does not implement `Send` and must be
 /// driven by [`SignalFishPollingClient`](crate::SignalFishPollingClient).
+#[deprecated(
+    since = "0.8.0",
+    note = "for standard Godot exports use GodotWebSocketTransport; this transport requires a custom Emscripten host that links the WebSocket library"
+)]
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,

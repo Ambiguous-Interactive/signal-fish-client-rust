@@ -148,6 +148,9 @@ pub use transport::{Transport, TransportCloseInfo, TransportFrame};
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
 
+#[cfg(feature = "transport-godot")]
+pub use transports::GodotWebSocketTransport;
+
 #[cfg(feature = "polling-client")]
 pub mod polling_client;
 

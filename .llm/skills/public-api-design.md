@@ -161,11 +161,11 @@ pub struct WebSocketTransport { /* ... */ }
 
 ## MSRV Policy
 
-Current MSRV: **Rust 1.85.0**
+Current MSRV: **Rust 1.87.0**
 
 ```toml
 [package]
-rust-version = "1.85.0"
+rust-version = "1.87.0"
 ```
 
 ### Transport and async bounds
@@ -178,7 +178,7 @@ has no trait-level `Send` bound. `SignalFishClient::start` adds
 ### Testing MSRV in CI
 
 ```yaml
-- { name: Test on MSRV, uses: dtolnay/rust-toolchain@stable, with: { toolchain: "1.85.0" } }
+- { name: Test on MSRV, uses: dtolnay/rust-toolchain@stable, with: { toolchain: "1.87.0" } }
 - run: cargo test --all-features
 ```
 
