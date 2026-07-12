@@ -5168,6 +5168,14 @@ mod ffi_safety_documentation {
             contents.contains("SignalFishPollingClient with a noop waker"),
             "Emscripten poll_recv must emit an actionable misuse diagnostic"
         );
+        assert!(
+            contents.contains("_not_send: std::marker::PhantomData<*const ()>"),
+            "Emscripten transport must remain explicitly non-Send"
+        );
+        assert!(
+            contents.contains("_not_send: std::marker::PhantomData,"),
+            "Emscripten constructor must initialize its non-Send marker"
+        );
     }
 
     /// Every `unsafe {` block in the Emscripten WebSocket transport must have
