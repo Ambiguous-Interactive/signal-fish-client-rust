@@ -93,7 +93,7 @@ unmaintained = "warn"
 yanked = "deny"
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "ISC", "Unicode-DFS-2016"]
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "ISC", "MPL-2.0", "Unicode-DFS-2016"]
 deny = ["GPL-3.0"]
 copyleft = "warn"
 
