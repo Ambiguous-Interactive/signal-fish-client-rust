@@ -63,13 +63,13 @@ jobs:
           fi
           checks=$(
             gh api --paginate \
-              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?per_page=100" \
+              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
               --jq '[.check_runs[]] | length' |
               awk '{ total += $1 } END { print total + 0 }'
           )
           failures=$(
             gh api --paginate \
-              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?per_page=100" \
+              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
               --jq '[.check_runs[] | select(
                 .status != "completed" or
                 (.conclusion != "success" and
@@ -96,6 +96,7 @@ jobs:
           tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
 
       - name: Validate release files
+        id: release-metadata
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -108,14 +109,19 @@ jobs:
             printf '::error::CHANGELOG.md has no dated %s section.\n' "$VERSION"
             exit 1
           fi
+          previous=$(python3 scripts/release.py previous-version "$VERSION")
+          release_type=$(python3 scripts/release.py release-type "$previous" "$VERSION")
+          printf 'release_type=%s\n' "$release_type" >> "$GITHUB_OUTPUT"
           python3 -m unittest scripts/test_release.py
 
       - name: Run complete release verification
+        env:
+          RELEASE_TYPE: ${{ steps.release-metadata.outputs.release_type }}
         run: |
           cargo fmt --check
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --all-features
-          cargo semver-checks check-release --release-type major
+          cargo semver-checks check-release --release-type "$RELEASE_TYPE"
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
           cargo publish --dry-run

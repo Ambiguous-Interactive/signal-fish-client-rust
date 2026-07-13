@@ -26,6 +26,14 @@ class VersionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(release.ReleaseError):
                 release.parse_version(value)
 
+    def test_release_type_requires_one_exact_component_bump(self) -> None:
+        self.assertEqual(release.release_type("1.2.3", "2.0.0"), "major")
+        self.assertEqual(release.release_type("1.2.3", "1.3.0"), "minor")
+        self.assertEqual(release.release_type("1.2.3", "1.2.4"), "patch")
+        for target in ("1.4.0", "1.3.1", "1.2.3", "1.2.2"):
+            with self.subTest(target=target), self.assertRaises(release.ReleaseError):
+                release.release_type("1.2.3", target)
+
 
 class PreparationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -61,6 +69,7 @@ class PreparationTests(unittest.TestCase):
         compatibility = (self.root / "tests/compatibility.toml").read_text(encoding="utf-8")
         self.assertIn('client_version = "1.3.0"', compatibility)
         self.assertIn('synced = "2026-07-13"', compatibility)
+        self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
 
     def test_empty_unreleased_section_fails_closed(self) -> None:
         (self.root / "CHANGELOG.md").write_text(
@@ -154,6 +163,12 @@ class WorkflowPolicyTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
+
+    def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
+        self.assertIn('release-type "$previous" "$VERSION"', self.publish)
+        self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)
+        self.assertNotIn("chore!: prepare release", self.prepare)
+        self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
 
 
 if __name__ == "__main__":

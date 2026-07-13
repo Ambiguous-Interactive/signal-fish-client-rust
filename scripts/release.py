@@ -57,6 +57,20 @@ def bump_version(current: str, level: str) -> str:
     raise ReleaseError(f"invalid bump {level!r}; expected major, minor, or patch")
 
 
+def release_type(base: str, target: str) -> str:
+    """Return the one-component SemVer bump from base to target."""
+    base_parts = parse_version(base)
+    target_parts = parse_version(target)
+    major, minor, patch = base_parts
+    if target_parts == (major + 1, 0, 0):
+        return "major"
+    if target_parts == (major, minor + 1, 0):
+        return "minor"
+    if target_parts == (major, minor, patch + 1):
+        return "patch"
+    raise ReleaseError(f"{base} to {target} is not a single major, minor, or patch bump")
+
+
 def package_version(root: Path) -> str:
     cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
@@ -64,6 +78,22 @@ def package_version(root: Path) -> str:
         raise ReleaseError("Cargo.toml has no package version")
     parse_version(match.group(1))
     return match.group(1)
+
+
+def previous_version(root: Path, version: str) -> str:
+    parse_version(version)
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf"^\[{re.escape(version)}\]: .*/compare/v"
+        rf"({SEMVER_RE.pattern[1:-1]})\.\.\.v{re.escape(version)}$",
+        re.MULTILINE,
+    )
+    match = pattern.search(changelog)
+    if match is None:
+        raise ReleaseError(f"CHANGELOG.md has no exact compare link for {version}")
+    previous = match.group(1)
+    parse_version(previous)
+    return previous
 
 
 def replace_required(path: Path, old: str, new: str) -> None:
@@ -238,15 +268,27 @@ def main(argv: list[str] | None = None) -> int:
     registry.add_argument("crate_name")
     registry.add_argument("version")
 
+    previous = subparsers.add_parser("previous-version")
+    previous.add_argument("version")
+    previous.add_argument("--root", type=Path, default=Path.cwd())
+
+    policy = subparsers.add_parser("release-type")
+    policy.add_argument("base")
+    policy.add_argument("target")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
             print(prepare(args.root.resolve(), args.bump, args.date, args.allow_dirty))
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
-        else:
+        elif args.command == "registry-checksum":
             value = registry_checksum(args.crate_name, args.version)
             print(value or "UNPUBLISHED")
+        elif args.command == "previous-version":
+            print(previous_version(args.root.resolve(), args.version))
+        else:
+            print(release_type(args.base, args.target))
     except (OSError, ValueError, ReleaseError, subprocess.CalledProcessError) as error:
         print(f"release error: {error}", file=sys.stderr)
         return 1

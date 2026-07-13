@@ -79,7 +79,7 @@ jobs:
 
       - name: Verify package and documentation
         run: |
-          cargo package
+          cargo package --allow-dirty
           cargo publish --dry-run --allow-dirty
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
@@ -98,7 +98,7 @@ jobs:
           git config user.name "signal-fish-release[bot]"
           git config user.email "signal-fish-release[bot]@users.noreply.github.com"
           git add Cargo.toml README.md CHANGELOG.md docs .llm tests/compatibility.toml tests/server-spec/PROVENANCE.toml tests/wire-samples/PROVENANCE.toml
-          git commit -m "chore!: prepare release ${VERSION}"
+          git commit -m "chore: prepare release ${VERSION}"
           git push --set-upstream origin "$BRANCH"
 
       - name: Open release pull request
@@ -112,5 +112,5 @@ jobs:
           gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$BRANCH" \
-            --title "chore!: prepare release ${VERSION}" \
+            --title "chore: prepare release ${VERSION}" \
             --body "Automated release preparation for \`${VERSION}\`. Merge only after every required check and review is green."
