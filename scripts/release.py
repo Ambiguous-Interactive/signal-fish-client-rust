@@ -73,7 +73,14 @@ def release_type(base: str, target: str) -> str:
 
 def package_version(root: Path) -> str:
     cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
-    match = re.search(r'^version = "([^"]+)"$', cargo, re.MULTILINE)
+    package = re.search(
+        r"^\[package\][ \t]*$\n(.*?)(?=^\[|\Z)",
+        cargo,
+        re.MULTILINE | re.DOTALL,
+    )
+    if package is None:
+        raise ReleaseError("Cargo.toml has no [package] section")
+    match = re.search(r'^version = "([^"]+)"$', package.group(1), re.MULTILINE)
     if match is None:
         raise ReleaseError("Cargo.toml has no package version")
     parse_version(match.group(1))

@@ -26,6 +26,17 @@ class VersionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(release.ReleaseError):
                 release.parse_version(value)
 
+    def test_package_version_is_scoped_to_package_section(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text(
+                '[workspace.package]\nversion = "9.9.9"\n\n'
+                '[package]\nname = "demo"\nversion = "1.2.3"\n\n'
+                '[dependencies]\ndemo = { version = "8.8.8" }\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(release.package_version(root), "1.2.3")
+
     def test_release_type_requires_one_exact_component_bump(self) -> None:
         self.assertEqual(release.release_type("1.2.3", "2.0.0"), "major")
         self.assertEqual(release.release_type("1.2.3", "1.3.0"), "minor")
@@ -148,6 +159,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("environment: crates-io", self.publish)
         self.assertIn("cancel-in-progress: false", self.publish)
         self.assertIn("expected strict X.Y.Z", self.publish)
+        self.assertIn("checks: read", self.publish)
 
     def test_publish_has_fail_closed_recovery_and_assets(self) -> None:
         for marker in (
@@ -169,6 +181,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)
         self.assertNotIn("chore!: prepare release", self.prepare)
         self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
+        self.assertIn("Expected one CycloneDX JSON file", self.publish)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  checks: read
   id-token: write
   attestations: write
 
@@ -135,8 +136,13 @@ jobs:
           cargo cyclonedx --format json
           mkdir -p release-assets
           crate="target/package/signal-fish-client-${VERSION}.crate"
+          mapfile -t sboms < <(find . -type f -name '*.cdx.json' -not -path './target/*' -print)
+          if [ "${#sboms[@]}" -ne 1 ]; then
+            printf '::error::Expected one CycloneDX JSON file, found %s.\n' "${#sboms[@]}"
+            exit 1
+          fi
           cp "$crate" release-assets/
-          cp signal-fish-client.cdx.json release-assets/
+          cp "${sboms[0]}" "release-assets/signal-fish-client-${VERSION}.cdx.json"
           checksum=$(python3 scripts/release.py checksum "$crate")
           printf '%s  %s\n' "$checksum" "signal-fish-client-${VERSION}.crate" > release-assets/SHA256SUMS
           {
