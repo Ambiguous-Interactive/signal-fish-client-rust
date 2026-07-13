@@ -120,6 +120,7 @@ pub struct GodotWebSocketTransport {
     backend: Box<dyn GodotWebSocketBackend>,
     ever_ready: bool,
     send_in_flight: bool,
+    close_deferred_to_receive: bool,
     close_started: bool,
     terminal: bool,
     close_info: Option<TransportCloseInfo>,
@@ -131,6 +132,7 @@ impl fmt::Debug for GodotWebSocketTransport {
             .debug_struct("GodotWebSocketTransport")
             .field("ever_ready", &self.ever_ready)
             .field("send_in_flight", &self.send_in_flight)
+            .field("close_deferred_to_receive", &self.close_deferred_to_receive)
             .field("close_started", &self.close_started)
             .field("terminal", &self.terminal)
             .field("close_info", &self.close_info)
@@ -173,6 +175,7 @@ impl GodotWebSocketTransport {
             backend,
             ever_ready,
             send_in_flight: false,
+            close_deferred_to_receive: false,
             close_started: false,
             terminal: false,
             close_info: None,
@@ -218,6 +221,16 @@ impl GodotWebSocketTransport {
             ))))
         }
     }
+
+    fn closed_send_error(&self) -> SignalFishError {
+        if self.ever_ready || self.close_started {
+            SignalFishError::TransportClosed
+        } else {
+            SignalFishError::TransportReceive(
+                "Godot WebSocket connection closed before opening".to_string(),
+            )
+        }
+    }
 }
 
 impl Transport for GodotWebSocketTransport {
@@ -228,15 +241,16 @@ impl Transport for GodotWebSocketTransport {
     ) -> Poll<Result<(), SignalFishError>> {
         match self.advance() {
             PeerState::Connecting => return Poll::Pending,
-            PeerState::Closing => {
-                self.send_in_flight = false;
-                return Poll::Ready(Err(SignalFishError::TransportClosed));
-            }
+            PeerState::Closing => return Poll::Pending,
             PeerState::Closed => {
                 self.record_close();
-                self.terminal = true;
                 self.send_in_flight = false;
-                return Poll::Ready(Err(SignalFishError::TransportClosed));
+                if !self.close_deferred_to_receive {
+                    self.close_deferred_to_receive = true;
+                    return Poll::Pending;
+                }
+                self.terminal = true;
+                return Poll::Ready(Err(self.closed_send_error()));
             }
             PeerState::Open => {}
         }
@@ -614,6 +628,77 @@ mod tests {
     }
 
     #[test]
+    fn send_defers_a_handshake_failure_to_receive() {
+        let mut backend = FakeBackend::new(PeerState::Connecting);
+        backend.states.push_back(PeerState::Closed);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("authenticate".to_string()));
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert!(frame.is_some());
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(Some(Err(SignalFishError::TransportReceive(error))))
+                if error.contains("closed before opening")
+        ));
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn send_only_driver_gets_the_handshake_failure_after_deferral() {
+        let mut backend = FakeBackend::new(PeerState::Connecting);
+        backend.states.push_back(PeerState::Closed);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("authenticate".to_string()));
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Err(SignalFishError::TransportReceive(error)))
+                if error.contains("closed before opening")
+        ));
+        assert!(frame.is_some());
+    }
+
+    #[test]
+    fn send_defers_a_peer_close_to_receive_with_metadata() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.states.push_back(PeerState::Closed);
+        backend.close_code = 4000;
+        backend.close_reason = "server draining".to_string();
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("pending".to_string()));
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert!(frame.is_some());
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+        assert_eq!(
+            transport.close_info(),
+            Some(TransportCloseInfo {
+                code: Some(4000),
+                reason: Some("server draining".to_string()),
+                clean: Some(true),
+                initiated_by_peer: true,
+            })
+        );
+    }
+
+    #[test]
     fn closing_does_not_freeze_incomplete_close_metadata() {
         let mut backend = FakeBackend::new(PeerState::Open);
         backend
@@ -626,7 +711,7 @@ mod tests {
 
         assert!(matches!(
             transport.poll_send(&mut context(), &mut frame),
-            Poll::Ready(Err(SignalFishError::TransportClosed))
+            Poll::Pending
         ));
         assert!(frame.is_some());
         assert_eq!(transport.close_info(), None);
