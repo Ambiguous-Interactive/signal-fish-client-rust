@@ -139,17 +139,18 @@ jobs:
         run: |
           cargo package
           cargo cyclonedx --format json
-          mkdir -p release-assets
+          asset_dir="$RUNNER_TEMP/release-assets"
+          mkdir -p "$asset_dir"
           crate="target/package/signal-fish-client-${VERSION}.crate"
           mapfile -t sboms < <(find . -type f -name '*.cdx.json' -not -path './target/*' -print)
           if [ "${#sboms[@]}" -ne 1 ]; then
             printf '::error::Expected one CycloneDX JSON file, found %s.\n' "${#sboms[@]}"
             exit 1
           fi
-          cp "$crate" release-assets/
-          cp "${sboms[0]}" "release-assets/signal-fish-client-${VERSION}.cdx.json"
+          cp "$crate" "$asset_dir/"
+          mv "${sboms[0]}" "$asset_dir/signal-fish-client-${VERSION}.cdx.json"
           checksum=$(python3 scripts/release.py checksum "$crate")
-          printf '%s  %s\n' "$checksum" "signal-fish-client-${VERSION}.crate" > release-assets/SHA256SUMS
+          printf '%s  %s\n' "$checksum" "signal-fish-client-${VERSION}.crate" > "$asset_dir/SHA256SUMS"
           {
             printf 'crate=%s\n' "$crate"
             printf 'checksum=%s\n' "$checksum"
@@ -166,6 +167,11 @@ jobs:
         run: |
           tag="v${VERSION}"
           head_sha=$(git rev-parse HEAD)
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            printf '::error::Release tooling dirtied the checkout before publication.\n'
+            git status --short
+            exit 1
+          fi
           remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
           if [ "$head_sha" != "$remote_sha" ]; then
             printf '::error::Default branch moved to %s during verification; restart from that HEAD.\n' "$remote_sha"
@@ -244,8 +250,8 @@ jobs:
             $0 ~ "^## \\[" version "\\]" { found=1; next }
             found && /^## \[/ { exit }
             found { print }
-          ' CHANGELOG.md > release-assets/release-notes.md
-          if [ ! -s release-assets/release-notes.md ]; then
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-assets/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-assets/release-notes.md" ]; then
             printf '::error::Release notes are empty.\n'
             exit 1
           fi
@@ -257,9 +263,11 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           gh release create "v${VERSION}" \
-            release-assets/*.crate release-assets/SHA256SUMS release-assets/*.cdx.json \
+            "$RUNNER_TEMP"/release-assets/*.crate \
+            "$RUNNER_TEMP"/release-assets/SHA256SUMS \
+            "$RUNNER_TEMP"/release-assets/*.cdx.json \
             --title "v${VERSION}" \
-            --notes-file release-assets/release-notes.md \
+            --notes-file "$RUNNER_TEMP/release-assets/release-notes.md" \
             --verify-tag
 
       - name: Repair assets on an existing matching release
@@ -267,4 +275,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-        run: gh release upload "v${VERSION}" release-assets/*.crate release-assets/SHA256SUMS release-assets/*.cdx.json --clobber
+        run: |
+          gh release upload "v${VERSION}" \
+            "$RUNNER_TEMP"/release-assets/*.crate \
+            "$RUNNER_TEMP"/release-assets/SHA256SUMS \
+            "$RUNNER_TEMP"/release-assets/*.cdx.json \
+            --clobber

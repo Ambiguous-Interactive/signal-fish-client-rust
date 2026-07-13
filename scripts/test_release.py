@@ -225,6 +225,8 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("chore!: prepare release", self.prepare)
         self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
         self.assertIn("Expected one CycloneDX JSON file", self.publish)
+        self.assertIn('$RUNNER_TEMP/release-assets', self.publish)
+        self.assertIn("Release tooling dirtied the checkout", self.publish)
         self.assertIn("Release publication", self.publish)
         self.assertIn("fetch-tags: true", self.publish)
         self.assertIn("github.run_id", self.publish)
