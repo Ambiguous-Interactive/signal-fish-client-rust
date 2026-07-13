@@ -1,0 +1,176 @@
+name: Godot Web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  GODOT_VERSION: "4.5"
+  EMSDK_VERSION: "3.1.74"
+  PLAYWRIGHT_VERSION: "1.61.1"
+  RUST_NIGHTLY: "nightly-2026-03-01"
+  SERVER_VERSION: "0.4.0"
+
+jobs:
+  browser-smoke:
+    name: Official template browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY }}
+          components: rust-src
+
+      - name: Install Emscripten SDK
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Install official Godot editor and templates
+        run: |
+          set -euo pipefail
+          release="${GODOT_VERSION}-stable"
+          base="https://github.com/godotengine/godot/releases/download/${release}"
+          curl --fail --location --retry 5 --output godot.zip \
+            "${base}/Godot_v${release}_linux.x86_64.zip"
+          curl --fail --location --retry 5 --output templates.tpz \
+            "${base}/Godot_v${release}_export_templates.tpz"
+          curl --fail --location --retry 5 --output SHA512-SUMS.txt \
+            "${base}/SHA512-SUMS.txt"
+          awk -v editor="Godot_v${release}_linux.x86_64.zip" \
+            '$2 == editor { print $1, "godot.zip" }' SHA512-SUMS.txt | sha512sum --check
+          awk -v templates="Godot_v${release}_export_templates.tpz" \
+            '$2 == templates { print $1, "templates.tpz" }' SHA512-SUMS.txt | sha512sum --check
+          unzip -q godot.zip -d .godot
+          mkdir -p "${HOME}/.local/share/godot/export_templates"
+          unzip -q templates.tpz -d .godot-templates
+          mv .godot-templates/templates \
+            "${HOME}/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          chmod +x ".godot/Godot_v${release}_linux.x86_64"
+
+      - name: Build Godot GDExtension for web
+        env:
+          RUSTFLAGS: >-
+            -Z unstable-options
+            -C panic=immediate-abort
+            -C link-arg=-sSIDE_MODULE=2
+            -C llvm-args=-enable-emscripten-cxx-exceptions=0
+            -Z default-visibility=hidden
+            -Z link-native-libraries=no
+        run: |
+          set -euo pipefail
+          export GODOT4_BIN="${PWD}/.godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
+          cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
+            --manifest-path tests/godot-web-smoke/Cargo.toml \
+            --target-dir target/godot-web-smoke \
+            --target wasm32-unknown-emscripten \
+            --release \
+            --features raw-emscripten-proof
+          cp target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm \
+            target/godot-web-smoke/raw-emscripten-proof.wasm
+          cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
+            --manifest-path tests/godot-web-smoke/Cargo.toml \
+            --target-dir target/godot-web-smoke \
+            --target wasm32-unknown-emscripten \
+            --release
+
+      - name: Export with the official no-thread extension template
+        run: |
+          set -euo pipefail
+          fixture="tests/godot-web-smoke"
+          mkdir -p "${fixture}/project/bin" "${fixture}/project/build-negative"
+          cp "target/godot-web-smoke/raw-emscripten-proof.wasm" \
+            "${fixture}/project/bin/signal_fish_godot_smoke.wasm"
+          ".godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
+            --headless --path "${fixture}/project" \
+            --export-release Web build-negative/index.html
+          mkdir -p "${fixture}/project/build"
+          cp "target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm" \
+            "${fixture}/project/bin/signal_fish_godot_smoke.wasm"
+          ".godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
+            --headless --path "${fixture}/project" --import
+          ".godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
+            --headless --path "${fixture}/project" \
+            --export-release Web build/index.html
+
+      - name: Install Chromium automation
+        run: |
+          npm install --no-save --no-package-lock "playwright@${PLAYWRIGHT_VERSION}"
+          npx playwright install --with-deps chromium
+
+      - name: Prove raw Emscripten transport is rejected by the standard template
+        run: |
+          set -euo pipefail
+          node scripts/run-godot-web-smoke.mjs \
+            tests/godot-web-smoke/project/build-negative \
+            --expect-raw-emscripten-link-failure | tee raw-emscripten.log
+
+      - name: Download pinned Signal Fish server
+        run: |
+          set -euo pipefail
+          asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
+          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
+          sha256sum --check "${asset}.sha256"
+          mkdir -p .signal-fish-server
+          tar -xzf "${asset}" -C .signal-fish-server
+
+      - name: Run browser interoperability test
+        run: |
+          set -euo pipefail
+          server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
+          chmod +x "${server_bin}"
+          SIGNAL_FISH__PORT=3536 \
+          SIGNAL_FISH__LOGGING__LEVEL=debug \
+          SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+          SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+          SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+          SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+            "${server_bin}" >server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            if (echo > /dev/tcp/127.0.0.1/3536) 2>/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 100 ]; then
+              echo "Signal Fish server did not become ready" >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          node scripts/run-godot-web-smoke.mjs \
+            tests/godot-web-smoke/project/build "${server_pid}" | tee browser.log
+          wait "${server_pid}"
+          trap - EXIT
+
+      - name: Upload browser and server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: godot-web-smoke-logs
+          path: |
+            browser.log
+            raw-emscripten.log
+            server.log
+          if-no-files-found: warn

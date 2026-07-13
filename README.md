@@ -15,8 +15,8 @@
   <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml">
     <img src="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://doc.rust-lang.org/stable/releases.html#version-1850-2025-02-20">
-    <img src="https://img.shields.io/badge/MSRV-1.85.0-blue.svg" alt="MSRV">
+  <a href="https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15">
+    <img src="https://img.shields.io/badge/MSRV-1.87.0-blue.svg" alt="MSRV">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
@@ -51,7 +51,8 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
-- **Emscripten WebSocket transport** — the `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` with raw FFI to Emscripten's C API
+- **Godot 4.5 native + web transport** — the `transport-godot` feature wraps Godot's own `WebSocketPeer`, including official no-thread web exports
+- **Advanced Emscripten transport** — `transport-websocket-emscripten` remains available for custom hosts that explicitly link Emscripten's WebSocket library
 - **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for frame-driven engines and wasm targets (e.g. Godot 4.5 web exports)
 
 ## Installation
@@ -115,6 +116,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Feature               | Default | Description                                                             |
 | --------------------- | ------- | ----------------------------------------------------------------------- |
 | `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
+| `transport-godot` | no | Godot 4.5 `WebSocketPeer` transport for native and official web exports; enables `polling-client` |
 | `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
 | `tokio-runtime` | **yes** (via `transport-websocket`) | Tokio runtime integration (`rt`, `time`); disable for pure WASM targets |
 
@@ -128,7 +130,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `error`       | `SignalFishError` unified client/transport error type             |
 | `error_codes` | Typed server error-code registry                                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
-| `transports`  | Built-in transport implementations (`WebSocketTransport`)         |
+| `transports`  | Built-in Tokio, Godot, and advanced Emscripten WebSocket transports |
 | `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
 | `mesh`        | `MeshSession` — zero-dep v3 mesh state tracker (`mesh` feature)    |
 | `webrtc`      | `WebRtcDriver` seam + `MeshController` v3 orchestrator (`mesh` feature) |
@@ -218,24 +220,23 @@ The SDK supports two WASM targets:
 | Target | Use Case | Transport | Client |
 | --- | --- | --- | --- |
 | `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
-| `wasm32-unknown-emscripten` | Engine-hosted web exports | Engine transport; Emscripten transport only with custom link-enabled templates | `SignalFishPollingClient` |
+| `wasm32-unknown-emscripten` | Godot native/web exports | `GodotWebSocketTransport`; Emscripten transport only with custom link-enabled templates | `SignalFishPollingClient` |
 
 The async `SignalFishClient` needs a *driven* tokio runtime (its transport loop runs under `tokio::spawn`); manually "ticking" a runtime once per frame starves it. Frame-driven or single-threaded environments — game loops on native as well as wasm — should use `SignalFishPollingClient` (feature `polling-client`), a synchronous pump you call once per frame.
 
-### Emscripten Quick Start (custom templates)
+### Godot 4.5 Quick Start
 
-`EmscriptenWebSocketTransport` requires the final host to link Emscripten's
-WebSocket JavaScript library. Official Godot web templates do not, so use an
-engine `WebSocketPeer` transport with those templates.
+`GodotWebSocketTransport` uses Godot's own `WebSocketPeer`, so the same Rust
+code works in native builds and official no-thread web export templates.
 
 ```rust,ignore
 use signal_fish_client::{
-    EmscriptenWebSocketTransport, SignalFishPollingClient,
+    GodotWebSocketTransport, SignalFishPollingClient,
     SignalFishConfig, JoinRoomParams, SignalFishEvent,
 };
 
 // 1. Connect (synchronous — no .await needed).
-let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+let transport = GodotWebSocketTransport::connect("wss://server/ws")
     .expect("WebSocket creation failed");
 
 // 2. Create the polling client (auto-sends Authenticate).
@@ -257,7 +258,21 @@ for event in client.poll() {
 }
 ```
 
-### Building for Emscripten
+Enable it in a Godot GDExtension crate with:
+
+```toml
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
+```
+
+The custom Godot API binding is required for the 32-bit Emscripten ABI. Set
+`GODOT4_BIN` to the Godot 4.5 editor when compiling the web extension.
+
+`EmscriptenWebSocketTransport` is retained for advanced custom-template
+integrations. It requires the final host to link Emscripten's WebSocket
+JavaScript library; official Godot templates do not.
+
+### Building the Advanced Emscripten Transport
 
 ```sh
 # Install prerequisites
@@ -314,7 +329,7 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 ## Minimum Supported Rust Version (MSRV)
 
 <!-- markdownlint-disable-next-line MD036 -->
-**1.85.0**
+**1.87.0**
 
 Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is considered a minor version change.
 

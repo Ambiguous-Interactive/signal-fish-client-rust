@@ -148,6 +148,9 @@ pub use transport::{Transport, TransportCloseInfo, TransportFrame};
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
 
+#[cfg(feature = "transport-godot")]
+pub use transports::GodotWebSocketTransport;
+
 #[cfg(feature = "polling-client")]
 pub mod polling_client;
 
@@ -171,4 +174,5 @@ pub use webrtc::MeshController;
 
 // Re-export only on the correct target (see transports/mod.rs for rationale).
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
+#[allow(deprecated)]
 pub use transports::EmscriptenWebSocketTransport;

@@ -13,7 +13,7 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 [![docs.rs](https://img.shields.io/docsrs/signal-fish-client?style=flat-square&logo=docs.rs)](https://docs.rs/signal-fish-client)
 [![CI](https://img.shields.io/github/actions/workflow/status/Ambiguous-Interactive/signal-fish-client-rust/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/LICENSE)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85.0-brightgreen?style=flat-square&logo=rust)](https://doc.rust-lang.org/stable/releases.html#version-1850-2025-02-20)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87.0-brightgreen?style=flat-square&logo=rust)](https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15)
 
 ---
 

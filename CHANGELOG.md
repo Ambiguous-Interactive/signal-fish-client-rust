@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Object-safe `SignalFishClientApi` for writing synchronous room, signaling,
   capacity, statistics, and snapshot logic that works with either client
   driver.
+- `transport-godot` and `GodotWebSocketTransport`, a pure-Rust Godot 4.5
+  `WebSocketPeer` path for native builds and official no-thread web exports,
+  replacing raw Emscripten WebSocket FFI as the standard Godot integration.
 
 ### Changed
 
@@ -44,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignalFishClientApi`. The matching `MeshController` room delegations now
   take `&mut self` and `client_mut()` exposes other mutable commands. Async
   waiting sends remain callable through `&self`.
+- The minimum supported Rust version is now 1.87.0, matching `godot` 0.4.5.
 
 ### Fixed
 
@@ -58,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `supports_mesh()` now requires both local WebRTC advertisement through
   `enable_mesh()` and negotiated protocol v3; relay-only `enable_v3()` clients
   no longer report that mesh is available.
+
+### Deprecated
+
+- `EmscriptenWebSocketTransport` is deprecated for standard Godot exports;
+  use `GodotWebSocketTransport` instead. It remains supported for custom
+  Emscripten hosts in 0.8.
 
 ## [0.7.0] - 2026-07-02
 

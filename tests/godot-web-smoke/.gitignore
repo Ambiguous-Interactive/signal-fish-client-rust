@@ -1,0 +1,6 @@
+/target/
+/project/.godot/
+/project/bin/
+/project/build/
+/project/build-negative/
+/project/*.uid

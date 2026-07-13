@@ -67,6 +67,8 @@
 //! let events = client.poll();
 //! ```
 
+#![allow(deprecated)]
+
 // Compile-time guard: this module requires the wasm32-unknown-emscripten target.
 // The FFI functions (emscripten_websocket_new, etc.) are only available in
 // Emscripten's C runtime. Compiling on any other target will produce linker errors.
@@ -242,6 +244,10 @@ struct CallbackState {
 /// This type is only intended for use on `wasm32-unknown-emscripten`, which
 /// is single-threaded. It deliberately does not implement `Send` and must be
 /// driven by [`SignalFishPollingClient`](crate::SignalFishPollingClient).
+#[deprecated(
+    since = "0.8.0",
+    note = "for standard Godot exports use GodotWebSocketTransport; this transport requires a custom Emscripten host that links the WebSocket library"
+)]
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,

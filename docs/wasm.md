@@ -11,7 +11,7 @@ compilation, transport selection, game-loop integration, and Godot gdext usage.
 | Target | Runtime | Transport | Client | Use Case |
 |--------|---------|-----------|--------|----------|
 | `wasm32-unknown-unknown` | Browser sandbox / wasm-pack | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) | Generic browser apps, Bevy, wasm-bindgen projects |
-| `wasm32-unknown-emscripten` | Emscripten C runtime | Engine transport, or `EmscriptenWebSocketTransport` with a custom link-enabled template | `SignalFishPollingClient` | Engine-hosted web exports |
+| `wasm32-unknown-emscripten` | Godot/Emscripten runtime | `GodotWebSocketTransport`; `EmscriptenWebSocketTransport` only with a custom link-enabled host | `SignalFishPollingClient` | Godot native/web exports |
 
 The two targets differ in what the compiled WASM module can access at runtime.
 `wasm32-unknown-unknown` runs inside a pure sandbox with no OS — you must bridge
@@ -27,7 +27,7 @@ graph TD
     end
 
     subgraph "wasm32-unknown-emscripten"
-        D["EmscriptenWebSocketTransport"] --> E["Emscripten C API<br/>(emscripten/websocket.h)"]
+        D["GodotWebSocketTransport"] --> E["Godot WebSocketPeer"]
         E --> F["Browser WebSocket"]
         G["SignalFishPollingClient"] --> D
         H["Godot _process()"] --> G
@@ -91,31 +91,38 @@ This target supports a synchronous polling client. The bundled
 `EmscriptenWebSocketTransport` is an advanced integration for hosts or custom
 export templates that explicitly link Emscripten's WebSocket library.
 
-!!! warning "Official Godot templates"
-    Standard Godot web export templates do not link that Emscripten library,
-    so merely enabling `transport-websocket-emscripten` does not make a
-    loadable GDExtension. With official templates, implement `Transport`
-    around Godot's own `WebSocketPeer` and drive it with
-    `SignalFishPollingClient`.
+!!! tip "Official Godot templates"
+    Enable `transport-godot` for the supported Godot 4.5 native/web path. It
+    wraps Godot's own `WebSocketPeer`, supports gdext's no-thread WASM mode,
+    and needs no separately linked Emscripten WebSocket symbols.
 
 ### What you get
 
 - Everything from `wasm32-unknown-unknown`, plus:
-- `EmscriptenWebSocketTransport` — browser WebSocket via Emscripten's C API
+- `GodotWebSocketTransport` — Godot 4.5 native/web `WebSocketPeer` wrapper
+- Optionally, `EmscriptenWebSocketTransport` for custom link-enabled hosts
 - `SignalFishPollingClient` — synchronous, game-loop-driven client
 
 ### Prerequisites
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust nightly | latest | Tier 3 target requires nightly toolchain |
+| Rust nightly | 2026-03-01 | Pinned tier 3 toolchain used by CI |
 | `rust-src` component | (matches nightly) | Required by `-Zbuild-std` to build `std` from source |
 | Emscripten SDK | 3.1.74 | Provides the sysroot and system libraries |
 
-### Feature flag
+### Feature flags
 
-Enable the `transport-websocket-emscripten` feature to access
-`EmscriptenWebSocketTransport` and `SignalFishPollingClient`:
+For Godot 4.5 native and official web exports, enable the supported transport:
+
+```toml
+[dependencies]
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
+```
+
+Only for a custom Emscripten host that explicitly links its WebSocket library,
+enable the advanced raw-FFI transport:
 
 ```toml
 [dependencies]
@@ -125,15 +132,19 @@ signal-fish-client = { version = "0.7.0", default-features = false, features = [
 ### Building
 
 ```sh
-cargo +nightly build -Zbuild-std \
-    --target wasm32-unknown-emscripten \
-    --no-default-features \
-    --features transport-websocket-emscripten
+export GODOT4_BIN=/path/to/Godot_v4.5-stable_linux.x86_64
+export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
+export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-arg=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
+cargo +nightly-2026-03-01 build -Zbuild-std=std \
+    --target wasm32-unknown-emscripten --release
 ```
 
+Substitute `transport-websocket-emscripten` only for the custom-host path.
+
 !!! note
-    The `-Zbuild-std` flag compiles `core`, `alloc`, and `std` from source for
-    this tier 3 target. This is why the `rust-src` component is required.
+    `api-custom` regenerates the GDExtension interface with the web target's
+    32-bit pointer layout. The Emscripten sysroot keeps bindgen from selecting
+    host C headers, and `-Zbuild-std=std` is why `rust-src` is required.
 
 ---
 
@@ -347,8 +358,9 @@ environment).
 
 ## Godot Integration Example (gdext)
 
-A complete example showing how to use `SignalFishPollingClient` with
-`EmscriptenWebSocketTransport` in a Godot 4.5 gdext Node for web exports.
+Use `SignalFishPollingClient` with `GodotWebSocketTransport` in a Godot 4.5
+GDExtension Node. The transport delegates networking to `WebSocketPeer`, so
+this code works for native builds and official no-thread web exports.
 
 ### Cargo.toml
 
@@ -362,8 +374,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = "0.3"
-signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -371,16 +383,14 @@ serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 
 ```rust,ignore
 use godot::prelude::*;
-use signal_fish_client::{
-    EmscriptenWebSocketTransport, JoinRoomParams, SignalFishConfig,
-    SignalFishEvent, SignalFishPollingClient,
-};
+use signal_fish_client::{GodotWebSocketTransport, JoinRoomParams,
+    SignalFishConfig, SignalFishEvent, SignalFishPollingClient};
 
 #[derive(GodotClass)]
 #[class(base=Node)]
 struct SignalFishNode {
     base: Base<Node>,
-    client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+    client: Option<SignalFishPollingClient<GodotWebSocketTransport>>,
 }
 
 #[godot_api]
@@ -393,7 +403,7 @@ impl INode for SignalFishNode {
     }
 
     fn ready(&mut self) {
-        let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")
+        let transport = GodotWebSocketTransport::connect("wss://example.com/signal")
             .expect("failed to create WebSocket");
         let config = SignalFishConfig::new("mb_app_abc123");
         self.client = Some(SignalFishPollingClient::new(transport, config));
@@ -418,13 +428,13 @@ impl INode for SignalFishNode {
                     godot_print!("Joined room {} as {}", room_code, player_id);
                     client.set_ready().ok();
                 }
-                SignalFishEvent::GameData { from_player, data } => {
+                SignalFishEvent::GameData { from_player, data, .. } => {
                     godot_print!("Game data from {}: {}", from_player, data);
                 }
                 SignalFishEvent::PlayerJoined { player } => {
                     godot_print!("{} joined the room", player.name);
                 }
-                SignalFishEvent::PlayerLeft { player_id } => {
+                SignalFishEvent::PlayerLeft { player_id, .. } => {
                     godot_print!("Player {} left", player_id);
                 }
                 SignalFishEvent::GameStarting { peer_connections } => {
@@ -447,13 +457,15 @@ impl INode for SignalFishNode {
 
 ### How it works
 
-1. **`ready()`** — creates the Emscripten WebSocket transport and the polling
+1. **`ready()`** — creates the Godot WebSocket transport and the polling
    client. Authentication is queued automatically.
 2. **`process(delta)`** — called every frame by Godot. Calls `poll()` to flush
    outgoing messages and drain incoming events. Each event is handled inline.
-3. **Disconnection** — on `Disconnected`, the client is dropped (`self.client = None`),
-   which closes the underlying WebSocket via the transport's `Drop`
-   implementation.
+3. **Disconnection** — call `client.close()` and keep processing frames while
+   `client.is_closing()` so Godot can complete the close handshake.
+
+No GDScript networking glue is needed. The fixture under
+`tests/godot-web-smoke/` contains a complete Rust GDExtension project and scene.
 
 ---
 
@@ -658,13 +670,13 @@ crate directly in your own code, add the `"js"` feature for WASM targets.
 
 ### MSRV vs. nightly requirement
 
-The SDK's MSRV is **1.85.0** for native targets. However, the
+The SDK's MSRV is **1.87.0** for native targets. However, the
 `wasm32-unknown-emscripten` target requires **Rust nightly** because:
 
 1. It is a tier 3 target — pre-built `std` is not available on stable.
 2. The `-Zbuild-std` flag is a nightly-only feature.
 
-The `wasm32-unknown-unknown` target works with **stable Rust 1.85.0+** (no
+The `wasm32-unknown-unknown` target works with **stable Rust 1.87.0+** (no
 `-Zbuild-std` needed; pre-built `std` is available via `rustup target add`).
 
 ---

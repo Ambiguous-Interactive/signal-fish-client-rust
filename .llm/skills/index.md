@@ -48,6 +48,10 @@ Reference for understanding and correctly documenting the timing semantics of sy
 
 Reference for writing correct and safe FFI bindings, with emphasis on C type mapping, struct layout, pointer...
 
+### [Godot 4.5 WebSocket Transport](godot-websocket.md)
+
+Reference for `GodotWebSocketTransport`, the supported native/web networking path for Godot GDExtension consumers.
+
 ### [Keep a Changelog Format](keep-a-changelog-format.md)
 
 Reference for writing `CHANGELOG.md` entries in Keep a Changelog format for this crate.

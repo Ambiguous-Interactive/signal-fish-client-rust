@@ -6,7 +6,7 @@ Get up and running with the Signal Fish Client SDK in minutes.
 
 Before you begin, make sure you have:
 
-- **Rust 1.85.0** or newer (`rustup update stable`)
+- **Rust 1.87.0** or newer (`rustup update stable`)
 - A **tokio** async runtime (the SDK is async-first)
 - A running **Signal Fish server** URL (e.g., `ws://localhost:3536/ws`)
 - An **App ID** registered with your Signal Fish server
@@ -24,6 +24,7 @@ cargo add signal-fish-client
 | Feature                | Default | Description                                      |
 |------------------------|---------|--------------------------------------------------|
 | `transport-websocket`  | Yes     | WebSocket transport via `tokio-tungstenite`       |
+| `transport-godot` | No | Godot 4.5 `WebSocketPeer` transport for native and official web exports |
 | `transport-websocket-emscripten` | No | Emscripten WebSocket transport for `wasm32-unknown-emscripten` |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Tokio runtime integration; disable for WASM targets |
 
@@ -44,15 +45,16 @@ signal-fish-client = { version = "0.7.0", default-features = false }
 !!! tip
     If you only need the core `Transport` trait to implement a custom backend, disable default features to avoid pulling in `tokio-tungstenite` and `futures-util`.
 
-#### For Emscripten / Godot web exports
+#### For Godot 4.5 native and web exports
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 ```
 
 !!! tip
-    The `transport-websocket-emscripten` feature provides `EmscriptenWebSocketTransport` and `SignalFishPollingClient` — a synchronous, game-loop-driven client that does not require an async runtime. See the [WebAssembly Guide](wasm.md) for complete setup instructions.
+    The `transport-godot` feature provides `GodotWebSocketTransport` and `SignalFishPollingClient` — a synchronous, game-loop-driven path using Godot's own `WebSocketPeer`. It works with official no-thread web export templates and requires no GDScript glue. See the [WebAssembly Guide](wasm.md) for complete setup instructions.
 
 ## Minimal Example
 

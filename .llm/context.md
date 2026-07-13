@@ -7,7 +7,7 @@
 - **Crate:** `signal-fish-client`
 - **Version:** 0.7.0
 - **Edition:** 2021
-- **MSRV:** 1.85.0
+- **MSRV:** 1.87.0
 - **License:** MIT
 - **Repository:** <https://github.com/Ambiguous-Interactive/signal-fish-client-rust>
 - **Guide (GitHub Pages):** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/>
@@ -61,6 +61,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
+| `src/transports/godot_websocket.rs` | Godot 4.5 native/web `WebSocketPeer` transport (feature: `transport-godot`) |
 
 ### Transport Trait
 
@@ -77,8 +78,7 @@ pub trait Transport {
 }
 ```
 
-The trait itself has no `Send` bound, so main-thread transports work with the
-polling client. `SignalFishClient::start` separately requires
+The trait itself has no `Send` bound, so main-thread transports work with the polling client. `SignalFishClient::start` separately requires
 `Transport + Send + 'static`. A `poll_send` implementation may take the frame
 only when it accepts ownership and must retain it internally until completion;
 `Pending` before acceptance leaves the caller's `Option` intact. Close polling
@@ -86,8 +86,7 @@ is idempotent. See `skills/transport-abstraction.md`.
 
 ### Client Usage Pattern
 
-Connect a transport, construct `SignalFishConfig`, and pass both to
-`SignalFishClient::start`, which returns the handle and event receiver and
+Connect a transport, construct `SignalFishConfig`, and pass both to `SignalFishClient::start`, which returns the handle and event receiver and
 queues `Authenticate`. Wait for `Authenticated` before room commands; drain
 events continuously and call `shutdown().await` for graceful teardown. The
 complete compiling example is `examples/basic_lobby.rs`.
@@ -174,6 +173,7 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
+| `transport-godot` | off | Godot 4.5 `WebSocketPeer` transport for native/no-thread web exports; web GDExtensions use `api-custom`; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
 | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
 | `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |
@@ -190,6 +190,7 @@ capacity accessors, `stats()`, and coherent `snapshot()`.
 | `tracing` | Structured logging and diagnostics |
 | `tokio-tungstenite` | WebSocket transport (optional) |
 | `futures-util` | Stream/sink utilities for WebSocket (optional) |
+| `godot` | Godot 4.5 `WebSocketPeer` bindings for native/web transport (optional) |
 
 `tokio` (full features, for tests) and `tracing-subscriber` (test log output).
 

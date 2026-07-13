@@ -547,18 +547,12 @@ cargo run --example mesh_session --features mesh,tokio-runtime
 
 ## Godot Web Export (Polling Client)
 
-Demonstrates the advanced `SignalFishPollingClient` integration with
-`EmscriptenWebSocketTransport`. This requires a custom Godot web export template
-that links Emscripten's WebSocket library; standard Godot export templates do
-not provide that link dependency.
-
-!!! warning "Not the standard Godot export path"
-    Do not use this example unchanged with an official Godot web template.
-    For standard templates, implement `Transport` around the engine's
-    `WebSocketPeer` and drive it with `SignalFishPollingClient`.
+Demonstrates the supported `SignalFishPollingClient` integration with
+`GodotWebSocketTransport`. It delegates to Godot's own `WebSocketPeer` and
+works with native builds and official no-thread Godot web export templates.
 
 !!! note "Feature gate"
-    This example requires the `transport-websocket-emscripten` feature and
+    This example requires the `transport-godot` feature and
     the `wasm32-unknown-emscripten` target. It cannot be run with
     `cargo run --example` — it must be compiled as part of a GDExtension
     library. See the [WebAssembly Guide](wasm.md) for full build
@@ -576,8 +570,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = "0.3"
-signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-websocket-emscripten"] }
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -586,7 +580,7 @@ serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```rust,ignore
 use godot::prelude::*;
 use signal_fish_client::{
-    EmscriptenWebSocketTransport, JoinRoomParams,
+    GodotWebSocketTransport, JoinRoomParams,
     SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
 };
 
@@ -594,7 +588,7 @@ use signal_fish_client::{
 #[class(base=Node)]
 struct SignalFishNode {
     base: Base<Node>,
-    client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+    client: Option<SignalFishPollingClient<GodotWebSocketTransport>>,
 }
 
 #[godot_api]
@@ -607,7 +601,7 @@ impl INode for SignalFishNode {
     }
 
     fn ready(&mut self) {
-        let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+        let transport = GodotWebSocketTransport::connect("wss://server/ws")
             .expect("WebSocket creation failed");
 
         let config = SignalFishConfig::new("mb_app_abc123");
@@ -662,26 +656,27 @@ impl INode for SignalFishNode {
 #[class(base=Node)]
 struct SignalFishNode {
     base: Base<Node>,
-    client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+    client: Option<SignalFishPollingClient<GodotWebSocketTransport>>,
 }
 ```
 
 The `client` field is `Option` because the transport connection is
 established in `ready()`, not at construction time. The generic parameter
-`EmscriptenWebSocketTransport` satisfies the `Transport` bound.
+`GodotWebSocketTransport` satisfies the `Transport` bound without requiring
+`Send`, which is important for Godot's main-thread object model.
 
 #### 2. Connect in `ready()`
 
 ```rust,ignore
 fn ready(&mut self) {
-    let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+    let transport = GodotWebSocketTransport::connect("wss://server/ws")
         .expect("WebSocket creation failed");
     let config = SignalFishConfig::new("mb_app_abc123");
     self.client = Some(SignalFishPollingClient::new(transport, config));
 }
 ```
 
-`EmscriptenWebSocketTransport::connect` is **synchronous** — no `.await`
+`GodotWebSocketTransport::connect` is **synchronous** — no `.await`
 needed. The polling client constructor queues an `Authenticate` message
 automatically.
 
@@ -702,12 +697,12 @@ When idle, `poll()` returns an empty vec — it is designed to be cheap.
 
 #### 4. Build for web export
 
+After setting the `GODOT4_BIN`, bindgen, and side-module environment variables
+from the [WebAssembly Guide](wasm.md#building):
+
 ```sh
-cargo +nightly build -Zbuild-std \
-    --target wasm32-unknown-emscripten \
-    --no-default-features \
-    --features transport-websocket-emscripten \
-    --release
+cargo +nightly-2026-03-01 build -Zbuild-std=std \
+    --target wasm32-unknown-emscripten --release
 ```
 
 The resulting `.wasm` file is used by Godot's HTML5 export template.

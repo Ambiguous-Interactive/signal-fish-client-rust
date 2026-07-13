@@ -3,7 +3,7 @@
 Practical reference for Tokio, polling transports, task spawning, selection,
 and channels in this crate.
 
-The crate's current MSRV is Rust 1.85.0.
+The crate's current MSRV is Rust 1.87.0.
 
 ## Runtime Setup
 

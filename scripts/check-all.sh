@@ -33,7 +33,7 @@
 #  22. Devcontainer Dockerfile (optional — docker buildx build --check)
 #
 # Notes:
-#   - MSRV (1.85.0) verification is CI-only (requires rustup toolchain override)
+#   - MSRV (1.87.0) verification is CI-only (requires rustup toolchain override)
 #   - --quick runs only the mandatory baseline (phases 1-4)
 #
 # Exit codes:
