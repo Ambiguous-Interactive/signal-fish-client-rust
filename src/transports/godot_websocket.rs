@@ -239,6 +239,9 @@ impl Transport for GodotWebSocketTransport {
         _cx: &mut Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> Poll<Result<(), SignalFishError>> {
+        if self.terminal {
+            return Poll::Ready(Err(self.closed_send_error()));
+        }
         match self.advance() {
             PeerState::Connecting => return Poll::Pending,
             PeerState::Closing => return Poll::Pending,
@@ -560,6 +563,7 @@ mod tests {
         backend.close_code = 4000;
         backend.close_reason = "server draining".to_string();
         let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let mut frame = Some(TransportFrame::Text("after close".to_string()));
 
         assert!(matches!(
             transport.poll_recv(&mut context()),
@@ -574,6 +578,11 @@ mod tests {
                 initiated_by_peer: true,
             })
         );
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Err(SignalFishError::TransportClosed))
+        ));
+        assert!(frame.is_some());
     }
 
     #[test]
