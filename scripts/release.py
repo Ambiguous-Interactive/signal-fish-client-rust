@@ -301,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
     checksum.add_argument("crate", type=Path)
     checksum.add_argument("--expected")
 
+    package = subparsers.add_parser("package-version")
+    package.add_argument("--root", type=Path, default=Path.cwd())
+
     registry = subparsers.add_parser("registry-checksum")
     registry.add_argument("crate_name")
     registry.add_argument("version")
@@ -323,6 +326,8 @@ def main(argv: list[str] | None = None) -> int:
             print(prepare(args.root.resolve(), args.bump, args.date, args.allow_dirty, args.breaking))
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
+        elif args.command == "package-version":
+            print(package_version(args.root.resolve()))
         elif args.command == "registry-checksum":
             value = registry_checksum(args.crate_name, args.version)
             print(value or "UNPUBLISHED")

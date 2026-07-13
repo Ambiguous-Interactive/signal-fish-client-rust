@@ -24,13 +24,21 @@ fn compatibility_manifest_binds_exact_server_040_artifacts() {
     let client_version = manifest["client_version"]
         .as_str()
         .unwrap_or_else(|| panic!("client_version must be a string"));
-    let version_parts = client_version.split('.').collect::<Vec<_>>();
-    assert_eq!(version_parts.len(), 3, "client_version must be X.Y.Z");
+    let mut version_parts = client_version.split('.');
+    for _ in 0..3 {
+        let part = version_parts
+            .next()
+            .unwrap_or_else(|| panic!("client_version must be strict X.Y.Z"));
+        assert!(
+            !part.is_empty()
+                && part.chars().all(|character| character.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0')),
+            "client_version must be strict X.Y.Z"
+        );
+    }
     assert!(
-        version_parts.iter().all(
-            |part| !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
-        ),
-        "client_version must be X.Y.Z"
+        version_parts.next().is_none(),
+        "client_version must be strict X.Y.Z"
     );
     assert_eq!(manifest["server_version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["server_tag"].as_str(), Some("v0.4.0"));

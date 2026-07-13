@@ -216,6 +216,8 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("Expected one CycloneDX JSON file", self.publish)
         self.assertIn("Release publication", self.publish)
         self.assertIn("fetch-tags: true", self.publish)
+        self.assertIn("github.run_id", self.publish)
+        self.assertIn("scripts/release.py package-version", self.publish)
 
 
 if __name__ == "__main__":
