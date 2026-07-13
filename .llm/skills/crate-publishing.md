@@ -7,7 +7,7 @@ Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny,
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.87.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier

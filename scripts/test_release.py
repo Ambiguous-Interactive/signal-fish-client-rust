@@ -43,11 +43,15 @@ class VersionTests(unittest.TestCase):
             self.assertIn('demo = { version = "8.8.8" }', cargo)
             self.assertEqual(release.package_version(root), "1.2.4")
 
-    def test_release_type_requires_one_exact_component_bump(self) -> None:
+    def test_release_type_classifies_strict_increases(self) -> None:
         self.assertEqual(release.release_type("1.2.3", "2.0.0"), "major")
         self.assertEqual(release.release_type("1.2.3", "1.3.0"), "minor")
         self.assertEqual(release.release_type("1.2.3", "1.2.4"), "patch")
-        for target in ("1.4.0", "1.3.1", "1.2.3", "1.2.2"):
+        self.assertEqual(release.release_type("1.2.3", "3.4.5"), "major")
+        self.assertEqual(release.release_type("1.2.3", "1.4.1"), "minor")
+        self.assertEqual(release.release_type("1.2.3", "1.2.9"), "patch")
+        self.assertEqual(release.release_type("0.6.0", "0.8.0"), "minor")
+        for target in ("1.2.3", "1.2.2", "1.1.9", "0.9.9"):
             with self.subTest(target=target), self.assertRaises(release.ReleaseError):
                 release.release_type("1.2.3", target)
 

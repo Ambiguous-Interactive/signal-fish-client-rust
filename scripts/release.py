@@ -58,17 +58,16 @@ def bump_version(current: str, level: str) -> str:
 
 
 def release_type(base: str, target: str) -> str:
-    """Return the one-component SemVer bump from base to target."""
+    """Classify a strict SemVer increase by its highest changed component."""
     base_parts = parse_version(base)
     target_parts = parse_version(target)
-    major, minor, patch = base_parts
-    if target_parts == (major + 1, 0, 0):
+    if target_parts <= base_parts:
+        raise ReleaseError(f"{base} to {target} is not a version increase")
+    if target_parts[0] > base_parts[0]:
         return "major"
-    if target_parts == (major, minor + 1, 0):
+    if target_parts[1] > base_parts[1]:
         return "minor"
-    if target_parts == (major, minor, patch + 1):
-        return "patch"
-    raise ReleaseError(f"{base} to {target} is not a single major, minor, or patch bump")
+    return "patch"
 
 
 def package_version(root: Path) -> str:
