@@ -37,7 +37,7 @@ jobs:
           components: rust-src
 
       - name: Install Emscripten SDK
-        uses: mymindstorm/setup-emsdk@v16
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: ${{ env.EMSDK_VERSION }}
 

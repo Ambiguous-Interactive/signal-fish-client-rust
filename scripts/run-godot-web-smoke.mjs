@@ -1,7 +1,8 @@
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { chromium } from "playwright";
 
 const [exportDirectoryArgument, modeArgument] = process.argv.slice(2);
@@ -11,7 +12,7 @@ if (!exportDirectoryArgument || !modeArgument) {
   );
 }
 
-const exportDirectory = resolve(exportDirectoryArgument);
+const exportDirectory = await realpath(resolve(exportDirectoryArgument));
 const expectRawEmscriptenLinkFailure = modeArgument === "--expect-raw-emscripten-link-failure";
 const serverPid = expectRawEmscriptenLinkFailure ? undefined : Number.parseInt(modeArgument, 10);
 if (!expectRawEmscriptenLinkFailure && (!Number.isSafeInteger(serverPid) || serverPid <= 0)) {
@@ -26,13 +27,27 @@ const mimeTypes = new Map([
   [".png", "image/png"],
 ]);
 
+function isWithinDirectory(directory, candidate) {
+  const relativePath = relative(directory, candidate);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+  );
+}
+
 const httpServer = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    const relativePath = requestUrl.pathname === "/" ? "index.html" : requestUrl.pathname.slice(1);
+    const relativePath =
+      requestUrl.pathname === "/" ? "index.html" : decodeURIComponent(requestUrl.pathname.slice(1));
     const normalizedPath = normalize(relativePath);
-    const filePath = resolve(join(exportDirectory, normalizedPath));
-    if (!filePath.startsWith(`${exportDirectory}/`)) {
+    const requestedPath = resolve(join(exportDirectory, normalizedPath));
+    if (!isWithinDirectory(exportDirectory, requestedPath)) {
+      response.writeHead(403).end("forbidden");
+      return;
+    }
+    const filePath = await realpath(requestedPath);
+    if (!isWithinDirectory(exportDirectory, filePath)) {
       response.writeHead(403).end("forbidden");
       return;
     }
@@ -45,9 +60,13 @@ const httpServer = createServer(async (request, response) => {
     response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
     response.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
     response.writeHead(200);
-    createReadStream(filePath).pipe(response);
+    await pipeline(createReadStream(filePath), response);
   } catch (error) {
-    response.writeHead(404).end(`not found: ${error}`);
+    if (!response.headersSent) {
+      response.writeHead(404).end(`not found: ${error}`);
+    } else {
+      response.destroy(error instanceof Error ? error : undefined);
+    }
   }
 });
 
