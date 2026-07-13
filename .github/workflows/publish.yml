@@ -192,7 +192,7 @@ jobs:
             exit 1
           fi
           tag_exists=$([ -n "$tag_sha" ] && printf true || printf false)
-          published=$([ "$registry_checksum" != UNPUBLISHED ] && printf true || printf false)
+          published=$([ "$registry_checksum" != "UNPUBLISHED" ] && printf true || printf false)
           release_exists=$(gh release view "$tag" >/dev/null 2>&1 && printf true || printf false)
           {
             printf 'tag_exists=%s\n' "$tag_exists"
@@ -232,7 +232,7 @@ jobs:
             if [ "$registry_checksum" = "$CHECKSUM" ]; then
               exit 0
             fi
-            if [ "$registry_checksum" != UNPUBLISHED ]; then
+            if [ "$registry_checksum" != "UNPUBLISHED" ]; then
               printf '::error::Registry checksum changed to an unexpected value.\n'
               exit 1
             fi
