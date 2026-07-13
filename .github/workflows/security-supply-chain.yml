@@ -58,7 +58,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.82.9
+        uses: taiki-e/install-action@v2.83.2
         with:
           tool: cargo-audit@0.22.1
 
@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@v7.0.0
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2.0.20
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
 
   # ──────────────────────────────────────────────────────────────
   # SBOM — generate CycloneDX Software Bill of Materials
@@ -108,7 +108,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2.82.9
+        uses: taiki-e/install-action@v2.83.2
         with:
           tool: cargo-cyclonedx@0.5.7
 
