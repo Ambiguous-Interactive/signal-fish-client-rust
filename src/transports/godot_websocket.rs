@@ -272,6 +272,9 @@ impl Transport for GodotWebSocketTransport {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.terminal {
+            return Poll::Ready(None);
+        }
         let state = self.advance();
         if state == PeerState::Connecting {
             return Poll::Pending;
@@ -591,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_failure_is_not_misreported_as_clean_peer_close() {
+    fn handshake_failure_is_reported_once_then_becomes_terminal() {
         let mut backend = FakeBackend::new(PeerState::Connecting);
         backend.states.push_back(PeerState::Closed);
         let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
@@ -604,6 +607,10 @@ mod tests {
             transport.close_info().and_then(|info| info.clean),
             Some(false)
         );
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
     }
 
     #[test]

@@ -216,7 +216,9 @@ impl SmokePair {
         let label = self.kind.label();
         if self.kind == PairKind::Binary
             && self.relay_received
-            && reason.is_some_and(|reason| reason.contains("code=Some(4000)"))
+            && reason.is_some_and(|reason| {
+                reason.contains("code=Some(4000)") || reason.contains("code=4000")
+            })
         {
             godot_print!("SIGNAL_FISH_SMOKE close-attribution-ok {peer}");
             self.close_attributed = true;
