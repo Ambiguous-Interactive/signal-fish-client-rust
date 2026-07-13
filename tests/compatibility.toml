@@ -3,7 +3,7 @@ client_version = "0.8.0"
 server_version = "0.4.0"
 server_tag = "v0.4.0"
 server_commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
-synced = "2026-07-12"
+synced = "2026-07-13"
 
 [wire_samples]
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-13
+
+<!-- semver-checks: major -->
+
 ### Added
 
 - Signal Fish Server 0.4.0 protocol surface: delivery classes and exact gap
@@ -386,3 +390,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Before: `SignalFishError::ServerError { message, error_code }` where `error_code` is `Option<String>`
   - After: `SignalFishError::ServerError { message, error_code }` where `error_code` is `Option<ErrorCode>`
   - Recommended handling: `match error_code { Some(code) => ..., None => ... }`
+
+[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.7.0...v0.8.0

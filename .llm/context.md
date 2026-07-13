@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crate:** `signal-fish-client`
-- **Version:** 0.7.0
+- **Version:** 0.8.0
 - **Edition:** 2021
 - **MSRV:** 1.87.0
 - **License:** MIT

@@ -12,7 +12,7 @@ commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
 protocol_version_min = 2
 protocol_version_max = 3
 # ISO 8601 date of the last refresh.
-synced = "2026-07-12"
+synced = "2026-07-13"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so a sample
 # cannot be edited without also updating this marker (keeps provenance honest).

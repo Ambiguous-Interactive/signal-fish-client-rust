@@ -10,7 +10,7 @@ Enable `transport-godot`. It enables `polling-client` and the optional `godot`
 
 ```toml
 signal-fish-client = {
-    version = "0.7.0",
+    version = "0.8.0",
     default-features = false,
     features = ["transport-godot"],
 }

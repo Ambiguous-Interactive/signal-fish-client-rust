@@ -571,7 +571,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
