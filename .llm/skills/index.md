@@ -72,6 +72,10 @@ Reference for the vendored golden wire samples, the provenance marker, and the p
 
 Reference for enum matching policy, semver, re-exports, feature flags, and MSRV in this crate.
 
+### [Release Preparation and Recovery](release-recovery.md)
+
+Reference for the two-stage 0.8+ release automation and its fail-closed recovery rules.
+
 ### [Serde Patterns](serde-patterns.md)
 
 Reference for serde_json, enum tagging, field attributes, and wire format as used in this codebase.

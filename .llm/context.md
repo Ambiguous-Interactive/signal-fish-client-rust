@@ -25,15 +25,15 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## Release Automation
+
+Use the manual **Prepare Release** and **Release** workflows; see
+`skills/release-recovery.md` and `docs/releasing.md` for fail-closed recovery.
+
 ## CI/CD Action Reference Policy
 
-Use version tags in workflow `uses:` references, not commit hashes.
-
-- Prefer: `owner/action@vN.N.N` (immutable tag); `owner/action@vN` acceptable
-  (mutable major pin, flagged by Phase 7 warning)
-- Exceptions: `dtolnay/rust-toolchain@stable|nightly|beta`,
-  `mymindstorm/setup-emsdk@vN` (no patch releases available)
-- Avoid commit-SHA refs unless a workflow has an explicit unavoidable requirement
+Use `owner/action@vN.N.N` (preferred) or `@vN`, not commit hashes. Exceptions:
+`dtolnay/rust-toolchain@stable|nightly|beta` and `mymindstorm/setup-emsdk@vN`.
 
 ## Changelog Policy
 
