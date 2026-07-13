@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
-assert SPEC is not None and SPEC.loader is not None
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("could not load scripts/release.py for testing")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
