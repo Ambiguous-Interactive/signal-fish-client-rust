@@ -87,6 +87,35 @@ def package_version(root: Path) -> str:
     return match.group(1)
 
 
+def replace_package_version(path: Path, old: str, new: str) -> None:
+    cargo = path.read_text(encoding="utf-8")
+    package = re.search(
+        r"^\[package\][ \t]*$\n(.*?)(?=^\[|\Z)",
+        cargo,
+        re.MULTILINE | re.DOTALL,
+    )
+    if package is None:
+        raise ReleaseError("Cargo.toml has no [package] section")
+    updated, count = re.subn(
+        rf'^version = "{re.escape(old)}"$',
+        f'version = "{new}"',
+        package.group(1),
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise ReleaseError(f"Cargo.toml [package] does not contain version {old!r}")
+    path.write_text(cargo[: package.start(1)] + updated + cargo[package.end(1) :], encoding="utf-8")
+
+
+def release_heading(version: str) -> re.Pattern[str]:
+    parse_version(version)
+    return re.compile(
+        rf"^## \[{re.escape(version)}\](?: - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})?[ \t]*$",
+        re.MULTILINE,
+    )
+
+
 def previous_version(root: Path, version: str) -> str:
     parse_version(version)
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -123,7 +152,7 @@ def cut_changelog(path: Path, old: str, new: str, date: str, breaking: bool = Fa
     unreleased = text[content_start:next_heading].strip()
     if not unreleased:
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
-    if f"## [{new}]" in text:
+    if release_heading(new).search(text) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
     policy_marker = "\n<!-- semver-checks: major -->\n" if breaking else ""
@@ -199,10 +228,10 @@ def prepare(
         raise ReleaseError("CHANGELOG.md has no complete [Unreleased] section")
     if not changelog_text[unreleased_start + len("## [Unreleased]") : next_release].strip():
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
-    if f"## [{new}]" in changelog_text:
+    if release_heading(new).search(changelog_text) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
-    replace_required(root / "Cargo.toml", f'version = "{old}"', f'version = "{new}"')
+    replace_package_version(root / "Cargo.toml", old, new)
     for relative in VERSION_FILES:
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
@@ -236,9 +265,12 @@ def semver_policy(root: Path, version: str) -> str:
     previous = previous_version(root, version)
     policy = release_type(previous, version)
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-    start = changelog.find(f"## [{version}]")
-    end = changelog.find("\n## [", start + 1)
-    if start < 0 or end < 0:
+    heading = release_heading(version).search(changelog)
+    if heading is None:
+        raise ReleaseError(f"CHANGELOG.md has no complete release section for {version}")
+    start = heading.start()
+    end = changelog.find("\n## [", heading.end())
+    if end < 0:
         raise ReleaseError(f"CHANGELOG.md has no complete release section for {version}")
     breaking = "<!-- semver-checks: major -->" in changelog[start:end]
     if not breaking:

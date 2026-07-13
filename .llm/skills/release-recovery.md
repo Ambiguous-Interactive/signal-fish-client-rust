@@ -44,7 +44,8 @@ The release workflow must retain this order:
 3. Run formatting, Clippy, tests, semver checks, docs.rs simulation, packaging,
    and publish dry-run.
 4. Reproduce the `.crate`, SHA-256 manifest, and CycloneDX SBOM.
-5. Validate all existing tag, GitHub Release, and crates.io state.
+5. Revalidate default-branch HEAD, then validate all existing tag, GitHub
+   Release, and crates.io state.
 6. Create the annotated tag if absent.
 7. Create package provenance and publish if absent.
 8. Wait for crates.io to report the reproduced checksum.

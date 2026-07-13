@@ -161,9 +161,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           tag="v${VERSION}"
           head_sha=$(git rev-parse HEAD)
+          remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
+          if [ "$head_sha" != "$remote_sha" ]; then
+            printf '::error::Default branch moved to %s during verification; restart from that HEAD.\n' "$remote_sha"
+            exit 1
+          fi
           tag_sha=$(git rev-list -n 1 "$tag" 2>/dev/null || true)
           if [ -n "$tag_sha" ] && [ "$tag_sha" != "$head_sha" ]; then
             printf '::error::Existing tag %s targets %s, not %s.\n' "$tag" "$tag_sha" "$head_sha"

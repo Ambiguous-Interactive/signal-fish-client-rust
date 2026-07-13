@@ -36,6 +36,11 @@ class VersionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(release.package_version(root), "1.2.3")
+            release.replace_package_version(root / "Cargo.toml", "1.2.3", "1.2.4")
+            cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
+            self.assertIn('[workspace.package]\nversion = "9.9.9"', cargo)
+            self.assertIn('demo = { version = "8.8.8" }', cargo)
+            self.assertEqual(release.package_version(root), "1.2.4")
 
     def test_release_type_requires_one_exact_component_bump(self) -> None:
         self.assertEqual(release.release_type("1.2.3", "2.0.0"), "major")
@@ -141,6 +146,12 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "already contains"):
             release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
         self.assertEqual(release.package_version(self.root), "1.2.3")
+
+    def test_release_heading_does_not_prefix_match(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        text = changelog.read_text(encoding="utf-8").replace("## [1.2.3]", "## [1.2.30]")
+        changelog.write_text(text, encoding="utf-8")
+        self.assertIsNone(release.release_heading("1.2.3").search(text))
 
     @mock.patch.object(release.subprocess, "run")
     def test_dirty_worktree_is_rejected(self, run: mock.Mock) -> None:
