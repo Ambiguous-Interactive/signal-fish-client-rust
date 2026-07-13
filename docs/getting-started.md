@@ -49,6 +49,7 @@ signal-fish-client = { version = "0.7.0", default-features = false }
 
 ```toml
 [dependencies]
+godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { version = "0.7.0", default-features = false, features = ["transport-godot"] }
 ```
 

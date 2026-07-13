@@ -320,7 +320,7 @@ struct SmokeExtension;
 #[cfg(feature = "raw-emscripten-proof")]
 #[allow(deprecated)]
 fn exercise_raw_emscripten_import() {
-    let _ = signal_fish_client::EmscriptenWebSocketTransport::connect("ws://127.0.0.1:3536/ws");
+    let _ = signal_fish_client::EmscriptenWebSocketTransport::connect(SERVER_URL);
 }
 
 #[gdextension]
