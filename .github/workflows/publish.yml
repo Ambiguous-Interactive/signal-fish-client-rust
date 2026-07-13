@@ -1,52 +1,91 @@
-# Release workflow for signal-fish-client
-#
-# Publishes the crate to crates.io and creates a GitHub Release.
-# Triggers: manual dispatch (workflow_dispatch) or pushing a v* tag.
-
-name: Release - Publish Crate
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      release_version:
-        description: "Version to publish (must match Cargo.toml)"
+      version:
+        description: Release version in strict X.Y.Z form
         required: true
-  push:
-    tags:
-      - "v*"
+        type: string
 
 permissions:
   contents: write
+  checks: read
+  id-token: write
+  attestations: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Never cancel an in-progress publish — partial releases are hard to recover from
+  group: release
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Deny warnings in CI for doc builds
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
-  publish:
+  release:
+    name: Release publication
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     environment: crates-io
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.actor != 'github-actions[bot]')
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.0
-
-      - name: Validate release_version format
-        if: github.event_name == 'workflow_dispatch'
+      - name: Validate strict version input
         env:
-          INPUT_VERSION: ${{ github.event.inputs.release_version }}
+          VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if ! echo "$INPUT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$'; then
-            echo "::error::Invalid semver format: '$INPUT_VERSION'. Expected format: MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]"
+          if ! printf '%s\n' "$VERSION" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            printf '::error::Invalid version %s; expected strict X.Y.Z.\n' "$VERSION"
+            exit 1
+          fi
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            printf '::error::Release must run from %s, not %s.\n' "$DEFAULT_BRANCH" "$REF_NAME"
+            exit 1
+          fi
+
+      - name: Checkout default-branch HEAD
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify default-branch HEAD and successful checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
+          local_sha=$(git rev-parse HEAD)
+          if [ "$local_sha" != "$remote_sha" ]; then
+            printf '::error::Checked-out SHA %s is not default-branch HEAD %s.\n' "$local_sha" "$remote_sha"
+            exit 1
+          fi
+          current_run="/actions/runs/${RUN_ID}/"
+          checks=$(
+            gh api --paginate \
+              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
+              --jq "[.check_runs[] | select(
+                ((.details_url // \"\") | contains(\"${current_run}\")) | not)] | length" |
+              awk '{ total += $1 } END { print total + 0 }'
+          )
+          failures=$(
+            gh api --paginate \
+              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
+              --jq "[.check_runs[] | select(
+                ((.details_url // \"\") | contains(\"${current_run}\")) | not) | select(
+                  .status != \"completed\" or
+                  (.conclusion != \"success\" and
+                   .conclusion != \"neutral\" and
+                   .conclusion != \"skipped\"))] | length" |
+              awk '{ total += $1 } END { print total + 0 }'
+          )
+          if [ "$checks" -eq 0 ] || [ "$failures" -ne 0 ]; then
+            printf '::error::Default-branch HEAD has %s check runs and %s non-successful runs.\n' "$checks" "$failures"
             exit 1
           fi
 
@@ -55,145 +94,190 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Configure sccache
-        id: sccache
-        uses: mozilla-actions/sccache-action@v0.0.10
-        continue-on-error: true
-
-      - name: Verify sccache is working
-        id: sccache-check
-        if: steps.sccache.outcome == 'success'
-        run: ./scripts/verify-sccache.sh
-        continue-on-error: true
-
-      - name: Clear sccache env on failure
-        if: steps.sccache.outcome != 'success' || steps.sccache-check.outcome != 'success'
-        run: |
-          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-          echo "SCCACHE_GHA_ENABLED=" >> "$GITHUB_ENV"
-
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
 
-      - name: Verify version matches tag (if tag push)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Install release tools
+        uses: taiki-e/install-action@v2.82.9
+        with:
+          tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
+
+      - name: Validate release files
+        id: release-metadata
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          TAG_VERSION=${GITHUB_REF#refs/tags/}
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
-          if [ "$TAG_VERSION" != "v${CARGO_VERSION}" ]; then
-            echo "Tag version $TAG_VERSION does not match Cargo.toml version $CARGO_VERSION" >&2
+          cargo_version=$(python3 scripts/release.py package-version)
+          if [ "$VERSION" != "$cargo_version" ]; then
+            printf '::error::Input %s does not match Cargo.toml %s.\n' "$VERSION" "$cargo_version"
             exit 1
           fi
-
-      - name: Verify version matches input (if manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          INPUT_VERSION: ${{ github.event.inputs.release_version }}
-        run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
-          if [ "$INPUT_VERSION" != "$CARGO_VERSION" ]; then
-            echo "Input version $INPUT_VERSION does not match Cargo.toml version $CARGO_VERSION" >&2
+          if ! grep -qF "## [${VERSION}] - " CHANGELOG.md; then
+            printf '::error::CHANGELOG.md has no dated %s section.\n' "$VERSION"
             exit 1
           fi
+          release_type=$(python3 scripts/release.py semver-policy "$VERSION")
+          printf 'release_type=%s\n' "$release_type" >> "$GITHUB_OUTPUT"
+          python3 -m unittest scripts/test_release.py
 
-      - name: Run fmt check
-        run: cargo fmt --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run complete release verification
         env:
-          RUSTC_WRAPPER: ${{ steps.sccache-check.outputs.working == 'true' && 'sccache' || '' }}
-          SCCACHE_GHA_ENABLED: ${{ steps.sccache-check.outputs.working == 'true' && 'true' || 'false' }}
-          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          SCCACHE_STARTUP_NOTIFY_TIMEOUT: "60"
-          SCCACHE_IDLE_TIMEOUT: "0"
-
-      - name: Run tests
-        run: cargo test --all-features
-        env:
-          RUSTC_WRAPPER: ${{ steps.sccache-check.outputs.working == 'true' && 'sccache' || '' }}
-          SCCACHE_GHA_ENABLED: ${{ steps.sccache-check.outputs.working == 'true' && 'true' || 'false' }}
-          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          SCCACHE_STARTUP_NOTIFY_TIMEOUT: "60"
-          SCCACHE_IDLE_TIMEOUT: "0"
-
-      - name: Verify docs.rs compatibility
+          RELEASE_TYPE: ${{ steps.release-metadata.outputs.release_type }}
         run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features
+          cargo semver-checks check-release --release-type "$RELEASE_TYPE"
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
+          cargo publish --dry-run
 
-      - name: Publish (dry-run)
-        run: cargo publish --dry-run
+      - name: Build release artifacts
+        id: artifact
         env:
-          RUSTC_WRAPPER: ${{ steps.sccache-check.outputs.working == 'true' && 'sccache' || '' }}
-          SCCACHE_GHA_ENABLED: ${{ steps.sccache-check.outputs.working == 'true' && 'true' || 'false' }}
-          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          SCCACHE_STARTUP_NOTIFY_TIMEOUT: "60"
-          SCCACHE_IDLE_TIMEOUT: "0"
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-          RUSTC_WRAPPER: ${{ steps.sccache-check.outputs.working == 'true' && 'sccache' || '' }}
-          SCCACHE_GHA_ENABLED: ${{ steps.sccache-check.outputs.working == 'true' && 'true' || 'false' }}
-          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          SCCACHE_STARTUP_NOTIFY_TIMEOUT: "60"
-          SCCACHE_IDLE_TIMEOUT: "0"
-        run: cargo publish
-
-      - name: Create and push git tag
-        if: github.event_name == 'workflow_dispatch'
+          VERSION: ${{ inputs.version }}
         run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
-          TAG_NAME="v${CARGO_VERSION}"
+          cargo package
+          cargo cyclonedx --format json
+          asset_dir="$RUNNER_TEMP/release-assets"
+          mkdir -p "$asset_dir"
+          crate="target/package/signal-fish-client-${VERSION}.crate"
+          mapfile -t sboms < <(find . -type f -name '*.cdx.json' -not -path './target/*' -print)
+          if [ "${#sboms[@]}" -ne 1 ]; then
+            printf '::error::Expected one CycloneDX JSON file, found %s.\n' "${#sboms[@]}"
+            exit 1
+          fi
+          cp "$crate" "$asset_dir/"
+          mv "${sboms[0]}" "$asset_dir/signal-fish-client-${VERSION}.cdx.json"
+          checksum=$(python3 scripts/release.py checksum "$crate")
+          printf '%s  %s\n' "$checksum" "signal-fish-client-${VERSION}.crate" > "$asset_dir/SHA256SUMS"
+          {
+            printf 'crate=%s\n' "$crate"
+            printf 'checksum=%s\n' "$checksum"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate recovery state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          tag="v${VERSION}"
+          head_sha=$(git rev-parse HEAD)
+          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            printf '::error::Release tooling dirtied the checkout before publication.\n'
+            git status --short
+            exit 1
+          fi
+          remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
+          if [ "$head_sha" != "$remote_sha" ]; then
+            printf '::error::Default branch moved to %s during verification; restart from that HEAD.\n' "$remote_sha"
+            exit 1
+          fi
+          tag_sha=$(git rev-list -n 1 "$tag" 2>/dev/null || true)
+          if [ -n "$tag_sha" ] && [ "$tag_sha" != "$head_sha" ]; then
+            printf '::error::Existing tag %s targets %s, not %s.\n' "$tag" "$tag_sha" "$head_sha"
+            exit 1
+          fi
+          registry_checksum=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
+          if [ "$registry_checksum" != "UNPUBLISHED" ] && [ "$registry_checksum" != "$CHECKSUM" ]; then
+            printf '::error::Published crate checksum does not match the reproduced package.\n'
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1 && [ -z "$tag_sha" ]; then
+            printf '::error::GitHub release %s exists without a matching local tag.\n' "$tag"
+            exit 1
+          fi
+          tag_exists=$([ -n "$tag_sha" ] && printf true || printf false)
+          published=$([ "$registry_checksum" != "UNPUBLISHED" ] && printf true || printf false)
+          release_exists=$(gh release view "$tag" >/dev/null 2>&1 && printf true || printf false)
+          {
+            printf 'tag_exists=%s\n' "$tag_exists"
+            printf 'published=%s\n' "$published"
+            printf 'release_exists=%s\n' "$release_exists"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create annotated tag
+        if: steps.state.outputs.tag_exists != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
-          git push origin "$TAG_NAME"
+          git tag -a "v${VERSION}" -m "Release ${VERSION}"
+          git push origin "v${VERSION}"
 
-      - name: Get version for release
-        id: get_version
+      - name: Attest package provenance
+        uses: actions/attest@v4.1.1
+        with:
+          subject-path: ${{ steps.artifact.outputs.crate }}
+
+      - name: Publish to crates.io
+        if: steps.state.outputs.published != 'true'
         env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
-          else
-            VERSION=${GITHUB_REF#refs/tags/v}
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
 
-      - name: Extract changelog for release
-        id: changelog
+      - name: Wait for crates.io and verify checksum
         env:
-          VERSION: ${{ steps.get_version.outputs.version }}
+          VERSION: ${{ inputs.version }}
+          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
         run: |
-          CHANGELOG_CONTENT=""
-          if [ -f CHANGELOG.md ]; then
-            CHANGELOG_CONTENT=$(awk -v ver="$VERSION" '
-              BEGIN { printing=0 }
-              /^## \[/ {
-                if (printing) { exit }
-                if (index($0, "[" ver "]") > 0) { printing=1; next }
-              }
-              printing { print }
-            ' CHANGELOG.md)
-          fi
+          attempt=1
+          while [ "$attempt" -le 30 ]; do
+            registry_checksum=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
+            if [ "$registry_checksum" = "$CHECKSUM" ]; then
+              exit 0
+            fi
+            if [ "$registry_checksum" != "UNPUBLISHED" ]; then
+              printf '::error::Registry checksum changed to an unexpected value.\n'
+              exit 1
+            fi
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+          printf '::error::Timed out waiting for crates.io visibility.\n'
+          exit 1
 
-          if [ -z "$CHANGELOG_CONTENT" ]; then
-            CHANGELOG_CONTENT="Release $VERSION"
+      - name: Extract release notes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-assets/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-assets/release-notes.md" ]; then
+            printf '::error::Release notes are empty.\n'
+            exit 1
           fi
-
-          printf '%s\n' "$CHANGELOG_CONTENT" > "$RUNNER_TEMP/release_notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.1
-        with:
-          tag_name: ${{ steps.get_version.outputs.tag }}
-          name: ${{ steps.get_version.outputs.tag }}
-          body_path: ${{ runner.temp }}/release_notes.md
-          draft: false
-          prerelease: false
+        if: steps.state.outputs.release_exists != 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            "$RUNNER_TEMP"/release-assets/*.crate \
+            "$RUNNER_TEMP"/release-assets/SHA256SUMS \
+            "$RUNNER_TEMP"/release-assets/*.cdx.json \
+            --title "v${VERSION}" \
+            --notes-file "$RUNNER_TEMP/release-assets/release-notes.md" \
+            --verify-tag
+
+      - name: Repair assets on an existing matching release
+        if: steps.state.outputs.release_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release upload "v${VERSION}" \
+            "$RUNNER_TEMP"/release-assets/*.crate \
+            "$RUNNER_TEMP"/release-assets/SHA256SUMS \
+            "$RUNNER_TEMP"/release-assets/*.cdx.json \
+            --clobber

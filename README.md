@@ -326,6 +326,10 @@ cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo t
 | `cargo mutants --file src/protocol.rs ...` | deep-safety.yml | `cargo install cargo-mutants` |
 | `cargo llvm-cov --all-features --summary-only` | coverage.yml | `cargo install cargo-llvm-cov` + `rustup component add llvm-tools-preview` |
 
+Release operators should follow the [release runbook](docs/releasing.md) for
+the reviewed preparation workflow, protected crates.io publication, and
+fail-closed recovery procedure.
+
 ## Minimum Supported Rust Version (MSRV)
 
 <!-- markdownlint-disable-next-line MD036 -->

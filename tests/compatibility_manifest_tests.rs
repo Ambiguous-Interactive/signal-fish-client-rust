@@ -21,7 +21,25 @@ fn compatibility_manifest_binds_exact_server_040_artifacts() {
     )
     .unwrap_or_else(|error| panic!("parse compatibility manifest: {error}"));
 
-    assert_eq!(manifest["client_version"].as_str(), Some("0.8.0"));
+    let client_version = manifest["client_version"]
+        .as_str()
+        .unwrap_or_else(|| panic!("client_version must be a string"));
+    let mut version_parts = client_version.split('.');
+    for _ in 0..3 {
+        let part = version_parts
+            .next()
+            .unwrap_or_else(|| panic!("client_version must be strict X.Y.Z"));
+        assert!(
+            !part.is_empty()
+                && part.chars().all(|character| character.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0')),
+            "client_version must be strict X.Y.Z"
+        );
+    }
+    assert!(
+        version_parts.next().is_none(),
+        "client_version must be strict X.Y.Z"
+    );
     assert_eq!(manifest["server_version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["server_tag"].as_str(), Some("v0.4.0"));
     let commit = manifest["server_commit"]

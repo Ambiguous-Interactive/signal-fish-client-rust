@@ -145,5 +145,6 @@ nav:
       - Delivery Contract & Backpressure: delivery.md
       - Mesh (v3): mesh-guide.md
       - WebAssembly: wasm.md
+      - Release Operations: releasing.md
   - Examples:
       - Walkthroughs: examples.md
