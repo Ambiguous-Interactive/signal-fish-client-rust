@@ -7,7 +7,8 @@ recovery rules.
 
 `.github/workflows/prepare-release.yml` is the reversible stage. It runs only
 by manual dispatch from the default branch, accepts a `major`, `minor`, or
-`patch` bump, and supports a dry run. A repository GitHub App creates the
+`patch` bump, a deliberate breaking-release marker, and supports a dry run. A
+repository GitHub App creates the
 `release/X.Y.Z` branch and pull request so ordinary CI triggers on the generated
 change.
 
@@ -26,6 +27,8 @@ Use `python3 scripts/release.py prepare <major|minor|patch>`. The script:
   compatibility marker, and provenance dates.
 - Moves non-empty `[Unreleased]` content into a dated release section and
   updates compare links.
+- Persists intentional major or pre-1.0 breaking-minor policy so release-time
+  semver checks distinguish it from ordinary minor and patch releases.
 - Fails when an expected reference is absent instead of producing a partial
   release bump.
 

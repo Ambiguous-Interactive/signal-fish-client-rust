@@ -110,7 +110,7 @@ def replace_required(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def cut_changelog(path: Path, old: str, new: str, date: str) -> None:
+def cut_changelog(path: Path, old: str, new: str, date: str, breaking: bool = False) -> None:
     text = path.read_text(encoding="utf-8")
     heading = "## [Unreleased]"
     start = text.find(heading)
@@ -126,9 +126,10 @@ def cut_changelog(path: Path, old: str, new: str, date: str) -> None:
     if f"## [{new}]" in text:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
+    policy_marker = "\n<!-- semver-checks: major -->\n" if breaking else ""
     body = (
         text[:start]
-        + f"{heading}\n\n## [{new}] - {date}\n\n{unreleased}\n"
+        + f"{heading}\n\n## [{new}] - {date}\n{policy_marker}\n{unreleased}\n"
         + text[next_heading:]
     )
     reference_re = re.compile(r"^\[Unreleased\]:.*$", re.MULTILINE)
@@ -159,7 +160,13 @@ def require_clean(root: Path) -> None:
         raise ReleaseError("worktree must be clean before release preparation")
 
 
-def prepare(root: Path, level: str, date: str, allow_dirty: bool = False) -> str:
+def prepare(
+    root: Path,
+    level: str,
+    date: str,
+    allow_dirty: bool = False,
+    breaking: bool = False,
+) -> str:
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date) is None:
         raise ReleaseError(f"invalid date {date!r}; expected YYYY-MM-DD")
     dt.date.fromisoformat(date)
@@ -167,6 +174,11 @@ def prepare(root: Path, level: str, date: str, allow_dirty: bool = False) -> str
         require_clean(root)
     old = package_version(root)
     new = bump_version(old, level)
+    if breaking:
+        policy = release_type(old, new)
+        old_major = parse_version(old)[0]
+        if policy != "major" and not (old_major == 0 and policy == "minor"):
+            raise ReleaseError("breaking releases require a major bump or a pre-1.0 minor bump")
 
     # Validate every required source before writing any file. A stale inventory
     # must not leave a plausible-looking partial release bump behind.
@@ -216,8 +228,25 @@ def prepare(root: Path, level: str, date: str, allow_dirty: bool = False) -> str
         if count != 1:
             raise ReleaseError(f"{relative} has no unique synced date")
         path.write_text(provenance, encoding="utf-8")
-    cut_changelog(root / "CHANGELOG.md", old, new, date)
+    cut_changelog(root / "CHANGELOG.md", old, new, date, breaking)
     return new
+
+
+def semver_policy(root: Path, version: str) -> str:
+    previous = previous_version(root, version)
+    policy = release_type(previous, version)
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = changelog.find(f"## [{version}]")
+    end = changelog.find("\n## [", start + 1)
+    if start < 0 or end < 0:
+        raise ReleaseError(f"CHANGELOG.md has no complete release section for {version}")
+    breaking = "<!-- semver-checks: major -->" in changelog[start:end]
+    if not breaking:
+        return policy
+    previous_major = parse_version(previous)[0]
+    if policy == "major" or (previous_major == 0 and policy == "minor"):
+        return "major"
+    raise ReleaseError("major semver policy is invalid for this version bump")
 
 
 def sha256(path: Path) -> str:
@@ -266,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     prep.add_argument("--root", type=Path, default=Path.cwd())
     prep.add_argument("--date", default=dt.date.today().isoformat())
     prep.add_argument("--allow-dirty", action="store_true", help=argparse.SUPPRESS)
+    prep.add_argument("--breaking", action="store_true")
 
     checksum = subparsers.add_parser("checksum")
     checksum.add_argument("crate", type=Path)
@@ -283,10 +313,14 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("base")
     policy.add_argument("target")
 
+    semver = subparsers.add_parser("semver-policy")
+    semver.add_argument("version")
+    semver.add_argument("--root", type=Path, default=Path.cwd())
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
-            print(prepare(args.root.resolve(), args.bump, args.date, args.allow_dirty))
+            print(prepare(args.root.resolve(), args.bump, args.date, args.allow_dirty, args.breaking))
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
         elif args.command == "registry-checksum":
@@ -294,8 +328,10 @@ def main(argv: list[str] | None = None) -> int:
             print(value or "UNPUBLISHED")
         elif args.command == "previous-version":
             print(previous_version(args.root.resolve(), args.version))
-        else:
+        elif args.command == "release-type":
             print(release_type(args.base, args.target))
+        else:
+            print(semver_policy(args.root.resolve(), args.version))
     except (OSError, ValueError, ReleaseError, subprocess.CalledProcessError) as error:
         print(f"release error: {error}", file=sys.stderr)
         return 1

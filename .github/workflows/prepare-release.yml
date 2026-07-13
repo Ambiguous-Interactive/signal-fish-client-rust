@@ -16,6 +16,11 @@ on:
         required: true
         default: true
         type: boolean
+      breaking:
+        description: This pre-1.0 minor or major release contains intentional API breaks
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -69,8 +74,13 @@ jobs:
         id: version
         env:
           BUMP: ${{ inputs.bump }}
+          BREAKING: ${{ inputs.breaking }}
         run: |
-          version=$(python3 scripts/release.py prepare "$BUMP")
+          args=()
+          if [ "$BREAKING" = true ]; then
+            args+=(--breaking)
+          fi
+          version=$(python3 scripts/release.py prepare "$BUMP" "${args[@]}")
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
           printf 'branch=release/%s\n' "$version" >> "$GITHUB_OUTPUT"
 
@@ -93,12 +103,17 @@ jobs:
         env:
           BRANCH: ${{ steps.version.outputs.branch }}
           VERSION: ${{ steps.version.outputs.version }}
+          BREAKING: ${{ inputs.breaking }}
         run: |
           git switch -c "$BRANCH"
           git config user.name "signal-fish-release[bot]"
           git config user.email "signal-fish-release[bot]@users.noreply.github.com"
           git add Cargo.toml README.md CHANGELOG.md docs .llm tests/compatibility.toml tests/server-spec/PROVENANCE.toml tests/wire-samples/PROVENANCE.toml
-          git commit -m "chore: prepare release ${VERSION}"
+          subject="chore: prepare release ${VERSION}"
+          if [ "$BREAKING" = true ]; then
+            subject="chore!: prepare release ${VERSION}"
+          fi
+          git commit -m "$subject"
           git push --set-upstream origin "$BRANCH"
 
       - name: Open release pull request
@@ -108,9 +123,14 @@ jobs:
           BRANCH: ${{ steps.version.outputs.branch }}
           VERSION: ${{ steps.version.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BREAKING: ${{ inputs.breaking }}
         run: |
+          title="chore: prepare release ${VERSION}"
+          if [ "$BREAKING" = true ]; then
+            title="chore!: prepare release ${VERSION}"
+          fi
           gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$BRANCH" \
-            --title "chore: prepare release ${VERSION}" \
+            --title "$title" \
             --body "Automated release preparation for \`${VERSION}\`. Merge only after every required check and review is green."

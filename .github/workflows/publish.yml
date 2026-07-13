@@ -25,6 +25,7 @@ env:
 
 jobs:
   release:
+    name: Release publication
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: crates-io
@@ -49,6 +50,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Verify default-branch HEAD and successful checks
         env:
@@ -65,13 +67,13 @@ jobs:
           checks=$(
             gh api --paginate \
               "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
-              --jq '[.check_runs[]] | length' |
+              --jq '[.check_runs[] | select(.name != "Release publication")] | length' |
               awk '{ total += $1 } END { print total + 0 }'
           )
           failures=$(
             gh api --paginate \
               "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
-              --jq '[.check_runs[] | select(
+              --jq '[.check_runs[] | select(.name != "Release publication") | select(
                 .status != "completed" or
                 (.conclusion != "success" and
                  .conclusion != "neutral" and
@@ -110,8 +112,7 @@ jobs:
             printf '::error::CHANGELOG.md has no dated %s section.\n' "$VERSION"
             exit 1
           fi
-          previous=$(python3 scripts/release.py previous-version "$VERSION")
-          release_type=$(python3 scripts/release.py release-type "$previous" "$VERSION")
+          release_type=$(python3 scripts/release.py semver-policy "$VERSION")
           printf 'release_type=%s\n' "$release_type" >> "$GITHUB_OUTPUT"
           python3 -m unittest scripts/test_release.py
 

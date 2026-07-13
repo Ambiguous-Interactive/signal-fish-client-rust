@@ -21,7 +21,9 @@ Actions and attestations to be enabled in repository settings.
 ## Prepare a release
 
 1. Run **Prepare Release** from the default branch.
-2. Select `major`, `minor`, or `patch` and leave `dry_run` enabled first.
+2. Select `major`, `minor`, or `patch` and leave `dry_run` enabled first. Enable
+   `breaking` only for an intentional major release or pre-1.0 breaking minor
+   release; this persists the stricter semver-checks policy in the changelog.
 3. Inspect the generated diff and validation output.
 4. Run it again with `dry_run` disabled. The workflow creates
    `release/X.Y.Z`, updates every version and provenance marker, cuts the

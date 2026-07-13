@@ -81,6 +81,37 @@ class PreparationTests(unittest.TestCase):
         self.assertIn('client_version = "1.3.0"', compatibility)
         self.assertIn('synced = "2026-07-13"', compatibility)
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
+        self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+
+    def test_pre_one_minor_can_persist_intentional_breaking_policy(self) -> None:
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace("1.2.3", "0.7.0"),
+                    encoding="utf-8",
+                )
+        version = release.prepare(
+            self.root,
+            "minor",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+        self.assertEqual(version, "0.8.0")
+        self.assertEqual(release.semver_policy(self.root, version), "major")
+        changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("<!-- semver-checks: major -->", changelog)
+
+    def test_breaking_patch_is_rejected_before_writes(self) -> None:
+        with self.assertRaisesRegex(release.ReleaseError, "breaking releases"):
+            release.prepare(
+                self.root,
+                "patch",
+                "2026-07-13",
+                allow_dirty=True,
+                breaking=True,
+            )
+        self.assertEqual(release.package_version(self.root), "1.2.3")
 
     def test_empty_unreleased_section_fails_closed(self) -> None:
         (self.root / "CHANGELOG.md").write_text(
@@ -177,11 +208,14 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertIn(marker, self.publish)
 
     def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
-        self.assertIn('release-type "$previous" "$VERSION"', self.publish)
+        self.assertIn('semver-policy "$VERSION"', self.publish)
         self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)
-        self.assertNotIn("chore!: prepare release", self.prepare)
+        self.assertIn('if [ "$BREAKING" = true ]', self.prepare)
+        self.assertIn("chore!: prepare release", self.prepare)
         self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
         self.assertIn("Expected one CycloneDX JSON file", self.publish)
+        self.assertIn("Release publication", self.publish)
+        self.assertIn("fetch-tags: true", self.publish)
 
 
 if __name__ == "__main__":
