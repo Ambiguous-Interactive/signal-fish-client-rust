@@ -366,13 +366,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 );
                 return events;
             }
-            if received_frames >= budget.receive_frames || received_bytes >= budget.receive_bytes {
-                self.polling_stats.receive_budget_exhaustions = self
-                    .polling_stats
-                    .receive_budget_exhaustions
-                    .saturating_add(1);
-                break;
-            }
         }
 
         // Emit Connected once the transport signals readiness.
@@ -964,13 +957,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
             received_frames = received_frames.saturating_add(1);
             received_bytes = next_bytes.unwrap_or(usize::MAX);
-            if received_frames >= budget.receive_frames || received_bytes >= budget.receive_bytes {
-                self.polling_stats.receive_budget_exhaustions = self
-                    .polling_stats
-                    .receive_budget_exhaustions
-                    .saturating_add(1);
-                break;
-            }
         }
     }
 
@@ -983,7 +969,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ) {
         self.abandon_client_owned(false);
         self.pending_inbound = None;
-        self.close_phase = ClosePhase::Closing { started_at: now };
+        self.close_phase = if self.send_in_flight {
+            ClosePhase::Flushing { started_at: now }
+        } else {
+            ClosePhase::Closing { started_at: now }
+        };
         events.push(self.core.disconnect(reason));
         self.drive_close_at(now, cx);
     }
@@ -2592,6 +2582,7 @@ mod tests {
         retained: Option<TransportFrame>,
         sent: Vec<TransportFrame>,
         replacement_seen: bool,
+        peer_closes_on_recv: bool,
     }
 
     impl Transport for AcceptedPendingSendTransport {
@@ -2616,7 +2607,12 @@ mod tests {
             &mut self,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
-            std::task::Poll::Pending
+            if self.peer_closes_on_recv {
+                self.peer_closes_on_recv = false;
+                std::task::Poll::Ready(None)
+            } else {
+                std::task::Poll::Pending
+            }
         }
 
         fn poll_close(
@@ -3707,6 +3703,7 @@ mod tests {
             retained: None,
             sent: Vec::new(),
             replacement_seen: false,
+            peer_closes_on_recv: false,
         };
         let mut client = SignalFishPollingClient::new(
             transport,
@@ -3908,8 +3905,35 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(client.polling_stats().receive_budget_exhaustions, 2);
+        assert_eq!(client.polling_stats().receive_budget_exhaustions, 1);
         assert!(client.pending_inbound.is_none());
+    }
+
+    #[test]
+    fn exact_receive_budget_without_backlog_is_not_an_exhaustion() {
+        let pong = TransportFrame::Text(
+            serde_json::to_string(&ServerMessage::Pong).expect("Pong should serialize"),
+        );
+        let transport = RecordingFrameTransport {
+            incoming: VecDeque::from([pong]),
+            ..RecordingFrameTransport::default()
+        };
+        let options = PollingClientOptions {
+            work_budget: PollingWorkBudget {
+                receive_frames: 1,
+                ..PollingWorkBudget::default()
+            },
+            ..PollingClientOptions::default()
+        };
+        let mut client =
+            SignalFishPollingClient::new_with_options(transport, default_config(), options);
+
+        let events = client.poll();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Pong)));
+        assert_eq!(client.polling_stats().receive_budget_exhaustions, 0);
     }
 
     #[test]
@@ -4084,6 +4108,7 @@ mod tests {
                 retained: None,
                 sent: Vec::new(),
                 replacement_seen: false,
+                peer_closes_on_recv: false,
             };
             let options = PollingClientOptions {
                 close_policy,
@@ -4104,6 +4129,30 @@ mod tests {
                 Some(TransportFrame::Text(text)) if text.contains("Authenticate")
             ));
         }
+    }
+
+    #[test]
+    fn peer_disconnect_finishes_a_backend_owned_send_before_close() {
+        let transport = AcceptedPendingSendTransport {
+            retained: None,
+            sent: Vec::new(),
+            replacement_seen: false,
+            peer_closes_on_recv: true,
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        let events = client.poll();
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Disconnected { .. })));
+        assert!(!client.send_in_flight);
+        assert_eq!(client.transport.sent.len(), 1);
+        assert!(matches!(
+            client.transport.sent.first(),
+            Some(TransportFrame::Text(text)) if text.contains("Authenticate")
+        ));
+        assert!(!client.is_closing());
     }
 
     #[test]
@@ -4162,11 +4211,14 @@ mod tests {
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
 
         client.close();
-        assert_eq!(client.transport.incoming.len(), 1);
+        assert!(client.transport.incoming.is_empty());
+        assert!(client.pending_inbound.is_some());
         assert!(client.is_closing());
 
         assert!(client.poll().is_empty());
         assert!(client.transport.incoming.is_empty());
+        assert!(client.pending_inbound.is_none());
+        assert_eq!(client.polling_stats().receive_budget_exhaustions, 1);
         assert!(client.is_closing());
     }
 
