@@ -71,8 +71,9 @@ peer disconnect.
   `Ready(Ok(()))` immediately. Acceptance transfers ownership; it is not peer
   delivery and does not wait for socket-wide `bufferedAmount` to reach zero.
 
-The default fixed watermark is 32 KiB. Adaptive mode is opt-in and defaults to
-a 50 ms latency target, 4 KiB floor, 32 KiB ceiling, and 1/8 EWMA smoothing:
+The default is adaptive with a 50 ms latency target, 4 KiB floor, 32 KiB
+ceiling, and 1/8 EWMA smoothing. Fixed and native-capacity policies are
+explicit opt-ins:
 
 ```text
 watermark = clamp(
@@ -134,8 +135,14 @@ Primary sources: [Godot WebSocketPeer API](https://docs.godotengine.org/en/stabl
 
 The `tests/godot-web-smoke` fixture is a standalone GDExtension workspace. It
 must remain free of GDScript networking code. Browser automation should assert
-its stable `SIGNAL_FISH_SMOKE` log markers and retain browser/server logs on
-failure.
+its stable `SIGNAL_FISH_SMOKE` and `SIGNAL_FISH_FORTRESS` log markers and
+retain browser/server logs on failure. The Fortress scenario launches two
+independent Chromium processes, derives stable handles from sorted Signal Fish
+UUIDs, and runs one polling cycle per rendered callback against a real server.
+Its impairment must produce measured rollback/load/resimulation, after which
+both peers must match exact game-state checksums, report in-sync health, drain
+all queues, conserve relay/server counts, and complete an observable v3
+`PlayerLeft` teardown.
 
 Web builds must use `godot/api-custom` so bindgen generates 32-bit interface
 types. Point `GODOT4_BIN` at the 4.5 editor, point the target-specific bindgen

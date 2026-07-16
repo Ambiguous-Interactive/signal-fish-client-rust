@@ -440,6 +440,14 @@ else
         if [ "$HTML_ERRORS" = false ]; then
             pass "No HTML error indicators in rendered pages"
         fi
+
+        # 4f. The published discovery file must be byte-for-byte identical to
+        #     the repository root source copied by hooks/llms_txt.py.
+        if cmp -s "$REPO_ROOT/llms.txt" "$SITE_DIR/llms.txt"; then
+            pass "Published llms.txt exactly matches the canonical root file"
+        else
+            fail "site/llms.txt is missing or differs from the canonical root llms.txt"
+        fi
     fi
 fi
 

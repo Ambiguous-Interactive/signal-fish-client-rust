@@ -22,6 +22,7 @@ on:
       - ".lychee.toml"
       - "mkdocs.yml"
       - "hooks/**"
+      - "llms.txt"
       - "requirements-docs.txt"
       - "scripts/check-docs-rendering.sh"
       - ".github/workflows/docs-validation.yml"
@@ -34,6 +35,7 @@ on:
       - ".lychee.toml"
       - "mkdocs.yml"
       - "hooks/**"
+      - "llms.txt"
       - "requirements-docs.txt"
       - "scripts/check-docs-rendering.sh"
       - ".github/workflows/docs-validation.yml"
@@ -80,6 +82,7 @@ jobs:
           args: >-
             --config .lychee.toml
             "**/*.md"
+            "llms.txt"
           fail: true
 
   # ──────────────────────────────────────────────────────────────

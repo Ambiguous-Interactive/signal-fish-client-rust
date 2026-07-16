@@ -7,6 +7,7 @@ edit_uri: edit/main/docs/
 
 hooks:
   - hooks/rustdoc_codeblocks.py
+  - hooks/llms_txt.py
 
 theme:
   name: material
@@ -145,6 +146,7 @@ nav:
       - Delivery Contract & Backpressure: delivery.md
       - Mesh (v3): mesh-guide.md
       - WebAssembly: wasm.md
+      - Godot + Fortress: fortress.md
       - Release Operations: releasing.md
   - Examples:
       - Walkthroughs: examples.md

@@ -33,7 +33,6 @@ jobs:
     name: Code coverage
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.0
@@ -58,10 +57,10 @@ jobs:
         run: cargo llvm-cov --all-features --no-report
 
       - name: Generate LCOV report
-        run: cargo llvm-cov --all-features --no-run --lcov --output-path lcov.info
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Generate HTML report
-        run: cargo llvm-cov --all-features --no-run --html --output-dir coverage-html
+        run: cargo llvm-cov report --html --output-dir coverage-html
 
       - name: Upload HTML coverage report
         if: always()
@@ -81,6 +80,8 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
 
-      - name: Print coverage summary
+      - name: Print coverage summary and enforce baseline
         if: always()
-        run: cargo llvm-cov --all-features --no-run --summary-only
+        # Measured at 93.70% after the issue #61 regression expansion. Keep a
+        # little platform/toolchain rounding headroom while preventing drift.
+        run: cargo llvm-cov report --summary-only --fail-under-lines 93

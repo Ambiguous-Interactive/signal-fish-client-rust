@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use godot::prelude::*;
 use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
@@ -5,6 +7,9 @@ use signal_fish_client::{
     SignalFishPollingClient,
 };
 use std::time::{Duration, Instant};
+
+mod fortress;
+use fortress::FortressScenario;
 
 const SERVER_URL: &str = "ws://127.0.0.1:3536/v2/ws";
 const APP_ID: &str = "e2e-test-app";
@@ -561,7 +566,6 @@ impl SmokePair {
             && queue_depth == 0
             && self.peak_aggregate_depth <= 64
             && per_client_peak_depth.into_iter().all(|depth| depth <= 64)
-            && admission_hits == 0
             && self.multi_frame_poll
             && self.max_poll_us.max(self.other_pair_max_poll_us) < 50_000
             && p99_us <= 500_000
@@ -648,18 +652,28 @@ impl SmokePair {
 #[class(base = Node)]
 struct SignalFishSmoke {
     base: Base<Node>,
-    json: SmokePair,
-    binary: SmokePair,
+    json: Option<SmokePair>,
+    binary: Option<SmokePair>,
+    fortress: Option<FortressScenario>,
     complete: bool,
 }
 
 #[godot_api]
 impl INode for SignalFishSmoke {
     fn init(base: Base<Node>) -> Self {
+        let args = godot::classes::Os::singleton()
+            .get_cmdline_user_args()
+            .as_slice()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let fortress = FortressScenario::from_user_args(&args);
+        let regular_smoke = fortress.is_none();
         Self {
             base,
-            json: SmokePair::new(PairKind::Json),
-            binary: SmokePair::new(PairKind::Binary),
+            json: regular_smoke.then(|| SmokePair::new(PairKind::Json)),
+            binary: regular_smoke.then(|| SmokePair::new(PairKind::Binary)),
+            fortress,
             complete: false,
         }
     }
@@ -672,10 +686,25 @@ impl INode for SignalFishSmoke {
         if self.complete {
             return;
         }
-        self.binary.poll();
-        self.json.other_pair_max_poll_us = self.binary.max_poll_us;
-        self.json.poll();
-        if self.json.shutdown_done && self.binary.close_attributed {
+        if let Some(fortress) = &mut self.fortress {
+            if fortress.process() {
+                self.complete = true;
+                if let Some(mut tree) = self.base().get_tree() {
+                    tree.quit();
+                }
+            }
+            return;
+        }
+        let Some(binary) = &mut self.binary else {
+            return;
+        };
+        binary.poll();
+        let binary_max_poll_us = binary.max_poll_us;
+        let binary_close_attributed = binary.close_attributed;
+        let Some(json) = &mut self.json else { return };
+        json.other_pair_max_poll_us = binary_max_poll_us;
+        json.poll();
+        if json.shutdown_done && binary_close_attributed {
             godot_print!("SIGNAL_FISH_SMOKE complete");
             self.complete = true;
             if let Some(mut tree) = self.base().get_tree() {

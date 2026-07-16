@@ -264,25 +264,28 @@ the client by calling `poll()` once per frame from the game loop.
 
 ```rust,ignore
 use signal_fish_client::{
-    EmscriptenWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
+    GodotWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
 };
 
-let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
+let transport = GodotWebSocketTransport::connect("wss://example.com/signal")?;
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
 For Godot buffering control, use
-`GodotWebSocketTransport::connect_with_options`. The default fixed policy
-normally admits up to 32 KiB of backend-buffered payload; one individually
-oversized frame may escape when the buffer is empty. `GodotBackpressurePolicy::adaptive()`
-opts into a 50 ms latency target with a 4 KiB floor and 32 KiB ceiling;
-`NativeCapacity` disables the latency watermark while retaining Godot's
-platform-safe capacity preflight. Pair this independently with
+`GodotWebSocketTransport::connect_with_options`. The default adaptive policy
+targets 50 ms of backend buffering with a 4 KiB floor and 32 KiB ceiling.
+One individually oversized frame may escape the latency watermark when the
+buffer is empty, but never Godot's native capacity boundary. Select `Fixed`
+for an explicit byte watermark or `NativeCapacity` to disable the latency
+watermark while retaining capacity-safe preflight. Pair this independently with
 `SignalFishPollingClient::new_with_options` for per-frame work and close-policy
 tuning. Backend-accepted, browser-buffered, and peer-delivered are separate
 stages; inspect `transport_diagnostics()` rather than treating buffered zero as
 per-frame completion.
+
+For rollback networking, see the [Godot + Fortress integration](fortress.md),
+including the bounded relay adapter and multi-process browser test used in CI.
 
 The constructor immediately queues an `Authenticate` message (just like
 `SignalFishClient::start`). It is offered on subsequent `poll()` calls as the

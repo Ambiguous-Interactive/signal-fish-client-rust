@@ -36,6 +36,11 @@ exclude = [
     "^https://crates\\.io/crates/signal-fish-client",
     "^https://docs\\.rs/signal-fish-client",
 
+    # New Pages routes return 404 until the merge-triggered deployment. MkDocs
+    # strict navigation and the post-build llms.txt comparison validate this
+    # route locally before publication.
+    "^https://ambiguous-interactive\\.github\\.io/signal-fish-client-rust/fortress/?$",
+
     # Badge image URLs — shields.io can be flaky and badges may not
     # exist for unpublished crates
     "^https://img\\.shields\\.io/",

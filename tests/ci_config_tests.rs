@@ -20,6 +20,66 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: Godot issue #61 system-regression policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod godot_issue_61_policy {
+    use super::*;
+
+    #[test]
+    fn fixture_and_workflow_pin_the_fortress_system_scenario() {
+        let workflow = read_project_file(".github/workflows/godot-web.yml");
+        let fixture = read_project_file("tests/godot-web-smoke/Cargo.toml");
+        let fixture: toml::Value =
+            toml::from_str(&fixture).expect("fixture manifest is valid TOML");
+        let fortress = fixture["dependencies"]["fortress-rollback"]
+            .as_str()
+            .expect("Fortress dependency uses a simple exact version");
+
+        assert_eq!(fortress, "=0.10.0");
+        assert!(
+            workflow.contains("SERVER_VERSION: \"0.4.0\"")
+                && workflow.contains("run-godot-fortress-e2e.mjs")
+                && workflow.contains("--locked")
+        );
+        for artifact in [
+            "godot-fortress-summary.json",
+            "godot-fortress-a.log",
+            "godot-fortress-b.log",
+            "fortress-metrics-before.prom",
+            "fortress-metrics-after.prom",
+        ] {
+            assert!(
+                workflow.contains(artifact),
+                "Godot CI must retain {artifact}"
+            );
+        }
+    }
+
+    #[test]
+    fn llms_txt_is_in_the_blocking_docs_validation_surface() {
+        let workflow = read_project_file(".github/workflows/docs-validation.yml");
+        let rendering = read_project_file("scripts/check-docs-rendering.sh");
+        assert!(workflow.matches("- \"llms.txt\"").count() >= 2);
+        assert!(workflow.contains("            \"llms.txt\""));
+        assert!(rendering.contains("cmp -s \"$REPO_ROOT/llms.txt\" \"$SITE_DIR/llms.txt\""));
+    }
+
+    #[test]
+    fn coverage_is_a_blocking_gate_with_a_measured_floor() {
+        let workflow = read_project_file(".github/workflows/coverage.yml");
+        assert!(!workflow.contains("continue-on-error: true"));
+        let floor = workflow
+            .split("--fail-under-lines")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<f64>().ok())
+            .expect("coverage workflow has a numeric line floor");
+        assert!(floor >= 93.0, "coverage floor regressed to {floor}");
+    }
+}
+
 /// Reads a file relative to the project root and returns its contents.
 fn read_project_file(relative_path: &str) -> String {
     let path = project_root().join(relative_path);

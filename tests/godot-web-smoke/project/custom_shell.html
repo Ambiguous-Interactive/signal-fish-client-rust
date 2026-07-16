@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$GODOT_PROJECT_NAME</title>
+  $GODOT_HEAD_INCLUDE
+  <style>
+    html, body, canvas { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #111827; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas">This browser does not support canvas.</canvas>
+  <script src="$GODOT_URL"></script>
+  <script>
+    const query = new URLSearchParams(window.location.search);
+    const role = query.get("fortress_role");
+    const roomCode = query.get("room_code");
+    const args = [];
+    if (role) {
+      args.push("--", "--fortress-role", role);
+      if (roomCode) args.push("--room-code", roomCode);
+    }
+    const config = $GODOT_CONFIG;
+    config.onExit = (code) => {
+      console.log("SIGNAL_FISH_SHELL game-complete", code);
+    };
+    const engine = new Engine(config);
+    engine.startGame({ args }).then(() => {
+      console.log("SIGNAL_FISH_SHELL startup-complete");
+    }).catch((error) => {
+      console.error("SIGNAL_FISH_SHELL startup-error", error);
+    });
+  </script>
+</body>
+</html>
