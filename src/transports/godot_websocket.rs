@@ -18,7 +18,6 @@ use godot::obj::{Gd, NewGd};
 use crate::error::SignalFishError;
 use crate::transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};
 
-const DEFAULT_HIGH_WATER_MARK: usize = 32 * 1024;
 const DEFAULT_ADAPTIVE_FLOOR: usize = 4 * 1024;
 const DEFAULT_ADAPTIVE_CEILING: usize = 32 * 1024;
 const DEFAULT_ADAPTIVE_LATENCY: Duration = Duration::from_millis(50);
@@ -58,16 +57,14 @@ impl GodotBackpressurePolicy {
 
 impl Default for GodotBackpressurePolicy {
     fn default() -> Self {
-        Self::Fixed {
-            high_water_mark_bytes: DEFAULT_HIGH_WATER_MARK,
-        }
+        Self::adaptive()
     }
 }
 
 /// Construction options for [`GodotWebSocketTransport`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GodotWebSocketOptions {
-    /// Outbound buffering policy. Defaults to a fixed 32 KiB watermark.
+    /// Outbound buffering policy. Defaults to the recommended adaptive policy.
     pub backpressure_policy: GodotBackpressurePolicy,
 }
 
@@ -92,6 +89,61 @@ enum NativeCapacityBoundary {
     GreaterThanOrEqual,
     /// Godot native rejects `buffered + next > capacity`.
     GreaterThan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionDecision {
+    Admit,
+    NativeCapacity,
+    Watermark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptedAdmissionAudit {
+    WithinWatermark,
+    EmptyBufferEscape(usize),
+    Violation,
+}
+
+fn accepted_admission_audit(
+    current: usize,
+    next: usize,
+    watermark: usize,
+) -> AcceptedAdmissionAudit {
+    let Some(total) = current.checked_add(next) else {
+        return AcceptedAdmissionAudit::Violation;
+    };
+    if total <= watermark {
+        AcceptedAdmissionAudit::WithinWatermark
+    } else if current == 0 {
+        AcceptedAdmissionAudit::EmptyBufferEscape(next)
+    } else {
+        AcceptedAdmissionAudit::Violation
+    }
+}
+
+fn admission_decision(
+    current: usize,
+    next: usize,
+    native_capacity: usize,
+    boundary: NativeCapacityBoundary,
+    watermark: usize,
+) -> AdmissionDecision {
+    let Some(total) = current.checked_add(next) else {
+        return AdmissionDecision::NativeCapacity;
+    };
+    if native_capacity != 0
+        && match boundary {
+            NativeCapacityBoundary::GreaterThanOrEqual => total >= native_capacity,
+            NativeCapacityBoundary::GreaterThan => total > native_capacity,
+        }
+    {
+        return AdmissionDecision::NativeCapacity;
+    }
+    if current != 0 && total > watermark {
+        return AdmissionDecision::Watermark;
+    }
+    AdmissionDecision::Admit
 }
 
 trait GodotWebSocketBackend {
@@ -219,6 +271,8 @@ pub struct GodotWebSocketTransport {
     close_started: bool,
     terminal: bool,
     close_info: Option<TransportCloseInfo>,
+    admission_watermark_violations: u64,
+    one_frame_escape_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -246,6 +300,23 @@ impl fmt::Debug for GodotWebSocketTransport {
 }
 
 impl GodotWebSocketTransport {
+    /// Accepted sends that exceeded the contemporaneous watermark while the
+    /// backend already owned buffered bytes.
+    ///
+    /// This is a defensive invariant counter and should remain zero. It does
+    /// not count the documented single-frame escape from an empty buffer.
+    #[must_use]
+    pub const fn admission_watermark_violations(&self) -> u64 {
+        self.admission_watermark_violations
+    }
+
+    /// Payload bytes accepted through the single-frame watermark escape while
+    /// the backend buffer was empty.
+    #[must_use]
+    pub const fn one_frame_escape_bytes(&self) -> u64 {
+        self.one_frame_escape_bytes
+    }
+
     /// Create a Godot `WebSocketPeer` and begin a non-blocking connection.
     ///
     /// The connection handshake advances when the transport is polled. For web
@@ -312,6 +383,8 @@ impl GodotWebSocketTransport {
             close_started: false,
             terminal: false,
             close_info: None,
+            admission_watermark_violations: 0,
+            one_frame_escape_bytes: 0,
         };
         transport.sample_cycle_at(Instant::now());
         transport
@@ -477,16 +550,6 @@ impl GodotWebSocketTransport {
         self.adaptive.previous_buffered = current;
         self.adaptive.accepted_since_sample = 0;
     }
-
-    fn native_capacity_refuses(&self, total: usize) -> bool {
-        if self.native_capacity() == 0 {
-            return false;
-        }
-        match self.backend.capacity_boundary() {
-            NativeCapacityBoundary::GreaterThanOrEqual => total >= self.native_capacity(),
-            NativeCapacityBoundary::GreaterThan => total > self.native_capacity(),
-        }
-    }
 }
 
 fn ewma_one_eighth(previous: u64, sample: u64) -> u64 {
@@ -534,22 +597,24 @@ impl Transport for GodotWebSocketTransport {
             .diagnostics
             .peak_buffered_bytes
             .max(self.diagnostics.current_buffered_bytes);
-        let Some(total) = current.checked_add(next_bytes) else {
-            self.diagnostics.backend_capacity_hits =
-                self.diagnostics.backend_capacity_hits.saturating_add(1);
-            return Poll::Pending;
-        };
-
-        if self.native_capacity_refuses(total) {
-            self.diagnostics.backend_capacity_hits =
-                self.diagnostics.backend_capacity_hits.saturating_add(1);
-            return Poll::Pending;
-        }
-
         let watermark = self.configured_watermark();
-        if total > watermark && current != 0 {
-            self.diagnostics.watermark_hits = self.diagnostics.watermark_hits.saturating_add(1);
-            return Poll::Pending;
+        match admission_decision(
+            current,
+            next_bytes,
+            self.native_capacity(),
+            self.backend.capacity_boundary(),
+            watermark,
+        ) {
+            AdmissionDecision::Admit => {}
+            AdmissionDecision::NativeCapacity => {
+                self.diagnostics.backend_capacity_hits =
+                    self.diagnostics.backend_capacity_hits.saturating_add(1);
+                return Poll::Pending;
+            }
+            AdmissionDecision::Watermark => {
+                self.diagnostics.watermark_hits = self.diagnostics.watermark_hits.saturating_add(1);
+                return Poll::Pending;
+            }
         }
 
         let result = match next_frame {
@@ -559,6 +624,18 @@ impl Transport for GodotWebSocketTransport {
         match result {
             BackendSendResult::Accepted => {
                 let _ = frame.take();
+                match accepted_admission_audit(current, next_bytes, watermark) {
+                    AcceptedAdmissionAudit::WithinWatermark => {}
+                    AcceptedAdmissionAudit::EmptyBufferEscape(bytes) => {
+                        self.one_frame_escape_bytes = self
+                            .one_frame_escape_bytes
+                            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+                    }
+                    AcceptedAdmissionAudit::Violation => {
+                        self.admission_watermark_violations =
+                            self.admission_watermark_violations.saturating_add(1);
+                    }
+                }
                 self.adaptive.accepted_since_sample = self
                     .adaptive
                     .accepted_since_sample
@@ -865,6 +942,8 @@ mod tests {
 
         assert_eq!(transport.diagnostics().accepted_frames, 4);
         assert!(transport.diagnostics().current_buffered_bytes > 7);
+        assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_bytes(), 0);
     }
 
     #[test]
@@ -997,12 +1076,16 @@ mod tests {
             transport.poll_send(&mut context(), &mut oversized),
             Poll::Ready(Ok(()))
         ));
+        assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_bytes(), 8 * 1024);
         let mut second = Some(TransportFrame::Binary(vec![1]));
         assert!(matches!(
             transport.poll_send(&mut context(), &mut second),
             Poll::Pending
         ));
         assert!(second.is_some());
+        assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_bytes(), 8 * 1024);
     }
 
     #[test]
@@ -1101,15 +1184,13 @@ mod tests {
         );
         assert_eq!(
             GodotWebSocketOptions::default().backpressure_policy,
-            GodotBackpressurePolicy::Fixed {
-                high_water_mark_bytes: 32 * 1024,
-            }
+            GodotBackpressurePolicy::adaptive()
         );
-        let fixed =
+        let adaptive =
             GodotWebSocketTransport::from_backend(Box::new(FakeBackend::new(PeerState::Open)));
         assert_eq!(
-            fixed.diagnostics().effective_watermark_bytes,
-            DEFAULT_HIGH_WATER_MARK as u64
+            adaptive.diagnostics().effective_watermark_bytes,
+            DEFAULT_ADAPTIVE_FLOOR as u64
         );
 
         let mut web = FakeBackend::new(PeerState::Open);
@@ -1134,6 +1215,67 @@ mod tests {
             },
         );
         assert_eq!(reversed.diagnostics().effective_watermark_bytes, 10);
+    }
+
+    #[test]
+    fn admission_decision_matches_exhaustive_spec() {
+        let values = [0, 1, 2, 3, 7, 8, 9, 10, 31, 32, usize::MAX];
+        for current in values {
+            for next in values {
+                for capacity in values {
+                    for watermark in values {
+                        for boundary in [
+                            NativeCapacityBoundary::GreaterThanOrEqual,
+                            NativeCapacityBoundary::GreaterThan,
+                        ] {
+                            let expected = match current.checked_add(next) {
+                                None => AdmissionDecision::NativeCapacity,
+                                Some(total)
+                                    if capacity != 0
+                                        && ((boundary
+                                            == NativeCapacityBoundary::GreaterThanOrEqual
+                                            && total >= capacity)
+                                            || (boundary
+                                                == NativeCapacityBoundary::GreaterThan
+                                                && total > capacity)) =>
+                                {
+                                    AdmissionDecision::NativeCapacity
+                                }
+                                Some(total) if current > 0 && total > watermark => {
+                                    AdmissionDecision::Watermark
+                                }
+                                Some(_) => AdmissionDecision::Admit,
+                            };
+                            assert_eq!(
+                                admission_decision(current, next, capacity, boundary, watermark),
+                                expected,
+                                "current={current} next={next} capacity={capacity} watermark={watermark} boundary={boundary:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_admission_audit_classifies_all_invariant_outcomes() {
+        assert_eq!(
+            accepted_admission_audit(1, 2, 3),
+            AcceptedAdmissionAudit::WithinWatermark
+        );
+        assert_eq!(
+            accepted_admission_audit(0, 4, 3),
+            AcceptedAdmissionAudit::EmptyBufferEscape(4)
+        );
+        assert_eq!(
+            accepted_admission_audit(2, 2, 3),
+            AcceptedAdmissionAudit::Violation
+        );
+        assert_eq!(
+            accepted_admission_audit(usize::MAX, 1, usize::MAX),
+            AcceptedAdmissionAudit::Violation
+        );
     }
 
     #[test]

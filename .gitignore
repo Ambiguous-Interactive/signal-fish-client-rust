@@ -18,6 +18,7 @@
 
 # Cargo.lock for library crates
 Cargo.lock
+!tests/godot-web-smoke/Cargo.lock
 
 # Editor swap files
 *.swp

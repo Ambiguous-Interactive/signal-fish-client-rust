@@ -1,0 +1,31 @@
+# Signal Fish Client SDK
+
+> Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol, including async, polling, Godot 4.5, WebAssembly, relay accountability, and mesh integrations.
+
+Use `SignalFishClient` with a continuously driven Tokio runtime. Use
+`SignalFishPollingClient` for every WebAssembly target and for frame-driven
+native engines. Official Godot native and web exports should use
+`GodotWebSocketTransport`; the raw Emscripten transport is only for custom hosts
+that explicitly link Emscripten's WebSocket library.
+
+## Documentation
+
+- [Getting started](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/getting-started/): Installation, features, and first client
+- [Client APIs](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/): Async and polling clients, work budgets, shutdown, and diagnostics
+- [Transport contract](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/transport/): Ownership, backpressure, framing, and close semantics
+- [Godot and WebAssembly](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/): Supported targets and current Godot 4.5 setup
+- [Godot + Fortress](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/fortress/): Bounded rollback relay and game-loop ordering
+- [Delivery and backpressure](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/delivery/): Delivery stages, capacity, metrics, and load testing
+- [Protocol versioning](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol-versioning/): v2/v3 negotiation and compatibility
+- [API reference](https://docs.rs/signal-fish-client): Rust API documentation
+
+## Project
+
+- [Repository](https://github.com/Ambiguous-Interactive/signal-fish-client-rust): Source, examples, fixtures, and CI
+- [Changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md): Released and unreleased behavior changes
+- [Issue #61](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/61): Godot throughput investigation and acceptance criteria
+
+## Optional
+
+- [Signal Fish server](https://github.com/Ambiguous-Interactive/signal-fish-server): Compatible signaling server
+- [Fortress Rollback](https://github.com/wallstop/fortress-rollback): Rollback networking library used by the Godot system fixture

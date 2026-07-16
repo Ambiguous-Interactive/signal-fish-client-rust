@@ -245,6 +245,8 @@ let mut client = SignalFishPollingClient::new(transport, config);
 
 // Optional: tune the bounded per-frame work and flush queued commands on close
 // with SignalFishPollingClient::new_with_options(...).
+// Godot admission defaults to an adaptive 50 ms target in the 4-32 KiB range,
+// further limited by the native backend; use connect_with_options to override it.
 
 // 3. Each frame, poll and handle events.
 for event in client.poll() {
@@ -270,6 +272,10 @@ signal-fish-client = { version = "0.8.0", default-features = false, features = [
 
 The custom Godot API binding is required for the 32-bit Emscripten ABI. Set
 `GODOT4_BIN` to the Godot 4.5 editor when compiling the web extension.
+
+For rollback games, the [Godot + Fortress guide](docs/fortress.md) documents
+the bounded binary relay and exact frame order exercised by the real
+two-process browser test in CI.
 
 `EmscriptenWebSocketTransport` is retained for advanced custom-template
 integrations. It requires the final host to link Emscripten's WebSocket

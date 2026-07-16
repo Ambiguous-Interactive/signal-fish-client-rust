@@ -126,17 +126,17 @@ enum ClosePhase {
 ///
 /// ```rust,ignore
 /// use signal_fish_client::{
-///     EmscriptenWebSocketTransport, SignalFishPollingClient,
+///     GodotWebSocketTransport, SignalFishPollingClient,
 ///     SignalFishConfig, JoinRoomParams, SignalFishEvent,
 /// };
 ///
 /// struct MyNode {
-///     client: Option<SignalFishPollingClient<EmscriptenWebSocketTransport>>,
+///     client: Option<SignalFishPollingClient<GodotWebSocketTransport>>,
 /// }
 ///
 /// impl MyNode {
 ///     fn ready(&mut self) {
-///         let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")
+///         let transport = GodotWebSocketTransport::connect("wss://server/ws")
 ///             .expect("failed to create WebSocket");
 ///         let config = SignalFishConfig::new("my_app_id");
 ///         self.client = Some(SignalFishPollingClient::new(transport, config));
@@ -262,15 +262,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// For transports that are already connected at construction time (e.g.,
     /// [`WebSocketTransport`](crate::WebSocketTransport)), `Connected` is
     /// emitted on the very first call to `poll()`. For transports with
-    /// asynchronous handshakes (e.g., `EmscriptenWebSocketTransport`),
-    /// `Connected` is deferred until the transport's connection handshake
-    /// completes (i.e., the browser's `onopen` callback fires).
+    /// asynchronous handshakes (e.g., `GodotWebSocketTransport`),
+    /// `Connected` is deferred until the transport reports that its connection
+    /// handshake has completed.
     ///
     /// Commands queued before `Connected` (including the automatic
     /// [`Authenticate`](crate::protocol::ClientMessage::Authenticate) message)
-    /// are flushed on every `poll()` call regardless of readiness. For
-    /// `EmscriptenWebSocketTransport`, these are buffered by the browser
-    /// and delivered once the connection opens.
+    /// are offered on every `poll()` call regardless of readiness. A transport
+    /// that is still connecting returns `Pending`, leaving the exact frame
+    /// caller-owned for a later poll.
     pub fn poll(&mut self) -> Vec<SignalFishEvent> {
         self.poll_at(Instant::now())
     }
@@ -692,6 +692,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// Return backend-owned transport buffering and admission diagnostics.
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         self.transport.diagnostics()
+    }
+
+    /// Borrow the owned transport for transport-specific read-only diagnostics.
+    ///
+    /// Protocol and I/O progress must still be driven through [`poll`](Self::poll).
+    #[must_use]
+    pub const fn transport(&self) -> &T {
+        &self.transport
     }
 
     /// Return a coherent synchronous snapshot of connection and room state.
@@ -2585,6 +2593,51 @@ mod tests {
         peer_closes_on_recv: bool,
     }
 
+    /// Accepts an initial FIFO burst, then permanently refuses caller-owned
+    /// frames and never completes close. This models a backend that transferred
+    /// multiple frames before becoming non-draining.
+    struct AcceptThenStallTransport {
+        accept_limit: usize,
+        accepted: Vec<TransportFrame>,
+        close_calls: usize,
+        abort_calls: usize,
+    }
+
+    impl Transport for AcceptThenStallTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            if self.accepted.len() >= self.accept_limit {
+                return std::task::Poll::Pending;
+            }
+            if let Some(frame) = frame.take() {
+                self.accepted.push(frame);
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            self.close_calls = self.close_calls.saturating_add(1);
+            std::task::Poll::Pending
+        }
+
+        fn abort(&mut self) {
+            self.abort_calls = self.abort_calls.saturating_add(1);
+        }
+    }
+
     impl Transport for AcceptedPendingSendTransport {
         fn poll_send(
             &mut self,
@@ -4036,6 +4089,14 @@ mod tests {
     }
 
     #[test]
+    fn transport_accessor_is_read_only_and_exposes_specific_diagnostics() {
+        let client = SignalFishPollingClient::new(MockTransport::new(), default_config());
+
+        assert!(!client.transport().closed);
+        assert!(client.transport().sent.is_empty());
+    }
+
+    #[test]
     fn abandon_close_discards_queued_work_and_starts_close() {
         let transport = RecordingFrameTransport::default();
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -4128,6 +4189,84 @@ mod tests {
                 client.transport.sent.first(),
                 Some(TransportFrame::Text(text)) if text.contains("Authenticate")
             ));
+        }
+    }
+
+    #[test]
+    fn accepted_burst_plus_retained_fifo_is_bounded_under_both_close_policies() {
+        for close_policy in [PollingClosePolicy::Abandon, PollingClosePolicy::Flush] {
+            let transport = AcceptThenStallTransport {
+                accept_limit: 2,
+                accepted: Vec::new(),
+                close_calls: 0,
+                abort_calls: 0,
+            };
+            let options = PollingClientOptions {
+                close_policy,
+                ..PollingClientOptions::default()
+            };
+            let config = default_config().with_shutdown_timeout(Duration::from_millis(10));
+            let mut client = SignalFishPollingClient::new_with_options(transport, config, options);
+            for _ in 0..4 {
+                client
+                    .cmd_queue
+                    .push_back(PollingCommand::Message(ClientMessage::Ping));
+            }
+            client.refresh_queue_depth();
+            let started_at = Instant::now();
+
+            let _ = client.poll_at(started_at);
+
+            assert_eq!(
+                client.transport.accepted.len(),
+                2,
+                "policy {close_policy:?}"
+            );
+            assert!(matches!(
+                client.transport.accepted.first(),
+                Some(TransportFrame::Text(text)) if text.contains("Authenticate")
+            ));
+            assert!(matches!(
+                client.transport.accepted.get(1),
+                Some(TransportFrame::Text(text)) if text.contains("Ping")
+            ));
+            assert_eq!(client.polling_stats().current_queue_depth, 3);
+
+            client.close_at(started_at);
+
+            let expected_retained = match close_policy {
+                PollingClosePolicy::Abandon => 0,
+                PollingClosePolicy::Flush => 3,
+            };
+            assert_eq!(
+                client.polling_stats().current_queue_depth,
+                expected_retained,
+                "policy {close_policy:?}"
+            );
+            assert_eq!(
+                client.polling_stats().abandoned_commands,
+                3 - expected_retained,
+                "policy {close_policy:?}"
+            );
+            assert_eq!(
+                client.transport.close_calls,
+                usize::from(close_policy == PollingClosePolicy::Abandon),
+                "policy {close_policy:?}"
+            );
+            assert!(client.is_closing(), "policy {close_policy:?}");
+
+            let _ = client.poll_at(started_at + Duration::from_millis(10));
+
+            assert!(!client.is_closing(), "policy {close_policy:?}");
+            assert_eq!(client.transport.abort_calls, 1, "policy {close_policy:?}");
+            assert_eq!(
+                client.transport.accepted.len(),
+                2,
+                "policy {close_policy:?}"
+            );
+            assert_eq!(client.polling_stats().current_queue_depth, 0);
+            assert_eq!(client.polling_stats().abandoned_commands, 3);
+            assert_eq!(client.polling_stats().close_deadline_expirations, 1);
         }
     }
 

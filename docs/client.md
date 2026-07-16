@@ -657,8 +657,9 @@ or a socket-wide drain.
 
 !!! tip "Call frequency"
     Call `poll()` once per frame. It is designed to be cheap when idle
-    (no messages buffered = no work done). Calling it more often than once
-    per frame is harmless but unnecessary.
+    (no messages buffered = no work done). Each additional call begins a new
+    bounded work cycle and a new adaptive-transport sample, so use extra calls
+    only when intentionally granting more networking work in that frame.
 
 ---
 
@@ -709,6 +710,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 | `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
 | `transport_diagnostics()` | `TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters. |
+| `transport()` | `&T` | Read-only access to transport-specific diagnostics; I/O remains driven by `poll()`. |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are

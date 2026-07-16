@@ -89,6 +89,14 @@ buffered byte count to reach zero. `Pending` before acceptance leaves the
 caller's `Option` intact. Close polling is idempotent. See
 `skills/transport-abstraction/SKILL.md`.
 
+Godot defaults to adaptive outbound admission: a 50 ms latency target with a
+4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
+transfers ownership immediately; browser buffering is observed separately.
+The blocking Godot workflow runs both the synthetic smoke and a real
+two-process Fortress Rollback session through Signal Fish Server 0.4.0. Its
+deterministic impairment must prove rollback/resimulation, exact state checksum
+convergence, in-sync health, relay/server conservation, and v3 peer departure.
+
 ### Client Usage Pattern
 
 Connect a transport, construct `SignalFishConfig`, and pass both to `SignalFishClient::start`, which returns the handle and event receiver and
@@ -175,6 +183,9 @@ work budget is 64 frames/64 KiB in each direction, and its default close policy
 abandons client-owned queued work. Adaptive backpressure and flush-on-close are
 explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
 `transport_diagnostics()` for backend buffering/admission diagnostics.
+Use the polling client's read-only `transport()` accessor for Godot's
+zero-expected `admission_watermark_violations()` counter and the separately
+accounted `one_frame_escape_bytes()` empty-buffer exception.
 
 ## Feature Flags
 

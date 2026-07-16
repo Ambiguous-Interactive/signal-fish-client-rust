@@ -84,6 +84,7 @@ jobs:
             --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
             --release \
+            --locked \
             --features raw-emscripten-proof
           cp target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm \
             target/godot-web-smoke/raw-emscripten-proof.wasm
@@ -91,7 +92,8 @@ jobs:
             --manifest-path tests/godot-web-smoke/Cargo.toml \
             --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
-            --release
+            --release \
+            --locked
 
       - name: Export with the official no-thread extension template
         run: |
@@ -159,6 +161,8 @@ jobs:
             fi
             sleep 0.1
           done
+          node scripts/run-godot-fortress-e2e.mjs \
+            tests/godot-web-smoke/project/build 2>&1 | tee fortress-browser.log
           node scripts/run-godot-web-smoke.mjs \
             tests/godot-web-smoke/project/build "${server_pid}" 2>&1 | tee browser.log
           wait "${server_pid}"
@@ -171,6 +175,7 @@ jobs:
           name: godot-web-smoke-logs
           path: |
             browser.log
+            fortress-browser.log
             raw-emscripten.log
             server.log
           if-no-files-found: warn
@@ -185,4 +190,9 @@ jobs:
             godot-throughput.csv
             metrics-before.prom
             metrics-after.prom
+            godot-fortress-summary.json
+            godot-fortress-a.log
+            godot-fortress-b.log
+            fortress-metrics-before.prom
+            fortress-metrics-after.prom
           if-no-files-found: warn
