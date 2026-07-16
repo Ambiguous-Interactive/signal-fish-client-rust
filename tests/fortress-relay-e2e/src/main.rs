@@ -108,6 +108,17 @@ fn advance_game(state: &mut GameState, inputs: &InputVec<Input>) {
     state.checksum = state.checksum.rotate_left(7) ^ mixed;
 }
 
+fn outbound_is_drained(
+    relay_queue_depth: usize,
+    client_queue_depth: u64,
+    relay_frames_enqueued: u64,
+    client_game_data_sent: u64,
+) -> bool {
+    relay_queue_depth == 0
+        && client_queue_depth == 0
+        && relay_frames_enqueued == client_game_data_sent
+}
+
 fn build_session(
     local: Uuid,
     remote: Uuid,
@@ -302,15 +313,19 @@ async fn main() -> Result<(), String> {
 
             relay_peak = relay_peak.max(relay.outbound_depth());
             drain_relay(&mut client, &relay, &mut relay_retries)?;
+            let relay_stats = relay.counters();
+            let client_stats = client.stats();
+            let polling_stats = client.polling_stats();
             if fortress.confirmed_frame().as_i32() >= TARGET_CONFIRMED_FRAMES
-                && relay.outbound_depth() == 0
-                && client.polling_stats().current_queue_depth == 0
+                && outbound_is_drained(
+                    relay.outbound_depth(),
+                    polling_stats.current_queue_depth,
+                    relay_stats.enqueued_outbound,
+                    client_stats.game_data_sent,
+                )
             {
                 let metrics = fortress.metrics();
-                let client_stats = client.stats();
-                let polling_stats = client.polling_stats();
                 let queue_age_stats = client.queue_age_stats();
-                let relay_stats = relay.counters();
                 let report = Report {
                     player_id: local.ok_or("local id disappeared")?,
                     current_frame: fortress.current_frame().as_i32(),
@@ -336,9 +351,7 @@ async fn main() -> Result<(), String> {
                     client_messages_undecodable: client_stats.messages_undecodable,
                     final_client_queue_depth: polling_stats.current_queue_depth,
                     peak_client_queue_depth: polling_stats.peak_queue_depth,
-                    peak_oldest_queue_age_us: queue_age_stats
-                        .peak_oldest_queue_age
-                        .as_micros(),
+                    peak_oldest_queue_age_us: queue_age_stats.peak_oldest_queue_age.as_micros(),
                     relay_frames_enqueued: relay_stats.enqueued_outbound,
                     relay_frames_enqueued_during_run: relay_stats
                         .enqueued_outbound
@@ -387,4 +400,21 @@ async fn main() -> Result<(), String> {
         relay.outbound_depth(),
         client.polling_stats()
     ))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::outbound_is_drained;
+
+    #[test]
+    fn drain_gate_waits_for_transport_accepted_frame_to_finish() {
+        assert!(outbound_is_drained(0, 0, 1_200, 1_200));
+        assert!(
+            !outbound_is_drained(0, 0, 1_200, 1_199),
+            "an empty client queue does not prove its accepted in-flight send has completed"
+        );
+        assert!(!outbound_is_drained(1, 0, 1_200, 1_200));
+        assert!(!outbound_is_drained(0, 1, 1_200, 1_200));
+    }
 }
