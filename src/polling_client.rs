@@ -727,7 +727,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return;
         }
         let _ = self.core.disconnect(Some("client closed".into()));
-        self.pending_inbound = None;
         self.close_phase = match self.options.close_policy {
             PollingClosePolicy::Abandon => {
                 self.abandon_client_owned(false);
@@ -901,6 +900,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return;
         }
 
+        self.drain_closing_inbound(cx);
+
         if matches!(self.close_phase, ClosePhase::Flushing { .. }) {
             if let Err(error) = self.drive_outbound(cx) {
                 error!(%error, "queued send failed while flushing close");
@@ -925,6 +926,50 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     self.close_phase = ClosePhase::Closed;
                 }
                 std::task::Poll::Pending => {}
+            }
+        }
+    }
+
+    fn drain_closing_inbound(&mut self, cx: &mut std::task::Context<'_>) {
+        let budget = self.options.work_budget;
+        let mut received_frames = 0usize;
+        let mut received_bytes = 0usize;
+        loop {
+            let frame = if let Some(frame) = self.pending_inbound.take() {
+                frame
+            } else {
+                match self.transport.poll_recv(cx) {
+                    std::task::Poll::Ready(Some(Ok(frame))) => frame,
+                    std::task::Poll::Ready(Some(Err(error))) => {
+                        error!(%error, "transport receive failed while closing");
+                        break;
+                    }
+                    std::task::Poll::Ready(None) | std::task::Poll::Pending => break,
+                }
+            };
+
+            let frame_bytes = frame_payload_len(&frame);
+            let next_bytes = received_bytes.checked_add(frame_bytes);
+            if received_frames > 0
+                && (received_frames >= budget.receive_frames
+                    || next_bytes.is_none_or(|bytes| bytes > budget.receive_bytes))
+            {
+                self.pending_inbound = Some(frame);
+                self.polling_stats.receive_budget_exhaustions = self
+                    .polling_stats
+                    .receive_budget_exhaustions
+                    .saturating_add(1);
+                break;
+            }
+
+            received_frames = received_frames.saturating_add(1);
+            received_bytes = next_bytes.unwrap_or(usize::MAX);
+            if received_frames >= budget.receive_frames || received_bytes >= budget.receive_bytes {
+                self.polling_stats.receive_budget_exhaustions = self
+                    .polling_stats
+                    .receive_budget_exhaustions
+                    .saturating_add(1);
+                break;
             }
         }
     }
@@ -4094,6 +4139,35 @@ mod tests {
                 "policy {close_policy:?}"
             );
         }
+    }
+
+    #[test]
+    fn close_drains_inbound_under_the_normal_receive_budget() {
+        let transport = RecordingFrameTransport {
+            incoming: VecDeque::from([
+                TransportFrame::Text("first late frame".to_string()),
+                TransportFrame::Binary(vec![1, 2, 3]),
+            ]),
+            close_pending: true,
+            ..RecordingFrameTransport::default()
+        };
+        let options = PollingClientOptions {
+            work_budget: PollingWorkBudget {
+                receive_frames: 1,
+                ..PollingWorkBudget::default()
+            },
+            ..PollingClientOptions::default()
+        };
+        let mut client =
+            SignalFishPollingClient::new_with_options(transport, default_config(), options);
+
+        client.close();
+        assert_eq!(client.transport.incoming.len(), 1);
+        assert!(client.is_closing());
+
+        assert!(client.poll().is_empty());
+        assert!(client.transport.incoming.is_empty());
+        assert!(client.is_closing());
     }
 
     #[test]

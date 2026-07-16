@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callback by treating successful `WebSocketPeer` submission as ownership
   transfer instead of waiting for browser socket-wide buffering to reach zero;
   capacity refusals now retain frames for ordered retry without loss.
+- Fixed polling close deadlines to release built-in WebSocket sockets
+  immediately, while bounded close progress drains already-buffered inbound
+  transport frames before completing the handshake.
 
 ## [0.8.0] - 2026-07-13
 

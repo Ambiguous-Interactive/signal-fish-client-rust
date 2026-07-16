@@ -203,7 +203,7 @@ try {
     timeout: 30_000,
   });
   if (expectRawEmscriptenLinkFailure) {
-    await waitForMarker("undefined symbol 'emscripten_websocket_new'");
+    await waitForMarker("undefined symbol 'emscripten_websocket_new'.");
     process.stdout.write("SIGNAL_FISH_SMOKE raw-emscripten-rejected\n");
   } else {
     for (const marker of [

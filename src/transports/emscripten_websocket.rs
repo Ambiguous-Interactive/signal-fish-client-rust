@@ -674,6 +674,30 @@ impl Transport for EmscriptenWebSocketTransport {
     fn close_info(&self) -> Option<TransportCloseInfo> {
         self.close_info.clone()
     }
+
+    fn abort(&mut self) {
+        let should_close = !self.closed;
+        self.closed = true;
+        if should_close {
+            // SAFETY: `self.socket` is still a live Emscripten handle. The
+            // immediate delete below unregisters callbacks without waiting for
+            // the close handshake to finish.
+            unsafe {
+                emscripten_websocket_close(self.socket, 1000, std::ptr::null());
+            }
+        }
+        if !self.deleted {
+            // SAFETY: deletion is guarded by `deleted` and unregisters every
+            // callback before `callback_state` is reclaimed by `Drop`.
+            unsafe {
+                let result = emscripten_websocket_delete(self.socket);
+                if result != EMSCRIPTEN_RESULT_SUCCESS {
+                    tracing::warn!("emscripten_websocket_delete returned {result}");
+                }
+            }
+            self.deleted = true;
+        }
+    }
 }
 // ── Drop Implementation ─────────────────────────────────────────────────────
 

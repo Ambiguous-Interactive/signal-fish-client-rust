@@ -12,6 +12,7 @@ const BINARY_PAYLOAD: &[u8] = &[0, 1, 2, 255];
 const LOAD_SECONDS: u64 = 16;
 const LOAD_RATE_PER_CLIENT: u64 = 136;
 const LOAD_TARGET_PER_CLIENT: u64 = LOAD_SECONDS * LOAD_RATE_PER_CLIENT;
+const LOAD_MAX_QUEUE_DEPTH_PER_CLIENT: u64 = 32;
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
@@ -417,18 +418,16 @@ impl SmokePair {
                 .saturating_duration_since(last_sample_at)
                 .as_millis()
                 .max(1);
-            let accepted_per_second = u128::from(
-                accepted.saturating_sub(self.sample_last_accepted),
-            )
-            .saturating_mul(1_000)
-            .checked_div(interval_ms)
-            .unwrap_or(0);
-            let received_per_second = u128::from(
-                received.saturating_sub(self.sample_last_received),
-            )
-            .saturating_mul(1_000)
-            .checked_div(interval_ms)
-            .unwrap_or(0);
+            let accepted_per_second =
+                u128::from(accepted.saturating_sub(self.sample_last_accepted))
+                    .saturating_mul(1_000)
+                    .checked_div(interval_ms)
+                    .unwrap_or(0);
+            let received_per_second =
+                u128::from(received.saturating_sub(self.sample_last_received))
+                    .saturating_mul(1_000)
+                    .checked_div(interval_ms)
+                    .unwrap_or(0);
             let sample = serde_json::json!({
                 "elapsed_ms": elapsed.as_millis(),
                 "command_depth": queue_depth,
@@ -551,8 +550,7 @@ impl SmokePair {
             .flatten()
             .all(|client| {
                 let diagnostics = client.transport_diagnostics();
-                diagnostics.peak_buffered_bytes
-                    <= diagnostics.effective_watermark_bytes
+                diagnostics.peak_buffered_bytes <= diagnostics.effective_watermark_bytes
             });
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
@@ -569,7 +567,9 @@ impl SmokePair {
             && p99_us <= 500_000
             && buffering_safe;
         let per_client_peak_buffered = [self.first.as_ref(), self.second.as_ref()].map(|client| {
-            client.map_or(0, |client| client.transport_diagnostics().peak_buffered_bytes)
+            client.map_or(0, |client| {
+                client.transport_diagnostics().peak_buffered_bytes
+            })
         });
         let per_client_watermark = [self.first.as_ref(), self.second.as_ref()].map(|client| {
             client.map_or(0, |client| {
@@ -729,7 +729,10 @@ fn offer_load(
     let Some(client) = client else {
         return true;
     };
-    while *offered < due {
+    let available =
+        LOAD_MAX_QUEUE_DEPTH_PER_CLIENT.saturating_sub(client.polling_stats().current_queue_depth);
+    let bounded_due = due.min(offered.saturating_add(available));
+    while *offered < bounded_due {
         let sent_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
         let data = serde_json::json!({
             "load_sender": sender,
@@ -748,16 +751,16 @@ fn offer_load(
 }
 
 fn aggregate_budget_exhaustions(first: Option<&Client>, second: Option<&Client>) -> (u64, u64) {
-    [first, second].into_iter().flatten().fold(
-        (0u64, 0u64),
-        |(send, receive), client| {
+    [first, second]
+        .into_iter()
+        .flatten()
+        .fold((0u64, 0u64), |(send, receive), client| {
             let stats = client.polling_stats();
             (
                 send.saturating_add(stats.send_budget_exhaustions),
                 receive.saturating_add(stats.receive_budget_exhaustions),
             )
-        },
-    )
+        })
 }
 
 fn aggregate_diagnostics(first: Option<&Client>, second: Option<&Client>) -> (u64, u64, u64, u64) {

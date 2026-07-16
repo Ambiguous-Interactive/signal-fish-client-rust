@@ -735,7 +735,10 @@ New commands are rejected immediately and session state is cleared. The
 default `Abandon` policy discards queued/unaccepted work and starts close;
 `Flush` first transfers existing work under the normal per-poll budget.
 Backend-accepted data remains ordered before Close. Subsequent `poll()` calls
-drive the lifecycle while `is_closing()` is true. If
+drive the lifecycle while `is_closing()` is true. Already-buffered inbound
+transport frames are drained under the normal receive budget so the peer close
+can complete; because session state is already cleared, these late frames are
+not emitted as application events. If
 `SignalFishConfig::shutdown_timeout` expires, remaining work is counted as
 abandoned, the transport is aborted, and `is_closing()` becomes false.
 After calling `close()`, `is_connected()` returns `false` and all command

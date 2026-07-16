@@ -79,7 +79,9 @@ application message.
 `begin_poll_cycle` lets adaptive transports sample once per application tick.
 `diagnostics` distinguishes backend-owned buffering/admission from the client
 queue. `abort` is invoked when the polling close deadline expires; defaulted
-hooks preserve existing custom transport implementations.
+hooks preserve existing custom transport implementations. The built-in
+WebSocket transports override `abort` to release their socket immediately;
+custom transports with owned resources should do the same.
 
 ## Receiving
 

@@ -631,6 +631,9 @@ impl Transport for GodotWebSocketTransport {
 
         let state = self.advance();
         if state == PeerState::Closed {
+            if self.backend.available_packet_count() > 0 {
+                return Poll::Pending;
+            }
             self.record_close();
             self.terminal = true;
             return Poll::Ready(Ok(()));
@@ -1326,6 +1329,29 @@ mod tests {
             transport.close_info().and_then(|info| info.code),
             Some(4000)
         );
+    }
+
+    #[test]
+    fn close_waits_for_already_buffered_inbound_packets() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.states.push_back(PeerState::Closed);
+        backend
+            .packets
+            .push_back(Ok((b"last packet".to_vec(), true)));
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Pending
+        ));
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(Some(Ok(TransportFrame::Text(text)))) if text == "last packet"
+        ));
+        assert!(matches!(
+            transport.poll_close(&mut context()),
+            Poll::Ready(Ok(()))
+        ));
     }
 
     #[test]

@@ -65,7 +65,7 @@ pub type WsStream =
 /// receive state across `Poll::Pending` and registers the supplied waker.
 #[derive(Debug)]
 pub struct WebSocketTransport {
-    stream: WsStream,
+    stream: Option<WsStream>,
     closed: bool,
     close_info: Option<TransportCloseInfo>,
     send_started: bool,
@@ -99,7 +99,7 @@ impl WebSocketTransport {
         tracing::info!(url = %url, "WebSocket connection established");
 
         Ok(Self {
-            stream,
+            stream: Some(stream),
             closed: false,
             close_info: None,
             send_started: false,
@@ -114,7 +114,7 @@ impl WebSocketTransport {
     /// any other connection setup that [`connect`](Self::connect) does not expose.
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
-            stream,
+            stream: Some(stream),
             closed: false,
             close_info: None,
             send_started: false,
@@ -152,8 +152,12 @@ impl Transport for WebSocketTransport {
         if self.closed || self.peer_close_pending {
             return Poll::Ready(Err(SignalFishError::TransportClosed));
         }
+        let Some(stream) = self.stream.as_mut() else {
+            self.closed = true;
+            return Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         if !self.send_started {
-            match Pin::new(&mut self.stream).poll_ready(cx) {
+            match Pin::new(&mut *stream).poll_ready(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => {
                     return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
@@ -167,12 +171,12 @@ impl Transport for WebSocketTransport {
                 TransportFrame::Text(text) => Message::Text(text.into()),
                 TransportFrame::Binary(bytes) => Message::Binary(bytes.into()),
             };
-            if let Err(error) = Pin::new(&mut self.stream).start_send(message) {
+            if let Err(error) = Pin::new(&mut *stream).start_send(message) {
                 return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
             }
             self.send_started = true;
         }
-        match Pin::new(&mut self.stream).poll_flush(cx) {
+        match Pin::new(&mut *stream).poll_flush(cx) {
             Poll::Ready(Ok(())) => {
                 self.send_started = false;
                 Poll::Ready(Ok(()))
@@ -189,9 +193,16 @@ impl Transport for WebSocketTransport {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return Poll::Ready(None);
+        }
+        let Some(stream) = self.stream.as_mut() else {
+            self.closed = true;
+            return Poll::Ready(None);
+        };
         loop {
             if self.control_flush_pending {
-                match Pin::new(&mut self.stream).poll_flush(cx) {
+                match Pin::new(&mut *stream).poll_flush(cx) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(error)) => {
                         self.control_flush_pending = false;
@@ -211,7 +222,7 @@ impl Transport for WebSocketTransport {
                     }
                 }
             }
-            let msg = match Pin::new(&mut self.stream).poll_next(cx) {
+            let msg = match Pin::new(&mut *stream).poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(value) => match value {
                     Some(Ok(msg)) => msg,
@@ -280,8 +291,12 @@ impl Transport for WebSocketTransport {
         if self.closed {
             return Poll::Ready(Ok(()));
         }
+        let Some(stream) = self.stream.as_mut() else {
+            self.closed = true;
+            return Poll::Ready(Ok(()));
+        };
         if self.peer_close_pending {
-            return match Pin::new(&mut self.stream).poll_flush(cx) {
+            return match Pin::new(&mut *stream).poll_flush(cx) {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Ok(())) => {
                     self.control_flush_pending = false;
@@ -297,7 +312,7 @@ impl Transport for WebSocketTransport {
                 }
             };
         }
-        match Pin::new(&mut self.stream).poll_close(cx) {
+        match Pin::new(&mut *stream).poll_close(cx) {
             Poll::Ready(Ok(())) => {
                 self.closed = true;
                 Poll::Ready(Ok(()))
@@ -312,6 +327,14 @@ impl Transport for WebSocketTransport {
 
     fn close_info(&self) -> Option<TransportCloseInfo> {
         self.close_info.clone()
+    }
+
+    fn abort(&mut self) {
+        self.stream = None;
+        self.closed = true;
+        self.send_started = false;
+        self.control_flush_pending = false;
+        self.peer_close_pending = false;
     }
 }
 
@@ -581,6 +604,33 @@ mod tests {
         crate::transport::close_transport(&mut transport)
             .await
             .expect("second close must succeed (idempotent)");
+    }
+
+    #[tokio::test]
+    async fn abort_drops_the_socket_without_waiting_for_a_close_handshake() {
+        let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
+        let url = start_mock_server(move |mut ws| async move {
+            let disconnected = matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), ws.next()).await,
+                Ok(None | Some(Err(_)))
+            );
+            let _ = disconnected_tx.send(disconnected);
+        })
+        .await;
+
+        let mut transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+        transport.abort();
+
+        assert!(transport.closed);
+        assert!(transport.stream.is_none());
+        assert!(
+            disconnected_rx
+                .await
+                .expect("server task must report the disconnect"),
+            "dropping the client stream must release the server connection"
+        );
     }
 
     #[tokio::test]

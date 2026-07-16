@@ -29,6 +29,13 @@ throughput regression merge-blocking.
 - Completed a second adversarial loop and targeted re-reviews after every
   finding; production, documentation/tests, and browser-E2E reviewers all
   reported zero remaining issues.
+- Opened PR #62 and repaired the first CI pass by restoring the Godot 0.4.5
+  binding required by Rust 1.87 and removing a Rust 1.97 rustdoc warning.
+- Addressed all three Cursor Bugbot findings with built-in socket abort
+  teardown, bounded inbound draining during close, a Godot buffered-packet
+  close guard, and a 32-command per-client load-producer cap.
+- Diagnosed the first browser workflow failure as a punctuation boundary in
+  the expected raw-Emscripten linker marker and corrected the exact marker.
 
 ## Evidence
 
@@ -41,7 +48,7 @@ throughput regression merge-blocking.
   acceptance was capped at 62.5 sends/s by one-frame-per-rendered-callback
   completion.
 - `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings &&
-  cargo test --all-features` — final post-review run passed: 279 library unit
+  cargo test --all-features` — final post-review run passed: 282 library unit
   tests plus all integration/doc suites (3 live-server tests remained
   intentionally environment-gated).
 - Focused revised suites — 102 polling tests and 30 Godot transport tests passed.
@@ -51,11 +58,12 @@ throughput regression merge-blocking.
 - `node --check scripts/run-godot-web-smoke.mjs` — passed.
 - `python3 scripts/pre-commit-llm.py` — passed and regenerated the skill index.
 - `uv run --with pytest pytest -q scripts/test_pre_commit_llm.py` — 111 passed.
-- The full browser export/run requires CI's Emscripten, Chromium, and Playwright
-  setup; local fixture compilation is complete and the browser run is pending.
+- The first full browser workflow reached the intended raw-Emscripten linker
+  rejection but its marker assertion rejected the following period; the fixed
+  workflow is pending a new-head CI run.
 
 ## Next
 
-- Commit and push while preserving the folder-based skill migration.
-- Open a draft PR, await all CI and available automated reviewers, address all
-  actionable feedback, and repeat until green with no unresolved findings.
+- Run the complete final gate, push the review/CI corrections, and repeat CI
+  and automated review until every required check is green with no unresolved
+  findings.
