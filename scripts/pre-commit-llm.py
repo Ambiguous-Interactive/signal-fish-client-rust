@@ -5,7 +5,8 @@ Pre-commit hook for .llm/ folder enforcement.
 Checks include:
 - Sync selected crate-version references to Cargo.toml package version.
 - Enforce .llm markdown line limits.
-- Auto-generate .llm/skills/index.md from skill file headings/descriptions.
+- Validate folder-based Agent Skills metadata and naming.
+- Auto-generate .llm/skills/index.md from SKILL.md metadata and headings.
 - Validate docs and mkdocs consistency checks.
 - Reject stale release-specific wording for unstable rustdoc removals.
 - Advisory: warn about absolute guarantee language in Rust doc comments.
@@ -17,7 +18,10 @@ import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-MAX_LINES = 300
+MAX_LINES = 500
+MAX_SKILL_NAME_LENGTH = 64
+MAX_SKILL_DESCRIPTION_LENGTH = 1024
+SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LLM_DIR = REPO_ROOT / ".llm"
 SKILLS_DIR = LLM_DIR / "skills"
@@ -167,7 +171,7 @@ def sync_crate_version_references(crate_version: str) -> Tuple[List[str], List[P
                 rf"\g<1>{crate_version}",
             )
         ],
-        REPO_ROOT / ".llm" / "skills" / "crate-publishing.md": [
+        REPO_ROOT / ".llm" / "skills" / "crate-publishing" / "SKILL.md": [
             (
                 re.compile(r'(^version\s*=\s*")([^"]+)(")', flags=re.MULTILINE),
                 rf"\g<1>{crate_version}\g<3>",
@@ -218,6 +222,127 @@ def check_line_counts(md_files: List[Path]) -> List[str]:
                 )
         except OSError as e:
             errors.append(f"  Could not read {path}: {e}")
+    return errors
+
+
+def discover_skill_files(skills_dir: Path) -> List[Path]:
+    """Return standard one-directory-deep ``<name>/SKILL.md`` files."""
+    if not skills_dir.is_dir():
+        return []
+    return sorted(path for path in skills_dir.glob("*/SKILL.md") if path.is_file())
+
+
+def parse_skill_frontmatter(text: str) -> Tuple[dict, List[str]]:
+    """Parse the simple top-level YAML scalars used by project skills.
+
+    Agent Skills permits general YAML. Project metadata intentionally uses only
+    one-line string values so the pre-commit hook remains dependency-free.
+    """
+    errors = []
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, ["frontmatter must start on the first line with `---`"]
+
+    try:
+        closing = next(
+            index for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration:
+        return {}, ["frontmatter is missing its closing `---` delimiter"]
+
+    metadata = {}
+    for line_number, line in enumerate(lines[1:closing], start=2):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[:1].isspace() or ":" not in line:
+            errors.append(
+                f"frontmatter line {line_number} must be a top-level `key: value` scalar"
+            )
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            errors.append(
+                f"frontmatter line {line_number} must have a non-empty key and value"
+            )
+            continue
+        if key in metadata:
+            errors.append(f"frontmatter key `{key}` is duplicated")
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        metadata[key] = value
+
+    return metadata, errors
+
+
+def validate_skill_files(skill_files: List[Path]) -> List[str]:
+    """Validate Agent Skills metadata, naming, and activation descriptions."""
+    errors = []
+    for path in skill_files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  {path}: could not read: {e}")
+            continue
+
+        metadata, parse_errors = parse_skill_frontmatter(text)
+        prefix = path_for_bash(path, REPO_ROOT)
+        errors.extend(f"  {prefix}: {error}" for error in parse_errors)
+
+        name = metadata.get("name", "").strip()
+        description = metadata.get("description", "").strip()
+        if not name:
+            errors.append(f"  {prefix}: missing required `name` metadata")
+        else:
+            if len(name) > MAX_SKILL_NAME_LENGTH:
+                errors.append(
+                    f"  {prefix}: `name` exceeds {MAX_SKILL_NAME_LENGTH} characters"
+                )
+            if not SKILL_NAME_RE.fullmatch(name):
+                errors.append(
+                    f"  {prefix}: `name` must contain lowercase letters, digits, and single hyphens only"
+                )
+            if name != path.parent.name:
+                errors.append(
+                    f"  {prefix}: `name` `{name}` must match parent directory `{path.parent.name}`"
+                )
+
+        if not description:
+            errors.append(f"  {prefix}: missing required `description` metadata")
+        else:
+            if len(description) > MAX_SKILL_DESCRIPTION_LENGTH:
+                errors.append(
+                    f"  {prefix}: `description` exceeds {MAX_SKILL_DESCRIPTION_LENGTH} characters"
+                )
+            if not re.search(r"\buse when\b", description, flags=re.IGNORECASE):
+                errors.append(
+                    f"  {prefix}: `description` must state activation context with `Use when`"
+                )
+
+    return errors
+
+
+def validate_skill_layout(skills_dir: Path, skill_files: List[Path]) -> List[str]:
+    """Reject legacy flat guides and skill directories without SKILL.md."""
+    if not skills_dir.is_dir():
+        return []
+
+    errors = []
+    for path in sorted(skills_dir.glob("*.md")):
+        if path.name != "index.md":
+            errors.append(
+                f"  {path_for_bash(path, REPO_ROOT)}: legacy flat skill; move it to `<name>/SKILL.md`"
+            )
+
+    discovered_dirs = {path.parent for path in skill_files}
+    for path in sorted(item for item in skills_dir.iterdir() if item.is_dir()):
+        if path not in discovered_dirs:
+            errors.append(
+                f"  {path_for_bash(path, REPO_ROOT)}: skill directory is missing `SKILL.md`"
+            )
     return errors
 
 
@@ -289,15 +414,15 @@ def extract_first_paragraph(text: str) -> str:
 
 
 def generate_index(skill_files: List[Path]) -> str:
-    """Generate the content of skills/index.md."""
+    """Generate the content of skills/index.md from Agent Skills metadata."""
     lines = [
         "# Skills Index",
         "",
         "> **AUTO-GENERATED** — Do not edit this file manually.",
         "> It is regenerated by `scripts/pre-commit-llm.py` on every commit.",
         "",
-        "This index lists all skill reference guides available in `.llm/skills/`.",
-        "Each skill is a focused, practical guide for a specific topic in this codebase.",
+        "This catalog lists the Agent Skills available in `.llm/skills/`.",
+        "Agents discover metadata here and load a skill's `SKILL.md` only when needed.",
         "",
         "## Available Skills",
         "",
@@ -311,7 +436,8 @@ def generate_index(skill_files: List[Path]) -> str:
             continue
 
         title = extract_title(text)
-        description = extract_first_paragraph(text)
+        metadata, _ = parse_skill_frontmatter(text)
+        description = metadata.get("description", "").strip()
 
         # Truncate long descriptions at word boundary
         if len(description) > 120:
@@ -773,19 +899,18 @@ def main() -> int:
             rel = changed.relative_to(REPO_ROOT)
             print(f"Synced crate version reference in {rel} -> {crate_version}")
 
-    # 2. Collect all .md files under .llm/
+    # 2. Discover and validate standard folder-based Agent Skills
+    skill_files = discover_skill_files(SKILLS_DIR)
+    skill_validation_errors = validate_skill_layout(SKILLS_DIR, skill_files)
+    skill_validation_errors.extend(validate_skill_files(skill_files))
+
+    # 3. Collect all .md files under .llm/
     all_md = find_md_files(LLM_DIR)
     index_generation_errors = []
 
-    # Separate skill files (excluding index.md itself) from other .llm/ files
-    skill_files = sorted(
-        f for f in SKILLS_DIR.glob("*.md")
-        if f.name != "index.md"
-    ) if SKILLS_DIR.exists() else []
-
-    # 3. Generate the index BEFORE line-count checks
+    # 4. Generate the index BEFORE line-count checks
     #    so that the index can be checked too
-    if skill_files:
+    if SKILLS_DIR.exists():
         index_content = generate_index(skill_files)
         try:
             INDEX_FILE.write_text(index_content, encoding="utf-8")
@@ -803,10 +928,10 @@ def main() -> int:
     # Refresh the list after generating index
     all_md = find_md_files(LLM_DIR)
 
-    # 4. Check line counts for all .md files under .llm/
+    # 5. Check line counts for all .md files under .llm/
     line_count_errors = check_line_counts(all_md)
 
-    # 5. Run devcontainer documentation validation (non-blocking)
+    # 6. Run devcontainer documentation validation (non-blocking)
     validate_script = REPO_ROOT / "scripts" / "validate-devcontainer-docs.sh"
     if validate_script.exists():
         result = subprocess.run(
@@ -830,28 +955,28 @@ def main() -> int:
             if result.stdout.strip():
                 print(result.stdout.strip())
 
-    # 6. Validate mkdocs.yml nav references (blocking)
+    # 7. Validate mkdocs.yml nav references (blocking)
     nav_errors = validate_mkdocs_nav()
 
-    # 7. Validate fenced YAML workflow step indentation in docs (blocking)
+    # 8. Validate fenced YAML workflow step indentation in docs (blocking)
     yaml_step_indentation_errors = validate_yaml_step_indentation(all_md)
 
-    # 8. Validate nav card labels match page titles (blocking)
+    # 9. Validate nav card labels match page titles (blocking)
     nav_card_errors = validate_doc_nav_card_consistency()
 
-    # 9. Validate changelog-style reference links are version-consistent (blocking)
+    # 10. Validate changelog-style reference links are version-consistent (blocking)
     changelog_link_errors = validate_changelog_example_links(all_md)
 
-    # 10. Validate unstable feature wording in .llm markdown (blocking)
+    # 11. Validate unstable feature wording in .llm markdown (blocking)
     unstable_wording_errors = validate_unstable_feature_wording(all_md)
 
-    # 11. Validate required changelog Added entries for public APIs (blocking)
+    # 12. Validate required changelog Added entries for public APIs (blocking)
     changelog_added_api_errors = validate_changelog_added_api_entries()
 
-    # 12. Validate Python syntax compatibility for plain `python3` entrypoints
+    # 13. Validate Python syntax compatibility for plain `python3` entrypoints
     python_syntax_errors = validate_plain_python_annotation_syntax()
 
-    # 13. Advisory: warn about absolute guarantee language in doc comments
+    # 14. Advisory: warn about absolute guarantee language in doc comments
     guarantee_warnings = warn_absolute_guarantee_language()
     if guarantee_warnings:
         print(
@@ -869,12 +994,17 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # 14. Report all collected errors together
+    # 15. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,
             "crate version synchronization checks failed:",
             "Fix Cargo.toml version parsing or read/write permissions in version-sync target files.",
+        ),
+        (
+            skill_validation_errors,
+            "Agent Skills validation failed:",
+            "Use `.llm/skills/<name>/SKILL.md` with valid `name` and trigger-focused `description` frontmatter.",
         ),
         (
             line_count_errors,
@@ -940,7 +1070,7 @@ def main() -> int:
         rel = path.relative_to(REPO_ROOT)
         counts.append(f"  {rel}: {n} lines")
 
-    print("All .llm/ files are within the 300-line limit:")
+    print(f"All .llm/ files are within the {MAX_LINES}-line limit:")
     for c in counts:
         print(c)
 

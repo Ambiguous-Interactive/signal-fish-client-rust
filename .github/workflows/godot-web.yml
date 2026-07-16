@@ -122,7 +122,7 @@ jobs:
           set -euo pipefail
           node scripts/run-godot-web-smoke.mjs \
             tests/godot-web-smoke/project/build-negative \
-            --expect-raw-emscripten-link-failure | tee raw-emscripten.log
+            --expect-raw-emscripten-link-failure 2>&1 | tee raw-emscripten.log
 
       - name: Download pinned Signal Fish server
         run: |
@@ -160,7 +160,7 @@ jobs:
             sleep 0.1
           done
           node scripts/run-godot-web-smoke.mjs \
-            tests/godot-web-smoke/project/build "${server_pid}" | tee browser.log
+            tests/godot-web-smoke/project/build "${server_pid}" 2>&1 | tee browser.log
           wait "${server_pid}"
           trap - EXIT
 
@@ -173,4 +173,16 @@ jobs:
             browser.log
             raw-emscripten.log
             server.log
+          if-no-files-found: warn
+
+      - name: Upload Godot throughput time series
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: godot-web-throughput
+          path: |
+            godot-throughput.json
+            godot-throughput.csv
+            metrics-before.prom
+            metrics-after.prom
           if-no-files-found: warn

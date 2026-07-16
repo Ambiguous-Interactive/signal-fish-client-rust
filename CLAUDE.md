@@ -16,6 +16,9 @@ Run this before every commit. All three steps must pass with zero warnings.
 
 ## Skills
 
-Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
+Focused Agent Skills live in `.llm/skills/<name>/SKILL.md`; the generated
+`.llm/skills/index.md` catalogs them. When a task matches a skill's frontmatter
+description, read its complete `SKILL.md` before acting and resolve relative
+resources from that skill directory.
 
 Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `ci-configuration`, `markdown-and-doc-validation`.

@@ -379,7 +379,11 @@ class TestCrateVersionSync:
             "- **Version:** 0.1.0\n",
             encoding="utf-8",
         )
-        (fake_root / ".llm" / "skills" / "crate-publishing.md").write_text(
+        publishing_skill = (
+            fake_root / ".llm" / "skills" / "crate-publishing" / "SKILL.md"
+        )
+        publishing_skill.parent.mkdir()
+        publishing_skill.write_text(
             "# Crate Publishing\n\n"
             "```toml\n"
             '[package]\nname = "signal-fish-client"\nversion = "0.1.0"\n'
@@ -400,7 +404,7 @@ class TestCrateVersionSync:
             "docs/client.md",
             "docs/protocol.md",
             ".llm/context.md",
-            ".llm/skills/crate-publishing.md",
+            ".llm/skills/crate-publishing/SKILL.md",
         }
 
         assert 'signal-fish-client = "1.2.3"' in (
@@ -421,9 +425,7 @@ class TestCrateVersionSync:
         assert "- **Version:** 1.2.3" in (
             fake_root / ".llm" / "context.md"
         ).read_text(encoding="utf-8")
-        publishing = (fake_root / ".llm" / "skills" / "crate-publishing.md").read_text(
-            encoding="utf-8"
-        )
+        publishing = publishing_skill.read_text(encoding="utf-8")
         assert 'version = "1.2.3"' in publishing
         assert "# Bump version (0.1.0 -> 0.2.0)" in publishing
 
@@ -606,9 +608,10 @@ class TestMainFunctionValidation:
 
         skills_dir = tmp_path / "repo" / ".llm" / "skills"
         skills_dir.mkdir()
-        (skills_dir / "example.md").write_text(
-            "# Example Skill\n\nDescription.\n",
-            encoding="utf-8",
+        _write_modern_skill(
+            skills_dir,
+            "example",
+            "Describe an example. Use when testing index write failures.",
         )
         monkeypatch.setattr(_mod, "SKILLS_DIR", skills_dir)
         monkeypatch.setattr(
@@ -713,9 +716,20 @@ _UNDERSCORE_EMPHASIS_RE = re.compile(r"(?<!\w)_[^_\n]+_(?!\w)")
 
 
 def _make_skill_file(directory: Path, name: str, content: str) -> Path:
-    """Write a mock skill markdown file and return its Path."""
-    path = directory / name
-    path.write_text(content, encoding="utf-8")
+    """Write a mock folder-based Agent Skill and return its SKILL.md path."""
+    skill_name = Path(name).stem
+    skill_dir = directory / skill_name
+    skill_dir.mkdir(parents=True)
+    path = skill_dir / "SKILL.md"
+    description = extract_first_paragraph(content)
+    path.write_text(
+        "---\n"
+        f"name: {skill_name}\n"
+        f"description: {description}\n"
+        "---\n\n"
+        f"{content}",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -807,8 +821,8 @@ class TestGenerateIndex:
         )
         output = generate_index([skill_a, skill_b])
         # Each skill should appear as an H3 link
-        assert "### [Alpha Skill](alpha.md)" in output
-        assert "### [Beta Skill](beta.md)" in output
+        assert "### [Alpha Skill](alpha/SKILL.md)" in output
+        assert "### [Beta Skill](beta/SKILL.md)" in output
         # Descriptions should appear
         assert "Alpha does alpha things." in output
         assert "Beta does beta things." in output
@@ -831,7 +845,7 @@ class TestGenerateIndex:
             f"# {title}\n\n{description}\n",
         )
         output = generate_index([skill])
-        assert f"### [{title}]({filename})" in output
+        assert f"### [{title}]({Path(filename).stem}/SKILL.md)" in output
         assert description in output
 
     # -- (f) markdownlint MD049 compliance -----------------------------------
@@ -890,7 +904,7 @@ class TestGenerateIndex:
                 f"skill-{i:02d}.md",
                 f"# Skill Number {i}\n\nDescription for skill {i}.\n",
             )
-        skill_files = sorted(skills_dir.glob("*.md"))
+        skill_files = _mod.discover_skill_files(skills_dir)
         output = generate_index(skill_files)
         for lineno, line in enumerate(output.splitlines(), start=1):
             match = _UNDERSCORE_EMPHASIS_RE.search(line)
@@ -920,6 +934,111 @@ class TestGenerateIndex:
         # (117 chars + "...")
         assert long_desc not in output
         assert "A" * 117 + "..." in output
+
+
+# ===================================================================
+# Tests for modern folder-based Agent Skills
+# ===================================================================
+
+
+def _write_modern_skill(
+    skills_dir: Path,
+    name: str,
+    description: str,
+    body: str = "# Example Skill\n\nFollow the project-specific workflow.\n",
+) -> Path:
+    """Create a standard ``<name>/SKILL.md`` fixture."""
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True)
+    path = skill_dir / "SKILL.md"
+    path.write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        "---\n\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestModernSkillLayout:
+    """Protect the repository's Agent Skills-compatible directory contract."""
+
+    def test_discovers_only_nested_skill_md_files(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        skill = _write_modern_skill(
+            skills_dir,
+            "async-rust-patterns",
+            "Guide async Rust changes. Use when editing Tokio client code.",
+        )
+        (skills_dir / "legacy.md").write_text("# Legacy\n", encoding="utf-8")
+        (skills_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+
+        assert _mod.discover_skill_files(skills_dir) == [skill]
+
+    def test_valid_skill_metadata_passes(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill = _write_modern_skill(
+            skills_dir,
+            "testing-async",
+            "Test asynchronous client behavior. Use when writing Tokio tests or mock transports.",
+        )
+
+        assert _mod.validate_skill_files([skill]) == []
+
+    @pytest.mark.parametrize(
+        "frontmatter, expected",
+        [
+            (
+                "name: wrong-name\n"
+                "description: Explain async tests. Use when testing Tokio code.",
+                "must match parent directory",
+            ),
+            (
+                "description: Explain async tests. Use when testing Tokio code.",
+                "missing required `name`",
+            ),
+            ("name: testing-async", "missing required `description`"),
+        ],
+    )
+    def test_invalid_metadata_is_rejected(
+        self, tmp_path, frontmatter, expected
+    ):
+        skill_dir = tmp_path / "skills" / "testing-async"
+        skill_dir.mkdir(parents=True)
+        skill = skill_dir / "SKILL.md"
+        skill.write_text(
+            f"---\n{frontmatter}\n---\n\n# Testing Async Code\n",
+            encoding="utf-8",
+        )
+
+        errors = _mod.validate_skill_files([skill])
+
+        assert any(expected in error for error in errors)
+
+    def test_index_uses_frontmatter_description_and_skill_md_link(
+        self, tmp_path, monkeypatch
+    ):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr(_mod, "SKILLS_DIR", skills_dir)
+        description = (
+            "Design public Rust APIs. Use when changing exported types or feature flags."
+        )
+        skill = _write_modern_skill(
+            skills_dir,
+            "public-api-design",
+            description,
+            "# Public API Design\n\nThis body paragraph must not become metadata.\n",
+        )
+
+        output = generate_index([skill])
+
+        assert "### [Public API Design](public-api-design/SKILL.md)" in output
+        assert description in output
+        assert "This body paragraph must not become metadata." not in output
 
 
 # ===================================================================

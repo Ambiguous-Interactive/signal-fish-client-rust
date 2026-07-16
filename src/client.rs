@@ -221,12 +221,14 @@ pub struct SignalFishConfig {
     ///
     /// Defaults to **1024**. Values below 1 are clamped to 1.
     pub command_channel_capacity: usize,
-    /// Timeout for the graceful shutdown.
+    /// Deadline for graceful async shutdown and polling-client close.
     ///
     /// When [`SignalFishClient::shutdown`] is called, the background transport
     /// loop is given this much time to close the transport and emit a final
     /// `Disconnected` event. If the timeout expires the task is aborted and
-    /// the `Disconnected` event may not be delivered.
+    /// the `Disconnected` event may not be delivered. The polling client uses
+    /// the same duration to bound queued-work flushing and its transport close
+    /// handshake; expiry invokes [`Transport::abort`](crate::Transport::abort).
     ///
     /// Defaults to **1 second**. A zero timeout aborts the transport loop
     /// immediately without waiting for graceful shutdown, meaning the
@@ -275,7 +277,7 @@ impl SignalFishConfig {
         self
     }
 
-    /// Set the timeout for the graceful shutdown.
+    /// Set the deadline for graceful async shutdown and polling-client close.
     ///
     /// Defaults to **1 second**. A zero timeout aborts the transport loop
     /// immediately without waiting for graceful shutdown.

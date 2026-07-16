@@ -28,6 +28,9 @@ For any user-visible change, update `CHANGELOG.md` in the same PR under
 
 ## Skills
 
-Focused reference guides live in `.llm/skills/`. See `.llm/skills/index.md` for a full listing.
+Focused Agent Skills live in `.llm/skills/<name>/SKILL.md`; the generated
+`.llm/skills/index.md` catalogs them. When a task matches a skill's frontmatter
+description, read its complete `SKILL.md` before acting and resolve relative
+resources from that skill directory.
 
 Key skills: `async-rust-patterns`, `shared-core-drivers`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `changelog-discipline`, `keep-a-changelog-format`.

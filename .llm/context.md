@@ -28,7 +28,7 @@ Run this before every commit. All three steps must pass with zero warnings.
 ## Release Automation
 
 Use the manual **Prepare Release** and **Release** workflows; see
-`skills/release-recovery.md` and `docs/releasing.md` for fail-closed recovery.
+`skills/release-recovery/SKILL.md` and `docs/releasing.md` for fail-closed recovery.
 
 ## CI/CD Action Reference Policy
 
@@ -73,6 +73,9 @@ pub trait Transport {
         -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
     fn poll_close(&mut self, cx: &mut Context<'_>)
         -> Poll<Result<(), SignalFishError>>;
+    fn begin_poll_cycle(&mut self) {}
+    fn abort(&mut self) {}
+    fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
 }
@@ -80,9 +83,11 @@ pub trait Transport {
 
 The trait itself has no `Send` bound, so main-thread transports work with the polling client. `SignalFishClient::start` separately requires
 `Transport + Send + 'static`. A `poll_send` implementation may take the frame
-only when it accepts ownership and must retain it internally until completion;
-`Pending` before acceptance leaves the caller's `Option` intact. Close polling
-is idempotent. See `skills/transport-abstraction.md`.
+only when the backend accepts ownership. That transfer is send completion for
+admission purposes; it is not peer delivery and never requires the socket-wide
+buffered byte count to reach zero. `Pending` before acceptance leaves the
+caller's `Option` intact. Close polling is idempotent. See
+`skills/transport-abstraction/SKILL.md`.
 
 ### Client Usage Pattern
 
@@ -106,7 +111,7 @@ pub struct SignalFishConfig {
     pub game_data_format: Option<GameDataEncoding>,
     pub event_channel_capacity: usize,        // defaults to 256 (buffer before backpressure)
     pub command_channel_capacity: usize,      // defaults to 1024 (bounded send queue)
-    pub shutdown_timeout: std::time::Duration, // defaults to 1 second
+    pub shutdown_timeout: std::time::Duration, // async shutdown / polling close deadline; 1s
     pub protocol_violation_policy: ProtocolViolationPolicy, // Quarantine
 }
 
@@ -165,7 +170,11 @@ a full event channel pauses the transport loop (backpressure); undecodable
 frames surface as `DecodeFailed` events; events are missed only on receiver
 drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 `SignalFishPollingClient` shares the classified/binary sends, queue bound,
-capacity accessors, `stats()`, and coherent `snapshot()`.
+capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
+work budget is 64 frames/64 KiB in each direction, and its default close policy
+abandons client-owned queued work. Adaptive backpressure and flush-on-close are
+explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
+`transport_diagnostics()` for backend buffering/admission diagnostics.
 
 ## Feature Flags
 
@@ -208,7 +217,7 @@ polling methods and can preserve structured close metadata.
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
 v2 JSON protocol. Never change serde attributes without verifying against
-the server spec. See `skills/serde-patterns.md` for details.
+the server spec. See `skills/serde-patterns/SKILL.md` for details.
 
 ### Exhaustive Public Types
 
@@ -261,15 +270,23 @@ Both `ClientMessage` and `ServerMessage` use adjacent tagging:
 Variant names are PascalCase in JSON (serde default for adjacently-tagged enums
 with no `rename_all`). Protocol v3 adds the additive, opt-in mesh (the default
 stays a byte-identical-to-v2 "relay floor"); WebRTC signals are externally tagged
-(`{ "Offer": "..." }`). See `skills/serde-patterns.md` for the full wire format,
-and `skills/protocol-versioning-and-negotiation.md` + `skills/webrtc-mesh-signaling.md`
+(`{ "Offer": "..." }`). See `skills/serde-patterns/SKILL.md` for the full wire format,
+and `skills/protocol-versioning-and-negotiation/SKILL.md` + `skills/webrtc-mesh-signaling/SKILL.md`
 for the v2/v3 deltas.
 
 ## `.llm/` Structure
 
 - `.llm/context.md` -- this file (canonical source of truth)
-- `.llm/skills/index.md` -- auto-regenerated skill index (do not edit); summarizes each skill
-- `.llm/skills/*.md` -- focused reference guides for common tasks
+- `.llm/skills/index.md` -- auto-generated human-readable skill catalog (do not edit)
+- `.llm/skills/<name>/SKILL.md` -- focused Agent Skill with YAML `name` and
+  trigger-focused `description` metadata
+- `.llm/skills/<name>/{scripts,references,assets}/` -- optional resources loaded
+  only when a skill needs them
+
+Agents discover skills from frontmatter, then load the matching `SKILL.md` only
+when its description applies. Resolve relative resource links from the skill's
+directory. Skill directory names and frontmatter names must match and use
+lowercase hyphen-case.
 
 ## Documentation Rendering (MkDocs)
 
@@ -278,21 +295,23 @@ hook (`hooks/rustdoc_codeblocks.py`) strips rustdoc code-fence annotations
 (`rust,ignore`, `rust,no_run`, `rust,compile_fail`) so Pygments highlights
 correctly. Mermaid diagrams require `custom_fences` in `mkdocs.yml`. CI runs
 `mkdocs build --strict` (`.github/workflows/docs-deploy.yml`). See
-`skills/markdown-and-doc-validation.md` for full guidance.
+`skills/markdown-and-doc-validation/SKILL.md` for full guidance.
 
 ## Pre-commit Enforcement
 
 A pre-commit hook enforces:
 
-1. No `.llm/*.md` file exceeds 300 lines (`scripts/pre-commit-llm.py`)
-2. `skills/index.md` is auto-regenerated from skill file headings
-3. `cargo fmt --all -- --check` passes
-4. `cargo clippy --all-targets --all-features -- -D warnings` passes
-5. Workflow guard checks pass (`scripts/check-workflows.sh`): explicit step names, MSRV/toolchain policy, fenced-YAML step-key alignment
-6. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`)
-7. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
-8. Devcontainer compatibility checks pass (`scripts/check-devcontainer-compat.sh`, plus a Dockerfile `docker buildx build --check` when buildx is available)
-9. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`) — no embedded double quotes
+1. No `.llm/*.md` file exceeds 500 lines (`scripts/pre-commit-llm.py`)
+2. Every skill uses `.llm/skills/<name>/SKILL.md`, valid YAML frontmatter, and
+   a description that states what the skill does and when to activate it
+3. `skills/index.md` is auto-regenerated from skill frontmatter and headings
+4. `cargo fmt --all -- --check` passes
+5. `cargo clippy --all-targets --all-features -- -D warnings` passes
+6. Workflow guard checks pass (`scripts/check-workflows.sh`): explicit step names, MSRV/toolchain policy, fenced-YAML step-key alignment
+7. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`)
+8. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries
+9. Devcontainer compatibility checks pass (`scripts/check-devcontainer-compat.sh`, plus a Dockerfile `docker buildx build --check` when buildx is available)
+10. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`) — no embedded double quotes
 
 `cargo test` runs on push, not every commit (too slow for a blocking hook) —
 run it manually before opening a PR.

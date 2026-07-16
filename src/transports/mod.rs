@@ -38,7 +38,9 @@ pub use websocket::WebSocketTransport;
 pub mod godot_websocket;
 
 #[cfg(feature = "transport-godot")]
-pub use godot_websocket::GodotWebSocketTransport;
+pub use godot_websocket::{
+    GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport,
+};
 
 // Gated on both feature and target: this module uses Emscripten's C WebSocket API,
 // which only exists on wasm32-unknown-emscripten. The dual gate keeps `--all-features`

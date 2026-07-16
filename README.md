@@ -243,6 +243,9 @@ let transport = GodotWebSocketTransport::connect("wss://server/ws")
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 
+// Optional: tune the bounded per-frame work and flush queued commands on close
+// with SignalFishPollingClient::new_with_options(...).
+
 // 3. Each frame, poll and handle events.
 for event in client.poll() {
     match event {

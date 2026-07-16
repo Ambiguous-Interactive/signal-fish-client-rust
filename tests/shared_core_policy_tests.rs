@@ -4,7 +4,7 @@ use std::fs;
 
 #[test]
 fn shared_core_guide_pins_driver_ownership_and_object_safety() {
-    let path = ".llm/skills/shared-core-drivers.md";
+    let path = ".llm/skills/shared-core-drivers/SKILL.md";
     let guide = fs::read_to_string(path).unwrap_or_else(|error| {
         panic!("failed to read {path}: {error}");
     });

@@ -143,19 +143,22 @@ pub use protocol::{
     SessionPlanPayload, Topology, TransportKind, V3BinaryGameDataFrame, VolatileDeliveryCounters,
 };
 pub use signal::PeerSignal;
-pub use transport::{Transport, TransportCloseInfo, TransportFrame};
+pub use transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};
 
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
 
 #[cfg(feature = "transport-godot")]
-pub use transports::GodotWebSocketTransport;
+pub use transports::{GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport};
 
 #[cfg(feature = "polling-client")]
 pub mod polling_client;
 
 #[cfg(feature = "polling-client")]
-pub use polling_client::SignalFishPollingClient;
+pub use polling_client::{
+    PollingClientOptions, PollingClosePolicy, PollingStats, PollingWorkBudget,
+    SignalFishPollingClient,
+};
 
 #[cfg(feature = "mesh")]
 pub mod mesh;
