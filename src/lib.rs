@@ -156,8 +156,8 @@ pub mod polling_client;
 
 #[cfg(feature = "polling-client")]
 pub use polling_client::{
-    PollingClientOptions, PollingClosePolicy, PollingStats, PollingWorkBudget,
-    SignalFishPollingClient,
+    PollingClientOptions, PollingClosePolicy, PollingQueueAgeStats, PollingStats,
+    PollingWorkBudget, SignalFishPollingClient,
 };
 
 #[cfg(feature = "mesh")]

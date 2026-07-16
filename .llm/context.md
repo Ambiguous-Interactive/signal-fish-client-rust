@@ -173,10 +173,9 @@ drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
 capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
 work budget is 64 frames/64 KiB in each direction, and its default close policy
 abandons client-owned queued work. Adaptive backpressure and flush-on-close are
-explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
-`transport_diagnostics()` for backend buffering/admission diagnostics. Polling
-queue diagnostics include current/peak depth and current/peak oldest
-client-owned command age.
+explicit opt-ins. Use `polling_stats()` for scheduling/queue-depth diagnostics,
+`queue_age_stats()` for current/peak oldest client-owned command age, and
+`transport_diagnostics()` for backend buffering/admission diagnostics.
 
 ## Feature Flags
 

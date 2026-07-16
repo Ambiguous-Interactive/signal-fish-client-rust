@@ -331,9 +331,9 @@ The fixed defaults are 64 frames/64 KiB for sends and the same for receives.
 Zero limits clamp to one; an individually oversized frame can consume one poll
 by itself. `PollingClientOptions` also selects `Abandon` (default) or `Flush`
 close behavior. Both are bounded by `SignalFishConfig::shutdown_timeout`.
-Use `polling_stats()` for client-owned queue depth, current/peak oldest-command
-age, budget exhaustion, and deadline counters; use `transport_diagnostics()`
-for backend buffering,
+Use `polling_stats()` for client-owned queue depth, budget exhaustion, and
+deadline counters; use `queue_age_stats()` for current/peak oldest-command age;
+use `transport_diagnostics()` for backend buffering,
 watermark, acceptance, and capacity counters. Backend acceptance is not peer
 delivery.
 
@@ -371,7 +371,8 @@ environment).
 | `current_player_id()` | `fn current_player_id(&self) -> Option<PlayerId>` | The local player's ID, if assigned. |
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
-| `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue depth/oldest age, work-budget, abandonment, and deadline diagnostics. |
+| `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue depth, work-budget, abandonment, and deadline diagnostics. |
+| `queue_age_stats()` | `fn queue_age_stats(&self) -> PollingQueueAgeStats` | Current and peak oldest client-owned queue age. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 
 !!! tip "Comparison with `SignalFishClient`"

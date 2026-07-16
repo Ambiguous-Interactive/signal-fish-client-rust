@@ -309,6 +309,7 @@ async fn main() -> Result<(), String> {
                 let metrics = fortress.metrics();
                 let client_stats = client.stats();
                 let polling_stats = client.polling_stats();
+                let queue_age_stats = client.queue_age_stats();
                 let relay_stats = relay.counters();
                 let report = Report {
                     player_id: local.ok_or("local id disappeared")?,
@@ -335,7 +336,9 @@ async fn main() -> Result<(), String> {
                     client_messages_undecodable: client_stats.messages_undecodable,
                     final_client_queue_depth: polling_stats.current_queue_depth,
                     peak_client_queue_depth: polling_stats.peak_queue_depth,
-                    peak_oldest_queue_age_us: polling_stats.peak_oldest_queue_age.as_micros(),
+                    peak_oldest_queue_age_us: queue_age_stats
+                        .peak_oldest_queue_age
+                        .as_micros(),
                     relay_frames_enqueued: relay_stats.enqueued_outbound,
                     relay_frames_enqueued_during_run: relay_stats
                         .enqueued_outbound

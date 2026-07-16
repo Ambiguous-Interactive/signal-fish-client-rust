@@ -95,11 +95,6 @@ pub struct PollingStats {
     pub current_queue_depth: u64,
     /// Highest observed client-owned outbound depth.
     pub peak_queue_depth: u64,
-    /// Age of the oldest client-owned outbound command/frame at the most
-    /// recent poll or queue mutation. Zero when no client-owned work remains.
-    pub current_oldest_queue_age: Duration,
-    /// Highest sampled age of the oldest client-owned outbound command/frame.
-    pub peak_oldest_queue_age: Duration,
     /// Polls that stopped because the send frame or byte budget was exhausted.
     pub send_budget_exhaustions: u64,
     /// Polls that stopped because the receive frame or byte budget was exhausted.
@@ -108,6 +103,16 @@ pub struct PollingStats {
     pub abandoned_commands: u64,
     /// Flush/close lifecycles aborted after the configured deadline.
     pub close_deadline_expirations: u64,
+}
+
+/// Snapshot of client-owned outbound queue age.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollingQueueAgeStats {
+    /// Age of the oldest client-owned outbound command/frame at the most
+    /// recent poll or queue mutation. Zero when no client-owned work remains.
+    pub current_oldest_queue_age: Duration,
+    /// Highest sampled age of the oldest client-owned outbound command/frame.
+    pub peak_oldest_queue_age: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -181,6 +186,7 @@ pub struct SignalFishPollingClient<T: Transport> {
     core: ClientCore,
     options: PollingClientOptions,
     polling_stats: PollingStats,
+    queue_age_stats: PollingQueueAgeStats,
     shutdown_timeout: Duration,
     started: bool,
     pending_frame: Option<TransportFrame>,
@@ -244,6 +250,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 peak_queue_depth: 1,
                 ..PollingStats::default()
             },
+            queue_age_stats: PollingQueueAgeStats::default(),
             shutdown_timeout,
             started: false,
             pending_frame: None,
@@ -707,6 +714,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.polling_stats
     }
 
+    /// Return the current and peak age of the oldest client-owned outbound work.
+    pub fn queue_age_stats(&self) -> PollingQueueAgeStats {
+        self.queue_age_stats
+    }
+
     /// Return backend-owned transport buffering and admission diagnostics.
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         self.transport.diagnostics()
@@ -1048,13 +1060,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .into_iter()
             .chain(self.cmd_queue.front().map(|queued| queued.enqueued_at))
             .min();
-        self.polling_stats.current_oldest_queue_age = oldest
+        self.queue_age_stats.current_oldest_queue_age = oldest
             .map(|enqueued_at| now.saturating_duration_since(enqueued_at))
             .unwrap_or_default();
-        self.polling_stats.peak_oldest_queue_age = self
-            .polling_stats
+        self.queue_age_stats.peak_oldest_queue_age = self
+            .queue_age_stats
             .peak_oldest_queue_age
-            .max(self.polling_stats.current_oldest_queue_age);
+            .max(self.queue_age_stats.current_oldest_queue_age);
     }
 
     #[cfg(test)]
@@ -3918,21 +3930,21 @@ mod tests {
 
         let first_sample = base + Duration::from_millis(40);
         let _ = client.poll_at(first_sample);
-        let stats = client.polling_stats();
-        assert_eq!(stats.current_queue_depth, 1);
+        let stats = client.queue_age_stats();
+        assert_eq!(client.polling_stats().current_queue_depth, 1);
         assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(40));
         assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(40));
 
         let second_sample = base + Duration::from_millis(75);
         let _ = client.poll_at(second_sample);
-        let stats = client.polling_stats();
+        let stats = client.queue_age_stats();
         assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(75));
         assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(75));
 
         client.transport.send_pending = false;
         let _ = client.poll_at(base + Duration::from_millis(80));
-        let stats = client.polling_stats();
-        assert_eq!(stats.current_queue_depth, 0);
+        let stats = client.queue_age_stats();
+        assert_eq!(client.polling_stats().current_queue_depth, 0);
         assert_eq!(stats.current_oldest_queue_age, Duration::ZERO);
         assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(80));
     }
@@ -3962,19 +3974,19 @@ mod tests {
             .expect("queue newer command");
 
         let _ = client.poll_at(base + Duration::from_millis(100));
-        let stats = client.polling_stats();
-        assert_eq!(stats.current_queue_depth, 1);
+        let stats = client.queue_age_stats();
+        assert_eq!(client.polling_stats().current_queue_depth, 1);
         assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(75));
         assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(100));
 
         client.refresh_queue_diagnostics(base);
         assert_eq!(
-            client.polling_stats().current_oldest_queue_age,
+            client.queue_age_stats().current_oldest_queue_age,
             Duration::ZERO,
             "an injected clock earlier than enqueue must saturate instead of panicking"
         );
         assert_eq!(
-            client.polling_stats().peak_oldest_queue_age,
+            client.queue_age_stats().peak_oldest_queue_age,
             Duration::from_millis(100)
         );
     }

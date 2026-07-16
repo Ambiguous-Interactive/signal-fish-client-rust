@@ -236,8 +236,8 @@ for event in client.poll() {
 `poll()` defaults to at most 64 frames/64 KiB in each direction. Configure
 `PollingClientOptions` for other budgets or `PollingClosePolicy::Flush`. Zero
 budgets clamp to one, and one individually oversized frame can consume a poll
-by itself. `polling_stats()` reports client-owned queue depth and oldest age,
-work-budget exhaustion, and close state;
+by itself. `polling_stats()` reports client-owned queue depth, work-budget
+exhaustion, and close state; `queue_age_stats()` reports current/peak oldest age;
 `transport_diagnostics()` reports backend acceptance and buffering. Queued,
 backend-accepted, backend-buffered, and peer-delivered are distinct stages.
 

@@ -562,7 +562,7 @@ impl SmokePair {
             .map(|client| {
                 client.map_or(0, |client| {
                     client
-                        .polling_stats()
+                        .queue_age_stats()
                         .peak_oldest_queue_age
                         .as_micros()
                         .min(u128::from(u64::MAX)) as u64
@@ -785,7 +785,7 @@ fn aggregate_queue_ages(first: Option<&Client>, second: Option<&Client>) -> (u64
     [first, second].into_iter().flatten().fold(
         (0u64, 0u64),
         |(current_max, peak_max), client| {
-            let stats = client.polling_stats();
+            let stats = client.queue_age_stats();
             let current = stats
                 .current_oldest_queue_age
                 .as_micros()
