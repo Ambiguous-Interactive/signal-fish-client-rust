@@ -228,7 +228,7 @@ pub struct SignalFishConfig {
     /// `Disconnected` event. If the timeout expires the task is aborted and
     /// the `Disconnected` event may not be delivered. The polling client uses
     /// the same duration to bound queued-work flushing and its transport close
-    /// handshake; expiry invokes [`Transport::abort`](crate::Transport::abort).
+    /// handshake; expiry invokes [`Transport::abort`].
     ///
     /// Defaults to **1 second**. A zero timeout aborts the transport loop
     /// immediately without waiting for graceful shutdown, meaning the
