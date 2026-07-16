@@ -179,6 +179,12 @@ impl SmokePair {
         if self.kind == PairKind::Json && self.relay_received && self.pong_received {
             if self.load_started.is_none() {
                 let now = Instant::now();
+                if let Some(client) = self.first.as_mut() {
+                    client.reset_queue_age_peak();
+                }
+                if let Some(client) = self.second.as_mut() {
+                    client.reset_queue_age_peak();
+                }
                 self.load_started = Some(now);
                 self.last_sample_at = Some(now);
                 self.max_poll_us = 0;

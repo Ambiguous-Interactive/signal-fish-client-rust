@@ -333,9 +333,9 @@ by itself. `PollingClientOptions` also selects `Abandon` (default) or `Flush`
 close behavior. Both are bounded by `SignalFishConfig::shutdown_timeout`.
 Use `polling_stats()` for client-owned queue depth, budget exhaustion, and
 deadline counters; use `queue_age_stats()` for current/peak oldest-command age;
-use `transport_diagnostics()` for backend buffering,
-watermark, acceptance, and capacity counters. Backend acceptance is not peer
-delivery.
+use `reset_queue_age_peak()` to begin a phase-specific observation window; use
+`transport_diagnostics()` for backend buffering, watermark, acceptance, and
+capacity counters. Backend acceptance is not peer delivery.
 
 ### API reference
 
@@ -373,6 +373,7 @@ environment).
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
 | `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue depth, work-budget, abandonment, and deadline diagnostics. |
 | `queue_age_stats()` | `fn queue_age_stats(&self) -> PollingQueueAgeStats` | Current and peak oldest client-owned queue age. |
+| `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Start a new peak-age observation window at the current oldest queue age. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 
 !!! tip "Comparison with `SignalFishClient`"

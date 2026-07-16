@@ -238,6 +238,7 @@ for event in client.poll() {
 budgets clamp to one, and one individually oversized frame can consume a poll
 by itself. `polling_stats()` reports client-owned queue depth, work-budget
 exhaustion, and close state; `queue_age_stats()` reports current/peak oldest age;
+`reset_queue_age_peak()` starts a new phase-specific peak observation window;
 `transport_diagnostics()` reports backend acceptance and buffering. Queued,
 backend-accepted, backend-buffered, and peer-delivered are distinct stages.
 

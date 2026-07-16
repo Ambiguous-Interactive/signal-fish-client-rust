@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `PollingClientOptions`, `PollingWorkBudget`, `PollingClosePolicy`,
   `PollingStats`, `PollingQueueAgeStats`,
   `SignalFishPollingClient::new_with_options`, `polling_stats()`,
-  `queue_age_stats()`, and `transport_diagnostics()` for bounded per-poll work,
-  explicit flush-on-close, deadline handling, and queue/transport observability;
-  defaults are 64 frames/64 KiB per direction and `Abandon` on close.
+  `queue_age_stats()`, `reset_queue_age_peak()`, and
+  `transport_diagnostics()` for bounded per-poll work, explicit flush-on-close,
+  deadline handling, and queue/transport observability; defaults are 64
+  frames/64 KiB per direction and `Abandon` on close.
 - Added `GodotWebSocketOptions`, `GodotBackpressurePolicy`,
   `connect_with_options`, and `from_peer_with_options` with fixed 32 KiB,
   adaptive latency-targeted, and native-capacity admission modes.

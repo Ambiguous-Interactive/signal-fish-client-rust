@@ -285,6 +285,7 @@ async fn main() -> Result<(), String> {
 
             if fortress.current_state() == SessionState::Running {
                 if running_since.is_none() {
+                    client.reset_queue_age_peak();
                     running_since = Some(Instant::now());
                     running_client_sent_baseline = client.stats().game_data_sent;
                     running_relay_enqueued_baseline = relay.counters().enqueued_outbound;

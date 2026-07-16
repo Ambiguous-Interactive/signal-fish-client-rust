@@ -175,6 +175,7 @@ work budget is 64 frames/64 KiB in each direction, and its default close policy
 abandons client-owned queued work. Adaptive backpressure and flush-on-close are
 explicit opt-ins. Use `polling_stats()` for scheduling/queue-depth diagnostics,
 `queue_age_stats()` for current/peak oldest client-owned command age, and
+`reset_queue_age_peak()` to begin a phase-specific observation window. Use
 `transport_diagnostics()` for backend buffering/admission diagnostics.
 
 ## Feature Flags

@@ -719,6 +719,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.queue_age_stats
     }
 
+    /// Start a new observation window for peak outbound queue age.
+    ///
+    /// The peak is reset to the current oldest age, preserving the invariant
+    /// that the peak is never lower than the current sample.
+    pub fn reset_queue_age_peak(&mut self) {
+        self.reset_queue_age_peak_at(Instant::now());
+    }
+
     /// Return backend-owned transport buffering and admission diagnostics.
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         self.transport.diagnostics()
@@ -1067,6 +1075,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .queue_age_stats
             .peak_oldest_queue_age
             .max(self.queue_age_stats.current_oldest_queue_age);
+    }
+
+    fn reset_queue_age_peak_at(&mut self, now: Instant) {
+        self.refresh_queue_diagnostics(now);
+        self.queue_age_stats.peak_oldest_queue_age = self.queue_age_stats.current_oldest_queue_age;
     }
 
     #[cfg(test)]
@@ -3989,6 +4002,29 @@ mod tests {
             client.queue_age_stats().peak_oldest_queue_age,
             Duration::from_millis(100)
         );
+    }
+
+    #[test]
+    fn resetting_queue_age_peak_starts_a_new_observation_window() {
+        let transport = RecordingFrameTransport::default();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        let _ = client.poll_at(base);
+        client.transport.send_pending = true;
+        client
+            .queue_command_at(PollingCommand::Binary(vec![1]), base)
+            .expect("queue command");
+
+        client.refresh_queue_diagnostics(base + Duration::from_millis(80));
+        assert_eq!(
+            client.queue_age_stats().peak_oldest_queue_age,
+            Duration::from_millis(80)
+        );
+
+        client.reset_queue_age_peak_at(base + Duration::from_millis(30));
+        let stats = client.queue_age_stats();
+        assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(30));
+        assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(30));
     }
 
     #[test]

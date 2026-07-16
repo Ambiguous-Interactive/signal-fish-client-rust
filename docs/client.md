@@ -709,6 +709,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 | `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
 | `queue_age_stats()` | `PollingQueueAgeStats` | Current and peak age of the oldest client-owned command/frame. |
+| `reset_queue_age_peak()` | `()` | Start a new peak-age observation window at the current oldest queue age. |
 | `transport_diagnostics()` | `TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters. |
 
 !!! note "No async accessors"
