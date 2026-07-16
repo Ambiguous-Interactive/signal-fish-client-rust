@@ -3,7 +3,7 @@
 # Weekly (and on demand) re-fetches the Signal Fish server's published protocol
 # samples and fails loudly if the vendored copies under tests/wire-samples/ have
 # drifted from upstream. Fail-closed: a human runs the refresh procedure in
-# .llm/skills/protocol-wire-conformance.md and reconciles any client type changes.
+# .llm/skills/protocol-wire-conformance/SKILL.md and reconciles any client type changes.
 #
 # The concurrency group includes the event name so scheduled and manual runs on
 # the same ref do not cancel each other.
@@ -54,7 +54,7 @@ jobs:
           done
           if [ "$drift" -ne 0 ]; then
             echo "Upstream protocol samples have drifted from the vendored copies."
-            echo "Refresh per .llm/skills/protocol-wire-conformance.md and reconcile any type changes."
+            echo "Refresh per .llm/skills/protocol-wire-conformance/SKILL.md and reconcile any type changes."
             exit 1
           fi
           echo "Vendored wire samples are in sync with upstream."
@@ -67,7 +67,7 @@ jobs:
           if ! diff -q tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml >/dev/null 2>&1; then
             echo "::error::server AsyncAPI spec drift detected — upstream changed (new error codes or messages?)"
             diff tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml || true
-            echo "Refresh per .llm/skills/protocol-wire-conformance.md: re-vendor the spec, update"
+            echo "Refresh per .llm/skills/protocol-wire-conformance/SKILL.md: re-vendor the spec, update"
             echo "tests/server-spec/PROVENANCE.toml, and run cargo test --test error_code_conformance_tests"
             echo "to surface any ErrorCode variants the client must add."
             exit 1

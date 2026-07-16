@@ -5,7 +5,7 @@
 #   bash scripts/install-hooks.sh
 #
 # This script installs a pre-commit hook that runs checks in parallel:
-#   1.  scripts/pre-commit-llm.py  (line-limit + skills index)
+#   1.  scripts/pre-commit-llm.py  (Agent Skills validation + index)
 #   2.  pytest -q scripts/test_pre_commit_llm.py (optional)
 #   3.  markdownlint on **/*.md     (optional)
 #   4.  shellcheck scripts/*.sh .devcontainer/scripts/*.sh (optional)
@@ -121,8 +121,8 @@ echo "Pre-commit checks (parallel)..."
 
 PIDS=()
 
-# ── 1. LLM line limit + skills index ────────────────────────────────
-run_check "LLM line limit" "01-llm" \
+# ── 1. Agent Skills validation + index ──────────────────────────────
+run_check "Agent Skills" "01-llm" \
     python3 "${REPO_ROOT}/scripts/pre-commit-llm.py" &
 PIDS+=($!)
 
@@ -598,7 +598,7 @@ echo "Pre-commit hook installed at: ${HOOK_FILE}"
 echo "Pre-push hook installed at:   ${PUSH_HOOK_FILE}"
 echo ""
 echo "The pre-commit hook runs on every 'git commit' (all checks in parallel):"
-echo "  1.  python3 scripts/pre-commit-llm.py  (line-limit + skills index)"
+echo "  1.  python3 scripts/pre-commit-llm.py  (Agent Skills validation + index)"
 echo "  2.  pytest -q scripts/test_pre_commit_llm.py (optional, skipped if not installed)"
 echo "  3.  markdownlint on **/*.md     (optional, skipped if not installed)"
 echo "  4.  shellcheck scripts/*.sh .devcontainer/scripts/*.sh (optional, skipped if not installed)"

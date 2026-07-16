@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `PollingClientOptions`, `PollingWorkBudget`, `PollingClosePolicy`,
+  `PollingStats`, `SignalFishPollingClient::new_with_options`,
+  `polling_stats()`, and `transport_diagnostics()` for bounded per-poll work,
+  explicit flush-on-close, deadline handling, and queue/transport observability;
+  defaults are 64 frames/64 KiB per direction and `Abandon` on close.
+- Added `GodotWebSocketOptions`, `GodotBackpressurePolicy`,
+  `connect_with_options`, and `from_peer_with_options` with fixed 32 KiB,
+  adaptive latency-targeted, and native-capacity admission modes.
+- Added defaulted `Transport` polling-cycle, abort, and diagnostics hooks so
+  existing custom transport implementations remain source-compatible, plus
+  the public `TransportDiagnostics` snapshot type.
+
+### Fixed
+
+- Fixed Godot web throughput being limited to one accepted frame per rendered
+  callback by treating successful `WebSocketPeer` submission as ownership
+  transfer instead of waiting for browser socket-wide buffering to reach zero;
+  capacity refusals now retain frames for ordered retry without loss.
+- Fixed polling close deadlines to release built-in WebSocket sockets
+  immediately, finish backend-owned sends before a disconnect closes the
+  transport, and drain already-buffered inbound frames under bounded close
+  progress.
+
 ## [0.8.0] - 2026-07-13
 
 <!-- semver-checks: major -->

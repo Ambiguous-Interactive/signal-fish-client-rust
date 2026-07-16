@@ -32,7 +32,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
 | `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
-| `shutdown_timeout` | `Duration` | `1 second` | Timeout for graceful shutdown of the background transport loop. A zero timeout aborts the loop immediately. |
+| `shutdown_timeout` | `Duration` | `1 second` | Deadline for async shutdown and polling-client close (including optional queued-work flush). A zero timeout aborts immediately. |
 | `protocol_violation_policy` | `ProtocolViolationPolicy` | `Quarantine` | Response to invalid v3 delivery-accountability state: quarantine room data, disconnect, or observe. |
 
 ### Builder Methods
@@ -589,12 +589,17 @@ directly — no `Arc`, `Mutex`, or atomics.
 
 ### Creation
 
-#### `new`
+#### `new` and `new_with_options`
 
 Create a new polling client with a connected transport and config.
 
 ```rust,ignore
 fn new(transport: impl Transport, config: SignalFishConfig) -> Self
+fn new_with_options(
+    transport: impl Transport,
+    config: SignalFishConfig,
+    options: PollingClientOptions,
+) -> Self
 ```
 
 ```rust,ignore
@@ -609,8 +614,10 @@ let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
 On construction, the client immediately queues an `Authenticate` message
-(just like `SignalFishClient::start`). The message is flushed on the first
-call to `poll()`.
+(just like `SignalFishClient::start`). The message is offered on the first
+call to `poll()`. `new` uses fixed defaults of 64 frames/64 KiB in each
+direction and the `Abandon` close policy. Use `new_with_options` to tune these
+limits or opt in to `Flush`.
 
 ---
 
@@ -618,8 +625,8 @@ call to `poll()`.
 
 #### `poll`
 
-Drain incoming messages, flush outgoing commands, and return all events
-generated this frame.
+Transfer bounded outgoing work, process bounded incoming work, and return the
+events generated this frame.
 
 ```rust,ignore
 fn poll(&mut self) -> Vec<SignalFishEvent>
@@ -641,14 +648,12 @@ for event in events {
 }
 ```
 
-`poll()` performs three steps internally:
-
-1. **Flush** — sends all queued outgoing messages via `transport.send()`.
-2. **Drain** — calls `transport.recv()` in a loop (using a noop waker) until
-   no more messages are buffered.
-3. **Parse** — deserializes each received JSON message into a
-   `ServerMessage`, updates internal state, and converts it to a
-   `SignalFishEvent`.
+`poll()` offers commands through `transport.poll_send`, then calls
+`transport.poll_recv`; each loop stops on `Pending` or at either its frame or
+byte budget. Remaining frames retain FIFO order for later polls. Zero limits
+clamp to one, and one individually oversized frame may consume a poll by
+itself. A successful send means backend ownership transfer, not peer delivery
+or a socket-wide drain.
 
 !!! tip "Call frequency"
     Call `poll()` once per frame. It is designed to be cheap when idle
@@ -660,7 +665,8 @@ for event in events {
 ### Command Methods
 
 All command methods are synchronous. They queue an outgoing message that is
-flushed on the next `poll()` call. All return `Result<(), SignalFishError>`.
+offered on subsequent `poll()` calls as readiness and work budgets allow. All
+return `Result<(), SignalFishError>`.
 
 The outgoing queue is bounded by the same
 [`SignalFishConfig::command_channel_capacity`](#fields) (default 1024): if
@@ -701,6 +707,8 @@ All accessors are **synchronous** (no async, no mutex):
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
+| `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
+| `transport_diagnostics()` | `TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters. |
 
 !!! note "No async accessors"
     Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are
@@ -723,9 +731,16 @@ fn close(&mut self)
 client.close();
 ```
 
-Starts `transport.poll_close()` and clears session state. If the close is
-pending, subsequent `poll()` calls continue driving it until completion;
-`is_closing()` reports whether more polls are required.
+New commands are rejected immediately and session state is cleared. The
+default `Abandon` policy discards queued/unaccepted work and starts close;
+`Flush` first transfers existing work under the normal per-poll budget.
+Backend-accepted data remains ordered before Close. Subsequent `poll()` calls
+drive the lifecycle while `is_closing()` is true. Already-buffered inbound
+transport frames are drained under the normal receive budget so the peer close
+can complete; because session state is already cleared, these late frames are
+not emitted as application events. If
+`SignalFishConfig::shutdown_timeout` expires, remaining work is counted as
+abandoned, the transport is aborted, and `is_closing()` becomes false.
 After calling `close()`, `is_connected()` returns `false` and all command
 methods return `Err(SignalFishError::NotConnected)`.
 

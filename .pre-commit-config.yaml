@@ -3,7 +3,7 @@ repos:
   - repo: local
     hooks:
       - id: llm-line-limit
-        name: ".llm/ line limit (max 300) + skills index"
+        name: ".llm/ Agent Skills validation + index"
         language: python
         entry: python scripts/pre-commit-llm.py
         pass_filenames: false

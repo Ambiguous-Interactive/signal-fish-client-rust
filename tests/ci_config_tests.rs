@@ -714,7 +714,7 @@ mod docsrs_policy {
 
     #[test]
     fn doc_auto_cfg_guidance_avoids_release_specific_removal_versions() {
-        let files = [".llm/skills/crate-publishing.md"];
+        let files = [".llm/skills/crate-publishing/SKILL.md"];
 
         for path in files {
             let contents = read_project_file(path);
@@ -1268,15 +1268,15 @@ mod ci_workflow_policy {
 
         // Files that should reference the canonical MSRV value.
         // Keep this list in sync with the MSRV drift section in
-        // .llm/skills/ci-configuration.md.
+        // .llm/skills/ci-configuration/SKILL.md.
         let files_to_check = [
             ".llm/context.md",
             "README.md",
             "docs/index.md",
             "docs/getting-started.md",
-            ".llm/skills/public-api-design.md",
-            ".llm/skills/crate-publishing.md",
-            ".llm/skills/async-rust-patterns.md",
+            ".llm/skills/public-api-design/SKILL.md",
+            ".llm/skills/crate-publishing/SKILL.md",
+            ".llm/skills/async-rust-patterns/SKILL.md",
             ".devcontainer/Dockerfile",
             "scripts/check-all.sh",
         ];
@@ -1458,10 +1458,10 @@ mod crate_version_consistency {
     #[test]
     fn crate_publishing_skill_package_snippet_matches_cargo_package_version() {
         let cargo_version = cargo_package_version();
-        let contents = read_project_file(".llm/skills/crate-publishing.md");
+        let contents = read_project_file(".llm/skills/crate-publishing/SKILL.md");
         assert!(
             text_contains_version_value(&contents, &cargo_version),
-            ".llm/skills/crate-publishing.md must include \
+            ".llm/skills/crate-publishing/SKILL.md must include \
              `version = \"{cargo_version}\"` (with any whitespace around `=`) in the \
              Cargo.toml metadata snippet."
         );
@@ -3144,23 +3144,23 @@ mod ci_config_validation {
 
     #[test]
     fn ci_configuration_skill_documents_sc2004_for_reads_and_writes() {
-        let contents = read_project_file(".llm/skills/ci-configuration.md");
+        let contents = read_project_file(".llm/skills/ci-configuration/SKILL.md");
 
         assert!(
             contents.contains("applies to both reads and writes"),
-            ".llm/skills/ci-configuration.md must state that SC2004 guidance \
+            ".llm/skills/ci-configuration/SKILL.md must state that SC2004 guidance \
              applies to both reads and writes."
         );
 
         assert!(
             contents.contains("${PHASE_RESULTS[phase]}"),
-            ".llm/skills/ci-configuration.md must include a read example using \
+            ".llm/skills/ci-configuration/SKILL.md must include a read example using \
              $PHASE_RESULTS[phase] syntax (without '$' in the index)."
         );
 
         assert!(
             contents.contains("PHASE_RESULTS[phase]=\"FAIL\""),
-            ".llm/skills/ci-configuration.md must include a write example using \
+            ".llm/skills/ci-configuration/SKILL.md must include a write example using \
              `PHASE_RESULTS[phase]=\"FAIL\"` (without '$' in the index)."
         );
     }
@@ -3947,7 +3947,7 @@ mod llm_index_validation {
 mod markdown_policy_validation {
     use super::*;
 
-    const LLM_MAX_LINES: usize = 300;
+    const LLM_MAX_LINES: usize = 500;
 
     fn is_heading_line(line: &str) -> bool {
         let trimmed = line.trim_start();
@@ -4026,13 +4026,124 @@ mod markdown_policy_validation {
     }
 
     #[test]
+    fn llm_skills_use_standard_layout_and_frontmatter() {
+        let skills_dir = project_root().join(".llm/skills");
+        let index = read_project_file(".llm/skills/index.md");
+        let mut skill_count = 0;
+        let mut violations = Vec::new();
+
+        for entry in std::fs::read_dir(&skills_dir)
+            .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", skills_dir.display()))
+        {
+            let path = entry
+                .expect("skill directory entry must be readable")
+                .path();
+            if path.is_file() {
+                if path.file_name().is_none_or(|name| name != "index.md") {
+                    violations.push(format!(
+                        "{} is a legacy flat file; expected <name>/SKILL.md",
+                        path.display()
+                    ));
+                }
+                continue;
+            }
+            if !path.is_dir() {
+                continue;
+            }
+
+            skill_count += 1;
+            let directory_name = path
+                .file_name()
+                .expect("skill directory must have a name")
+                .to_string_lossy();
+            let skill_path = path.join("SKILL.md");
+            if !skill_path.is_file() {
+                violations.push(format!("{} is missing SKILL.md", path.display()));
+                continue;
+            }
+
+            let contents = std::fs::read_to_string(&skill_path)
+                .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", skill_path.display()));
+            let mut lines = contents.lines();
+            if lines.next() != Some("---") {
+                violations.push(format!(
+                    "{} must begin with YAML frontmatter",
+                    skill_path.display()
+                ));
+                continue;
+            }
+
+            let frontmatter: Vec<&str> = lines.by_ref().take_while(|line| *line != "---").collect();
+            let name = frontmatter
+                .iter()
+                .find_map(|line| line.strip_prefix("name: "));
+            let description = frontmatter
+                .iter()
+                .find_map(|line| line.strip_prefix("description: "));
+
+            if name != Some(directory_name.as_ref()) {
+                violations.push(format!(
+                    "{} name metadata must match its directory",
+                    skill_path.display()
+                ));
+            }
+            if name.is_some_and(|value| {
+                value.len() > 64
+                    || value.starts_with('-')
+                    || value.ends_with('-')
+                    || value.contains("--")
+                    || !value
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+            }) {
+                violations.push(format!(
+                    "{} has an invalid skill name",
+                    skill_path.display()
+                ));
+            }
+            if description.is_none_or(|value| {
+                value.is_empty()
+                    || value.len() > 1024
+                    || !value.to_ascii_lowercase().contains("use when")
+            }) {
+                violations.push(format!(
+                    "{} description must explain activation with `Use when`",
+                    skill_path.display()
+                ));
+            }
+            if !index.contains(&format!("{directory_name}/SKILL.md")) {
+                violations.push(format!(
+                    "{} is missing from the generated index",
+                    skill_path.display()
+                ));
+            }
+        }
+
+        assert!(skill_count > 0, "No Agent Skills found in .llm/skills");
+        assert!(
+            violations.is_empty(),
+            "Agent Skills layout or metadata violations:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
     fn llm_skills_headings_have_blank_lines_around_them() {
         let skills_dir = project_root().join(".llm/skills");
         let mut markdown_files: Vec<PathBuf> = std::fs::read_dir(&skills_dir)
             .unwrap_or_else(|e| panic!("Failed to read '{}': {e}", skills_dir.display()))
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .filter_map(|path| {
+                if path.is_dir() {
+                    Some(path.join("SKILL.md"))
+                } else if path.file_name().is_some_and(|name| name == "index.md") {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .filter(|path| path.is_file())
             .collect();
 
         markdown_files.sort();
@@ -5026,36 +5137,36 @@ mod check_all_documentation_accuracy {
         panic!("scripts/check-all.sh must set TOTAL_PHASES inside the --quick conditional");
     }
 
-    /// `.llm/skills/ci-configuration.md` must reference the correct total
+    /// `.llm/skills/ci-configuration/SKILL.md` must reference the correct total
     /// phase count from `scripts/check-all.sh`. This prevents documentation
     /// drift when phases are added or removed.
     #[test]
     fn ci_configuration_md_references_correct_total_phase_count() {
         let total = script_total_phases();
-        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let doc = read_project_file(".llm/skills/ci-configuration/SKILL.md");
         let expected_fragment = format!("{total}-phase");
 
         assert!(
             doc.contains(&expected_fragment),
-            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+            ".llm/skills/ci-configuration/SKILL.md must reference '{expected_fragment}' \
              to match the TOTAL_PHASES={total} in scripts/check-all.sh. \
              Found TOTAL_PHASES={total} in the script but the documentation \
              does not contain '{expected_fragment}'."
         );
     }
 
-    /// `.llm/skills/ci-configuration.md` must reference the correct
+    /// `.llm/skills/ci-configuration/SKILL.md` must reference the correct
     /// `--quick` phase range. If the script runs phases 1-N in quick mode,
     /// the docs must say "phases 1-N".
     #[test]
     fn ci_configuration_md_references_correct_quick_phase_count() {
         let quick_phases = script_quick_phases();
-        let doc = read_project_file(".llm/skills/ci-configuration.md");
+        let doc = read_project_file(".llm/skills/ci-configuration/SKILL.md");
         let expected_fragment = format!("phases 1-{quick_phases}");
 
         assert!(
             doc.contains(&expected_fragment),
-            ".llm/skills/ci-configuration.md must reference '{expected_fragment}' \
+            ".llm/skills/ci-configuration/SKILL.md must reference '{expected_fragment}' \
              to match the --quick TOTAL_PHASES={quick_phases} in scripts/check-all.sh. \
              The documentation is stale."
         );
@@ -7718,8 +7829,8 @@ mod dev_dependency_usage {
                         relevant [Unreleased] items into it, or\n\
                      2. Revert Cargo.toml version to {latest} if the release hasn't \
                         been cut yet.\n\n\
-                     See .llm/skills/changelog-discipline.md and \
-                     .llm/skills/keep-a-changelog-format.md for guidance."
+                     See .llm/skills/changelog-discipline/SKILL.md and \
+                     .llm/skills/keep-a-changelog-format/SKILL.md for guidance."
                 );
             }
         }
@@ -7855,7 +7966,7 @@ mod protocol_wire_conformance_policy {
                 actual, expected,
                 "{name}: SHA-256 differs from PROVENANCE.toml — the sample was \
                  edited but the marker was not updated (or vice versa). See \
-                 .llm/skills/protocol-wire-conformance.md."
+                 .llm/skills/protocol-wire-conformance/SKILL.md."
             );
         }
     }
@@ -7915,11 +8026,11 @@ mod protocol_wire_conformance_policy {
             "protocol-wire-conformance",
         ] {
             assert!(
-                project_file_exists(&format!(".llm/skills/{skill}.md")),
-                "missing skill file: .llm/skills/{skill}.md"
+                project_file_exists(&format!(".llm/skills/{skill}/SKILL.md")),
+                "missing skill file: .llm/skills/{skill}/SKILL.md"
             );
             assert!(
-                index.contains(&format!("{skill}.md")),
+                index.contains(&format!("{skill}/SKILL.md")),
                 "skill not referenced in the auto-generated index: {skill}"
             );
         }
@@ -8025,7 +8136,7 @@ mod protocol_wire_conformance_policy {
             actual, expected,
             "{SERVER_SPEC_FILE}: SHA-256 differs from PROVENANCE.toml — the spec was \
              edited but the marker was not updated (or vice versa). See \
-             .llm/skills/protocol-wire-conformance.md."
+             .llm/skills/protocol-wire-conformance/SKILL.md."
         );
     }
 }

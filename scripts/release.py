@@ -25,8 +25,8 @@ VERSION_FILES = (
     "docs/protocol.md",
     "docs/wasm.md",
     ".llm/context.md",
-    ".llm/skills/crate-publishing.md",
-    ".llm/skills/godot-websocket.md",
+    ".llm/skills/crate-publishing/SKILL.md",
+    ".llm/skills/godot-websocket/SKILL.md",
 )
 PROVENANCE_FILES = (
     "tests/compatibility.toml",

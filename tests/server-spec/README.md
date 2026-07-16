@@ -18,7 +18,7 @@ in `tests/ci_config_tests.rs`.
 
 ## Refreshing when the server protocol changes
 
-See [`.llm/skills/protocol-wire-conformance.md`](../../.llm/skills/protocol-wire-conformance.md)
+See [`.llm/skills/protocol-wire-conformance/SKILL.md`](../../.llm/skills/protocol-wire-conformance/SKILL.md)
 for the full procedure. In short:
 
 1. Copy `spec/signal-fish-protocol.asyncapi.yaml` from the server repo into

@@ -22,7 +22,7 @@
 //! `type`. A complete (non-placeholder) line that fails to deserialize is a real
 //! conformance break and fails the test.
 //!
-//! See `.llm/skills/protocol-wire-conformance.md` for the refresh procedure when
+//! See `.llm/skills/protocol-wire-conformance/SKILL.md` for the refresh procedure when
 //! the server protocol changes.
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -65,7 +65,7 @@ fn assert_conformance<T: Serialize + DeserializeOwned>(name: &str, content: &str
             panic!(
                 "{name}:{lineno}: sample line failed to deserialize into our typed enum: \
                  {e}\n  line: {line}\n\n  The client types have drifted from the server \
-                 wire format. See .llm/skills/protocol-wire-conformance.md."
+                 wire format. See .llm/skills/protocol-wire-conformance/SKILL.md."
             )
         });
         // (2) Re-serialize and compare semantically (order-independent).

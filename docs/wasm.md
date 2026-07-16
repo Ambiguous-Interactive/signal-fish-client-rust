@@ -272,14 +272,27 @@ let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
+For Godot buffering control, use
+`GodotWebSocketTransport::connect_with_options`. The default fixed policy
+normally admits up to 32 KiB of backend-buffered payload; one individually
+oversized frame may escape when the buffer is empty. `GodotBackpressurePolicy::adaptive()`
+opts into a 50 ms latency target with a 4 KiB floor and 32 KiB ceiling;
+`NativeCapacity` disables the latency watermark while retaining Godot's
+platform-safe capacity preflight. Pair this independently with
+`SignalFishPollingClient::new_with_options` for per-frame work and close-policy
+tuning. Backend-accepted, browser-buffered, and peer-delivered are separate
+stages; inspect `transport_diagnostics()` rather than treating buffered zero as
+per-frame completion.
+
 The constructor immediately queues an `Authenticate` message (just like
-`SignalFishClient::start`). The message is sent on the first call to `poll()`.
+`SignalFishClient::start`). It is offered on subsequent `poll()` calls as the
+handshake, transport admission, and work budget allow.
 
 ### Game loop integration
 
-Call `poll()` once per frame. It flushes all queued outgoing commands, drains
-all buffered incoming messages from the transport, and returns a `Vec` of
-events that occurred during this poll cycle:
+Call `poll()` once per frame. It transfers queued outgoing commands and
+processes incoming messages up to the configured work budget, then returns a
+`Vec` of events for that cycle. Remaining work stays ordered for later polls:
 
 ```rust,ignore
 // In your game loop / _process(delta):
@@ -301,17 +314,27 @@ for event in client.poll() {
 
 ### How `poll()` works internally
 
-`poll()` uses `std::task::Waker::noop()` to create a no-op waker and polls
-the transport's async `send()` and `recv()` futures synchronously:
+`poll()` uses `std::task::Waker::noop()` to create a context and invokes the
+transport polling contract synchronously:
 
 1. Creates a `std::task::Context` with a noop waker.
-2. Pops each queued command, serializes it, and polls `transport.send(json)`.
-   If the send returns `Pending`, the command is re-queued for the next frame.
-3. Loops calling `transport.recv()` and polling the returned future. Each
-   `Ready(Some(Ok(text)))` is deserialized into a `ServerMessage`, converted to
+2. Pops queued commands up to both the send frame and byte budgets, serializes
+   each, and polls `transport.poll_send`. `Pending` before ownership transfer
+   preserves the exact frame for the next cycle.
+3. Loops calling `transport.poll_recv()`. Each ready frame is decoded and
+   converted to
    a `SignalFishEvent`, and appended to the output vector. The loop breaks on
    `Pending` (no more buffered messages this frame) or `Ready(None)` (transport
-   closed).
+   closed), or when the receive frame/byte budget is reached.
+
+The fixed defaults are 64 frames/64 KiB for sends and the same for receives.
+Zero limits clamp to one; an individually oversized frame can consume one poll
+by itself. `PollingClientOptions` also selects `Abandon` (default) or `Flush`
+close behavior. Both are bounded by `SignalFishConfig::shutdown_timeout`.
+Use `polling_stats()` for client-owned queue depth, budget exhaustion, and
+deadline counters; use `transport_diagnostics()` for backend buffering,
+watermark, acceptance, and capacity counters. Backend acceptance is not peer
+delivery.
 
 ### API reference
 
@@ -322,7 +345,7 @@ They return `Err(SignalFishError::NotConnected)` if the transport has closed.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `poll()` | `fn poll(&mut self) -> Vec<SignalFishEvent>` | Flush sends, drain receives, return events. Call once per frame. |
+| `poll()` | `fn poll(&mut self) -> Vec<SignalFishEvent>` | Process bounded sends and receives, then return this cycle's events. |
 | `join_room(params)` | `fn join_room(&mut self, params: JoinRoomParams) -> Result<()>` | Join or create a room. |
 | `leave_room()` | `fn leave_room(&mut self) -> Result<()>` | Leave the current room. |
 | `set_ready()` | `fn set_ready(&mut self) -> Result<()>` | Signal readiness. |
@@ -333,7 +356,7 @@ They return `Err(SignalFishError::NotConnected)` if the transport has closed.
 | `join_as_spectator(game, room, name)` | `fn join_as_spectator(&mut self, game_name: String, room_code: String, spectator_name: String) -> Result<()>` | Join a room as a spectator. |
 | `leave_spectator()` | `fn leave_spectator(&mut self) -> Result<()>` | Leave spectator mode. |
 | `ping()` | `fn ping(&mut self) -> Result<()>` | Send a heartbeat ping. |
-| `close()` | `fn close(&mut self)` | Close the transport via a single noop-waker poll; see [close lifecycle](client.md#close). |
+| `close()` | `fn close(&mut self)` | Start the configured bounded close lifecycle; keep polling while `is_closing()`. |
 
 #### State accessors
 
@@ -347,6 +370,8 @@ environment).
 | `current_player_id()` | `fn current_player_id(&self) -> Option<PlayerId>` | The local player's ID, if assigned. |
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
+| `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue, work-budget, abandonment, and deadline diagnostics. |
+| `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 
 !!! tip "Comparison with `SignalFishClient`"
     `SignalFishPollingClient` mirrors the same API surface as `SignalFishClient`
@@ -691,15 +716,15 @@ Emscripten transport to the browser WebSocket and back:
 ```mermaid
 graph LR
     A["Godot _process(delta)"] --> B["poll()"]
-    B --> C["Flush command queue"]
-    C --> D["transport.send(json)"]
+    B --> C["Process bounded command work"]
+    C --> D["transport.poll_send(frame)"]
     D --> E["emscripten_websocket_send_utf8_text()"]
     E --> F["Browser WebSocket.send()"]
 
     G["Server"] --> H["Browser WebSocket.onmessage"]
     H --> I["C callback: on_message_callback()"]
     I --> J["mpsc::Sender::send(IncomingEvent::Message)"]
-    J --> K["transport.recv() → try_recv()"]
+    J --> K["transport.poll_recv() → try_recv()"]
     K --> L["poll() → deserialize → SignalFishEvent"]
     L --> M["Godot match event { ... }"]
 ```

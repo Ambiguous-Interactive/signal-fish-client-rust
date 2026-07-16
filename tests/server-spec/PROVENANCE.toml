@@ -1,6 +1,6 @@
 # Provenance for the vendored Signal Fish server AsyncAPI protocol spec.
 #
-# Refresh procedure: see .llm/skills/protocol-wire-conformance.md
+# Refresh procedure: see .llm/skills/protocol-wire-conformance/SKILL.md
 # Update this file IN THE SAME COMMIT as any change to the vendored spec.
 
 [upstream]

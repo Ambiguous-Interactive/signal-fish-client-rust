@@ -26,6 +26,9 @@ pub trait Transport {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), SignalFishError>>;
 
+    fn begin_poll_cycle(&mut self) {}
+    fn abort(&mut self) {}
+    fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
 }
@@ -66,11 +69,19 @@ and transport:
    that exact frame.
 4. If it then returns `Pending`, it must retain the accepted frame/write state
    internally and continue it on the next poll.
-5. It returns `Ready` only after the frame is fully flushed or the send fails.
+5. It may return `Ready(Ok(()))` as soon as the backend accepts ownership.
+   This does not mean peer delivery or that socket-wide buffering is empty.
 
 Never take a frame, forget it on `Pending`, and ask the caller to retry. Never
 repeat a partially completed write: either mistake can lose or duplicate an
 application message.
+
+`begin_poll_cycle` lets adaptive transports sample once per application tick.
+`diagnostics` distinguishes backend-owned buffering/admission from the client
+queue. `abort` is invoked when the polling close deadline expires; defaulted
+hooks preserve existing custom transport implementations. The built-in
+WebSocket transports override `abort` to release their socket immediately;
+custom transports with owned resources should do the same.
 
 ## Receiving
 
@@ -222,6 +233,13 @@ for event in client.poll() {
 }
 ```
 
+`poll()` defaults to at most 64 frames/64 KiB in each direction. Configure
+`PollingClientOptions` for other budgets or `PollingClosePolicy::Flush`. Zero
+budgets clamp to one, and one individually oversized frame can consume a poll
+by itself. `polling_stats()` reports client-owned queue/budget/close state;
+`transport_diagnostics()` reports backend acceptance and buffering. Queued,
+backend-accepted, backend-buffered, and peer-delivered are distinct stages.
+
 ## Emscripten transport
 
 `EmscriptenWebSocketTransport` implements the same framed polling contract on
@@ -237,7 +255,8 @@ the [WebAssembly guide](wasm.md) for target and linker requirements.
 
 - Preserve both text and binary frame boundaries.
 - Do not take the caller frame before the backend accepts it.
-- Retain accepted sends and partial receives across `Pending`.
+- Retain accepted sends and partial receives across `Pending`; do not wait for
+  a socket-wide buffered byte count to reach zero as per-frame completion.
 - Register the supplied waker when async progress depends on readiness.
 - Make close multi-poll and idempotent.
 - Record close code/reason/initiator before returning `None`.

@@ -20,7 +20,7 @@ recorded in [`PROVENANCE.toml`](PROVENANCE.toml) and verified by a policy test i
 
 ## Refreshing when the server protocol changes
 
-See [`.llm/skills/protocol-wire-conformance.md`](../../.llm/skills/protocol-wire-conformance.md)
+See [`.llm/skills/protocol-wire-conformance/SKILL.md`](../../.llm/skills/protocol-wire-conformance/SKILL.md)
 for the full procedure. In short:
 
 1. Copy the four `.jsonl` files from the server repo's
