@@ -11,13 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `PollingClientOptions`, `PollingWorkBudget`, `PollingClosePolicy`,
   `PollingStats`, `SignalFishPollingClient::new_with_options`,
-  `polling_stats()`, and `transport_diagnostics()` for bounded per-poll work,
-  explicit flush-on-close, deadline handling, and queue/transport observability;
-  defaults are 64 frames/64 KiB per direction and `Abandon` on close.
+  `polling_stats()`, `transport_diagnostics()`, and the read-only `transport()`
+  accessor for bounded per-poll work, explicit flush-on-close, deadline
+  handling, and queue/transport observability; defaults are 64 frames/64 KiB
+  per direction and `Abandon` on close.
 - Added `GodotWebSocketOptions`, `GodotBackpressurePolicy`,
   `connect_with_options`, and `from_peer_with_options` with adaptive
   latency-targeted admission by default (50 ms, 4 KiB–32 KiB), plus explicit
-  fixed-watermark and native-capacity modes.
+  fixed-watermark and native-capacity modes. Godot-specific admission
+  diagnostics expose invariant violations and empty-buffer single-frame
+  escape bytes.
 - Added defaulted `Transport` polling-cycle, abort, and diagnostics hooks so
   existing custom transport implementations remain source-compatible, plus
   the public `TransportDiagnostics` snapshot type.

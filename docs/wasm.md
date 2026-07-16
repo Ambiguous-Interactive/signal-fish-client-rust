@@ -282,7 +282,12 @@ watermark while retaining capacity-safe preflight. Pair this independently with
 `SignalFishPollingClient::new_with_options` for per-frame work and close-policy
 tuning. Backend-accepted, browser-buffered, and peer-delivered are separate
 stages; inspect `transport_diagnostics()` rather than treating buffered zero as
-per-frame completion.
+per-frame completion. For a stronger admission audit,
+`client.transport().admission_watermark_violations()` must remain zero;
+`client.transport().one_frame_escape_bytes()` separately counts payload
+accepted through the documented empty-buffer exception. The read-only
+`transport()` accessor is for transport-specific diagnostics; continue to drive
+all protocol and I/O progress through `poll()`.
 
 For rollback networking, see the [Godot + Fortress integration](fortress.md),
 including the bounded relay adapter and multi-process browser test used in CI.

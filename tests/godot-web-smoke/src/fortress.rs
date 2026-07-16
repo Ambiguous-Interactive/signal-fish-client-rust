@@ -25,7 +25,10 @@ const SETTLEMENT_FRAME_LIMIT: i32 = TARGET_FRAMES + 20;
 const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
 const IMPAIRMENT_END_FRAME: i32 = 128;
-const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+// GitHub's shared runners have measured at roughly 23 rendered frames/second
+// under two independent Chromium/Godot processes. Keep a generous wall-clock
+// guard while the frame/checksum/queue oracles remain exact.
+const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 const TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
@@ -474,35 +477,10 @@ impl FortressScenario {
                 return;
             }
         }
-        if session.current_state() != SessionState::Running {
-            return;
-        }
-
-        let target_is_confirmed = session.confirmed_frame().as_i32() >= TARGET_FRAMES
-            && self.checksum_through >= TARGET_FRAMES;
-        if target_is_confirmed && !self.target_confirmed {
-            self.target_confirmed = true;
-            self.simulation_elapsed_ms = self.started.map(|started| started.elapsed().as_millis());
-        }
-
         let metrics = session.metrics();
         let sync_health = self
             .remote_handle
             .and_then(|handle| session.sync_health(handle));
-        if target_is_confirmed
-            && self.target_state_checksum.is_some()
-            && sync_health == Some(SyncHealth::InSync)
-            && metrics.checksums_compared >= 10
-            && metrics.checksums_mismatched == 0
-            && metrics.events_discarded_total == 0
-        {
-            if !self.game_ready {
-                self.game_ready = true;
-                self.game_ready_at = Some(Instant::now());
-            }
-            return;
-        }
-
         if self
             .started
             .is_some_and(|started| started.elapsed() >= SESSION_TIMEOUT)
@@ -514,6 +492,30 @@ impl FortressScenario {
                 self.target_state_checksum.is_some(),
                 metrics.checksums_compared,
             ));
+            return;
+        }
+        if session.current_state() != SessionState::Running {
+            return;
+        }
+
+        let target_is_confirmed = session.confirmed_frame().as_i32() >= TARGET_FRAMES
+            && self.checksum_through >= TARGET_FRAMES;
+        if target_is_confirmed && !self.target_confirmed {
+            self.target_confirmed = true;
+            self.simulation_elapsed_ms = self.started.map(|started| started.elapsed().as_millis());
+        }
+
+        if target_is_confirmed
+            && self.target_state_checksum.is_some()
+            && sync_health == Some(SyncHealth::InSync)
+            && metrics.checksums_compared >= 10
+            && metrics.checksums_mismatched == 0
+            && metrics.events_discarded_total == 0
+        {
+            if !self.game_ready {
+                self.game_ready = true;
+                self.game_ready_at = Some(Instant::now());
+            }
             return;
         }
 
@@ -779,6 +781,7 @@ impl FortressScenario {
             "remote_id": self.remote_id.map(|id| id.to_string()),
             "target_frames": TARGET_FRAMES,
             "settlement_frame_limit": SETTLEMENT_FRAME_LIMIT,
+            "session_timeout_ms": SESSION_TIMEOUT.as_millis(),
             "game_frame": self.game.frame,
             // Preserve exact integer values when the browser runner parses JSON.
             "confirmed_input_checksum": self.confirmed_checksum.to_string(),

@@ -159,7 +159,7 @@ async function launchPeer(role, requestedRoomCode) {
   return peer;
 }
 
-async function waitFor(peer, predicate, description, timeoutMilliseconds = 45_000) {
+async function waitFor(peer, predicate, description, timeoutMilliseconds = 60_000) {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     const value = predicate();
@@ -174,13 +174,17 @@ function assertPeerSummary(peer) {
   const decimal = /^\d+$/;
   if (
     !summary?.passed || summary.target_frames !== 600 || summary.settlement_frame_limit !== 620 ||
+    summary.session_timeout_ms !== 40_000 ||
     summary.game_frame < 600 || summary.game_frame > 620 || summary.checksum_through !== 600 ||
     !decimal.test(summary.confirmed_input_checksum) || !decimal.test(summary.target_state_checksum) ||
     !summary.game_ready || !summary.sync_in_sync
   ) {
     throw new Error(`Fortress peer ${peer.role} failed its state oracle: ${JSON.stringify(summary)}`);
   }
-  if (summary.simulation_elapsed_ms > 12_000 || summary.max_poll_us >= 50_000) {
+  if (
+    !Number.isFinite(summary.simulation_elapsed_ms) || summary.simulation_elapsed_ms <= 0 ||
+    summary.simulation_elapsed_ms >= summary.session_timeout_ms || summary.max_poll_us >= 50_000
+  ) {
     throw new Error(`Fortress peer ${peer.role} missed timing bounds: ${JSON.stringify(summary)}`);
   }
   if (

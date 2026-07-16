@@ -57,7 +57,22 @@ feedback.
 
 ## Next
 
-- Commit and push the scoped work, open a draft PR, trigger all available
-  automated reviewers, and iterate until every CI check and review is green.
-- Publish through the connected GitHub integration, then monitor every check
-  and automated review to completion.
+- Draft PR #64 is open. The first GitHub run proved every check green except
+  the new browser E2E, whose artifacts showed an environment-only 20-second
+  settlement timeout at 461/464 confirmed frames with 7/7 checksums matched.
+  The data-backed guard is now a hard 40-second settlement deadline; the
+  independent browser wait is 60 seconds.
+- Cursor Bugbot found that the synthetic fixture compared a historical buffer
+  peak with a later adaptive watermark. The corrected gate uses an immutable
+  adaptive ceiling plus exact accepted-send invariant counters captured with
+  the contemporaneous watermark. It aggregates both JSON and binary client
+  pairs and separately accounts for the empty-buffer single-frame escape.
+- The rebuilt post-review browser runs pass: Fortress again confirms 600
+  frames with 10/10 checksums, rollback and lifecycle proof; the synthetic run
+  delivers all 4,352 frames with zero admission violations, zero escapes,
+  drained queues, and 67.230 ms p99 latency.
+- Coverage remains blocking at 93.69%. Strict MkDocs/`llms.txt`, 187-link
+  lychee, mandatory Rust checks, fixture checks, and repository hooks pass.
+- Commit and push the review/CI corrections, retrigger Cursor and Copilot, then
+  monitor checks and resolve reviewer feedback to completion. Copilot's first
+  attempt started but was stopped by the repository's external monthly quota.

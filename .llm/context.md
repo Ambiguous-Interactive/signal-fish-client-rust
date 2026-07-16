@@ -183,6 +183,9 @@ work budget is 64 frames/64 KiB in each direction, and its default close policy
 abandons client-owned queued work. Adaptive backpressure and flush-on-close are
 explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
 `transport_diagnostics()` for backend buffering/admission diagnostics.
+Use the polling client's read-only `transport()` accessor for Godot's
+zero-expected `admission_watermark_violations()` counter and the separately
+accounted `one_frame_escape_bytes()` empty-buffer exception.
 
 ## Feature Flags
 

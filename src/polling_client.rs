@@ -694,6 +694,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.transport.diagnostics()
     }
 
+    /// Borrow the owned transport for transport-specific read-only diagnostics.
+    ///
+    /// Protocol and I/O progress must still be driven through [`poll`](Self::poll).
+    #[must_use]
+    pub const fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// Return a coherent synchronous snapshot of connection and room state.
     pub fn snapshot(&self) -> ClientSnapshot {
         self.core.snapshot()
@@ -4078,6 +4086,14 @@ mod tests {
                 close_policy: PollingClosePolicy::Abandon,
             }
         );
+    }
+
+    #[test]
+    fn transport_accessor_is_read_only_and_exposes_specific_diagnostics() {
+        let client = SignalFishPollingClient::new(MockTransport::new(), default_config());
+
+        assert!(!client.transport().closed);
+        assert!(client.transport().sent.is_empty());
     }
 
     #[test]

@@ -16,7 +16,10 @@ gate requires exact reliable receipt, bounded/finally drained client queues, a
 non-positive final queue slope, p99 latency at most
 500 ms, and every `poll()` below 50 ms. CI always uploads JSON/CSV time series
 and before/after `/metrics/prom` snapshots; browser/server logs are retained on
-failure. Server 0.4.0 does not expose an internal queue/sojourn gauge, so the
+failure. The transport wrapper also requires zero contemporaneous adaptive
+watermark violations and reports empty-buffer single-frame escape bytes
+separately from the immutable 32 KiB ceiling. Server 0.4.0 does not expose an
+internal queue/sojourn gauge, so the
 fixture uses timestamped end-to-end latency and available conservation/drop
 metrics instead of a client-side proxy.
 
@@ -41,9 +44,10 @@ queue into Fortress, supplies deterministic local input, advances rollback,
 and records both confirmed-input and serialized game-state checksums. Player B
 holds its outbound relay for frames 120 through 127, deterministically forcing
 player A to predict, roll back, load state, and resimulate after release. The
-gate requires both clients to confirm 600 frames in at most 12 seconds, settle
-in sync with matching state, drain every relay and SDK queue, conserve every
-client/server delivery, and cross-check the exact room and player IDs. Player B
+gate requires both clients to confirm 600 frames within a 40-second wall-clock
+guard, settle in sync with matching state, drain every relay and SDK queue,
+conserve every client/server delivery, and cross-check the exact room and
+player IDs. Player B
 then closes first; player A must observe its nonzero v3 `PlayerLeft` epoch and
 final sequence before closing. Malformed packets, relay loss, desynchronization,
 backend-capacity refusals, server drops, and slow consumers all fail the run.

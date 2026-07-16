@@ -3,8 +3,8 @@
 use godot::prelude::*;
 use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
-    GodotWebSocketTransport, JoinRoomParams, SignalFishConfig, SignalFishEvent,
-    SignalFishPollingClient,
+    GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport, JoinRoomParams,
+    SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
 };
 use std::time::{Duration, Instant};
 
@@ -90,6 +90,9 @@ struct SmokePair {
     load_error: bool,
     peak_aggregate_depth: u64,
     other_pair_max_poll_us: u64,
+    other_pair_admission_violations: u64,
+    other_pair_one_frame_escape_bytes: u64,
+    other_pair_within_absolute_ceiling: bool,
 }
 
 impl SmokePair {
@@ -134,6 +137,9 @@ impl SmokePair {
             load_error: false,
             peak_aggregate_depth: 0,
             other_pair_max_poll_us: 0,
+            other_pair_admission_violations: 0,
+            other_pair_one_frame_escape_bytes: 0,
+            other_pair_within_absolute_ceiling: true,
         }
     }
 
@@ -550,13 +556,15 @@ impl SmokePair {
                     .saturating_add(diagnostics.backend_capacity_hits)
             })
             .fold(0u64, u64::saturating_add);
-        let buffering_safe = [self.first.as_ref(), self.second.as_ref()]
-            .into_iter()
-            .flatten()
-            .all(|client| {
-                let diagnostics = client.transport_diagnostics();
-                diagnostics.peak_buffered_bytes <= diagnostics.effective_watermark_bytes
-            });
+        let (own_violations, own_escape_bytes, own_within_ceiling) =
+            aggregate_godot_admission(self.first.as_ref(), self.second.as_ref());
+        let admission_violations = own_violations
+            .saturating_add(self.other_pair_admission_violations);
+        let one_frame_escape_bytes = own_escape_bytes
+            .saturating_add(self.other_pair_one_frame_escape_bytes);
+        let within_absolute_ceiling =
+            own_within_ceiling && self.other_pair_within_absolute_ceiling;
+        let buffering_safe = within_absolute_ceiling && admission_violations == 0;
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
         let passed = self.offered_a == LOAD_TARGET_PER_CLIENT
@@ -596,9 +604,14 @@ impl SmokePair {
             "max_poll_us": self.max_poll_us.max(self.other_pair_max_poll_us),
             "p99_latency_us": p99_us,
             "buffering_safe": buffering_safe,
+            "admission_watermark_violations": admission_violations,
+            "within_absolute_adaptive_ceiling": within_absolute_ceiling,
+            "binary_pair_admission_watermark_violations": self.other_pair_admission_violations,
+            "binary_pair_one_frame_escape_bytes": self.other_pair_one_frame_escape_bytes,
+            "binary_pair_within_absolute_adaptive_ceiling": self.other_pair_within_absolute_ceiling,
             "per_client_peak_buffered_bytes": per_client_peak_buffered,
             "per_client_effective_watermark_bytes": per_client_watermark,
-            "one_frame_escape_bytes": 0,
+            "one_frame_escape_bytes": one_frame_escape_bytes,
             "load_error": self.load_error,
         });
         if passed {
@@ -701,8 +714,13 @@ impl INode for SignalFishSmoke {
         binary.poll();
         let binary_max_poll_us = binary.max_poll_us;
         let binary_close_attributed = binary.close_attributed;
+        let (binary_violations, binary_escape_bytes, binary_within_ceiling) =
+            aggregate_godot_admission(binary.first.as_ref(), binary.second.as_ref());
         let Some(json) = &mut self.json else { return };
         json.other_pair_max_poll_us = binary_max_poll_us;
+        json.other_pair_admission_violations = binary_violations;
+        json.other_pair_one_frame_escape_bytes = binary_escape_bytes;
+        json.other_pair_within_absolute_ceiling = binary_within_ceiling;
         json.poll();
         if json.shutdown_done && binary_close_attributed {
             godot_print!("SIGNAL_FISH_SMOKE complete");
@@ -808,6 +826,37 @@ fn aggregate_diagnostics(first: Option<&Client>, second: Option<&Client>) -> (u6
     )
 }
 
+fn aggregate_godot_admission(
+    first: Option<&Client>,
+    second: Option<&Client>,
+) -> (u64, u64, bool) {
+    [first, second].into_iter().flatten().fold(
+        (0u64, 0u64, true),
+        |(violations, escape_bytes, within_ceiling), client| {
+            let transport = client.transport();
+            let peak = client.transport_diagnostics().peak_buffered_bytes;
+            (
+                violations.saturating_add(transport.admission_watermark_violations()),
+                escape_bytes.saturating_add(transport.one_frame_escape_bytes()),
+                within_ceiling && adaptive_peak_is_safe(peak),
+            )
+        },
+    )
+}
+
+fn adaptive_peak_is_safe(peak_buffered_bytes: u64) -> bool {
+    default_adaptive_ceiling_bytes().is_some_and(|ceiling| peak_buffered_bytes <= ceiling)
+}
+
+fn default_adaptive_ceiling_bytes() -> Option<u64> {
+    match GodotWebSocketOptions::default().backpressure_policy {
+        GodotBackpressurePolicy::Adaptive { ceiling_bytes, .. } => {
+            Some(u64::try_from(ceiling_bytes).unwrap_or(u64::MAX))
+        }
+        GodotBackpressurePolicy::Fixed { .. } | GodotBackpressurePolicy::NativeCapacity => None,
+    }
+}
+
 fn connect_client(kind: PairKind, suffix: &str) -> Option<Client> {
     match GodotWebSocketTransport::connect(SERVER_URL) {
         Ok(transport) => {
@@ -830,6 +879,30 @@ fn close_client(client: &mut Option<Client>) {
 }
 
 struct SmokeExtension;
+
+#[cfg(test)]
+mod tests {
+    use super::{adaptive_peak_is_safe, default_adaptive_ceiling_bytes};
+
+    #[test]
+    fn historical_peak_is_compared_with_immutable_adaptive_ceiling() {
+        let ceiling = default_adaptive_ceiling_bytes().unwrap_or_default();
+
+        assert_eq!(ceiling, 32 * 1024);
+        assert!(adaptive_peak_is_safe(0));
+        assert!(adaptive_peak_is_safe(ceiling));
+        assert!(!adaptive_peak_is_safe(ceiling.saturating_add(1)));
+    }
+
+    #[test]
+    fn lower_current_watermark_does_not_invalidate_safe_historical_peak() {
+        let historical_peak = default_adaptive_ceiling_bytes().unwrap_or_default();
+        let later_effective_watermark = 4 * 1024;
+
+        assert!(historical_peak > later_effective_watermark);
+        assert!(adaptive_peak_is_safe(historical_peak));
+    }
+}
 
 // The CI negative-control build enables this feature to force the raw
 // Emscripten WebSocket imports into an otherwise valid Godot GDExtension.
