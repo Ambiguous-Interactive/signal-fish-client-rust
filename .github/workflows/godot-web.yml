@@ -22,6 +22,50 @@ env:
   SERVER_VERSION: "0.4.0"
 
 jobs:
+  fortress-relay:
+    name: Fortress rollback multiprocess E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: tests/fortress-relay-e2e
+
+      - name: Download pinned Signal Fish server
+        run: |
+          set -euo pipefail
+          asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
+          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
+          sha256sum --check "${asset}.sha256"
+          mkdir -p .signal-fish-server
+          tar -xzf "${asset}" -C .signal-fish-server
+
+      - name: Lint Fortress relay harness
+        run: |
+          cargo fmt --manifest-path tests/fortress-relay-e2e/Cargo.toml -- --check
+          cargo clippy --manifest-path tests/fortress-relay-e2e/Cargo.toml \
+            --locked --all-targets -- -D warnings
+
+      - name: Run real server and two Fortress game processes
+        run: |
+          set -euo pipefail
+          server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
+          chmod +x "${server_bin}"
+          SIGNAL_FISH_SERVER_BIN="${server_bin}" \
+            cargo test --manifest-path tests/fortress-relay-e2e/Cargo.toml \
+              --locked --all-targets -- --nocapture
+
   browser-smoke:
     name: Official template browser E2E
     runs-on: ubuntu-latest

@@ -180,7 +180,8 @@ async function writeThroughputArtifacts() {
   const report = { loadSummary, samples, serverMetricDeltas: deltas };
   await writeFile("godot-throughput.json", `${JSON.stringify(report, null, 2)}\n`);
   const columns = [
-    "elapsed_ms", "command_depth", "peak_depth", "buffered_bytes",
+    "elapsed_ms", "command_depth", "peak_depth", "oldest_queue_age_us",
+    "peak_oldest_queue_age_us", "buffered_bytes",
     "accepted_frames", "received_frames", "accepted_per_second",
     "received_per_second", "offered_frames", "poll_max_us", "poll_work_frames",
     "poll_work_bytes", "poll_receive_frames", "poll_count",
@@ -244,6 +245,20 @@ try {
     loadSummary.queue_depth_slope_per_ms = queueDepthSlope;
     if (queueDepthSlope > 0) {
       throw new Error(`positive final command-depth slope: ${queueDepthSlope}`);
+    }
+    const meanAge = finalSamples.reduce(
+      (sum, sample) => sum + sample.oldest_queue_age_us,
+      0,
+    ) / finalSamples.length;
+    const ageSlopeNumerator = finalSamples.reduce(
+      (sum, sample) => sum +
+        (sample.elapsed_ms - meanX) * (sample.oldest_queue_age_us - meanAge),
+      0,
+    );
+    const oldestAgeSlope = ageSlopeNumerator / Math.max(1, slopeDenominator);
+    loadSummary.oldest_queue_age_slope_us_per_ms = oldestAgeSlope;
+    if (oldestAgeSlope > 0) {
+      throw new Error(`positive final oldest-queue-age slope: ${oldestAgeSlope}`);
     }
     metricsAfter = await fetchMetrics();
     const deltas = metricDeltas(metricsBefore, metricsAfter);

@@ -10,11 +10,13 @@ binary pair. Stable `SIGNAL_FISH_SMOKE` markers drive browser automation.
 
 Before shutdown, the fixture proves four binary packets are accepted in one
 rendered callback, then runs two JSON clients at 136 offered frames/second each
-for 16 seconds. It records queue depth, Godot/browser buffering, acceptance and
-receipt counts, poll duration, and end-to-end timestamp latency. The browser
+for 16 seconds. It records queue depth, oldest queued-command age,
+Godot/browser buffering, acceptance and receipt counts, poll duration, and
+end-to-end timestamp latency. The browser
 gate requires exact reliable receipt, no admission refusal, bounded/finally
-drained client queues, a non-positive final queue slope, p99 latency at most
-500 ms, and every `poll()` below 50 ms. CI always uploads JSON/CSV time series
+drained client queues, non-positive final depth and oldest-age slopes, peak
+oldest age at most 500 ms, p99 latency at most 500 ms, and every `poll()` below
+50 ms. CI always uploads JSON/CSV time series
 and before/after `/metrics/prom` snapshots; browser/server logs are retained on
 failure. Server 0.4.0 does not expose an internal queue/sojourn gauge, so the
 fixture uses timestamped end-to-end latency and available conservation/drop

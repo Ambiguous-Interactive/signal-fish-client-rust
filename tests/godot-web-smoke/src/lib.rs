@@ -410,6 +410,8 @@ impl SmokePair {
             self.last_sample_at = Some(now);
             let (queue_depth, peak_depth, buffered, accepted) =
                 aggregate_diagnostics(self.first.as_ref(), self.second.as_ref());
+            let (oldest_queue_age_us, peak_oldest_queue_age_us) =
+                aggregate_queue_ages(self.first.as_ref(), self.second.as_ref());
             self.peak_aggregate_depth = self.peak_aggregate_depth.max(queue_depth);
             let (send_budget_exhaustions, receive_budget_exhaustions) =
                 aggregate_budget_exhaustions(self.first.as_ref(), self.second.as_ref());
@@ -432,6 +434,8 @@ impl SmokePair {
                 "elapsed_ms": elapsed.as_millis(),
                 "command_depth": queue_depth,
                 "peak_depth": peak_depth,
+                "oldest_queue_age_us": oldest_queue_age_us,
+                "peak_oldest_queue_age_us": peak_oldest_queue_age_us,
                 "buffered_bytes": buffered,
                 "accepted_frames": accepted,
                 "received_frames": received,
@@ -554,6 +558,16 @@ impl SmokePair {
             });
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
+        let per_client_peak_oldest_queue_age_us = [self.first.as_ref(), self.second.as_ref()]
+            .map(|client| {
+                client.map_or(0, |client| {
+                    client
+                        .polling_stats()
+                        .peak_oldest_queue_age
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64
+                })
+            });
         let passed = self.offered_a == LOAD_TARGET_PER_CLIENT
             && self.offered_b == LOAD_TARGET_PER_CLIENT
             && self.received_a == LOAD_TARGET_PER_CLIENT
@@ -561,6 +575,9 @@ impl SmokePair {
             && queue_depth == 0
             && self.peak_aggregate_depth <= 64
             && per_client_peak_depth.into_iter().all(|depth| depth <= 64)
+            && per_client_peak_oldest_queue_age_us
+                .into_iter()
+                .all(|age_us| age_us <= 500_000)
             && admission_hits == 0
             && self.multi_frame_poll
             && self.max_poll_us.max(self.other_pair_max_poll_us) < 50_000
@@ -585,6 +602,7 @@ impl SmokePair {
             "peak_queue_depth": peak_depth,
             "peak_aggregate_queue_depth": self.peak_aggregate_depth,
             "per_client_peak_queue_depth": per_client_peak_depth,
+            "per_client_peak_oldest_queue_age_us": per_client_peak_oldest_queue_age_us,
             "buffered_bytes": buffered,
             "accepted_frames": accepted,
             "admission_hits": admission_hits,
@@ -761,6 +779,24 @@ fn aggregate_budget_exhaustions(first: Option<&Client>, second: Option<&Client>)
                 receive.saturating_add(stats.receive_budget_exhaustions),
             )
         })
+}
+
+fn aggregate_queue_ages(first: Option<&Client>, second: Option<&Client>) -> (u64, u64) {
+    [first, second].into_iter().flatten().fold(
+        (0u64, 0u64),
+        |(current_max, peak_max), client| {
+            let stats = client.polling_stats();
+            let current = stats
+                .current_oldest_queue_age
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            let peak = stats
+                .peak_oldest_queue_age
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            (current_max.max(current), peak_max.max(peak))
+        },
+    )
 }
 
 fn aggregate_diagnostics(first: Option<&Client>, second: Option<&Client>) -> (u64, u64, u64, u64) {

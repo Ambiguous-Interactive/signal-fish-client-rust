@@ -95,6 +95,11 @@ pub struct PollingStats {
     pub current_queue_depth: u64,
     /// Highest observed client-owned outbound depth.
     pub peak_queue_depth: u64,
+    /// Age of the oldest client-owned outbound command/frame at the most
+    /// recent poll or queue mutation. Zero when no client-owned work remains.
+    pub current_oldest_queue_age: Duration,
+    /// Highest sampled age of the oldest client-owned outbound command/frame.
+    pub peak_oldest_queue_age: Duration,
     /// Polls that stopped because the send frame or byte budget was exhausted.
     pub send_budget_exhaustions: u64,
     /// Polls that stopped because the receive frame or byte budget was exhausted.
@@ -111,6 +116,12 @@ enum ClosePhase {
     Flushing { started_at: Instant },
     Closing { started_at: Instant },
     Closed,
+}
+
+#[derive(Debug)]
+struct QueuedCommand {
+    command: PollingCommand,
+    enqueued_at: Instant,
 }
 
 // ── Public client ───────────────────────────────────────────────────
@@ -162,7 +173,7 @@ enum ClosePhase {
 /// ```
 pub struct SignalFishPollingClient<T: Transport> {
     transport: T,
-    cmd_queue: VecDeque<PollingCommand>,
+    cmd_queue: VecDeque<QueuedCommand>,
     /// Maximum number of queued commands before sends fail fast with
     /// [`SignalFishError::SendBufferFull`]. Mirrors the async client's
     /// bounded command channel.
@@ -173,6 +184,7 @@ pub struct SignalFishPollingClient<T: Transport> {
     shutdown_timeout: Duration,
     started: bool,
     pending_frame: Option<TransportFrame>,
+    pending_frame_enqueued_at: Option<Instant>,
     /// The transport accepted the current frame and is still completing it.
     /// While true, poll with `None` and do not dequeue a replacement frame.
     send_in_flight: bool,
@@ -209,8 +221,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
         let auth_msg = ClientCore::authenticate(&config);
 
+        let created_at = Instant::now();
         let mut cmd_queue = VecDeque::new();
-        cmd_queue.push_back(auth_msg);
+        cmd_queue.push_back(QueuedCommand {
+            command: auth_msg,
+            enqueued_at: created_at,
+        });
 
         let shutdown_timeout = config.shutdown_timeout;
         let mut client = Self {
@@ -231,13 +247,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
             shutdown_timeout,
             started: false,
             pending_frame: None,
+            pending_frame_enqueued_at: None,
             send_in_flight: false,
             pending_frame_is_game_data: false,
             in_flight_is_game_data: false,
             pending_inbound: None,
             close_phase: ClosePhase::Open,
         };
-        client.refresh_queue_depth();
+        client.refresh_queue_diagnostics(created_at);
         client
     }
 
@@ -282,6 +299,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
         self.transport.begin_poll_cycle();
+        self.refresh_queue_diagnostics(now);
 
         if !matches!(self.close_phase, ClosePhase::Open) {
             self.drive_close_at(now, &mut cx);
@@ -292,7 +310,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return events;
         }
 
-        if let Err(error) = self.drive_outbound(&mut cx) {
+        if let Err(error) = self.drive_outbound(&mut cx, now) {
             error!(%error, "transport send failed");
             self.handle_disconnect_at(
                 &mut events,
@@ -746,6 +764,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     fn queue_command(&mut self, command: PollingCommand) -> Result<()> {
+        self.queue_command_at(command, Instant::now())
+    }
+
+    fn queue_command_at(&mut self, command: PollingCommand, now: Instant) -> Result<()> {
         if !self.core.is_connected() {
             return Err(SignalFishError::NotConnected);
         }
@@ -758,14 +780,18 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 capacity: self.command_capacity,
             });
         }
-        self.cmd_queue.push_back(command);
-        self.refresh_queue_depth();
+        self.cmd_queue.push_back(QueuedCommand {
+            command,
+            enqueued_at: now,
+        });
+        self.refresh_queue_diagnostics(now);
         Ok(())
     }
 
     fn drive_outbound(
         &mut self,
         cx: &mut std::task::Context<'_>,
+        now: Instant,
     ) -> std::result::Result<(), SignalFishError> {
         if self.send_in_flight {
             let mut no_frame = None;
@@ -791,7 +817,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
         let mut sent_bytes = 0usize;
         loop {
             if self.pending_frame.is_none() {
-                let Some(command) = self.cmd_queue.pop_front() else {
+                let Some(QueuedCommand {
+                    command,
+                    enqueued_at,
+                }) = self.cmd_queue.pop_front()
+                else {
                     break;
                 };
                 match command {
@@ -802,7 +832,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                                 error!(%error, "failed to serialize ClientMessage");
                                 self.polling_stats.abandoned_commands =
                                     self.polling_stats.abandoned_commands.saturating_add(1);
-                                self.refresh_queue_depth();
+                                self.refresh_queue_diagnostics(now);
                                 continue;
                             }
                         };
@@ -815,7 +845,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
                         self.pending_frame = Some(TransportFrame::Binary(payload));
                     }
                 }
-                self.refresh_queue_depth();
+                self.pending_frame_enqueued_at = Some(enqueued_at);
+                self.refresh_queue_diagnostics(now);
             }
 
             let frame_bytes = self
@@ -837,7 +868,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
             if transferred {
                 sent_frames = sent_frames.saturating_add(1);
                 sent_bytes = next_bytes.unwrap_or(usize::MAX);
-                self.refresh_queue_depth();
+                self.pending_frame_enqueued_at = None;
+                self.refresh_queue_diagnostics(now);
             }
             match result {
                 std::task::Poll::Ready(Ok(())) => {
@@ -896,7 +928,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.drain_closing_inbound(cx);
 
         if matches!(self.close_phase, ClosePhase::Flushing { .. }) {
-            if let Err(error) = self.drive_outbound(cx) {
+            if let Err(error) = self.drive_outbound(cx, now) {
                 error!(%error, "queued send failed while flushing close");
                 self.abandon_client_owned(false);
                 self.close_phase = ClosePhase::Closing { started_at };
@@ -992,15 +1024,16 @@ impl<T: Transport> SignalFishPollingClient<T> {
         }
         self.cmd_queue.clear();
         self.pending_frame = None;
+        self.pending_frame_enqueued_at = None;
         self.pending_frame_is_game_data = false;
         self.polling_stats.abandoned_commands = self
             .polling_stats
             .abandoned_commands
             .saturating_add(u64::try_from(abandoned).unwrap_or(u64::MAX));
-        self.refresh_queue_depth();
+        self.refresh_queue_diagnostics(Instant::now());
     }
 
-    fn refresh_queue_depth(&mut self) {
+    fn refresh_queue_diagnostics(&mut self, now: Instant) {
         let depth = self
             .cmd_queue
             .len()
@@ -1010,6 +1043,28 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .polling_stats
             .peak_queue_depth
             .max(self.polling_stats.current_queue_depth);
+        let oldest = self
+            .pending_frame_enqueued_at
+            .into_iter()
+            .chain(self.cmd_queue.front().map(|queued| queued.enqueued_at))
+            .min();
+        self.polling_stats.current_oldest_queue_age = oldest
+            .map(|enqueued_at| now.saturating_duration_since(enqueued_at))
+            .unwrap_or_default();
+        self.polling_stats.peak_oldest_queue_age = self
+            .polling_stats
+            .peak_oldest_queue_age
+            .max(self.polling_stats.current_oldest_queue_age);
+    }
+
+    #[cfg(test)]
+    fn push_test_command(&mut self, command: PollingCommand) {
+        let now = Instant::now();
+        self.cmd_queue.push_back(QueuedCommand {
+            command,
+            enqueued_at: now,
+        });
+        self.refresh_queue_diagnostics(now);
     }
 }
 
@@ -3737,17 +3792,10 @@ mod tests {
     fn one_poll_transfers_multiple_text_and_binary_frames() {
         let transport = RecordingFrameTransport::default();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Binary(vec![1, 2, 3]));
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.cmd_queue.push_back(PollingCommand::Binary(vec![4]));
-        client.refresh_queue_depth();
+        client.push_test_command(PollingCommand::Message(ClientMessage::Ping));
+        client.push_test_command(PollingCommand::Binary(vec![1, 2, 3]));
+        client.push_test_command(PollingCommand::Message(ClientMessage::Ping));
+        client.push_test_command(PollingCommand::Binary(vec![4]));
 
         let _ = client.poll();
 
@@ -3782,11 +3830,8 @@ mod tests {
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         for _ in 0..5 {
-            client
-                .cmd_queue
-                .push_back(PollingCommand::Message(ClientMessage::Ping));
+            client.push_test_command(PollingCommand::Message(ClientMessage::Ping));
         }
-        client.refresh_queue_depth();
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 3);
@@ -3813,10 +3858,7 @@ mod tests {
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         let _ = client.poll();
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Binary(vec![7; 32]));
-        client.refresh_queue_depth();
+        client.push_test_command(PollingCommand::Binary(vec![7; 32]));
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 2);
@@ -3842,11 +3884,8 @@ mod tests {
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         let _ = client.poll();
         for byte in [1, 2, 3] {
-            client
-                .cmd_queue
-                .push_back(PollingCommand::Binary(vec![byte; 4]));
+            client.push_test_command(PollingCommand::Binary(vec![byte; 4]));
         }
-        client.refresh_queue_depth();
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 2);
@@ -3864,6 +3903,80 @@ mod tests {
             ]
         );
         assert_eq!(client.polling_stats().current_queue_depth, 0);
+    }
+
+    #[test]
+    fn oldest_queue_age_tracks_refused_frame_and_resets_after_transfer() {
+        let transport = RecordingFrameTransport::default();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        let _ = client.poll_at(base);
+        client.transport.send_pending = true;
+        client
+            .queue_command_at(PollingCommand::Message(ClientMessage::Ping), base)
+            .expect("queue Ping behind the transport refusal");
+
+        let first_sample = base + Duration::from_millis(40);
+        let _ = client.poll_at(first_sample);
+        let stats = client.polling_stats();
+        assert_eq!(stats.current_queue_depth, 1);
+        assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(40));
+        assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(40));
+
+        let second_sample = base + Duration::from_millis(75);
+        let _ = client.poll_at(second_sample);
+        let stats = client.polling_stats();
+        assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(75));
+        assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(75));
+
+        client.transport.send_pending = false;
+        let _ = client.poll_at(base + Duration::from_millis(80));
+        let stats = client.polling_stats();
+        assert_eq!(stats.current_queue_depth, 0);
+        assert_eq!(stats.current_oldest_queue_age, Duration::ZERO);
+        assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(80));
+    }
+
+    #[test]
+    fn oldest_queue_age_uses_fifo_head_and_saturates_clock_regression() {
+        let options = PollingClientOptions {
+            work_budget: PollingWorkBudget {
+                send_frames: 1,
+                ..PollingWorkBudget::default()
+            },
+            ..PollingClientOptions::default()
+        };
+        let transport = RecordingFrameTransport::default();
+        let mut client =
+            SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        let base = Instant::now();
+        let _ = client.poll_at(base);
+        client
+            .queue_command_at(PollingCommand::Binary(vec![1]), base)
+            .expect("queue older command");
+        client
+            .queue_command_at(
+                PollingCommand::Binary(vec![2]),
+                base + Duration::from_millis(25),
+            )
+            .expect("queue newer command");
+
+        let _ = client.poll_at(base + Duration::from_millis(100));
+        let stats = client.polling_stats();
+        assert_eq!(stats.current_queue_depth, 1);
+        assert_eq!(stats.current_oldest_queue_age, Duration::from_millis(75));
+        assert_eq!(stats.peak_oldest_queue_age, Duration::from_millis(100));
+
+        client.refresh_queue_diagnostics(base);
+        assert_eq!(
+            client.polling_stats().current_oldest_queue_age,
+            Duration::ZERO,
+            "an injected clock earlier than enqueue must saturate instead of panicking"
+        );
+        assert_eq!(
+            client.polling_stats().peak_oldest_queue_age,
+            Duration::from_millis(100)
+        );
     }
 
     #[test]
@@ -4039,10 +4152,7 @@ mod tests {
     fn abandon_close_discards_queued_work_and_starts_close() {
         let transport = RecordingFrameTransport::default();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.refresh_queue_depth();
+        client.push_test_command(PollingCommand::Message(ClientMessage::Ping));
 
         client.close();
 
@@ -4080,10 +4190,7 @@ mod tests {
         let transport = RecordingFrameTransport::default();
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.refresh_queue_depth();
+        client.push_test_command(PollingCommand::Message(ClientMessage::Ping));
 
         client.close();
 

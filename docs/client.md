@@ -707,7 +707,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
-| `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
+| `polling_stats()` | `PollingStats` | Client-owned queue depth and oldest-command age, budget exhaustion, abandoned-command, and deadline counters. |
 | `transport_diagnostics()` | `TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters. |
 
 !!! note "No async accessors"
