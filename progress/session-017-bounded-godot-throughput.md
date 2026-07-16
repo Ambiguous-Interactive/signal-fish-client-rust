@@ -37,6 +37,9 @@ throughput regression merge-blocking.
 - Addressed the second Cursor pass by flushing a backend-owned in-flight send
   before peer-disconnect close and counting receive-budget exhaustion only
   when another frame is actually retained for a later poll.
+- Addressed the third Cursor pass by applying Godot's buffered-inbound close
+  guard both before and after a locally initiated close advances the peer to
+  `Closed`.
 - Diagnosed the first browser workflow failure as a punctuation boundary in
   the expected raw-Emscripten linker marker and corrected the exact marker.
 
@@ -51,7 +54,7 @@ throughput regression merge-blocking.
   acceptance was capped at 62.5 sends/s by one-frame-per-rendered-callback
   completion.
 - `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings &&
-  cargo test --all-features` — final post-review run passed: 284 library unit
+  cargo test --all-features` — final post-review run passed: 285 library unit
   tests plus all integration/doc suites (3 live-server tests remained
   intentionally environment-gated).
 - Focused revised suites — 102 polling tests and 30 Godot transport tests passed.
