@@ -61,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
+          server_bin="${GITHUB_WORKSPACE}/${server_bin#./}"
           chmod +x "${server_bin}"
           SIGNAL_FISH_SERVER_BIN="${server_bin}" \
             cargo test --manifest-path tests/fortress-relay-e2e/Cargo.toml \

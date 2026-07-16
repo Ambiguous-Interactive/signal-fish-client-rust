@@ -2663,6 +2663,16 @@ mod dependency_policy {
 mod ci_config_validation {
     use super::*;
 
+    #[test]
+    fn fortress_e2e_passes_an_absolute_server_path_to_cargo() {
+        let workflow = read_project_file(".github/workflows/godot-web.yml");
+
+        assert!(
+            workflow.contains(r#"server_bin="${GITHUB_WORKSPACE}/${server_bin#./}""#),
+            "the standalone Fortress test runs from its package directory, so the workflow must convert the downloaded server path to an absolute path"
+        );
+    }
+
     fn validate_sc2317_directive_line(
         path: &str,
         line_number: usize,
