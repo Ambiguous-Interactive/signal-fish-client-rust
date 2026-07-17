@@ -13,7 +13,7 @@
 //! All checks are synchronous and offline — filesystem reads plus a
 //! `git ls-files` query — with no network access or async runtime needed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Returns the project root directory (where Cargo.toml lives).
 fn project_root() -> PathBuf {
@@ -4423,13 +4423,18 @@ mod markdown_policy_validation {
     }
 
     /// Returns every markdown file the docs-validation `markdownlint` job
-    /// lints, sourced from `git ls-files` so the set is exactly what a clean
-    /// CI checkout contains: tracked files only. `.gitignore`d build/tool
-    /// directories (`target/`, `.venv/`, `.pytest_cache/`, …) and untracked
-    /// scratch files are excluded for free, so this stays deterministic and
-    /// identical to CI with no hand-maintained ignore list to drift.
+    /// lints. A repository checkout uses `git ls-files` so the set is exactly
+    /// the tracked files from clean CI. A packaged crate has no `.git`
+    /// directory, so it falls back to the package's already-filtered contents.
     fn collect_lintable_markdown_files() -> Vec<PathBuf> {
         let root = project_root();
+        if !root.join(".git").exists() {
+            let mut files = Vec::new();
+            collect_packaged_markdown_files(&root, &mut files);
+            files.sort();
+            return files;
+        }
+
         // `-z` emits NUL-separated, unquoted paths, so non-ASCII filenames
         // survive verbatim (without it, git C-quotes them and they would be
         // silently dropped). `--cached` lists tracked files only, so the
@@ -4459,6 +4464,59 @@ mod markdown_policy_validation {
             .collect();
         files.sort();
         files
+    }
+
+    fn collect_packaged_markdown_files(directory: &Path, files: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(directory).unwrap_or_else(|error| {
+            panic!(
+                "Failed to enumerate packaged directory '{}': {error}",
+                directory.display()
+            )
+        });
+
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Failed to read an entry in packaged directory '{}': {error}",
+                        directory.display()
+                    )
+                })
+                .path();
+            if path.is_dir() {
+                collect_packaged_markdown_files(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                files.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn packaged_markdown_collection_recurses_without_git_metadata() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after Unix epoch")
+            .as_nanos();
+        let package = std::env::temp_dir().join(format!(
+            "signal-fish-packaged-markdown-{}-{unique}",
+            std::process::id()
+        ));
+        let docs = package.join("docs");
+        std::fs::create_dir_all(&docs).expect("create packaged docs directory");
+        std::fs::write(package.join("README.md"), "# Root\n").expect("write packaged README");
+        std::fs::write(docs.join("guide.md"), "# Guide\n").expect("write packaged guide");
+        std::fs::write(docs.join("ignored.txt"), "not markdown\n")
+            .expect("write packaged non-markdown file");
+
+        let mut files = Vec::new();
+        collect_packaged_markdown_files(&package, &mut files);
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![package.join("README.md"), docs.join("guide.md")]
+        );
+        std::fs::remove_dir_all(&package).expect("remove packaged markdown fixture");
     }
 
     /// True for a thematic break (`---`, `***`, `___`, or spaced forms such as
@@ -4508,10 +4566,7 @@ mod markdown_policy_validation {
         // does not chase nested lists or the blank-line-AFTER half of MD032;
         // markdownlint remains the complete authority in CI.
         let files = collect_lintable_markdown_files();
-        assert!(
-            !files.is_empty(),
-            "`git ls-files '*.md'` returned no markdown files."
-        );
+        assert!(!files.is_empty(), "No lintable markdown files were found.");
 
         let mut violations: Vec<String> = Vec::new();
 

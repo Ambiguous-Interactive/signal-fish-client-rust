@@ -38,6 +38,9 @@ fully green pull request with all automated review feedback addressed.
   exact-head reviews from Cursor Bugbot and GitHub Copilot.
 - Diagnosed the first CI failure as a Yamllint line-length violation in the
   release-preparation staging command and split that command across lines.
+- Diagnosed the core MSRV test failure: one repository policy test assumed a
+  `.git` directory, while the deliberately isolated core snapshot has none.
+  Added a package-content fallback that scans the already-filtered snapshot.
 
 ## Remaining
 
