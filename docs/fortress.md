@@ -83,9 +83,10 @@ Chromium processes and a real Signal Fish Server 0.4.0. The clean case advances
 600 confirmed frames; the impaired case adds seeded bidirectional 40 ms delay,
 10 ms jitter, 0.2% correlated loss, a 10 Mbit/s rate, and a six-callback polling
 hitch at frame 240; the soak advances 3,600 confirmed frames under the same
-profile. The fixture configures a 12-frame prediction window so the declared
-hitch can recover without a scheduler stall; the clean oracle still caps
-observed confirmation lag at eight frames. Simulation advances on a fixed local
+profile. The fixture configures a 20-frame prediction window so acceptable
+constrained-network lag and the declared hitch can recover without an internal
+scheduler stall; the scenario oracles still cap observed confirmation lag at
+eight clean or 12 impaired/soak frames. Simulation advances on a fixed local
 18 Hz cadence, independent of peer or network progress, so unequal browser CPU
 slices do not become artificial frame advantage and real prediction-window
 stalls remain observable. A bounded relay hold uses causal post-advance frame

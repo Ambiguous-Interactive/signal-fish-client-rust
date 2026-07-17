@@ -95,11 +95,12 @@ transfers ownership immediately; browser buffering is observed separately.
 The blocking Godot workflow builds one official export and runs clean,
 seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
 0.4.0. It checksum-verifies and builds iproute2 6.6.0 for seeded netem rather
-than relying on the runner's older `tc`. A 12-frame Fortress prediction window
-leaves recovery headroom while the clean oracle still enforces eight-frame
-lag. The fixture uses a peer-independent fixed 18 Hz simulation cadence and a
-bounded causal relay hold, while the polling-hitch oracle requires forward
-gameplay progress. These controls must prove
+than relying on the runner's older `tc`. A 20-frame Fortress prediction window
+leaves recovery headroom while scenario oracles still enforce eight-frame
+clean and 12-frame impaired/soak lag bounds. The fixture uses a
+peer-independent fixed 18 Hz simulation cadence and a bounded causal relay
+hold, while the polling-hitch oracle requires forward gameplay progress. These
+controls must prove
 rollback/resimulation, bounded confirmation lag with zero waits/stalls, exact
 state checksum convergence, drained queue age/depth with a non-positive final
 eight-sample soak age slope, relay/server conservation, and v3 peer departure.

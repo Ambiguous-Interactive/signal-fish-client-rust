@@ -26,6 +26,7 @@ const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
 const INPUT_DELAY_FRAMES: i32 = 2;
 const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
+const PREDICTION_WINDOW_FRAMES: usize = 20;
 const SIMULATION_FPS: usize = 18;
 const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
 // GitHub's shared runners have measured at roughly 23 rendered frames/second
@@ -496,10 +497,11 @@ impl FortressScenario {
             .with_num_players(2)
             .and_then(|builder| builder.with_fps(SIMULATION_FPS))
             .and_then(|builder| builder.with_input_delay(INPUT_DELAY_FRAMES as usize))
-            // Leave enough prediction headroom for the declared six-callback
-            // hitch on top of the constrained-network round trip. Scenario
-            // oracles still enforce the tighter clean/impaired lag limits.
-            .map(|builder| builder.with_max_prediction_window(12))
+            // Keep Fortress's internal stop threshold above the declared
+            // constrained-network lag limit. Scenario oracles independently
+            // enforce tighter clean/impaired bounds, so acceptable lag does
+            // not manufacture a wait or stall by exhausting this window.
+            .map(|builder| builder.with_max_prediction_window(PREDICTION_WINDOW_FRAMES))
             .and_then(|builder| builder.add_player(PlayerType::Local, local_handle))
             .and_then(|builder| builder.add_player(PlayerType::Remote(remote_id), remote_handle))
             .map(|builder| {
