@@ -19,7 +19,7 @@ echo "    rustc (nightly): $(rustc +nightly --version)"
 # Always include docs.rs cfg; keep warnings denied to match CI policy.
 export RUSTDOCFLAGS="--cfg docsrs -D warnings"
 
-echo "==> running: cargo +nightly doc --all-features --no-deps"
-cargo +nightly doc --all-features --no-deps
+echo "==> running: cargo +nightly doc --workspace --all-features --no-deps"
+cargo +nightly doc --workspace --all-features --no-deps
 
 echo "==> docs.rs compatibility check passed"

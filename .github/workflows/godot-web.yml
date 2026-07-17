@@ -79,6 +79,7 @@ jobs:
           GODOT4_BIN: ${{ github.workspace }}/.godot/Godot_v4.5-stable_linux.x86_64
         run: |
           set -euo pipefail
+          cargo check --manifest-path tests/godot-compat-min/Cargo.toml --locked
           cargo clippy --manifest-path tests/godot-web-smoke/Cargo.toml \
             --all-targets --locked -- -D warnings
           cargo test --manifest-path tests/godot-web-smoke/Cargo.toml --locked
@@ -97,6 +98,11 @@ jobs:
           set -euo pipefail
           export GODOT4_BIN="${PWD}/.godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
+          cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
+            --manifest-path tests/godot-compat-min/Cargo.toml \
+            --target-dir target/godot-compat-min \
+            --target wasm32-unknown-emscripten \
+            --release --locked
           cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
             --manifest-path tests/godot-web-smoke/Cargo.toml \
             --target-dir target/godot-web-smoke \

@@ -17,7 +17,7 @@
 #  10.  scripts/check-test-io-unwrap.sh
 #  11.  scripts/check-workflows.sh
 #  12.  cargo fmt --all -- --check (skipped if no Rust files staged)
-#  13.  cargo clippy --all-targets --all-features -- -D warnings (skipped if no Rust files staged)
+#  13.  cargo clippy --workspace --all-targets --all-features -- -D warnings (skipped if no Rust files staged)
 #  14.  typos --config .typos.toml  (optional)
 #  15.  TOML config validation      (optional)
 #  16.  scripts/check-test-quality.sh
@@ -34,8 +34,8 @@
 #     4. scripts/extract-rust-snippets.sh
 #     5. scripts/pre-commit-docs.sh (optional)
 #   Phase 2 (sequential, foreground — shared target/):
-#     1. cargo clippy --all-targets --no-default-features -- -D warnings
-#     2. cargo test --all-features
+#     1. cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+#     2. cargo test --workspace --all-features
 #     6. cargo machete (optional — unused dependency heuristic check)
 #
 # Hook behavior:
@@ -234,7 +234,7 @@ fi
 # ── 13. Cargo clippy (skip if no Rust files staged) ─────────────────
 if [ "$HAS_RUST_FILES" = true ]; then
     run_check "cargo clippy" "13-clippy" \
-        cargo clippy --all-targets --all-features -- -D warnings &
+        cargo clippy --workspace --all-targets --all-features -- -D warnings &
     PIDS+=($!)
 else
     printf 'SKIP 0.0 cargo clippy (no Rust files staged)\n' > "$CHECK_TMPDIR/13-clippy.result"
@@ -515,11 +515,11 @@ fi
 
 # ── 1. Cargo clippy (no-default-features) ────────────────────────────
 run_check "clippy no-default" "01-clippy-nodef" \
-    cargo clippy --all-targets --no-default-features -- -D warnings
+    cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
 # ── 2. Cargo test ────────────────────────────────────────────────────
 run_check "cargo test" "02-test" \
-    cargo test --all-features
+    cargo test --workspace --all-features
 
 # ── 6. Unused dependency check — cargo-machete (optional) ────────────
 if command -v cargo-machete &>/dev/null; then
@@ -610,7 +610,7 @@ echo "  9.  bash scripts/test_shell_portability.sh (shell portability checks)"
 echo " 10.  bash scripts/check-test-io-unwrap.sh (Rust test I/O unwrap check)"
 echo " 11.  bash scripts/check-workflows.sh"
 echo " 12.  cargo fmt --all -- --check (skipped if no Rust files staged)"
-echo " 13.  cargo clippy --all-targets --all-features -- -D warnings (skipped if no Rust files staged)"
+echo " 13.  cargo clippy --workspace --all-targets --all-features -- -D warnings (skipped if no Rust files staged)"
 echo " 14.  typos --config .typos.toml  (spell check — optional, skipped if not installed)"
 echo " 15.  TOML config validation      (optional, requires python3)"
 echo " 16.  bash scripts/check-test-quality.sh (test quality check)"
@@ -627,8 +627,8 @@ echo "    3. bash scripts/check-no-panics.sh (panic-free policy — phases 1-2)"
 echo "    4. bash scripts/extract-rust-snippets.sh (markdown snippet compilation)"
 echo "    5. bash scripts/pre-commit-docs.sh (docs rendering — optional, skipped if mkdocs not installed)"
 echo "  Phase 2 — sequential foreground (cargo, shared target/):"
-echo "    1. cargo clippy --all-targets --no-default-features -- -D warnings"
-echo "    2. cargo test --all-features"
+echo "    1. cargo clippy --workspace --all-targets --no-default-features -- -D warnings"
+echo "    2. cargo test --workspace --all-features"
 echo "    6. cargo machete (optional — unused dependency check, skipped if not installed)"
 echo ""
 echo "NOTE: .pre-commit-config.yaml is kept as documentation reference only."

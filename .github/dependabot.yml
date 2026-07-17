@@ -38,6 +38,30 @@ updates:
       prefix: "deps"
       include: scope
 
+  # ── Exact latest Godot compatibility fixture ──────────────────
+  - package-ecosystem: cargo
+    directory: /tests/godot-web-smoke
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: America/New_York
+    labels:
+      - dependencies
+      - security
+    # Limit to 1 so compatibility evidence changes remain reviewable as one PR.
+    open-pull-requests-limit: 1
+    groups:
+      godot-latest-all:
+        patterns:
+          - "*"
+        update-types:
+          - major
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps(godot-latest)"
+      include: scope
+
   # ── GitHub Actions ─────────────────────────────────────────────
   - package-ecosystem: github-actions
     directory: /

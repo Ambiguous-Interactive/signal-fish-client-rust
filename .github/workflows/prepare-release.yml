@@ -85,12 +85,15 @@ jobs:
           printf 'branch=release/%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Run mandatory verification
-        run: cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+        run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
       - name: Verify package and documentation
         run: |
-          cargo package --allow-dirty
-          cargo publish --dry-run --allow-dirty
+          cargo package --allow-dirty -p signal-fish-client
+          core_path=$(pwd)
+          cargo package --allow-dirty --no-verify -p signal-fish-client-godot \
+            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+          cargo publish --dry-run --allow-dirty -p signal-fish-client
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
 
@@ -108,7 +111,12 @@ jobs:
           git switch -c "$BRANCH"
           git config user.name "signal-fish-release[bot]"
           git config user.email "signal-fish-release[bot]@users.noreply.github.com"
-          git add Cargo.toml README.md CHANGELOG.md docs .llm tests/compatibility.toml tests/server-spec/PROVENANCE.toml tests/wire-samples/PROVENANCE.toml
+          git add Cargo.toml crates/signal-fish-client-godot/Cargo.toml \
+            README.md CHANGELOG.md docs .llm tests/compatibility.toml \
+            tests/godot-compat-min/Cargo.lock \
+            tests/godot-web-smoke/Cargo.lock \
+            tests/server-spec/PROVENANCE.toml \
+            tests/wire-samples/PROVENANCE.toml
           subject="chore: prepare release ${VERSION}"
           if [ "$BREAKING" = true ]; then
             subject="chore!: prepare release ${VERSION}"

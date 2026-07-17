@@ -44,8 +44,8 @@ skip() {
 # ──────────────────────────────────────────────────────────────
 # 1. Cargo fmt
 # ──────────────────────────────────────────────────────────────
-section "cargo fmt --check"
-if cargo fmt --check; then
+section "cargo fmt --all -- --check"
+if cargo fmt --all -- --check; then
     pass "Formatting is correct"
 else
     fail "cargo fmt found formatting issues — run 'cargo fmt' to fix"
@@ -54,8 +54,8 @@ fi
 # ──────────────────────────────────────────────────────────────
 # 2. Cargo clippy (all targets, all features, deny warnings)
 # ──────────────────────────────────────────────────────────────
-section "cargo clippy --all-targets --all-features -- -D warnings"
-if cargo clippy --all-targets --all-features -- -D warnings; then
+section "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+if cargo clippy --workspace --all-targets --all-features -- -D warnings; then
     pass "Clippy is clean"
 else
     fail "Clippy reported warnings or errors"
@@ -64,8 +64,8 @@ fi
 # ──────────────────────────────────────────────────────────────
 # 3. Cargo test (all features)
 # ──────────────────────────────────────────────────────────────
-section "cargo test --all-features"
-if cargo test --all-features; then
+section "cargo test --workspace --all-features"
+if cargo test --workspace --all-features; then
     pass "All tests passed"
 else
     fail "Tests failed"

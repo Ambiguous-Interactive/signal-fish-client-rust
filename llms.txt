@@ -5,7 +5,8 @@
 Use `SignalFishClient` with a continuously driven Tokio runtime. Use
 `SignalFishPollingClient` for every WebAssembly target and for frame-driven
 native engines. Official Godot native and web exports should use
-`GodotWebSocketTransport`; the raw Emscripten transport is only for custom hosts
+`GodotWebSocketTransport` from the lockstep `signal-fish-client-godot` adapter;
+the raw Emscripten transport is only for custom hosts
 that explicitly link Emscripten's WebSocket library.
 
 The GitHub Pages documentation tracks the unreleased `main` branch. Install

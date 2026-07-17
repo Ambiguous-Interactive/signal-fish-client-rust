@@ -563,9 +563,9 @@ Demonstrates the supported `SignalFishPollingClient` integration with
 `GodotWebSocketTransport`. It delegates to Godot's own `WebSocketPeer` and
 works with native builds and official no-thread Godot web export templates.
 
-!!! note "Feature gate"
-    This example requires the `transport-godot` feature and
-    the `wasm32-unknown-emscripten` target. It cannot be run with
+!!! note "Companion crate"
+    This example requires the `signal-fish-client-godot` adapter and the
+    `wasm32-unknown-emscripten` target. It cannot be run with
     `cargo run --example` — it must be compiled as part of a GDExtension
     library. See the [WebAssembly Guide](wasm.md) for full build
     instructions.
@@ -582,9 +582,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 # The issue #61 throughput/admission fix is currently unreleased on `main`.
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -597,9 +598,9 @@ issue #61 polling-throughput fix documented in this current-`main` guide.
 ```rust,ignore
 use godot::prelude::*;
 use signal_fish_client::{
-    GodotWebSocketTransport, JoinRoomParams,
-    SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
+    JoinRoomParams, SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
 };
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 #[derive(GodotClass)]
 #[class(base=Node)]

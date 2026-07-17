@@ -14,9 +14,10 @@ branches and pull requests created with the normal workflow token do not
 reliably trigger the repository's full CI policy.
 
 Configure the protected `crates-io` environment with required reviewers and a
-`CRATES_IO_TOKEN` secret scoped to the `signal-fish-client` crate. Restrict the
-environment to the default branch. Artifact attestations also require GitHub
-Actions and attestations to be enabled in repository settings.
+`CRATES_IO_TOKEN` secret authorized for both `signal-fish-client` and
+`signal-fish-client-godot`, including first publication of the adapter.
+Restrict the environment to the default branch. Artifact attestations also
+require GitHub Actions and attestations to be enabled in repository settings.
 
 ## Prepare a release
 
@@ -26,8 +27,9 @@ Actions and attestations to be enabled in repository settings.
    release; this persists the stricter semver-checks policy in the changelog.
 3. Inspect the generated diff and validation output.
 4. Run it again with `dry_run` disabled. The workflow creates
-   `release/X.Y.Z`, updates every version and provenance marker, cuts the
-   changelog, and opens a pull request.
+   `release/X.Y.Z`, updates both package versions, the adapter's exact core
+   requirement, fixture locks, and every provenance marker, cuts the changelog,
+   and opens a pull request.
 5. Review and merge only after all required CI and reviewer feedback is green.
 
 Preparation fails if the default branch is not selected, the worktree is not
@@ -44,12 +46,15 @@ Run **Release** from the default branch and enter the strict `X.Y.Z` version
 from the merged preparation pull request. After the protected-environment
 approval, the workflow verifies default-branch HEAD and its checks, package and
 changelog versions, the full Rust suite, docs.rs compatibility, semver policy,
-and `cargo publish --dry-run`.
+and the core `cargo publish --dry-run`. The first adapter release has no semver
+baseline; every later release checks both crates.
 
-The workflow then reproduces the `.crate`, checksum manifest, and CycloneDX
-SBOM; creates an annotated `vX.Y.Z` tag; attests the package; publishes to
-crates.io; waits until the registry reports the exact package checksum; and
-creates the GitHub Release with all three assets.
+The workflow then reproduces both `.crate` files, verifies the packaged adapter
+against the extracted packaged core through `[patch.crates-io]`, creates both
+CycloneDX SBOMs and one checksum manifest, and creates the annotated `vX.Y.Z`
+tag. It attests both packages, publishes core first, waits for its exact
+registry checksum, then dry-runs and publishes the adapter and waits for its
+checksum. One GitHub Release carries both crates and both SBOMs.
 
 ## Recovery rules
 
@@ -58,19 +63,22 @@ allowed only when every existing artifact agrees with the current
 default-branch commit:
 
 - An existing tag must target the current SHA.
-- An existing crates.io version must have the exact checksum of the locally
-  reproduced package.
+- Each existing crates.io package must have the exact checksum of its locally
+  reproduced package. A matching core with an unpublished adapter is a valid
+  recovery state; the rerun resumes with the adapter.
 - An existing GitHub Release must have the matching tag.
 
 The workflow fails closed on any mismatch. It never overwrites a crate version;
-when registry publication already matches, it skips publishing and repairs only
-the GitHub Release assets. If a tag or registry checksum points elsewhere, stop
-and investigate rather than deleting or moving release state.
+when registry publication already matches, it skips that crate and repairs only
+the GitHub Release assets. If a tag or either registry checksum points
+elsewhere, stop and investigate rather than deleting or moving release state.
 
 After success, confirm the version and assets on crates.io and GitHub, confirm
 docs.rs built the same version, and verify the package attestation with:
 
 ```sh
 gh attestation verify signal-fish-client-X.Y.Z.crate \
+  --repo Ambiguous-Interactive/signal-fish-client-rust
+gh attestation verify signal-fish-client-godot-X.Y.Z.crate \
   --repo Ambiguous-Interactive/signal-fish-client-rust
 ```

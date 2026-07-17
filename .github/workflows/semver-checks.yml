@@ -64,22 +64,22 @@ jobs:
       - name: Generate lockfile
         run: bash scripts/cargo-retry.sh generate-lockfile
 
-      - name: Check if package exists on base branch
-        id: check-base-package
+      - name: Check if adapter package exists on base branch
+        id: check-base-adapter
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git show "$BASE_SHA":Cargo.toml >/dev/null 2>&1; then
+          if git show "$BASE_SHA":crates/signal-fish-client-godot/Cargo.toml >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping semver check: package does not exist on base branch (new crate)"
+            echo "Skipping adapter semver check: package does not exist on base branch"
           fi
 
       - name: Classify PR release type
         id: pr-release-type
-        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true'
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -91,18 +91,31 @@ jobs:
           fi
 
       - name: Check semver compliance (PR — against base branch)
-        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true' && steps.pr-release-type.outputs.release-type == 'auto'
+        if: github.event_name == 'pull_request' && steps.pr-release-type.outputs.release-type == 'auto'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: cargo semver-checks check-release --baseline-rev "$BASE_SHA"
+        run: cargo semver-checks check-release --package signal-fish-client --baseline-rev "$BASE_SHA"
 
       - name: Check intentional breaking API change (PR — against base branch)
-        if: github.event_name == 'pull_request' && steps.check-base-package.outputs.exists == 'true' && steps.pr-release-type.outputs.release-type == 'major'
+        if: github.event_name == 'pull_request' && steps.pr-release-type.outputs.release-type == 'major'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: cargo semver-checks check-release --baseline-rev "$BASE_SHA" --release-type major
+        run: cargo semver-checks check-release --package signal-fish-client --baseline-rev "$BASE_SHA" --release-type major
 
-      - name: Check if crate is published on crates.io
+      - name: Check adapter semver compliance (PR — against base branch)
+        if: github.event_name == 'pull_request' && steps.check-base-adapter.outputs.exists == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RELEASE_TYPE: ${{ steps.pr-release-type.outputs.release-type }}
+        run: |
+          args=()
+          if [ "$RELEASE_TYPE" = major ]; then
+            args+=(--release-type major)
+          fi
+          cargo semver-checks check-release --package signal-fish-client-godot \
+            --baseline-rev "$BASE_SHA" "${args[@]}"
+
+      - name: Check which crates are published on crates.io
         id: check-published
         if: github.event_name == 'push'
         run: |
@@ -113,12 +126,26 @@ jobs:
           fi
 
           if printf '%s\n' "$search_output" | grep -q '^signal-fish-client '; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "core=true" >> "$GITHUB_OUTPUT"
           else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "Crate not yet published on crates.io — skipping crates.io baseline check"
+            echo "core=false" >> "$GITHUB_OUTPUT"
+          fi
+          if ! adapter_search="$(CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search signal-fish-client-godot --limit 1 2>&1)"; then
+            echo "::error::Could not query crates.io for signal-fish-client-godot."
+            printf '%s\n' "$adapter_search"
+            exit 1
+          fi
+          if printf '%s\n' "$adapter_search" | grep -q '^signal-fish-client-godot '; then
+            echo "adapter=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "adapter=false" >> "$GITHUB_OUTPUT"
+            echo "Adapter not yet published — skipping its first-release baseline"
           fi
 
       - name: Check semver compliance (push — against crates.io)
-        if: github.event_name == 'push' && steps.check-published.outputs.published == 'true'
-        run: cargo semver-checks check-release
+        if: github.event_name == 'push' && steps.check-published.outputs.core == 'true'
+        run: cargo semver-checks check-release --package signal-fish-client
+
+      - name: Check adapter semver compliance (push — against crates.io)
+        if: github.event_name == 'push' && steps.check-published.outputs.adapter == 'true'
+        run: cargo semver-checks check-release --package signal-fish-client-godot

@@ -61,6 +61,12 @@ pub use transport::Transport;
 pub use transports::WebSocketTransport;
 ```
 
+Godot types are intentionally absent from core. The lockstep
+`signal-fish-client-godot` crate owns and exports `GodotWebSocketTransport`,
+`GodotWebSocketOptions`, and `GodotBackpressurePolicy`. Never add a Godot
+feature, module, dependency, re-export, or godot-rust type to the core public
+surface.
+
 Users can write:
 
 ```rust
@@ -173,6 +179,9 @@ Current MSRV: **Rust 1.87.0**
 rust-version = "1.87.0"
 ```
 
+The Godot adapter has a separate Rust 1.94.0 MSRV. Keep these compiler floors
+independent: a godot-rust upgrade must not raise core's MSRV.
+
 ### Transport and async bounds
 
 `Transport` uses object-safe `poll_send`/`poll_recv`/`poll_close` methods and
@@ -184,7 +193,7 @@ has no trait-level `Send` bound. `SignalFishClient::start` adds
 
 ```yaml
 - { name: Test on MSRV, uses: dtolnay/rust-toolchain@stable, with: { toolchain: "1.87.0" } }
-- run: cargo test --all-features
+- run: cargo test --workspace --all-features
 ```
 
 ## Semver and Versioning

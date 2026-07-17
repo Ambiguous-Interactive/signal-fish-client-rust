@@ -15,6 +15,12 @@ import urllib.request
 from pathlib import Path
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+CORE_MANIFEST = "Cargo.toml"
+ADAPTER_MANIFEST = "crates/signal-fish-client-godot/Cargo.toml"
+LOCKSTEP_LOCKFILES = (
+    "tests/godot-compat-min/Cargo.lock",
+    "tests/godot-web-smoke/Cargo.lock",
+)
 VERSION_FILES = (
     "README.md",
     "docs/client.md",
@@ -26,7 +32,6 @@ VERSION_FILES = (
     "docs/wasm.md",
     ".llm/context.md",
     ".llm/skills/crate-publishing/SKILL.md",
-    ".llm/skills/godot-websocket/SKILL.md",
 )
 PROVENANCE_FILES = (
     "tests/compatibility.toml",
@@ -70,20 +75,24 @@ def release_type(base: str, target: str) -> str:
     return "patch"
 
 
-def package_version(root: Path) -> str:
-    cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
+def manifest_package_version(path: Path) -> str:
+    cargo = path.read_text(encoding="utf-8")
     package = re.search(
         r"^\[package\][ \t]*$\n(.*?)(?=^\[|\Z)",
         cargo,
         re.MULTILINE | re.DOTALL,
     )
     if package is None:
-        raise ReleaseError("Cargo.toml has no [package] section")
+        raise ReleaseError(f"{path} has no [package] section")
     match = re.search(r'^version = "([^"]+)"$', package.group(1), re.MULTILINE)
     if match is None:
-        raise ReleaseError("Cargo.toml has no package version")
+        raise ReleaseError(f"{path} has no package version")
     parse_version(match.group(1))
     return match.group(1)
+
+
+def package_version(root: Path) -> str:
+    return manifest_package_version(root / CORE_MANIFEST)
 
 
 def replace_package_version(path: Path, old: str, new: str) -> None:
@@ -105,6 +114,33 @@ def replace_package_version(path: Path, old: str, new: str) -> None:
     if count != 1:
         raise ReleaseError(f"Cargo.toml [package] does not contain version {old!r}")
     path.write_text(cargo[: package.start(1)] + updated + cargo[package.end(1) :], encoding="utf-8")
+
+
+def replace_adapter_core_requirement(path: Path, old: str, new: str) -> None:
+    cargo = path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf'^(signal-fish-client\s*=\s*\{{[^\n]*version\s*=\s*")='
+        rf'{re.escape(old)}("[^\n]*\}})$',
+        re.MULTILINE,
+    )
+    updated, count = pattern.subn(rf"\g<1>={new}\2", cargo, count=1)
+    if count != 1:
+        raise ReleaseError(f"{path} has no exact core requirement ={old}")
+    path.write_text(updated, encoding="utf-8")
+
+
+def replace_lockstep_package_versions(path: Path, old: str, new: str) -> None:
+    lock = path.read_text(encoding="utf-8")
+    for package in ("signal-fish-client", "signal-fish-client-godot"):
+        pattern = re.compile(
+            rf'(^\[\[package\]\]\nname = "{re.escape(package)}"\nversion = ")'
+            rf'{re.escape(old)}("$)',
+            re.MULTILINE,
+        )
+        lock, count = pattern.subn(rf"\g<1>{new}\2", lock, count=1)
+        if count != 1:
+            raise ReleaseError(f"{path} has no unique locked {package} {old}")
+    path.write_text(lock, encoding="utf-8")
 
 
 def release_heading(version: str) -> re.Pattern[str]:
@@ -201,6 +237,12 @@ def prepare(
     if not allow_dirty:
         require_clean(root)
     old = package_version(root)
+    adapter = root / ADAPTER_MANIFEST
+    if manifest_package_version(adapter) != old:
+        raise ReleaseError("core and adapter package versions must match before preparation")
+    adapter_text = adapter.read_text(encoding="utf-8")
+    if len(re.findall(rf'version\s*=\s*"={re.escape(old)}"', adapter_text)) != 1:
+        raise ReleaseError(f"adapter must require core exactly at ={old}")
     new = bump_version(old, level)
     if breaking:
         policy = release_type(old, new)
@@ -213,6 +255,12 @@ def prepare(
     for relative in VERSION_FILES:
         if old not in (root / relative).read_text(encoding="utf-8"):
             raise ReleaseError(f"{relative} does not contain required value {old!r}")
+    for relative in LOCKSTEP_LOCKFILES:
+        lock = (root / relative).read_text(encoding="utf-8")
+        for package in ("signal-fish-client", "signal-fish-client-godot"):
+            marker = f'name = "{package}"\nversion = "{old}"'
+            if lock.count(marker) != 1:
+                raise ReleaseError(f"{relative} has no unique locked {package} {old}")
     compatibility_text = (root / "tests/compatibility.toml").read_text(encoding="utf-8")
     if len(re.findall(r'^client_version = "[^"]+"$', compatibility_text, re.MULTILINE)) != 1:
         raise ReleaseError("tests/compatibility.toml has no unique client_version")
@@ -230,7 +278,11 @@ def prepare(
     if release_heading(new).search(changelog_text) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
-    replace_package_version(root / "Cargo.toml", old, new)
+    replace_package_version(root / CORE_MANIFEST, old, new)
+    replace_package_version(adapter, old, new)
+    replace_adapter_core_requirement(adapter, old, new)
+    for relative in LOCKSTEP_LOCKFILES:
+        replace_lockstep_package_versions(root / relative, old, new)
     for relative in VERSION_FILES:
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
@@ -334,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
 
     package = subparsers.add_parser("package-version")
     package.add_argument("--root", type=Path, default=Path.cwd())
+    package.add_argument("--manifest", type=Path, default=Path(CORE_MANIFEST))
 
     registry = subparsers.add_parser("registry-checksum")
     registry.add_argument("crate_name")
@@ -358,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
         elif args.command == "package-version":
-            print(package_version(args.root.resolve()))
+            print(manifest_package_version(args.root.resolve() / args.manifest))
         elif args.command == "registry-checksum":
             value = registry_checksum(args.crate_name, args.version)
             print(value or "UNPUBLISHED")

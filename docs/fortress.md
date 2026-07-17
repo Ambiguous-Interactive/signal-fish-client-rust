@@ -8,9 +8,18 @@ Add the rollback library beside the SDK in the Godot GDExtension crate:
 
 ```toml
 fortress-rollback = "=0.10.0"
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 serde = { version = "1.0", features = ["derive"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
+
+The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94;
+the transport-agnostic core remains compatible with Rust 1.87. Keep the direct
+`godot` dependency aligned with the binding used by the adapter. Run
+`cargo tree -d` after dependency updates and resolve any duplicate `godot` or
+`godot-*` families before passing `Gd` values across the adapter boundary,
+because bindings from different versions are distinct Rust types.
 
 The issue #61 polling and admission guarantees in this guide are currently on
 `main` under [`Unreleased`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md);
@@ -22,9 +31,8 @@ Enable protocol v3 and MessagePack before constructing the polling client:
 
 ```rust,ignore
 use signal_fish_client::protocol::GameDataEncoding;
-use signal_fish_client::{
-    GodotWebSocketTransport, SignalFishConfig, SignalFishPollingClient,
-};
+use signal_fish_client::{SignalFishConfig, SignalFishPollingClient};
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 let transport = GodotWebSocketTransport::connect("wss://example.com/v2/ws")?;
 let mut config = SignalFishConfig::new("mb_app_example").enable_v3();

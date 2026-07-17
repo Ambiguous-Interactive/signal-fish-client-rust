@@ -55,7 +55,7 @@ rooms, and receive strongly typed events.
 - **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
-- **Godot 4.5 native + web transport** — the `transport-godot` feature wraps Godot's own `WebSocketPeer`, including official no-thread web exports
+- **Godot 4.5 native + web adapter** — the lockstep `signal-fish-client-godot` crate wraps Godot's own `WebSocketPeer`, including official no-thread web exports
 - **Advanced Emscripten transport** — `transport-websocket-emscripten` remains available for custom hosts that explicitly link Emscripten's WebSocket library
 - **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for frame-driven engines and wasm targets (e.g. Godot 4.5 web exports)
 
@@ -131,7 +131,6 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | Feature               | Default | Description                                                             |
 | --------------------- | ------- | ----------------------------------------------------------------------- |
 | `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
-| `transport-godot` | no | Godot 4.5 `WebSocketPeer` transport for native and official web exports; enables `polling-client` |
 | `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
 | `polling-client` | no | Synchronous protocol pump for frame-driven and single-threaded hosts |
 | `mesh` | no | v3 mesh state, signaling orchestration, and WebRTC driver seam |
@@ -147,7 +146,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `error`       | `SignalFishError` unified client/transport error type             |
 | `error_codes` | Typed server error-code registry                                  |
 | `transport`   | `Transport` trait for pluggable backends                          |
-| `transports`  | Built-in Tokio, Godot, and advanced Emscripten WebSocket transports |
+| `transports`  | Built-in Tokio and advanced Emscripten WebSocket transports |
 | `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
 | `mesh`        | `MeshSession` — zero-dep v3 mesh state tracker (`mesh` feature)    |
 | `webrtc`      | `WebRtcDriver` seam + `MeshController` v3 orchestrator (`mesh` feature) |
@@ -248,9 +247,9 @@ code works in native builds and official no-thread web export templates.
 
 ```rust,ignore
 use signal_fish_client::{
-    GodotWebSocketTransport, SignalFishPollingClient,
-    SignalFishConfig, JoinRoomParams, SignalFishEvent,
+    SignalFishPollingClient, SignalFishConfig, JoinRoomParams, SignalFishEvent,
 };
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 // 1. Connect (synchronous — no .await needed).
 let transport = GodotWebSocketTransport::connect("wss://server/ws")
@@ -288,9 +287,16 @@ for event in client.poll() {
 Enable it in a Godot GDExtension crate with:
 
 ```toml
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
+
+The adapter supports godot-rust `0.4.5` through `0.5.x` and requires Rust
+1.94 or newer. The transport-agnostic core remains at Rust 1.87. If Cargo
+selects two binding families, inspect `cargo tree -d` and align the direct
+`godot` version with the adapter before compiling; Godot binding types from
+different versions are not interchangeable.
 
 The custom Godot API binding is required for the 32-bit Emscripten ABI. Set
 `GODOT4_BIN` to the Godot 4.5 editor when compiling the web extension.
@@ -336,7 +342,7 @@ bash scripts/check-all.sh --quick
 ### Mandatory baseline
 
 ```sh
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
 
 ### Additional quality checks

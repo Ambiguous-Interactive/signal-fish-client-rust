@@ -9,7 +9,7 @@
 #   bash scripts/ci-validate.sh
 #
 # Checks:
-#   1. cargo fmt --check          (formatting)
+#   1. cargo fmt --all -- --check          (formatting)
 #   2. cargo clippy                (linting)
 #   3. cargo test                  (tests)
 #   4. typos spell check           (optional — skipped if typos not installed)
@@ -82,32 +82,32 @@ echo -e "${BOLD}${YELLOW}=== signal-fish-client: CI validation ===${NC}"
 echo "Running the same checks that CI enforces..."
 
 # ── Check 1: cargo fmt ───────────────────────────────────────────────
-section_header 1 "Formatting (cargo fmt --check)"
+section_header 1 "Formatting (cargo fmt --all -- --check)"
 
 if ! command -v cargo &>/dev/null; then
     echo -e "${RED}ERROR: cargo is not installed. Install Rust via https://rustup.rs${NC}" >&2
     exit 1
 fi
 
-if cargo fmt --check 2>&1; then
+if cargo fmt --all -- --check 2>&1; then
     pass "Code formatting is correct"
 else
     fail "Code formatting issues found. Run 'cargo fmt' to fix."
 fi
 
 # ── Check 2: cargo clippy ───────────────────────────────────────────
-section_header 2 "Linting (cargo clippy --all-targets --all-features -- -D warnings)"
+section_header 2 "Linting (cargo clippy --workspace --all-targets --all-features -- -D warnings)"
 
-if cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
+if cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1; then
     pass "No clippy warnings"
 else
     fail "Clippy reported warnings or errors"
 fi
 
 # ── Check 3: cargo test ─────────────────────────────────────────────
-section_header 3 "Tests (cargo test --all-features)"
+section_header 3 "Tests (cargo test --workspace --all-features)"
 
-if cargo test --all-features 2>&1; then
+if cargo test --workspace --all-features 2>&1; then
     pass "All tests passed"
 else
     fail "One or more tests failed"

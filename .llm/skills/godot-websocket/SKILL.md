@@ -5,23 +5,33 @@ description: Maintain the Godot 4.5 WebSocketPeer transport. Use when changing G
 
 # Godot 4.5 WebSocket Transport
 
-Reference for `GodotWebSocketTransport`, the supported native/web networking
-path for Godot GDExtension consumers.
+Reference for the `signal-fish-client-godot` companion crate and its
+`GodotWebSocketTransport`, the supported native/web networking path for Godot
+GDExtension consumers.
 
 ## Supported Path
 
-Enable `transport-godot`. It enables `polling-client` and the optional `godot`
-0.4.5 dependency with no-thread WASM and lazy function-table support.
+Core must never depend on `godot` or expose godot-rust types. Add the lockstep
+adapter, which depends exactly on the same core version with `polling-client`
+and supports godot-rust `>=0.4.5, <0.6`. Web consumers select `api-custom` on
+their direct Godot dependency; the adapter retains no-thread WASM and lazy
+function-table support.
 
 ```toml
-signal-fish-client = {
-    version = "0.8.0",
-    default-features = false,
-    features = ["transport-godot"],
-}
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
 
-Use `GodotWebSocketTransport` with `SignalFishPollingClient`. Do not move the
+Repository manifests remain at the current released core version during
+implementation. Do not publish the adapter against that older registry build;
+release preparation performs the coordinated breaking bump before the first
+adapter publication.
+
+Import `GodotWebSocketTransport`, `GodotWebSocketOptions`, and
+`GodotBackpressurePolicy` from `signal_fish_client_godot`; core client and
+protocol types remain under `signal_fish_client`. Use the transport with
+`SignalFishPollingClient`. Do not move the
 transport to `SignalFishClient::start`: Godot engine objects are main-thread
 objects and the async driver requires `Send + 'static`.
 
@@ -133,7 +143,14 @@ Primary sources: [Godot WebSocketPeer API](https://docs.godotengine.org/en/stabl
 [Godot 4.5 native implementation](https://github.com/godotengine/godot/blob/4.5-stable/modules/websocket/wsl_peer.cpp), and the
 [WebSocket `bufferedAmount` definition](https://websockets.spec.whatwg.org/#dom-websocket-bufferedamount).
 
-The `tests/godot-web-smoke` fixture is a standalone GDExtension workspace. It
+The `tests/godot-compat-min` fixture pins godot-rust 0.4.5 and passes a
+directly-created `Gd<WebSocketPeer>` through `from_peer`. The
+`tests/godot-web-smoke` fixture pins 0.5.4 and is the standalone production
+GDExtension workspace. Both lockfiles must contain exactly one `godot` version
+and one version of every `godot-*` family crate. Compile both natively and for
+`wasm32-unknown-emscripten`; run browser scenarios only on the latest fixture.
+
+The browser fixture
 must remain free of GDScript networking code. Browser automation should assert
 its stable `SIGNAL_FISH_SMOKE` and `SIGNAL_FISH_FORTRESS` log markers and
 retain browser/server logs on failure. The Fortress scenario launches two
@@ -173,10 +190,11 @@ undefined `emscripten_websocket_new` symbol.
 
 ## Checklist
 
-- [x] `transport-godot` enables `polling-client`.
-- [x] Godot remains optional and pinned to the intended 4.5-compatible release.
-- [x] Native all-feature Clippy and tests pass.
-- [x] The fixture crate checks independently.
+- [x] Core has no `godot` dependency, feature, module, or re-export.
+- [x] Adapter and core versions match; the adapter requires core exactly.
+- [x] The adapter range remains `>=0.4.5, <0.6` until deliberate compatibility evidence widens it.
+- [x] All 34 fake-backend transport tests pass in the adapter.
+- [x] Minimum and latest fixtures compile natively and for Emscripten with one binding family.
 - [x] Official Godot 4.5 web templates export the fixture.
 - [x] Browser E2E proves connect, authentication, room join, Ping/Pong, relay,
       close attribution, and graceful shutdown.

@@ -617,8 +617,8 @@ polling client has no background task and no runtime — you pump it yourself.
 
 !!! note "Feature gate"
     `SignalFishPollingClient` requires the `polling-client` feature.
-    This feature is automatically enabled by `transport-godot` and
-    `transport-websocket-emscripten`.
+    This feature is also enabled by the lockstep `signal-fish-client-godot`
+    adapter and by `transport-websocket-emscripten`.
 
 Unlike `SignalFishClient`, the polling client does **not** spawn background
 tasks. Instead, the caller drives the protocol by calling
@@ -645,9 +645,8 @@ fn new_with_options(
 ```
 
 ```rust,ignore
-use signal_fish_client::{
-    GodotWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
-};
+use signal_fish_client::{SignalFishPollingClient, SignalFishConfig};
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 let transport = GodotWebSocketTransport::connect("wss://server/ws")
     .expect("connection failed");

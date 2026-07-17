@@ -150,9 +150,6 @@ pub use transport::{Transport, TransportCloseInfo, TransportDiagnostics, Transpo
 #[cfg(feature = "transport-websocket")]
 pub use transports::WebSocketTransport;
 
-#[cfg(feature = "transport-godot")]
-pub use transports::{GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport};
-
 #[cfg(feature = "polling-client")]
 pub mod polling_client;
 

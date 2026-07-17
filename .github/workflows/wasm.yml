@@ -23,9 +23,10 @@
 #   `transport-websocket` is excluded because it depends on tokio-tungstenite
 #   over TCP sockets, which are unavailable in the browser sandbox. Consumers
 #   targeting WASM can supply their own transport implementation via the
-#   Transport trait. Godot consumers use `transport-godot`; the raw
-#   `transport-websocket-emscripten` feature is retained for custom hosts that
-#   explicitly link Emscripten's optional WebSocket library.
+#   Transport trait. Godot consumers use the `signal-fish-client-godot`
+#   companion crate; the raw `transport-websocket-emscripten` feature is
+#   retained for custom hosts that explicitly link Emscripten's optional
+#   WebSocket library.
 
 name: WASM
 

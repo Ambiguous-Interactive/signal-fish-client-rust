@@ -4,14 +4,15 @@
 
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
-- **Crate:** `signal-fish-client`
-- **Version:** 0.8.0
+- **Crates:** `signal-fish-client` (core) and `signal-fish-client-godot` (adapter)
+- **Version:** 0.8.0 lockstep across both crates
 - **Edition:** 2021
-- **MSRV:** 1.87.0
+- **MSRV:** Rust 1.87.0 for core; Rust 1.94.0 for the Godot adapter
 - **License:** MIT
 - **Repository:** <https://github.com/Ambiguous-Interactive/signal-fish-client-rust>
 - **Guide (GitHub Pages):** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/>
-- **API Docs (docs.rs):** <https://docs.rs/signal-fish-client>
+- **API Docs (docs.rs):** <https://docs.rs/signal-fish-client> and
+  <https://docs.rs/signal-fish-client-godot>
 
 ## Purpose
 
@@ -20,15 +21,16 @@ Transport-agnostic Rust client for the Signal Fish multiplayer signaling protoco
 ## Mandatory Workflow
 
 ```shell
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
 
 Run this before every commit. All three steps must pass with zero warnings.
 
 ## Release Automation
 
-Use the manual **Prepare Release** and **Release** workflows; see
-`skills/release-recovery/SKILL.md` and `docs/releasing.md` for fail-closed recovery.
+Use the manual **Prepare Release** and **Release** workflows. They prepare,
+reproduce, attest, and publish both crates at one version, core first and the
+adapter second; see `skills/release-recovery/SKILL.md` and `docs/releasing.md`.
 
 ## GitHub Tool Order
 
@@ -69,7 +71,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
-| `src/transports/godot_websocket.rs` | Godot 4.5 native/web `WebSocketPeer` transport (feature: `transport-godot`) |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 34 fake-backend tests |
 
 ### Transport Trait
 
@@ -102,7 +104,7 @@ connecting and must not call `emscripten_websocket_send_*` or consume the
 caller's frame until `onopen`. Preparation or FFI send errors likewise leave
 the exact frame available to its caller.
 
-Godot defaults to adaptive outbound admission: a 50 ms latency target with a
+The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
 The blocking Godot workflow builds one official export and runs clean,
@@ -222,7 +224,6 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
-| `transport-godot` | off | Godot 4.5 `WebSocketPeer` transport for native/no-thread web exports; web GDExtensions use `api-custom`; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
 | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
 | `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |
@@ -239,7 +240,13 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 | `tracing` | Structured logging and diagnostics |
 | `tokio-tungstenite` | WebSocket transport (optional) |
 | `futures-util` | Stream/sink utilities for WebSocket (optional) |
-| `godot` | Godot 4.5 `WebSocketPeer` bindings for native/web transport (optional) |
+
+The core manifest must never depend on `godot` or expose godot-rust types.
+`signal-fish-client-godot` depends exactly on the same core version with
+`default-features = false` and `polling-client`, and declares
+`godot = ">=0.4.5, <0.6"` with no-thread WASM and lazy-function-table support.
+Its minimum 0.4.5 and latest 0.5.4 standalone fixtures must each lock exactly
+one `godot` and one version of every `godot-*` family crate.
 
 `tokio` (full features, for tests) and `tracing-subscriber` (test log output).
 
@@ -251,6 +258,11 @@ The `Transport` trait decouples protocol logic from network I/O. Tests use
 in-memory `VecDeque`-backed transports. Production code uses WebSocket. Custom
 transports (QUIC, raw TCP, engine WebSockets, etc.) implement three object-safe
 polling methods and can preserve structured close metadata.
+
+Concrete engine bindings live outside core. In particular, all Godot bindings,
+constructors, backend behavior, and godot-rust public types belong to the
+lockstep adapter. A Godot Engine version, godot-rust version, Rust MSRV, and
+Emscripten SDK version are independent compatibility axes.
 
 ### Wire Compatibility
 
@@ -346,7 +358,7 @@ A pre-commit hook enforces:
    a description that states what the skill does and when to activate it
 3. `skills/index.md` is auto-regenerated from skill frontmatter and headings
 4. `cargo fmt --all -- --check` passes
-5. `cargo clippy --all-targets --all-features -- -D warnings` passes
+5. `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
 6. Workflow guard checks pass (`scripts/check-workflows.sh`): explicit step names, MSRV/toolchain policy, fenced-YAML step-key alignment
 7. FFI safety check and its script tests pass (`scripts/check-ffi-safety.sh`)
 8. Test quality check passes (`scripts/check-test-quality.sh`) — catches `&mut <literal>` temporaries

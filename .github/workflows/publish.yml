@@ -112,6 +112,18 @@ jobs:
             printf '::error::Input %s does not match Cargo.toml %s.\n' "$VERSION" "$cargo_version"
             exit 1
           fi
+          adapter_version=$(python3 scripts/release.py package-version \
+            --manifest crates/signal-fish-client-godot/Cargo.toml)
+          if [ "$VERSION" != "$adapter_version" ]; then
+            printf '::error::Input %s does not match adapter Cargo.toml %s.\n' \
+              "$VERSION" "$adapter_version"
+            exit 1
+          fi
+          if ! grep -qF "version = \"=${VERSION}\"" \
+            crates/signal-fish-client-godot/Cargo.toml; then
+            printf '::error::Adapter does not require core exactly at =%s.\n' "$VERSION"
+            exit 1
+          fi
           if ! grep -qF "## [${VERSION}] - " CHANGELOG.md; then
             printf '::error::CHANGELOG.md has no dated %s section.\n' "$VERSION"
             exit 1
@@ -124,36 +136,86 @@ jobs:
         env:
           RELEASE_TYPE: ${{ steps.release-metadata.outputs.release_type }}
         run: |
-          cargo fmt --check
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --all-features
-          cargo semver-checks check-release --release-type "$RELEASE_TYPE"
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-features
+          cargo semver-checks check-release --package signal-fish-client \
+            --release-type "$RELEASE_TYPE"
+          previous=$(python3 scripts/release.py previous-version "${{ inputs.version }}")
+          adapter_baseline=$(python3 scripts/release.py registry-checksum \
+            signal-fish-client-godot "$previous")
+          if [ "$adapter_baseline" = "UNPUBLISHED" ]; then
+            echo "Skipping adapter semver baseline for its first release."
+          else
+            cargo semver-checks check-release --package signal-fish-client-godot \
+              --release-type "$RELEASE_TYPE"
+          fi
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
-          cargo publish --dry-run
+          cargo publish --dry-run -p signal-fish-client
 
       - name: Build release artifacts
         id: artifact
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          cargo package
-          cargo cyclonedx --format json
+          cargo package -p signal-fish-client
+          core_path=$(pwd)
+          cargo package --no-verify -p signal-fish-client-godot \
+            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+          cargo cyclonedx --format json --workspace
           asset_dir="$RUNNER_TEMP/release-assets"
           mkdir -p "$asset_dir"
-          crate="target/package/signal-fish-client-${VERSION}.crate"
+          core_crate="target/package/signal-fish-client-${VERSION}.crate"
+          adapter_crate="target/package/signal-fish-client-godot-${VERSION}.crate"
           mapfile -t sboms < <(find . -type f -name '*.cdx.json' -not -path './target/*' -print)
-          if [ "${#sboms[@]}" -ne 1 ]; then
-            printf '::error::Expected one CycloneDX JSON file, found %s.\n' "${#sboms[@]}"
+          if [ "${#sboms[@]}" -ne 2 ]; then
+            printf '::error::Expected two CycloneDX JSON files, found %s.\n' "${#sboms[@]}"
             exit 1
           fi
-          cp "$crate" "$asset_dir/"
-          mv "${sboms[0]}" "$asset_dir/signal-fish-client-${VERSION}.cdx.json"
-          checksum=$(python3 scripts/release.py checksum "$crate")
-          printf '%s  %s\n' "$checksum" "signal-fish-client-${VERSION}.crate" > "$asset_dir/SHA256SUMS"
+          cp "$core_crate" "$adapter_crate" "$asset_dir/"
+          for sbom in "${sboms[@]}"; do
+            case "$sbom" in
+              *signal-fish-client-godot.cdx.json)
+                mv "$sbom" "$asset_dir/signal-fish-client-godot-${VERSION}.cdx.json" ;;
+              *signal-fish-client.cdx.json)
+                mv "$sbom" "$asset_dir/signal-fish-client-${VERSION}.cdx.json" ;;
+              *)
+                printf '::error::Unexpected CycloneDX file %s.\n' "$sbom"
+                exit 1 ;;
+            esac
+          done
+          core_checksum=$(python3 scripts/release.py checksum "$core_crate")
+          adapter_checksum=$(python3 scripts/release.py checksum "$adapter_crate")
           {
-            printf 'crate=%s\n' "$crate"
-            printf 'checksum=%s\n' "$checksum"
+            printf '%s  %s\n' "$core_checksum" "signal-fish-client-${VERSION}.crate"
+            printf '%s  %s\n' "$adapter_checksum" "signal-fish-client-godot-${VERSION}.crate"
+          } > "$asset_dir/SHA256SUMS"
+
+          verify_dir="$RUNNER_TEMP/packaged-consumer"
+          mkdir -p "$verify_dir/core" "$verify_dir/adapter" "$verify_dir/consumer/src"
+          tar -xzf "$core_crate" -C "$verify_dir/core" --strip-components=1
+          tar -xzf "$adapter_crate" -C "$verify_dir/adapter" --strip-components=1
+          cat > "$verify_dir/consumer/Cargo.toml" <<EOF
+          [package]
+          name = "signal-fish-packaged-adapter-check"
+          version = "0.0.0"
+          edition = "2021"
+          publish = false
+
+          [dependencies]
+          signal-fish-client-godot = { path = "$verify_dir/adapter" }
+
+          [patch.crates-io]
+          signal-fish-client = { path = "$verify_dir/core" }
+          EOF
+          printf 'fn main() {}\n' > "$verify_dir/consumer/src/main.rs"
+          cargo check --manifest-path "$verify_dir/consumer/Cargo.toml"
+          {
+            printf 'core_crate=%s\n' "$core_crate"
+            printf 'core_checksum=%s\n' "$core_checksum"
+            printf 'adapter_crate=%s\n' "$adapter_crate"
+            printf 'adapter_checksum=%s\n' "$adapter_checksum"
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate recovery state
@@ -161,7 +223,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          CORE_CHECKSUM: ${{ steps.artifact.outputs.core_checksum }}
+          ADAPTER_CHECKSUM: ${{ steps.artifact.outputs.adapter_checksum }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -182,9 +245,18 @@ jobs:
             printf '::error::Existing tag %s targets %s, not %s.\n' "$tag" "$tag_sha" "$head_sha"
             exit 1
           fi
-          registry_checksum=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
-          if [ "$registry_checksum" != "UNPUBLISHED" ] && [ "$registry_checksum" != "$CHECKSUM" ]; then
-            printf '::error::Published crate checksum does not match the reproduced package.\n'
+          core_registry=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
+          adapter_registry=$(python3 scripts/release.py registry-checksum signal-fish-client-godot "$VERSION")
+          if [ "$core_registry" != "UNPUBLISHED" ] && [ "$core_registry" != "$CORE_CHECKSUM" ]; then
+            printf '::error::Published core checksum does not match the reproduced package.\n'
+            exit 1
+          fi
+          if [ "$adapter_registry" != "UNPUBLISHED" ] && [ "$adapter_registry" != "$ADAPTER_CHECKSUM" ]; then
+            printf '::error::Published adapter checksum does not match the reproduced package.\n'
+            exit 1
+          fi
+          if [ "$core_registry" = "UNPUBLISHED" ] && [ "$adapter_registry" != "UNPUBLISHED" ]; then
+            printf '::error::Adapter is published while its exact core version is absent.\n'
             exit 1
           fi
           if gh release view "$tag" >/dev/null 2>&1 && [ -z "$tag_sha" ]; then
@@ -192,11 +264,13 @@ jobs:
             exit 1
           fi
           tag_exists=$([ -n "$tag_sha" ] && printf true || printf false)
-          published=$([ "$registry_checksum" != "UNPUBLISHED" ] && printf true || printf false)
+          core_published=$([ "$core_registry" != "UNPUBLISHED" ] && printf true || printf false)
+          adapter_published=$([ "$adapter_registry" != "UNPUBLISHED" ] && printf true || printf false)
           release_exists=$(gh release view "$tag" >/dev/null 2>&1 && printf true || printf false)
           {
             printf 'tag_exists=%s\n' "$tag_exists"
-            printf 'published=%s\n' "$published"
+            printf 'core_published=%s\n' "$core_published"
+            printf 'adapter_published=%s\n' "$adapter_published"
             printf 'release_exists=%s\n' "$release_exists"
           } >> "$GITHUB_OUTPUT"
 
@@ -213,18 +287,18 @@ jobs:
       - name: Attest package provenance
         uses: actions/attest@v4.1.1
         with:
-          subject-path: ${{ steps.artifact.outputs.crate }}
+          subject-path: ${{ runner.temp }}/release-assets/*.crate
 
-      - name: Publish to crates.io
-        if: steps.state.outputs.published != 'true'
+      - name: Publish core to crates.io
+        if: steps.state.outputs.core_published != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: cargo publish
+        run: cargo publish -p signal-fish-client
 
-      - name: Wait for crates.io and verify checksum
+      - name: Wait for core visibility and verify checksum
         env:
           VERSION: ${{ inputs.version }}
-          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          CHECKSUM: ${{ steps.artifact.outputs.core_checksum }}
         run: |
           attempt=1
           while [ "$attempt" -le 30 ]; do
@@ -240,6 +314,39 @@ jobs:
             attempt=$((attempt + 1))
           done
           printf '::error::Timed out waiting for crates.io visibility.\n'
+          exit 1
+
+      - name: Dry-run and publish adapter to crates.io
+        if: steps.state.outputs.adapter_published != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          core_path=$(pwd)
+          cargo publish --dry-run --no-verify -p signal-fish-client-godot \
+            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+          cargo publish --no-verify -p signal-fish-client-godot \
+            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+
+      - name: Wait for adapter visibility and verify checksum
+        env:
+          VERSION: ${{ inputs.version }}
+          CHECKSUM: ${{ steps.artifact.outputs.adapter_checksum }}
+        run: |
+          attempt=1
+          while [ "$attempt" -le 30 ]; do
+            registry_checksum=$(python3 scripts/release.py registry-checksum \
+              signal-fish-client-godot "$VERSION")
+            if [ "$registry_checksum" = "$CHECKSUM" ]; then
+              exit 0
+            fi
+            if [ "$registry_checksum" != "UNPUBLISHED" ]; then
+              printf '::error::Adapter registry checksum changed unexpectedly.\n'
+              exit 1
+            fi
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+          printf '::error::Timed out waiting for adapter crates.io visibility.\n'
           exit 1
 
       - name: Extract release notes

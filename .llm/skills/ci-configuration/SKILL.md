@@ -87,6 +87,13 @@ Dev-dependencies that also appear in `[dependencies]` are found in `src/` via th
 
 `cargo semver-checks` fails when the base branch lacks the crate. The CI workflow must check for package existence before running semver-checks.
 
+The first `signal-fish-client-godot` release therefore skips only its missing
+baseline. Later releases semver-check core and adapter separately. Core MSRV
+uses Rust 1.87.0 with `-p signal-fish-client`; adapter/compatibility jobs use
+Rust 1.94.0 or newer. The Godot minimum and latest fixtures compile natively
+and for `wasm32-unknown-emscripten`, and their parsed lockfiles must contain one
+Godot binding family before the latest fixture runs browser scenarios.
+
 ### markdownlint: Emphasis conventions
 
 Use **asterisks** for emphasis (`*text*`, `**text**`), not underscores. This avoids MD049/MD050 violations with the default markdownlint configuration.
@@ -309,7 +316,7 @@ the parser gap.
 |---|---|
 | Workflow YAML/action pin/toolchain/auto-merge policy failure | `bash scripts/check-workflows.sh` then `cargo test --test ci_config_tests -- --nocapture workflow_security` |
 | CI policy test failure in `tests/ci_config_tests.rs` | `cargo test --test ci_config_tests -- --nocapture` |
-| Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features` |
+| Formatting/clippy/test drift vs required local workflow | `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features` |
 | Broken docs snippet extraction or markdown validation flow | `bash scripts/extract-rust-snippets.sh` then `bash scripts/ci-validate.sh` |
 | Unresolved intra-doc link (`rustdoc::broken_intra_doc_links`) | `RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps` — check for target-gated types needing plain backtick formatting |
 

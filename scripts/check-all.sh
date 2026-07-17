@@ -20,7 +20,7 @@
 #   9. Docs validation       (markdownlint, lychee, typos — each optional)
 #  10. Unused deps           (cargo-machete — optional)
 #  11. Workflow lint          (delegates to scripts/check-workflows.sh)
-#  12. Publish dry-run        (optional — cargo publish --dry-run)
+#  12. Publish dry-run        (optional — cargo publish --dry-run -p signal-fish-client)
 #  13. Examples validation    (doc tests, examples build, snippet check)
 #  14. Semver checks        (optional — cargo-semver-checks)
 #  15. Miri                  (optional — requires nightly + miri component)
@@ -150,7 +150,7 @@ echo ""
 
 # ── Phase 1: cargo fmt ──────────────────────────────────────────────
 echo -e "${YELLOW}Phase 1/$TOTAL_PHASES: Checking formatting (cargo fmt)...${NC}"
-if cargo fmt --check 2>&1; then
+if cargo fmt --all -- --check 2>&1; then
     echo -e "${GREEN}Phase 1: PASS${NC}"
     PHASE_RESULTS[1]="PASS"
 else
@@ -180,7 +180,7 @@ echo -e "${YELLOW}Phase 3/$TOTAL_PHASES: Running Clippy (cargo clippy — 3 feat
 PHASE3_FAIL=false
 for feature_flags in "" "--all-features" "--no-default-features"; do
     label="${feature_flags:-default features}"
-    if cargo clippy --all-targets $feature_flags -- -D warnings 2>&1; then
+    if cargo clippy --workspace --all-targets $feature_flags -- -D warnings 2>&1; then
         echo -e "${GREEN}  clippy ($label): PASS${NC}"
     else
         echo -e "${RED}  clippy ($label): FAIL${NC}"
@@ -201,7 +201,7 @@ echo -e "${YELLOW}Phase 4/$TOTAL_PHASES: Running tests (cargo test — 3 feature
 PHASE4_FAIL=false
 for feature_flags in "" "--all-features" "--no-default-features"; do
     label="${feature_flags:-default features}"
-    if cargo test $feature_flags 2>&1; then
+    if cargo test --workspace $feature_flags 2>&1; then
         echo -e "${GREEN}  test ($label): PASS${NC}"
     else
         echo -e "${RED}  test ($label): FAIL${NC}"
@@ -423,20 +423,20 @@ fi
 echo ""
 
 # ── Phase 12: Publish dry-run ─────────────────────────────────────
-echo -e "${YELLOW}Phase 12/$TOTAL_PHASES: Publish dry-run (cargo publish --dry-run)...${NC}"
-if cargo publish --dry-run 2>&1; then
+echo -e "${YELLOW}Phase 12/$TOTAL_PHASES: Publish dry-run (cargo publish --dry-run -p signal-fish-client)...${NC}"
+if cargo publish --dry-run -p signal-fish-client 2>&1; then
     echo -e "${GREEN}Phase 12: PASS${NC}"
     PHASE_RESULTS[12]="PASS"
 else
-    # cargo publish --dry-run can fail for non-registry crates or incomplete
+    # cargo publish --dry-run -p signal-fish-client can fail for non-registry crates or incomplete
     # metadata — treat as a soft/optional failure.
-    echo -e "${YELLOW}Phase 12: SKIP (cargo publish --dry-run failed — this is optional)${NC}"
+    echo -e "${YELLOW}Phase 12: SKIP (cargo publish --dry-run -p signal-fish-client failed — this is optional)${NC}"
     PHASE_RESULTS[12]="SKIP"
 fi
 echo ""
 
 # ── Phase 13: Examples validation ──────────────────────────────────
-# Note: Phase 4 already runs `cargo test --all-features` which includes doc-tests
+# Note: Phase 4 already runs `cargo test --workspace --all-features` which includes doc-tests
 # and examples. Phase 13 re-validates them as explicit categories for defense-in-depth
 # and clearer diagnostics when doc-tests or examples specifically fail.
 echo -e "${YELLOW}Phase 13/$TOTAL_PHASES: Examples validation (doc tests, examples, snippets)...${NC}"

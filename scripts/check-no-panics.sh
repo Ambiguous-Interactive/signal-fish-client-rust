@@ -12,7 +12,7 @@
 # NOTE: A previous Phase 3 (running cargo clippy with panic-free lints)
 # was removed because those lints are already configured as deny in
 # Cargo.toml [lints.clippy], and the pre-commit hook already runs
-# `cargo clippy --all-targets --all-features -- -D warnings` which
+# `cargo clippy --workspace --all-targets --all-features -- -D warnings` which
 # catches all deny-level lints. Removing Phase 3 saves ~60-120 seconds
 # of redundant compilation per hook run.
 #

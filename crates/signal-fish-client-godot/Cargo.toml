@@ -1,0 +1,32 @@
+[package]
+name = "signal-fish-client-godot"
+version = "0.8.0"
+edition = "2021"
+license = "MIT"
+authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
+description = "Godot WebSocket transport adapter for the Signal Fish client SDK"
+repository = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust"
+homepage = "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/"
+documentation = "https://docs.rs/signal-fish-client-godot"
+keywords = ["godot", "gamedev", "signaling", "multiplayer", "networking"]
+categories = ["game-engines", "network-programming"]
+rust-version = "1.94.0"
+readme = "README.md"
+include = ["/src/**", "/Cargo.toml", "/README.md", "/LICENSE"]
+
+[dependencies]
+godot = { version = ">=0.4.5, <0.6", features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "=0.8.0", path = "../..", default-features = false, features = ["polling-client"] }
+tracing = "0.1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

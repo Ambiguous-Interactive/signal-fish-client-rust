@@ -22,7 +22,7 @@ Configure and validate Signal Fish CI/CD safely. Use when editing workflows, dep
 
 ### [Crate Publishing](crate-publishing/SKILL.md)
 
-Prepare and publish the Signal Fish Rust crate. Use when changing Cargo metadata, docs.rs configuration, cargo-deny...
+Prepare and publish the lockstep Signal Fish Rust crates. Use when changing Cargo metadata, docs.rs configuration,...
 
 ### [Devcontainer Cross-Platform Compatibility](devcontainer-cross-platform/SKILL.md)
 

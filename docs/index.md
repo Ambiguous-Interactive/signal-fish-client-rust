@@ -31,6 +31,7 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
   channel; the polling driver returns them directly from each `poll()` call.
 - :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and a default client keeps the v2 authentication wire shape; game start is now an explicit `start_game()` request. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
+- :material-gamepad-variant: **Godot Adapter** — the lockstep `signal-fish-client-godot` crate provides the Godot 4.5 native/web `WebSocketPeer` transport without coupling core to godot-rust.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
 - :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
 - :material-shield-check: **Explicit Flow Control** — Event-channel overflow applies backpressure during normal operation, and the bounded send queue surfaces congestion explicitly. Shutdown and receiver-drop boundaries are documented. See [Core Concepts](concepts.md#reliability-and-flow-control).
