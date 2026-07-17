@@ -41,6 +41,10 @@ fully green pull request with all automated review feedback addressed.
 - Diagnosed the core MSRV test failure: one repository policy test assumed a
   `.git` directory, while the deliberately isolated core snapshot has none.
   Added a package-content fallback that scans the already-filtered snapshot.
+- Addressed Bugbot's release-sentinel review by making every relevant
+  `UNPUBLISHED` comparison explicitly quoted and adding workflow regression
+  coverage. (The prior bare static token was not shell variable expansion, but
+  the explicit literal form removes ambiguity and keeps the guards auditable.)
 
 ## Remaining
 

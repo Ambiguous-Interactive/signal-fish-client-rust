@@ -144,7 +144,7 @@ jobs:
           previous=$(python3 scripts/release.py previous-version "${{ inputs.version }}")
           adapter_baseline=$(python3 scripts/release.py registry-checksum \
             signal-fish-client-godot "$previous")
-          if [ "$adapter_baseline" = UNPUBLISHED ]; then
+          if [ "$adapter_baseline" = "UNPUBLISHED" ]; then
             echo "Skipping adapter semver baseline for its first release."
           else
             cargo semver-checks check-release --package signal-fish-client-godot \
@@ -255,7 +255,7 @@ jobs:
             printf '::error::Published adapter checksum does not match the reproduced package.\n'
             exit 1
           fi
-          if [ "$core_registry" = UNPUBLISHED ] && [ "$adapter_registry" != UNPUBLISHED ]; then
+          if [ "$core_registry" = "UNPUBLISHED" ] && [ "$adapter_registry" != "UNPUBLISHED" ]; then
             printf '::error::Adapter is published while its exact core version is absent.\n'
             exit 1
           fi

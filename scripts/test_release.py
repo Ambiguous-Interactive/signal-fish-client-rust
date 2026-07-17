@@ -256,6 +256,16 @@ class WorkflowPolicyTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
 
+    def test_unpublished_registry_sentinel_is_compared_as_a_literal(self) -> None:
+        self.assertIn(
+            'if [ "$adapter_baseline" = "UNPUBLISHED" ]; then', self.publish
+        )
+        self.assertIn(
+            'if [ "$core_registry" = "UNPUBLISHED" ] '
+            '&& [ "$adapter_registry" != "UNPUBLISHED" ]; then',
+            self.publish,
+        )
+
     def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
         self.assertIn('semver-policy "$VERSION"', self.publish)
         self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)
