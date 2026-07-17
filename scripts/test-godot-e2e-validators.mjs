@@ -13,6 +13,7 @@ function peer(role) {
   return {
     passed: true, role, target_frames: 600, game_frame: 600, checksum_through: 600,
     settlement_frame_limit: 620, session_timeout_ms: 40_000, simulation_elapsed_ms: 20_000,
+    simulation_target_fps: 18, observed_simulation_fps: 18,
     max_poll_us: 1_000, multi_frame_poll: true, peak_queue_depth: 4,
     confirmed_input_checksum: "123", target_state_checksum: "456", game_ready: true,
     sync_in_sync: true, queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 40,
@@ -29,6 +30,7 @@ function peer(role) {
     pre_impairment_resimulated_frames: 0, max_rollback_depth: 1, load_requests: 2,
     peer_left_observed: role === "a", peer_left_epoch: role === "a" ? 1 : null,
     peer_left_final_seq: role === "a" ? 10 : null,
+    poll_hitch_completed: true, poll_hitch_frames_advanced: 4,
   };
 }
 
@@ -77,14 +79,16 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["settlement schema", (value) => { delete value.settlement_frame_limit; }],
     ["timeout schema", (value) => { delete value.session_timeout_ms; }],
     ["callback schema", (value) => { delete value.max_poll_us; }],
+    ["simulation cadence", (value) => { value.observed_simulation_fps = 11; }],
     ["queue-depth schema", (value) => { delete value.peak_queue_depth; }],
     ["age schema", (value) => { delete value.peak_queue_age_ms; }],
     ["lag schema", (value) => { delete value.confirmation_lag_current; }],
     ["cadence schema", (value) => { delete value.relay_messages_per_simulated_frame; }],
+    ["hitch advancement", (value) => { value.poll_hitch_frames_advanced = 0; }],
   ]) {
     const corrupted = structuredClone(first);
     mutation(corrupted);
-    assert.equal(validateFortressPeer(corrupted).ok, false, label);
+    assert.equal(validateFortressPeer(corrupted, { requireHitch: true }).ok, false, label);
   }
 
   for (const [label, mutation] of [

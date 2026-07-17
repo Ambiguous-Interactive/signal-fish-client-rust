@@ -32,7 +32,7 @@ const metricsUrl = `http://${serverAddress.host}/metrics/prom`;
 const targetFrames = scenario === "soak" ? 3_600 : 600;
 const lagLimit = scenario === "clean" ? 8 : 12;
 const requireHitch = scenario !== "clean";
-const sessionTimeoutMs = scenario === "soak" ? 240_000 : scenario === "clean" ? 40_000 : 60_000;
+const sessionTimeoutMs = scenario === "soak" ? 300_000 : scenario === "clean" ? 60_000 : 90_000;
 const exportDirectory = await realpath(resolve(exportDirectoryArgument));
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -201,7 +201,7 @@ async function waitFor(
   peer,
   predicate,
   description,
-  timeoutMilliseconds = scenario === "soak" ? 300_000 : 90_000,
+  timeoutMilliseconds = scenario === "soak" ? 360_000 : 120_000,
 ) {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {

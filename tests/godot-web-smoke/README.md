@@ -42,10 +42,13 @@ joins the exact room code reported by A.
 Each rendered callback polls Signal Fish exactly once, pumps a bounded relay
 queue into Fortress, supplies deterministic local input, advances rollback,
 and records both confirmed-input and serialized game-state checksums. Player B
-holds its outbound relay for frames 120 through 127, deterministically forcing
-player A to predict, roll back, load state, and resimulate after release. The
-gate requires both clients to confirm 600 frames within a 40-second wall-clock
-guard, settle in sync with matching state, drain every relay and SDK queue,
+changes its delayed input at frame 120 and holds its outbound relay until
+player A's causal post-advance watermark proves that A predicted through the
+changed input. The bounded hold deterministically forces A to roll back, load
+state, and resimulate after release. Both peers advance on an independent fixed
+18 Hz cadence. The gate requires both clients to confirm 600 frames within the
+scenario timeout, settle in sync with matching state, and drain every relay and
+SDK queue,
 conserve every client/server delivery, and cross-check the exact room and
 player IDs. Player B
 then closes first; player A must observe its nonzero v3 `PlayerLeft` epoch and

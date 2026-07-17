@@ -24,6 +24,10 @@ const DEFAULT_TARGET_FRAMES: i32 = 600;
 const SETTLEMENT_FRAMES: i32 = 20;
 const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
+const INPUT_DELAY_FRAMES: i32 = 2;
+const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
+const SIMULATION_FPS: usize = 18;
+const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
 // GitHub's shared runners have measured at roughly 23 rendered frames/second
 // under two independent Chromium/Godot processes. Keep a generous wall-clock
 // guard while the frame/checksum/queue oracles remain exact.
@@ -65,6 +69,8 @@ struct RelayQueues {
     retries: u64,
     peak_inbound: usize,
     peak_outbound: usize,
+    local_frame: Option<i32>,
+    remote_frame: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -81,9 +87,11 @@ impl NonBlockingSocket<PlayerId> for RelaySocket {
         }
         match encode(message) {
             Ok(encoded) => {
-                let mut payload = Vec::with_capacity(16usize.saturating_add(encoded.len()));
-                payload.extend_from_slice(destination.as_bytes());
-                payload.extend_from_slice(&encoded);
+                let payload = encode_relay_envelope(
+                    destination.as_bytes(),
+                    queues.local_frame.unwrap_or(Frame::NULL.as_i32()),
+                    &encoded,
+                );
                 queues.outbound.push_back((*destination, payload));
                 queues.encoded = queues.encoded.saturating_add(1);
                 queues.peak_outbound = queues.peak_outbound.max(queues.outbound.len());
@@ -106,6 +114,7 @@ pub(super) struct FortressScenario {
     poll_hitch_frame: Option<i32>,
     poll_hitch_callbacks_remaining: u8,
     poll_hitch_completed: bool,
+    poll_hitch_frames_advanced: u64,
     joined_room_code: Option<String>,
     client: Option<Client>,
     local_id: Option<PlayerId>,
@@ -125,6 +134,7 @@ pub(super) struct FortressScenario {
     target_state_checksum: Option<u128>,
     started: Option<Instant>,
     simulation_elapsed_ms: Option<u128>,
+    next_advance_at: Option<Instant>,
     game_ready: bool,
     max_poll_us: u64,
     last_time_series_frame: i32,
@@ -197,6 +207,7 @@ impl FortressScenario {
             poll_hitch_frame,
             poll_hitch_callbacks_remaining: u8::from(poll_hitch_frame.is_some()) * 6,
             poll_hitch_completed: false,
+            poll_hitch_frames_advanced: 0,
             joined_room_code: None,
             client,
             local_id: None,
@@ -216,6 +227,7 @@ impl FortressScenario {
             target_state_checksum: None,
             started: None,
             simulation_elapsed_ms: None,
+            next_advance_at: None,
             game_ready: false,
             max_poll_us: 0,
             last_time_series_frame: -60,
@@ -243,7 +255,8 @@ impl FortressScenario {
         if self.completed {
             return true;
         }
-        let events = if self.should_skip_poll_for_hitch() {
+        let skipped_poll_for_hitch = self.should_skip_poll_for_hitch();
+        let events = if skipped_poll_for_hitch {
             Vec::new()
         } else {
             self.poll_client_once()
@@ -254,7 +267,24 @@ impl FortressScenario {
         if self.fatal.is_none() && !self.closing_success {
             self.start_session_if_ready();
             if !(self.game_ready && self.peer_left_observed) {
+                let advances_before = self.advance_requests;
+                let visual_frames_before = self
+                    .session
+                    .as_ref()
+                    .map_or(0, |session| session.metrics().visual_frames);
                 self.drive_session();
+                if skipped_poll_for_hitch {
+                    let visual_frames_after = self
+                        .session
+                        .as_ref()
+                        .map_or(visual_frames_before, |session| {
+                            session.metrics().visual_frames
+                        });
+                    self.poll_hitch_frames_advanced = self
+                        .poll_hitch_frames_advanced
+                        .saturating_add(visual_frames_after.saturating_sub(visual_frames_before));
+                }
+                debug_assert!(self.advance_requests >= advances_before);
             }
             self.stop_game_session_if_ready();
             self.drain_post_ready_relay();
@@ -396,7 +426,7 @@ impl FortressScenario {
             && seq.is_some_and(|value| value > 0)
             && epoch.is_some_and(|value| value > 0)
             && valid_sender;
-        let Some((destination, encoded)) = payload.split_at_checked(16) else {
+        let Some((destination, advertised_frame, encoded)) = decode_relay_envelope(&payload) else {
             self.note_malformed();
             return;
         };
@@ -408,6 +438,14 @@ impl FortressScenario {
             let ignored = self.relay.borrow().ignored_nonlocal.saturating_add(1);
             self.relay.borrow_mut().ignored_nonlocal = ignored;
             return;
+        }
+        {
+            let mut queues = self.relay.borrow_mut();
+            queues.remote_frame = Some(
+                queues
+                    .remote_frame
+                    .map_or(advertised_frame, |current| current.max(advertised_frame)),
+            );
         }
         match decode_message(encoded) {
             Ok((message, consumed)) if consumed == encoded.len() => {
@@ -456,8 +494,8 @@ impl FortressScenario {
         let remote_handle = PlayerHandle::new(remote_index);
         let builder = SessionBuilder::<TestConfig>::new()
             .with_num_players(2)
-            .and_then(|builder| builder.with_fps(60))
-            .and_then(|builder| builder.with_input_delay(2))
+            .and_then(|builder| builder.with_fps(SIMULATION_FPS))
+            .and_then(|builder| builder.with_input_delay(INPUT_DELAY_FRAMES as usize))
             // Leave enough prediction headroom for the declared six-callback
             // hitch on top of the constrained-network round trip. Scenario
             // oracles still enforce the tighter clean/impaired lag limits.
@@ -494,6 +532,7 @@ impl FortressScenario {
         let Some(session) = &mut self.session else {
             return;
         };
+        self.relay.borrow_mut().local_frame = Some(session.current_frame().as_i32());
         session.poll_remote_clients();
         let confirmed = session.confirmed_frame().as_i32().min(self.target_frames);
         while self.checksum_through < confirmed {
@@ -582,7 +621,13 @@ impl FortressScenario {
         // session entered Running first. Receiving one valid Fortress packet
         // proves the independently launched peer is also pumping the session,
         // removing process-start skew from gameplay-lag measurements.
-        if self.relay.borrow().decoded == 0 {
+        if self.relay.borrow().decoded == 0
+            || self
+                .relay
+                .borrow()
+                .remote_frame
+                .is_none_or(|remote| remote < 0)
+        {
             return;
         }
 
@@ -611,16 +656,37 @@ impl FortressScenario {
         if current >= IMPAIRMENT_START_FRAME && self.pre_impairment_metrics.is_none() {
             self.pre_impairment_metrics = Some(session.metrics());
         }
+        if self.role == "b" && !self.impairment_activated && current >= IMPAIRMENT_START_FRAME {
+            // Align at the switch boundary before changing B's delayed input.
+            // This setup synchronization does not pace measured steady-state
+            // gameplay and is bounded by the session timeout/oracles.
+            if self
+                .relay
+                .borrow()
+                .remote_frame
+                .is_none_or(|remote| remote < IMPAIRMENT_START_FRAME)
+            {
+                return;
+            }
+            self.impairment_activated = true;
+        }
+        let now = Instant::now();
+        if !simulation_advance_due(now, &mut self.next_advance_at) {
+            return;
+        }
         if current < self.settlement_frame_limit {
             let Some(local_handle) = self.local_handle else {
                 self.fatal = Some("missing local Fortress handle".to_string());
                 return;
             };
+            // The input packet produced by this advance causally proves the
+            // advertised post-advance watermark at the receiving peer.
+            self.relay.borrow_mut().local_frame = Some(current.saturating_add(1));
             // Prediction stays exactly correct before the switch. Player B's
             // value change makes A's last-value prediction wrong, so the later
             // nonzero rollback delta is causally tied to that remote input.
             let input = TestInput {
-                value: u32::from(self.role == "b" && current >= IMPAIRMENT_START_FRAME),
+                value: u32::from(self.role == "b" && self.impairment_activated),
             };
             if let Err(error) = session.add_local_input(local_handle, input) {
                 self.fatal = Some(format!("add_local_input failed: {error}"));
@@ -704,11 +770,27 @@ impl FortressScenario {
             .session
             .as_ref()
             .map_or(0, |session| session.current_frame().as_i32());
-        if self.role == "b" && !self.impairment_activated && current_frame >= IMPAIRMENT_START_FRAME
-        {
-            // Changing B's input invalidates A's prior prediction. Keep relay
-            // delivery live so this rollback proof does not manufacture lag.
-            self.impairment_activated = true;
+        if self.role == "b" && self.impairment_activated && !self.impairment_released {
+            let predicted_through = IMPAIRMENT_START_FRAME
+                .saturating_add(INPUT_DELAY_FRAMES)
+                .saturating_add(1);
+            // Retain B's FIFO until A's causal post-advance watermark proves
+            // it simulated the changed delayed-input frame speculatively.
+            if self
+                .relay
+                .borrow()
+                .remote_frame
+                .is_none_or(|remote| remote < predicted_through)
+            {
+                if current_frame
+                    >= IMPAIRMENT_START_FRAME.saturating_add(IMPAIRMENT_MAX_HOLD_FRAMES)
+                {
+                    self.fatal = Some(
+                        "deterministic rollback relay hold exceeded its frame bound".to_string(),
+                    );
+                }
+                return;
+            }
             self.impairment_released = true;
         }
         let Some(client) = &mut self.client else {
@@ -862,6 +944,12 @@ impl FortressScenario {
             queues.encoded.saturating_add(queues.decoded) as f64
                 / metrics.visual_frames.max(1) as f64
         });
+        let observed_simulation_fps = self
+            .simulation_elapsed_ms
+            .filter(|elapsed| *elapsed > 0)
+            .map_or(0.0, |elapsed| {
+                self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
+            });
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
             && final_inbound_depth == 0
@@ -897,6 +985,8 @@ impl FortressScenario {
             "checksum_through": self.checksum_through,
             "speculative_value": self.game.value,
             "simulation_elapsed_ms": self.simulation_elapsed_ms,
+            "simulation_target_fps": SIMULATION_FPS,
+            "observed_simulation_fps": observed_simulation_fps,
             "total_elapsed_ms": total_elapsed_ms,
             "max_poll_us": self.max_poll_us,
             "multi_frame_poll": self.multi_frame_poll,
@@ -947,6 +1037,7 @@ impl FortressScenario {
             "impairment_released": self.impairment_released,
             "poll_hitch_frame": self.poll_hitch_frame,
             "poll_hitch_completed": self.poll_hitch_completed,
+            "poll_hitch_frames_advanced": self.poll_hitch_frames_advanced,
             "peer_left_observed": self.peer_left_observed,
             "peer_left_epoch": self.peer_left_epoch,
             "peer_left_final_seq": self.peer_left_final_seq,
@@ -972,7 +1063,103 @@ impl FortressScenario {
     }
 }
 
+fn simulation_frame_period() -> std::time::Duration {
+    std::time::Duration::from_nanos(1_000_000_000 / SIMULATION_FPS as u64)
+}
+
+fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
+    let period = simulation_frame_period();
+    let Some(deadline) = next_advance_at else {
+        *next_advance_at = now.checked_add(period);
+        return true;
+    };
+    if now < *deadline {
+        return false;
+    }
+    let scheduled = deadline.checked_add(period).unwrap_or(now);
+    // Preserve the absolute cadence under ordinary callback jitter, but bound
+    // recovery after a long suspension to one immediate catch-up callback.
+    *deadline = scheduled.max(now);
+    true
+}
+
+fn encode_relay_envelope(destination: &[u8; 16], advertised_frame: i32, encoded: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(
+        destination
+            .len()
+            .saturating_add(RELAY_ENVELOPE_MAGIC.len())
+            .saturating_add(std::mem::size_of::<i32>())
+            .saturating_add(encoded.len()),
+    );
+    payload.extend_from_slice(destination);
+    payload.extend_from_slice(RELAY_ENVELOPE_MAGIC);
+    payload.extend_from_slice(&advertised_frame.to_le_bytes());
+    payload.extend_from_slice(encoded);
+    payload
+}
+
+fn decode_relay_envelope(payload: &[u8]) -> Option<(&[u8], i32, &[u8])> {
+    let (destination, remainder) = payload.split_at_checked(16)?;
+    let (header, encoded) = remainder.split_at_checked(8)?;
+    if header.get(..4)? != RELAY_ENVELOPE_MAGIC {
+        return None;
+    }
+    let advertised_frame = i32::from_le_bytes(header.get(4..8)?.try_into().ok()?);
+    Some((destination, advertised_frame, encoded))
+}
+
 fn argument(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find_map(|pair| (pair.first().map(String::as_str) == Some(name)).then(|| pair[1].clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{
+        decode_relay_envelope, encode_relay_envelope, simulation_advance_due,
+        simulation_frame_period,
+    };
+
+    #[test]
+    fn fixed_cadence_preserves_deadlines_and_bounds_long_pause_recovery() {
+        let start = Instant::now();
+        let period = simulation_frame_period();
+        let mut deadline = None;
+
+        assert!(simulation_advance_due(start, &mut deadline));
+        assert!(!simulation_advance_due(
+            start + Duration::from_millis(40),
+            &mut deadline
+        ));
+        assert!(simulation_advance_due(
+            start + Duration::from_millis(60),
+            &mut deadline
+        ));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(2)));
+
+        let after_pause = start + Duration::from_secs(5);
+        assert!(simulation_advance_due(after_pause, &mut deadline));
+        assert_eq!(deadline, Some(after_pause));
+    }
+
+    #[test]
+    fn relay_envelope_round_trips_frame_watermark_and_rejects_corruption() {
+        let destination = [7; 16];
+        let encoded = [1, 2, 3, 4];
+        let payload = encode_relay_envelope(&destination, 123, &encoded);
+
+        assert_eq!(
+            decode_relay_envelope(&payload),
+            Some((destination.as_slice(), 123, encoded.as_slice()))
+        );
+        assert_eq!(decode_relay_envelope(&payload[..20]), None);
+
+        let mut corrupt = payload;
+        if let Some(byte) = corrupt.get_mut(16) {
+            *byte ^= 0xff;
+        }
+        assert_eq!(decode_relay_envelope(&corrupt), None);
+    }
 }

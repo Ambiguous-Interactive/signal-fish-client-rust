@@ -139,7 +139,12 @@ its stable `SIGNAL_FISH_SMOKE` and `SIGNAL_FISH_FORTRESS` log markers and
 retain browser/server logs on failure. The Fortress scenario launches two
 independent Chromium processes, derives stable handles from sorted Signal Fish
 UUIDs, and runs one polling cycle per rendered callback against a real server.
-Its impairment must produce measured rollback/load/resimulation, after which
+Advance simulation on a fixed local cadence that does not consult peer or
+network progress, so process scheduling is controlled without hiding genuine
+Fortress stalls. Use causal post-advance watermarks to bound the relay hold that
+forces rollback while both games continue advancing, and require the polling
+hitch window to contain forward simulation progress. Its impairment must
+produce measured rollback/load/resimulation, after which
 both peers must match exact game-state checksums, report in-sync health, drain
 all queues, conserve relay/server counts, and complete an observable v3
 `PlayerLeft` teardown.

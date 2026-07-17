@@ -85,8 +85,14 @@ Chromium processes and a real Signal Fish Server 0.4.0. The clean case advances
 hitch at frame 240; the soak advances 3,600 confirmed frames under the same
 profile. The fixture configures a 12-frame prediction window so the declared
 hitch can recover without a scheduler stall; the clean oracle still caps
-observed confirmation lag at eight frames. A deterministic remote-input change
-still forces prediction, rollback, state load, and resimulation. CI builds
+observed confirmation lag at eight frames. Simulation advances on a fixed local
+18 Hz cadence, independent of peer or network progress, so unequal browser CPU
+slices do not become artificial frame advantage and real prediction-window
+stalls remain observable. A bounded relay hold uses causal post-advance frame
+watermarks to prove the remote peer predicted the changed delayed input before
+release, forcing rollback, state load, and resimulation while both games keep
+advancing. The hitch oracle separately requires forward simulation progress
+during its six skipped polling callbacks. CI builds
 the pinned, checksum-verified iproute2 6.6.0 `tc` because the runner's packaged
 version cannot apply a deterministic netem seed.
 

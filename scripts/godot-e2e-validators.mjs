@@ -91,6 +91,9 @@ export function validateFortressPeer(summary, options = {}) {
   if (
     !isNonnegativeNumber(summary?.simulation_elapsed_ms) || summary.simulation_elapsed_ms === 0 ||
     summary.simulation_elapsed_ms >= sessionTimeoutMs ||
+    summary?.simulation_target_fps !== 18 ||
+    !isNonnegativeNumber(summary?.observed_simulation_fps) ||
+    summary.observed_simulation_fps < 12 || summary.observed_simulation_fps > 20 ||
     !isNonnegativeNumber(summary?.max_poll_us) || summary.max_poll_us >= 50_000
   ) errors.push("simulation or callback timing bound failed");
   if (
@@ -125,8 +128,12 @@ export function validateFortressPeer(summary, options = {}) {
     summary?.desync_events !== 0 ||
     summary?.frames_advanced !== summary?.visual_frames + summary?.resimulated_frames
   ) errors.push("integrity, conservation, or admission diagnostics failed");
-  if (options.requireHitch && !summary?.poll_hitch_completed) {
-    errors.push("six-callback polling hitch was not completed");
+  if (
+    options.requireHitch &&
+    (!summary?.poll_hitch_completed || !isNonnegativeInteger(summary?.poll_hitch_frames_advanced) ||
+      summary.poll_hitch_frames_advanced === 0)
+  ) {
+    errors.push("six-callback polling hitch did not preserve gameplay advancement");
   }
   return { ok: errors.length === 0, errors };
 }
