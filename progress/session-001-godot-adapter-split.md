@@ -45,6 +45,10 @@ fully green pull request with all automated review feedback addressed.
   `UNPUBLISHED` comparison explicitly quoted and adding workflow regression
   coverage. (The prior bare static token was not shell variable expansion, but
   the explicit literal form removes ambiguity and keeps the guards auditable.)
+- Fixed the exact-0.5.4 production fixture after Godot Web CI exposed two
+  remaining 0.4-era APIs: use `get_tree_or_null()` and
+  `ExtensionLibrary::on_stage_init`. Reproduced native clippy and all eight
+  fixture tests against the official Godot 4.5 editor locally.
 
 ## Remaining
 

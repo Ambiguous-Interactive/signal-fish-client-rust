@@ -761,7 +761,7 @@ impl INode for SignalFishSmoke {
         if let Some(fortress) = &mut self.fortress {
             if fortress.process() {
                 self.complete = true;
-                if let Some(mut tree) = self.base().get_tree() {
+                if let Some(mut tree) = self.base().get_tree_or_null() {
                     tree.quit();
                 }
             }
@@ -789,7 +789,7 @@ impl INode for SignalFishSmoke {
         if json.shutdown_done && binary_close_attributed {
             godot_print!("SIGNAL_FISH_SMOKE complete");
             self.complete = true;
-            if let Some(mut tree) = self.base().get_tree() {
+            if let Some(mut tree) = self.base().get_tree_or_null() {
                 tree.quit();
             }
         }
@@ -1015,7 +1015,7 @@ fn exercise_raw_emscripten_import() {
 
 #[gdextension]
 unsafe impl ExtensionLibrary for SmokeExtension {
-    fn on_level_init(_level: InitLevel) {
+    fn on_stage_init(_stage: InitStage) {
         #[cfg(feature = "raw-emscripten-proof")]
         exercise_raw_emscripten_import();
     }
