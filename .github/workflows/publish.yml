@@ -98,7 +98,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install release tools
-        uses: taiki-e/install-action@v2.83.2
+        uses: taiki-e/install-action@v2.83.4
         with:
           tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
 
@@ -285,7 +285,7 @@ jobs:
           git push origin "v${VERSION}"
 
       - name: Attest package provenance
-        uses: actions/attest@v4.1.1
+        uses: actions/attest@v4.2.0
         with:
           subject-path: ${{ runner.temp }}/release-assets/*.crate
 

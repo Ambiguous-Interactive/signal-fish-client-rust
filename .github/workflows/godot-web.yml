@@ -165,7 +165,7 @@ jobs:
         uses: actions/checkout@v7.0.0
 
       - name: Download exported browser fixture
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: godot-web-export
           path: tests/godot-web-smoke/project
