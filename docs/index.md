@@ -26,7 +26,9 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 
 - :material-swap-horizontal: **Transport-Agnostic** — Plug in any transport that implements the `Transport` trait; swap WebSocket for TCP, QUIC, or a test loopback without changing your game code.
 - :material-lightning-bolt: **Async or Frame-Driven** — Use the Tokio background driver or the synchronous polling client. Command admission is bounded and explicit in both.
-- :material-message-flash: **Event-Driven Architecture** — All server responses are delivered as strongly-typed `SignalFishEvent` variants on a bounded `mpsc` channel — just `match` in a loop.
+- :material-message-flash: **Typed Event Architecture** — The async driver
+  delivers strongly typed `SignalFishEvent` variants on a bounded `mpsc`
+  channel; the polling driver returns them directly from each `poll()` call.
 - :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and a default client keeps the v2 authentication wire shape; game start is now an explicit `start_game()` request. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.

@@ -10,9 +10,11 @@
 //! [`poll()`](SignalFishPollingClient::poll) once per frame from the game
 //! loop; no background task or runtime is required.
 //!
-//! Delivery guarantees match the async client: incoming events are returned
-//! from `poll()` without loss, and outgoing commands go through a bounded
-//! queue that fails fast with
+//! During normal operation, ready inbound frames are retained across bounded
+//! polling cycles and returned as events rather than dropped for overflow.
+//! Calling `close` clears session state and intentionally drains any late
+//! inbound transport frames without emitting application events. Outgoing
+//! commands go through a bounded queue that fails fast with
 //! [`SendBufferFull`](crate::error::SignalFishError::SendBufferFull) instead
 //! of growing without bound when the transport is congested.
 

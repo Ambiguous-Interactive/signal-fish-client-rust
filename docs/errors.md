@@ -73,7 +73,7 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **50 variants** representing
+`ErrorCode` is a protocol-level enum with **52 variants** representing
 structured error codes returned by the Signal Fish server. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 

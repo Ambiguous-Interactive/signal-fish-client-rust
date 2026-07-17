@@ -266,6 +266,48 @@ fn client_and_spec_error_code_counts_match() {
 }
 
 #[test]
+fn public_documentation_covers_every_error_code_variant_and_current_count() {
+    let codes = all_client_error_codes();
+    for code in &codes {
+        exhaustiveness_guard(code);
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let errors_path = root.join("docs/errors.md");
+    let errors = std::fs::read_to_string(&errors_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", errors_path.display()));
+    let concepts_path = root.join("docs/concepts.md");
+    let concepts = std::fs::read_to_string(&concepts_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", concepts_path.display()));
+    let context_path = root.join(".llm/context.md");
+    let context = std::fs::read_to_string(&context_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", context_path.display()));
+
+    let count = codes.len();
+    assert!(
+        errors.contains(&format!("**{count} variants**")),
+        "docs/errors.md must report the source-derived ErrorCode variant count ({count})"
+    );
+    assert!(
+        concepts.contains(&format!("`ErrorCode` is a {count}-variant enum")),
+        "docs/concepts.md must report the source-derived ErrorCode variant count ({count})"
+    );
+    assert!(
+        context.contains(&format!("`ErrorCode` enum — {count} variants from server")),
+        ".llm/context.md must report the source-derived ErrorCode variant count ({count})"
+    );
+
+    for code in &codes {
+        let variant = format!("{code:?}");
+        let table_cell = format!("| `{variant}` |");
+        assert!(
+            errors.contains(&table_cell),
+            "docs/errors.md must document ErrorCode::{variant} in its variant tables"
+        );
+    }
+}
+
+#[test]
 fn spec_error_code_extraction_finds_a_plausible_count() {
     let tokens = extract_spec_error_tokens();
     assert!(

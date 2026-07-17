@@ -26,6 +26,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LLM_DIR = REPO_ROOT / ".llm"
 SKILLS_DIR = LLM_DIR / "skills"
 INDEX_FILE = SKILLS_DIR / "index.md"
+GITHUB_GUIDANCE_FILES = (
+    Path("AGENTS.md"),
+    Path("CLAUDE.md"),
+    Path(".github/copilot-instructions.md"),
+    Path(".llm/context.md"),
+    Path(".llm/skills/github-operations/SKILL.md"),
+)
 
 
 def path_for_bash(path: Path, cwd: Optional[Path] = None) -> str:
@@ -71,6 +78,74 @@ def validate_plain_python_annotation_syntax() -> List[str]:
                         f"  {path_for_bash(path, REPO_ROOT)}:{lineno}: "
                         f"{description}: {line.strip()}"
                     )
+    return errors
+
+
+def validate_github_tool_order(repo_root: Path = REPO_ROOT) -> List[str]:
+    """Enforce connector, git, then gh ordering in every LLM entry point."""
+    errors = []
+    patterns = (
+        re.compile(r"VS Code GitHub\s+connector/extension", re.IGNORECASE),
+        re.compile(r"local\s+`git`", re.IGNORECASE),
+        re.compile(r"GitHub CLI\s+\(`gh`\)", re.IGNORECASE),
+    )
+
+    for relative_path in GITHUB_GUIDANCE_FILES:
+        path = repo_root / relative_path
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            errors.append(f"  {relative_path.as_posix()}: could not read: {e}")
+            continue
+
+        marker = (
+            "# GitHub Operations"
+            if relative_path.name == "SKILL.md"
+            else "## GitHub Tool Order"
+        )
+        marker_index = text.find(marker)
+        if marker_index == -1:
+            errors.append(
+                f"  {relative_path.as_posix()}: missing `{marker}` section"
+            )
+            continue
+
+        section = text[marker_index + len(marker):]
+        next_heading = re.search(r"\n#{1,2} ", section)
+        if next_heading is not None:
+            section = section[:next_heading.start()]
+
+        matches = [pattern.search(section) for pattern in patterns]
+        missing = [
+            label
+            for label, match in zip(("connector/extension", "local git", "gh"), matches)
+            if match is None
+        ]
+        if missing:
+            errors.append(
+                f"  {relative_path.as_posix()}: GitHub tool-order section is "
+                f"missing {', '.join(missing)}"
+            )
+            continue
+
+        positions = [match.start() for match in matches if match is not None]
+        if positions != sorted(positions) or len(set(positions)) != len(positions):
+            errors.append(
+                f"  {relative_path.as_posix()}: GitHub tools must appear in "
+                "connector/extension -> local git -> gh order"
+            )
+
+        lower_section = section.lower()
+        if "final fallback" not in lower_section and "only when neither" not in lower_section:
+            errors.append(
+                f"  {relative_path.as_posix()}: must state that gh is the final fallback"
+            )
+
+        if relative_path.name != "SKILL.md" and "github-operations/SKILL.md" not in section:
+            errors.append(
+                f"  {relative_path.as_posix()}: must route to the github-operations skill"
+            )
+
     return errors
 
 
@@ -973,10 +1048,13 @@ def main() -> int:
     # 12. Validate required changelog Added entries for public APIs (blocking)
     changelog_added_api_errors = validate_changelog_added_api_entries()
 
-    # 13. Validate Python syntax compatibility for plain `python3` entrypoints
+    # 13. Validate GitHub tool preference in every LLM guidance entry point
+    github_tool_order_errors = validate_github_tool_order()
+
+    # 14. Validate Python syntax compatibility for plain `python3` entrypoints
     python_syntax_errors = validate_plain_python_annotation_syntax()
 
-    # 14. Advisory: warn about absolute guarantee language in doc comments
+    # 15. Advisory: warn about absolute guarantee language in doc comments
     guarantee_warnings = warn_absolute_guarantee_language()
     if guarantee_warnings:
         print(
@@ -994,7 +1072,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # 15. Report all collected errors together
+    # 16. Report all collected errors together
     error_sections = [
         (
             version_sync_errors,
@@ -1045,6 +1123,11 @@ def main() -> int:
             changelog_added_api_errors,
             "required changelog public API additions are missing:",
             "Document required user-visible public APIs under a `### Added` section in CHANGELOG.md.",
+        ),
+        (
+            github_tool_order_errors,
+            "GitHub tool-order guidance is inconsistent:",
+            "Keep every LLM entry point ordered as VS Code GitHub connector/extension, local git, then gh as the final fallback.",
         ),
         (
             python_syntax_errors,

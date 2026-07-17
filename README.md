@@ -23,7 +23,10 @@
   </a>
 </p>
 
-Transport-agnostic async Rust client for the **Signal Fish** multiplayer signaling protocol. Connect to a Signal Fish server over any bidirectional transport, authenticate, join rooms, and receive strongly-typed events — all through a simple channel-based API.
+Transport-agnostic Rust client SDK for the **Signal Fish** multiplayer
+signaling protocol. Choose the Tokio background driver or the caller-driven
+polling client to connect over any bidirectional transport, authenticate, join
+rooms, and receive strongly typed events.
 
 ---
 
@@ -45,7 +48,8 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
 - **Protocol support: v2 relay + server 0.4.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and WebRTC mesh signaling; the default remains byte-identical to v2. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
-- **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
+- **Typed events for both drivers** — receive `SignalFishEvent`s through the
+  async driver's bounded Tokio MPSC channel or directly from each polling call
 - **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
 - **Full protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
 - **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` counters make relay-path loss observable
