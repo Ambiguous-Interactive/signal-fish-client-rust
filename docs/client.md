@@ -419,7 +419,7 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
-(`GameData` messages written to the transport), `game_data_received`
+(`GameData` messages whose frames the transport accepted), `game_data_received`
 (`GameData`/`GameDataBinary` messages read off the transport and accepted by
 the protocol-accountability layer —
 counted at **receipt**, not at delivery to your event loop, so a consumer
@@ -769,9 +769,10 @@ All accessors are **synchronous** (no async, no mutex):
 | `transport()` | `&T` | Read-only access to transport-specific diagnostics; I/O remains driven by `poll()`. |
 
 !!! note "No async accessors"
-    Unlike `SignalFishClient`, all `SignalFishPollingClient` accessors are
-    plain `&self` methods — no `.await` needed. This is because the polling
-    client is single-threaded and owns its state directly.
+    Unlike `SignalFishClient`, polling diagnostics and state access require no
+    `.await`: read-only accessors take `&self`, while
+    `reset_queue_age_peak()` takes `&mut self` because it resets sampled state.
+    The polling client owns its state directly and uses no mutex.
 
 ---
 

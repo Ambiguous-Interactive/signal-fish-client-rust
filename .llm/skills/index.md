@@ -48,6 +48,10 @@ Preserve lifecycle event timing across async and polling clients. Use when chang
 
 Implement and review safe native or WebAssembly FFI boundaries. Use when changing C type mappings, struct layout,...
 
+### [GitHub Operations](github-operations/SKILL.md)
+
+Route repository-hosted GitHub work through the VS Code GitHub connector or extension, local git, and gh in strict...
+
 ### [Godot 4.5 WebSocket Transport](godot-websocket/SKILL.md)
 
 Maintain the Godot 4.5 WebSocketPeer transport. Use when changing Godot native or web GDExtension networking, polling...

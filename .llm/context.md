@@ -30,6 +30,14 @@ Run this before every commit. All three steps must pass with zero warnings.
 Use the manual **Prepare Release** and **Release** workflows; see
 `skills/release-recovery/SKILL.md` and `docs/releasing.md` for fail-closed recovery.
 
+## GitHub Tool Order
+
+For every GitHub operation, follow
+`skills/github-operations/SKILL.md`: prefer the VS Code GitHub
+connector/extension first, use local `git` second, and use GitHub CLI (`gh`)
+only as the final fallback. Missing `gh` authentication does not block a
+connector- or `git`-capable workflow.
+
 ## CI/CD Action Reference Policy
 
 Use `owner/action@vN.N.N` (preferred) or `@vN`, not commit hashes. Exceptions:
@@ -51,7 +59,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
 | `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 50 variants from server |
+| `src/error_codes.rs` | `ErrorCode` enum — 52 variants from server |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |

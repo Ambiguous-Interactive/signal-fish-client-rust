@@ -33,6 +33,7 @@ sync_crate_version_references = _mod.sync_crate_version_references
 warn_absolute_guarantee_language = _mod.warn_absolute_guarantee_language
 path_for_bash = _mod.path_for_bash
 validate_plain_python_annotation_syntax = _mod.validate_plain_python_annotation_syntax
+validate_github_tool_order = _mod.validate_github_tool_order
 
 
 # ===================================================================
@@ -85,6 +86,62 @@ def test_plain_python_entrypoints_avoid_modern_annotation_syntax():
                     violations.append(f"{path.name}:{lineno}: {description}: {line.strip()}")
 
     assert violations == []
+
+
+def _write_github_guidance_fixture(repo_root, tool_order):
+    """Create all repository-owned LLM guidance surfaces for policy tests."""
+    entrypoint_section = """\
+## GitHub Tool Order
+
+Follow `.llm/skills/github-operations/SKILL.md`: {tool_order}. Use `gh` only
+as the final fallback.
+"""
+    for relative in (
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".github/copilot-instructions.md",
+        ".llm/context.md",
+    ):
+        path = repo_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(entrypoint_section.format(tool_order=tool_order), encoding="utf-8")
+
+    skill = repo_root / ".llm/skills/github-operations/SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(
+        "# GitHub Operations\n\n"
+        + tool_order
+        + ". Use GitHub CLI (`gh`) only when neither prior tool works.\n",
+        encoding="utf-8",
+    )
+
+
+def test_github_tool_order_is_consistent_in_repository_guidance():
+    """Current repository guidance must keep the connector-first policy."""
+    assert validate_github_tool_order() == []
+
+
+def test_github_tool_order_validator_accepts_connector_git_gh(tmp_path):
+    """The canonical connector, git, gh ordering is accepted everywhere."""
+    _write_github_guidance_fixture(
+        tmp_path,
+        "VS Code GitHub connector/extension, local `git`, GitHub CLI (`gh`)",
+    )
+
+    assert validate_github_tool_order(tmp_path) == []
+
+
+def test_github_tool_order_validator_rejects_gh_before_git(tmp_path):
+    """A guidance regression that promotes gh ahead of git must fail."""
+    _write_github_guidance_fixture(
+        tmp_path,
+        "VS Code GitHub connector/extension, GitHub CLI (`gh`), local `git`",
+    )
+
+    errors = validate_github_tool_order(tmp_path)
+
+    assert len(errors) == 5
+    assert all("connector/extension -> local git -> gh order" in error for error in errors)
 
 
 # ===================================================================

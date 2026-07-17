@@ -476,18 +476,18 @@ impl JoinRoomParams {
 /// Returned by [`SignalFishClient::stats`] and
 /// [`SignalFishPollingClient::stats`](crate::polling_client::SignalFishPollingClient::stats).
 ///
-/// The client itself never drops game data (events are delivered with
-/// backpressure and refused sends return
-/// [`SendBufferFull`](crate::SignalFishError::SendBufferFull)), so these
-/// counters make loss *elsewhere* observable: exchange or log them across
-/// peers, and a persistent sent-vs-received deficit points at the relay
-/// path or a peer — not at this client.
+/// During normal operation, async event-channel overflow applies backpressure,
+/// polling work remains queued across bounded cycles, and refused sends return
+/// [`SendBufferFull`](crate::SignalFishError::SendBufferFull). Exchange or log
+/// these counters across peers to locate a persistent deficit after accounting
+/// for explicit terminal boundaries (shutdown, handle/receiver drop, or
+/// disconnect) and protocol quarantine.
 ///
 /// Counters are cumulative for the lifetime of the client (they survive
 /// room changes and disconnection).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClientStats {
-    /// `GameData` messages successfully written to the transport.
+    /// `GameData` messages whose frames the transport accepted from the client.
     pub game_data_sent: u64,
     /// `GameData`/`GameDataBinary` messages received from the server.
     ///
@@ -496,8 +496,8 @@ pub struct ClientStats {
     /// the relay-path deficit diagnostic needs — it measures the wire, so a
     /// consumer that stops draining events (or a terminal abort racing the
     /// last deliveries) cannot masquerade as relay loss. In steady state
-    /// receipt and delivery are identical because events are not dropped on
-    /// overflow.
+    /// normal-operation receipt and delivery remain aligned across async
+    /// backpressure or bounded polling cycles.
     pub game_data_received: u64,
     /// Inbound frames that failed to decode into a `ServerMessage`.
     ///

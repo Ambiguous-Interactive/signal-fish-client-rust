@@ -21,6 +21,14 @@ Use version tags in workflow `uses:` references, not commit hashes.
 - Use: `owner/action@vN` or `owner/action@vN.N.N`
 - Exception: `dtolnay/rust-toolchain@stable|nightly|beta`
 
+## GitHub Tool Order
+
+For every GitHub operation, follow
+`.llm/skills/github-operations/SKILL.md`: prefer the VS Code GitHub
+connector/extension first, use local `git` second, and use GitHub CLI (`gh`)
+only as the final fallback. Missing `gh` authentication does not block a
+connector- or `git`-capable workflow.
+
 ## Skills
 
 Focused Agent Skills live in `.llm/skills/<name>/SKILL.md`; the generated
@@ -28,4 +36,4 @@ Focused Agent Skills live in `.llm/skills/<name>/SKILL.md`; the generated
 description, read its complete `SKILL.md` before acting and resolve relative
 resources from that skill directory.
 
-Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`.
+Key skills: `async-rust-patterns`, `transport-abstraction`, `websocket-client`, `error-handling`, `serde-patterns`, `testing-async`, `public-api-design`, `tracing-instrumentation`, `crate-publishing`, `github-operations`.

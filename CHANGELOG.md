@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a Godot 4.5 + Fortress Rollback integration guide and a published
   `llms.txt` usage index for discovering current SDK documentation.
 
+### Changed
+
+- Changed repository agent guidance to prefer the VS Code GitHub
+  connector/extension for hosted operations, then local `git`, with GitHub CLI
+  (`gh`) reserved for the final fallback.
+
 ### Fixed
 
 - Fixed the Emscripten WebSocket transport consuming a queued frame while the

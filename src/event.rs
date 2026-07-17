@@ -93,13 +93,14 @@ pub enum SignalFishEvent {
     /// an otherwise-known message), a proxy injecting non-protocol frames,
     /// or payload corruption.
     ///
-    /// Every undecodable frame produces exactly one `DecodeFailed` event
-    /// (no coalescing), delivered with backpressure like any other event
-    /// (never dropped merely because the consumer is behind; see the delivery
-    /// guarantees on [`SignalFishClient`](crate::SignalFishClient)), and
-    /// increments the `messages_undecodable` counter in
+    /// Every undecodable frame processed during normal operation produces
+    /// exactly one `DecodeFailed` event (no coalescing) and increments the
+    /// `messages_undecodable` counter in
     /// [`ClientStats`](crate::ClientStats). Steady growth of that counter
-    /// means protocol drift (upgrade this SDK) or a corrupting middlebox.
+    /// means protocol drift (upgrade this SDK) or a corrupting middlebox. The
+    /// async driver delivers the event with channel backpressure; the polling
+    /// driver returns it from the current bounded polling cycle. Explicit
+    /// shutdown/close boundaries retain their documented delivery caveats.
     DecodeFailed {
         /// The wire `type` tag, when the frame was valid JSON with one.
         ///

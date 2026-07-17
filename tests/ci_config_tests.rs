@@ -4089,6 +4089,70 @@ mod llm_index_validation {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module: github_tool_order_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod github_tool_order_policy {
+    use super::*;
+
+    const GUIDANCE_FILES: [(&str, &str); 5] = [
+        ("AGENTS.md", "## GitHub Tool Order"),
+        ("CLAUDE.md", "## GitHub Tool Order"),
+        (".github/copilot-instructions.md", "## GitHub Tool Order"),
+        (".llm/context.md", "## GitHub Tool Order"),
+        (
+            ".llm/skills/github-operations/SKILL.md",
+            "# GitHub Operations",
+        ),
+    ];
+
+    #[test]
+    fn all_llm_guidance_prefers_connector_then_git_then_gh() {
+        for (path, marker) in GUIDANCE_FILES {
+            let contents = read_project_file(path);
+            let section = contents
+                .split_once(marker)
+                .map(|(_, tail)| tail)
+                .unwrap_or_else(|| panic!("{path} must contain a `{marker}` section"));
+
+            let connector = section.find("VS Code GitHub").unwrap_or_else(|| {
+                panic!("{path} must name the VS Code GitHub connector/extension")
+            });
+            let git = [section.find("local `git`"), section.find("Local `git`")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or_else(|| panic!("{path} must name local git"));
+            let gh = section
+                .find("GitHub CLI (`gh`)")
+                .unwrap_or_else(|| panic!("{path} must name GitHub CLI (`gh`)"));
+
+            assert!(
+                connector < git && git < gh,
+                "{path} must order GitHub tools as connector/extension -> local git -> gh"
+            );
+            assert!(
+                section.contains("final fallback") || section.contains("only when neither"),
+                "{path} must state that gh is the final fallback"
+            );
+
+            if path != ".llm/skills/github-operations/SKILL.md" {
+                assert!(
+                    section.contains("github-operations/SKILL.md"),
+                    "{path} must route agents to the github-operations skill"
+                );
+            }
+        }
+
+        let index = read_project_file(".llm/skills/index.md");
+        assert!(
+            index.contains("[GitHub Operations](github-operations/SKILL.md)"),
+            "the generated skills index must expose github-operations"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module: markdown_policy_validation
 // ─────────────────────────────────────────────────────────────────────────────
 

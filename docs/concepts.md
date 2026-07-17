@@ -153,12 +153,13 @@ once). See the [Mesh Guide](mesh-guide.md).
 
 ---
 
-## Event-Driven Architecture
+## Typed Event Architecture
 
-All server responses arrive as `SignalFishEvent` variants on a **bounded
+Both drivers convert server responses into `SignalFishEvent` variants. The
+async `SignalFishClient` delivers them on a **bounded
 `mpsc::Receiver<SignalFishEvent>`** (default capacity 256, configurable via
-`SignalFishConfig::event_channel_capacity`). Your application consumes
-them in an async loop:
+`SignalFishConfig::event_channel_capacity`), which an application consumes in
+an async loop:
 
 ```rust,ignore
 let config = SignalFishConfig::new("mb_app_abc123");
@@ -183,6 +184,10 @@ while let Some(event) = events.recv().await {
     }
 }
 ```
+
+`SignalFishPollingClient::poll()` returns the events decoded during that
+bounded polling cycle directly as a `Vec<SignalFishEvent>`; it does not create
+an event channel.
 
 ### Synthetic vs. Server Events
 
@@ -289,9 +294,10 @@ Because the client applies backpressure instead of dropping events on
 overflow, loss elsewhere becomes observable. `stats()`
 returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
 `game_data_received` / `messages_undecodable` counters (they survive
-disconnects): exchange or log them across peers, and a persistent
-sent-vs-received deficit points at the relay path or a peer — not at this
-client. Pace high-rate streams with
+disconnects): exchange or log them across peers, account for the explicit
+terminal and quarantine boundaries above, and use any remaining persistent
+sent-vs-received deficit to investigate the relay path or a peer. Pace
+high-rate streams with
 `send_game_data_reliable` instead of guessing at sleep durations — but drain
 events from a separate task while awaiting it: the queue only drains while
 the transport loop runs, and the loop pauses when the event channel is full,
@@ -430,7 +436,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 50-variant enum that arrives inside events. The server sends
+`ErrorCode` is a 52-variant enum that arrives inside events. The server sends
 these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore
