@@ -92,9 +92,10 @@ slices do not become artificial frame advantage and real prediction-window
 stalls remain observable. Delayed callbacks retain their elapsed deadline debt
 and recover by at most one simulation frame per rendered callback, preventing
 permanent scheduling skew without allowing a multi-frame burst. A bounded
-one-time barrier admits A after B's frame-zero synchronization packet and B
-after A's causally subsequent frame-one packet, preventing process-start order
-from becoming measured gameplay skew. A bounded relay hold uses causal
+one-time proposal/ack/commit barrier maps a shared deadline to each browser's
+monotonic clock, preventing process-start order from becoming measured gameplay
+skew. This wall-clock assumption is fixture-scoped because CI launches both
+Chromium processes on the same host. A bounded relay hold uses causal
 post-advance frame watermarks to prove the remote peer
 predicted the changed delayed input before release, forcing rollback, state
 load, and resimulation while both games keep advancing. The hitch oracle

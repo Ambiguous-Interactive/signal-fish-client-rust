@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fortress_rollback::network::codec::{decode_message, encode};
 use fortress_rollback::{
@@ -32,6 +32,13 @@ const SOAK_LAG_LIMIT: u64 = 12;
 const PREDICTION_WINDOW_FRAMES: usize = 20;
 const SIMULATION_FPS: usize = 18;
 const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
+const STARTUP_ENVELOPE_MAGIC: &[u8; 4] = b"SFS1";
+const STARTUP_LEAD_MS: u64 = 2_000;
+const STARTUP_MAX_LEAD: Duration = Duration::from_secs(3);
+const STARTUP_MIN_PROPOSAL_LEAD: Duration = Duration::from_millis(1_250);
+const STARTUP_MIN_ACK_LEAD: Duration = Duration::from_millis(750);
+const STARTUP_MIN_COMMIT_LEAD: Duration = Duration::from_millis(250);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 // GitHub's shared runners have measured at roughly 23 rendered frames/second
 // under two independent Chromium/Godot processes. Keep a generous wall-clock
 // guard while the frame/checksum/queue oracles remain exact.
@@ -58,6 +65,51 @@ impl Config for TestConfig {
     type Input = TestInput;
     type State = TestState;
     type Address = PlayerId;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupControl {
+    Proposal { start_unix_ms: u64 },
+    Ack { start_unix_ms: u64 },
+    Commit { start_unix_ms: u64 },
+}
+
+impl StartupControl {
+    fn start_unix_ms(self) -> u64 {
+        match self {
+            Self::Proposal { start_unix_ms }
+            | Self::Ack { start_unix_ms }
+            | Self::Commit { start_unix_ms } => start_unix_ms,
+        }
+    }
+}
+
+fn startup_control_allowed(
+    role: &str,
+    control: StartupControl,
+    expected_start_unix_ms: Option<u64>,
+    proposal_sent: bool,
+    ack_sent: bool,
+) -> bool {
+    let exact_deadline = expected_start_unix_ms == Some(control.start_unix_ms());
+    match (role, control) {
+        ("a", StartupControl::Proposal { .. }) => {
+            expected_start_unix_ms.is_none() || exact_deadline
+        }
+        ("a", StartupControl::Commit { .. }) => ack_sent && exact_deadline,
+        ("b", StartupControl::Ack { .. }) => proposal_sent && exact_deadline,
+        _ => false,
+    }
+}
+
+fn startup_control_lead_valid(
+    deadline: Option<Instant>,
+    now: Instant,
+    minimum_lead: Duration,
+    already_received: bool,
+) -> bool {
+    already_received
+        || deadline.is_some_and(|deadline| deadline.saturating_duration_since(now) >= minimum_lead)
 }
 
 #[derive(Default)]
@@ -136,13 +188,22 @@ pub(super) struct FortressScenario {
     checksum_through: i32,
     confirmed_checksum: u64,
     target_state_checksum: Option<u128>,
+    startup_started_at: Option<Instant>,
     started: Option<Instant>,
     simulation_elapsed_ms: Option<u128>,
     next_advance_at: Option<Instant>,
     startup_barrier_completed: bool,
-    startup_barrier_release_remote_frame: Option<i32>,
+    startup_start_unix_ms: Option<u64>,
+    startup_start_at: Option<Instant>,
+    startup_proposal_sent: bool,
+    startup_proposal_received: bool,
+    startup_ack_sent: bool,
+    startup_ack_received: bool,
+    startup_commit_sent: bool,
+    startup_commit_received: bool,
     startup_barrier_release_local_frame: Option<i32>,
     startup_barrier_elapsed_ms: Option<u128>,
+    startup_release_lateness_ms: Option<u128>,
     game_ready: bool,
     max_poll_us: u64,
     last_time_series_frame: i32,
@@ -233,13 +294,22 @@ impl FortressScenario {
             checksum_through: -1,
             confirmed_checksum: 0,
             target_state_checksum: None,
+            startup_started_at: None,
             started: None,
             simulation_elapsed_ms: None,
             next_advance_at: None,
             startup_barrier_completed: false,
-            startup_barrier_release_remote_frame: None,
+            startup_start_unix_ms: None,
+            startup_start_at: None,
+            startup_proposal_sent: false,
+            startup_proposal_received: false,
+            startup_ack_sent: false,
+            startup_ack_received: false,
+            startup_commit_sent: false,
+            startup_commit_received: false,
             startup_barrier_release_local_frame: None,
             startup_barrier_elapsed_ms: None,
+            startup_release_lateness_ms: None,
             game_ready: false,
             max_poll_us: 0,
             last_time_series_frame: -60,
@@ -438,14 +508,30 @@ impl FortressScenario {
             && seq.is_some_and(|value| value > 0)
             && epoch.is_some_and(|value| value > 0)
             && valid_sender;
-        let Some((destination, advertised_frame, encoded)) = decode_relay_envelope(&payload) else {
-            self.note_malformed();
-            return;
-        };
         if !valid_envelope {
             self.note_malformed();
             return;
         }
+        if let Some((destination, control)) = decode_startup_envelope(&payload) {
+            if destination != local_id.as_bytes() {
+                let ignored = self.relay.borrow().ignored_nonlocal.saturating_add(1);
+                self.relay.borrow_mut().ignored_nonlocal = ignored;
+                return;
+            }
+            let mut relay = self.relay.borrow_mut();
+            relay.decoded = relay.decoded.saturating_add(1);
+            drop(relay);
+            if self.remote_id != Some(sender) {
+                self.fail("startup control did not originate from the session peer".to_string());
+                return;
+            }
+            self.handle_startup_control(control);
+            return;
+        }
+        let Some((destination, advertised_frame, encoded)) = decode_relay_envelope(&payload) else {
+            self.note_malformed();
+            return;
+        };
         if destination != local_id.as_bytes() {
             let ignored = self.relay.borrow().ignored_nonlocal.saturating_add(1);
             self.relay.borrow_mut().ignored_nonlocal = ignored;
@@ -471,6 +557,80 @@ impl FortressScenario {
                 }
             }
             _ => self.note_malformed(),
+        }
+    }
+
+    fn handle_startup_control(&mut self, control: StartupControl) {
+        let start_unix_ms = control.start_unix_ms();
+        if !startup_control_allowed(
+            &self.role,
+            control,
+            self.startup_start_unix_ms,
+            self.startup_proposal_sent,
+            self.startup_ack_sent,
+        ) {
+            self.fail(format!(
+                "unexpected startup control for role {}: {control:?}",
+                self.role
+            ));
+            return;
+        }
+        match (&*self.role, control) {
+            ("a", StartupControl::Proposal { .. }) => {
+                if self.startup_start_at.is_none() {
+                    match instant_for_unix_ms(start_unix_ms) {
+                        Some(deadline) => {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if !(STARTUP_MIN_PROPOSAL_LEAD..=STARTUP_MAX_LEAD).contains(&remaining)
+                            {
+                                self.fail(
+                                    "startup proposal has an unsafe deadline lead".to_string(),
+                                );
+                                return;
+                            }
+                            self.startup_start_unix_ms = Some(start_unix_ms);
+                            self.startup_start_at = Some(deadline);
+                        }
+                        None => {
+                            self.fail("startup proposal arrived after its deadline".to_string());
+                            return;
+                        }
+                    }
+                }
+                self.startup_proposal_received = true;
+            }
+            ("a", StartupControl::Commit { .. })
+                if self.startup_ack_sent && self.startup_start_unix_ms == Some(start_unix_ms) =>
+            {
+                if !startup_control_lead_valid(
+                    self.startup_start_at,
+                    Instant::now(),
+                    STARTUP_MIN_COMMIT_LEAD,
+                    self.startup_commit_received,
+                ) {
+                    self.fail("startup commit arrived too near its common deadline".to_string());
+                    return;
+                }
+                self.startup_commit_received = true;
+            }
+            ("b", StartupControl::Ack { .. })
+                if self.startup_proposal_sent
+                    && self.startup_start_unix_ms == Some(start_unix_ms) =>
+            {
+                if !startup_control_lead_valid(
+                    self.startup_start_at,
+                    Instant::now(),
+                    STARTUP_MIN_ACK_LEAD,
+                    self.startup_ack_received,
+                ) {
+                    self.fail(
+                        "startup acknowledgement arrived too near its common deadline".to_string(),
+                    );
+                    return;
+                }
+                self.startup_ack_received = true;
+            }
+            _ => self.fail("startup control admission mismatch".to_string()),
         }
     }
 
@@ -528,10 +688,7 @@ impl FortressScenario {
                 self.local_handle = Some(local_handle);
                 self.remote_handle = Some(remote_handle);
                 self.remote_id = Some(remote_id);
-                self.started = Some(Instant::now());
-                if let Some(client) = &mut self.client {
-                    client.reset_queue_age_peak();
-                }
+                self.startup_started_at = Some(Instant::now());
                 godot_print!(
                     "SIGNAL_FISH_FORTRESS session-created role={} local_handle={local_index}",
                     self.role
@@ -627,29 +784,126 @@ impl FortressScenario {
             ));
             return;
         }
+        let now = Instant::now();
+        if !self.startup_barrier_completed
+            && self
+                .startup_started_at
+                .is_some_and(|started| started.elapsed() >= STARTUP_TIMEOUT)
+        {
+            self.fatal = Some("causal startup handshake timed out".to_string());
+            return;
+        }
         if session.current_state() != SessionState::Running {
             return;
         }
-
-        // Do not let the creator's earlier process start become permanent
-        // gameplay skew. Both sessions emit frame-zero synchronization
-        // packets before advancing. A may advance after observing B at frame
-        // zero; B waits for A's causally later frame-one packet. This one-time
-        // barrier proves A observed B before either peer begins independent
-        // fixed-cadence gameplay.
-        let (decoded, remote_frame) = {
-            let relay = self.relay.borrow();
-            (relay.decoded, relay.remote_frame)
-        };
-        if decoded == 0 || !startup_remote_frame_ready(&self.role, remote_frame) {
+        if self.role == "b" && !self.startup_proposal_sent {
+            let Some(start_unix_ms) =
+                unix_time_millis().and_then(|now_ms| now_ms.checked_add(STARTUP_LEAD_MS))
+            else {
+                self.fatal = Some("system clock cannot represent startup deadline".to_string());
+                return;
+            };
+            let Some(start_at) = instant_for_unix_ms(start_unix_ms) else {
+                self.fatal = Some("startup deadline cannot be mapped monotonically".to_string());
+                return;
+            };
+            let Some(remote_id) = self.remote_id else {
+                self.fatal = Some("missing remote player for startup proposal".to_string());
+                return;
+            };
+            let control = StartupControl::Proposal { start_unix_ms };
+            if !queue_startup_control(&self.relay, remote_id, control) {
+                self.fatal = Some("startup proposal exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_start_unix_ms = Some(start_unix_ms);
+            self.startup_start_at = Some(start_at);
+            self.startup_proposal_sent = true;
             return;
         }
+        if self.role == "a" && self.startup_proposal_received && !self.startup_ack_sent {
+            let (Some(remote_id), Some(start_unix_ms), Some(start_at)) = (
+                self.remote_id,
+                self.startup_start_unix_ms,
+                self.startup_start_at,
+            ) else {
+                self.fatal = Some("startup proposal state is incomplete".to_string());
+                return;
+            };
+            if now >= start_at {
+                self.fatal = Some("startup proposal left no time for acknowledgement".to_string());
+                return;
+            }
+            if !queue_startup_control(
+                &self.relay,
+                remote_id,
+                StartupControl::Ack { start_unix_ms },
+            ) {
+                self.fatal =
+                    Some("startup acknowledgement exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_ack_sent = true;
+            return;
+        }
+        if self.role == "b" && self.startup_ack_received && !self.startup_commit_sent {
+            let (Some(remote_id), Some(start_unix_ms), Some(start_at)) = (
+                self.remote_id,
+                self.startup_start_unix_ms,
+                self.startup_start_at,
+            ) else {
+                self.fatal = Some("startup acknowledgement state is incomplete".to_string());
+                return;
+            };
+            if now >= start_at {
+                self.fatal = Some("startup acknowledgement missed the common deadline".to_string());
+                return;
+            }
+            if !queue_startup_control(
+                &self.relay,
+                remote_id,
+                StartupControl::Commit { start_unix_ms },
+            ) {
+                self.fatal = Some("startup commit exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_commit_sent = true;
+            return;
+        }
+        let startup_handshake_ready = match &*self.role {
+            "a" => self.startup_ack_sent && self.startup_commit_received,
+            "b" => {
+                self.startup_proposal_sent && self.startup_ack_received && self.startup_commit_sent
+            }
+            _ => false,
+        };
+        match startup_release_due(now, self.startup_start_at, startup_handshake_ready) {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(message) => {
+                self.fatal = Some(format!("{message} for role {}", self.role));
+                return;
+            }
+        }
+        let Some(start_at) = self.startup_start_at else {
+            self.fatal = Some("startup release lost the common deadline".to_string());
+            return;
+        };
         if !self.startup_barrier_completed {
             self.startup_barrier_completed = true;
-            self.startup_barrier_release_remote_frame = remote_frame;
             self.startup_barrier_release_local_frame = Some(session.current_frame().as_i32());
-            self.startup_barrier_elapsed_ms =
-                self.started.map(|started| started.elapsed().as_millis());
+            self.startup_barrier_elapsed_ms = self
+                .startup_started_at
+                .map(|started| started.elapsed().as_millis());
+            self.startup_release_lateness_ms =
+                Some(now.saturating_duration_since(start_at).as_millis());
+            self.started = Some(now);
+            // Anchor both independent cadence schedules to the same mapped
+            // deadline rather than each browser's first later callback.
+            self.next_advance_at = Some(start_at);
+            if let Some(client) = &mut self.client {
+                client.reset_queue_age_peak();
+            }
         }
 
         let target_is_confirmed = session.confirmed_frame().as_i32() >= self.target_frames
@@ -691,7 +945,6 @@ impl FortressScenario {
             }
             self.impairment_activated = true;
         }
-        let now = Instant::now();
         if !simulation_advance_due(now, &mut self.next_advance_at) {
             return;
         }
@@ -978,7 +1231,24 @@ impl FortressScenario {
         );
         let startup_barrier_valid = self.startup_barrier_completed
             && self.startup_barrier_release_local_frame == Some(0)
-            && startup_remote_frame_ready(&self.role, self.startup_barrier_release_remote_frame);
+            && self.startup_start_unix_ms.is_some_and(|value| value > 0)
+            && self.startup_barrier_elapsed_ms.is_some()
+            && self
+                .startup_release_lateness_ms
+                .is_some_and(|value| value <= 100)
+            && match &*self.role {
+                "a" => {
+                    self.startup_proposal_received
+                        && self.startup_ack_sent
+                        && self.startup_commit_received
+                }
+                "b" => {
+                    self.startup_proposal_sent
+                        && self.startup_ack_received
+                        && self.startup_commit_sent
+                }
+                _ => false,
+            };
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
             && startup_barrier_valid
@@ -1019,10 +1289,16 @@ impl FortressScenario {
             "observed_simulation_fps": observed_simulation_fps,
             "total_elapsed_ms": total_elapsed_ms,
             "startup_barrier_completed": self.startup_barrier_completed,
-            "startup_barrier_required_remote_frame": startup_required_remote_frame(&self.role),
-            "startup_barrier_release_remote_frame": self.startup_barrier_release_remote_frame,
+            "startup_start_unix_ms": self.startup_start_unix_ms,
+            "startup_proposal_sent": self.startup_proposal_sent,
+            "startup_proposal_received": self.startup_proposal_received,
+            "startup_ack_sent": self.startup_ack_sent,
+            "startup_ack_received": self.startup_ack_received,
+            "startup_commit_sent": self.startup_commit_sent,
+            "startup_commit_received": self.startup_commit_received,
             "startup_barrier_release_local_frame": self.startup_barrier_release_local_frame,
             "startup_barrier_elapsed_ms": self.startup_barrier_elapsed_ms,
+            "startup_release_lateness_ms": self.startup_release_lateness_ms,
             "max_poll_us": self.max_poll_us,
             "multi_frame_poll": self.multi_frame_poll,
             "game_ready": self.game_ready,
@@ -1119,20 +1395,6 @@ fn scenario_lag_limit(
     }
 }
 
-fn startup_required_remote_frame(role: &str) -> Option<i32> {
-    match role {
-        "a" => Some(0),
-        "b" => Some(1),
-        _ => None,
-    }
-}
-
-fn startup_remote_frame_ready(role: &str, remote_frame: Option<i32>) -> bool {
-    startup_required_remote_frame(role)
-        .zip(remote_frame)
-        .is_some_and(|(required, observed)| observed >= required)
-}
-
 fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
     let period = simulation_frame_period();
     let Some(deadline) = next_advance_at else {
@@ -1148,6 +1410,92 @@ fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -
     // this once per rendered callback, bounding recovery to one frame there.
     *deadline = scheduled;
     true
+}
+
+fn unix_time_millis() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+}
+
+fn instant_for_unix_ms(start_unix_ms: u64) -> Option<Instant> {
+    let remaining_ms = start_unix_ms.checked_sub(unix_time_millis()?)?;
+    if remaining_ms == 0 {
+        return None;
+    }
+    Instant::now().checked_add(Duration::from_millis(remaining_ms))
+}
+
+fn startup_release_due(
+    now: Instant,
+    start_at: Option<Instant>,
+    handshake_ready: bool,
+) -> Result<bool, &'static str> {
+    let Some(start_at) = start_at else {
+        return if handshake_ready {
+            Err("startup handshake omitted the common deadline")
+        } else {
+            Ok(false)
+        };
+    };
+    if !handshake_ready {
+        return if now >= start_at {
+            Err("startup handshake was incomplete at the common deadline")
+        } else {
+            Ok(false)
+        };
+    }
+    Ok(now >= start_at)
+}
+
+fn queue_startup_control(
+    relay: &Rc<RefCell<RelayQueues>>,
+    remote_id: PlayerId,
+    control: StartupControl,
+) -> bool {
+    let payload = encode_startup_envelope(remote_id.as_bytes(), control);
+    let mut queues = relay.borrow_mut();
+    if queues.outbound.len() >= MAX_RELAY_QUEUE {
+        queues.dropped = queues.dropped.saturating_add(1);
+        return false;
+    }
+    queues.outbound.push_back((remote_id, payload));
+    queues.encoded = queues.encoded.saturating_add(1);
+    queues.peak_outbound = queues.peak_outbound.max(queues.outbound.len());
+    true
+}
+
+fn encode_startup_envelope(destination: &[u8; 16], control: StartupControl) -> Vec<u8> {
+    let kind = match control {
+        StartupControl::Proposal { .. } => 1,
+        StartupControl::Ack { .. } => 2,
+        StartupControl::Commit { .. } => 3,
+    };
+    let mut payload = Vec::with_capacity(29);
+    payload.extend_from_slice(destination);
+    payload.extend_from_slice(STARTUP_ENVELOPE_MAGIC);
+    payload.push(kind);
+    payload.extend_from_slice(&control.start_unix_ms().to_le_bytes());
+    payload
+}
+
+fn decode_startup_envelope(payload: &[u8]) -> Option<(&[u8], StartupControl)> {
+    let (destination, header) = payload.split_at_checked(16)?;
+    if header.len() != 13 || header.get(..4)? != STARTUP_ENVELOPE_MAGIC {
+        return None;
+    }
+    let start_unix_ms = u64::from_le_bytes(header.get(5..13)?.try_into().ok()?);
+    if start_unix_ms == 0 {
+        return None;
+    }
+    let control = match *header.get(4)? {
+        1 => StartupControl::Proposal { start_unix_ms },
+        2 => StartupControl::Ack { start_unix_ms },
+        3 => StartupControl::Commit { start_unix_ms },
+        _ => return None,
+    };
+    Some((destination, control))
 }
 
 fn encode_relay_envelope(destination: &[u8; 16], advertised_frame: i32, encoded: &[u8]) -> Vec<u8> {
@@ -1185,20 +1533,117 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        decode_relay_envelope, encode_relay_envelope, scenario_lag_limit, simulation_advance_due,
-        simulation_frame_period, startup_remote_frame_ready,
+        decode_relay_envelope, decode_startup_envelope, encode_relay_envelope,
+        encode_startup_envelope, scenario_lag_limit, simulation_advance_due,
+        simulation_frame_period, startup_control_allowed, startup_control_lead_valid,
+        startup_release_due, StartupControl,
     };
 
     #[test]
-    fn startup_barrier_causally_orders_the_independent_peer_cadences() {
-        assert!(!startup_remote_frame_ready("a", None));
-        assert!(!startup_remote_frame_ready("a", Some(-1)));
-        assert!(startup_remote_frame_ready("a", Some(0)));
+    fn startup_envelope_round_trips_deadline_controls_and_rejects_corruption() {
+        let destination = [9; 16];
+        for control in [
+            StartupControl::Proposal {
+                start_unix_ms: 123_456,
+            },
+            StartupControl::Ack {
+                start_unix_ms: 123_456,
+            },
+            StartupControl::Commit {
+                start_unix_ms: 123_456,
+            },
+        ] {
+            let payload = encode_startup_envelope(&destination, control);
+            assert_eq!(
+                decode_startup_envelope(&payload),
+                Some((destination.as_slice(), control))
+            );
+        }
 
-        assert!(!startup_remote_frame_ready("b", Some(0)));
-        assert!(startup_remote_frame_ready("b", Some(1)));
-        assert!(startup_remote_frame_ready("b", Some(2)));
-        assert!(!startup_remote_frame_ready("unexpected", Some(i32::MAX)));
+        let mut invalid_kind = encode_startup_envelope(
+            &destination,
+            StartupControl::Proposal {
+                start_unix_ms: 123_456,
+            },
+        );
+        invalid_kind[20] = u8::MAX;
+        assert_eq!(decode_startup_envelope(&invalid_kind), None);
+        assert_eq!(decode_startup_envelope(&invalid_kind[..28]), None);
+    }
+
+    #[test]
+    fn startup_transition_gate_rejects_wrong_stage_timestamp_and_missed_deadline() {
+        let start = Instant::now();
+        let proposal = StartupControl::Proposal { start_unix_ms: 100 };
+        let ack = StartupControl::Ack { start_unix_ms: 100 };
+        let commit = StartupControl::Commit { start_unix_ms: 100 };
+
+        assert!(startup_control_allowed("a", proposal, None, false, false));
+        assert!(startup_control_allowed(
+            "a",
+            proposal,
+            Some(100),
+            false,
+            true
+        ));
+        assert!(!startup_control_allowed(
+            "a",
+            StartupControl::Proposal { start_unix_ms: 101 },
+            Some(100),
+            false,
+            true
+        ));
+        assert!(!startup_control_allowed(
+            "a",
+            commit,
+            Some(100),
+            false,
+            false
+        ));
+        assert!(startup_control_allowed("a", commit, Some(100), false, true));
+        assert!(startup_control_allowed("b", ack, Some(100), true, false));
+        assert!(!startup_control_allowed(
+            "b",
+            StartupControl::Ack { start_unix_ms: 101 },
+            Some(100),
+            true,
+            false
+        ));
+        assert!(!startup_control_allowed(
+            "b",
+            proposal,
+            Some(100),
+            true,
+            false
+        ));
+
+        assert_eq!(
+            startup_release_due(start, Some(start), false),
+            Err("startup handshake was incomplete at the common deadline")
+        );
+        assert_eq!(startup_release_due(start, Some(start), true), Ok(true));
+        assert_eq!(
+            startup_release_due(start, Some(start + Duration::from_millis(1)), false),
+            Ok(false)
+        );
+        assert_eq!(
+            startup_release_due(start, None, true),
+            Err("startup handshake omitted the common deadline")
+        );
+
+        let after_deadline = start + Duration::from_millis(1);
+        assert!(!startup_control_lead_valid(
+            Some(start),
+            after_deadline,
+            Duration::from_millis(250),
+            false
+        ));
+        assert!(startup_control_lead_valid(
+            Some(start),
+            after_deadline,
+            Duration::from_millis(250),
+            true
+        ));
     }
 
     #[test]

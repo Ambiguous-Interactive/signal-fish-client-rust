@@ -77,7 +77,14 @@ export function validateFortressPeer(summary, options = {}) {
   const sessionTimeoutMs = options.sessionTimeoutMs ?? 40_000;
   const errors = [];
   const decimal = /^\d+$/;
-  const requiredStartupFrame = summary?.role === "a" ? 0 : summary?.role === "b" ? 1 : null;
+  const startupRoleValid = summary?.role === "a"
+    ? summary?.startup_proposal_sent === false && summary?.startup_proposal_received === true &&
+      summary?.startup_ack_sent === true && summary?.startup_ack_received === false &&
+      summary?.startup_commit_sent === false && summary?.startup_commit_received === true
+    : summary?.role === "b" && summary?.startup_proposal_sent === true &&
+      summary?.startup_proposal_received === false && summary?.startup_ack_sent === false &&
+      summary?.startup_ack_received === true && summary?.startup_commit_sent === true &&
+      summary?.startup_commit_received === false;
   if (
     summary?.passed !== true || summary?.target_frames !== targetFrames ||
     summary?.settlement_frame_limit !== targetFrames + settlementFrames ||
@@ -104,12 +111,12 @@ export function validateFortressPeer(summary, options = {}) {
     !isNonnegativeNumber(summary?.max_poll_us) || summary.max_poll_us >= 50_000
   ) errors.push("simulation or callback timing bound failed");
   if (
-    requiredStartupFrame === null || summary?.startup_barrier_completed !== true ||
-    summary?.startup_barrier_required_remote_frame !== requiredStartupFrame ||
+    !startupRoleValid || summary?.startup_barrier_completed !== true ||
     summary?.startup_barrier_release_local_frame !== 0 ||
-    !isNonnegativeInteger(summary?.startup_barrier_release_remote_frame) ||
-    summary.startup_barrier_release_remote_frame < requiredStartupFrame ||
-    !isNonnegativeNumber(summary?.startup_barrier_elapsed_ms)
+    !isNonnegativeInteger(summary?.startup_start_unix_ms) || summary.startup_start_unix_ms === 0 ||
+    !isNonnegativeNumber(summary?.startup_barrier_elapsed_ms) ||
+    !isNonnegativeNumber(summary?.startup_release_lateness_ms) ||
+    summary.startup_release_lateness_ms > 100
   ) errors.push("causal startup barrier failed");
   if (
     summary?.multi_frame_poll !== true ||
@@ -155,6 +162,14 @@ export function validateFortressPeer(summary, options = {}) {
 
 export function validateFortressPair(first, second) {
   const errors = [];
+  if (first?.startup_start_unix_ms !== second?.startup_start_unix_ms) {
+    errors.push("peer startup deadlines diverged");
+  }
+  if (
+    !isNonnegativeNumber(first?.startup_release_lateness_ms) ||
+    !isNonnegativeNumber(second?.startup_release_lateness_ms) ||
+    Math.abs(first.startup_release_lateness_ms - second.startup_release_lateness_ms) > 56
+  ) errors.push("peer startup release phases diverged");
   if (
     first?.target_state_checksum !== second?.target_state_checksum ||
     first?.confirmed_input_checksum !== second?.confirmed_input_checksum

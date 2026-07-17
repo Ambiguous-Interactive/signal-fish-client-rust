@@ -144,10 +144,12 @@ network progress, so process scheduling is controlled without hiding genuine
 Fortress stalls. Preserve elapsed deadline debt and recover by at most one
 simulation frame per rendered callback, preventing permanent process skew
 without allowing multi-frame bursts. Before initializing those local cadence
-deadlines, use a one-time causal barrier: A observes B at frame zero and B
-observes A's subsequent frame one. Retain and validate both roles' release
-watermarks and local release frames so launch order cannot masquerade as
-gameplay lag. Use causal post-advance watermarks to
+deadlines, use a one-time proposal/ack/commit barrier with a shared same-host
+wall-clock deadline mapped once to each process's monotonic clock. Retain and
+validate every stage, the exact deadline, local release frame, and release
+lateness so launch order cannot masquerade as gameplay lag. This is a
+fixture-only same-host assumption, not a multiplayer clock-synchronization
+protocol. Use causal post-advance watermarks to
 bound the relay hold that forces rollback while both games continue advancing,
 and require the polling hitch window to contain forward simulation progress. Its impairment must
 produce measured rollback/load/resimulation, after which

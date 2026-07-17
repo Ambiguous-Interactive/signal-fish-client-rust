@@ -48,8 +48,9 @@ changed input. The bounded hold deterministically forces A to roll back, load
 state, and resimulate after release. Both peers advance on an independent fixed
 18 Hz cadence, preserving elapsed deadline debt and recovering by at most one
 simulation frame per rendered callback. Before those independent clocks begin,
-A must observe B's frame-zero synchronization packet and B must observe A's
-causally subsequent frame-one packet; the summary retains the release evidence.
+B proposes a future same-host wall-clock deadline and the peers exchange an
+exact proposal/ack/commit handshake. Each browser maps that deadline once to
+its monotonic clock; the summary retains every stage and release lateness.
 The gate requires both clients to
 confirm 600 frames within the scenario timeout, settle in sync with matching
 state, and drain every relay and SDK queue,
