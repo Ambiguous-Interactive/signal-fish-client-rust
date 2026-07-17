@@ -35,12 +35,31 @@ function isNonnegativeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function isFixedLengthArray(value, length, predicate) {
+  return Array.isArray(value) && value.length === length && value.every(predicate);
+}
+
+const LOAD_TARGET_PER_CLIENT = 2_176;
+
 export function validateLoadSummary(summary, samples) {
   const errors = [];
   const depth = validateFinalSlope(samples, "command_depth");
   const age = validateFinalSlope(samples, "current_queue_age_ms");
   const finalSamples = samples.slice(-8);
+  const workSamplesValid = samples.length > 0 && samples.every((sample) =>
+    isNonnegativeInteger(sample?.poll_work_frames) && sample.poll_work_frames <= 64 &&
+    isNonnegativeInteger(sample?.poll_work_bytes) && sample.poll_work_bytes <= 65_536 &&
+    isNonnegativeInteger(sample?.poll_receive_frames) && sample.poll_receive_frames <= 64 &&
+    isNonnegativeInteger(sample?.send_budget_exhaustions) &&
+    isNonnegativeInteger(sample?.receive_budget_exhaustions)
+  );
   if (summary?.passed !== true) errors.push("fixture summary failed");
+  if (
+    !isFixedLengthArray(summary?.offered_per_client, 2, isNonnegativeInteger) ||
+    summary.offered_per_client.some((count) => count !== LOAD_TARGET_PER_CLIENT) ||
+    !isFixedLengthArray(summary?.received_per_client, 2, isNonnegativeInteger) ||
+    summary.received_per_client.some((count) => count !== LOAD_TARGET_PER_CLIENT)
+  ) errors.push("load offer/receive conservation failed");
   if (summary?.final_queue_depth !== 0) errors.push("final command queue was not drained");
   if (summary?.current_queue_age_ms !== 0) errors.push("final queue age was not zero");
   if (summary?.final_drained_samples !== 8 || finalSamples.length !== 8 ||
@@ -58,6 +77,14 @@ export function validateLoadSummary(summary, samples) {
     errors.push("final queue-age slope was positive or unavailable");
   }
   if (
+    !workSamplesValid || !isNonnegativeInteger(summary?.max_poll_work_frames) ||
+    summary.max_poll_work_frames > 64 ||
+    !isNonnegativeInteger(summary?.max_poll_work_bytes) ||
+    summary.max_poll_work_bytes > 65_536 ||
+    !isNonnegativeInteger(summary?.max_poll_receive_frames) ||
+    summary.max_poll_receive_frames > 64
+  ) errors.push("per-poll work budget evidence failed");
+  if (
     summary?.load_error !== false || !isNonnegativeNumber(summary?.p99_latency_us) ||
     summary.p99_latency_us > 500_000 || !isNonnegativeNumber(summary?.max_poll_us) ||
     summary.max_poll_us >= 50_000
@@ -67,6 +94,48 @@ export function validateLoadSummary(summary, samples) {
   if (summary?.buffering_safe !== true || summary?.admission_watermark_violations !== 0) {
     errors.push("transport admission diagnostics failed");
   }
+  if (
+    !isNonnegativeInteger(summary?.peak_queue_depth) || summary.peak_queue_depth > 64 ||
+    !isNonnegativeInteger(summary?.peak_aggregate_queue_depth) ||
+    summary.peak_aggregate_queue_depth > 64 ||
+    !isFixedLengthArray(summary?.per_client_peak_queue_depth, 2, isNonnegativeInteger) ||
+    summary.per_client_peak_queue_depth.some((depth) => depth > 32) ||
+    summary?.multi_frame_poll !== true
+  ) errors.push("queue-depth or multi-frame-poll evidence failed");
+  if (
+    summary?.buffered_bytes !== 0 ||
+    !isNonnegativeInteger(summary?.accepted_frames) || summary.accepted_frames < 4_352 ||
+    !isNonnegativeInteger(summary?.admission_hits) ||
+    summary?.within_absolute_adaptive_ceiling !== true ||
+    summary?.binary_pair_admission_watermark_violations !== 0 ||
+    !isNonnegativeInteger(summary?.binary_pair_one_frame_escape_bytes) ||
+    summary?.binary_pair_within_absolute_adaptive_ceiling !== true ||
+    !isNonnegativeInteger(summary?.one_frame_escape_bytes)
+  ) errors.push("adaptive-buffering evidence failed");
+  if (
+    !isFixedLengthArray(summary?.per_client_peak_buffered_bytes, 2, isNonnegativeInteger) ||
+    !isFixedLengthArray(summary?.per_client_effective_watermark_bytes, 2, isNonnegativeInteger) ||
+    !isFixedLengthArray(summary?.per_client_one_frame_escape_bytes, 2, isNonnegativeInteger) ||
+    summary.per_client_effective_watermark_bytes.some((watermark) =>
+      watermark < 4_096 || watermark > 32_768
+    ) ||
+    summary.per_client_peak_buffered_bytes.some((peak) => peak > 32_768) ||
+    !isFixedLengthArray(summary?.binary_pair_peak_buffered_bytes, 2, isNonnegativeInteger) ||
+    !isFixedLengthArray(
+      summary?.binary_pair_effective_watermark_bytes, 2, isNonnegativeInteger,
+    ) ||
+    !isFixedLengthArray(summary?.binary_pair_per_client_escape_bytes, 2, isNonnegativeInteger) ||
+    summary.binary_pair_effective_watermark_bytes.some((watermark) =>
+      watermark < 4_096 || watermark > 32_768
+    ) ||
+    summary.binary_pair_peak_buffered_bytes.some((peak) => peak > 32_768) ||
+    summary.binary_pair_one_frame_escape_bytes !==
+      summary.binary_pair_per_client_escape_bytes.reduce((sum, value) => sum + value, 0) ||
+    summary.one_frame_escape_bytes !==
+      [...summary.per_client_one_frame_escape_bytes,
+        ...summary.binary_pair_per_client_escape_bytes]
+        .reduce((sum, value) => sum + value, 0)
+  ) errors.push("per-client buffering schema or ceiling failed");
   return { ok: errors.length === 0, errors, depthSlope: depth.slope, ageSlope: age.slope };
 }
 
@@ -74,6 +143,8 @@ export function validateFortressPeer(summary, options = {}) {
   const targetFrames = options.targetFrames ?? 600;
   const settlementFrames = options.settlementFrames ?? 20;
   const lagLimit = options.lagLimit ?? 8;
+  const lifetimeLagLimit = options.lifetimeLagLimit ?? 20;
+  const lagWarmupFrames = options.lagWarmupFrames ?? 60;
   const sessionTimeoutMs = options.sessionTimeoutMs ?? 40_000;
   const errors = [];
   const decimal = /^\d+$/;
@@ -90,6 +161,11 @@ export function validateFortressPeer(summary, options = {}) {
     summary?.settlement_frame_limit !== targetFrames + settlementFrames ||
     summary?.session_timeout_ms !== sessionTimeoutMs
   ) errors.push("state summary schema or scenario bounds failed");
+  if (
+    typeof summary?.local_id !== "string" || summary.local_id.length === 0 ||
+    typeof summary?.remote_id !== "string" || summary.remote_id.length === 0 ||
+    summary.local_id === summary.remote_id
+  ) errors.push("local/remote player identity schema failed");
   if (
     !isNonnegativeInteger(summary?.game_frame) ||
     !isNonnegativeInteger(summary?.checksum_through) ||
@@ -133,9 +209,19 @@ export function validateFortressPeer(summary, options = {}) {
   if (
     !isNonnegativeInteger(summary?.confirmation_lag_current) ||
     !isNonnegativeInteger(summary?.confirmation_lag_max) ||
-    summary?.confirmation_lag_current > lagLimit || summary?.confirmation_lag_max > lagLimit ||
+    summary?.confirmation_lag_warmup_frames !== lagWarmupFrames ||
+    !isNonnegativeInteger(summary?.confirmation_lag_warmup_max) ||
+    !isNonnegativeInteger(summary?.confirmation_lag_steady_max) ||
+    summary.confirmation_lag_current > lagLimit ||
+    summary.confirmation_lag_steady_max > lagLimit ||
+    summary.confirmation_lag_warmup_max > lifetimeLagLimit ||
+    summary.confirmation_lag_max > lifetimeLagLimit ||
+    summary.confirmation_lag_max !== Math.max(
+      summary.confirmation_lag_warmup_max,
+      summary.confirmation_lag_steady_max,
+    ) ||
     summary?.wait_recommendation_count !== 0 || summary?.stall_count !== 0
-  ) errors.push("gameplay confirmation lag, wait, or stall bound failed");
+  ) errors.push("phase-aware confirmation lag, wait, or stall bound failed");
   if (
     !isNonnegativeNumber(summary?.relay_messages_per_simulated_frame) ||
     summary.relay_messages_per_simulated_frame < 2
@@ -162,6 +248,16 @@ export function validateFortressPeer(summary, options = {}) {
 
 export function validateFortressPair(first, second) {
   const errors = [];
+  const rollbackFields = [
+    first?.rollback_count,
+    first?.pre_impairment_rollback_count,
+    first?.resimulated_frames,
+    first?.pre_impairment_resimulated_frames,
+    first?.prediction_miss_count,
+    first?.pre_impairment_prediction_miss_count,
+    first?.max_rollback_depth,
+    first?.load_requests,
+  ];
   if (first?.startup_start_unix_ms !== second?.startup_start_unix_ms) {
     errors.push("peer startup deadlines diverged");
   }
@@ -181,13 +277,16 @@ export function validateFortressPair(first, second) {
   ) errors.push("roster or relay delivery conservation failed");
   if (
     !second?.impairment_activated || !second?.impairment_released ||
+    !rollbackFields.every(isNonnegativeInteger) ||
     first?.rollback_count <= first?.pre_impairment_rollback_count ||
     first?.resimulated_frames <= first?.pre_impairment_resimulated_frames ||
     first?.prediction_miss_count <= first?.pre_impairment_prediction_miss_count ||
     first?.max_rollback_depth < 1 || first?.load_requests <= 0
   ) errors.push("deterministic rollback proof was absent");
   if (
-    !first?.peer_left_observed || first?.peer_left_epoch <= 0 || first?.peer_left_final_seq <= 0
+    !first?.peer_left_observed || !isNonnegativeInteger(first?.peer_left_epoch) ||
+    first.peer_left_epoch === 0 || !isNonnegativeInteger(first?.peer_left_final_seq) ||
+    first.peer_left_final_seq === 0
   ) errors.push("terminal teardown watermark was absent");
   return { ok: errors.length === 0, errors };
 }

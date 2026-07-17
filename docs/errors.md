@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **11
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **12
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -32,7 +32,7 @@ variants**:
 | `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
-| `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only send (e.g. `send_signal`, `report_transport_status`) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md). |
+| `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
@@ -173,7 +173,9 @@ println!("{}", code.description());
 ### Game Start — protocol v2 (2)
 
 The game now starts **explicitly** via `client.start_game()` rather than
-automatically when everyone is ready (see [Concepts](concepts.md#protocol-versioning--topology)).
+automatically when everyone is ready (see [Concepts](concepts.md#protocol-versioning-and-topology)).
+Applications migrating from readiness-based auto-start must call it after an
+`all_ready` lobby update; see [the 0.8 migration](migration-0.8.md#explicit-game-start).
 
 | Variant | Description |
 |---------|-------------|
@@ -241,7 +243,7 @@ match event {
 
 ### Handling `SignalFishEvent::AuthenticationError`
 
-Authentication errors always include an `ErrorCode`. React to specific codes to
+`AuthenticationError` includes a non-optional `ErrorCode`. React to specific codes to
 guide the user:
 
 ```rust,ignore
@@ -317,13 +319,13 @@ preference:
 ```rust,ignore
 use signal_fish_client::{SignalFishClient, SignalFishError};
 
-async fn stream_input(client: &SignalFishClient, input: serde_json::Value) {
+async fn stream_input(client: &mut SignalFishClient, input: serde_json::Value) {
     match client.send_game_data(input.clone()) {
         Ok(()) => {}
         Err(SignalFishError::SendBufferFull { capacity }) => {
-            // Transport can't keep up with our send rate (queue of `capacity`
-            // is full). Switch to the pacing variant instead of dropping.
-            eprintln!("send queue full ({capacity}); pacing");
+            // `capacity` is the configured queue bound, not the current depth.
+            // Switch to the pacing variant instead of dropping the payload.
+            eprintln!("send queue full (configured capacity {capacity}); pacing");
             if let Err(e) = client.send_game_data_reliable(input).await {
                 eprintln!("send failed: {e}");
             }
@@ -335,8 +337,9 @@ async fn stream_input(client: &SignalFishClient, input: serde_json::Value) {
 
 !!! warning "Keep draining events while awaiting a reliable send"
     The command queue only drains while the transport loop runs, and the
-    loop pauses whenever the *event* channel is full (events are never
-    dropped). A task that awaits `send_game_data_reliable` while it is also
+    loop pauses whenever the *event* channel is full (overflow pauses the loop
+    instead of dropping the event). A task that awaits
+    `send_game_data_reliable` while it is also
     the only consumer of the event receiver can deadlock under simultaneous
     send + receive pressure — drain events from a separate task. See the
     [`send_game_data_reliable` rustdoc](https://docs.rs/signal-fish-client)

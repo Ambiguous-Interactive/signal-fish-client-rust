@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the Emscripten WebSocket transport consuming a queued frame while the
+  browser socket was still connecting; pre-open and failed-send frames now
+  remain owned by the caller for ordered retry.
 - Fixed Godot web throughput being limited to one accepted frame per rendered
   callback by treating successful `WebSocketPeer` submission as ownership
   transfer instead of waiting for browser socket-wide buffering to reach zero;

@@ -113,7 +113,11 @@ should_skip() {
     if printf '%s\n' "$content" | grep -qE '^[[:space:]]*\.\.\.[[:space:]]*$'; then return 0; fi
     if printf '%s\n' "$content" | grep -qE '//[[:space:]]*\.\.\.' ; then return 0; fi
     if printf '%s\n' "$content" | grep -qE '/\*[[:space:]]*\.\.\.[[:space:]]*\*/' ; then return 0; fi
-    if printf '%s\n' "$content" | grep -qF '…'; then return 0; fi
+    # A Unicode ellipsis is a placeholder only when it is the whole line (or
+    # the whole contents of a comment). String literals such as "waiting…"
+    # are valid Rust and must still be compiled by the documentation gate.
+    if printf '%s\n' "$content" | grep -qE '^[[:space:]]*(//[[:space:]]*)?…[[:space:]]*$'; then return 0; fi
+    if printf '%s\n' "$content" | grep -qE '/\*[[:space:]]*…[[:space:]]*\*/'; then return 0; fi
 
     # Bare function/method signatures without bodies (API reference docs).
     # e.g. "fn join_room(&self, params: JoinRoomParams) -> Result<()>"

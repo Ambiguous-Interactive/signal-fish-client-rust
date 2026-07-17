@@ -1,9 +1,39 @@
 # Migrating from 0.7 to 0.8
 
 Version 0.8 unifies the async and polling clients behind one protocol state
-machine and a common object-safe API. Wire behavior remains unchanged: the
-default client still speaks the protocol-v2 relay floor, while v3 remains an
-explicit opt-in.
+machine and a common object-safe API. The default authentication handshake
+still selects the protocol-v2 relay floor, while v3 remains an explicit opt-in.
+One protocol-v2 workflow did change: readiness no longer auto-starts the game.
+
+## Explicit game start
+
+After every current player is ready, one eligible client must now call
+`start_game()`. Code that previously treated `all_ready` as an automatic start
+signal must send the explicit request and wait for `GameStarting`:
+
+```rust,ignore
+let mut start_request_sent = false;
+
+match event {
+    SignalFishEvent::LobbyStateChanged { all_ready: true, .. }
+        if !start_request_sent =>
+    {
+        client.start_game()?;
+        start_request_sent = true;
+    }
+    SignalFishEvent::GameStarting { .. } => {
+        // The server accepted the start request.
+    }
+    _ => {}
+}
+```
+
+This simple pattern is correct for a room created without authority support.
+For an authority-enabled room, require that the local player is the current
+authority and re-evaluate the one-shot decision on `AuthorityChanged`. Rejected
+requests arrive as `GameStartNotReady` or `GameStartForbidden`. The compiling
+[`basic_lobby` example](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/basic_lobby.rs)
+also handles reconnect snapshots and repeated readiness updates.
 
 ## Mutable synchronous commands
 

@@ -1,9 +1,10 @@
 # Protocol Versioning
 
 The Signal Fish Client SDK speaks two generations of the signaling protocol:
-**v2 relay** and **v3 delivery/mesh**. v3 is **additive, opt-in, and backward-compatible**
-— a client that opts into nothing behaves exactly like the old v2 client. This
-page explains what's new, how negotiation works, and how to migrate.
+**v2 relay** and **v3 delivery/mesh**. v3 negotiation is **additive, opt-in,
+and backward-compatible** — a client that opts into nothing sends the same v2
+authentication bytes and remains on the relay floor. Version 0.8 separately
+made protocol-v2 game start explicit. This page explains both changes.
 
 !!! tip "Just want peer-to-peer?"
     If you have a WebRTC stack and want full mesh, jump to the
@@ -16,8 +17,8 @@ page explains what's new, how negotiation works, and how to migrate.
 
 The single most important compatibility invariant:
 
-> A client that opts into nothing behaves **byte-identically** to the old v2
-> client.
+> A client's default `Authenticate` message is **byte-identical** to the old
+> v2 client.
 
 `SignalFishConfig::new("app")` leaves the v3 negotiation fields unset. Because
 each is `Option` (skipped when `None`), they vanish from the wire and the
@@ -29,8 +30,9 @@ each is `Option` (skipped when `None`), they vanish from the wire and the
 let config = SignalFishConfig::new("mb_app_abc123");
 ```
 
-This is why upgrading the SDK is safe: existing code keeps working with no
-changes at all.
+This protects relay-floor negotiation from accidental v3 opt-in. It does not
+remove the 0.8 game-start migration: applications that relied on readiness
+auto-starting the game must call `start_game()`.
 
 ---
 
@@ -164,14 +166,17 @@ match client.send_offer(peer, sdp) {
 
 ## Migrating from v2 to v3
 
-Migration is **purely additive** — there is nothing you must change:
+Adopting v3 capabilities is additive, but upgrading an older SDK still requires
+the explicit-start audit:
 
-- **Existing v2 code keeps working unchanged.** Don't call `enable_mesh()` and
-  you stay on the byte-identical relay floor.
+- **Relay negotiation stays v2 by default.** Don't call `enable_v3()` or
+  `enable_mesh()` and the authentication bytes stay on the relay floor.
 - **One v2 behavior change:** the game now starts **explicitly**. If you relied
   on the game auto-starting when everyone was ready, call `client.start_game()`
   (typically on `LobbyStateChanged { all_ready: true, .. }`). Rejections surface
-  as `GameStartNotReady` / `GameStartForbidden` error codes.
+  as `GameStartNotReady` / `GameStartForbidden` error codes. Use a one-shot
+  latch and, in authority rooms, require current authority; see
+  [Migrating 0.7 to 0.8](migration-0.8.md#explicit-game-start).
 - **To adopt mesh,** add `.enable_mesh()`, wire a
   [`WebRtcDriver`](mesh-guide.md) (or use `MeshController`), and handle the four
   [mesh events](events.md#mesh-events-protocol-v3).
@@ -185,7 +190,7 @@ Migration is **purely additive** — there is nothing you must change:
 ## See also
 
 - [Mesh Guide](mesh-guide.md) — implementing WebRTC mesh end to end.
-- [Core Concepts](concepts.md#protocol-versioning--topology) — the conceptual overview.
+- [Core Concepts](concepts.md#protocol-versioning-and-topology) — the conceptual overview.
 - [Protocol Types](protocol.md) — the v3 wire types in detail.
 - [Events](events.md#mesh-events-protocol-v3) — the v3 events.
 - [Errors](errors.md) — `ProtocolUnsupported` and the v3 error codes.

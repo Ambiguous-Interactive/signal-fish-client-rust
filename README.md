@@ -48,7 +48,7 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 - **Event-driven** — receive typed `SignalFishEvent`s via a Tokio MPSC channel
 - **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
 - **Full protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
-- **No silent loss** — events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; `send_game_data_reliable` / `send_signal_reliable` wait for capacity, and `stats()` counters make relay-path loss observable
+- **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
 - **Godot 4.5 native + web transport** — the `transport-godot` feature wraps Godot's own `WebSocketPeer`, including official no-thread web exports
@@ -60,6 +60,7 @@ Transport-agnostic async Rust client for the **Signal Fish** multiplayer signali
 ```toml
 [dependencies]
 signal-fish-client = "0.8.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 Without the built-in WebSocket transport (bring your own):
@@ -67,6 +68,16 @@ Without the built-in WebSocket transport (bring your own):
 ```toml
 [dependencies]
 signal-fish-client = { version = "0.8.0", default-features = false }
+```
+
+The published `0.8.0` crate is the stable release. This `main`-branch README
+also documents fixes listed under [`Unreleased`](CHANGELOG.md), including the
+issue #61 browser polling guarantees. Until the next release, test those APIs
+and fixes with:
+
+```toml
+[dependencies]
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
 
 ## Quick Start
@@ -118,6 +129,8 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
 | `transport-godot` | no | Godot 4.5 `WebSocketPeer` transport for native and official web exports; enables `polling-client` |
 | `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
+| `polling-client` | no | Synchronous protocol pump for frame-driven and single-threaded hosts |
+| `mesh` | no | v3 mesh state, signaling orchestration, and WebRTC driver seam |
 | `tokio-runtime` | **yes** (via `transport-websocket`) | Tokio runtime integration (`rt`, `time`); disable for pure WASM targets |
 
 ## Architecture
@@ -209,7 +222,7 @@ Key requirements:
 - Retain accepted outbound frames and partial receives across `Poll::Pending`
 - Register the supplied waker when async progress becomes possible
 - Make `poll_close` idempotent and expose structured peer metadata via `close_info`
-- Connection setup happens *before* constructing the transport — the trait only covers message I/O
+- A transport constructor may begin an asynchronous connection attempt; report readiness through `is_ready()` and retain sends while the handshake is pending
 - The trait has no `Send` bound; only `SignalFishClient::start` requires
   `Send + 'static`, while `SignalFishPollingClient` accepts non-`Send` transports
 
@@ -272,7 +285,7 @@ Enable it in a Godot GDExtension crate with:
 
 ```toml
 godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
 ```
 
 The custom Godot API binding is required for the 32-bit Emscripten ABI. Set

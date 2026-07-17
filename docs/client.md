@@ -8,6 +8,13 @@ For WebAssembly environments without an async runtime,
 [`SignalFishPollingClient`](#signalfishpollingclient) provides a synchronous,
 game-loop-driven alternative.
 
+!!! note "Published crate versus this guide"
+    The stable crates.io release is **0.8.0**. This guide tracks the current
+    `main` branch, including polling budgets, close policies, queue-age
+    diagnostics, and adaptive Godot admission added after 0.8.0. Use the
+    [0.8.0 API docs](https://docs.rs/signal-fish-client/0.8.0/) for the
+    published surface, or a `git` dependency on `main` for the unreleased APIs.
+
 ---
 
 ## `SignalFishConfig`
@@ -30,6 +37,9 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
+| `protocol_version` | `Option<u16>` | `None` | Highest signaling protocol version advertised. `None` preserves the v2 relay floor. Prefer `enable_v3()` or `enable_mesh()` over setting this alone. |
+| `supported_transports` | `Option<Vec<TransportKind>>` | `None` | Protocol-v3 data-path transports the application can actually fulfill. |
+| `supported_topologies` | `Option<Vec<Topology>>` | `None` | Protocol-v3 session topologies the application can participate in. |
 | `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
 | `shutdown_timeout` | `Duration` | `1 second` | Deadline for async shutdown and polling-client close (including optional queued-work flush). A zero timeout aborts immediately. |
@@ -46,12 +56,15 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_shutdown_timeout(d)` | `Duration` | Set the graceful shutdown timeout (default 1 second). |
 | `.enable_v3()` | — | Advertise protocol v3 relay/accountability support without opting into WebRTC. |
 | `.enable_mesh()` | — | Enable v3 and advertise WebRTC mesh/host support. Only use when a WebRTC driver is available. |
+| `.with_protocol_version(v)` | `u16` | Set the advertised protocol ceiling without selecting transports or topologies. Power-user API. |
+| `.with_transports(values)` | `impl IntoIterator<Item = TransportKind>` | Advertise data-path transports the application can fulfill. Power-user API. |
+| `.with_topologies(values)` | `impl IntoIterator<Item = Topology>` | Advertise supported session topologies. Power-user API. |
 | `.with_protocol_violation_policy(policy)` | `ProtocolViolationPolicy` | Select `Quarantine` (default), `Disconnect`, or `Observe`. |
 
 ### Full Example
 
 ```rust,ignore
-use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
+use signal_fish_client::SignalFishConfig;
 use std::time::Duration;
 
 let config = SignalFishConfig::new("mb_app_abc123")
@@ -147,7 +160,7 @@ Start the client transport loop and return a handle plus event receiver.
 
 ```rust,ignore
 fn start(
-    transport: impl Transport,
+    transport: impl Transport + Send + 'static,
     config: SignalFishConfig,
 ) -> (Self, tokio::sync::mpsc::Receiver<SignalFishEvent>)
 ```
@@ -224,7 +237,33 @@ fn set_ready(&mut self) -> Result<()>
 client.set_ready()?;
 ```
 
-When all players in a room are ready, the server transitions the lobby state.
+Readiness does **not** start the game. Once a
+`LobbyStateChanged { all_ready: true, .. }` event arrives, one eligible client
+must explicitly call [`start_game()`](#start_game). In an authority-enabled
+room, only the current authority is eligible.
+
+---
+
+#### `start_game`
+
+Request explicit protocol-v2 game start.
+
+```rust,ignore
+fn start_game(&mut self) -> Result<()>
+```
+
+```rust,ignore
+if all_ready && (!supports_authority || is_authority) && !start_request_sent {
+    client.start_game()?;
+    start_request_sent = true;
+}
+```
+
+The server accepts the request only after every current player is ready. In an
+authority-enabled room, it accepts the request only from the authority.
+Rejected requests arrive as `GameStartNotReady` or `GameStartForbidden` server
+errors. Applications that previously relied on readiness auto-starting the
+game must add this call; see [Migrating from 0.7 to 0.8](migration-0.8.md#explicit-game-start).
 
 ---
 
@@ -381,7 +420,8 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
 (`GameData` messages written to the transport), `game_data_received`
-(`GameData`/`GameDataBinary` messages read off the transport and parsed —
+(`GameData`/`GameDataBinary` messages read off the transport and accepted by
+the protocol-accountability layer —
 counted at **receipt**, not at delivery to your event loop, so a consumer
 that stops draining events cannot masquerade as relay loss; in steady state
 the two are identical because events are not dropped on overflow), and
@@ -391,11 +431,11 @@ means protocol drift or a corrupting middlebox). The counters are
 cumulative for the lifetime of the client — they survive room changes and
 disconnects.
 
-Because the client itself never drops game data (events are delivered with
-backpressure; refused sends return `SendBufferFull`), these counters make
-loss *elsewhere* observable: exchange or log them across peers, and a
-persistent sent-vs-received deficit points at the relay path or a peer — not
-at this client.
+During normal operation, event-channel overflow does not drop game data and
+refused sends return `SendBufferFull`. Exchange or log the counters across
+peers to locate a persistent deficit. Also account for receiver drop, handle
+drop without `shutdown()`, shutdown abandoning one blocked event, disconnects,
+and protocol quarantine before attributing a deficit solely to the relay.
 
 ```rust,ignore
 let stats = client.stats();
@@ -543,7 +583,7 @@ async fn shutdown(&mut self)
 client.shutdown().await;
 ```
 
-Shutdown proceeds in three stages:
+Shutdown proceeds in four stages:
 
 1. Sends a oneshot signal to the background transport loop.
 2. Awaits the loop task with a configurable timeout (default **1 second**,
@@ -591,7 +631,9 @@ directly — no `Arc`, `Mutex`, or atomics.
 
 #### `new` and `new_with_options`
 
-Create a new polling client with a connected transport and config.
+Create a new polling client with a transport and config. The transport may
+already be ready, or it may finish an asynchronous handshake while `poll()`
+drives it.
 
 ```rust,ignore
 fn new(transport: impl Transport, config: SignalFishConfig) -> Self
@@ -614,8 +656,10 @@ let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
 On construction, the client immediately queues an `Authenticate` message
-(just like `SignalFishClient::start`). The message is offered on the first
-call to `poll()`. `new` uses fixed defaults of 64 frames/64 KiB in each
+(just like `SignalFishClient::start`). It is offered on every `poll()` as
+transport admission and work budgets allow, even before `is_ready()` becomes
+true; a connecting transport must return `Pending` without taking it. `new`
+uses defaults of 64 frames/64 KiB in each
 direction and the `Abandon` close policy. Use `new_with_options` to tune these
 limits or opt in to `Flush`.
 
@@ -680,14 +724,20 @@ configured capacity.
 |---|---|
 | `join_room(params: JoinRoomParams)` | Join or create a room. |
 | `leave_room()` | Leave the current room. |
-| `set_ready()` | Signal readiness in the lobby. |
-| `send_game_data(data: serde_json::Value)` | Send arbitrary JSON game data. |
+| `set_ready()` | Signal readiness in the lobby; this does not start the game. |
+| `start_game()` | Explicitly request game start after all players are ready. |
+| `send_game_data(data: serde_json::Value)` | Send protocol-reliable JSON game data. |
+| `send_game_data_with_delivery(data, delivery)` | Select a protocol-v3 JSON delivery class. |
+| `send_binary_game_data(payload: Vec<u8>)` | Send a protocol-v3 binary game-data frame. |
 | `request_authority(become: bool)` | Request or release room authority. |
 | `provide_connection_info(info: ConnectionInfo)` | Provide P2P connection information. |
 | `reconnect(player_id, room_id, auth_token)` | Reconnect to a previous session. |
 | `ping()` | Send a heartbeat ping. |
 | `join_as_spectator(game, room, name)` | Join a room as a spectator. |
 | `leave_spectator()` | Leave spectator mode. |
+| `send_signal(to, signal)` / `send_offer` / `send_answer` / `send_ice_candidate` | Send typed protocol-v3 WebRTC signaling. |
+| `send_raw_signal(to, value)` | Send an unmodeled protocol-v3 signal shape. |
+| `report_transport_status(transport, connected)` | Report protocol-v3 data-path status. |
 
 All methods return `Err(SignalFishError::NotConnected)` if the transport has
 closed.
@@ -702,13 +752,19 @@ All accessors are **synchronous** (no async, no mutex):
 |---|---|---|
 | `is_connected()` | `bool` | Whether the transport is believed connected. |
 | `is_authenticated()` | `bool` | Whether the server confirmed authentication. |
+| `is_closing()` | `bool` | Whether `poll()` must continue driving a close lifecycle. |
+| `negotiated_protocol_version()` | `Option<u16>` | Negotiated v3-or-newer version; `None` before `ProtocolInfo` or on the v2 floor. |
+| `supports_mesh()` | `bool` | Whether WebRTC was advertised and protocol v3 was negotiated. |
 | `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
+| `snapshot()` | `ClientSnapshot` | Coherent connection, room, reconnect-token, negotiation, and quarantine state. |
 | `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
+| `queue_age_stats()` | `PollingQueueAgeStats` | Sampled current/peak age of the oldest client-owned outbound item. |
+| `reset_queue_age_peak()` | `()` | Refresh current age and reset its sampled peak; useful after setup. |
 | `transport_diagnostics()` | `TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters. |
 | `transport()` | `&T` | Read-only access to transport-specific diagnostics; I/O remains driven by `poll()`. |
 

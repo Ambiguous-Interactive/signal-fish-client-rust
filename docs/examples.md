@@ -1,8 +1,8 @@
 # Example Walkthroughs
 
 Hands-on examples that demonstrate the Signal Fish Client SDK in realistic
-scenarios. Each walkthrough covers the **complete** source file, then breaks it
-down step by step.
+scenarios. Each walkthrough links its authoritative compiling source and then
+breaks the important patterns down step by step.
 
 !!! tip "Running the examples"
 
@@ -26,7 +26,12 @@ down gracefully.
     [Mesh Session example](#mesh-session-protocol-v3) and the
     [Mesh Guide](mesh-guide.md).
 
-### Full source
+### Core pattern
+
+The authoritative, compiling
+[`examples/basic_lobby.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/basic_lobby.rs)
+also handles authority changes and reconnection state so it sends exactly one
+eligible start request. This shorter excerpt shows the non-authority-room path:
 
 ```rust
 use signal_fish_client::{
@@ -50,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = WebSocketTransport::connect(&url).await?;
     let config = SignalFishConfig::new("mb_app_abc123");
     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
+    let mut start_request_sent = false;
 
     loop {
         tokio::select! {
@@ -83,11 +89,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     SignalFishEvent::PlayerJoined { player } => {
                         tracing::info!("Player joined: {} ({})", player.name, player.id);
                     }
-                    SignalFishEvent::PlayerLeft { player_id } => {
+                    SignalFishEvent::PlayerLeft { player_id, .. } => {
                         tracing::info!("Player left: {player_id}");
                     }
                     SignalFishEvent::LobbyStateChanged { lobby_state, all_ready, .. } => {
                         tracing::info!("Lobby state → {lobby_state:?} (all_ready={all_ready})");
+                        if all_ready && !start_request_sent {
+                            // JoinRoomParams above creates a non-authority room.
+                            client.start_game()?;
+                            start_request_sent = true;
+                        }
                     }
                     SignalFishEvent::GameStarting { peer_connections } => {
                         tracing::info!(
@@ -171,7 +182,7 @@ events** while also catching **Ctrl+C** for a clean exit.
 | `Authenticated` | Build `JoinRoomParams` and call `client.join_room(…)`. |
 | `RoomJoined` | Log the room code and player list, then call `client.set_ready()`. |
 | `PlayerJoined` / `PlayerLeft` | Log the change. |
-| `LobbyStateChanged` | Log the new lobby state and whether all players are ready. |
+| `LobbyStateChanged` | Log readiness and send one explicit `start_game()` request when all players are ready. |
 | `GameStarting` | Log the peer connections — the game is about to begin. |
 | `AuthenticationError` / `Error` | Log the error (and break on auth failure). |
 | `Disconnected` | Log the reason and exit the loop. |
@@ -182,8 +193,9 @@ events** while also catching **Ctrl+C** for a clean exit.
 client.shutdown().await;
 ```
 
-`shutdown()` closes the transport and drains background tasks so the process
-exits cleanly.
+`shutdown()` asks the transport loop to close gracefully and waits up to
+`SignalFishConfig::shutdown_timeout`; if that deadline expires, it aborts the
+task and the terminal `Disconnected` event may be omitted.
 
 ### Running it
 
@@ -571,9 +583,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
+# The issue #61 throughput/admission fix is currently unreleased on `main`.
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
+
+The stable crates.io dependency is
+`signal-fish-client = { version = "0.8.0", ... }`, but 0.8.0 predates the
+issue #61 polling-throughput fix documented in this current-`main` guide.
 
 ### Source
 
@@ -691,9 +708,10 @@ fn process(&mut self, _delta: f64) {
 }
 ```
 
-Godot calls `_process` once per frame. `poll()` drains incoming messages,
-flushes outgoing commands, and returns all events as a `Vec<SignalFishEvent>`.
-When idle, `poll()` returns an empty vec — it is designed to be cheap.
+Godot calls `_process` once per frame. `poll()` processes outgoing and incoming
+work up to its configured frame/byte budgets, preserving remaining FIFO work
+for later callbacks, and returns that cycle's `Vec<SignalFishEvent>`. When idle,
+it returns an empty vector.
 
 #### 4. Build for web export
 

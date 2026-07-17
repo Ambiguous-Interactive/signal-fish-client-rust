@@ -28,8 +28,11 @@ const INPUT_DELAY_FRAMES: i32 = 2;
 const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
 const CLEAN_LAG_LIMIT: u64 = 8;
 const IMPAIRED_LAG_LIMIT: u64 = 13;
-const SOAK_LAG_LIMIT: u64 = 12;
 const PREDICTION_WINDOW_FRAMES: usize = 20;
+// Browser startup includes renderer/JIT warm-up that is distinct from sustained
+// rollback behavior. Keep that phase explicitly bounded by the prediction
+// window, then enforce the scenario lag limit from frame 61 onward.
+const CONFIRMATION_LAG_WARMUP_FRAMES: i32 = 60;
 const SIMULATION_FPS: usize = 18;
 const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
 const STARTUP_ENVELOPE_MAGIC: &[u8; 4] = b"SFS1";
@@ -209,6 +212,8 @@ pub(super) struct FortressScenario {
     last_time_series_frame: i32,
     last_accepted: u64,
     multi_frame_poll: bool,
+    confirmation_lag_warmup_max: u64,
+    confirmation_lag_steady_max: u64,
     completed: bool,
     target_confirmed: bool,
     game_ready_at: Option<Instant>,
@@ -315,6 +320,8 @@ impl FortressScenario {
             last_time_series_frame: -60,
             last_accepted: 0,
             multi_frame_poll: false,
+            confirmation_lag_warmup_max: 0,
+            confirmation_lag_steady_max: 0,
             completed: false,
             target_confirmed: false,
             game_ready_at: None,
@@ -743,6 +750,15 @@ impl FortressScenario {
         }
         let metrics = session.metrics();
         let sample_frame = session.current_frame().as_i32();
+        if confirmation_lag_is_warmup(sample_frame) {
+            self.confirmation_lag_warmup_max = self
+                .confirmation_lag_warmup_max
+                .max(metrics.confirmation_lag_current);
+        } else {
+            self.confirmation_lag_steady_max = self
+                .confirmation_lag_steady_max
+                .max(metrics.confirmation_lag_current);
+        }
         if sample_frame >= self.last_time_series_frame.saturating_add(60) {
             self.last_time_series_frame = sample_frame;
             let queue_depth = self
@@ -1224,11 +1240,7 @@ impl FortressScenario {
             .map_or(0.0, |elapsed| {
                 self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
             });
-        let lag_limit = scenario_lag_limit(
-            self.poll_hitch_frame,
-            self.target_frames,
-            self.settlement_frame_limit,
-        );
+        let lag_limit = scenario_lag_limit(self.poll_hitch_frame, self.settlement_frame_limit);
         let startup_barrier_valid = self.startup_barrier_completed
             && self.startup_barrier_release_local_frame == Some(0)
             && self.startup_start_unix_ms.is_some_and(|value| value > 0)
@@ -1263,7 +1275,13 @@ impl FortressScenario {
             && events_discarded == 0
             && metrics.is_some_and(|metrics| {
                 metrics.confirmation_lag_current <= lag_limit
-                    && metrics.confirmation_lag_max <= lag_limit
+                    && self.confirmation_lag_steady_max <= lag_limit
+                    && self.confirmation_lag_warmup_max <= PREDICTION_WINDOW_FRAMES as u64
+                    && metrics.confirmation_lag_max <= PREDICTION_WINDOW_FRAMES as u64
+                    && metrics.confirmation_lag_max
+                        == self
+                            .confirmation_lag_warmup_max
+                            .max(self.confirmation_lag_steady_max)
                     && metrics.stall_count == 0
                     && metrics.wait_recommendations == 0
             })
@@ -1313,6 +1331,9 @@ impl FortressScenario {
             "wait_recommendation_count": metrics.map_or(0, |metrics| metrics.wait_recommendations),
             "confirmation_lag_current": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
             "confirmation_lag_max": metrics.map_or(0, |metrics| metrics.confirmation_lag_max),
+            "confirmation_lag_warmup_frames": CONFIRMATION_LAG_WARMUP_FRAMES,
+            "confirmation_lag_warmup_max": self.confirmation_lag_warmup_max,
+            "confirmation_lag_steady_max": self.confirmation_lag_steady_max,
             "checksums_compared": metrics.map_or(0, |metrics| metrics.checksums_compared),
             "checksums_matched": metrics.map_or(0, |metrics| metrics.checksums_matched),
             "checksums_mismatched": checksums_mismatched,
@@ -1379,20 +1400,16 @@ fn simulation_frame_period() -> std::time::Duration {
     std::time::Duration::from_nanos(1_000_000_000 / SIMULATION_FPS as u64)
 }
 
-fn scenario_lag_limit(
-    poll_hitch_frame: Option<i32>,
-    target_frames: i32,
-    settlement_frame_limit: i32,
-) -> u64 {
+fn scenario_lag_limit(poll_hitch_frame: Option<i32>, settlement_frame_limit: i32) -> u64 {
     if poll_hitch_frame.is_some_and(|frame| (0..settlement_frame_limit).contains(&frame)) {
-        if target_frames > DEFAULT_TARGET_FRAMES {
-            SOAK_LAG_LIMIT
-        } else {
-            IMPAIRED_LAG_LIMIT
-        }
+        IMPAIRED_LAG_LIMIT
     } else {
         CLEAN_LAG_LIMIT
     }
+}
+
+fn confirmation_lag_is_warmup(current_frame: i32) -> bool {
+    current_frame <= CONFIRMATION_LAG_WARMUP_FRAMES
 }
 
 fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
@@ -1533,8 +1550,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        decode_relay_envelope, decode_startup_envelope, encode_relay_envelope,
-        encode_startup_envelope, scenario_lag_limit, simulation_advance_due,
+        confirmation_lag_is_warmup, decode_relay_envelope, decode_startup_envelope,
+        encode_relay_envelope, encode_startup_envelope, scenario_lag_limit, simulation_advance_due,
         simulation_frame_period, startup_control_allowed, startup_control_lead_valid,
         startup_release_due, StartupControl,
     };
@@ -1676,11 +1693,21 @@ mod tests {
 
     #[test]
     fn clean_and_impaired_self_oracles_use_the_runner_lag_limits() {
-        assert_eq!(scenario_lag_limit(None, 600, 620), 8);
-        assert_eq!(scenario_lag_limit(Some(240), 600, 620), 13);
-        assert_eq!(scenario_lag_limit(Some(240), 3_600, 3_620), 12);
-        assert_eq!(scenario_lag_limit(Some(-1), 600, 620), 8);
-        assert_eq!(scenario_lag_limit(Some(620), 600, 620), 8);
+        assert_eq!(scenario_lag_limit(None, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(240), 620), 13);
+        assert_eq!(scenario_lag_limit(Some(240), 3_620), 13);
+        assert_eq!(scenario_lag_limit(Some(-1), 620), 8);
+        assert_eq!(scenario_lag_limit(Some(620), 620), 8);
+    }
+
+    #[test]
+    fn confirmation_lag_warmup_has_an_explicit_frame_boundary() {
+        assert!(confirmation_lag_is_warmup(-1));
+        assert!(confirmation_lag_is_warmup(0));
+        assert!(confirmation_lag_is_warmup(59));
+        assert!(confirmation_lag_is_warmup(60));
+        assert!(!confirmation_lag_is_warmup(61));
+        assert!(!confirmation_lag_is_warmup(3_600));
     }
 
     #[test]

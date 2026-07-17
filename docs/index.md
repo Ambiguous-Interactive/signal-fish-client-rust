@@ -9,6 +9,11 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 
 **A transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol.**
 
+!!! note "Release status"
+    **0.8.0** is the current crates.io release. This site follows unreleased
+    `main`; use the [0.8.0 API docs](https://docs.rs/signal-fish-client/0.8.0/)
+    for the published surface.
+
 [![Crates.io](https://img.shields.io/crates/v/signal-fish-client?style=flat-square&logo=rust)](https://crates.io/crates/signal-fish-client)
 [![docs.rs](https://img.shields.io/docsrs/signal-fish-client?style=flat-square&logo=docs.rs)](https://docs.rs/signal-fish-client)
 [![CI](https://img.shields.io/github/actions/workflow/status/Ambiguous-Interactive/signal-fish-client-rust/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml)
@@ -20,13 +25,13 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 ## Key Features
 
 - :material-swap-horizontal: **Transport-Agnostic** — Plug in any transport that implements the `Transport` trait; swap WebSocket for TCP, QUIC, or a test loopback without changing your game code.
-- :material-lightning-bolt: **Async / Await** — Built on Tokio with a fully non-blocking API. Command methods return immediately (failing fast with `SendBufferFull` under congestion); events arrive on an async channel.
+- :material-lightning-bolt: **Async or Frame-Driven** — Use the Tokio background driver or the synchronous polling client. Command admission is bounded and explicit in both.
 - :material-message-flash: **Event-Driven Architecture** — All server responses are delivered as strongly-typed `SignalFishEvent` variants on a bounded `mpsc` channel — just `match` in a loop.
-- :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and backward-compatible; a default client stays byte-identical to v2. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
+- :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and a default client keeps the v2 authentication wire shape; game start is now an explicit `start_game()` request. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
 - :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
 - :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
 - :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
-- :material-shield-check: **No Silent Loss** — Events are delivered with backpressure (never dropped), and the bounded send queue surfaces congestion explicitly. See [Core Concepts](concepts.md#reliability-and-flow-control).
+- :material-shield-check: **Explicit Flow Control** — Event-channel overflow applies backpressure during normal operation, and the bounded send queue surfaces congestion explicitly. Shutdown and receiver-drop boundaries are documented. See [Core Concepts](concepts.md#reliability-and-flow-control).
 - :material-tune-variant: **Configurable** — Tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods.
 
 ---
@@ -37,6 +42,7 @@ Add the crate to your project:
 
 ```bash
 cargo add signal-fish-client
+cargo add tokio --features macros,rt-multi-thread
 ```
 
 Then connect, authenticate, and join a room in just a few lines:
@@ -52,6 +58,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
     let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
     let config = SignalFishConfig::new("mb_app_abc123");
     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
+    let mut start_request_sent = false;
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -61,6 +68,14 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
             }
             SignalFishEvent::RoomJoined { room_code, .. } => {
                 println!("Joined room {room_code}");
+                client.set_ready()?;
+            }
+            SignalFishEvent::LobbyStateChanged { all_ready: true, .. }
+                if !start_request_sent =>
+            {
+                // The default JoinRoomParams creates a non-authority room.
+                client.start_game()?;
+                start_request_sent = true;
             }
             SignalFishEvent::Disconnected { .. } => break,
             _ => {}
@@ -75,7 +90,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 !!! tip "Feature flag"
     `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.8.0", features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-websocket"] }
     ```
 
 ---

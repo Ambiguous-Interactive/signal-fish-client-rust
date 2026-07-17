@@ -53,9 +53,11 @@ pub enum TransportFrame {
 }
 ```
 
-Text frames carry JSON protocol messages. Binary frames carry opaque
-protocol-v3 binary game data. A transport must preserve frame boundaries and
-must not silently discard either kind.
+Text frames carry JSON protocol messages. Inbound binary frames can decode
+protocol-v2 or protocol-v3 game-data envelopes; the public physical binary-send
+APIs are gated on negotiated v3 plus MessagePack. A transport treats binary
+payloads as opaque bytes, preserves frame boundaries, and must not silently
+discard either kind.
 
 ## Sending and ownership across `Pending`
 

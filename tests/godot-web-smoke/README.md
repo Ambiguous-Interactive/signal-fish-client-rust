@@ -51,12 +51,13 @@ simulation frame per rendered callback. Before those independent clocks begin,
 B proposes a future same-host wall-clock deadline and the peers exchange an
 exact proposal/ack/commit handshake. Each browser maps that deadline once to
 its monotonic clock; the summary retains every stage and release lateness.
-The gate requires both clients to
-confirm 600 frames within the scenario timeout, settle in sync with matching
+The gate requires both clients to confirm 600 frames in clean/impaired runs or
+3,600 frames in the soak within the scenario timeout, settle in sync with matching
 state, and drain every relay and SDK queue,
 conserve every client/server delivery, and cross-check the exact room and
-player IDs. Confirmation lag is capped at eight clean, 13 impaired, and 12 soak
-frames. Player B
+player IDs. Startup lag through simulated frame 60 is separately
+bounded by the 20-frame prediction window; steady-state and final lag are
+capped at eight clean or 13 impaired/soak frames. Player B
 then closes first; player A must observe its nonzero v3 `PlayerLeft` epoch and
 final sequence before closing. Malformed packets, relay loss, desynchronization,
 backend-capacity refusals, server drops, and slow consumers all fail the run.

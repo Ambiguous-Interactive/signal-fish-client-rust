@@ -23,12 +23,17 @@ binary frames:
 
 ```rust,ignore
 pub trait Transport {
+    fn begin_poll_cycle(&mut self) {}
     fn poll_send(&mut self, cx: &mut Context<'_>, frame: &mut Option<TransportFrame>)
         -> Poll<Result<(), SignalFishError>>;
     fn poll_recv(&mut self, cx: &mut Context<'_>)
         -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
     fn poll_close(&mut self, cx: &mut Context<'_>)
         -> Poll<Result<(), SignalFishError>>;
+    fn abort(&mut self) {}
+    fn is_ready(&self) -> bool { true }
+    fn close_info(&self) -> Option<TransportCloseInfo> { None }
+    fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
 }
 ```
 
@@ -37,6 +42,9 @@ pub trait Transport {
 | `poll_send` | Accept and progress one `TransportFrame`; preserve ownership correctly across `Pending`. |
 | `poll_recv` | Poll the next text/binary frame; `Ready(None)` is a clean close. |
 | `poll_close` | Progress idempotent graceful shutdown across calls. |
+
+The defaulted hooks mark a polling cycle, abort after a close deadline, report
+handshake readiness and close metadata, and expose backend-owned diagnostics.
 
 The trait has no `Send` bound, allowing engine-owned main-thread transports.
 The async client adds `Send + 'static` at `start`; the polling client does not.
@@ -71,7 +79,7 @@ stateDiagram-v2
 
 | Transition | Trigger |
 |------------|---------|
-| **Disconnected → Connected** | `SignalFishClient::start` spawns the background task and emits `SignalFishEvent::Connected`. |
+| **Disconnected → Connected** | The async client emits `Connected` when its loop starts with the already-connected transport. The polling client emits it on the first `poll()` cycle where `Transport::is_ready()` is true. |
 | **Connected → Authenticated** | The SDK auto-sends an `Authenticate` message. On success the server replies and `SignalFishEvent::Authenticated` is emitted. |
 | **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)`. The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
 | **InRoom → Authenticated** | Call `client.leave_room()` or `client.leave_spectator()`. The server confirms with `SignalFishEvent::RoomLeft`. |
@@ -84,7 +92,7 @@ stateDiagram-v2
 
 ---
 
-## Protocol versioning & topology
+## Protocol versioning and topology
 
 The SDK speaks two generations of the Signal Fish protocol, and you pick which
 one through `SignalFishConfig`. For the full story see
@@ -94,13 +102,15 @@ one through `SignalFishConfig`. For the full story see
 
 **v2 is the relay floor.** `SignalFishConfig::new("app")` advertises no v3
 capabilities; the server relays all traffic through itself, and the
-`Authenticate` message is **byte-identical** to the old v2 client. The promise:
-opt into nothing and nothing changes.
+`Authenticate` message is **byte-identical** to the old v2 client. This
+guarantee concerns negotiation and relay behavior. Version 0.8 also made game
+start explicit: after readiness, an eligible client must call `start_game()`.
 
-**v3 is additive and opt-in.** `SignalFishConfig::enable_mesh()` advertises the
-WebRTC/relay transports and mesh/host/relay topologies, letting the server form
-a peer-to-peer session. Existing v2 code keeps working unchanged — v3 only adds
-new optional fields, messages, and events that a v2 connection never sees.
+**v3 is additive and opt-in.** `SignalFishConfig::enable_v3()` advertises
+relay/accountability v3 without WebRTC. `enable_mesh()` additionally advertises
+the WebRTC/relay transports and mesh/host/relay topologies, letting the server
+form a peer-to-peer session. v3 only adds optional fields, messages, and events
+that a v2 connection never sees.
 
 ### Capability negotiation
 
@@ -203,9 +213,9 @@ are generated locally by the transport layer:
 
 ## Non-Blocking Command Sending
 
-All client command methods — `join_room`, `leave_room`, `send_game_data`,
-`set_ready`, `request_authority`, `provide_connection_info`, `reconnect`,
-`join_as_spectator`, `leave_spectator`, `ping` — are **synchronous**. They
+All common command methods — including room operations, game-data sends,
+`set_ready`, `start_game`, authority/reconnection/spectator operations, ping,
+and protocol-v3 signaling — are **synchronous**. They
 serialize a `ClientMessage`, queue it on an internal **bounded** channel
 (default capacity **1024**, configurable via
 `SignalFishConfig::command_channel_capacity`), and return `Result<()>`
@@ -221,6 +231,8 @@ client.join_room(
 client.send_game_data(serde_json::json!({ "action": "move", "x": 10 }))?;
 
 client.set_ready()?;
+// Later, after LobbyStateChanged reports all_ready=true:
+client.start_game()?;
 ```
 
 When the queue is full — the caller is producing faster than the transport
@@ -250,11 +262,11 @@ client.shutdown().await;
 
 ### Reliability and Flow Control
 
-Putting the two halves together, the client **never silently drops data** in
-either direction:
+Putting the two halves together, the client does not silently drop data because
+of bounded-channel overflow during normal operation:
 
 - **Inbound:** events are delivered with backpressure — a lagging consumer
-  pauses the transport loop; nothing is lost. Frames that fail to decode
+  pauses the transport loop rather than causing overflow loss. Frames that fail to decode
   (an unknown message type or error code from a newer server, malformed
   JSON) surface as [`DecodeFailed`](events.md#decodefailed) events instead
   of being skipped.
@@ -262,7 +274,11 @@ either direction:
   `SendBufferFull` (fail-fast methods) or as waiting (`*_reliable` methods),
   never as an unbounded backlog. Note that *queued* is not *delivered*:
   commands still in the queue when the connection ends are discarded with
-  it, surfaced by the `Disconnected` event.
+  it. `Disconnected` itself is best-effort during shutdown.
+
+Receiver drop, dropping the handle without shutdown, shutdown preempting one
+blocked delivery, transport failure, and protocol quarantine remain explicit
+delivery boundaries; see [Events](events.md#connection-events).
 
 The server's half of the story — the relay's reliable-and-ordered
 guarantee, backpressure toward senders, slow-consumer eviction, and the
@@ -290,12 +306,16 @@ simultaneous send + receive pressure.
 |----------|--------|---------|
 | `is_connected()` | No | `bool` |
 | `is_authenticated()` | No | `bool` |
+| `snapshot()` | No | `ClientSnapshot` |
+| `negotiated_protocol_version()` | No | `Option<u16>` |
+| `supports_mesh()` | No | `bool` |
 | `current_player_id()` | Yes (`async`) | `Option<PlayerId>` |
 | `current_room_id()` | Yes (`async`) | `Option<RoomId>` |
 | `current_room_code()` | Yes (`async`) | `Option<String>` |
 
-The synchronous accessors use `AtomicBool` internally. The async accessors use
-a `tokio::sync::Mutex` because they guard heap-allocated optional state.
+Use `snapshot()` when multiple values must describe one instant. The individual
+async room/player accessors are convenient for one-off reads but are not one
+coherent multi-field observation.
 
 ## Driving the Client (Runtime Contract)
 
@@ -322,11 +342,14 @@ loop as server messages arrive:
 
 | Field | Type | Updated when |
 |-------|------|-------------|
-| `connected` | `AtomicBool` | Transport opens / closes |
-| `authenticated` | `AtomicBool` | `Authenticated` event received |
-| `player_id` | `Mutex<Option<PlayerId>>` | `RoomJoined` / `Reconnected` / `SpectatorJoined` |
-| `room_id` | `Mutex<Option<RoomId>>` | `RoomJoined` / `RoomLeft` / `Reconnected` / `SpectatorJoined` / `SpectatorLeft` |
-| `room_code` | `Mutex<Option<String>>` | `RoomJoined` / `RoomLeft` / `Reconnected` / `SpectatorJoined` / `SpectatorLeft` |
+| `connected` | `bool` | Transport opens / closes |
+| `authenticated` | `bool` | `Authenticated` event received |
+| `player_id` | `Option<PlayerId>` | `RoomJoined` / `Reconnected` / `SpectatorJoined` |
+| `room_id` | `Option<RoomId>` | `RoomJoined` / `RoomLeft` / `Reconnected` / spectator lifecycle |
+| `room_code` | `Option<String>` | `RoomJoined` / `RoomLeft` / `Reconnected` / spectator lifecycle |
+| `reconnection_token` | `Option<String>` | `RoomJoined` / `Reconnected` / room exit |
+| `negotiated_protocol_version` | `Option<u16>` | `ProtocolInfo` / disconnect |
+| `delivery_quarantined` | `bool` | Protocol-v3 accountability policy / authoritative reset |
 
 State flows **one direction**: the background task writes, your code reads
 through the accessors. You never set state directly.
@@ -358,7 +381,8 @@ client.shutdown().await;
 Under the hood this:
 
 1. Sends a signal to the background transport loop via a `oneshot` channel.
-2. The loop calls `transport.close()` and emits `SignalFishEvent::Disconnected`.
+2. The loop drives `transport.poll_close()` and attempts to emit
+   `SignalFishEvent::Disconnected`.
 3. `shutdown()` awaits the background task with a configurable timeout (default
    **1 second**, set via `SignalFishConfig::shutdown_timeout`). If the task does
    not finish in time, it is aborted to prevent detached background work.
@@ -369,8 +393,9 @@ Under the hood this:
 
 If `shutdown()` is never called and the `SignalFishClient` is dropped, the
 `Drop` implementation **aborts** the background task immediately. This is a
-last-resort cleanup — always prefer an explicit `shutdown().await` so that the
-server receives a clean close and `Disconnected` is emitted.
+last-resort cleanup — prefer an explicit `shutdown().await` so that the server
+can receive a clean close and `Disconnected` can be delivered when channel
+capacity and the shutdown deadline permit.
 
 !!! warning
     `Drop` cannot run async code. It calls `task.abort()`, which cancels the
@@ -398,7 +423,8 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `SendBufferFull { capacity }` | The bounded outgoing command queue is full; the message was refused, not queued. See [Non-Blocking Command Sending](#non-blocking-command-sending). |
 | `NotInRoom` | Attempted a room operation without being in a room. |
 | `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
-| `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning & topology](#protocol-versioning--topology). |
+| `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning and topology](#protocol-versioning-and-topology). |
+| `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
 | `Timeout` | An operation exceeded its time limit. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
@@ -434,6 +460,7 @@ Error codes are grouped by category:
 | **Game Start (v2)** | `GameStartNotReady`, `GameStartForbidden` |
 | **Signaling (v3)** | `CrossRoomSignal`, `UnsupportedTransport`, `SignalTargetNotFound`, `SignalRateLimited`, `SignalTooLarge` |
 | **Connection Lifecycle (v3)** | `ConnectionIdleTimeout` |
+| **Delivery & Liveness** | `SlowConsumer`, `ActivityTimeout`, `ServerDraining`, `InvalidDeliveryClass` |
 
 See [Errors](errors.md) for the full table with descriptions.
 
