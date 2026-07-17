@@ -116,8 +116,8 @@ echo -e "${YELLOW}Phase 2: Checking tests/ for panic-free opt-in...${NC}"
 
 TESTS_VIOLATIONS=0
 if [ -d "tests" ]; then
-    # Recursively find all .rs files under tests/ (covers tests/common/,
-    # tests/helpers/, or any future subdirectories).
+    # Recursively find repository-owned .rs files under tests/ while pruning
+    # nested Cargo build output (for example tests/godot-web-smoke/target/).
     while IFS= read -r test_file; do
         test_file="${test_file//$'\r'/}"
         # Check if the file has any panic-prone patterns at all.
@@ -141,7 +141,7 @@ if [ -d "tests" ]; then
             echo -e "${RED}VIOLATION:${NC} $test_file uses panic-prone patterns without allowing a panic-related lint (e.g. #![allow(clippy::unwrap_used)])"
             TESTS_VIOLATIONS=$((TESTS_VIOLATIONS + 1))
         fi
-    done < <(find tests -name '*.rs' -type f)
+    done < <(find tests -type d -name target -prune -o -name '*.rs' -type f -print)
 fi
 
 if [ "$TESTS_VIOLATIONS" -eq 0 ]; then

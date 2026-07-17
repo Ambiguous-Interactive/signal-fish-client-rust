@@ -4868,6 +4868,15 @@ mod ffi_safety {
 mod panic_script_cfg_handling {
     use super::*;
 
+    #[test]
+    fn check_no_panics_prunes_nested_cargo_target_directories() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+        assert!(
+            contents.contains("find tests -type d -name target -prune -o"),
+            "generated Rust under nested Cargo target directories must not be scanned as repository tests"
+        );
+    }
+
     /// The grep pattern used by `check-no-panics.sh` to detect `#[cfg(..test..)]`
     /// module boundaries. This must match both simple `#[cfg(test)]` and compound
     /// forms like `#[cfg(all(test, feature = "tokio-runtime"))]`.

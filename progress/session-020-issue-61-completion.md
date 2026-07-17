@@ -59,3 +59,6 @@ publish accurate repository/GitHub Pages documentation.
   JavaScript negative controls passed.
 - A final adversarial sub-agent re-audit reported zero remaining actionable
   issues in the transport/oracle scope.
+- The first push exposed a local-hook false positive in generated nested Cargo
+  output. `check-no-panics.sh` now prunes `tests/**/target/`, with a focused CI
+  policy test; the scanner passes even while Godot build artifacts exist.
