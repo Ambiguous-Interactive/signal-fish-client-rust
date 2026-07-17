@@ -5,8 +5,8 @@ description: Operate and recover the two-stage Signal Fish release process. Use 
 
 # Release Preparation and Recovery
 
-Reference for the two-stage 0.8+ release automation and its fail-closed
-recovery rules.
+Reference for the two-stage 0.8+ release automation and fail-closed recovery
+for the lockstep core and Godot adapter crates.
 
 ## Workflow split
 
@@ -28,7 +28,8 @@ Use `python3 scripts/release.py prepare <major|minor|patch>`. The script:
 
 - Requires a clean worktree.
 - Calculates the next version without prerelease or build metadata.
-- Updates Cargo, dependency snippets, SDK examples, LLM references, the
+- Updates both package versions, the adapter's exact core requirement,
+  lockfiles, dependency snippets, SDK examples, LLM references, the
   compatibility marker, and provenance dates.
 - Moves non-empty `[Unreleased]` content into a dated release section and
   updates compare links.
@@ -48,13 +49,13 @@ The release workflow must retain this order:
 2. Match Cargo and the dated changelog section.
 3. Run formatting, Clippy, tests, semver checks, docs.rs simulation, packaging,
    and publish dry-run.
-4. Reproduce the `.crate`, SHA-256 manifest, and CycloneDX SBOM.
+4. Reproduce both `.crate` files, one SHA-256 manifest, and both CycloneDX SBOMs.
 5. Revalidate default-branch HEAD, then validate all existing tag, GitHub
    Release, and crates.io state.
 6. Create the annotated tag if absent.
-7. Create package provenance and publish if absent.
-8. Wait for crates.io to report the reproduced checksum.
-9. Create the GitHub Release or repair assets on its matching existing release.
+7. Attest both packages; publish core if absent and wait for its checksum.
+8. Dry-run and publish the adapter if absent, then wait for its checksum.
+9. Create the GitHub Release or repair all matching assets.
 
 Crates.io versions cannot be overwritten. Never move an existing release tag,
 delete state automatically, or publish before package reproduction and dry-run.
@@ -62,14 +63,16 @@ delete state automatically, or publish before package reproduction and dry-run.
 ## Allowed recovery states
 
 A rerun may proceed when an existing tag targets the current default-branch
-SHA or an existing registry version has the exact checksum returned by
-`python3 scripts/release.py checksum`. An existing GitHub Release must have the
-matching tag.
+SHA and each existing registry package has the exact reproduced checksum. Core
+may already match while the adapter remains unpublished; the rerun resumes at
+adapter dry-run/publication. An existing GitHub Release must have the matching
+tag.
 
 Any mismatched SHA or checksum is an integrity failure, not a transient CI
 failure. Stop and investigate. Recovery may skip an already-matching publish
-and upload the reproduced crate, checksum manifest, and SBOM to the matching
-GitHub Release with replacement enabled.
+and upload both reproduced crates, checksum manifest, and SBOMs to the matching
+GitHub Release with replacement enabled. A mismatch for either crate stops the
+entire run.
 
 ## Repository configuration
 
@@ -77,6 +80,7 @@ The release GitHub App needs only Contents and Pull requests read/write access.
 Store its client ID in `RELEASE_APP_CLIENT_ID` and private key in
 `RELEASE_APP_PRIVATE_KEY`. Store the crate-scoped token as `CRATES_IO_TOKEN` in
 the protected `crates-io` environment, with required reviewers and a default
-branch deployment restriction.
+branch deployment restriction. The token must be authorized for both packages,
+including first publication of `signal-fish-client-godot`.
 
 See `docs/releasing.md` for the operator-facing runbook.

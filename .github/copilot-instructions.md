@@ -9,7 +9,7 @@ Read `.llm/context.md` for the full project context (architecture, design decisi
 ## Mandatory Workflow
 
 ```shell
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
 
 Run this before every commit. All three steps must pass with zero warnings.

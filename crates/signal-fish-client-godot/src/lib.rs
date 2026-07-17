@@ -3,8 +3,13 @@
 //! Godot owns the platform WebSocket implementation. This transport advances
 //! it from [`Transport::poll_send`], [`Transport::poll_recv`], and
 //! [`Transport::poll_close`], making it suitable for
-//! [`SignalFishPollingClient`](crate::SignalFishPollingClient) in a Node's
+//! [`SignalFishPollingClient`](signal_fish_client::SignalFishPollingClient) in a Node's
 //! `_process` callback. It contains no GDScript or Emscripten WebSocket FFI.
+//!
+//! This crate is versioned in lockstep with `signal-fish-client`, supports
+//! godot-rust 0.4.5 through 0.5.x, and requires Rust 1.94. Applications should
+//! select one exact `godot` version in that range so their `Gd<WebSocketPeer>`
+//! has the same type identity as the adapter's public API.
 
 use std::fmt;
 use std::task::{Context, Poll};
@@ -15,8 +20,9 @@ use godot::classes::{web_socket_peer, WebSocketPeer};
 use godot::global::Error;
 use godot::obj::{Gd, NewGd};
 
-use crate::error::SignalFishError;
-use crate::transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};
+use signal_fish_client::{
+    SignalFishError, Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame,
+};
 
 const DEFAULT_ADAPTIVE_FLOOR: usize = 4 * 1024;
 const DEFAULT_ADAPTIVE_CEILING: usize = 32 * 1024;
@@ -257,8 +263,8 @@ fn godot_send_result(result: Error, operation: &str) -> BackendSendResult {
 
 /// A main-thread [`Transport`] backed by Godot 4.5's `WebSocketPeer`.
 ///
-/// Enable the `transport-godot` feature and drive this transport through
-/// [`SignalFishPollingClient`](crate::SignalFishPollingClient). The contained
+/// Add this adapter crate and drive the transport through
+/// [`SignalFishPollingClient`](signal_fish_client::SignalFishPollingClient). The contained
 /// Godot object is intentionally not required to be `Send`; call the polling
 /// client's `poll()` method from the same Godot thread on every frame.
 pub struct GodotWebSocketTransport {
@@ -1336,9 +1342,9 @@ mod tests {
         let mut backend = FakeBackend::new(PeerState::Open);
         backend.buffered = 7;
         let transport = GodotWebSocketTransport::from_backend(Box::new(backend));
-        let mut client = crate::SignalFishPollingClient::new(
+        let mut client = signal_fish_client::SignalFishPollingClient::new(
             transport,
-            crate::SignalFishConfig::new("mb_app_test"),
+            signal_fish_client::SignalFishConfig::new("mb_app_test"),
         );
         client.ping().expect("first ping should queue");
         client.ping().expect("second ping should queue");

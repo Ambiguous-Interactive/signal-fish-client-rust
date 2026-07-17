@@ -54,7 +54,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Run tests with coverage instrumentation
-        run: cargo llvm-cov --all-features --no-report
+        run: cargo llvm-cov --workspace --all-features --no-report
 
       - name: Generate LCOV report
         run: cargo llvm-cov report --lcov --output-path lcov.info

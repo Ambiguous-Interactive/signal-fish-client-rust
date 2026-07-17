@@ -16,6 +16,7 @@ include = [
     "/src/**",
     "/examples/**",
     "/tests/**",
+    "!/tests/godot_adapter_policy_tests.rs",
     "/Cargo.toml",
     "/LICENSE",
     "/README.md",
@@ -31,8 +32,6 @@ transport-websocket = [
 ]
 # Requires --target wasm32-unknown-emscripten; compile_error!() fires on other targets.
 transport-websocket-emscripten = ["polling-client"]
-# Godot 4.5 WebSocketPeer transport for native and no-thread web exports.
-transport-godot = ["dep:godot", "polling-client"]
 polling-client = []
 tokio-runtime = ["tokio/rt", "tokio/time"]
 # Protocol v3 mesh orchestration helpers (MeshSession tracker + WebRtcDriver seam).
@@ -65,10 +64,6 @@ tracing = "0.1"
 # Optional: WebSocket transport
 tokio-tungstenite = { version = "0.30", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
-
-# Optional: Godot 4.5 native/web transport. Web exports use Godot's own
-# main-thread WebSocketPeer, so gdext's no-thread WASM mode is intentional.
-godot = { version = "0.4.5", optional = true, features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["v4", "serde", "js"] }
@@ -114,3 +109,7 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+
+[workspace]
+members = ["crates/signal-fish-client-godot"]
+resolver = "2"

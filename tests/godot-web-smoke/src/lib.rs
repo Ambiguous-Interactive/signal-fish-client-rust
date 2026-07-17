@@ -3,8 +3,10 @@
 use godot::prelude::*;
 use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
-    GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport, JoinRoomParams,
-    SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
+    JoinRoomParams, SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
+};
+use signal_fish_client_godot::{
+    GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport,
 };
 use std::time::{Duration, Instant};
 

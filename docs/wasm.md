@@ -92,9 +92,10 @@ This target supports a synchronous polling client. The bundled
 export templates that explicitly link Emscripten's WebSocket library.
 
 !!! tip "Official Godot templates"
-    Enable `transport-godot` for the supported Godot 4.5 native/web path. It
-    wraps Godot's own `WebSocketPeer`, supports gdext's no-thread WASM mode,
-    and needs no separately linked Emscripten WebSocket symbols.
+    Add the lockstep `signal-fish-client-godot` adapter for the supported
+    Godot 4.5 native/web path. It wraps Godot's own `WebSocketPeer`, supports
+    gdext's no-thread WASM mode, and needs no separately linked Emscripten
+    WebSocket symbols.
 
 ### What you get
 
@@ -117,8 +118,9 @@ For Godot 4.5 native and official web exports, enable the supported transport:
 
 ```toml
 [dependencies]
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
 
 Only for a custom Emscripten host that explicitly links its WebSocket library,
@@ -134,6 +136,12 @@ guarantees documented below are listed under `Unreleased`. Use the published
 `0.8.0` dependency with its [versioned API docs](https://docs.rs/signal-fish-client/0.8.0/)
 when you do not need those fixes yet.
 
+The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94 or
+newer; the core remains compatible with Rust 1.87. After changing the direct
+`godot` version, run `cargo tree -d`. A valid integration contains one `godot`
+and one version of every `godot-*` binding crate. Duplicate binding versions
+produce distinct `Gd` types and must be aligned in the lockfile before use.
+
 ### Building
 
 ```sh
@@ -141,8 +149,7 @@ export GODOT4_BIN=/path/to/Godot_v4.5-stable_linux.x86_64
 export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
 export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-arg=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
 cargo +nightly-2026-03-01 build -Zbuild-std=std \
-    --target wasm32-unknown-emscripten --release \
-    --no-default-features --features transport-godot
+    --target wasm32-unknown-emscripten --release
 ```
 
 Substitute `transport-websocket-emscripten` only for the custom-host path.
@@ -278,9 +285,8 @@ the client by calling `poll()` once per frame from the game loop.
 ### Construction
 
 ```rust,ignore
-use signal_fish_client::{
-    GodotWebSocketTransport, SignalFishPollingClient, SignalFishConfig,
-};
+use signal_fish_client::{SignalFishPollingClient, SignalFishConfig};
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 let transport = GodotWebSocketTransport::connect("wss://example.com/signal")?;
 let config = SignalFishConfig::new("mb_app_abc123");
@@ -453,8 +459,9 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -462,8 +469,9 @@ serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 
 ```rust,ignore
 use godot::prelude::*;
-use signal_fish_client::{GodotWebSocketTransport, JoinRoomParams,
-    SignalFishConfig, SignalFishEvent, SignalFishPollingClient};
+use signal_fish_client::{JoinRoomParams, SignalFishConfig, SignalFishEvent,
+    SignalFishPollingClient};
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 #[derive(GodotClass)]
 #[class(base=Node)]
@@ -617,7 +625,6 @@ for the full workflow. Key steps:
 |---------|---------|-------------|:------------------------:|:---------------------------:|
 | `transport-websocket` | Yes | WebSocket transport via `tokio-tungstenite` (TCP sockets) | No | No |
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
-| `transport-godot` | No | Godot 4.5 `WebSocketPeer`; enables `polling-client` | No | Yes |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
@@ -627,7 +634,7 @@ for the full workflow. Key steps:
 |--------|---------------------------|
 | Native (desktop/server) | `transport-websocket` (default) |
 | `wasm32-unknown-unknown` | `--no-default-features` (bring your own transport) |
-| Godot 4.5 on `wasm32-unknown-emscripten` | `--no-default-features --features transport-godot` |
+| Godot 4.5 on `wasm32-unknown-emscripten` | `signal-fish-client-godot` adapter plus core `polling-client` |
 | Custom link-enabled Emscripten host | `--no-default-features --features transport-websocket-emscripten` |
 
 !!! warning "Feature conflicts"
@@ -751,8 +758,10 @@ crate directly in your own code, add the `"js"` feature for WASM targets.
 
 ### MSRV vs. nightly requirement
 
-The SDK's MSRV is **1.87.0** for native targets. However, the
-`wasm32-unknown-emscripten` target requires **Rust nightly** because:
+The transport-agnostic core's MSRV is **1.87.0** for native targets, while the
+`signal-fish-client-godot` adapter requires **Rust 1.94.0**. Regardless of
+those stable native floors, the `wasm32-unknown-emscripten` target requires
+**Rust nightly** because:
 
 1. It is a tier 3 target — pre-built `std` is not available on stable.
 2. The `-Zbuild-std` flag is a nightly-only feature.

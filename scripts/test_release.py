@@ -61,6 +61,13 @@ class PreparationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n', encoding="utf-8")
+        adapter = self.root / release.ADAPTER_MANIFEST
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        adapter.write_text(
+            '[package]\nname = "signal-fish-client-godot"\nversion = "1.2.3"\n\n'
+            '[dependencies]\nsignal-fish-client = { version = "=1.2.3", path = "../.." }\n',
+            encoding="utf-8",
+        )
         for relative in release.VERSION_FILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -69,6 +76,15 @@ class PreparationTests(unittest.TestCase):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('client_version = "1.2.3"\nsynced = "2020-01-01"\n', encoding="utf-8")
+        for relative in release.LOCKSTEP_LOCKFILES:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                'version = 4\n\n[[package]]\nname = "signal-fish-client"\n'
+                'version = "1.2.3"\n\n[[package]]\n'
+                'name = "signal-fish-client-godot"\nversion = "1.2.3"\n',
+                encoding="utf-8",
+            )
         (self.root / "CHANGELOG.md").write_text(
             "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
             "## [1.2.3] - 2020-01-01\n\n- Old.\n\n"
@@ -83,6 +99,12 @@ class PreparationTests(unittest.TestCase):
         version = release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
         self.assertEqual(version, "1.3.0")
         self.assertEqual(release.package_version(self.root), "1.3.0")
+        adapter = (self.root / release.ADAPTER_MANIFEST).read_text(encoding="utf-8")
+        self.assertIn('version = "1.3.0"', adapter)
+        self.assertIn('version = "=1.3.0"', adapter)
+        for relative in release.LOCKSTEP_LOCKFILES:
+            lock = (self.root / relative).read_text(encoding="utf-8")
+            self.assertEqual(lock.count('version = "1.3.0"'), 2)
         changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn("## [Unreleased]\n\n## [1.3.0] - 2026-07-13", changelog)
         self.assertIn("compare/v1.2.3...v1.3.0", changelog)
@@ -136,6 +158,16 @@ class PreparationTests(unittest.TestCase):
         missing.write_text("stale\n", encoding="utf-8")
         with self.assertRaisesRegex(release.ReleaseError, "required value"):
             release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
+        self.assertEqual(release.package_version(self.root), "1.2.3")
+
+    def test_mismatched_adapter_version_fails_before_writes(self) -> None:
+        adapter = self.root / release.ADAPTER_MANIFEST
+        adapter.write_text(
+            adapter.read_text(encoding="utf-8").replace('version = "1.2.3"', 'version = "1.2.4"', 1),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "versions must match"):
+            release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
         self.assertEqual(release.package_version(self.root), "1.2.3")
 
     def test_date_must_use_canonical_iso_form(self) -> None:
@@ -192,6 +224,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         cls.publish = (root / ".github/workflows/publish.yml").read_text(
             encoding="utf-8"
         )
+        cls.ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
     def test_prepare_uses_app_token_and_supports_dry_run(self) -> None:
         self.assertIn("actions/create-github-app-token@v3.2.0", self.prepare)
@@ -211,7 +244,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_publish_has_fail_closed_recovery_and_assets(self) -> None:
         for marker in (
             "Existing tag",
-            "Published crate checksum",
+            "Published core checksum",
             "registry-checksum",
             "SHA256SUMS",
             "cargo cyclonedx",
@@ -229,13 +262,43 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('if [ "$BREAKING" = true ]', self.prepare)
         self.assertIn("chore!: prepare release", self.prepare)
         self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
-        self.assertIn("Expected one CycloneDX JSON file", self.publish)
+        self.assertIn("Expected two CycloneDX JSON files", self.publish)
         self.assertIn('$RUNNER_TEMP/release-assets', self.publish)
         self.assertIn("Release tooling dirtied the checkout", self.publish)
         self.assertIn("Release publication", self.publish)
         self.assertIn("fetch-tags: true", self.publish)
         self.assertIn("github.run_id", self.publish)
         self.assertIn("scripts/release.py package-version", self.publish)
+
+    def test_publish_reproduces_and_publishes_both_lockstep_crates(self) -> None:
+        for marker in (
+            "signal-fish-client-godot-${VERSION}.crate",
+            "[patch.crates-io]",
+            "cargo publish -p signal-fish-client",
+            "cargo publish --dry-run --no-verify -p signal-fish-client-godot",
+            "cargo publish --no-verify -p signal-fish-client-godot",
+            "core_published",
+            "adapter_published",
+            "ADAPTER_CHECKSUM",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.publish)
+
+    def test_unpublished_adapter_packaging_patches_to_local_core(self) -> None:
+        marker = "patch.crates-io.signal-fish-client.path='$core_path'"
+        for workflow in (self.ci, self.prepare, self.publish):
+            with self.subTest(workflow=workflow[:40]):
+                self.assertIn(marker, workflow)
+
+    def test_adapter_publish_reuses_the_reproduced_local_core_patch(self) -> None:
+        publish_adapter = self.publish.split(
+            "- name: Dry-run and publish adapter to crates.io", 1
+        )[1].split("- name: Wait for adapter visibility", 1)[0]
+        self.assertIn("cargo publish --dry-run --no-verify", publish_adapter)
+        self.assertIn("cargo publish --no-verify", publish_adapter)
+        self.assertIn(
+            "patch.crates-io.signal-fish-client.path='$core_path'", publish_adapter
+        )
 
 
 if __name__ == "__main__":

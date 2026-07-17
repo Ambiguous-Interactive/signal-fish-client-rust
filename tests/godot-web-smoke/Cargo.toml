@@ -12,10 +12,11 @@ raw-emscripten-proof = ["signal-fish-client/transport-websocket-emscripten"]
 
 [dependencies]
 fortress-rollback = "=0.10.0"
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+godot = { version = "=0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-signal-fish-client = { path = "../..", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { path = "../..", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { path = "../../crates/signal-fish-client-godot" }
 
 [workspace]
 

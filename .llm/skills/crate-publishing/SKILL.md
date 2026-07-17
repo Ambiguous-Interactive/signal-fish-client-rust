@@ -1,11 +1,12 @@
 ---
 name: crate-publishing
-description: Prepare and publish the Signal Fish Rust crate. Use when changing Cargo metadata, docs.rs configuration, cargo-deny policy, crate versions, package contents, or publishing workflows.
+description: Prepare and publish the lockstep Signal Fish Rust crates. Use when changing Cargo metadata, docs.rs configuration, cargo-deny policy, crate versions, package contents, or publishing workflows.
 ---
 
 # Crate Publishing
 
-Reference for Cargo.toml metadata, docs.rs configuration, deny.toml, cargo-deny, and CI publishing.
+Reference for Cargo metadata, docs.rs configuration, cargo-deny, and lockstep
+publishing of the core and Godot adapter crates.
 
 ## Cargo.toml Metadata Checklist
 
@@ -28,12 +29,29 @@ include = [
     "src/**/*",
     "examples/**/*",
     "tests/**/*",
+    "!tests/godot_adapter_policy_tests.rs",
     "Cargo.toml",
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
 ]
 ```
+
+The adapter manifest uses the same package version, Rust 1.94.0, its own
+docs.rs URL, and an exact core requirement:
+
+```toml
+[package]
+name = "signal-fish-client-godot"
+version = "0.8.0"
+rust-version = "1.94.0"
+
+[dependencies]
+godot = { version = ">=0.4.5, <0.6", features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+signal-fish-client = { version = "=0.8.0", default-features = false, features = ["polling-client"] }
+```
+
+Never publish mismatched versions or a non-exact adapter-to-core requirement.
 
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list
@@ -124,16 +142,17 @@ Run: `cargo deny check`
 
 ```shell
 # 1. Verify mandatory workflow passes
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
 # 2. Check deny policies
 cargo deny check
 
 # 3. Verify what will be published
-cargo package --list
+cargo package --list -p signal-fish-client
+cargo package --list -p signal-fish-client-godot
 
-# 4. Do a dry run
-cargo publish --dry-run --allow-dirty
+# 4. Dry-run core. Adapter dry-run follows core registry visibility.
+cargo publish --dry-run --allow-dirty -p signal-fish-client
 
 # 5. Check docs build cleanly (stable + docs.rs nightly simulation)
 cargo doc --all-features --no-deps
@@ -142,6 +161,14 @@ bash scripts/check-docsrs.sh
 # 6. Verify version in Cargo.toml matches tag
 grep '^version' Cargo.toml
 ```
+
+Before publication, reproduce both `.crate` files. Package the adapter with
+`--no-verify`, extract both archives into a temporary consumer, and use
+`[patch.crates-io]` to point its exact core requirement at the extracted core
+package. This verifies packaged contents without depending on an unpublished
+registry version. Publish core first and wait for its exact crates.io checksum;
+only then dry-run and publish the adapter. Attach both crates, checksums, SBOMs,
+and attestations to one tag and GitHub Release.
 
 ## CI Publishing Workflow
 
@@ -164,7 +191,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
 
       - name: Check deny
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -191,7 +218,9 @@ jobs:
 
 A version bump must update **all** references, not just `Cargo.toml`:
 
-- `Cargo.toml` (`version`)
+- `Cargo.toml` and `crates/signal-fish-client-godot/Cargo.toml` (`version`)
+- the adapter's exact `signal-fish-client` requirement
+- root and standalone fixture lockfile path-package versions
 - `README.md` (dependency snippet, badge if present)
 - `docs/getting-started.md` (dependency snippets)
 - `docs/index.md` (dependency snippet)
@@ -234,10 +263,12 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 
 | Issue | Fix |
 |-------|-----|
-| `package.include` too broad | Use `cargo package --list` to verify |
+| `package.include` too broad | Use `cargo package --list -p <package>` to verify |
 | Private types in public API | Run `cargo doc` and check for `warning: public item not documented` |
 | Feature not gated properly | Run `cargo check --no-default-features` |
-| MSRV violation | Run `cargo +1.87.0 check --all-features` |
+| Core MSRV violation | Run `cargo +1.87.0 check -p signal-fish-client --all-features` |
+| Adapter MSRV violation | Run `cargo +1.94.0 check -p signal-fish-client-godot` |
+| Adapter unavailable during pre-publish verification | Verify extracted packages with `[patch.crates-io]`, then dry-run after core is visible |
 | Yanked dependency | Update in Cargo.toml, run `cargo update` |
 | License mismatch | Run `cargo deny check licenses` |
 

@@ -136,6 +136,7 @@ nav:
       - Core Concepts: concepts.md
       - Protocol Versioning: protocol-versioning.md
       - Migrating 0.7 to 0.8: migration-0.8.md
+      - Migrating 0.8 to 0.9: migration-0.9.md
   - API Reference:
       - Client: client.md
       - Transport: transport.md

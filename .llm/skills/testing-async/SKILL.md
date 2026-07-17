@@ -202,7 +202,7 @@ authentication, room/spectator lifecycle, errors, and text/binary game data.
 
 ```shell
 # Run all tests (mandatory workflow)
-cargo test --all-features
+cargo test --workspace --all-features
 
 # Run a specific test by name
 cargo test test_join_room

@@ -41,7 +41,7 @@ jobs:
         with:
           components: rustfmt
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all -- --check
 
   # ──────────────────────────────────────────────────────────────
   # Spell check — typos scans the WHOLE repository (Rust source,
@@ -90,7 +90,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
       - name: Run Clippy
-        run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
   # Tests — run across feature combinations
@@ -118,7 +118,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
       - name: Run tests
-        run: cargo test ${{ matrix.flags }}
+        run: cargo test --workspace ${{ matrix.flags }}
 
   # ──────────────────────────────────────────────────────────────
   # MSRV — verify minimum supported Rust version (1.87.0)
@@ -137,12 +137,47 @@ jobs:
           toolchain: 1.87.0
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
-      - name: Generate lockfile
+      - name: Create isolated core package tree
+        run: |
+          core_dir="$RUNNER_TEMP/signal-fish-core-msrv"
+          mkdir -p "$core_dir"
+          git archive HEAD | tar -x -C "$core_dir"
+          awk '/^\[workspace\]$/ { exit } { print }' Cargo.toml > "$core_dir/Cargo.toml"
+      - name: Generate isolated core lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile --manifest-path "$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml"
+      - name: Verify isolated core metadata has no Godot packages
+        run: |
+          cargo metadata --locked --format-version 1 \
+            --manifest-path "$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml" \
+            > "$RUNNER_TEMP/core-metadata.json"
+          python3 -c 'import json,sys; data=json.load(open(sys.argv[1])); assert all(not p["name"].startswith("godot") for p in data["packages"])' \
+            "$RUNNER_TEMP/core-metadata.json"
+      - name: Build isolated core with MSRV
+        run: cargo build --locked --manifest-path "$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml" --all-features
+      - name: Test isolated core with MSRV
+        run: cargo test --locked --manifest-path "$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml" --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # Adapter MSRV — godot-rust 0.5 requires a newer compiler than core
+  # ──────────────────────────────────────────────────────────────
+  adapter-msrv:
+    name: Godot adapter MSRV (1.94.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: fmt
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+      - name: Install adapter Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.0
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.1
+      - name: Generate workspace lockfile
         run: bash scripts/cargo-retry.sh generate-lockfile
-      - name: Build with MSRV
-        run: cargo build --locked --all-features
-      - name: Test with MSRV
-        run: cargo test --locked --all-features
+      - name: Test adapter with its MSRV
+        run: cargo test --locked -p signal-fish-client-godot
 
   # ──────────────────────────────────────────────────────────────
   # Documentation — ensure docs build cleanly
@@ -160,7 +195,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
       - name: Build documentation
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --workspace --all-features --no-deps
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
       - name: Verify docs.rs compatibility
@@ -188,7 +223,7 @@ jobs:
     name: Publish dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [clippy, test, msrv, doc, deny]
+    needs: [clippy, test, msrv, adapter-msrv, doc, deny]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.0
@@ -197,4 +232,8 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
       - name: Run publish dry-run
-        run: cargo publish --dry-run
+        run: |
+          cargo publish --dry-run -p signal-fish-client
+          core_path=$(pwd)
+          cargo package --no-verify -p signal-fish-client-godot \
+            --config "patch.crates-io.signal-fish-client.path='$core_path'"

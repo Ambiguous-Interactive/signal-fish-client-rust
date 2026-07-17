@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the lockstep `signal-fish-client-godot` companion crate, which owns
+  `GodotWebSocketTransport`, `GodotWebSocketOptions`, and
+  `GodotBackpressurePolicy` and supports godot-rust 0.4.5 through 0.5.x.
 - Added `PollingClientOptions`, `PollingWorkBudget`, `PollingClosePolicy`,
   `PollingStats`, `SignalFishPollingClient::new_with_options`,
   `polling_stats()`, `transport_diagnostics()`, and the read-only `transport()`
@@ -33,9 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** Godot consumers now depend on the lockstep companion adapter and
+  import the transport from that crate; the transport-agnostic core keeps its
+  Rust 1.87 MSRV while the adapter requires Rust 1.94. The tested production
+  Godot 4.5 browser integration now pins godot-rust 0.5.4.
 - Changed repository agent guidance to prefer the VS Code GitHub
   connector/extension for hosted operations, then local `git`, with GitHub CLI
   (`gh`) reserved for the final fallback.
+
+### Removed
+
+- **Breaking:** Removed the core crate's `transport-godot` feature, optional
+  `godot` dependency, Godot transport module, and crate-root Godot re-exports.
+  See the 0.9 migration guide for dependency and import changes.
 
 ### Fixed
 

@@ -42,7 +42,6 @@ cannot use the SDK's transitive Tokio dependency directly.
 | Feature                | Default | Description                                      |
 |------------------------|---------|--------------------------------------------------|
 | `transport-websocket`  | Yes     | WebSocket transport via `tokio-tungstenite`       |
-| `transport-godot` | No | Godot 4.5 `WebSocketPeer` transport for native and official web exports |
 | `transport-websocket-emscripten` | No | Emscripten WebSocket transport for `wasm32-unknown-emscripten` |
 | `polling-client` | No | Synchronous, caller-driven `SignalFishPollingClient` |
 | `tokio-runtime` | No (enabled by default `transport-websocket`) | Tokio task/time integration used by the async client |
@@ -70,13 +69,14 @@ signal-fish-client = { version = "0.8.0", default-features = false }
 
 ```toml
 [dependencies]
-godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 # The issue #61 transport-admission fix is currently unreleased on `main`.
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
 
 !!! tip
-    The `transport-godot` feature provides `GodotWebSocketTransport` and `SignalFishPollingClient` — a synchronous, game-loop-driven path using Godot's own `WebSocketPeer`. It works with official no-thread web export templates and requires no GDScript glue. See the [WebAssembly Guide](wasm.md) for complete setup instructions.
+    The lockstep `signal-fish-client-godot` adapter provides `GodotWebSocketTransport`; core provides `SignalFishPollingClient`. This synchronous, game-loop-driven path uses Godot's own `WebSocketPeer`, works with official no-thread web export templates, and requires no GDScript glue. The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94, while core remains on Rust 1.87. See the [WebAssembly Guide](wasm.md) for complete setup instructions.
 
 ## Minimal Example
 

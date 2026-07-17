@@ -13,9 +13,9 @@ use godot::prelude::*;
 use serde::{Deserialize, Serialize};
 use signal_fish_client::protocol::{GameDataEncoding, PlayerId, PlayerInfo};
 use signal_fish_client::{
-    GodotWebSocketTransport, JoinRoomParams, SignalFishConfig, SignalFishError, SignalFishEvent,
-    SignalFishPollingClient,
+    JoinRoomParams, SignalFishConfig, SignalFishError, SignalFishEvent, SignalFishPollingClient,
 };
+use signal_fish_client_godot::GodotWebSocketTransport;
 
 const SERVER_URL: &str = "ws://127.0.0.1:3536/v2/ws";
 const APP_ID: &str = "e2e-test-app";

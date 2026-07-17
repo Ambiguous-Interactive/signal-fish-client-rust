@@ -150,9 +150,9 @@ enum ClosePhase {
 ///
 /// ```rust,ignore
 /// use signal_fish_client::{
-///     GodotWebSocketTransport, SignalFishPollingClient,
-///     SignalFishConfig, JoinRoomParams, SignalFishEvent,
+///     SignalFishPollingClient, SignalFishConfig, JoinRoomParams, SignalFishEvent,
 /// };
+/// use signal_fish_client_godot::GodotWebSocketTransport;
 ///
 /// struct MyNode {
 ///     client: Option<SignalFishPollingClient<GodotWebSocketTransport>>,
