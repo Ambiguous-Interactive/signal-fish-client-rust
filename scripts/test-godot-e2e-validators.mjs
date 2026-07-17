@@ -37,6 +37,7 @@ function peer(role) {
 test("load oracle rejects independently corrupted age and admission fields", () => {
   const summary = {
     passed: true, final_queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 100,
+    final_drained_samples: 8,
     load_error: false, p99_latency_us: 100_000, max_poll_us: 1_000, buffering_safe: true,
     admission_watermark_violations: 0,
   };
@@ -46,6 +47,7 @@ test("load oracle rejects independently corrupted age and admission fields", () 
   assert.equal(validateLoadSummary(summary, samples).ok, true);
   for (const [label, mutation] of [
     ["current age", (value) => { value.current_queue_age_ms = 1; }],
+    ["drained samples", (value) => { value.final_drained_samples = 7; }],
     ["peak age", (value) => { value.peak_queue_age_ms = 501; }],
     ["admission", (value) => { value.admission_watermark_violations = 1; }],
     ["missing latency", (value) => { delete value.p99_latency_us; }],
@@ -59,6 +61,12 @@ test("load oracle rejects independently corrupted age and admission fields", () 
   const staleSamples = structuredClone(samples);
   staleSamples.forEach((sample, index) => { sample.current_queue_age_ms = index; });
   assert.equal(validateLoadSummary(summary, staleSamples).ok, false);
+  const flatButNotDrained = structuredClone(samples);
+  flatButNotDrained.forEach((sample) => {
+    sample.command_depth = 1;
+    sample.current_queue_age_ms = 1;
+  });
+  assert.equal(validateLoadSummary(summary, flatButNotDrained).ok, false);
 });
 
 test("Fortress oracle rejects each critical negative control", () => {

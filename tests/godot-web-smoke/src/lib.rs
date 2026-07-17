@@ -518,6 +518,7 @@ impl SmokePair {
                 self.received_a,
                 self.received_b
             );
+            self.load_error = true;
             self.finish_load();
         }
     }
@@ -600,6 +601,7 @@ impl SmokePair {
             && self.offered_b == LOAD_TARGET_PER_CLIENT
             && self.received_a == LOAD_TARGET_PER_CLIENT
             && self.received_b == LOAD_TARGET_PER_CLIENT
+            && self.final_drained_samples >= FINAL_DRAIN_SAMPLES
             && queue_depth == 0
             && current_queue_age == Duration::ZERO
             && peak_queue_age <= Duration::from_millis(500)
@@ -628,6 +630,7 @@ impl SmokePair {
             "peak_queue_depth": peak_depth,
             "current_queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
             "peak_queue_age_ms": peak_queue_age.as_secs_f64() * 1_000.0,
+            "final_drained_samples": self.final_drained_samples,
             "peak_aggregate_queue_depth": self.peak_aggregate_depth,
             "per_client_peak_queue_depth": per_client_peak_depth,
             "buffered_bytes": buffered,

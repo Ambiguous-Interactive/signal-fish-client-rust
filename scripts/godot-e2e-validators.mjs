@@ -39,9 +39,15 @@ export function validateLoadSummary(summary, samples) {
   const errors = [];
   const depth = validateFinalSlope(samples, "command_depth");
   const age = validateFinalSlope(samples, "current_queue_age_ms");
+  const finalSamples = samples.slice(-8);
   if (summary?.passed !== true) errors.push("fixture summary failed");
   if (summary?.final_queue_depth !== 0) errors.push("final command queue was not drained");
   if (summary?.current_queue_age_ms !== 0) errors.push("final queue age was not zero");
+  if (summary?.final_drained_samples !== 8 || finalSamples.length !== 8 ||
+      finalSamples.some((sample) =>
+        sample.command_depth !== 0 || sample.current_queue_age_ms !== 0)) {
+    errors.push("final eight samples were not continuously drained");
+  }
   if (!Number.isFinite(summary?.peak_queue_age_ms) || summary.peak_queue_age_ms > 500) {
     errors.push("peak queue age exceeded 500 ms");
   }
