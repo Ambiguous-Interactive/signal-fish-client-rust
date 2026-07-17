@@ -38,6 +38,29 @@ __pycache__/
 # MkDocs build output
 site/
 
+# Local Godot/browser E2E tools and retained evidence
+node_modules/
+.signal-fish-server/
+.netem-tools/
+logs/
+/browser.log
+/fortress-browser.log
+/raw-emscripten.log
+/server.log
+/netem.txt
+/godot-throughput.json
+/godot-throughput.csv
+/metrics-before.prom
+/metrics-after.prom
+/fortress-metrics-before.prom
+/fortress-metrics-after.prom
+/godot-fortress-summary.json
+/godot-fortress-timeseries.json
+/godot-fortress-timeseries.csv
+/godot-fortress-a.log
+/godot-fortress-b.log
+/iproute2-*.tar.xz
+
 # Fuzz artifacts
 fuzz/artifacts/
 fuzz/corpus/

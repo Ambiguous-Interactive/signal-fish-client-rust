@@ -139,10 +139,30 @@ its stable `SIGNAL_FISH_SMOKE` and `SIGNAL_FISH_FORTRESS` log markers and
 retain browser/server logs on failure. The Fortress scenario launches two
 independent Chromium processes, derives stable handles from sorted Signal Fish
 UUIDs, and runs one polling cycle per rendered callback against a real server.
-Its impairment must produce measured rollback/load/resimulation, after which
+Advance simulation on a fixed local cadence that does not consult peer or
+network progress, so process scheduling is controlled without hiding genuine
+Fortress stalls. Preserve elapsed deadline debt and recover by at most one
+simulation frame per rendered callback, preventing permanent process skew
+without allowing multi-frame bursts. Before initializing those local cadence
+deadlines, use a one-time proposal/ack/commit barrier with a shared same-host
+wall-clock deadline mapped once to each process's monotonic clock. Retain and
+validate every stage, the exact deadline, local release frame, and release
+lateness so launch order cannot masquerade as gameplay lag. This is a
+fixture-only same-host assumption, not a multiplayer clock-synchronization
+protocol. Use causal post-advance watermarks to
+bound the relay hold that forces rollback while both games continue advancing,
+and require the polling hitch window to contain forward simulation progress. Its impairment must
+produce measured rollback/load/resimulation, after which
 both peers must match exact game-state checksums, report in-sync health, drain
 all queues, conserve relay/server counts, and complete an observable v3
 `PlayerLeft` teardown.
+
+The workflow builds/exports once, then runs required clean, seeded bidirectional
+netem, and 3,600-confirmed-frame soak jobs in parallel. Impaired profiles include
+a six-callback polling hitch while gameplay advances. Pure JavaScript validators
+must reject negative controls for checksum, confirmation, conservation, queue
+age, lag/stalls, teardown watermarks, and admission diagnostics. Always retain
+logs, time series, Prometheus snapshots, summaries, and netem configuration.
 
 Web builds must use `godot/api-custom` so bindgen generates 32-bit interface
 types. Point `GODOT4_BIN` at the 4.5 editor, point the target-specific bindgen

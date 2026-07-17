@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fortress_rollback::network::codec::{decode_message, encode};
 use fortress_rollback::{
@@ -20,15 +20,29 @@ use signal_fish_client::{
 const SERVER_URL: &str = "ws://127.0.0.1:3536/v2/ws";
 const APP_ID: &str = "e2e-test-app";
 const GAME_NAME: &str = "godot-fortress-issue-61";
-const TARGET_FRAMES: i32 = 600;
-const SETTLEMENT_FRAME_LIMIT: i32 = TARGET_FRAMES + 20;
+const DEFAULT_TARGET_FRAMES: i32 = 600;
+const SETTLEMENT_FRAMES: i32 = 20;
 const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
-const IMPAIRMENT_END_FRAME: i32 = 128;
+const INPUT_DELAY_FRAMES: i32 = 2;
+const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
+const CLEAN_LAG_LIMIT: u64 = 8;
+const IMPAIRED_LAG_LIMIT: u64 = 13;
+const SOAK_LAG_LIMIT: u64 = 12;
+const PREDICTION_WINDOW_FRAMES: usize = 20;
+const SIMULATION_FPS: usize = 18;
+const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
+const STARTUP_ENVELOPE_MAGIC: &[u8; 4] = b"SFS1";
+const STARTUP_LEAD_MS: u64 = 2_000;
+const STARTUP_MAX_LEAD: Duration = Duration::from_secs(3);
+const STARTUP_MIN_PROPOSAL_LEAD: Duration = Duration::from_millis(1_250);
+const STARTUP_MIN_ACK_LEAD: Duration = Duration::from_millis(750);
+const STARTUP_MIN_COMMIT_LEAD: Duration = Duration::from_millis(250);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 // GitHub's shared runners have measured at roughly 23 rendered frames/second
 // under two independent Chromium/Godot processes. Keep a generous wall-clock
 // guard while the frame/checksum/queue oracles remain exact.
-const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+const DEFAULT_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 const TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
@@ -53,6 +67,51 @@ impl Config for TestConfig {
     type Address = PlayerId;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupControl {
+    Proposal { start_unix_ms: u64 },
+    Ack { start_unix_ms: u64 },
+    Commit { start_unix_ms: u64 },
+}
+
+impl StartupControl {
+    fn start_unix_ms(self) -> u64 {
+        match self {
+            Self::Proposal { start_unix_ms }
+            | Self::Ack { start_unix_ms }
+            | Self::Commit { start_unix_ms } => start_unix_ms,
+        }
+    }
+}
+
+fn startup_control_allowed(
+    role: &str,
+    control: StartupControl,
+    expected_start_unix_ms: Option<u64>,
+    proposal_sent: bool,
+    ack_sent: bool,
+) -> bool {
+    let exact_deadline = expected_start_unix_ms == Some(control.start_unix_ms());
+    match (role, control) {
+        ("a", StartupControl::Proposal { .. }) => {
+            expected_start_unix_ms.is_none() || exact_deadline
+        }
+        ("a", StartupControl::Commit { .. }) => ack_sent && exact_deadline,
+        ("b", StartupControl::Ack { .. }) => proposal_sent && exact_deadline,
+        _ => false,
+    }
+}
+
+fn startup_control_lead_valid(
+    deadline: Option<Instant>,
+    now: Instant,
+    minimum_lead: Duration,
+    already_received: bool,
+) -> bool {
+    already_received
+        || deadline.is_some_and(|deadline| deadline.saturating_duration_since(now) >= minimum_lead)
+}
+
 #[derive(Default)]
 struct RelayQueues {
     inbound: VecDeque<(PlayerId, Message)>,
@@ -66,6 +125,8 @@ struct RelayQueues {
     retries: u64,
     peak_inbound: usize,
     peak_outbound: usize,
+    local_frame: Option<i32>,
+    remote_frame: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -82,9 +143,11 @@ impl NonBlockingSocket<PlayerId> for RelaySocket {
         }
         match encode(message) {
             Ok(encoded) => {
-                let mut payload = Vec::with_capacity(16usize.saturating_add(encoded.len()));
-                payload.extend_from_slice(destination.as_bytes());
-                payload.extend_from_slice(&encoded);
+                let payload = encode_relay_envelope(
+                    destination.as_bytes(),
+                    queues.local_frame.unwrap_or(Frame::NULL.as_i32()),
+                    &encoded,
+                );
                 queues.outbound.push_back((*destination, payload));
                 queues.encoded = queues.encoded.saturating_add(1);
                 queues.peak_outbound = queues.peak_outbound.max(queues.outbound.len());
@@ -101,6 +164,13 @@ impl NonBlockingSocket<PlayerId> for RelaySocket {
 pub(super) struct FortressScenario {
     role: String,
     requested_room_code: Option<String>,
+    target_frames: i32,
+    settlement_frame_limit: i32,
+    session_timeout: std::time::Duration,
+    poll_hitch_frame: Option<i32>,
+    poll_hitch_callbacks_remaining: u8,
+    poll_hitch_completed: bool,
+    poll_hitch_frames_advanced: u64,
     joined_room_code: Option<String>,
     client: Option<Client>,
     local_id: Option<PlayerId>,
@@ -118,10 +188,25 @@ pub(super) struct FortressScenario {
     checksum_through: i32,
     confirmed_checksum: u64,
     target_state_checksum: Option<u128>,
+    startup_started_at: Option<Instant>,
     started: Option<Instant>,
     simulation_elapsed_ms: Option<u128>,
+    next_advance_at: Option<Instant>,
+    startup_barrier_completed: bool,
+    startup_start_unix_ms: Option<u64>,
+    startup_start_at: Option<Instant>,
+    startup_proposal_sent: bool,
+    startup_proposal_received: bool,
+    startup_ack_sent: bool,
+    startup_ack_received: bool,
+    startup_commit_sent: bool,
+    startup_commit_received: bool,
+    startup_barrier_release_local_frame: Option<i32>,
+    startup_barrier_elapsed_ms: Option<u128>,
+    startup_release_lateness_ms: Option<u128>,
     game_ready: bool,
     max_poll_us: u64,
+    last_time_series_frame: i32,
     last_accepted: u64,
     multi_frame_poll: bool,
     completed: bool,
@@ -145,6 +230,19 @@ impl FortressScenario {
     pub(super) fn from_user_args(args: &[String]) -> Option<Self> {
         let role = argument(args, "--fortress-role")?;
         let requested_room_code = argument(args, "--room-code");
+        let target_frames = argument(args, "--target-frames")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_TARGET_FRAMES);
+        let settlement_frame_limit = target_frames.saturating_add(SETTLEMENT_FRAMES);
+        let session_timeout = argument(args, "--session-timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(DEFAULT_SESSION_TIMEOUT);
+        let poll_hitch_frame = argument(args, "--poll-hitch-frame")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|value| *value >= 0);
+        let server_url = argument(args, "--server-url").unwrap_or_else(|| SERVER_URL.into());
         let configuration_error = match (role.as_str(), requested_room_code.as_ref()) {
             ("a", None) | ("b", Some(_)) => None,
             ("a", Some(_)) => Some("role a must create a room without --room-code".to_string()),
@@ -155,7 +253,7 @@ impl FortressScenario {
             godot_error!("SIGNAL_FISH_FORTRESS startup-error {error}");
             (None, Some(error))
         } else {
-            match GodotWebSocketTransport::connect(SERVER_URL) {
+            match GodotWebSocketTransport::connect(&server_url) {
                 Ok(transport) => {
                     let mut config = SignalFishConfig::new(APP_ID).enable_v3();
                     config.platform = Some(format!("godot-fortress-{role}"));
@@ -172,6 +270,13 @@ impl FortressScenario {
         Some(Self {
             role,
             requested_room_code,
+            target_frames,
+            settlement_frame_limit,
+            session_timeout,
+            poll_hitch_frame,
+            poll_hitch_callbacks_remaining: u8::from(poll_hitch_frame.is_some()) * 6,
+            poll_hitch_completed: false,
+            poll_hitch_frames_advanced: 0,
             joined_room_code: None,
             client,
             local_id: None,
@@ -189,10 +294,25 @@ impl FortressScenario {
             checksum_through: -1,
             confirmed_checksum: 0,
             target_state_checksum: None,
+            startup_started_at: None,
             started: None,
             simulation_elapsed_ms: None,
+            next_advance_at: None,
+            startup_barrier_completed: false,
+            startup_start_unix_ms: None,
+            startup_start_at: None,
+            startup_proposal_sent: false,
+            startup_proposal_received: false,
+            startup_ack_sent: false,
+            startup_ack_received: false,
+            startup_commit_sent: false,
+            startup_commit_received: false,
+            startup_barrier_release_local_frame: None,
+            startup_barrier_elapsed_ms: None,
+            startup_release_lateness_ms: None,
             game_ready: false,
             max_poll_us: 0,
+            last_time_series_frame: -60,
             last_accepted: 0,
             multi_frame_poll: false,
             completed: false,
@@ -217,14 +337,36 @@ impl FortressScenario {
         if self.completed {
             return true;
         }
-        let events = self.poll_client_once();
+        let skipped_poll_for_hitch = self.should_skip_poll_for_hitch();
+        let events = if skipped_poll_for_hitch {
+            Vec::new()
+        } else {
+            self.poll_client_once()
+        };
         for event in events {
             self.handle_event(event);
         }
         if self.fatal.is_none() && !self.closing_success {
             self.start_session_if_ready();
             if !(self.game_ready && self.peer_left_observed) {
+                let advances_before = self.advance_requests;
+                let visual_frames_before = self
+                    .session
+                    .as_ref()
+                    .map_or(0, |session| session.metrics().visual_frames);
                 self.drive_session();
+                if skipped_poll_for_hitch {
+                    let visual_frames_after = self
+                        .session
+                        .as_ref()
+                        .map_or(visual_frames_before, |session| {
+                            session.metrics().visual_frames
+                        });
+                    self.poll_hitch_frames_advanced = self
+                        .poll_hitch_frames_advanced
+                        .saturating_add(visual_frames_after.saturating_sub(visual_frames_before));
+                }
+                debug_assert!(self.advance_requests >= advances_before);
             }
             self.stop_game_session_if_ready();
             self.drain_post_ready_relay();
@@ -252,6 +394,24 @@ impl FortressScenario {
         self.multi_frame_poll |= accepted.saturating_sub(self.last_accepted) > 1;
         self.last_accepted = accepted;
         events
+    }
+
+    fn should_skip_poll_for_hitch(&mut self) -> bool {
+        let Some(hitch_frame) = self.poll_hitch_frame else {
+            return false;
+        };
+        let current_frame = self
+            .session
+            .as_ref()
+            .map_or(-1, |session| session.current_frame().as_i32());
+        if current_frame < hitch_frame || self.poll_hitch_callbacks_remaining == 0 {
+            return false;
+        }
+        self.poll_hitch_callbacks_remaining = self.poll_hitch_callbacks_remaining.saturating_sub(1);
+        if self.poll_hitch_callbacks_remaining == 0 {
+            self.poll_hitch_completed = true;
+        }
+        true
     }
 
     fn handle_event(&mut self, event: SignalFishEvent) {
@@ -348,18 +508,42 @@ impl FortressScenario {
             && seq.is_some_and(|value| value > 0)
             && epoch.is_some_and(|value| value > 0)
             && valid_sender;
-        let Some((destination, encoded)) = payload.split_at_checked(16) else {
-            self.note_malformed();
-            return;
-        };
         if !valid_envelope {
             self.note_malformed();
             return;
         }
+        if let Some((destination, control)) = decode_startup_envelope(&payload) {
+            if destination != local_id.as_bytes() {
+                let ignored = self.relay.borrow().ignored_nonlocal.saturating_add(1);
+                self.relay.borrow_mut().ignored_nonlocal = ignored;
+                return;
+            }
+            let mut relay = self.relay.borrow_mut();
+            relay.decoded = relay.decoded.saturating_add(1);
+            drop(relay);
+            if self.remote_id != Some(sender) {
+                self.fail("startup control did not originate from the session peer".to_string());
+                return;
+            }
+            self.handle_startup_control(control);
+            return;
+        }
+        let Some((destination, advertised_frame, encoded)) = decode_relay_envelope(&payload) else {
+            self.note_malformed();
+            return;
+        };
         if destination != local_id.as_bytes() {
             let ignored = self.relay.borrow().ignored_nonlocal.saturating_add(1);
             self.relay.borrow_mut().ignored_nonlocal = ignored;
             return;
+        }
+        {
+            let mut queues = self.relay.borrow_mut();
+            queues.remote_frame = Some(
+                queues
+                    .remote_frame
+                    .map_or(advertised_frame, |current| current.max(advertised_frame)),
+            );
         }
         match decode_message(encoded) {
             Ok((message, consumed)) if consumed == encoded.len() => {
@@ -373,6 +557,80 @@ impl FortressScenario {
                 }
             }
             _ => self.note_malformed(),
+        }
+    }
+
+    fn handle_startup_control(&mut self, control: StartupControl) {
+        let start_unix_ms = control.start_unix_ms();
+        if !startup_control_allowed(
+            &self.role,
+            control,
+            self.startup_start_unix_ms,
+            self.startup_proposal_sent,
+            self.startup_ack_sent,
+        ) {
+            self.fail(format!(
+                "unexpected startup control for role {}: {control:?}",
+                self.role
+            ));
+            return;
+        }
+        match (&*self.role, control) {
+            ("a", StartupControl::Proposal { .. }) => {
+                if self.startup_start_at.is_none() {
+                    match instant_for_unix_ms(start_unix_ms) {
+                        Some(deadline) => {
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if !(STARTUP_MIN_PROPOSAL_LEAD..=STARTUP_MAX_LEAD).contains(&remaining)
+                            {
+                                self.fail(
+                                    "startup proposal has an unsafe deadline lead".to_string(),
+                                );
+                                return;
+                            }
+                            self.startup_start_unix_ms = Some(start_unix_ms);
+                            self.startup_start_at = Some(deadline);
+                        }
+                        None => {
+                            self.fail("startup proposal arrived after its deadline".to_string());
+                            return;
+                        }
+                    }
+                }
+                self.startup_proposal_received = true;
+            }
+            ("a", StartupControl::Commit { .. })
+                if self.startup_ack_sent && self.startup_start_unix_ms == Some(start_unix_ms) =>
+            {
+                if !startup_control_lead_valid(
+                    self.startup_start_at,
+                    Instant::now(),
+                    STARTUP_MIN_COMMIT_LEAD,
+                    self.startup_commit_received,
+                ) {
+                    self.fail("startup commit arrived too near its common deadline".to_string());
+                    return;
+                }
+                self.startup_commit_received = true;
+            }
+            ("b", StartupControl::Ack { .. })
+                if self.startup_proposal_sent
+                    && self.startup_start_unix_ms == Some(start_unix_ms) =>
+            {
+                if !startup_control_lead_valid(
+                    self.startup_start_at,
+                    Instant::now(),
+                    STARTUP_MIN_ACK_LEAD,
+                    self.startup_ack_received,
+                ) {
+                    self.fail(
+                        "startup acknowledgement arrived too near its common deadline".to_string(),
+                    );
+                    return;
+                }
+                self.startup_ack_received = true;
+            }
+            _ => self.fail("startup control admission mismatch".to_string()),
         }
     }
 
@@ -408,8 +666,13 @@ impl FortressScenario {
         let remote_handle = PlayerHandle::new(remote_index);
         let builder = SessionBuilder::<TestConfig>::new()
             .with_num_players(2)
-            .and_then(|builder| builder.with_fps(60))
-            .and_then(|builder| builder.with_input_delay(2))
+            .and_then(|builder| builder.with_fps(SIMULATION_FPS))
+            .and_then(|builder| builder.with_input_delay(INPUT_DELAY_FRAMES as usize))
+            // Keep Fortress's internal stop threshold above the declared
+            // constrained-network lag limit. Scenario oracles independently
+            // enforce tighter clean/impaired bounds, so acceptable lag does
+            // not manufacture a wait or stall by exhausting this window.
+            .map(|builder| builder.with_max_prediction_window(PREDICTION_WINDOW_FRAMES))
             .and_then(|builder| builder.add_player(PlayerType::Local, local_handle))
             .and_then(|builder| builder.add_player(PlayerType::Remote(remote_id), remote_handle))
             .map(|builder| {
@@ -425,7 +688,7 @@ impl FortressScenario {
                 self.local_handle = Some(local_handle);
                 self.remote_handle = Some(remote_handle);
                 self.remote_id = Some(remote_id);
-                self.started = Some(Instant::now());
+                self.startup_started_at = Some(Instant::now());
                 godot_print!(
                     "SIGNAL_FISH_FORTRESS session-created role={} local_handle={local_index}",
                     self.role
@@ -439,8 +702,9 @@ impl FortressScenario {
         let Some(session) = &mut self.session else {
             return;
         };
+        self.relay.borrow_mut().local_frame = Some(session.current_frame().as_i32());
         session.poll_remote_clients();
-        let confirmed = session.confirmed_frame().as_i32().min(TARGET_FRAMES);
+        let confirmed = session.confirmed_frame().as_i32().min(self.target_frames);
         while self.checksum_through < confirmed {
             let frame = self.checksum_through.saturating_add(1);
             match session.confirmed_inputs_for_frame(Frame::new(frame)) {
@@ -478,12 +742,38 @@ impl FortressScenario {
             }
         }
         let metrics = session.metrics();
+        let sample_frame = session.current_frame().as_i32();
+        if sample_frame >= self.last_time_series_frame.saturating_add(60) {
+            self.last_time_series_frame = sample_frame;
+            let queue_depth = self
+                .client
+                .as_ref()
+                .map_or(0, |client| client.polling_stats().current_queue_depth);
+            let queue_age_ms = self.client.as_ref().map_or(0.0, |client| {
+                client
+                    .queue_age_stats()
+                    .current_oldest_queue_age
+                    .as_secs_f64()
+                    * 1_000.0
+            });
+            let sample = serde_json::json!({
+                "role": self.role,
+                "elapsed_ms": self.started.map_or(0, |started| started.elapsed().as_millis()),
+                "current_frame": sample_frame,
+                "confirmed_frame": session.confirmed_frame().as_i32(),
+                "confirmation_lag": metrics.confirmation_lag_current,
+                "confirmation_lag_max": metrics.confirmation_lag_max,
+                "queue_depth": queue_depth,
+                "queue_age_ms": queue_age_ms,
+            });
+            godot_print!("SIGNAL_FISH_FORTRESS sample {sample}");
+        }
         let sync_health = self
             .remote_handle
             .and_then(|handle| session.sync_health(handle));
         if self
             .started
-            .is_some_and(|started| started.elapsed() >= SESSION_TIMEOUT)
+            .is_some_and(|started| started.elapsed() >= self.session_timeout)
         {
             self.fatal = Some(format!(
                 "Fortress settlement timed out: confirmed={} checksum_through={} target_checksum={} sync_health={sync_health:?} checks={}",
@@ -494,12 +784,130 @@ impl FortressScenario {
             ));
             return;
         }
+        let now = Instant::now();
+        if !self.startup_barrier_completed
+            && self
+                .startup_started_at
+                .is_some_and(|started| started.elapsed() >= STARTUP_TIMEOUT)
+        {
+            self.fatal = Some("causal startup handshake timed out".to_string());
+            return;
+        }
         if session.current_state() != SessionState::Running {
             return;
         }
+        if self.role == "b" && !self.startup_proposal_sent {
+            let Some(start_unix_ms) =
+                unix_time_millis().and_then(|now_ms| now_ms.checked_add(STARTUP_LEAD_MS))
+            else {
+                self.fatal = Some("system clock cannot represent startup deadline".to_string());
+                return;
+            };
+            let Some(start_at) = instant_for_unix_ms(start_unix_ms) else {
+                self.fatal = Some("startup deadline cannot be mapped monotonically".to_string());
+                return;
+            };
+            let Some(remote_id) = self.remote_id else {
+                self.fatal = Some("missing remote player for startup proposal".to_string());
+                return;
+            };
+            let control = StartupControl::Proposal { start_unix_ms };
+            if !queue_startup_control(&self.relay, remote_id, control) {
+                self.fatal = Some("startup proposal exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_start_unix_ms = Some(start_unix_ms);
+            self.startup_start_at = Some(start_at);
+            self.startup_proposal_sent = true;
+            return;
+        }
+        if self.role == "a" && self.startup_proposal_received && !self.startup_ack_sent {
+            let (Some(remote_id), Some(start_unix_ms), Some(start_at)) = (
+                self.remote_id,
+                self.startup_start_unix_ms,
+                self.startup_start_at,
+            ) else {
+                self.fatal = Some("startup proposal state is incomplete".to_string());
+                return;
+            };
+            if now >= start_at {
+                self.fatal = Some("startup proposal left no time for acknowledgement".to_string());
+                return;
+            }
+            if !queue_startup_control(
+                &self.relay,
+                remote_id,
+                StartupControl::Ack { start_unix_ms },
+            ) {
+                self.fatal =
+                    Some("startup acknowledgement exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_ack_sent = true;
+            return;
+        }
+        if self.role == "b" && self.startup_ack_received && !self.startup_commit_sent {
+            let (Some(remote_id), Some(start_unix_ms), Some(start_at)) = (
+                self.remote_id,
+                self.startup_start_unix_ms,
+                self.startup_start_at,
+            ) else {
+                self.fatal = Some("startup acknowledgement state is incomplete".to_string());
+                return;
+            };
+            if now >= start_at {
+                self.fatal = Some("startup acknowledgement missed the common deadline".to_string());
+                return;
+            }
+            if !queue_startup_control(
+                &self.relay,
+                remote_id,
+                StartupControl::Commit { start_unix_ms },
+            ) {
+                self.fatal = Some("startup commit exceeded the relay queue bound".to_string());
+                return;
+            }
+            self.startup_commit_sent = true;
+            return;
+        }
+        let startup_handshake_ready = match &*self.role {
+            "a" => self.startup_ack_sent && self.startup_commit_received,
+            "b" => {
+                self.startup_proposal_sent && self.startup_ack_received && self.startup_commit_sent
+            }
+            _ => false,
+        };
+        match startup_release_due(now, self.startup_start_at, startup_handshake_ready) {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(message) => {
+                self.fatal = Some(format!("{message} for role {}", self.role));
+                return;
+            }
+        }
+        let Some(start_at) = self.startup_start_at else {
+            self.fatal = Some("startup release lost the common deadline".to_string());
+            return;
+        };
+        if !self.startup_barrier_completed {
+            self.startup_barrier_completed = true;
+            self.startup_barrier_release_local_frame = Some(session.current_frame().as_i32());
+            self.startup_barrier_elapsed_ms = self
+                .startup_started_at
+                .map(|started| started.elapsed().as_millis());
+            self.startup_release_lateness_ms =
+                Some(now.saturating_duration_since(start_at).as_millis());
+            self.started = Some(now);
+            // Anchor both independent cadence schedules to the same mapped
+            // deadline rather than each browser's first later callback.
+            self.next_advance_at = Some(start_at);
+            if let Some(client) = &mut self.client {
+                client.reset_queue_age_peak();
+            }
+        }
 
-        let target_is_confirmed = session.confirmed_frame().as_i32() >= TARGET_FRAMES
-            && self.checksum_through >= TARGET_FRAMES;
+        let target_is_confirmed = session.confirmed_frame().as_i32() >= self.target_frames
+            && self.checksum_through >= self.target_frames;
         if target_is_confirmed && !self.target_confirmed {
             self.target_confirmed = true;
             self.simulation_elapsed_ms = self.started.map(|started| started.elapsed().as_millis());
@@ -523,17 +931,36 @@ impl FortressScenario {
         if current >= IMPAIRMENT_START_FRAME && self.pre_impairment_metrics.is_none() {
             self.pre_impairment_metrics = Some(session.metrics());
         }
-        if current < SETTLEMENT_FRAME_LIMIT {
+        if self.role == "b" && !self.impairment_activated && current >= IMPAIRMENT_START_FRAME {
+            // Align at the switch boundary before changing B's delayed input.
+            // This setup synchronization does not pace measured steady-state
+            // gameplay and is bounded by the session timeout/oracles.
+            if self
+                .relay
+                .borrow()
+                .remote_frame
+                .is_none_or(|remote| remote < IMPAIRMENT_START_FRAME)
+            {
+                return;
+            }
+            self.impairment_activated = true;
+        }
+        if !simulation_advance_due(now, &mut self.next_advance_at) {
+            return;
+        }
+        if current < self.settlement_frame_limit {
             let Some(local_handle) = self.local_handle else {
                 self.fatal = Some("missing local Fortress handle".to_string());
                 return;
             };
-            // Prediction stays exactly correct before the impairment. Player
-            // B changes its value at the same frame its outbound relay is
-            // withheld, so the later nonzero rollback delta is causally tied
-            // to reintegrating those delayed inputs.
+            // The input packet produced by this advance causally proves the
+            // advertised post-advance watermark at the receiving peer.
+            self.relay.borrow_mut().local_frame = Some(current.saturating_add(1));
+            // Prediction stays exactly correct before the switch. Player B's
+            // value change makes A's last-value prediction wrong, so the later
+            // nonzero rollback delta is causally tied to that remote input.
             let input = TestInput {
-                value: u32::from(self.role == "b" && current >= IMPAIRMENT_START_FRAME),
+                value: u32::from(self.role == "b" && self.impairment_activated),
             };
             if let Err(error) = session.add_local_input(local_handle, input) {
                 self.fatal = Some(format!("add_local_input failed: {error}"));
@@ -568,7 +995,7 @@ impl FortressScenario {
                                     return;
                                 }
                                 self.save_requests = self.save_requests.saturating_add(1);
-                                if frame.as_i32() == TARGET_FRAMES {
+                                if frame.as_i32() == self.target_frames {
                                     self.target_state_checksum = Some(checksum);
                                 }
                             }
@@ -617,13 +1044,27 @@ impl FortressScenario {
             .session
             .as_ref()
             .map_or(0, |session| session.current_frame().as_i32());
-        if self.role == "b"
-            && (IMPAIRMENT_START_FRAME..IMPAIRMENT_END_FRAME).contains(&current_frame)
-        {
-            self.impairment_activated = true;
-            return;
-        }
-        if self.role == "b" && self.impairment_activated && current_frame >= IMPAIRMENT_END_FRAME {
+        if self.role == "b" && self.impairment_activated && !self.impairment_released {
+            let predicted_through = IMPAIRMENT_START_FRAME
+                .saturating_add(INPUT_DELAY_FRAMES)
+                .saturating_add(1);
+            // Retain B's FIFO until A's causal post-advance watermark proves
+            // it simulated the changed delayed-input frame speculatively.
+            if self
+                .relay
+                .borrow()
+                .remote_frame
+                .is_none_or(|remote| remote < predicted_through)
+            {
+                if current_frame
+                    >= IMPAIRMENT_START_FRAME.saturating_add(IMPAIRMENT_MAX_HOLD_FRAMES)
+                {
+                    self.fatal = Some(
+                        "deterministic rollback relay hold exceeded its frame bound".to_string(),
+                    );
+                }
+                return;
+            }
             self.impairment_released = true;
         }
         let Some(client) = &mut self.client else {
@@ -751,27 +1192,82 @@ impl FortressScenario {
                     == Some(SyncHealth::InSync)
             });
         let polling = self.client.as_ref().map(|client| client.polling_stats());
+        let queue_age = self.client.as_ref().map(|client| client.queue_age_stats());
         let transport = self
             .client
             .as_ref()
             .map(|client| client.transport_diagnostics());
+        let admission_watermark_violations = self.client.as_ref().map_or(0, |client| {
+            client.transport().admission_watermark_violations()
+        });
         let total_elapsed_ms = self
             .started
             .map_or(0, |started| started.elapsed().as_millis());
         let final_inbound_depth = queues.inbound.len();
         let final_outbound_depth = queues.outbound.len();
         let queue_depth = polling.map_or(0, |stats| stats.current_queue_depth);
+        let current_queue_age = queue_age.map_or(std::time::Duration::ZERO, |stats| {
+            stats.current_oldest_queue_age
+        });
+        let peak_queue_age = queue_age.map_or(std::time::Duration::ZERO, |stats| {
+            stats.peak_oldest_queue_age
+        });
         let checksums_mismatched = metrics.map_or(0, |metrics| metrics.checksums_mismatched);
         let events_discarded = metrics.map_or(0, |metrics| metrics.events_discarded_total);
+        let relay_messages_per_simulated_frame = metrics.map_or(0.0, |metrics| {
+            queues.encoded.saturating_add(queues.decoded) as f64
+                / metrics.visual_frames.max(1) as f64
+        });
+        let observed_simulation_fps = self
+            .simulation_elapsed_ms
+            .filter(|elapsed| *elapsed > 0)
+            .map_or(0.0, |elapsed| {
+                self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
+            });
+        let lag_limit = scenario_lag_limit(
+            self.poll_hitch_frame,
+            self.target_frames,
+            self.settlement_frame_limit,
+        );
+        let startup_barrier_valid = self.startup_barrier_completed
+            && self.startup_barrier_release_local_frame == Some(0)
+            && self.startup_start_unix_ms.is_some_and(|value| value > 0)
+            && self.startup_barrier_elapsed_ms.is_some()
+            && self
+                .startup_release_lateness_ms
+                .is_some_and(|value| value <= 100)
+            && match &*self.role {
+                "a" => {
+                    self.startup_proposal_received
+                        && self.startup_ack_sent
+                        && self.startup_commit_received
+                }
+                "b" => {
+                    self.startup_proposal_sent
+                        && self.startup_ack_received
+                        && self.startup_commit_sent
+                }
+                _ => false,
+            };
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
+            && startup_barrier_valid
             && final_inbound_depth == 0
             && final_outbound_depth == 0
             && queue_depth == 0
+            && current_queue_age == std::time::Duration::ZERO
+            && peak_queue_age <= std::time::Duration::from_millis(500)
             && queues.dropped == 0
             && queues.malformed == 0
             && checksums_mismatched == 0
-            && events_discarded == 0;
+            && events_discarded == 0
+            && metrics.is_some_and(|metrics| {
+                metrics.confirmation_lag_current <= lag_limit
+                    && metrics.confirmation_lag_max <= lag_limit
+                    && metrics.stall_count == 0
+                    && metrics.wait_recommendations == 0
+            })
+            && relay_messages_per_simulated_frame >= 2.0;
         let summary = serde_json::json!({
             "passed": passed && self.fatal.is_none() && invariant_passed,
             "role": self.role,
@@ -779,9 +1275,9 @@ impl FortressScenario {
             "joined_room_code": self.joined_room_code,
             "local_id": self.local_id.map(|id| id.to_string()),
             "remote_id": self.remote_id.map(|id| id.to_string()),
-            "target_frames": TARGET_FRAMES,
-            "settlement_frame_limit": SETTLEMENT_FRAME_LIMIT,
-            "session_timeout_ms": SESSION_TIMEOUT.as_millis(),
+            "target_frames": self.target_frames,
+            "settlement_frame_limit": self.settlement_frame_limit,
+            "session_timeout_ms": self.session_timeout.as_millis(),
             "game_frame": self.game.frame,
             // Preserve exact integer values when the browser runner parses JSON.
             "confirmed_input_checksum": self.confirmed_checksum.to_string(),
@@ -789,7 +1285,20 @@ impl FortressScenario {
             "checksum_through": self.checksum_through,
             "speculative_value": self.game.value,
             "simulation_elapsed_ms": self.simulation_elapsed_ms,
+            "simulation_target_fps": SIMULATION_FPS,
+            "observed_simulation_fps": observed_simulation_fps,
             "total_elapsed_ms": total_elapsed_ms,
+            "startup_barrier_completed": self.startup_barrier_completed,
+            "startup_start_unix_ms": self.startup_start_unix_ms,
+            "startup_proposal_sent": self.startup_proposal_sent,
+            "startup_proposal_received": self.startup_proposal_received,
+            "startup_ack_sent": self.startup_ack_sent,
+            "startup_ack_received": self.startup_ack_received,
+            "startup_commit_sent": self.startup_commit_sent,
+            "startup_commit_received": self.startup_commit_received,
+            "startup_barrier_release_local_frame": self.startup_barrier_release_local_frame,
+            "startup_barrier_elapsed_ms": self.startup_barrier_elapsed_ms,
+            "startup_release_lateness_ms": self.startup_release_lateness_ms,
             "max_poll_us": self.max_poll_us,
             "multi_frame_poll": self.multi_frame_poll,
             "game_ready": self.game_ready,
@@ -801,6 +1310,9 @@ impl FortressScenario {
             "max_rollback_depth": metrics.map_or(0, |metrics| metrics.max_rollback_depth),
             "prediction_miss_count": metrics.map_or(0, |metrics| metrics.prediction_miss_count),
             "stall_count": metrics.map_or(0, |metrics| metrics.stall_count),
+            "wait_recommendation_count": metrics.map_or(0, |metrics| metrics.wait_recommendations),
+            "confirmation_lag_current": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
+            "confirmation_lag_max": metrics.map_or(0, |metrics| metrics.confirmation_lag_max),
             "checksums_compared": metrics.map_or(0, |metrics| metrics.checksums_compared),
             "checksums_matched": metrics.map_or(0, |metrics| metrics.checksums_matched),
             "checksums_mismatched": checksums_mismatched,
@@ -825,16 +1337,35 @@ impl FortressScenario {
             "relay_outbound_depth": final_outbound_depth,
             "queue_depth": queue_depth,
             "peak_queue_depth": polling.map_or(0, |stats| stats.peak_queue_depth),
+            "current_queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+            "peak_queue_age_ms": peak_queue_age.as_secs_f64() * 1_000.0,
+            "relay_messages_per_simulated_frame": relay_messages_per_simulated_frame,
             "accepted_frames": transport.map_or(0, |stats| stats.accepted_frames),
             "watermark_hits": transport.map_or(0, |stats| stats.watermark_hits),
             "backend_capacity_hits": transport.map_or(0, |stats| stats.backend_capacity_hits),
+            "admission_watermark_violations": admission_watermark_violations,
             "impairment_activated": self.impairment_activated,
             "impairment_released": self.impairment_released,
+            "poll_hitch_frame": self.poll_hitch_frame,
+            "poll_hitch_completed": self.poll_hitch_completed,
+            "poll_hitch_frames_advanced": self.poll_hitch_frames_advanced,
             "peer_left_observed": self.peer_left_observed,
             "peer_left_epoch": self.peer_left_epoch,
             "peer_left_final_seq": self.peer_left_final_seq,
             "fatal": self.fatal,
         });
+        let final_sample = serde_json::json!({
+            "role": self.role,
+            "elapsed_ms": total_elapsed_ms,
+            "current_frame": self.game.frame,
+            "confirmed_frame": self.checksum_through,
+            "confirmation_lag": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
+            "confirmation_lag_max": metrics.map_or(0, |metrics| metrics.confirmation_lag_max),
+            "queue_depth": queue_depth,
+            "queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+            "final": true,
+        });
+        godot_print!("SIGNAL_FISH_FORTRESS sample {final_sample}");
         if summary["passed"].as_bool() == Some(true) {
             godot_print!("SIGNAL_FISH_FORTRESS summary {summary}");
         } else {
@@ -844,7 +1375,330 @@ impl FortressScenario {
     }
 }
 
+fn simulation_frame_period() -> std::time::Duration {
+    std::time::Duration::from_nanos(1_000_000_000 / SIMULATION_FPS as u64)
+}
+
+fn scenario_lag_limit(
+    poll_hitch_frame: Option<i32>,
+    target_frames: i32,
+    settlement_frame_limit: i32,
+) -> u64 {
+    if poll_hitch_frame.is_some_and(|frame| (0..settlement_frame_limit).contains(&frame)) {
+        if target_frames > DEFAULT_TARGET_FRAMES {
+            SOAK_LAG_LIMIT
+        } else {
+            IMPAIRED_LAG_LIMIT
+        }
+    } else {
+        CLEAN_LAG_LIMIT
+    }
+}
+
+fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
+    let period = simulation_frame_period();
+    let Some(deadline) = next_advance_at else {
+        *next_advance_at = now.checked_add(period);
+        return true;
+    };
+    if now < *deadline {
+        return false;
+    }
+    let scheduled = deadline.checked_add(period).unwrap_or(now);
+    // Preserve elapsed deadline debt so a delayed browser process can catch
+    // up instead of retaining permanent frame advantage. The caller invokes
+    // this once per rendered callback, bounding recovery to one frame there.
+    *deadline = scheduled;
+    true
+}
+
+fn unix_time_millis() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+}
+
+fn instant_for_unix_ms(start_unix_ms: u64) -> Option<Instant> {
+    let remaining_ms = start_unix_ms.checked_sub(unix_time_millis()?)?;
+    if remaining_ms == 0 {
+        return None;
+    }
+    Instant::now().checked_add(Duration::from_millis(remaining_ms))
+}
+
+fn startup_release_due(
+    now: Instant,
+    start_at: Option<Instant>,
+    handshake_ready: bool,
+) -> Result<bool, &'static str> {
+    let Some(start_at) = start_at else {
+        return if handshake_ready {
+            Err("startup handshake omitted the common deadline")
+        } else {
+            Ok(false)
+        };
+    };
+    if !handshake_ready {
+        return if now >= start_at {
+            Err("startup handshake was incomplete at the common deadline")
+        } else {
+            Ok(false)
+        };
+    }
+    Ok(now >= start_at)
+}
+
+fn queue_startup_control(
+    relay: &Rc<RefCell<RelayQueues>>,
+    remote_id: PlayerId,
+    control: StartupControl,
+) -> bool {
+    let payload = encode_startup_envelope(remote_id.as_bytes(), control);
+    let mut queues = relay.borrow_mut();
+    if queues.outbound.len() >= MAX_RELAY_QUEUE {
+        queues.dropped = queues.dropped.saturating_add(1);
+        return false;
+    }
+    queues.outbound.push_back((remote_id, payload));
+    queues.encoded = queues.encoded.saturating_add(1);
+    queues.peak_outbound = queues.peak_outbound.max(queues.outbound.len());
+    true
+}
+
+fn encode_startup_envelope(destination: &[u8; 16], control: StartupControl) -> Vec<u8> {
+    let kind = match control {
+        StartupControl::Proposal { .. } => 1,
+        StartupControl::Ack { .. } => 2,
+        StartupControl::Commit { .. } => 3,
+    };
+    let mut payload = Vec::with_capacity(29);
+    payload.extend_from_slice(destination);
+    payload.extend_from_slice(STARTUP_ENVELOPE_MAGIC);
+    payload.push(kind);
+    payload.extend_from_slice(&control.start_unix_ms().to_le_bytes());
+    payload
+}
+
+fn decode_startup_envelope(payload: &[u8]) -> Option<(&[u8], StartupControl)> {
+    let (destination, header) = payload.split_at_checked(16)?;
+    if header.len() != 13 || header.get(..4)? != STARTUP_ENVELOPE_MAGIC {
+        return None;
+    }
+    let start_unix_ms = u64::from_le_bytes(header.get(5..13)?.try_into().ok()?);
+    if start_unix_ms == 0 {
+        return None;
+    }
+    let control = match *header.get(4)? {
+        1 => StartupControl::Proposal { start_unix_ms },
+        2 => StartupControl::Ack { start_unix_ms },
+        3 => StartupControl::Commit { start_unix_ms },
+        _ => return None,
+    };
+    Some((destination, control))
+}
+
+fn encode_relay_envelope(destination: &[u8; 16], advertised_frame: i32, encoded: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(
+        destination
+            .len()
+            .saturating_add(RELAY_ENVELOPE_MAGIC.len())
+            .saturating_add(std::mem::size_of::<i32>())
+            .saturating_add(encoded.len()),
+    );
+    payload.extend_from_slice(destination);
+    payload.extend_from_slice(RELAY_ENVELOPE_MAGIC);
+    payload.extend_from_slice(&advertised_frame.to_le_bytes());
+    payload.extend_from_slice(encoded);
+    payload
+}
+
+fn decode_relay_envelope(payload: &[u8]) -> Option<(&[u8], i32, &[u8])> {
+    let (destination, remainder) = payload.split_at_checked(16)?;
+    let (header, encoded) = remainder.split_at_checked(8)?;
+    if header.get(..4)? != RELAY_ENVELOPE_MAGIC {
+        return None;
+    }
+    let advertised_frame = i32::from_le_bytes(header.get(4..8)?.try_into().ok()?);
+    Some((destination, advertised_frame, encoded))
+}
+
 fn argument(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find_map(|pair| (pair.first().map(String::as_str) == Some(name)).then(|| pair[1].clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{
+        decode_relay_envelope, decode_startup_envelope, encode_relay_envelope,
+        encode_startup_envelope, scenario_lag_limit, simulation_advance_due,
+        simulation_frame_period, startup_control_allowed, startup_control_lead_valid,
+        startup_release_due, StartupControl,
+    };
+
+    #[test]
+    fn startup_envelope_round_trips_deadline_controls_and_rejects_corruption() {
+        let destination = [9; 16];
+        for control in [
+            StartupControl::Proposal {
+                start_unix_ms: 123_456,
+            },
+            StartupControl::Ack {
+                start_unix_ms: 123_456,
+            },
+            StartupControl::Commit {
+                start_unix_ms: 123_456,
+            },
+        ] {
+            let payload = encode_startup_envelope(&destination, control);
+            assert_eq!(
+                decode_startup_envelope(&payload),
+                Some((destination.as_slice(), control))
+            );
+        }
+
+        let mut invalid_kind = encode_startup_envelope(
+            &destination,
+            StartupControl::Proposal {
+                start_unix_ms: 123_456,
+            },
+        );
+        invalid_kind[20] = u8::MAX;
+        assert_eq!(decode_startup_envelope(&invalid_kind), None);
+        assert_eq!(decode_startup_envelope(&invalid_kind[..28]), None);
+    }
+
+    #[test]
+    fn startup_transition_gate_rejects_wrong_stage_timestamp_and_missed_deadline() {
+        let start = Instant::now();
+        let proposal = StartupControl::Proposal { start_unix_ms: 100 };
+        let ack = StartupControl::Ack { start_unix_ms: 100 };
+        let commit = StartupControl::Commit { start_unix_ms: 100 };
+
+        assert!(startup_control_allowed("a", proposal, None, false, false));
+        assert!(startup_control_allowed(
+            "a",
+            proposal,
+            Some(100),
+            false,
+            true
+        ));
+        assert!(!startup_control_allowed(
+            "a",
+            StartupControl::Proposal { start_unix_ms: 101 },
+            Some(100),
+            false,
+            true
+        ));
+        assert!(!startup_control_allowed(
+            "a",
+            commit,
+            Some(100),
+            false,
+            false
+        ));
+        assert!(startup_control_allowed("a", commit, Some(100), false, true));
+        assert!(startup_control_allowed("b", ack, Some(100), true, false));
+        assert!(!startup_control_allowed(
+            "b",
+            StartupControl::Ack { start_unix_ms: 101 },
+            Some(100),
+            true,
+            false
+        ));
+        assert!(!startup_control_allowed(
+            "b",
+            proposal,
+            Some(100),
+            true,
+            false
+        ));
+
+        assert_eq!(
+            startup_release_due(start, Some(start), false),
+            Err("startup handshake was incomplete at the common deadline")
+        );
+        assert_eq!(startup_release_due(start, Some(start), true), Ok(true));
+        assert_eq!(
+            startup_release_due(start, Some(start + Duration::from_millis(1)), false),
+            Ok(false)
+        );
+        assert_eq!(
+            startup_release_due(start, None, true),
+            Err("startup handshake omitted the common deadline")
+        );
+
+        let after_deadline = start + Duration::from_millis(1);
+        assert!(!startup_control_lead_valid(
+            Some(start),
+            after_deadline,
+            Duration::from_millis(250),
+            false
+        ));
+        assert!(startup_control_lead_valid(
+            Some(start),
+            after_deadline,
+            Duration::from_millis(250),
+            true
+        ));
+    }
+
+    #[test]
+    fn fixed_cadence_preserves_deadline_debt_and_bounds_each_recovery_callback() {
+        let start = Instant::now();
+        let period = simulation_frame_period();
+        let mut deadline = None;
+
+        assert!(simulation_advance_due(start, &mut deadline));
+        assert!(!simulation_advance_due(
+            start + Duration::from_millis(40),
+            &mut deadline
+        ));
+        assert!(simulation_advance_due(
+            start + Duration::from_millis(60),
+            &mut deadline
+        ));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(2)));
+
+        let after_pause = start + Duration::from_secs(5);
+        assert!(simulation_advance_due(after_pause, &mut deadline));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(3)));
+        assert!(deadline.is_some_and(|deadline| deadline < after_pause));
+
+        // Each invocation advances exactly one deadline even while overdue;
+        // the rendered-callback caller therefore cannot burst several frames.
+        assert!(simulation_advance_due(after_pause, &mut deadline));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(4)));
+    }
+
+    #[test]
+    fn clean_and_impaired_self_oracles_use_the_runner_lag_limits() {
+        assert_eq!(scenario_lag_limit(None, 600, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(240), 600, 620), 13);
+        assert_eq!(scenario_lag_limit(Some(240), 3_600, 3_620), 12);
+        assert_eq!(scenario_lag_limit(Some(-1), 600, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(620), 600, 620), 8);
+    }
+
+    #[test]
+    fn relay_envelope_round_trips_frame_watermark_and_rejects_corruption() {
+        let destination = [7; 16];
+        let encoded = [1, 2, 3, 4];
+        let payload = encode_relay_envelope(&destination, 123, &encoded);
+
+        assert_eq!(
+            decode_relay_envelope(&payload),
+            Some((destination.as_slice(), 123, encoded.as_slice()))
+        );
+        assert_eq!(decode_relay_envelope(&payload[..20]), None);
+
+        let mut corrupt = payload;
+        if let Some(byte) = corrupt.get_mut(16) {
+            *byte ^= 0xff;
+        }
+        assert_eq!(decode_relay_envelope(&corrupt), None);
+    }
 }

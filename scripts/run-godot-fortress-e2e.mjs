@@ -4,11 +4,35 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { chromium } from "playwright";
+import {
+  validateFinalSlope,
+  validateFortressPair,
+  validateFortressPeer,
+  validateServerConservation,
+} from "./godot-e2e-validators.mjs";
 
-const [exportDirectoryArgument] = process.argv.slice(2);
+const [exportDirectoryArgument, ...scenarioArguments] = process.argv.slice(2);
 if (!exportDirectoryArgument) {
-  throw new Error("usage: node scripts/run-godot-fortress-e2e.mjs <export-directory>");
+  throw new Error(
+    "usage: node scripts/run-godot-fortress-e2e.mjs <export-directory> " +
+    "[--scenario clean|impaired|soak] [--server-url ws://host:port/v2/ws]",
+  );
 }
+function option(name, fallback) {
+  const index = scenarioArguments.indexOf(name);
+  return index >= 0 ? scenarioArguments[index + 1] : fallback;
+}
+const scenario = option("--scenario", "clean");
+if (!["clean", "impaired", "soak"].includes(scenario)) {
+  throw new Error(`unsupported Fortress scenario: ${scenario}`);
+}
+const serverUrl = option("--server-url", "ws://127.0.0.1:3536/v2/ws");
+const serverAddress = new URL(serverUrl);
+const metricsUrl = `http://${serverAddress.host}/metrics/prom`;
+const targetFrames = scenario === "soak" ? 3_600 : 600;
+const lagLimit = scenario === "clean" ? 8 : scenario === "soak" ? 12 : 13;
+const requireHitch = scenario !== "clean";
+const sessionTimeoutMs = scenario === "soak" ? 300_000 : scenario === "clean" ? 60_000 : 90_000;
 const exportDirectory = await realpath(resolve(exportDirectoryArgument));
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -64,7 +88,7 @@ let runError;
 let passed = false;
 
 async function fetchMetrics() {
-  const response = await fetch("http://127.0.0.1:3536/metrics/prom", {
+  const response = await fetch(metricsUrl, {
     signal: AbortSignal.timeout(5_000),
   });
   if (!response.ok) throw new Error(`metrics request failed with HTTP ${response.status}`);
@@ -125,6 +149,7 @@ async function launchPeer(role, requestedRoomCode) {
     console: [],
     pageErrors: [],
     summary: undefined,
+    samples: [],
   };
   // Register the browser immediately so a newPage/navigation failure cannot
   // leak its process or erase its partial diagnostics.
@@ -145,6 +170,15 @@ async function launchPeer(role, requestedRoomCode) {
         peer.pageErrors.push(`invalid summary JSON: ${error}`);
       }
     }
+    const sampleMarker = "SIGNAL_FISH_FORTRESS sample ";
+    const sampleIndex = line.indexOf(sampleMarker);
+    if (sampleIndex >= 0) {
+      try {
+        peer.samples.push(JSON.parse(line.slice(sampleIndex + sampleMarker.length)));
+      } catch (error) {
+        peer.pageErrors.push(`invalid time-series JSON: ${error}`);
+      }
+    }
   });
   page.on("pageerror", (error) => {
     peer.pageErrors.push(error.message);
@@ -152,6 +186,10 @@ async function launchPeer(role, requestedRoomCode) {
   });
   const query = new URLSearchParams({ fortress_role: role });
   if (requestedRoomCode) query.set("room_code", requestedRoomCode);
+  query.set("server_url", serverUrl);
+  query.set("target_frames", String(targetFrames));
+  query.set("session_timeout_ms", String(sessionTimeoutMs));
+  if (requireHitch) query.set("poll_hitch_frame", "240");
   await page.goto(`http://127.0.0.1:${address.port}/index.html?${query}`, {
     waitUntil: "domcontentloaded",
     timeout: 30_000,
@@ -159,7 +197,12 @@ async function launchPeer(role, requestedRoomCode) {
   return peer;
 }
 
-async function waitFor(peer, predicate, description, timeoutMilliseconds = 60_000) {
+async function waitFor(
+  peer,
+  predicate,
+  description,
+  timeoutMilliseconds = scenario === "soak" ? 360_000 : 120_000,
+) {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     const value = predicate();
@@ -171,36 +214,24 @@ async function waitFor(peer, predicate, description, timeoutMilliseconds = 60_00
 
 function assertPeerSummary(peer) {
   const summary = peer.summary;
-  const decimal = /^\d+$/;
-  if (
-    !summary?.passed || summary.target_frames !== 600 || summary.settlement_frame_limit !== 620 ||
-    summary.session_timeout_ms !== 40_000 ||
-    summary.game_frame < 600 || summary.game_frame > 620 || summary.checksum_through !== 600 ||
-    !decimal.test(summary.confirmed_input_checksum) || !decimal.test(summary.target_state_checksum) ||
-    !summary.game_ready || !summary.sync_in_sync
-  ) {
-    throw new Error(`Fortress peer ${peer.role} failed its state oracle: ${JSON.stringify(summary)}`);
+  const validation = validateFortressPeer(summary, {
+    targetFrames,
+    lagLimit,
+    requireHitch,
+    sessionTimeoutMs,
+  });
+  if (!validation.ok) {
+    throw new Error(
+      `Fortress peer ${peer.role} failed its oracle: ${JSON.stringify({ validation, summary })}`,
+    );
   }
-  if (
-    !Number.isFinite(summary.simulation_elapsed_ms) || summary.simulation_elapsed_ms <= 0 ||
-    summary.simulation_elapsed_ms >= summary.session_timeout_ms || summary.max_poll_us >= 50_000
-  ) {
-    throw new Error(`Fortress peer ${peer.role} missed timing bounds: ${JSON.stringify(summary)}`);
-  }
-  if (
-    !summary.multi_frame_poll || summary.peak_queue_depth > 64 || summary.queue_depth !== 0 ||
-    summary.relay_inbound_depth !== 0 || summary.relay_outbound_depth !== 0
-  ) {
-    throw new Error(`Fortress peer ${peer.role} missed queue assertions: ${JSON.stringify(summary)}`);
-  }
-  if (
-    summary.relay_dropped !== 0 || summary.relay_malformed !== 0 ||
-    summary.backend_capacity_hits !== 0 || summary.checksums_compared < 10 ||
-    summary.checksums_matched !== summary.checksums_compared || summary.checksums_mismatched !== 0 ||
-    summary.events_discarded !== 0 || summary.desync_events !== 0 ||
-    summary.frames_advanced !== summary.visual_frames + summary.resimulated_frames
-  ) {
-    throw new Error(`Fortress peer ${peer.role} reported integrity loss: ${JSON.stringify(summary)}`);
+  const finalAgeValidation = validateFinalSlope(peer.samples, "queue_age_ms");
+  peer.finalAgeSlope = finalAgeValidation.slope;
+  if (scenario === "soak" && !finalAgeValidation.ok) {
+    throw new Error(
+      `Fortress peer ${peer.role} ended the soak with a positive or unavailable queue-age slope: ` +
+      JSON.stringify(finalAgeValidation),
+    );
   }
   assertPeerDiagnostics(peer);
 }
@@ -246,31 +277,14 @@ try {
   ) {
     throw new Error(`Fortress room/roster mismatch: ${JSON.stringify(peers.map((peer) => peer.summary))}`);
   }
-  if (
-    first.summary.target_state_checksum !== second.summary.target_state_checksum ||
-    first.summary.confirmed_input_checksum !== second.summary.confirmed_input_checksum
-  ) {
-    throw new Error(`Fortress convergence mismatch: ${JSON.stringify(peers.map((peer) => peer.summary))}`);
-  }
-  if (
-    !second.summary.impairment_activated || !second.summary.impairment_released ||
-    first.summary.pre_impairment_rollback_count !== 0 ||
-    first.summary.pre_impairment_resimulated_frames !== 0 ||
-    first.summary.pre_impairment_prediction_miss_count !== 0 ||
-    first.summary.rollback_count <= first.summary.pre_impairment_rollback_count ||
-    first.summary.resimulated_frames <= first.summary.pre_impairment_resimulated_frames ||
-    first.summary.prediction_miss_count <= first.summary.pre_impairment_prediction_miss_count ||
-    first.summary.max_rollback_depth < 4 || first.summary.load_requests <= 0 ||
-    !first.summary.peer_left_observed || first.summary.peer_left_epoch <= 0 ||
-    first.summary.peer_left_final_seq <= 0
-  ) {
-    throw new Error(`Fortress rollback/teardown proof absent: ${JSON.stringify(peers.map((peer) => peer.summary))}`);
-  }
-  if (
-    first.summary.relay_encoded !== second.summary.relay_decoded ||
-    second.summary.relay_encoded !== first.summary.relay_decoded
-  ) {
-    throw new Error(`Fortress relay conservation failed: ${JSON.stringify(peers.map((peer) => peer.summary))}`);
+  const pairValidation = validateFortressPair(first.summary, second.summary);
+  if (!pairValidation.ok) {
+    throw new Error(
+      `Fortress pair oracle failed: ${JSON.stringify({
+        pairValidation,
+        peers: peers.map((peer) => peer.summary),
+      })}`,
+    );
   }
 
   await Promise.all(peers.map((peer) => waitFor(
@@ -314,11 +328,16 @@ try {
   const harmfulDeltas = Object.entries(serverMetricDeltas).filter(
     ([name, delta]) => delta > 0 && /(drop|slow_consumer.*disconnect)/i.test(name),
   );
-  if (
-    gameDataForwarded !== expectedGameData || reliableAttempted !== expectedGameData ||
-    reliableDelivered !== expectedGameData || deliveryAttempts !== deliveryTerminals ||
-    harmfulDeltas.length > 0
-  ) {
+  const conservation = validateServerConservation({
+    expectedGameData,
+    gameDataForwarded,
+    reliableAttempted,
+    reliableDelivered,
+    deliveryAttempts,
+    deliveryTerminals,
+    harmfulDeltas,
+  });
+  if (!conservation.ok) {
     throw new Error(`server delivery conservation failed: ${JSON.stringify({
       expectedGameData,
       gameDataForwarded,
@@ -361,11 +380,34 @@ try {
         peers: peers.map((peer) => ({
           role: peer.role,
           summary: peer.summary ?? null,
+          finalAgeSlope: Number.isFinite(peer.finalAgeSlope) ? peer.finalAgeSlope : null,
           pageErrors: peer.pageErrors,
           consoleTypes: peer.console.map(({ type }) => type),
         })),
         serverMetricDeltas,
+        scenario,
+        serverUrl,
       }, null, 2)}\n`,
+    ),
+    writeFile(
+      "godot-fortress-timeseries.json",
+      `${JSON.stringify(peers.flatMap((peer) => peer.samples), null, 2)}\n`,
+    ),
+    writeFile(
+      "godot-fortress-timeseries.csv",
+      `${[
+        "role,elapsed_ms,current_frame,confirmed_frame,confirmation_lag,confirmation_lag_max,queue_depth,queue_age_ms",
+        ...peers.flatMap((peer) => peer.samples.map((sample) => [
+          sample.role,
+          sample.elapsed_ms,
+          sample.current_frame,
+          sample.confirmed_frame,
+          sample.confirmation_lag,
+          sample.confirmation_lag_max,
+          sample.queue_depth,
+          sample.queue_age_ms,
+        ].join(","))),
+      ].join("\n")}\n`,
     ),
     ...peers.map((peer) =>
       writeFile(`godot-fortress-${peer.role}.log`, `${peer.lines.join("\n")}\n`)

@@ -69,19 +69,45 @@ Drive the integration once from Godot's `_process` callback:
 
 Messages produced in step 3 are offered to the WebSocket on the next rendered
 callback. This ordering preserves the real frame-driven pressure that exposed
-issue #61 while keeping each callback bounded. Inspect `polling_stats()` and
-`transport_diagnostics()` for queue peaks, work-budget exhaustion, admission
-hits, and accepted multi-frame bursts.
+issue #61 while keeping each callback bounded. Inspect `polling_stats()` for
+queue peaks and work-budget exhaustion, and `queue_age_stats()` so a
+stable-depth but increasingly stale queue is visible; reset the age peak when
+measured simulation begins. Inspect `transport_diagnostics()` separately for
+admission hits, backend buffering, and accepted multi-frame bursts.
 
 ## System test
 
-The `Godot Web` workflow starts a real Signal Fish server, launches two
-independent Chromium processes running the official Godot 4.5 no-thread export,
-creates and joins one room, and advances a deterministic two-player Fortress
-game for 600 confirmed frames. A deterministic eight-frame outbound impairment
-forces prediction, rollback, state load, and resimulation. The gate then proves
-matching serialized state checksums, in-sync Fortress health and checksum
-comparisons, exact room/roster identity, relay and server conservation, an
-observable v3 `PlayerLeft` terminal watermark, and zero residual queues. It
-also rejects malformed envelopes, capacity hits, callback stalls, server drops,
-and slow-consumer disconnects, and uploads per-process diagnostics on every run.
+The required `Godot Web` checks reuse one official Godot 4.5 no-thread export
+across clean, impaired, and soak jobs. Every job launches two independent
+Chromium processes and a real Signal Fish Server 0.4.0. The clean case advances
+600 confirmed frames; the impaired case adds seeded bidirectional 40 ms delay,
+10 ms jitter, 0.2% correlated loss, a 10 Mbit/s rate, and a six-callback polling
+hitch at frame 240; the soak advances 3,600 confirmed frames under the same
+profile. The fixture configures a 20-frame prediction window so acceptable
+constrained-network lag and the declared hitch can recover without an internal
+scheduler stall; the scenario oracles still cap observed confirmation lag at
+eight clean, 13 impaired, or 12 soak frames. Simulation advances on a fixed
+local 18 Hz cadence, independent of peer or network progress, so unequal browser CPU
+slices do not become artificial frame advantage and real prediction-window
+stalls remain observable. Delayed callbacks retain their elapsed deadline debt
+and recover by at most one simulation frame per rendered callback, preventing
+permanent scheduling skew without allowing a multi-frame burst. A bounded
+one-time proposal/ack/commit barrier maps a shared deadline to each browser's
+monotonic clock, preventing process-start order from becoming measured gameplay
+skew. This wall-clock assumption is fixture-scoped because CI launches both
+Chromium processes on the same host. A bounded relay hold uses causal
+post-advance frame watermarks to prove the remote peer
+predicted the changed delayed input before release, forcing rollback, state
+load, and resimulation while both games keep advancing. The hitch oracle
+separately requires forward simulation progress during its six skipped polling
+callbacks. CI builds
+the pinned, checksum-verified iproute2 6.6.0 `tc` because the runner's packaged
+version cannot apply a deterministic netem seed.
+
+The gates require exact checksum convergence, in-sync health, bounded
+confirmation lag, zero waits/stalls, at least two relay messages per simulated
+frame, final queue depth and age of zero, a sampled queue-age peak no greater
+than 500 ms, a non-positive final eight-sample queue-age slope for the soak,
+exact client/server conservation, and an observable v3 `PlayerLeft` terminal
+watermark. Browser/server logs, time series, summaries, Prometheus snapshots,
+and netem seed/configuration are uploaded even on failure.

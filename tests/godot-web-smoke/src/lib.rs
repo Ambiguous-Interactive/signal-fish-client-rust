@@ -18,6 +18,8 @@ const LOAD_SECONDS: u64 = 16;
 const LOAD_RATE_PER_CLIENT: u64 = 136;
 const LOAD_TARGET_PER_CLIENT: u64 = LOAD_SECONDS * LOAD_RATE_PER_CLIENT;
 const LOAD_MAX_QUEUE_DEPTH_PER_CLIENT: u64 = 32;
+const FINAL_DRAIN_SAMPLES: u8 = 8;
+const FINAL_DRAIN_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
@@ -52,6 +54,7 @@ impl PairKind {
 
 struct SmokePair {
     kind: PairKind,
+    server_url: String,
     first: Option<Client>,
     second: Option<Client>,
     room_code: Option<String>,
@@ -83,6 +86,8 @@ struct SmokePair {
     last_latency_us: u64,
     sample_last_accepted: u64,
     sample_last_received: u64,
+    final_drained_samples: u8,
+    final_drain_started_at: Option<Instant>,
     max_poll_work_frames: u64,
     max_poll_work_bytes: u64,
     max_poll_receive_frames: u64,
@@ -96,10 +101,11 @@ struct SmokePair {
 }
 
 impl SmokePair {
-    fn new(kind: PairKind) -> Self {
+    fn new(kind: PairKind, server_url: &str) -> Self {
         Self {
             kind,
-            first: connect_client(kind, "a"),
+            server_url: server_url.to_string(),
+            first: connect_client(kind, "a", server_url),
             second: None,
             room_code: None,
             relay_sent: false,
@@ -130,6 +136,8 @@ impl SmokePair {
             last_latency_us: 0,
             sample_last_accepted: 0,
             sample_last_received: 0,
+            final_drained_samples: 0,
+            final_drain_started_at: None,
             max_poll_work_frames: 0,
             max_poll_work_bytes: 0,
             max_poll_receive_frames: 0,
@@ -169,7 +177,7 @@ impl SmokePair {
         }
 
         if self.second.is_none() && self.room_code.is_some() {
-            self.second = connect_client(self.kind, "b");
+            self.second = connect_client(self.kind, "b", &self.server_url);
         }
 
         let second_events = poll_measured(
@@ -213,10 +221,18 @@ impl SmokePair {
                 self.sample_last_accepted =
                     self.last_accepted_a.saturating_add(self.last_accepted_b);
                 self.sample_last_received = 0;
+                self.final_drained_samples = 0;
+                self.final_drain_started_at = None;
                 self.max_poll_work_frames = 0;
                 self.max_poll_work_bytes = 0;
                 self.max_poll_receive_frames = 0;
                 self.poll_count = 0;
+                if let Some(client) = &mut self.first {
+                    client.reset_queue_age_peak();
+                }
+                if let Some(client) = &mut self.second {
+                    client.reset_queue_age_peak();
+                }
                 godot_print!("SIGNAL_FISH_SMOKE load-started");
             }
             self.drive_load();
@@ -407,20 +423,22 @@ impl SmokePair {
         let (current_depth, _, _, _) =
             aggregate_diagnostics(self.first.as_ref(), self.second.as_ref());
         self.peak_aggregate_depth = self.peak_aggregate_depth.max(current_depth);
+        let load_received = elapsed >= Duration::from_secs(LOAD_SECONDS)
+            && self.offered_a == LOAD_TARGET_PER_CLIENT
+            && self.offered_b == LOAD_TARGET_PER_CLIENT
+            && self.received_a == LOAD_TARGET_PER_CLIENT
+            && self.received_b == LOAD_TARGET_PER_CLIENT;
 
         if self
             .last_sample_at
             .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(250))
-            || (elapsed >= Duration::from_secs(LOAD_SECONDS)
-                && self.offered_a == LOAD_TARGET_PER_CLIENT
-                && self.offered_b == LOAD_TARGET_PER_CLIENT
-                && self.received_a == LOAD_TARGET_PER_CLIENT
-                && self.received_b == LOAD_TARGET_PER_CLIENT)
         {
             let last_sample_at = self.last_sample_at.unwrap_or(now);
             self.last_sample_at = Some(now);
             let (queue_depth, peak_depth, buffered, accepted) =
                 aggregate_diagnostics(self.first.as_ref(), self.second.as_ref());
+            let (current_queue_age, peak_queue_age) =
+                aggregate_queue_age(self.first.as_ref(), self.second.as_ref());
             self.peak_aggregate_depth = self.peak_aggregate_depth.max(queue_depth);
             let (send_budget_exhaustions, receive_budget_exhaustions) =
                 aggregate_budget_exhaustions(self.first.as_ref(), self.second.as_ref());
@@ -443,6 +461,8 @@ impl SmokePair {
                 "elapsed_ms": elapsed.as_millis(),
                 "command_depth": queue_depth,
                 "peak_depth": peak_depth,
+                "current_queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+                "peak_queue_age_ms": peak_queue_age.as_secs_f64() * 1_000.0,
                 "buffered_bytes": buffered,
                 "accepted_frames": accepted,
                 "received_frames": received,
@@ -459,6 +479,15 @@ impl SmokePair {
                 "latest_latency_us": self.last_latency_us,
             });
             godot_print!("SIGNAL_FISH_LOAD sample {sample}");
+            if load_received && queue_depth == 0 && current_queue_age == Duration::ZERO {
+                if self.final_drained_samples == 0 {
+                    self.final_drain_started_at = Some(now);
+                }
+                self.final_drained_samples = self.final_drained_samples.saturating_add(1);
+            } else {
+                self.final_drained_samples = 0;
+                self.final_drain_started_at = None;
+            }
             self.sample_last_accepted = accepted;
             self.sample_last_received = received;
             self.max_poll_work_frames = 0;
@@ -474,15 +503,14 @@ impl SmokePair {
                 .second
                 .as_ref()
                 .is_none_or(|client| client.polling_stats().current_queue_depth == 0);
-        if elapsed >= Duration::from_secs(LOAD_SECONDS)
-            && self.offered_a == LOAD_TARGET_PER_CLIENT
-            && self.offered_b == LOAD_TARGET_PER_CLIENT
-            && self.received_a == LOAD_TARGET_PER_CLIENT
-            && self.received_b == LOAD_TARGET_PER_CLIENT
-            && queues_empty
-        {
+        if load_received && queues_empty && self.final_drained_samples >= FINAL_DRAIN_SAMPLES {
             self.finish_load();
-        } else if elapsed >= Duration::from_secs(LOAD_SECONDS + 5) {
+        } else if (self.final_drain_started_at.is_none()
+            && elapsed >= Duration::from_secs(LOAD_SECONDS + 5))
+            || self.final_drain_started_at.is_some_and(|started| {
+                now.saturating_duration_since(started) >= FINAL_DRAIN_OBSERVATION_TIMEOUT
+            })
+        {
             godot_error!(
                 "SIGNAL_FISH_SMOKE load-drain-error offered={}/{} received={}/{}",
                 self.offered_a,
@@ -490,6 +518,7 @@ impl SmokePair {
                 self.received_a,
                 self.received_b
             );
+            self.load_error = true;
             self.finish_load();
         }
     }
@@ -546,6 +575,8 @@ impl SmokePair {
             .unwrap_or(u64::MAX);
         let (queue_depth, peak_depth, buffered, accepted) =
             aggregate_diagnostics(self.first.as_ref(), self.second.as_ref());
+        let (current_queue_age, peak_queue_age) =
+            aggregate_queue_age(self.first.as_ref(), self.second.as_ref());
         let admission_hits = [self.first.as_ref(), self.second.as_ref()]
             .into_iter()
             .flatten()
@@ -558,12 +589,11 @@ impl SmokePair {
             .fold(0u64, u64::saturating_add);
         let (own_violations, own_escape_bytes, own_within_ceiling) =
             aggregate_godot_admission(self.first.as_ref(), self.second.as_ref());
-        let admission_violations = own_violations
-            .saturating_add(self.other_pair_admission_violations);
-        let one_frame_escape_bytes = own_escape_bytes
-            .saturating_add(self.other_pair_one_frame_escape_bytes);
-        let within_absolute_ceiling =
-            own_within_ceiling && self.other_pair_within_absolute_ceiling;
+        let admission_violations =
+            own_violations.saturating_add(self.other_pair_admission_violations);
+        let one_frame_escape_bytes =
+            own_escape_bytes.saturating_add(self.other_pair_one_frame_escape_bytes);
+        let within_absolute_ceiling = own_within_ceiling && self.other_pair_within_absolute_ceiling;
         let buffering_safe = within_absolute_ceiling && admission_violations == 0;
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
@@ -571,7 +601,10 @@ impl SmokePair {
             && self.offered_b == LOAD_TARGET_PER_CLIENT
             && self.received_a == LOAD_TARGET_PER_CLIENT
             && self.received_b == LOAD_TARGET_PER_CLIENT
+            && self.final_drained_samples >= FINAL_DRAIN_SAMPLES
             && queue_depth == 0
+            && current_queue_age == Duration::ZERO
+            && peak_queue_age <= Duration::from_millis(500)
             && self.peak_aggregate_depth <= 64
             && per_client_peak_depth.into_iter().all(|depth| depth <= 64)
             && self.multi_frame_poll
@@ -595,6 +628,9 @@ impl SmokePair {
             "received_per_client": [self.received_a, self.received_b],
             "final_queue_depth": queue_depth,
             "peak_queue_depth": peak_depth,
+            "current_queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+            "peak_queue_age_ms": peak_queue_age.as_secs_f64() * 1_000.0,
+            "final_drained_samples": self.final_drained_samples,
             "peak_aggregate_queue_depth": self.peak_aggregate_depth,
             "per_client_peak_queue_depth": per_client_peak_depth,
             "buffered_bytes": buffered,
@@ -682,10 +718,11 @@ impl INode for SignalFishSmoke {
             .collect::<Vec<_>>();
         let fortress = FortressScenario::from_user_args(&args);
         let regular_smoke = fortress.is_none();
+        let server_url = user_argument(&args, "--server-url").unwrap_or_else(|| SERVER_URL.into());
         Self {
             base,
-            json: regular_smoke.then(|| SmokePair::new(PairKind::Json)),
-            binary: regular_smoke.then(|| SmokePair::new(PairKind::Binary)),
+            json: regular_smoke.then(|| SmokePair::new(PairKind::Json, &server_url)),
+            binary: regular_smoke.then(|| SmokePair::new(PairKind::Binary, &server_url)),
             fortress,
             complete: false,
         }
@@ -826,10 +863,20 @@ fn aggregate_diagnostics(first: Option<&Client>, second: Option<&Client>) -> (u6
     )
 }
 
-fn aggregate_godot_admission(
-    first: Option<&Client>,
-    second: Option<&Client>,
-) -> (u64, u64, bool) {
+fn aggregate_queue_age(first: Option<&Client>, second: Option<&Client>) -> (Duration, Duration) {
+    [first, second].into_iter().flatten().fold(
+        (Duration::ZERO, Duration::ZERO),
+        |(current, peak), client| {
+            let age = client.queue_age_stats();
+            (
+                current.max(age.current_oldest_queue_age),
+                peak.max(age.peak_oldest_queue_age),
+            )
+        },
+    )
+}
+
+fn aggregate_godot_admission(first: Option<&Client>, second: Option<&Client>) -> (u64, u64, bool) {
     [first, second].into_iter().flatten().fold(
         (0u64, 0u64, true),
         |(violations, escape_bytes, within_ceiling), client| {
@@ -857,8 +904,8 @@ fn default_adaptive_ceiling_bytes() -> Option<u64> {
     }
 }
 
-fn connect_client(kind: PairKind, suffix: &str) -> Option<Client> {
-    match GodotWebSocketTransport::connect(SERVER_URL) {
+fn connect_client(kind: PairKind, suffix: &str, server_url: &str) -> Option<Client> {
+    match GodotWebSocketTransport::connect(server_url) {
         Ok(transport) => {
             let mut config = SignalFishConfig::new(APP_ID).enable_v3();
             config.platform = Some(format!("godot-smoke-{}-{suffix}", kind.label()));
@@ -870,6 +917,11 @@ fn connect_client(kind: PairKind, suffix: &str) -> Option<Client> {
             None
         }
     }
+}
+
+fn user_argument(args: &[String], name: &str) -> Option<String> {
+    args.windows(2)
+        .find_map(|pair| (pair.first().map(String::as_str) == Some(name)).then(|| pair[1].clone()))
 }
 
 fn close_client(client: &mut Option<Client>) {

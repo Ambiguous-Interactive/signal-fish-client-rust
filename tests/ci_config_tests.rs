@@ -31,6 +31,8 @@ mod godot_issue_61_policy {
     fn fixture_and_workflow_pin_the_fortress_system_scenario() {
         let workflow = read_project_file(".github/workflows/godot-web.yml");
         let fixture = read_project_file("tests/godot-web-smoke/Cargo.toml");
+        let fortress_fixture = read_project_file("tests/godot-web-smoke/src/fortress.rs");
+        let fortress_runner = read_project_file("scripts/run-godot-fortress-e2e.mjs");
         let fixture: toml::Value =
             toml::from_str(&fixture).expect("fixture manifest is valid TOML");
         let fortress = fixture["dependencies"]["fortress-rollback"]
@@ -38,17 +40,59 @@ mod godot_issue_61_policy {
             .expect("Fortress dependency uses a simple exact version");
 
         assert_eq!(fortress, "=0.10.0");
+        assert!(fortress_fixture.contains("const PREDICTION_WINDOW_FRAMES: usize = 20;"));
+        assert!(fortress_fixture.contains("with_max_prediction_window(PREDICTION_WINDOW_FRAMES)"));
+        assert!(fortress_runner.contains("scenario === \"soak\" ? 3_600 : 600"));
+        assert!(fortress_runner
+            .contains("scenario === \"clean\" ? 8 : scenario === \"soak\" ? 12 : 13"));
+        assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
             workflow.contains("SERVER_VERSION: \"0.4.0\"")
                 && workflow.contains("run-godot-fortress-e2e.mjs")
+                && workflow.contains("scenario: clean")
+                && workflow.contains("scenario: impaired")
+                && workflow.contains("scenario: soak")
+                && workflow.contains("delay 40ms 10ms")
+                && workflow.contains("loss random 0.2% 25%")
+                && workflow.contains("rate 10mbit")
+                && workflow.contains("NETEM_SEED: \"6101\"")
+                && workflow.contains("IPROUTE2_VERSION: \"6.6.0\"")
+                && workflow.contains("sha256sum --check")
+                && workflow.contains("actions/download-artifact@v7.0.0")
                 && workflow.contains("--locked")
         );
+        assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 2);
+        assert_eq!(workflow.matches("name: godot-web-export").count(), 2);
+        for required in [
+            "needs: build-export",
+            "fail-fast: false",
+            "if: always()",
+            "qdisc add dev veth-host handle ffff: ingress",
+            "qdisc add dev veth-server handle ffff: ingress",
+            "filter show dev veth-host parent ffff:",
+            "filter show dev veth-server parent ffff:",
+        ] {
+            assert!(
+                workflow.contains(required),
+                "Godot CI must retain {required}"
+            );
+        }
+        assert!(!workflow.contains("continue-on-error"));
         for artifact in [
+            "browser.log",
+            "server.log",
+            "godot-throughput.json",
+            "godot-throughput.csv",
+            "metrics-before.prom",
+            "metrics-after.prom",
             "godot-fortress-summary.json",
+            "godot-fortress-timeseries.json",
+            "godot-fortress-timeseries.csv",
             "godot-fortress-a.log",
             "godot-fortress-b.log",
             "fortress-metrics-before.prom",
             "fortress-metrics-after.prom",
+            "netem.txt",
         ] {
             assert!(
                 workflow.contains(artifact),

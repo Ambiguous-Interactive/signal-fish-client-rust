@@ -272,7 +272,9 @@ close details come from `Transport::close_info()`.
   backlog.
 - **Diagnostics are plain accessors.** `send_capacity()`,
   `max_send_capacity()`, `stats()`, and `snapshot()` return plain data on both
-  clients; keep the common APIs mirrored.
+  clients; keep the common APIs mirrored. Polling-only scheduling telemetry
+  such as `PollingQueueAgeStats` stays on the concrete polling client and is
+  exported from the crate root.
 - `GameDataDelivery::Reliable` preserves the v2 wire by omitting class/key;
   `Latest { key }` and `Volatile` require negotiated v3.
 - Adding `SendBufferFull` to the exhaustive `SignalFishError` is breaking

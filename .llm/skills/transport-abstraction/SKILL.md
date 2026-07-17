@@ -61,6 +61,9 @@ The caller owns `frame: Option<TransportFrame>` until the transport takes it.
   it.
 - Once the transport calls `frame.take()`, the backend owns the frame. This is
   successful ownership transfer, not peer delivery or a socket-wide drain.
+- Client-owned queue-age telemetry ends at that `frame.take()` boundary. A
+  refusal that leaves the slot intact must preserve the frame's original
+  enqueue timestamp along with its FIFO identity.
 - A transport may return `Ready(Ok(()))` immediately after backend acceptance.
   Never use a socket-wide buffered amount reaching zero as per-frame completion.
 - If a transport returns `Pending` after taking a frame, it must retain all

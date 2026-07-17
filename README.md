@@ -243,6 +243,11 @@ let transport = GodotWebSocketTransport::connect("wss://server/ws")
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 
+// Reset after authentication/setup, then monitor both queue depth and age.
+client.reset_queue_age_peak();
+let queue_age = client.queue_age_stats();
+assert!(queue_age.current_oldest_queue_age <= queue_age.peak_oldest_queue_age);
+
 // Optional: tune the bounded per-frame work and flush queued commands on close
 // with SignalFishPollingClient::new_with_options(...).
 // Godot admission defaults to an adaptive 50 ms target in the 4-32 KiB range,

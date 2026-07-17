@@ -92,10 +92,21 @@ caller's `Option` intact. Close polling is idempotent. See
 Godot defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
-The blocking Godot workflow runs both the synthetic smoke and a real
-two-process Fortress Rollback session through Signal Fish Server 0.4.0. Its
-deterministic impairment must prove rollback/resimulation, exact state checksum
-convergence, in-sync health, relay/server conservation, and v3 peer departure.
+The blocking Godot workflow builds one official export and runs clean,
+seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
+0.4.0. It checksum-verifies and builds iproute2 6.6.0 for seeded netem rather
+than relying on the runner's older `tc`. A 20-frame Fortress prediction window
+leaves recovery headroom while scenario oracles still enforce eight-frame
+clean, 13-frame impaired, and 12-frame soak lag bounds. The fixture uses a
+peer-independent fixed 18 Hz simulation cadence that preserves elapsed
+deadline debt and catches up by at most one frame per rendered callback, plus
+a one-time proposal/ack/commit startup barrier that maps a shared same-host
+wall-clock deadline to each browser's monotonic clock, preventing process-launch
+order from becoming frame advantage. A bounded causal relay hold and the polling-hitch
+oracle then require rollback and forward gameplay progress. These controls must prove
+rollback/resimulation, bounded confirmation lag with zero waits/stalls, exact
+state checksum convergence, drained queue age/depth with a non-positive final
+eight-sample soak age slope, relay/server conservation, and v3 peer departure.
 
 ### Client Usage Pattern
 
@@ -182,7 +193,10 @@ capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
 work budget is 64 frames/64 KiB in each direction, and its default close policy
 abandons client-owned queued work. Adaptive backpressure and flush-on-close are
 explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
-`transport_diagnostics()` for backend buffering/admission diagnostics.
+`queue_age_stats()` for sampled current/peak age of client-owned work; reset the
+age peak after authentication/setup when measuring gameplay. Backend acceptance
+ends queue age but is not peer delivery. Use `transport_diagnostics()` for
+backend buffering/admission diagnostics.
 Use the polling client's read-only `transport()` accessor for Godot's
 zero-expected `admission_watermark_violations()` counter and the separately
 accounted `one_frame_escape_bytes()` empty-buffer exception.
