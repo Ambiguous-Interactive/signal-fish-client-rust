@@ -77,6 +77,7 @@ export function validateFortressPeer(summary, options = {}) {
   const sessionTimeoutMs = options.sessionTimeoutMs ?? 40_000;
   const errors = [];
   const decimal = /^\d+$/;
+  const requiredStartupFrame = summary?.role === "a" ? 0 : summary?.role === "b" ? 1 : null;
   if (
     summary?.passed !== true || summary?.target_frames !== targetFrames ||
     summary?.settlement_frame_limit !== targetFrames + settlementFrames ||
@@ -102,6 +103,14 @@ export function validateFortressPeer(summary, options = {}) {
     summary.observed_simulation_fps < 12 || summary.observed_simulation_fps > 20 ||
     !isNonnegativeNumber(summary?.max_poll_us) || summary.max_poll_us >= 50_000
   ) errors.push("simulation or callback timing bound failed");
+  if (
+    requiredStartupFrame === null || summary?.startup_barrier_completed !== true ||
+    summary?.startup_barrier_required_remote_frame !== requiredStartupFrame ||
+    summary?.startup_barrier_release_local_frame !== 0 ||
+    !isNonnegativeInteger(summary?.startup_barrier_release_remote_frame) ||
+    summary.startup_barrier_release_remote_frame < requiredStartupFrame ||
+    !isNonnegativeNumber(summary?.startup_barrier_elapsed_ms)
+  ) errors.push("causal startup barrier failed");
   if (
     summary?.multi_frame_poll !== true ||
     !isNonnegativeInteger(summary?.peak_queue_depth) || summary.peak_queue_depth > 64

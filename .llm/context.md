@@ -100,8 +100,9 @@ leaves recovery headroom while scenario oracles still enforce eight-frame
 clean, 13-frame impaired, and 12-frame soak lag bounds. The fixture uses a
 peer-independent fixed 18 Hz simulation cadence that preserves elapsed
 deadline debt and catches up by at most one frame per rendered callback, plus
-a bounded causal relay hold, while the polling-hitch oracle requires forward
-gameplay progress. These controls must prove
+a one-time causal startup barrier that prevents process-launch order from
+becoming frame advantage. A bounded causal relay hold and the polling-hitch
+oracle then require rollback and forward gameplay progress. These controls must prove
 rollback/resimulation, bounded confirmation lag with zero waits/stalls, exact
 state checksum convergence, drained queue age/depth with a non-positive final
 eight-sample soak age slope, relay/server conservation, and v3 peer departure.

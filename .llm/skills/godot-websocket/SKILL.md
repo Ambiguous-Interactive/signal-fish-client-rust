@@ -143,7 +143,11 @@ Advance simulation on a fixed local cadence that does not consult peer or
 network progress, so process scheduling is controlled without hiding genuine
 Fortress stalls. Preserve elapsed deadline debt and recover by at most one
 simulation frame per rendered callback, preventing permanent process skew
-without allowing multi-frame bursts. Use causal post-advance watermarks to
+without allowing multi-frame bursts. Before initializing those local cadence
+deadlines, use a one-time causal barrier: A observes B at frame zero and B
+observes A's subsequent frame one. Retain and validate both roles' release
+watermarks and local release frames so launch order cannot masquerade as
+gameplay lag. Use causal post-advance watermarks to
 bound the relay hold that forces rollback while both games continue advancing,
 and require the polling hitch window to contain forward simulation progress. Its impairment must
 produce measured rollback/load/resimulation, after which

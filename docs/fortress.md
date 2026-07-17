@@ -92,7 +92,10 @@ slices do not become artificial frame advantage and real prediction-window
 stalls remain observable. Delayed callbacks retain their elapsed deadline debt
 and recover by at most one simulation frame per rendered callback, preventing
 permanent scheduling skew without allowing a multi-frame burst. A bounded
-relay hold uses causal post-advance frame watermarks to prove the remote peer
+one-time barrier admits A after B's frame-zero synchronization packet and B
+after A's causally subsequent frame-one packet, preventing process-start order
+from becoming measured gameplay skew. A bounded relay hold uses causal
+post-advance frame watermarks to prove the remote peer
 predicted the changed delayed input before release, forcing rollback, state
 load, and resimulation while both games keep advancing. The hitch oracle
 separately requires forward simulation progress during its six skipped polling

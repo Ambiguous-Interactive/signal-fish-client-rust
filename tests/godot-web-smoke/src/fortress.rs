@@ -139,6 +139,10 @@ pub(super) struct FortressScenario {
     started: Option<Instant>,
     simulation_elapsed_ms: Option<u128>,
     next_advance_at: Option<Instant>,
+    startup_barrier_completed: bool,
+    startup_barrier_release_remote_frame: Option<i32>,
+    startup_barrier_release_local_frame: Option<i32>,
+    startup_barrier_elapsed_ms: Option<u128>,
     game_ready: bool,
     max_poll_us: u64,
     last_time_series_frame: i32,
@@ -232,6 +236,10 @@ impl FortressScenario {
             started: None,
             simulation_elapsed_ms: None,
             next_advance_at: None,
+            startup_barrier_completed: false,
+            startup_barrier_release_remote_frame: None,
+            startup_barrier_release_local_frame: None,
+            startup_barrier_elapsed_ms: None,
             game_ready: false,
             max_poll_us: 0,
             last_time_series_frame: -60,
@@ -597,6 +605,7 @@ impl FortressScenario {
                 "current_frame": sample_frame,
                 "confirmed_frame": session.confirmed_frame().as_i32(),
                 "confirmation_lag": metrics.confirmation_lag_current,
+                "confirmation_lag_max": metrics.confirmation_lag_max,
                 "queue_depth": queue_depth,
                 "queue_age_ms": queue_age_ms,
             });
@@ -622,18 +631,25 @@ impl FortressScenario {
             return;
         }
 
-        // Do not let the first browser advance merely because its local
-        // session entered Running first. Receiving one valid Fortress packet
-        // proves the independently launched peer is also pumping the session,
-        // removing process-start skew from gameplay-lag measurements.
-        if self.relay.borrow().decoded == 0
-            || self
-                .relay
-                .borrow()
-                .remote_frame
-                .is_none_or(|remote| remote < 0)
-        {
+        // Do not let the creator's earlier process start become permanent
+        // gameplay skew. Both sessions emit frame-zero synchronization
+        // packets before advancing. A may advance after observing B at frame
+        // zero; B waits for A's causally later frame-one packet. This one-time
+        // barrier proves A observed B before either peer begins independent
+        // fixed-cadence gameplay.
+        let (decoded, remote_frame) = {
+            let relay = self.relay.borrow();
+            (relay.decoded, relay.remote_frame)
+        };
+        if decoded == 0 || !startup_remote_frame_ready(&self.role, remote_frame) {
             return;
+        }
+        if !self.startup_barrier_completed {
+            self.startup_barrier_completed = true;
+            self.startup_barrier_release_remote_frame = remote_frame;
+            self.startup_barrier_release_local_frame = Some(session.current_frame().as_i32());
+            self.startup_barrier_elapsed_ms =
+                self.started.map(|started| started.elapsed().as_millis());
         }
 
         let target_is_confirmed = session.confirmed_frame().as_i32() >= self.target_frames
@@ -960,8 +976,12 @@ impl FortressScenario {
             self.target_frames,
             self.settlement_frame_limit,
         );
+        let startup_barrier_valid = self.startup_barrier_completed
+            && self.startup_barrier_release_local_frame == Some(0)
+            && startup_remote_frame_ready(&self.role, self.startup_barrier_release_remote_frame);
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
+            && startup_barrier_valid
             && final_inbound_depth == 0
             && final_outbound_depth == 0
             && queue_depth == 0
@@ -998,6 +1018,11 @@ impl FortressScenario {
             "simulation_target_fps": SIMULATION_FPS,
             "observed_simulation_fps": observed_simulation_fps,
             "total_elapsed_ms": total_elapsed_ms,
+            "startup_barrier_completed": self.startup_barrier_completed,
+            "startup_barrier_required_remote_frame": startup_required_remote_frame(&self.role),
+            "startup_barrier_release_remote_frame": self.startup_barrier_release_remote_frame,
+            "startup_barrier_release_local_frame": self.startup_barrier_release_local_frame,
+            "startup_barrier_elapsed_ms": self.startup_barrier_elapsed_ms,
             "max_poll_us": self.max_poll_us,
             "multi_frame_poll": self.multi_frame_poll,
             "game_ready": self.game_ready,
@@ -1059,6 +1084,7 @@ impl FortressScenario {
             "current_frame": self.game.frame,
             "confirmed_frame": self.checksum_through,
             "confirmation_lag": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
+            "confirmation_lag_max": metrics.map_or(0, |metrics| metrics.confirmation_lag_max),
             "queue_depth": queue_depth,
             "queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
             "final": true,
@@ -1091,6 +1117,20 @@ fn scenario_lag_limit(
     } else {
         CLEAN_LAG_LIMIT
     }
+}
+
+fn startup_required_remote_frame(role: &str) -> Option<i32> {
+    match role {
+        "a" => Some(0),
+        "b" => Some(1),
+        _ => None,
+    }
+}
+
+fn startup_remote_frame_ready(role: &str, remote_frame: Option<i32>) -> bool {
+    startup_required_remote_frame(role)
+        .zip(remote_frame)
+        .is_some_and(|(required, observed)| observed >= required)
 }
 
 fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
@@ -1146,8 +1186,20 @@ mod tests {
 
     use super::{
         decode_relay_envelope, encode_relay_envelope, scenario_lag_limit, simulation_advance_due,
-        simulation_frame_period,
+        simulation_frame_period, startup_remote_frame_ready,
     };
+
+    #[test]
+    fn startup_barrier_causally_orders_the_independent_peer_cadences() {
+        assert!(!startup_remote_frame_ready("a", None));
+        assert!(!startup_remote_frame_ready("a", Some(-1)));
+        assert!(startup_remote_frame_ready("a", Some(0)));
+
+        assert!(!startup_remote_frame_ready("b", Some(0)));
+        assert!(startup_remote_frame_ready("b", Some(1)));
+        assert!(startup_remote_frame_ready("b", Some(2)));
+        assert!(!startup_remote_frame_ready("unexpected", Some(i32::MAX)));
+    }
 
     #[test]
     fn fixed_cadence_preserves_deadline_debt_and_bounds_each_recovery_callback() {

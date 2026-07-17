@@ -396,13 +396,14 @@ try {
     writeFile(
       "godot-fortress-timeseries.csv",
       `${[
-        "role,elapsed_ms,current_frame,confirmed_frame,confirmation_lag,queue_depth,queue_age_ms",
+        "role,elapsed_ms,current_frame,confirmed_frame,confirmation_lag,confirmation_lag_max,queue_depth,queue_age_ms",
         ...peers.flatMap((peer) => peer.samples.map((sample) => [
           sample.role,
           sample.elapsed_ms,
           sample.current_frame,
           sample.confirmed_frame,
           sample.confirmation_lag,
+          sample.confirmation_lag_max,
           sample.queue_depth,
           sample.queue_age_ms,
         ].join(","))),

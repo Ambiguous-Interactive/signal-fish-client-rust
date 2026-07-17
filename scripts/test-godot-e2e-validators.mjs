@@ -14,6 +14,10 @@ function peer(role) {
     passed: true, role, target_frames: 600, game_frame: 600, checksum_through: 600,
     settlement_frame_limit: 620, session_timeout_ms: 40_000, simulation_elapsed_ms: 20_000,
     simulation_target_fps: 18, observed_simulation_fps: 18,
+    startup_barrier_completed: true,
+    startup_barrier_required_remote_frame: role === "a" ? 0 : 1,
+    startup_barrier_release_remote_frame: role === "a" ? 0 : 1,
+    startup_barrier_release_local_frame: 0, startup_barrier_elapsed_ms: 100,
     max_poll_us: 1_000, multi_frame_poll: true, peak_queue_depth: 4,
     confirmed_input_checksum: "123", target_state_checksum: "456", game_ready: true,
     sync_in_sync: true, queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 40,
@@ -93,6 +97,9 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["settlement schema", (value) => { delete value.settlement_frame_limit; }],
     ["timeout schema", (value) => { delete value.session_timeout_ms; }],
     ["callback schema", (value) => { delete value.max_poll_us; }],
+    ["startup completion", (value) => { value.startup_barrier_completed = false; }],
+    ["startup local frame", (value) => { value.startup_barrier_release_local_frame = 1; }],
+    ["startup elapsed time", (value) => { delete value.startup_barrier_elapsed_ms; }],
     ["simulation cadence", (value) => { value.observed_simulation_fps = 11; }],
     ["queue-depth schema", (value) => { delete value.peak_queue_depth; }],
     ["age schema", (value) => { delete value.peak_queue_age_ms; }],
@@ -104,6 +111,10 @@ test("Fortress oracle rejects each critical negative control", () => {
     mutation(corrupted);
     assert.equal(validateFortressPeer(corrupted, { requireHitch: true }).ok, false, label);
   }
+
+  const staleCreatorWatermark = structuredClone(second);
+  staleCreatorWatermark.startup_barrier_release_remote_frame = 0;
+  assert.equal(validateFortressPeer(staleCreatorWatermark).ok, false, "B rejects stale A0");
 
   for (const [label, mutation] of [
     ["checksum", (value) => { value.target_state_checksum = "different"; }],
