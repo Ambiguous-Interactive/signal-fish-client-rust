@@ -222,6 +222,10 @@ cargo test --test client_tests --all-features
 - Returning `Poll::Pending` without using `cx.waker()` deliberately never
   wakes the async driver. Use this only for mocks meant to stay idle until
   shutdown; transports with later input or send capacity must register/wake.
+- For polling schedulers, use generated transition sequences plus a reference
+  ownership model. Persist shrunken failures and include negative models that
+  duplicate a frame or impose stop-and-wait so the oracle's sensitivity is
+  itself tested.
 
 ## Custom Code Scanners in Tests
 

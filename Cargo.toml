@@ -81,6 +81,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "1.0"
 # Used by the wire-sample provenance policy test to verify checksums.
 sha2 = "0.11"
+# Generates and shrinks polling-driver scheduler transition sequences.
+proptest = "1.7"
 
 [[example]]
 name = "basic_lobby"

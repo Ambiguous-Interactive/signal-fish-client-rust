@@ -343,6 +343,15 @@ Use `polling_stats()` for client-owned queue depth, budget exhaustion, and
 deadline counters; use `transport_diagnostics()` for backend buffering,
 watermark, acceptance, and capacity counters. Backend acceptance is not peer
 delivery.
+Use `queue_age_stats()` alongside depth to detect a fixed-depth queue whose
+oldest command is becoming progressively stale. The current and peak ages are
+sampled on polls and queue mutations. Authentication/setup time contributes
+until `reset_queue_age_peak()` is called; backend acceptance stops the age
+immediately but does not mean the peer has received the frame.
+[Godot's `WebSocketPeer`](https://docs.godotengine.org/en/stable/classes/class_websocketpeer.html)
+reports its outbound buffer separately, matching the
+[WebSocket `bufferedAmount` contract](https://websockets.spec.whatwg.org/):
+buffering after acceptance is backend-owned, not proof of peer delivery.
 
 ### API reference
 
@@ -379,6 +388,8 @@ environment).
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
 | `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue, work-budget, abandonment, and deadline diagnostics. |
+| `queue_age_stats()` | `fn queue_age_stats(&self) -> PollingQueueAgeStats` | Sampled current/peak age of the oldest client-owned outbound item. |
+| `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Refresh current age and reset the sampled peak to it. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 
 !!! tip "Comparison with `SignalFishClient`"

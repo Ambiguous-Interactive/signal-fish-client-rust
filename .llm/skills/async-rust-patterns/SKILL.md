@@ -153,6 +153,12 @@ The polling client uses a noop waker and calls the methods again on the next
 game-loop tick. A transport may therefore support both models with the same
 state machine.
 
+Polling queue-age telemetry follows client ownership: timestamp on enqueue,
+preserve the timestamp while pre-acceptance `Pending` retains the exact frame,
+and stop counting it as soon as `poll_send` takes the frame. Sample age with
+`Instant::saturating_duration_since` so a regressing injected/test clock cannot
+violate `peak >= current`.
+
 Do not create and immediately drop a readiness future on every poll: dropping
 it may unregister its waker. Retain the future/state across polls or poll the
 underlying primitive directly.

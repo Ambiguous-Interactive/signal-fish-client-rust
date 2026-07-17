@@ -105,6 +105,28 @@ pub struct PollingStats {
     pub close_deadline_expirations: u64,
 }
 
+/// Sampled age of the oldest client-owned outbound command or frame.
+///
+/// Authentication and other setup commands contribute to these values until
+/// [`SignalFishPollingClient::reset_queue_age_peak`] is called. The age stops
+/// when the transport accepts ownership of a frame; transport acceptance is
+/// not peer delivery, and backend-owned buffering is reported separately by
+/// [`SignalFishPollingClient::transport_diagnostics`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollingQueueAgeStats {
+    /// Age of the oldest client-owned item at the latest sample.
+    pub current_oldest_queue_age: Duration,
+    /// Highest sampled age of the oldest client-owned item since construction
+    /// or the latest peak reset.
+    pub peak_oldest_queue_age: Duration,
+}
+
+#[derive(Debug)]
+struct QueuedCommand {
+    command: PollingCommand,
+    enqueued_at: Instant,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ClosePhase {
     Open,
@@ -162,7 +184,7 @@ enum ClosePhase {
 /// ```
 pub struct SignalFishPollingClient<T: Transport> {
     transport: T,
-    cmd_queue: VecDeque<PollingCommand>,
+    cmd_queue: VecDeque<QueuedCommand>,
     /// Maximum number of queued commands before sends fail fast with
     /// [`SignalFishError::SendBufferFull`]. Mirrors the async client's
     /// bounded command channel.
@@ -170,9 +192,11 @@ pub struct SignalFishPollingClient<T: Transport> {
     core: ClientCore,
     options: PollingClientOptions,
     polling_stats: PollingStats,
+    queue_age_stats: PollingQueueAgeStats,
     shutdown_timeout: Duration,
     started: bool,
     pending_frame: Option<TransportFrame>,
+    pending_frame_enqueued_at: Option<Instant>,
     /// The transport accepted the current frame and is still completing it.
     /// While true, poll with `None` and do not dequeue a replacement frame.
     send_in_flight: bool,
@@ -209,8 +233,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
         let auth_msg = ClientCore::authenticate(&config);
 
+        let now = Instant::now();
         let mut cmd_queue = VecDeque::new();
-        cmd_queue.push_back(auth_msg);
+        cmd_queue.push_back(QueuedCommand {
+            command: auth_msg,
+            enqueued_at: now,
+        });
 
         let shutdown_timeout = config.shutdown_timeout;
         let mut client = Self {
@@ -228,16 +256,18 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 peak_queue_depth: 1,
                 ..PollingStats::default()
             },
+            queue_age_stats: PollingQueueAgeStats::default(),
             shutdown_timeout,
             started: false,
             pending_frame: None,
+            pending_frame_enqueued_at: None,
             send_in_flight: false,
             pending_frame_is_game_data: false,
             in_flight_is_game_data: false,
             pending_inbound: None,
             close_phase: ClosePhase::Open,
         };
-        client.refresh_queue_depth();
+        client.refresh_queue_diagnostics_at(now);
         client
     }
 
@@ -277,6 +307,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     fn poll_at(&mut self, now: Instant) -> Vec<SignalFishEvent> {
         let mut events = Vec::new();
+        self.refresh_queue_diagnostics_at(now);
 
         // Create a noop waker to poll transport futures synchronously.
         let waker = std::task::Waker::noop();
@@ -292,7 +323,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return events;
         }
 
-        if let Err(error) = self.drive_outbound(&mut cx) {
+        if let Err(error) = self.drive_outbound(&mut cx, now) {
             error!(%error, "transport send failed");
             self.handle_disconnect_at(
                 &mut events,
@@ -689,6 +720,22 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.polling_stats
     }
 
+    /// Return the latest sampled client-owned queue-age diagnostics.
+    ///
+    /// Queue age is sampled on every poll and queue mutation. Empty queues
+    /// report zero. Backend acceptance ends client ownership immediately; use
+    /// [`transport_diagnostics`](Self::transport_diagnostics) for buffering
+    /// after that boundary.
+    pub fn queue_age_stats(&self) -> PollingQueueAgeStats {
+        self.queue_age_stats
+    }
+
+    /// Refresh the current oldest client-owned queue age and reset its peak to
+    /// that sampled value.
+    pub fn reset_queue_age_peak(&mut self) {
+        self.reset_queue_age_peak_at(Instant::now());
+    }
+
     /// Return backend-owned transport buffering and admission diagnostics.
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         self.transport.diagnostics()
@@ -730,7 +777,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         let _ = self.core.disconnect(Some("client closed".into()));
         self.close_phase = match self.options.close_policy {
             PollingClosePolicy::Abandon => {
-                self.abandon_client_owned(false);
+                self.abandon_client_owned(false, now);
                 if self.send_in_flight {
                     ClosePhase::Flushing { started_at: now }
                 } else {
@@ -750,10 +797,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     fn queue_operation(&mut self, operation: ClientOperation) -> Result<()> {
         let command = self.core.prepare(operation)?;
-        self.queue_command(command)
+        self.queue_command_at(command, Instant::now())
     }
 
-    fn queue_command(&mut self, command: PollingCommand) -> Result<()> {
+    fn queue_command_at(&mut self, command: PollingCommand, now: Instant) -> Result<()> {
         if !self.core.is_connected() {
             return Err(SignalFishError::NotConnected);
         }
@@ -766,14 +813,18 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 capacity: self.command_capacity,
             });
         }
-        self.cmd_queue.push_back(command);
-        self.refresh_queue_depth();
+        self.cmd_queue.push_back(QueuedCommand {
+            command,
+            enqueued_at: now,
+        });
+        self.refresh_queue_diagnostics_at(now);
         Ok(())
     }
 
     fn drive_outbound(
         &mut self,
         cx: &mut std::task::Context<'_>,
+        now: Instant,
     ) -> std::result::Result<(), SignalFishError> {
         if self.send_in_flight {
             let mut no_frame = None;
@@ -799,20 +850,16 @@ impl<T: Transport> SignalFishPollingClient<T> {
         let mut sent_bytes = 0usize;
         loop {
             if self.pending_frame.is_none() {
-                let Some(command) = self.cmd_queue.pop_front() else {
+                let Some(queued) = self.cmd_queue.pop_front() else {
                     break;
                 };
-                match command {
+                self.pending_frame_enqueued_at = Some(queued.enqueued_at);
+                match queued.command {
                     PollingCommand::Message(message) => {
-                        let json = match serde_json::to_string(&message) {
-                            Ok(json) => json,
-                            Err(error) => {
-                                error!(%error, "failed to serialize ClientMessage");
-                                self.polling_stats.abandoned_commands =
-                                    self.polling_stats.abandoned_commands.saturating_add(1);
-                                self.refresh_queue_depth();
-                                continue;
-                            }
+                        let Some(json) =
+                            self.finish_serialization_at(serde_json::to_string(&message), now)
+                        else {
+                            continue;
                         };
                         self.pending_frame_is_game_data =
                             matches!(message, ClientMessage::GameData { .. });
@@ -823,7 +870,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                         self.pending_frame = Some(TransportFrame::Binary(payload));
                     }
                 }
-                self.refresh_queue_depth();
+                self.refresh_queue_diagnostics_at(now);
             }
 
             let frame_bytes = self
@@ -843,9 +890,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
             let result = self.transport.poll_send(cx, &mut self.pending_frame);
             let transferred = self.pending_frame.is_none();
             if transferred {
+                self.pending_frame_enqueued_at = None;
                 sent_frames = sent_frames.saturating_add(1);
                 sent_bytes = next_bytes.unwrap_or(usize::MAX);
-                self.refresh_queue_depth();
+                self.refresh_queue_diagnostics_at(now);
             }
             match result {
                 std::task::Poll::Ready(Ok(())) => {
@@ -890,7 +938,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             ClosePhase::Open | ClosePhase::Closed => return,
         };
         if now.saturating_duration_since(started_at) >= self.shutdown_timeout {
-            self.abandon_client_owned(true);
+            self.abandon_client_owned(true, now);
             self.transport.abort();
             self.polling_stats.close_deadline_expirations = self
                 .polling_stats
@@ -904,9 +952,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.drain_closing_inbound(cx);
 
         if matches!(self.close_phase, ClosePhase::Flushing { .. }) {
-            if let Err(error) = self.drive_outbound(cx) {
+            if let Err(error) = self.drive_outbound(cx, now) {
                 error!(%error, "queued send failed while flushing close");
-                self.abandon_client_owned(false);
+                self.abandon_client_owned(false, now);
                 self.close_phase = ClosePhase::Closing { started_at };
             } else if !self.has_outbound_work() {
                 self.close_phase = ClosePhase::Closing { started_at };
@@ -975,7 +1023,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         cx: &mut std::task::Context<'_>,
         now: Instant,
     ) {
-        self.abandon_client_owned(false);
+        self.abandon_client_owned(false, now);
         self.pending_inbound = None;
         self.close_phase = if self.send_in_flight {
             ClosePhase::Flushing { started_at: now }
@@ -990,7 +1038,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.send_in_flight || self.pending_frame.is_some() || !self.cmd_queue.is_empty()
     }
 
-    fn abandon_client_owned(&mut self, include_in_flight: bool) {
+    fn abandon_client_owned(&mut self, include_in_flight: bool, now: Instant) {
         let mut abandoned = self.cmd_queue.len();
         abandoned = abandoned.saturating_add(usize::from(self.pending_frame.is_some()));
         if include_in_flight {
@@ -1000,15 +1048,38 @@ impl<T: Transport> SignalFishPollingClient<T> {
         }
         self.cmd_queue.clear();
         self.pending_frame = None;
+        self.pending_frame_enqueued_at = None;
         self.pending_frame_is_game_data = false;
         self.polling_stats.abandoned_commands = self
             .polling_stats
             .abandoned_commands
             .saturating_add(u64::try_from(abandoned).unwrap_or(u64::MAX));
-        self.refresh_queue_depth();
+        self.refresh_queue_diagnostics_at(now);
     }
 
-    fn refresh_queue_depth(&mut self) {
+    fn record_serialization_failure_at(&mut self, now: Instant) {
+        self.polling_stats.abandoned_commands =
+            self.polling_stats.abandoned_commands.saturating_add(1);
+        self.pending_frame_enqueued_at = None;
+        self.refresh_queue_diagnostics_at(now);
+    }
+
+    fn finish_serialization_at(
+        &mut self,
+        result: serde_json::Result<String>,
+        now: Instant,
+    ) -> Option<String> {
+        match result {
+            Ok(json) => Some(json),
+            Err(error) => {
+                error!(%error, "failed to serialize ClientMessage");
+                self.record_serialization_failure_at(now);
+                None
+            }
+        }
+    }
+
+    fn refresh_queue_diagnostics_at(&mut self, now: Instant) {
         let depth = self
             .cmd_queue
             .len()
@@ -1018,6 +1089,21 @@ impl<T: Transport> SignalFishPollingClient<T> {
             .polling_stats
             .peak_queue_depth
             .max(self.polling_stats.current_queue_depth);
+
+        let oldest = self
+            .pending_frame_enqueued_at
+            .or_else(|| self.cmd_queue.front().map(|queued| queued.enqueued_at));
+        let current = oldest.map_or(Duration::ZERO, |enqueued_at| {
+            now.saturating_duration_since(enqueued_at)
+        });
+        self.queue_age_stats.current_oldest_queue_age = current;
+        self.queue_age_stats.peak_oldest_queue_age =
+            self.queue_age_stats.peak_oldest_queue_age.max(current);
+    }
+
+    fn reset_queue_age_peak_at(&mut self, now: Instant) {
+        self.refresh_queue_diagnostics_at(now);
+        self.queue_age_stats.peak_oldest_queue_age = self.queue_age_stats.current_oldest_queue_age;
     }
 }
 
@@ -1154,6 +1240,8 @@ impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingC
 )]
 mod tests {
     use std::collections::VecDeque;
+
+    use proptest::{prop_assert, prop_assert_eq};
 
     use super::*;
     use crate::protocol::ServerMessage;
@@ -1309,6 +1397,18 @@ mod tests {
 
     fn default_config() -> SignalFishConfig {
         SignalFishConfig::new("test_app_id")
+    }
+
+    fn enqueue_direct<T: Transport>(
+        client: &mut SignalFishPollingClient<T>,
+        command: PollingCommand,
+    ) {
+        let now = Instant::now();
+        client.cmd_queue.push_back(QueuedCommand {
+            command,
+            enqueued_at: now,
+        });
+        client.refresh_queue_diagnostics_at(now);
     }
 
     fn accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
@@ -3751,6 +3851,180 @@ mod tests {
     }
 
     #[test]
+    fn constant_depth_can_have_positive_oldest_queue_age_slope() {
+        let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport = TogglePendingSendTransport {
+            allow,
+            sent: Vec::new(),
+            _sent_binary: Vec::new(),
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        client
+            .cmd_queue
+            .front_mut()
+            .expect("Authenticate should be queued")
+            .enqueued_at = base;
+
+        let _ = client.poll_at(base);
+        let first_depth = client.polling_stats().current_queue_depth;
+        let first_age = client.queue_age_stats().current_oldest_queue_age;
+        let _ = client.poll_at(base + Duration::from_millis(40));
+        let second_depth = client.polling_stats().current_queue_depth;
+        let second_age = client.queue_age_stats().current_oldest_queue_age;
+
+        assert_eq!(second_depth, first_depth);
+        assert!(second_age > first_age);
+        assert_eq!(second_age, Duration::from_millis(40));
+    }
+
+    #[test]
+    fn refused_frame_retains_fifo_identity_and_ages_until_acceptance() {
+        let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport = TogglePendingSendTransport {
+            allow: std::sync::Arc::clone(&allow),
+            sent: Vec::new(),
+            _sent_binary: Vec::new(),
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        client
+            .cmd_queue
+            .front_mut()
+            .expect("Authenticate should be queued")
+            .enqueued_at = base;
+
+        let _ = client.poll_at(base + Duration::from_millis(10));
+        let refused = client
+            .pending_frame
+            .clone()
+            .expect("refused frame should remain client-owned");
+        let refused_at = client.pending_frame_enqueued_at;
+        let _ = client.poll_at(base + Duration::from_millis(25));
+
+        assert_eq!(client.pending_frame.as_ref(), Some(&refused));
+        assert_eq!(client.pending_frame_enqueued_at, refused_at);
+        assert_eq!(
+            client.queue_age_stats().current_oldest_queue_age,
+            Duration::from_millis(25)
+        );
+
+        allow.store(true, std::sync::atomic::Ordering::Release);
+        let _ = client.poll_at(base + Duration::from_millis(30));
+
+        assert!(client.pending_frame.is_none());
+        assert!(client.pending_frame_enqueued_at.is_none());
+        assert_eq!(
+            client.queue_age_stats().current_oldest_queue_age,
+            Duration::ZERO
+        );
+        assert_eq!(
+            client.queue_age_stats().peak_oldest_queue_age,
+            Duration::from_millis(30)
+        );
+        assert_eq!(client.transport.sent.len(), 1);
+    }
+
+    #[test]
+    fn queue_age_peak_reset_clock_regression_and_close_preserve_invariants() {
+        let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport = TogglePendingSendTransport {
+            allow,
+            sent: Vec::new(),
+            _sent_binary: Vec::new(),
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        client
+            .cmd_queue
+            .front_mut()
+            .expect("Authenticate should be queued")
+            .enqueued_at = base;
+
+        let _ = client.poll_at(base + Duration::from_millis(50));
+        client.reset_queue_age_peak_at(base + Duration::from_millis(20));
+        let regressed = client.queue_age_stats();
+        assert_eq!(
+            regressed.current_oldest_queue_age,
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            regressed.peak_oldest_queue_age,
+            regressed.current_oldest_queue_age
+        );
+
+        let _ = client.poll_at(base - Duration::from_millis(1));
+        let regressed = client.queue_age_stats();
+        assert_eq!(regressed.current_oldest_queue_age, Duration::ZERO);
+        assert_eq!(regressed.peak_oldest_queue_age, Duration::from_millis(20));
+
+        client.close_at(base + Duration::from_millis(60));
+        let drained = client.queue_age_stats();
+        assert_eq!(drained.current_oldest_queue_age, Duration::ZERO);
+        assert_eq!(drained.peak_oldest_queue_age, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn serialization_failure_cleanup_stops_queue_age_and_preserves_peak() {
+        let mut client = SignalFishPollingClient::new(MockTransport::new(), default_config());
+        let base = Instant::now();
+        let queued = client
+            .cmd_queue
+            .pop_front()
+            .expect("Authenticate should be queued");
+        let _ = queued;
+        client.pending_frame_enqueued_at = Some(base);
+        client.refresh_queue_diagnostics_at(base + Duration::from_millis(10));
+
+        let serialization_error = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("the injected malformed JSON should fail");
+        assert!(client
+            .finish_serialization_at(Err(serialization_error), base + Duration::from_millis(20),)
+            .is_none());
+
+        let age = client.queue_age_stats();
+        assert_eq!(age.current_oldest_queue_age, Duration::ZERO);
+        assert_eq!(age.peak_oldest_queue_age, Duration::from_millis(10));
+        assert_eq!(client.polling_stats().abandoned_commands, 1);
+
+        // `ClientMessage` contains only JSON-representable SDK and
+        // `serde_json::Value` fields, so safe public inputs cannot construct a
+        // failing message. Inject an error into the same result transition
+        // used by `drive_outbound` instead.
+    }
+
+    #[test]
+    fn backend_accepted_pending_frame_stops_contributing_to_queue_age() {
+        let transport = AcceptedPendingSendTransport {
+            retained: None,
+            sent: Vec::new(),
+            replacement_seen: false,
+            peer_closes_on_recv: false,
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        client
+            .cmd_queue
+            .front_mut()
+            .expect("Authenticate should be queued")
+            .enqueued_at = base;
+
+        let _ = client.poll_at(base + Duration::from_millis(25));
+
+        assert!(client.send_in_flight, "backend should retain Authenticate");
+        assert!(client.pending_frame.is_none());
+        assert_eq!(
+            client.queue_age_stats().current_oldest_queue_age,
+            Duration::ZERO,
+            "backend ownership must stop client queue age even while completion is pending"
+        );
+        assert_eq!(
+            client.queue_age_stats().peak_oldest_queue_age,
+            Duration::from_millis(25)
+        );
+    }
+
+    #[test]
     fn accepted_pending_send_completes_before_dequeuing_replacement() {
         let transport = AcceptedPendingSendTransport {
             retained: None,
@@ -3790,17 +4064,10 @@ mod tests {
     fn one_poll_transfers_multiple_text_and_binary_frames() {
         let transport = RecordingFrameTransport::default();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Binary(vec![1, 2, 3]));
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.cmd_queue.push_back(PollingCommand::Binary(vec![4]));
-        client.refresh_queue_depth();
+        enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
+        enqueue_direct(&mut client, PollingCommand::Binary(vec![1, 2, 3]));
+        enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
+        enqueue_direct(&mut client, PollingCommand::Binary(vec![4]));
 
         let _ = client.poll();
 
@@ -3835,11 +4102,8 @@ mod tests {
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         for _ in 0..5 {
-            client
-                .cmd_queue
-                .push_back(PollingCommand::Message(ClientMessage::Ping));
+            enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
         }
-        client.refresh_queue_depth();
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 3);
@@ -3866,10 +4130,7 @@ mod tests {
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         let _ = client.poll();
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Binary(vec![7; 32]));
-        client.refresh_queue_depth();
+        enqueue_direct(&mut client, PollingCommand::Binary(vec![7; 32]));
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 2);
@@ -3895,11 +4156,8 @@ mod tests {
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
         let _ = client.poll();
         for byte in [1, 2, 3] {
-            client
-                .cmd_queue
-                .push_back(PollingCommand::Binary(vec![byte; 4]));
+            enqueue_direct(&mut client, PollingCommand::Binary(vec![byte; 4]));
         }
-        client.refresh_queue_depth();
 
         let _ = client.poll();
         assert_eq!(client.transport.sent.len(), 2);
@@ -4100,16 +4358,25 @@ mod tests {
     fn abandon_close_discards_queued_work_and_starts_close() {
         let transport = RecordingFrameTransport::default();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.refresh_queue_depth();
+        enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
+        let base = Instant::now();
+        for queued in &mut client.cmd_queue {
+            queued.enqueued_at = base;
+        }
+        client.refresh_queue_diagnostics_at(base + Duration::from_millis(15));
 
-        client.close();
+        client.close_at(base + Duration::from_millis(20));
 
         assert_eq!(client.transport.sent.len(), 0);
         assert_eq!(client.transport.close_calls, 1);
         assert_eq!(client.polling_stats().abandoned_commands, 2);
+        assert_eq!(
+            client.queue_age_stats(),
+            PollingQueueAgeStats {
+                current_oldest_queue_age: Duration::ZERO,
+                peak_oldest_queue_age: Duration::from_millis(15),
+            }
+        );
         assert!(!client.is_closing());
         assert!(matches!(client.ping(), Err(SignalFishError::NotConnected)));
     }
@@ -4128,6 +4395,14 @@ mod tests {
 
         assert!(client.pending_frame.is_none());
         assert_eq!(client.polling_stats().abandoned_commands, 1);
+        assert_eq!(
+            client.queue_age_stats().current_oldest_queue_age,
+            Duration::ZERO
+        );
+        assert!(
+            client.queue_age_stats().peak_oldest_queue_age
+                >= client.queue_age_stats().current_oldest_queue_age
+        );
         assert_eq!(client.transport.close_calls, 1);
         assert!(!client.is_closing());
     }
@@ -4141,10 +4416,7 @@ mod tests {
         let transport = RecordingFrameTransport::default();
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
-        client
-            .cmd_queue
-            .push_back(PollingCommand::Message(ClientMessage::Ping));
-        client.refresh_queue_depth();
+        enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
 
         client.close();
 
@@ -4208,11 +4480,8 @@ mod tests {
             let config = default_config().with_shutdown_timeout(Duration::from_millis(10));
             let mut client = SignalFishPollingClient::new_with_options(transport, config, options);
             for _ in 0..4 {
-                client
-                    .cmd_queue
-                    .push_back(PollingCommand::Message(ClientMessage::Ping));
+                enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
             }
-            client.refresh_queue_depth();
             let started_at = Instant::now();
 
             let _ = client.poll_at(started_at);
@@ -4715,5 +4984,808 @@ mod tests {
             matches!(join_result, Err(SignalFishError::NotConnected)),
             "expected NotConnected after close(), got: {join_result:?}"
         );
+    }
+
+    // ── H. Model-based scheduler verification ─────────────────────
+
+    #[derive(Debug, Clone)]
+    enum SchedulerOperation {
+        EnqueueText,
+        EnqueueBinary,
+        Poll,
+        SetReady(bool),
+        RefuseBeforeAcceptance,
+        PendingAfterAcceptance(bool),
+        CapacityRecovery,
+        SetCloseReady(bool),
+        ReceiveText,
+        ReceiveBinary,
+        AdvanceClock(u8),
+        Close,
+        Abort,
+    }
+
+    fn scheduler_operations() -> impl proptest::strategy::Strategy<Value = Vec<SchedulerOperation>>
+    {
+        use proptest::prelude::*;
+
+        prop::collection::vec(
+            prop_oneof![
+                5 => Just(SchedulerOperation::EnqueueText),
+                5 => Just(SchedulerOperation::EnqueueBinary),
+                8 => Just(SchedulerOperation::Poll),
+                1 => any::<bool>().prop_map(SchedulerOperation::SetReady),
+                2 => Just(SchedulerOperation::RefuseBeforeAcceptance),
+                2 => any::<bool>().prop_map(SchedulerOperation::PendingAfterAcceptance),
+                2 => Just(SchedulerOperation::CapacityRecovery),
+                1 => any::<bool>().prop_map(SchedulerOperation::SetCloseReady),
+                2 => Just(SchedulerOperation::ReceiveText),
+                2 => Just(SchedulerOperation::ReceiveBinary),
+                3 => (0u8..=20).prop_map(SchedulerOperation::AdvanceClock),
+                1 => Just(SchedulerOperation::Close),
+                1 => Just(SchedulerOperation::Abort),
+            ],
+            1..96,
+        )
+        .prop_map(|mut operations| {
+            // Every generated close/refusal/in-flight state gets an explicit
+            // recovery suffix. The driver must remain stuck until these
+            // transitions occur, then finish in finite polls.
+            operations.push(SchedulerOperation::CapacityRecovery);
+            operations.push(SchedulerOperation::PendingAfterAcceptance(false));
+            operations.push(SchedulerOperation::SetCloseReady(true));
+            operations.extend((0..8).map(|_| SchedulerOperation::Poll));
+            operations
+        })
+    }
+
+    fn scheduler_budgets() -> impl proptest::strategy::Strategy<Value = PollingWorkBudget> {
+        use proptest::prelude::*;
+
+        (1usize..=4, 1usize..=160, 1usize..=4, 1usize..=160).prop_map(
+            |(send_frames, send_bytes, receive_frames, receive_bytes)| PollingWorkBudget {
+                send_frames,
+                send_bytes,
+                receive_frames,
+                receive_bytes,
+            },
+        )
+    }
+
+    #[derive(Default)]
+    struct SchedulerTransport {
+        ready: bool,
+        accept: bool,
+        pending_after_acceptance: bool,
+        complete_retained: bool,
+        close_ready: bool,
+        retained: Option<TransportFrame>,
+        accepted: Vec<TransportFrame>,
+        incoming: VecDeque<TransportFrame>,
+        replacement_seen: bool,
+        close_calls: u64,
+        abort_calls: u64,
+    }
+
+    impl Transport for SchedulerTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            if self.retained.is_some() {
+                self.replacement_seen |= frame.is_some();
+                if !self.complete_retained {
+                    return std::task::Poll::Pending;
+                }
+                let retained = self
+                    .retained
+                    .take()
+                    .expect("retained frame was checked immediately above");
+                let _ = retained;
+                return std::task::Poll::Ready(Ok(()));
+            }
+            if !self.accept {
+                return std::task::Poll::Pending;
+            }
+            let Some(accepted) = frame.take() else {
+                return std::task::Poll::Ready(Ok(()));
+            };
+            self.accepted.push(accepted.clone());
+            if self.pending_after_acceptance {
+                self.retained = Some(accepted);
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            self.incoming
+                .pop_front()
+                .map_or(std::task::Poll::Pending, |frame| {
+                    std::task::Poll::Ready(Some(Ok(frame)))
+                })
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            self.close_calls = self.close_calls.saturating_add(1);
+            if self.close_ready {
+                std::task::Poll::Ready(Ok(()))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+
+        fn abort(&mut self) {
+            self.abort_calls = self.abort_calls.saturating_add(1);
+            self.retained = None;
+        }
+
+        fn is_ready(&self) -> bool {
+            self.ready
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SchedulerReceiveIdentity {
+        Text(u64),
+        Binary(u64),
+    }
+
+    #[derive(Debug, Clone)]
+    struct SchedulerInbound {
+        frame: TransportFrame,
+        identity: SchedulerReceiveIdentity,
+    }
+
+    #[derive(Default)]
+    struct SchedulerModel {
+        commands: VecDeque<(TransportFrame, Instant)>,
+        pending: Option<(TransportFrame, Instant)>,
+        backend_in_flight: Option<TransportFrame>,
+        accepted: Vec<TransportFrame>,
+        incoming: VecDeque<SchedulerInbound>,
+        current_age: Duration,
+        peak_age: Duration,
+        connected_emitted: bool,
+        abandoned: u64,
+        close_started_at: Option<Instant>,
+        close_calls: u64,
+        abort_calls: u64,
+        close_deadline_expirations: u64,
+        closed: bool,
+    }
+
+    impl SchedulerModel {
+        fn sample_age(&mut self, now: Instant) {
+            let oldest = self
+                .pending
+                .as_ref()
+                .map(|(_, enqueued_at)| *enqueued_at)
+                .or_else(|| self.commands.front().map(|(_, enqueued_at)| *enqueued_at));
+            self.current_age = oldest.map_or(Duration::ZERO, |enqueued_at| {
+                now.saturating_duration_since(enqueued_at)
+            });
+            self.peak_age = self.peak_age.max(self.current_age);
+        }
+
+        fn client_owned_depth(&self) -> usize {
+            self.commands
+                .len()
+                .saturating_add(usize::from(self.pending.is_some()))
+        }
+
+        fn all_outbound_depth(&self) -> usize {
+            self.client_owned_depth()
+                .saturating_add(usize::from(self.backend_in_flight.is_some()))
+        }
+
+        fn abandon_client_owned(&mut self, include_in_flight: bool, now: Instant) -> usize {
+            let mut abandoned = self.client_owned_depth();
+            self.commands.clear();
+            self.pending = None;
+            if include_in_flight {
+                abandoned =
+                    abandoned.saturating_add(usize::from(self.backend_in_flight.take().is_some()));
+            }
+            self.sample_age(now);
+            abandoned
+        }
+
+        fn stage_pending(&mut self, now: Instant) {
+            if self.pending.is_none() {
+                self.pending = self.commands.pop_front();
+                if self.pending.is_some() {
+                    self.sample_age(now);
+                }
+            }
+        }
+
+        fn is_open(&self) -> bool {
+            self.close_started_at.is_none() && !self.closed
+        }
+
+        fn is_closing(&self) -> bool {
+            self.close_started_at.is_some() && !self.closed
+        }
+    }
+
+    fn scheduler_text(id: u64) -> (PollingCommand, TransportFrame) {
+        let message = ClientMessage::GameData {
+            data: serde_json::json!({ "scheduler_id": id }),
+            class: None,
+            key: None,
+        };
+        let frame = TransportFrame::Text(
+            serde_json::to_string(&message).expect("scheduler text frame should serialize"),
+        );
+        (PollingCommand::Message(message), frame)
+    }
+
+    fn scheduler_binary(id: u64) -> (PollingCommand, TransportFrame) {
+        let mut bytes = vec![0x42];
+        bytes.extend_from_slice(&id.to_be_bytes());
+        (
+            PollingCommand::Binary(bytes.clone()),
+            TransportFrame::Binary(bytes),
+        )
+    }
+
+    fn scheduler_inbound(id: u64, binary: bool) -> SchedulerInbound {
+        if binary {
+            let frame = crate::protocol::V2BinaryGameDataFrame {
+                from_player: uuid::Uuid::from_u128(0xfeed),
+                encoding: GameDataEncoding::MessagePack,
+                payload: id.to_be_bytes().to_vec(),
+            };
+            SchedulerInbound {
+                frame: TransportFrame::Binary(
+                    rmp_serde::to_vec_named(&frame)
+                        .expect("scheduler binary receive frame should serialize"),
+                ),
+                identity: SchedulerReceiveIdentity::Binary(id),
+            }
+        } else {
+            SchedulerInbound {
+                frame: TransportFrame::Text(
+                    serde_json::to_string(&ServerMessage::Error {
+                        message: format!("scheduler-receive-{id}"),
+                        error_code: None,
+                    })
+                    .expect("scheduler Error frame should serialize"),
+                ),
+                identity: SchedulerReceiveIdentity::Text(id),
+            }
+        }
+    }
+
+    fn scheduler_event_identity(event: &SignalFishEvent) -> Option<SchedulerReceiveIdentity> {
+        match event {
+            SignalFishEvent::Error { message, .. } => message
+                .strip_prefix("scheduler-receive-")?
+                .parse()
+                .ok()
+                .map(SchedulerReceiveIdentity::Text),
+            SignalFishEvent::GameDataBinary { payload, .. } => {
+                let bytes: [u8; 8] = payload.as_slice().try_into().ok()?;
+                Some(SchedulerReceiveIdentity::Binary(u64::from_be_bytes(bytes)))
+            }
+            _ => None,
+        }
+    }
+
+    fn declarative_admission_count(
+        model: &SchedulerModel,
+        accept: bool,
+        pending_after_acceptance: bool,
+        budget: PollingWorkBudget,
+    ) -> usize {
+        if !accept {
+            return 0;
+        }
+        let candidates = model
+            .pending
+            .iter()
+            .map(|(frame, _)| frame)
+            .chain(model.commands.iter().map(|(frame, _)| frame));
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        for frame in candidates {
+            let next_bytes = bytes.saturating_add(frame_payload_len(frame));
+            if count >= budget.send_frames || (count > 0 && next_bytes > budget.send_bytes) {
+                break;
+            }
+            count = count.saturating_add(1);
+            bytes = next_bytes;
+            if pending_after_acceptance {
+                break;
+            }
+        }
+        count
+    }
+
+    fn drive_scheduler_model(
+        model: &mut SchedulerModel,
+        now: Instant,
+        accept: bool,
+        pending_after_acceptance: bool,
+        complete_retained: bool,
+        budget: PollingWorkBudget,
+    ) -> Vec<TransportFrame> {
+        if model.backend_in_flight.is_some() {
+            if !complete_retained {
+                return Vec::new();
+            }
+            model.backend_in_flight = None;
+        }
+
+        model.stage_pending(now);
+        let admission_count =
+            declarative_admission_count(model, accept, pending_after_acceptance, budget);
+        let mut accepted = Vec::new();
+        let mut bytes = 0usize;
+        for index in 0..admission_count {
+            let (frame, _) = model
+                .pending
+                .take()
+                .expect("declarative admission selected an available frame");
+            model.accepted.push(frame.clone());
+            accepted.push(frame.clone());
+            bytes = bytes.saturating_add(frame_payload_len(&frame));
+            model.sample_age(now);
+            if pending_after_acceptance {
+                model.backend_in_flight = Some(frame);
+            } else if index + 1 < admission_count {
+                model.stage_pending(now);
+            }
+        }
+
+        // The driver stages the next FIFO frame before discovering that it
+        // would exceed a non-exact byte budget. Exact frame/byte exhaustion
+        // stops at the queue boundary instead.
+        if !pending_after_acceptance
+            && accepted.len() < budget.send_frames
+            && bytes < budget.send_bytes
+        {
+            model.stage_pending(now);
+        }
+        accepted
+    }
+
+    #[derive(Clone, Copy)]
+    struct SchedulerTransportState {
+        accept: bool,
+        pending_after_acceptance: bool,
+        complete_retained: bool,
+        close_ready: bool,
+    }
+
+    fn scheduler_transport_state(
+        client: &SignalFishPollingClient<SchedulerTransport>,
+    ) -> SchedulerTransportState {
+        SchedulerTransportState {
+            accept: client.transport.accept,
+            pending_after_acceptance: client.transport.pending_after_acceptance,
+            complete_retained: client.transport.complete_retained,
+            close_ready: client.transport.close_ready,
+        }
+    }
+
+    fn drive_model_close_tick(
+        model: &mut SchedulerModel,
+        now: Instant,
+        transport: SchedulerTransportState,
+        budget: PollingWorkBudget,
+    ) -> Vec<TransportFrame> {
+        let accepted = drive_scheduler_model(
+            model,
+            now,
+            transport.accept,
+            transport.pending_after_acceptance,
+            transport.complete_retained,
+            budget,
+        );
+        if model.all_outbound_depth() == 0 {
+            model.close_calls = model.close_calls.saturating_add(1);
+            if transport.close_ready {
+                model.closed = true;
+            }
+        }
+        accepted
+    }
+
+    fn start_model_close(
+        model: &mut SchedulerModel,
+        now: Instant,
+        flush_on_close: bool,
+        transport: SchedulerTransportState,
+        budget: PollingWorkBudget,
+    ) -> Vec<TransportFrame> {
+        if !model.is_open() {
+            return Vec::new();
+        }
+        model.close_started_at = Some(now);
+        if !flush_on_close {
+            let abandoned = model.abandon_client_owned(false, now);
+            model.abandoned = model
+                .abandoned
+                .saturating_add(u64::try_from(abandoned).unwrap_or(u64::MAX));
+        }
+        drive_model_close_tick(model, now, transport, budget)
+    }
+
+    fn poll_model_close(
+        model: &mut SchedulerModel,
+        now: Instant,
+        transport: SchedulerTransportState,
+        budget: PollingWorkBudget,
+    ) -> Vec<TransportFrame> {
+        model.sample_age(now);
+        let started_at = model
+            .close_started_at
+            .expect("closing model should retain its start time");
+        if now.saturating_duration_since(started_at) >= Duration::from_millis(50) {
+            let abandoned = model.abandon_client_owned(true, now);
+            model.abandoned = model
+                .abandoned
+                .saturating_add(u64::try_from(abandoned).unwrap_or(u64::MAX));
+            model.abort_calls = model.abort_calls.saturating_add(1);
+            model.close_deadline_expirations = model.close_deadline_expirations.saturating_add(1);
+            model.closed = true;
+            Vec::new()
+        } else {
+            drive_model_close_tick(model, now, transport, budget)
+        }
+    }
+
+    fn drive_scheduler_receive_model(
+        model: &mut SchedulerModel,
+        budget: PollingWorkBudget,
+    ) -> Vec<SchedulerInbound> {
+        let mut processed = Vec::new();
+        let mut frames = 0usize;
+        let mut bytes = 0usize;
+        while let Some(inbound) = model.incoming.front() {
+            let next_bytes = bytes.checked_add(frame_payload_len(&inbound.frame));
+            if frames > 0
+                && (frames >= budget.receive_frames
+                    || next_bytes.is_none_or(|next| next > budget.receive_bytes))
+            {
+                break;
+            }
+            let inbound = model
+                .incoming
+                .pop_front()
+                .expect("model receive front was just checked");
+            frames = frames.saturating_add(1);
+            bytes = next_bytes.unwrap_or(usize::MAX);
+            processed.push(inbound);
+        }
+        processed
+    }
+
+    fn scheduler_batch_within_budget(
+        batch: &[TransportFrame],
+        frame_limit: usize,
+        byte_limit: usize,
+    ) -> bool {
+        let bytes = batch.iter().fold(0usize, |total, frame| {
+            total.saturating_add(frame_payload_len(frame))
+        });
+        batch.len() <= frame_limit && (bytes <= byte_limit || batch.len() == 1)
+    }
+
+    fn scheduler_transition_matches(
+        expected: &[TransportFrame],
+        observed: &[TransportFrame],
+        budget: PollingWorkBudget,
+    ) -> bool {
+        expected == observed
+            && scheduler_batch_within_budget(observed, budget.send_frames, budget.send_bytes)
+    }
+
+    #[test]
+    fn scheduler_oracle_rejects_stop_and_wait_and_duplication_models() {
+        let budget = PollingWorkBudget {
+            send_frames: 2,
+            send_bytes: 8,
+            ..PollingWorkBudget::default()
+        };
+        let now = Instant::now();
+        let first = TransportFrame::Binary(vec![1; 4]);
+        let second = TransportFrame::Binary(vec![2; 4]);
+        let mut model = SchedulerModel::default();
+        model.commands.push_back((first.clone(), now));
+        model.commands.push_back((second.clone(), now));
+        let expected = drive_scheduler_model(&mut model, now, true, false, true, budget);
+
+        let stop_and_wait = vec![first.clone()];
+        let duplication = vec![first.clone(), first, second];
+        assert!(scheduler_transition_matches(&expected, &expected, budget));
+        assert!(!scheduler_transition_matches(
+            &expected,
+            &stop_and_wait,
+            budget
+        ));
+        assert!(!scheduler_transition_matches(
+            &expected,
+            &duplication,
+            budget
+        ));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 128,
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::SourceParallel(
+                    "proptest-regressions",
+                ),
+            )),
+            ..proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn polling_scheduler_matches_reference_model(
+            operations in scheduler_operations(),
+            flush_on_close in proptest::bool::ANY,
+            budget in scheduler_budgets(),
+            command_capacity in 1usize..=6,
+        ) {
+            let options = PollingClientOptions {
+                work_budget: budget,
+                close_policy: if flush_on_close {
+                    PollingClosePolicy::Flush
+                } else {
+                    PollingClosePolicy::Abandon
+                },
+            };
+            let mut config = default_config()
+                .with_command_channel_capacity(command_capacity)
+                .with_shutdown_timeout(Duration::from_millis(50));
+            config.game_data_format = Some(GameDataEncoding::MessagePack);
+            let transport = SchedulerTransport {
+                ready: false,
+                accept: true,
+                complete_retained: true,
+                close_ready: true,
+                ..SchedulerTransport::default()
+            };
+            let mut client = SignalFishPollingClient::new_with_options(transport, config, options);
+            let mut now = Instant::now();
+            let startup_events = client.poll_at(now);
+            prop_assert!(!startup_events
+                .iter()
+                .any(|event| matches!(event, SignalFishEvent::Connected)));
+            client.transport.accepted.clear();
+            client.reset_queue_age_peak_at(now);
+            let mut model = SchedulerModel::default();
+            let mut next_outbound_id = 1u64;
+            let mut next_receive_id = 1u64;
+
+            for operation in operations {
+                if model.closed {
+                    prop_assert!(matches!(
+                        client.queue_command_at(PollingCommand::Binary(vec![0]), now),
+                        Err(SignalFishError::NotConnected)
+                    ));
+                    continue;
+                }
+                match operation {
+                    operation @ (SchedulerOperation::EnqueueText
+                    | SchedulerOperation::EnqueueBinary) => {
+                        let id = next_outbound_id;
+                        next_outbound_id = next_outbound_id.saturating_add(1);
+                        let (command, frame) = match operation {
+                            SchedulerOperation::EnqueueText => scheduler_text(id),
+                            SchedulerOperation::EnqueueBinary => scheduler_binary(id),
+                            _ => unreachable!("enqueue alternatives were matched above"),
+                        };
+                        if model.is_closing() {
+                            prop_assert!(matches!(
+                                client.queue_command_at(command, now),
+                                Err(SignalFishError::NotConnected)
+                            ));
+                        } else {
+                            let expected_full = model.commands.len() >= command_capacity;
+                            let result = client.queue_command_at(command, now);
+                            if expected_full {
+                                match result {
+                                    Err(SignalFishError::SendBufferFull { capacity }) => {
+                                        prop_assert_eq!(capacity, command_capacity);
+                                    }
+                                    other => prop_assert!(
+                                        false,
+                                        "full scheduler queue returned {other:?}"
+                                    ),
+                                }
+                            } else {
+                                prop_assert!(result.is_ok());
+                                model.commands.push_back((frame, now));
+                                model.sample_age(now);
+                            }
+                        }
+                    }
+                    SchedulerOperation::Poll => {
+                        let was_open = model.is_open();
+                        let transport_state = scheduler_transport_state(&client);
+                        let accepted_before = client.transport.accepted.len();
+                        let events = client.poll_at(now);
+                        let expected_accepted = if was_open {
+                            model.sample_age(now);
+                            drive_scheduler_model(
+                                &mut model,
+                                now,
+                                transport_state.accept,
+                                transport_state.pending_after_acceptance,
+                                transport_state.complete_retained,
+                                budget,
+                            )
+                        } else {
+                            poll_model_close(&mut model, now, transport_state, budget)
+                        };
+                        let actual_accepted = &client.transport.accepted[accepted_before..];
+                        prop_assert!(scheduler_transition_matches(
+                            &expected_accepted,
+                            actual_accepted,
+                            budget
+                        ));
+
+                        let should_connect =
+                            was_open && client.transport.ready && !model.connected_emitted;
+                        let connected_count = events
+                            .iter()
+                            .filter(|event| matches!(event, SignalFishEvent::Connected))
+                            .count();
+                        prop_assert_eq!(connected_count, usize::from(should_connect));
+                        if should_connect {
+                            model.connected_emitted = true;
+                        }
+
+                        let expected_inbound = if was_open {
+                            drive_scheduler_receive_model(&mut model, budget)
+                        } else {
+                            Vec::new()
+                        };
+                        let actual_inbound = events
+                            .iter()
+                            .filter_map(scheduler_event_identity)
+                            .collect::<Vec<_>>();
+                        let expected_identities = expected_inbound
+                            .iter()
+                            .map(|inbound| inbound.identity)
+                            .collect::<Vec<_>>();
+                        prop_assert_eq!(&actual_inbound, &expected_identities);
+                        let processed_frames = expected_inbound
+                            .iter()
+                            .map(|inbound| inbound.frame.clone())
+                            .collect::<Vec<_>>();
+                        prop_assert!(scheduler_batch_within_budget(
+                            &processed_frames,
+                            budget.receive_frames,
+                            budget.receive_bytes,
+                        ));
+                    }
+                    SchedulerOperation::SetReady(ready) => client.transport.ready = ready,
+                    SchedulerOperation::RefuseBeforeAcceptance => client.transport.accept = false,
+                    SchedulerOperation::PendingAfterAcceptance(pending) => {
+                        client.transport.pending_after_acceptance = pending;
+                        if pending {
+                            client.transport.complete_retained = false;
+                        }
+                    }
+                    SchedulerOperation::CapacityRecovery => {
+                        client.transport.accept = true;
+                        client.transport.complete_retained = true;
+                    }
+                    SchedulerOperation::SetCloseReady(ready) => {
+                        client.transport.close_ready = ready;
+                    }
+                    operation @ (SchedulerOperation::ReceiveText
+                    | SchedulerOperation::ReceiveBinary) => {
+                        let inbound = scheduler_inbound(
+                            next_receive_id,
+                            matches!(operation, SchedulerOperation::ReceiveBinary),
+                        );
+                        next_receive_id = next_receive_id.saturating_add(1);
+                        client.transport.incoming.push_back(inbound.frame.clone());
+                        model.incoming.push_back(inbound);
+                    }
+                    SchedulerOperation::AdvanceClock(milliseconds) => {
+                        now += Duration::from_millis(u64::from(milliseconds));
+                    }
+                    SchedulerOperation::Close => {
+                        let transport_state = scheduler_transport_state(&client);
+                        let accepted_before = client.transport.accepted.len();
+                        let expected = start_model_close(
+                            &mut model,
+                            now,
+                            flush_on_close,
+                            transport_state,
+                            budget,
+                        );
+                        client.close_at(now);
+                        let actual = &client.transport.accepted[accepted_before..];
+                        prop_assert!(scheduler_transition_matches(&expected, actual, budget));
+                    }
+                    SchedulerOperation::Abort => {
+                        client.transport.accept = false;
+                        client.transport.complete_retained = false;
+                        client.transport.close_ready = false;
+                        let transport_state = SchedulerTransportState {
+                            accept: false,
+                            pending_after_acceptance: client.transport.pending_after_acceptance,
+                            complete_retained: false,
+                            close_ready: false,
+                        };
+                        if model.is_open() {
+                            let accepted_before = client.transport.accepted.len();
+                            let expected = start_model_close(
+                                &mut model,
+                                now,
+                                flush_on_close,
+                                transport_state,
+                                budget,
+                            );
+                            client.close_at(now);
+                            let actual = &client.transport.accepted[accepted_before..];
+                            prop_assert!(scheduler_transition_matches(&expected, actual, budget));
+                        }
+                        let deadline = model
+                            .close_started_at
+                            .expect("abort operation should start close")
+                            + Duration::from_millis(50);
+                        now = now.max(deadline);
+                        let expected = poll_model_close(&mut model, now, transport_state, budget);
+                        prop_assert!(expected.is_empty());
+                        let _ = client.poll_at(now);
+                    }
+                }
+
+                prop_assert!(client.cmd_queue.len() <= command_capacity);
+                prop_assert!(!client.transport.replacement_seen);
+                prop_assert_eq!(
+                    client.polling_stats.current_queue_depth,
+                    u64::try_from(model.client_owned_depth())
+                        .unwrap_or(u64::MAX),
+                );
+                prop_assert_eq!(
+                    client.queue_age_stats.current_oldest_queue_age,
+                    model.current_age
+                );
+                prop_assert_eq!(
+                    client.queue_age_stats.peak_oldest_queue_age,
+                    model.peak_age
+                );
+                prop_assert_eq!(client.polling_stats.abandoned_commands, model.abandoned);
+                prop_assert_eq!(client.transport.close_calls, model.close_calls);
+                prop_assert_eq!(client.transport.abort_calls, model.abort_calls);
+                prop_assert_eq!(
+                    client.polling_stats.close_deadline_expirations,
+                    model.close_deadline_expirations
+                );
+                prop_assert_eq!(client.is_closing(), model.is_closing());
+                prop_assert_eq!(&client.transport.accepted, &model.accepted);
+                if model.closed {
+                    prop_assert!(!client.is_closing());
+                    prop_assert_eq!(client.polling_stats.current_queue_depth, 0);
+                    prop_assert_eq!(model.current_age, Duration::ZERO);
+                    prop_assert!(matches!(
+                        client.queue_command_at(PollingCommand::Binary(vec![0]), now),
+                        Err(SignalFishError::NotConnected)
+                    ));
+                    break;
+                }
+            }
+            prop_assert!(!model.is_closing(), "recovery suffix must finish close");
+            prop_assert!(!client.is_closing(), "driver must finish after recovery suffix");
+        }
     }
 }

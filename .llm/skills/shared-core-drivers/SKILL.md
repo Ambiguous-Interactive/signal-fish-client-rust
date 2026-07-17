@@ -27,7 +27,8 @@ pending transport sends, bounded per-poll send/receive work, scheduling
 diagnostics, and deadline-bounded close progress. Its default close policy
 abandons client-owned queued work; flush-on-close is an explicit option. Never
 wait indefinitely for polling close, and never interpret backend acceptance as
-peer delivery.
+peer delivery. Queue age belongs only to polling-driver client ownership and
+stops at backend acceptance; backend buffering remains transport diagnostics.
 
 Never add protocol interpretation or state mutation directly to a driver. Add
 it to `ClientCore`, then exercise it through both drivers in the parity matrix.
