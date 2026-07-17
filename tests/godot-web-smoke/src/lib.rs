@@ -18,6 +18,8 @@ const LOAD_SECONDS: u64 = 16;
 const LOAD_RATE_PER_CLIENT: u64 = 136;
 const LOAD_TARGET_PER_CLIENT: u64 = LOAD_SECONDS * LOAD_RATE_PER_CLIENT;
 const LOAD_MAX_QUEUE_DEPTH_PER_CLIENT: u64 = 32;
+const FINAL_DRAIN_SAMPLES: u8 = 8;
+const FINAL_DRAIN_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
@@ -84,6 +86,8 @@ struct SmokePair {
     last_latency_us: u64,
     sample_last_accepted: u64,
     sample_last_received: u64,
+    final_drained_samples: u8,
+    final_drain_started_at: Option<Instant>,
     max_poll_work_frames: u64,
     max_poll_work_bytes: u64,
     max_poll_receive_frames: u64,
@@ -132,6 +136,8 @@ impl SmokePair {
             last_latency_us: 0,
             sample_last_accepted: 0,
             sample_last_received: 0,
+            final_drained_samples: 0,
+            final_drain_started_at: None,
             max_poll_work_frames: 0,
             max_poll_work_bytes: 0,
             max_poll_receive_frames: 0,
@@ -215,6 +221,8 @@ impl SmokePair {
                 self.sample_last_accepted =
                     self.last_accepted_a.saturating_add(self.last_accepted_b);
                 self.sample_last_received = 0;
+                self.final_drained_samples = 0;
+                self.final_drain_started_at = None;
                 self.max_poll_work_frames = 0;
                 self.max_poll_work_bytes = 0;
                 self.max_poll_receive_frames = 0;
@@ -415,15 +423,15 @@ impl SmokePair {
         let (current_depth, _, _, _) =
             aggregate_diagnostics(self.first.as_ref(), self.second.as_ref());
         self.peak_aggregate_depth = self.peak_aggregate_depth.max(current_depth);
+        let load_received = elapsed >= Duration::from_secs(LOAD_SECONDS)
+            && self.offered_a == LOAD_TARGET_PER_CLIENT
+            && self.offered_b == LOAD_TARGET_PER_CLIENT
+            && self.received_a == LOAD_TARGET_PER_CLIENT
+            && self.received_b == LOAD_TARGET_PER_CLIENT;
 
         if self
             .last_sample_at
             .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(250))
-            || (elapsed >= Duration::from_secs(LOAD_SECONDS)
-                && self.offered_a == LOAD_TARGET_PER_CLIENT
-                && self.offered_b == LOAD_TARGET_PER_CLIENT
-                && self.received_a == LOAD_TARGET_PER_CLIENT
-                && self.received_b == LOAD_TARGET_PER_CLIENT)
         {
             let last_sample_at = self.last_sample_at.unwrap_or(now);
             self.last_sample_at = Some(now);
@@ -471,6 +479,15 @@ impl SmokePair {
                 "latest_latency_us": self.last_latency_us,
             });
             godot_print!("SIGNAL_FISH_LOAD sample {sample}");
+            if load_received && queue_depth == 0 && current_queue_age == Duration::ZERO {
+                if self.final_drained_samples == 0 {
+                    self.final_drain_started_at = Some(now);
+                }
+                self.final_drained_samples = self.final_drained_samples.saturating_add(1);
+            } else {
+                self.final_drained_samples = 0;
+                self.final_drain_started_at = None;
+            }
             self.sample_last_accepted = accepted;
             self.sample_last_received = received;
             self.max_poll_work_frames = 0;
@@ -486,15 +503,14 @@ impl SmokePair {
                 .second
                 .as_ref()
                 .is_none_or(|client| client.polling_stats().current_queue_depth == 0);
-        if elapsed >= Duration::from_secs(LOAD_SECONDS)
-            && self.offered_a == LOAD_TARGET_PER_CLIENT
-            && self.offered_b == LOAD_TARGET_PER_CLIENT
-            && self.received_a == LOAD_TARGET_PER_CLIENT
-            && self.received_b == LOAD_TARGET_PER_CLIENT
-            && queues_empty
-        {
+        if load_received && queues_empty && self.final_drained_samples >= FINAL_DRAIN_SAMPLES {
             self.finish_load();
-        } else if elapsed >= Duration::from_secs(LOAD_SECONDS + 5) {
+        } else if (self.final_drain_started_at.is_none()
+            && elapsed >= Duration::from_secs(LOAD_SECONDS + 5))
+            || self.final_drain_started_at.is_some_and(|started| {
+                now.saturating_duration_since(started) >= FINAL_DRAIN_OBSERVATION_TIMEOUT
+            })
+        {
             godot_error!(
                 "SIGNAL_FISH_SMOKE load-drain-error offered={}/{} received={}/{}",
                 self.offered_a,

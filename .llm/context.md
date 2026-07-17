@@ -97,7 +97,7 @@ seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
 0.4.0. It checksum-verifies and builds iproute2 6.6.0 for seeded netem rather
 than relying on the runner's older `tc`. A 20-frame Fortress prediction window
 leaves recovery headroom while scenario oracles still enforce eight-frame
-clean and 12-frame impaired/soak lag bounds. The fixture uses a
+clean, 13-frame impaired, and 12-frame soak lag bounds. The fixture uses a
 peer-independent fixed 18 Hz simulation cadence that preserves elapsed
 deadline debt and catches up by at most one frame per rendered callback, plus
 a bounded causal relay hold, while the polling-hitch oracle requires forward

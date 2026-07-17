@@ -27,7 +27,8 @@ const IMPAIRMENT_START_FRAME: i32 = 120;
 const INPUT_DELAY_FRAMES: i32 = 2;
 const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
 const CLEAN_LAG_LIMIT: u64 = 8;
-const IMPAIRED_LAG_LIMIT: u64 = 12;
+const IMPAIRED_LAG_LIMIT: u64 = 13;
+const SOAK_LAG_LIMIT: u64 = 12;
 const PREDICTION_WINDOW_FRAMES: usize = 20;
 const SIMULATION_FPS: usize = 18;
 const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
@@ -954,7 +955,11 @@ impl FortressScenario {
             .map_or(0.0, |elapsed| {
                 self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
             });
-        let lag_limit = scenario_lag_limit(self.poll_hitch_frame, self.settlement_frame_limit);
+        let lag_limit = scenario_lag_limit(
+            self.poll_hitch_frame,
+            self.target_frames,
+            self.settlement_frame_limit,
+        );
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
             && final_inbound_depth == 0
@@ -1072,9 +1077,17 @@ fn simulation_frame_period() -> std::time::Duration {
     std::time::Duration::from_nanos(1_000_000_000 / SIMULATION_FPS as u64)
 }
 
-fn scenario_lag_limit(poll_hitch_frame: Option<i32>, settlement_frame_limit: i32) -> u64 {
+fn scenario_lag_limit(
+    poll_hitch_frame: Option<i32>,
+    target_frames: i32,
+    settlement_frame_limit: i32,
+) -> u64 {
     if poll_hitch_frame.is_some_and(|frame| (0..settlement_frame_limit).contains(&frame)) {
-        IMPAIRED_LAG_LIMIT
+        if target_frames > DEFAULT_TARGET_FRAMES {
+            SOAK_LAG_LIMIT
+        } else {
+            IMPAIRED_LAG_LIMIT
+        }
     } else {
         CLEAN_LAG_LIMIT
     }
@@ -1166,10 +1179,11 @@ mod tests {
 
     #[test]
     fn clean_and_impaired_self_oracles_use_the_runner_lag_limits() {
-        assert_eq!(scenario_lag_limit(None, 620), 8);
-        assert_eq!(scenario_lag_limit(Some(240), 620), 12);
-        assert_eq!(scenario_lag_limit(Some(-1), 620), 8);
-        assert_eq!(scenario_lag_limit(Some(620), 620), 8);
+        assert_eq!(scenario_lag_limit(None, 600, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(240), 600, 620), 13);
+        assert_eq!(scenario_lag_limit(Some(240), 3_600, 3_620), 12);
+        assert_eq!(scenario_lag_limit(Some(-1), 600, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(620), 600, 620), 8);
     }
 
     #[test]

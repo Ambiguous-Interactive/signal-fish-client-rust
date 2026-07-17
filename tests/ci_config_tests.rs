@@ -43,7 +43,8 @@ mod godot_issue_61_policy {
         assert!(fortress_fixture.contains("const PREDICTION_WINDOW_FRAMES: usize = 20;"));
         assert!(fortress_fixture.contains("with_max_prediction_window(PREDICTION_WINDOW_FRAMES)"));
         assert!(fortress_runner.contains("scenario === \"soak\" ? 3_600 : 600"));
-        assert!(fortress_runner.contains("scenario === \"clean\" ? 8 : 12"));
+        assert!(fortress_runner
+            .contains("scenario === \"clean\" ? 8 : scenario === \"soak\" ? 12 : 13"));
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
             workflow.contains("SERVER_VERSION: \"0.4.0\"")

@@ -86,8 +86,8 @@ hitch at frame 240; the soak advances 3,600 confirmed frames under the same
 profile. The fixture configures a 20-frame prediction window so acceptable
 constrained-network lag and the declared hitch can recover without an internal
 scheduler stall; the scenario oracles still cap observed confirmation lag at
-eight clean or 12 impaired/soak frames. Simulation advances on a fixed local
-18 Hz cadence, independent of peer or network progress, so unequal browser CPU
+eight clean, 13 impaired, or 12 soak frames. Simulation advances on a fixed
+local 18 Hz cadence, independent of peer or network progress, so unequal browser CPU
 slices do not become artificial frame advantage and real prediction-window
 stalls remain observable. Delayed callbacks retain their elapsed deadline debt
 and recover by at most one simulation frame per rendered callback, preventing

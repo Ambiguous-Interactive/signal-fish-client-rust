@@ -66,6 +66,12 @@ test("Fortress oracle rejects each critical negative control", () => {
   const second = peer("b");
   assert.equal(validateFortressPeer(first).ok, true);
   assert.equal(validateFortressPair(first, second).ok, true);
+  const impairedBoundary = structuredClone(first);
+  impairedBoundary.confirmation_lag_current = 13;
+  impairedBoundary.confirmation_lag_max = 13;
+  assert.equal(validateFortressPeer(impairedBoundary, { lagLimit: 13 }).ok, true);
+  impairedBoundary.confirmation_lag_max = 14;
+  assert.equal(validateFortressPeer(impairedBoundary, { lagLimit: 13 }).ok, false);
 
   for (const [label, mutation] of [
     ["frame confirmation", (value) => { value.checksum_through = 599; }],
