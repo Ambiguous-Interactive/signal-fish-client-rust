@@ -225,11 +225,7 @@ function assertPeerSummary(peer) {
       `Fortress peer ${peer.role} failed its oracle: ${JSON.stringify({ validation, summary })}`,
     );
   }
-  const finalAgeSamples = peer.samples.slice(-8).map((sample) => ({
-    elapsed_ms: sample.current_frame,
-    queue_age_ms: sample.queue_age_ms,
-  }));
-  const finalAgeValidation = validateFinalSlope(finalAgeSamples, "queue_age_ms");
+  const finalAgeValidation = validateFinalSlope(peer.samples, "queue_age_ms");
   peer.finalAgeSlope = finalAgeValidation.slope;
   if (scenario === "soak" && !finalAgeValidation.ok) {
     throw new Error(
@@ -400,9 +396,10 @@ try {
     writeFile(
       "godot-fortress-timeseries.csv",
       `${[
-        "role,current_frame,confirmed_frame,confirmation_lag,queue_depth,queue_age_ms",
+        "role,elapsed_ms,current_frame,confirmed_frame,confirmation_lag,queue_depth,queue_age_ms",
         ...peers.flatMap((peer) => peer.samples.map((sample) => [
           sample.role,
+          sample.elapsed_ms,
           sample.current_frame,
           sample.confirmed_frame,
           sample.confirmation_lag,

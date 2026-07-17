@@ -108,6 +108,12 @@ test("final slope oracle requires eight samples and rejects growth", () => {
   const growing = structuredClone(samples);
   growing.forEach((sample, index) => { sample.queue_age_ms = index; });
   assert.equal(validateFinalSlope(growing, "queue_age_ms").ok, false);
+  const regressingClock = structuredClone(samples);
+  regressingClock[6].elapsed_ms = 2;
+  assert.equal(validateFinalSlope(regressingClock, "queue_age_ms").ok, false);
+  const frozenClock = structuredClone(samples);
+  frozenClock.forEach((sample) => { sample.elapsed_ms = 1; });
+  assert.equal(validateFinalSlope(frozenClock, "queue_age_ms").ok, false);
 });
 
 test("server oracle rejects delivery-count corruption", () => {

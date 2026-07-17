@@ -549,6 +549,7 @@ impl FortressScenario {
             });
             let sample = serde_json::json!({
                 "role": self.role,
+                "elapsed_ms": self.started.map_or(0, |started| started.elapsed().as_millis()),
                 "current_frame": sample_frame,
                 "confirmed_frame": session.confirmed_frame().as_i32(),
                 "confirmation_lag": metrics.confirmation_lag_current,
@@ -953,6 +954,7 @@ impl FortressScenario {
         });
         let final_sample = serde_json::json!({
             "role": self.role,
+            "elapsed_ms": total_elapsed_ms,
             "current_frame": self.game.frame,
             "confirmed_frame": self.checksum_through,
             "confirmation_lag": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),

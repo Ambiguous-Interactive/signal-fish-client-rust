@@ -1,5 +1,9 @@
 export function linearSlope(samples, field) {
   if (samples.length < 2) return Number.NaN;
+  if (samples.some((sample, index) =>
+    !Number.isFinite(sample.elapsed_ms) || !Number.isFinite(sample[field]) ||
+    (index > 0 && sample.elapsed_ms < samples[index - 1].elapsed_ms)
+  )) return Number.NaN;
   const meanX = samples.reduce((sum, sample) => sum + sample.elapsed_ms, 0) / samples.length;
   const meanY = samples.reduce((sum, sample) => sum + sample[field], 0) / samples.length;
   const numerator = samples.reduce(
@@ -10,7 +14,7 @@ export function linearSlope(samples, field) {
     (sum, sample) => sum + (sample.elapsed_ms - meanX) ** 2,
     0,
   );
-  return numerator / Math.max(1, denominator);
+  return denominator > 0 ? numerator / denominator : Number.NaN;
 }
 
 export function validateFinalSlope(samples, field) {
