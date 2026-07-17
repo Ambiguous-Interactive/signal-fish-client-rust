@@ -26,6 +26,8 @@ const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
 const INPUT_DELAY_FRAMES: i32 = 2;
 const IMPAIRMENT_MAX_HOLD_FRAMES: i32 = 8;
+const CLEAN_LAG_LIMIT: u64 = 8;
+const IMPAIRED_LAG_LIMIT: u64 = 12;
 const PREDICTION_WINDOW_FRAMES: usize = 20;
 const SIMULATION_FPS: usize = 18;
 const RELAY_ENVELOPE_MAGIC: &[u8; 4] = b"SFF1";
@@ -952,6 +954,7 @@ impl FortressScenario {
             .map_or(0.0, |elapsed| {
                 self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
             });
+        let lag_limit = scenario_lag_limit(self.poll_hitch_frame, self.settlement_frame_limit);
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
             && final_inbound_depth == 0
@@ -964,8 +967,8 @@ impl FortressScenario {
             && checksums_mismatched == 0
             && events_discarded == 0
             && metrics.is_some_and(|metrics| {
-                metrics.confirmation_lag_current <= 12
-                    && metrics.confirmation_lag_max <= 12
+                metrics.confirmation_lag_current <= lag_limit
+                    && metrics.confirmation_lag_max <= lag_limit
                     && metrics.stall_count == 0
                     && metrics.wait_recommendations == 0
             })
@@ -1069,6 +1072,14 @@ fn simulation_frame_period() -> std::time::Duration {
     std::time::Duration::from_nanos(1_000_000_000 / SIMULATION_FPS as u64)
 }
 
+fn scenario_lag_limit(poll_hitch_frame: Option<i32>, settlement_frame_limit: i32) -> u64 {
+    if poll_hitch_frame.is_some_and(|frame| (0..settlement_frame_limit).contains(&frame)) {
+        IMPAIRED_LAG_LIMIT
+    } else {
+        CLEAN_LAG_LIMIT
+    }
+}
+
 fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -> bool {
     let period = simulation_frame_period();
     let Some(deadline) = next_advance_at else {
@@ -1121,7 +1132,7 @@ mod tests {
 
     use super::{
         decode_relay_envelope, encode_relay_envelope, simulation_advance_due,
-        simulation_frame_period,
+        simulation_frame_period, scenario_lag_limit,
     };
 
     #[test]
@@ -1144,6 +1155,14 @@ mod tests {
         let after_pause = start + Duration::from_secs(5);
         assert!(simulation_advance_due(after_pause, &mut deadline));
         assert_eq!(deadline, Some(after_pause));
+    }
+
+    #[test]
+    fn clean_and_impaired_self_oracles_use_the_runner_lag_limits() {
+        assert_eq!(scenario_lag_limit(None, 620), 8);
+        assert_eq!(scenario_lag_limit(Some(240), 620), 12);
+        assert_eq!(scenario_lag_limit(Some(-1), 620), 8);
+        assert_eq!(scenario_lag_limit(Some(620), 620), 8);
     }
 
     #[test]
