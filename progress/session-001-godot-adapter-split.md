@@ -34,10 +34,13 @@ fully green pull request with all automated review feedback addressed.
 - Reused the identical local-core patch for final adapter dry-run/publication so
   Cargo republishes the already-reproduced artifact instead of changing its
   lock source and checksum after core becomes registry-visible.
+- Committed and pushed the split as `daec06e`, opened PR #68, and requested
+  exact-head reviews from Cursor Bugbot and GitHub Copilot.
+- Diagnosed the first CI failure as a Yamllint line-length violation in the
+  release-preparation staging command and split that command across lines.
 
 ## Remaining
 
-- Commit and push the complete scoped worktree.
-- Open the pull request, explicitly request automated reviews, and await all CI
-  checks and reviewer feedback.
+- Push the CI fix and re-request automated reviews for the new exact head.
+- Await all CI checks and reviewer feedback.
 - Fix every actionable failure or review thread until the PR is fully green.
