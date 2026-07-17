@@ -141,9 +141,11 @@ independent Chromium processes, derives stable handles from sorted Signal Fish
 UUIDs, and runs one polling cycle per rendered callback against a real server.
 Advance simulation on a fixed local cadence that does not consult peer or
 network progress, so process scheduling is controlled without hiding genuine
-Fortress stalls. Use causal post-advance watermarks to bound the relay hold that
-forces rollback while both games continue advancing, and require the polling
-hitch window to contain forward simulation progress. Its impairment must
+Fortress stalls. Preserve elapsed deadline debt and recover by at most one
+simulation frame per rendered callback, preventing permanent process skew
+without allowing multi-frame bursts. Use causal post-advance watermarks to
+bound the relay hold that forces rollback while both games continue advancing,
+and require the polling hitch window to contain forward simulation progress. Its impairment must
 produce measured rollback/load/resimulation, after which
 both peers must match exact game-state checksums, report in-sync health, drain
 all queues, conserve relay/server counts, and complete an observable v3

@@ -1090,9 +1090,10 @@ fn simulation_advance_due(now: Instant, next_advance_at: &mut Option<Instant>) -
         return false;
     }
     let scheduled = deadline.checked_add(period).unwrap_or(now);
-    // Preserve the absolute cadence under ordinary callback jitter, but bound
-    // recovery after a long suspension to one immediate catch-up callback.
-    *deadline = scheduled.max(now);
+    // Preserve elapsed deadline debt so a delayed browser process can catch
+    // up instead of retaining permanent frame advantage. The caller invokes
+    // this once per rendered callback, bounding recovery to one frame there.
+    *deadline = scheduled;
     true
 }
 
@@ -1131,12 +1132,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        decode_relay_envelope, encode_relay_envelope, simulation_advance_due,
-        simulation_frame_period, scenario_lag_limit,
+        decode_relay_envelope, encode_relay_envelope, scenario_lag_limit, simulation_advance_due,
+        simulation_frame_period,
     };
 
     #[test]
-    fn fixed_cadence_preserves_deadlines_and_bounds_long_pause_recovery() {
+    fn fixed_cadence_preserves_deadline_debt_and_bounds_each_recovery_callback() {
         let start = Instant::now();
         let period = simulation_frame_period();
         let mut deadline = None;
@@ -1154,7 +1155,13 @@ mod tests {
 
         let after_pause = start + Duration::from_secs(5);
         assert!(simulation_advance_due(after_pause, &mut deadline));
-        assert_eq!(deadline, Some(after_pause));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(3)));
+        assert!(deadline.is_some_and(|deadline| deadline < after_pause));
+
+        // Each invocation advances exactly one deadline even while overdue;
+        // the rendered-callback caller therefore cannot burst several frames.
+        assert!(simulation_advance_due(after_pause, &mut deadline));
+        assert_eq!(deadline, start.checked_add(period.saturating_mul(4)));
     }
 
     #[test]

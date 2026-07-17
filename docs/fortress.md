@@ -89,11 +89,14 @@ scheduler stall; the scenario oracles still cap observed confirmation lag at
 eight clean or 12 impaired/soak frames. Simulation advances on a fixed local
 18 Hz cadence, independent of peer or network progress, so unequal browser CPU
 slices do not become artificial frame advantage and real prediction-window
-stalls remain observable. A bounded relay hold uses causal post-advance frame
-watermarks to prove the remote peer predicted the changed delayed input before
-release, forcing rollback, state load, and resimulation while both games keep
-advancing. The hitch oracle separately requires forward simulation progress
-during its six skipped polling callbacks. CI builds
+stalls remain observable. Delayed callbacks retain their elapsed deadline debt
+and recover by at most one simulation frame per rendered callback, preventing
+permanent scheduling skew without allowing a multi-frame burst. A bounded
+relay hold uses causal post-advance frame watermarks to prove the remote peer
+predicted the changed delayed input before release, forcing rollback, state
+load, and resimulation while both games keep advancing. The hitch oracle
+separately requires forward simulation progress during its six skipped polling
+callbacks. CI builds
 the pinned, checksum-verified iproute2 6.6.0 `tc` because the runner's packaged
 version cannot apply a deterministic netem seed.
 

@@ -46,9 +46,10 @@ changes its delayed input at frame 120 and holds its outbound relay until
 player A's causal post-advance watermark proves that A predicted through the
 changed input. The bounded hold deterministically forces A to roll back, load
 state, and resimulate after release. Both peers advance on an independent fixed
-18 Hz cadence. The gate requires both clients to confirm 600 frames within the
-scenario timeout, settle in sync with matching state, and drain every relay and
-SDK queue,
+18 Hz cadence, preserving elapsed deadline debt and recovering by at most one
+simulation frame per rendered callback. The gate requires both clients to
+confirm 600 frames within the scenario timeout, settle in sync with matching
+state, and drain every relay and SDK queue,
 conserve every client/server delivery, and cross-check the exact room and
 player IDs. Player B
 then closes first; player A must observe its nonzero v3 `PlayerLeft` epoch and
