@@ -20,15 +20,14 @@ use signal_fish_client::{
 const SERVER_URL: &str = "ws://127.0.0.1:3536/v2/ws";
 const APP_ID: &str = "e2e-test-app";
 const GAME_NAME: &str = "godot-fortress-issue-61";
-const TARGET_FRAMES: i32 = 600;
-const SETTLEMENT_FRAME_LIMIT: i32 = TARGET_FRAMES + 20;
+const DEFAULT_TARGET_FRAMES: i32 = 600;
+const SETTLEMENT_FRAMES: i32 = 20;
 const MAX_RELAY_QUEUE: usize = 256;
 const IMPAIRMENT_START_FRAME: i32 = 120;
-const IMPAIRMENT_END_FRAME: i32 = 128;
 // GitHub's shared runners have measured at roughly 23 rendered frames/second
 // under two independent Chromium/Godot processes. Keep a generous wall-clock
 // guard while the frame/checksum/queue oracles remain exact.
-const SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+const DEFAULT_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 const TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
@@ -101,6 +100,12 @@ impl NonBlockingSocket<PlayerId> for RelaySocket {
 pub(super) struct FortressScenario {
     role: String,
     requested_room_code: Option<String>,
+    target_frames: i32,
+    settlement_frame_limit: i32,
+    session_timeout: std::time::Duration,
+    poll_hitch_frame: Option<i32>,
+    poll_hitch_callbacks_remaining: u8,
+    poll_hitch_completed: bool,
     joined_room_code: Option<String>,
     client: Option<Client>,
     local_id: Option<PlayerId>,
@@ -122,6 +127,7 @@ pub(super) struct FortressScenario {
     simulation_elapsed_ms: Option<u128>,
     game_ready: bool,
     max_poll_us: u64,
+    last_time_series_frame: i32,
     last_accepted: u64,
     multi_frame_poll: bool,
     completed: bool,
@@ -145,6 +151,19 @@ impl FortressScenario {
     pub(super) fn from_user_args(args: &[String]) -> Option<Self> {
         let role = argument(args, "--fortress-role")?;
         let requested_room_code = argument(args, "--room-code");
+        let target_frames = argument(args, "--target-frames")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_TARGET_FRAMES);
+        let settlement_frame_limit = target_frames.saturating_add(SETTLEMENT_FRAMES);
+        let session_timeout = argument(args, "--session-timeout-ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(DEFAULT_SESSION_TIMEOUT);
+        let poll_hitch_frame = argument(args, "--poll-hitch-frame")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|value| *value >= 0);
+        let server_url = argument(args, "--server-url").unwrap_or_else(|| SERVER_URL.into());
         let configuration_error = match (role.as_str(), requested_room_code.as_ref()) {
             ("a", None) | ("b", Some(_)) => None,
             ("a", Some(_)) => Some("role a must create a room without --room-code".to_string()),
@@ -155,7 +174,7 @@ impl FortressScenario {
             godot_error!("SIGNAL_FISH_FORTRESS startup-error {error}");
             (None, Some(error))
         } else {
-            match GodotWebSocketTransport::connect(SERVER_URL) {
+            match GodotWebSocketTransport::connect(&server_url) {
                 Ok(transport) => {
                     let mut config = SignalFishConfig::new(APP_ID).enable_v3();
                     config.platform = Some(format!("godot-fortress-{role}"));
@@ -172,6 +191,12 @@ impl FortressScenario {
         Some(Self {
             role,
             requested_room_code,
+            target_frames,
+            settlement_frame_limit,
+            session_timeout,
+            poll_hitch_frame,
+            poll_hitch_callbacks_remaining: u8::from(poll_hitch_frame.is_some()) * 6,
+            poll_hitch_completed: false,
             joined_room_code: None,
             client,
             local_id: None,
@@ -193,6 +218,7 @@ impl FortressScenario {
             simulation_elapsed_ms: None,
             game_ready: false,
             max_poll_us: 0,
+            last_time_series_frame: -60,
             last_accepted: 0,
             multi_frame_poll: false,
             completed: false,
@@ -217,7 +243,11 @@ impl FortressScenario {
         if self.completed {
             return true;
         }
-        let events = self.poll_client_once();
+        let events = if self.should_skip_poll_for_hitch() {
+            Vec::new()
+        } else {
+            self.poll_client_once()
+        };
         for event in events {
             self.handle_event(event);
         }
@@ -252,6 +282,24 @@ impl FortressScenario {
         self.multi_frame_poll |= accepted.saturating_sub(self.last_accepted) > 1;
         self.last_accepted = accepted;
         events
+    }
+
+    fn should_skip_poll_for_hitch(&mut self) -> bool {
+        let Some(hitch_frame) = self.poll_hitch_frame else {
+            return false;
+        };
+        let current_frame = self
+            .session
+            .as_ref()
+            .map_or(-1, |session| session.current_frame().as_i32());
+        if current_frame < hitch_frame || self.poll_hitch_callbacks_remaining == 0 {
+            return false;
+        }
+        self.poll_hitch_callbacks_remaining = self.poll_hitch_callbacks_remaining.saturating_sub(1);
+        if self.poll_hitch_callbacks_remaining == 0 {
+            self.poll_hitch_completed = true;
+        }
+        true
     }
 
     fn handle_event(&mut self, event: SignalFishEvent) {
@@ -410,6 +458,10 @@ impl FortressScenario {
             .with_num_players(2)
             .and_then(|builder| builder.with_fps(60))
             .and_then(|builder| builder.with_input_delay(2))
+            // Leave enough prediction headroom for the declared six-callback
+            // hitch on top of the constrained-network round trip. Scenario
+            // oracles still enforce the tighter clean/impaired lag limits.
+            .map(|builder| builder.with_max_prediction_window(12))
             .and_then(|builder| builder.add_player(PlayerType::Local, local_handle))
             .and_then(|builder| builder.add_player(PlayerType::Remote(remote_id), remote_handle))
             .map(|builder| {
@@ -426,6 +478,9 @@ impl FortressScenario {
                 self.remote_handle = Some(remote_handle);
                 self.remote_id = Some(remote_id);
                 self.started = Some(Instant::now());
+                if let Some(client) = &mut self.client {
+                    client.reset_queue_age_peak();
+                }
                 godot_print!(
                     "SIGNAL_FISH_FORTRESS session-created role={} local_handle={local_index}",
                     self.role
@@ -440,7 +495,7 @@ impl FortressScenario {
             return;
         };
         session.poll_remote_clients();
-        let confirmed = session.confirmed_frame().as_i32().min(TARGET_FRAMES);
+        let confirmed = session.confirmed_frame().as_i32().min(self.target_frames);
         while self.checksum_through < confirmed {
             let frame = self.checksum_through.saturating_add(1);
             match session.confirmed_inputs_for_frame(Frame::new(frame)) {
@@ -478,12 +533,36 @@ impl FortressScenario {
             }
         }
         let metrics = session.metrics();
+        let sample_frame = session.current_frame().as_i32();
+        if sample_frame >= self.last_time_series_frame.saturating_add(60) {
+            self.last_time_series_frame = sample_frame;
+            let queue_depth = self
+                .client
+                .as_ref()
+                .map_or(0, |client| client.polling_stats().current_queue_depth);
+            let queue_age_ms = self.client.as_ref().map_or(0.0, |client| {
+                client
+                    .queue_age_stats()
+                    .current_oldest_queue_age
+                    .as_secs_f64()
+                    * 1_000.0
+            });
+            let sample = serde_json::json!({
+                "role": self.role,
+                "current_frame": sample_frame,
+                "confirmed_frame": session.confirmed_frame().as_i32(),
+                "confirmation_lag": metrics.confirmation_lag_current,
+                "queue_depth": queue_depth,
+                "queue_age_ms": queue_age_ms,
+            });
+            godot_print!("SIGNAL_FISH_FORTRESS sample {sample}");
+        }
         let sync_health = self
             .remote_handle
             .and_then(|handle| session.sync_health(handle));
         if self
             .started
-            .is_some_and(|started| started.elapsed() >= SESSION_TIMEOUT)
+            .is_some_and(|started| started.elapsed() >= self.session_timeout)
         {
             self.fatal = Some(format!(
                 "Fortress settlement timed out: confirmed={} checksum_through={} target_checksum={} sync_health={sync_health:?} checks={}",
@@ -498,8 +577,16 @@ impl FortressScenario {
             return;
         }
 
-        let target_is_confirmed = session.confirmed_frame().as_i32() >= TARGET_FRAMES
-            && self.checksum_through >= TARGET_FRAMES;
+        // Do not let the first browser advance merely because its local
+        // session entered Running first. Receiving one valid Fortress packet
+        // proves the independently launched peer is also pumping the session,
+        // removing process-start skew from gameplay-lag measurements.
+        if self.relay.borrow().decoded == 0 {
+            return;
+        }
+
+        let target_is_confirmed = session.confirmed_frame().as_i32() >= self.target_frames
+            && self.checksum_through >= self.target_frames;
         if target_is_confirmed && !self.target_confirmed {
             self.target_confirmed = true;
             self.simulation_elapsed_ms = self.started.map(|started| started.elapsed().as_millis());
@@ -523,15 +610,14 @@ impl FortressScenario {
         if current >= IMPAIRMENT_START_FRAME && self.pre_impairment_metrics.is_none() {
             self.pre_impairment_metrics = Some(session.metrics());
         }
-        if current < SETTLEMENT_FRAME_LIMIT {
+        if current < self.settlement_frame_limit {
             let Some(local_handle) = self.local_handle else {
                 self.fatal = Some("missing local Fortress handle".to_string());
                 return;
             };
-            // Prediction stays exactly correct before the impairment. Player
-            // B changes its value at the same frame its outbound relay is
-            // withheld, so the later nonzero rollback delta is causally tied
-            // to reintegrating those delayed inputs.
+            // Prediction stays exactly correct before the switch. Player B's
+            // value change makes A's last-value prediction wrong, so the later
+            // nonzero rollback delta is causally tied to that remote input.
             let input = TestInput {
                 value: u32::from(self.role == "b" && current >= IMPAIRMENT_START_FRAME),
             };
@@ -568,7 +654,7 @@ impl FortressScenario {
                                     return;
                                 }
                                 self.save_requests = self.save_requests.saturating_add(1);
-                                if frame.as_i32() == TARGET_FRAMES {
+                                if frame.as_i32() == self.target_frames {
                                     self.target_state_checksum = Some(checksum);
                                 }
                             }
@@ -617,13 +703,11 @@ impl FortressScenario {
             .session
             .as_ref()
             .map_or(0, |session| session.current_frame().as_i32());
-        if self.role == "b"
-            && (IMPAIRMENT_START_FRAME..IMPAIRMENT_END_FRAME).contains(&current_frame)
+        if self.role == "b" && !self.impairment_activated && current_frame >= IMPAIRMENT_START_FRAME
         {
+            // Changing B's input invalidates A's prior prediction. Keep relay
+            // delivery live so this rollback proof does not manufacture lag.
             self.impairment_activated = true;
-            return;
-        }
-        if self.role == "b" && self.impairment_activated && current_frame >= IMPAIRMENT_END_FRAME {
             self.impairment_released = true;
         }
         let Some(client) = &mut self.client else {
@@ -751,27 +835,50 @@ impl FortressScenario {
                     == Some(SyncHealth::InSync)
             });
         let polling = self.client.as_ref().map(|client| client.polling_stats());
+        let queue_age = self.client.as_ref().map(|client| client.queue_age_stats());
         let transport = self
             .client
             .as_ref()
             .map(|client| client.transport_diagnostics());
+        let admission_watermark_violations = self.client.as_ref().map_or(0, |client| {
+            client.transport().admission_watermark_violations()
+        });
         let total_elapsed_ms = self
             .started
             .map_or(0, |started| started.elapsed().as_millis());
         let final_inbound_depth = queues.inbound.len();
         let final_outbound_depth = queues.outbound.len();
         let queue_depth = polling.map_or(0, |stats| stats.current_queue_depth);
+        let current_queue_age = queue_age.map_or(std::time::Duration::ZERO, |stats| {
+            stats.current_oldest_queue_age
+        });
+        let peak_queue_age = queue_age.map_or(std::time::Duration::ZERO, |stats| {
+            stats.peak_oldest_queue_age
+        });
         let checksums_mismatched = metrics.map_or(0, |metrics| metrics.checksums_mismatched);
         let events_discarded = metrics.map_or(0, |metrics| metrics.events_discarded_total);
+        let relay_messages_per_simulated_frame = metrics.map_or(0.0, |metrics| {
+            queues.encoded.saturating_add(queues.decoded) as f64
+                / metrics.visual_frames.max(1) as f64
+        });
         let invariant_passed = self.game_ready
             && self.target_state_checksum.is_some()
             && final_inbound_depth == 0
             && final_outbound_depth == 0
             && queue_depth == 0
+            && current_queue_age == std::time::Duration::ZERO
+            && peak_queue_age <= std::time::Duration::from_millis(500)
             && queues.dropped == 0
             && queues.malformed == 0
             && checksums_mismatched == 0
-            && events_discarded == 0;
+            && events_discarded == 0
+            && metrics.is_some_and(|metrics| {
+                metrics.confirmation_lag_current <= 12
+                    && metrics.confirmation_lag_max <= 12
+                    && metrics.stall_count == 0
+                    && metrics.wait_recommendations == 0
+            })
+            && relay_messages_per_simulated_frame >= 2.0;
         let summary = serde_json::json!({
             "passed": passed && self.fatal.is_none() && invariant_passed,
             "role": self.role,
@@ -779,9 +886,9 @@ impl FortressScenario {
             "joined_room_code": self.joined_room_code,
             "local_id": self.local_id.map(|id| id.to_string()),
             "remote_id": self.remote_id.map(|id| id.to_string()),
-            "target_frames": TARGET_FRAMES,
-            "settlement_frame_limit": SETTLEMENT_FRAME_LIMIT,
-            "session_timeout_ms": SESSION_TIMEOUT.as_millis(),
+            "target_frames": self.target_frames,
+            "settlement_frame_limit": self.settlement_frame_limit,
+            "session_timeout_ms": self.session_timeout.as_millis(),
             "game_frame": self.game.frame,
             // Preserve exact integer values when the browser runner parses JSON.
             "confirmed_input_checksum": self.confirmed_checksum.to_string(),
@@ -801,6 +908,9 @@ impl FortressScenario {
             "max_rollback_depth": metrics.map_or(0, |metrics| metrics.max_rollback_depth),
             "prediction_miss_count": metrics.map_or(0, |metrics| metrics.prediction_miss_count),
             "stall_count": metrics.map_or(0, |metrics| metrics.stall_count),
+            "wait_recommendation_count": metrics.map_or(0, |metrics| metrics.wait_recommendations),
+            "confirmation_lag_current": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
+            "confirmation_lag_max": metrics.map_or(0, |metrics| metrics.confirmation_lag_max),
             "checksums_compared": metrics.map_or(0, |metrics| metrics.checksums_compared),
             "checksums_matched": metrics.map_or(0, |metrics| metrics.checksums_matched),
             "checksums_mismatched": checksums_mismatched,
@@ -825,16 +935,32 @@ impl FortressScenario {
             "relay_outbound_depth": final_outbound_depth,
             "queue_depth": queue_depth,
             "peak_queue_depth": polling.map_or(0, |stats| stats.peak_queue_depth),
+            "current_queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+            "peak_queue_age_ms": peak_queue_age.as_secs_f64() * 1_000.0,
+            "relay_messages_per_simulated_frame": relay_messages_per_simulated_frame,
             "accepted_frames": transport.map_or(0, |stats| stats.accepted_frames),
             "watermark_hits": transport.map_or(0, |stats| stats.watermark_hits),
             "backend_capacity_hits": transport.map_or(0, |stats| stats.backend_capacity_hits),
+            "admission_watermark_violations": admission_watermark_violations,
             "impairment_activated": self.impairment_activated,
             "impairment_released": self.impairment_released,
+            "poll_hitch_frame": self.poll_hitch_frame,
+            "poll_hitch_completed": self.poll_hitch_completed,
             "peer_left_observed": self.peer_left_observed,
             "peer_left_epoch": self.peer_left_epoch,
             "peer_left_final_seq": self.peer_left_final_seq,
             "fatal": self.fatal,
         });
+        let final_sample = serde_json::json!({
+            "role": self.role,
+            "current_frame": self.game.frame,
+            "confirmed_frame": self.checksum_through,
+            "confirmation_lag": metrics.map_or(0, |metrics| metrics.confirmation_lag_current),
+            "queue_depth": queue_depth,
+            "queue_age_ms": current_queue_age.as_secs_f64() * 1_000.0,
+            "final": true,
+        });
+        godot_print!("SIGNAL_FISH_FORTRESS sample {final_sample}");
         if summary["passed"].as_bool() == Some(true) {
             godot_print!("SIGNAL_FISH_FORTRESS summary {summary}");
         } else {

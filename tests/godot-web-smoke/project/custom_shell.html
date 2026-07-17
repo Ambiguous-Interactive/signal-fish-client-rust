@@ -18,11 +18,21 @@
     const query = new URLSearchParams(window.location.search);
     const role = query.get("fortress_role");
     const roomCode = query.get("room_code");
-    const args = [];
+    const userArgs = [];
     if (role) {
-      args.push("--", "--fortress-role", role);
-      if (roomCode) args.push("--room-code", roomCode);
+      userArgs.push("--fortress-role", role);
+      if (roomCode) userArgs.push("--room-code", roomCode);
     }
+    for (const [queryName, argumentName] of [
+      ["server_url", "--server-url"],
+      ["target_frames", "--target-frames"],
+      ["session_timeout_ms", "--session-timeout-ms"],
+      ["poll_hitch_frame", "--poll-hitch-frame"],
+    ]) {
+      const value = query.get(queryName);
+      if (value) userArgs.push(argumentName, value);
+    }
+    const args = userArgs.length > 0 ? ["--", ...userArgs] : [];
     const config = $GODOT_CONFIG;
     config.onExit = (code) => {
       console.log("SIGNAL_FISH_SHELL game-complete", code);

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { chromium } from "playwright";
+import { validateLoadSummary, validateServerConservation } from "./godot-e2e-validators.mjs";
 
 const [exportDirectoryArgument, modeArgument] = process.argv.slice(2);
 if (!exportDirectoryArgument || !modeArgument) {
@@ -180,7 +181,8 @@ async function writeThroughputArtifacts() {
   const report = { loadSummary, samples, serverMetricDeltas: deltas };
   await writeFile("godot-throughput.json", `${JSON.stringify(report, null, 2)}\n`);
   const columns = [
-    "elapsed_ms", "command_depth", "peak_depth", "buffered_bytes",
+    "elapsed_ms", "command_depth", "peak_depth", "current_queue_age_ms",
+    "peak_queue_age_ms", "buffered_bytes",
     "accepted_frames", "received_frames", "accepted_per_second",
     "received_per_second", "offered_frames", "poll_max_us", "poll_work_frames",
     "poll_work_bytes", "poll_receive_frames", "poll_count",
@@ -220,30 +222,12 @@ try {
 
     const summaryLine = consoleLines.find((line) => line.includes("SIGNAL_FISH_SMOKE load-summary "));
     loadSummary = JSON.parse(summaryLine.slice(summaryLine.indexOf("SIGNAL_FISH_SMOKE load-summary ") + 31));
-    if (!loadSummary.passed) {
-      throw new Error(`Godot throughput assertions failed: ${JSON.stringify(loadSummary)}`);
-    }
     const samples = loadSamples();
-    const finalSamples = samples.slice(-8);
-    if (finalSamples.length < 2) {
-      throw new Error("insufficient final throughput samples for queue-depth slope");
-    }
-    const meanX = finalSamples.reduce((sum, sample) => sum + sample.elapsed_ms, 0) /
-      finalSamples.length;
-    const meanY = finalSamples.reduce((sum, sample) => sum + sample.command_depth, 0) /
-      finalSamples.length;
-    const slopeNumerator = finalSamples.reduce(
-      (sum, sample) => sum + (sample.elapsed_ms - meanX) * (sample.command_depth - meanY),
-      0,
-    );
-    const slopeDenominator = finalSamples.reduce(
-      (sum, sample) => sum + (sample.elapsed_ms - meanX) ** 2,
-      0,
-    );
-    const queueDepthSlope = slopeNumerator / Math.max(1, slopeDenominator);
-    loadSummary.queue_depth_slope_per_ms = queueDepthSlope;
-    if (queueDepthSlope > 0) {
-      throw new Error(`positive final command-depth slope: ${queueDepthSlope}`);
+    const loadValidation = validateLoadSummary(loadSummary, samples);
+    loadSummary.queue_depth_slope_per_ms = loadValidation.depthSlope;
+    loadSummary.queue_age_slope_ms_per_ms = loadValidation.ageSlope;
+    if (!loadValidation.ok) {
+      throw new Error(`Godot throughput assertions failed: ${JSON.stringify(loadValidation)}`);
     }
     metricsAfter = await fetchMetrics();
     const deltas = metricDeltas(metricsBefore, metricsAfter);
@@ -286,12 +270,16 @@ try {
       (deltas.signal_fish_websocket_deliveries_enqueued_total ?? 0) +
       (deltas.signal_fish_websocket_deliveries_channel_closed_total ?? 0) +
       (deltas.signal_fish_websocket_deliveries_canceled_total ?? 0);
-    if (
-      gameDataForwarded !== expectedGameData ||
-      reliableAttempted !== expectedGameData ||
-      reliableDelivered !== expectedGameData ||
-      deliveryAttempts !== deliveryTerminals
-    ) {
+    const conservation = validateServerConservation({
+      expectedGameData,
+      gameDataForwarded,
+      reliableAttempted,
+      reliableDelivered,
+      deliveryAttempts,
+      deliveryTerminals,
+      harmfulDeltas,
+    });
+    if (!conservation.ok) {
       throw new Error(`server delivery conservation failed: ${JSON.stringify({
         expectedGameData,
         gameDataForwarded,
@@ -299,6 +287,7 @@ try {
         reliableDelivered,
         deliveryAttempts,
         deliveryTerminals,
+        harmfulDeltas,
       })}`);
     }
 

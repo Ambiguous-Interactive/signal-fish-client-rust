@@ -144,6 +144,13 @@ both peers must match exact game-state checksums, report in-sync health, drain
 all queues, conserve relay/server counts, and complete an observable v3
 `PlayerLeft` teardown.
 
+The workflow builds/exports once, then runs required clean, seeded bidirectional
+netem, and 3,600-confirmed-frame soak jobs in parallel. Impaired profiles include
+a six-callback polling hitch while gameplay advances. Pure JavaScript validators
+must reject negative controls for checksum, confirmation, conservation, queue
+age, lag/stalls, teardown watermarks, and admission diagnostics. Always retain
+logs, time series, Prometheus snapshots, summaries, and netem configuration.
+
 Web builds must use `godot/api-custom` so bindgen generates 32-bit interface
 types. Point `GODOT4_BIN` at the 4.5 editor, point the target-specific bindgen
 arguments at Emscripten's sysroot, build `std` with the pinned nightly, and

@@ -20,12 +20,15 @@ env:
   PLAYWRIGHT_VERSION: "1.61.1"
   RUST_NIGHTLY: "nightly-2026-03-01"
   SERVER_VERSION: "0.4.0"
+  NETEM_SEED: "6101"
+  IPROUTE2_VERSION: "6.6.0"
+  IPROUTE2_SHA256: "8738c804afd09f0bf756937f0c3de23117832a98d8cbbf50386cf5005cd613ce"
 
 jobs:
-  browser-smoke:
-    name: Official template browser E2E
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  build-export:
+    name: Build and export official template
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.0
@@ -66,6 +69,16 @@ jobs:
             "${HOME}/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           chmod +x ".godot/Godot_v${release}_linux.x86_64"
 
+      - name: Test standalone fixture and pure browser oracles
+        env:
+          GODOT4_BIN: ${{ github.workspace }}/.godot/Godot_v4.5-stable_linux.x86_64
+        run: |
+          set -euo pipefail
+          cargo clippy --manifest-path tests/godot-web-smoke/Cargo.toml \
+            --all-targets --locked -- -D warnings
+          cargo test --manifest-path tests/godot-web-smoke/Cargo.toml --locked
+          node --test scripts/test-godot-e2e-validators.mjs
+
       - name: Build Godot GDExtension for web
         env:
           RUSTFLAGS: >-
@@ -83,19 +96,16 @@ jobs:
             --manifest-path tests/godot-web-smoke/Cargo.toml \
             --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
-            --release \
-            --locked \
-            --features raw-emscripten-proof
+            --release --locked --features raw-emscripten-proof
           cp target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm \
             target/godot-web-smoke/raw-emscripten-proof.wasm
           cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
             --manifest-path tests/godot-web-smoke/Cargo.toml \
             --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
-            --release \
-            --locked
+            --release --locked
 
-      - name: Export with the official no-thread extension template
+      - name: Export official no-thread extension templates
         run: |
           set -euo pipefail
           fixture="tests/godot-web-smoke"
@@ -114,17 +124,45 @@ jobs:
             --headless --path "${fixture}/project" \
             --export-release Web build/index.html
 
-      - name: Install Chromium automation
+      - name: Upload exported browser fixture
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: godot-web-export
+          path: |
+            tests/godot-web-smoke/project/build
+            tests/godot-web-smoke/project/build-negative
+          if-no-files-found: error
+          retention-days: 3
+
+  browser-scenarios:
+    name: Browser E2E (${{ matrix.scenario }})
+    needs: build-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: clean
+            timeout: 30
+          - scenario: impaired
+            timeout: 30
+          - scenario: soak
+            timeout: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Download exported browser fixture
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: godot-web-export
+          path: tests/godot-web-smoke/project
+
+      - name: Install pinned Chromium automation
         run: |
           npm install --no-save --no-package-lock "playwright@${PLAYWRIGHT_VERSION}"
           npx playwright install --with-deps chromium
-
-      - name: Prove raw Emscripten transport is rejected by the standard template
-        run: |
-          set -euo pipefail
-          node scripts/run-godot-web-smoke.mjs \
-            tests/godot-web-smoke/project/build-negative \
-            --expect-raw-emscripten-link-failure 2>&1 | tee raw-emscripten.log
 
       - name: Download pinned Signal Fish server
         run: |
@@ -137,60 +175,167 @@ jobs:
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server
 
-      - name: Run browser interoperability test
+      - name: Run required browser scenario
+        env:
+          SCENARIO: ${{ matrix.scenario }}
         run: |
           set -euo pipefail
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
           chmod +x "${server_bin}"
-          SIGNAL_FISH__PORT=3536 \
-          SIGNAL_FISH__LOGGING__LEVEL=debug \
-          SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
-          SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
-          SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
-          SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
-            "${server_bin}" >server.log 2>&1 &
+          server_url="ws://127.0.0.1:3536/v2/ws"
+          tc_netem="tc"
+          if [ "${SCENARIO}" = "clean" ]; then
+            echo "scenario=clean status=disabled" >netem.txt
+          else
+            echo \
+              "scenario=${SCENARIO} status=setup-pending seed=${NETEM_SEED} profile=40ms/10ms/0.2%/25%/10mbit" \
+              >netem.txt
+          fi
+
+          cleanup() {
+            if [ -n "${server_pid:-}" ]; then
+              kill "${server_pid}" 2>/dev/null || true
+              wait "${server_pid}" 2>/dev/null || true
+            fi
+            if [ "${SCENARIO}" != "clean" ]; then
+              {
+                sudo "${tc_netem}" -s qdisc show dev ifb-host
+                sudo "${tc_netem}" -s filter show dev veth-host parent ffff:
+                sudo ip netns exec sf-server "${tc_netem}" -s qdisc show dev ifb-server
+                sudo ip netns exec sf-server "${tc_netem}" \
+                  -s filter show dev veth-server parent ffff:
+              } >>netem.txt 2>&1 || true
+              sudo ip netns delete sf-server 2>/dev/null || true
+              sudo ip link delete veth-host 2>/dev/null || true
+              sudo ip link delete ifb-host 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          if [ "${SCENARIO}" != "clean" ]; then
+            sudo apt-get update
+            sudo apt-get install --yes bison build-essential flex iproute2 libmnl-dev pkg-config
+            archive="iproute2-${IPROUTE2_VERSION}.tar.xz"
+            curl --fail --location --silent --show-error \
+              "https://www.kernel.org/pub/linux/utils/net/iproute2/${archive}" \
+              --output "${archive}"
+            echo "${IPROUTE2_SHA256}  ${archive}" | sha256sum --check
+            mkdir -p .netem-tools/iproute2
+            tar -xJf "${archive}" -C .netem-tools/iproute2 --strip-components=1
+            make -C .netem-tools/iproute2 --jobs=2 SUBDIRS="lib tc"
+            tc_netem="${PWD}/.netem-tools/iproute2/tc/tc"
+            "${tc_netem}" -Version
+            sudo modprobe ifb numifbs=2
+            sudo ip netns add sf-server
+            sudo ip link add veth-host type veth peer name veth-server
+            sudo ip link set veth-server netns sf-server
+            sudo ip address add 10.77.0.1/24 dev veth-host
+            sudo ip link set veth-host up
+            sudo ip netns exec sf-server ip address add 10.77.0.2/24 dev veth-server
+            sudo ip netns exec sf-server ip link set lo up
+            sudo ip netns exec sf-server ip link set veth-server up
+
+            sudo ip link add ifb-host type ifb
+            sudo ip link set ifb-host up
+            sudo "${tc_netem}" qdisc add dev veth-host handle ffff: ingress
+            sudo "${tc_netem}" filter add dev veth-host parent ffff: protocol all u32 \
+              match u32 0 0 action mirred egress redirect dev ifb-host
+            sudo "${tc_netem}" qdisc add dev ifb-host root netem \
+              delay 40ms 10ms loss random 0.2% 25% rate 10mbit seed "${NETEM_SEED}"
+
+            sudo ip netns exec sf-server ip link add ifb-server type ifb
+            sudo ip netns exec sf-server ip link set ifb-server up
+            sudo ip netns exec sf-server "${tc_netem}" \
+              qdisc add dev veth-server handle ffff: ingress
+            sudo ip netns exec sf-server "${tc_netem}" \
+              filter add dev veth-server parent ffff: protocol all u32 \
+              match u32 0 0 action mirred egress redirect dev ifb-server
+            sudo ip netns exec sf-server "${tc_netem}" qdisc add dev ifb-server root netem \
+              delay 40ms 10ms loss random 0.2% 25% rate 10mbit seed "${NETEM_SEED}"
+            {
+              echo "scenario=${SCENARIO} status=applied seed=${NETEM_SEED}"
+              "${tc_netem}" -Version
+              sudo "${tc_netem}" -s qdisc show dev ifb-host
+              sudo "${tc_netem}" -s filter show dev veth-host parent ffff:
+              sudo ip netns exec sf-server "${tc_netem}" -s qdisc show dev ifb-server
+              sudo ip netns exec sf-server "${tc_netem}" \
+                -s filter show dev veth-server parent ffff:
+            } >netem.txt
+            server_url="ws://10.77.0.2:3536/v2/ws"
+            # The runner owns server.log; sudo is only for network namespace entry.
+            # shellcheck disable=SC2024
+            sudo ip netns exec sf-server env \
+              SIGNAL_FISH__PORT=3536 \
+              SIGNAL_FISH__LOGGING__LEVEL=debug \
+              SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+              SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+              SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+              SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+              "${PWD}/${server_bin}" >server.log 2>&1 &
+          else
+            SIGNAL_FISH__PORT=3536 \
+            SIGNAL_FISH__LOGGING__LEVEL=debug \
+            SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+            SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+            SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+            SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+              "${server_bin}" >server.log 2>&1 &
+          fi
           server_pid=$!
-          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 100); do
-            if (echo > /dev/tcp/127.0.0.1/3536) 2>/dev/null; then
+
+          host="$(node -e 'process.stdout.write(new URL(process.argv[1]).hostname)' "${server_url}")"
+          for attempt in $(seq 1 150); do
+            if timeout 1 bash -c "echo >/dev/tcp/${host}/3536" 2>/dev/null; then
               break
             fi
-            if [ "${attempt}" -eq 100 ]; then
+            if [ "${attempt}" -eq 150 ]; then
               echo "Signal Fish server did not become ready" >&2
               exit 1
             fi
             sleep 0.1
           done
-          node scripts/run-godot-fortress-e2e.mjs \
-            tests/godot-web-smoke/project/build 2>&1 | tee fortress-browser.log
-          node scripts/run-godot-web-smoke.mjs \
-            tests/godot-web-smoke/project/build "${server_pid}" 2>&1 | tee browser.log
-          wait "${server_pid}"
-          trap - EXIT
 
-      - name: Upload browser and server logs on failure
-        if: failure()
+          if [ "${SCENARIO}" = "clean" ]; then
+            node scripts/run-godot-fortress-e2e.mjs \
+              tests/godot-web-smoke/project/build \
+              --scenario clean --server-url "${server_url}" 2>&1 | tee fortress-browser.log
+            node scripts/run-godot-web-smoke.mjs \
+              tests/godot-web-smoke/project/build "${server_pid}" 2>&1 | tee browser.log
+            wait "${server_pid}"
+            server_pid=""
+            node scripts/run-godot-web-smoke.mjs \
+              tests/godot-web-smoke/project/build-negative \
+              --expect-raw-emscripten-link-failure 2>&1 | tee raw-emscripten.log
+          else
+            node scripts/run-godot-fortress-e2e.mjs \
+              tests/godot-web-smoke/project/build \
+              --scenario "${SCENARIO}" --server-url "${server_url}" \
+              2>&1 | tee fortress-browser.log
+            kill -TERM "${server_pid}"
+            wait "${server_pid}" || true
+            server_pid=""
+          fi
+          trap - EXIT
+          cleanup
+
+      - name: Upload complete scenario evidence
+        if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: godot-web-smoke-logs
+          name: godot-web-${{ matrix.scenario }}-evidence
           path: |
             browser.log
             fortress-browser.log
             raw-emscripten.log
             server.log
-          if-no-files-found: warn
-
-      - name: Upload Godot throughput time series
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: godot-web-throughput
-          path: |
+            netem.txt
             godot-throughput.json
             godot-throughput.csv
             metrics-before.prom
             metrics-after.prom
             godot-fortress-summary.json
+            godot-fortress-timeseries.json
+            godot-fortress-timeseries.csv
             godot-fortress-a.log
             godot-fortress-b.log
             fortress-metrics-before.prom

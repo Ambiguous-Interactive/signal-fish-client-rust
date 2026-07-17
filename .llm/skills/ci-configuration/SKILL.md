@@ -132,6 +132,12 @@ The project uses `locale = "en-us"` in `.typos.toml`. Use American English spell
 
 Any cargo subcommands sharing the same `target/` directory or Cargo package lock must not be run in parallel in local scripts/hooks. Two problems arise: (1) **Feature-flag conflicts** — different flag combinations (e.g., `--all-features` vs `--no-default-features`) cause constant cache invalidation, each process rebuilding what the other just compiled. (2) **Package-lock contention** — even non-compiling subcommands like `cargo fmt --check` acquire the Cargo package lock; running them in parallel with `cargo clippy` gains nothing because one blocks on the lock while the other holds it, and output becomes interleaved and non-deterministic.
 
+Browser system-test workflows should build/export expensive fixtures once and
+fan out required scenario jobs through an uploaded artifact. Seed network
+impairment explicitly, capture the applied `tc` configuration, and upload logs,
+time series, summaries, and metric snapshots with `if: always()` so a failed
+oracle remains diagnosable.
+
 **Correct pattern (two-phase hooks):** Phase 1 runs non-cargo checks in parallel (typos, shellcheck, markdownlint, etc.). Phase 2 runs cargo commands sequentially to avoid lock contention and cache thrashing. The two hooks differ in Phase 2: the **pre-commit hook** runs `cargo fmt` in the foreground first (fast, no compilation), then backgrounds `cargo clippy` alongside remaining non-cargo checks; the **pre-push hook** runs `cargo clippy` then `cargo test` sequentially (no `cargo fmt`). In CI, matrix strategies give each job its own runner and `target/` directory, so parallel execution across jobs is safe. Enforced by `ci_config_tests.rs::ci_config_validation::install_hooks_pre_push_cargo_commands_must_not_run_in_parallel` and `install_hooks_pre_commit_cargo_fmt_must_run_before_clippy`. Reference: `scripts/install-hooks.sh`.
 
 ### Shell scripts: Comments must match behavior
@@ -284,6 +290,16 @@ Always include a version pin in the `tool:` parameter: `cargo-audit@0.22.1`, not
 ### Nightly clippy may flag different issues than stable
 
 The emscripten WASM target requires nightly, which may introduce lints (e.g., `needless_borrow`) not flagged by stable. Fix code for both when possible; otherwise use `#[allow(clippy::lint_name)]` with a comment.
+
+### Seeded netem requires a seed-capable tc
+
+Ubuntu 24.04's packaged iproute2 6.1 does not parse netem's `seed` option. The
+blocking Godot impaired/soak jobs therefore checksum-verify and build only the
+`lib tc` subdirectories from pinned iproute2 6.6.0. Keep the runner version,
+source version/checksum, parser invocation, receiver-facing ingress filters,
+and `netem.txt` qdisc/filter counters in sync. Removing `seed` makes the
+scenario nondeterministic; reinstalling the distribution package does not fix
+the parser gap.
 
 ## Validation Scripts
 
