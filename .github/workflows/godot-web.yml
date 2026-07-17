@@ -39,6 +39,11 @@ jobs:
           toolchain: ${{ env.RUST_NIGHTLY }}
           components: rust-src
 
+      - name: Install Rust stable with Clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
       - name: Install Emscripten SDK
         uses: emscripten-core/setup-emsdk@v16
         with:
