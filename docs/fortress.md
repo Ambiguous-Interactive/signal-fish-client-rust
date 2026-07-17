@@ -9,8 +9,12 @@ Add the rollback library beside the SDK in the Godot GDExtension crate:
 ```toml
 fortress-rollback = "=0.10.0"
 serde = { version = "1.0", features = ["derive"] }
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
 ```
+
+The issue #61 polling and admission guarantees in this guide are currently on
+`main` under [`Unreleased`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md);
+use the git dependency until the next crate release publishes them.
 
 ## Configure Signal Fish
 
@@ -85,8 +89,11 @@ Chromium processes and a real Signal Fish Server 0.4.0. The clean case advances
 hitch at frame 240; the soak advances 3,600 confirmed frames under the same
 profile. The fixture configures a 20-frame prediction window so acceptable
 constrained-network lag and the declared hitch can recover without an internal
-scheduler stall; the scenario oracles still cap observed confirmation lag at
-eight clean, 13 impaired, or 12 soak frames. Simulation advances on a fixed
+scheduler stall. Simulated frames 1 through 60 are an explicit browser
+renderer/JIT warm-up phase bounded by the 20-frame prediction window. From
+frame 61 onward, the scenario oracles cap confirmation lag at eight clean or
+13 impaired/soak frames; final current lag must obey the same scenario bound.
+Simulation advances on a fixed
 local 18 Hz cadence, independent of peer or network progress, so unequal browser CPU
 slices do not become artificial frame advantage and real prediction-window
 stalls remain observable. Delayed callbacks retain their elapsed deadline debt
@@ -105,7 +112,7 @@ the pinned, checksum-verified iproute2 6.6.0 `tc` because the runner's packaged
 version cannot apply a deterministic netem seed.
 
 The gates require exact checksum convergence, in-sync health, bounded
-confirmation lag, zero waits/stalls, at least two relay messages per simulated
+phase-aware confirmation lag, zero waits/stalls, at least two relay messages per simulated
 frame, final queue depth and age of zero, a sampled queue-age peak no greater
 than 500 ms, a non-positive final eight-sample queue-age slope for the soak,
 exact client/server conservation, and an observable v3 `PlayerLeft` terminal

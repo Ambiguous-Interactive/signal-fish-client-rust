@@ -25,7 +25,9 @@ function peer(role) {
     confirmed_input_checksum: "123", target_state_checksum: "456", game_ready: true,
     sync_in_sync: true, queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 40,
     relay_inbound_depth: 0, relay_outbound_depth: 0, confirmation_lag_current: 0,
-    confirmation_lag_max: 6, wait_recommendation_count: 0, stall_count: 0,
+    confirmation_lag_max: 12, confirmation_lag_warmup_frames: 60,
+    confirmation_lag_warmup_max: 12, confirmation_lag_steady_max: 6,
+    wait_recommendation_count: 0, stall_count: 0,
     relay_messages_per_simulated_frame: 2.5, relay_dropped: 0, relay_malformed: 0,
     backend_capacity_hits: 0, admission_watermark_violations: 0, checksums_compared: 10,
     checksums_matched: 10, checksums_mismatched: 0, events_discarded: 0,
@@ -46,10 +48,26 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     passed: true, final_queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 100,
     final_drained_samples: 8,
     load_error: false, p99_latency_us: 100_000, max_poll_us: 1_000, buffering_safe: true,
-    admission_watermark_violations: 0,
+    admission_watermark_violations: 0, offered_per_client: [2_176, 2_176],
+    received_per_client: [2_176, 2_176], peak_queue_depth: 32,
+    peak_aggregate_queue_depth: 64, per_client_peak_queue_depth: [32, 32],
+    multi_frame_poll: true, buffered_bytes: 0, accepted_frames: 4_352, admission_hits: 0,
+    within_absolute_adaptive_ceiling: true,
+    binary_pair_admission_watermark_violations: 0,
+    binary_pair_one_frame_escape_bytes: 64,
+    binary_pair_within_absolute_adaptive_ceiling: true,
+    binary_pair_peak_buffered_bytes: [1_000, 1_000],
+    binary_pair_effective_watermark_bytes: [4_096, 4_096],
+    binary_pair_per_client_escape_bytes: [32, 32],
+    per_client_peak_buffered_bytes: [1_000, 1_000],
+    per_client_effective_watermark_bytes: [4_096, 4_096],
+    per_client_one_frame_escape_bytes: [32, 32], one_frame_escape_bytes: 128,
+    max_poll_work_frames: 64, max_poll_work_bytes: 65_536, max_poll_receive_frames: 64,
   };
   const samples = Array.from({ length: 8 }, (_, index) => ({
     elapsed_ms: index * 10, command_depth: 0, current_queue_age_ms: 0,
+    poll_work_frames: 64, poll_work_bytes: 65_536, poll_receive_frames: 64,
+    send_budget_exhaustions: 0, receive_budget_exhaustions: 0,
   }));
   assert.equal(validateLoadSummary(summary, samples).ok, true);
   for (const [label, mutation] of [
@@ -57,8 +75,26 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     ["drained samples", (value) => { value.final_drained_samples = 7; }],
     ["peak age", (value) => { value.peak_queue_age_ms = 501; }],
     ["admission", (value) => { value.admission_watermark_violations = 1; }],
+    ["offered conservation", (value) => { value.offered_per_client[0] -= 1; }],
+    ["received schema", (value) => { delete value.received_per_client; }],
+    ["multi-frame poll", (value) => { value.multi_frame_poll = false; }],
+    ["aggregate depth", (value) => { value.peak_aggregate_queue_depth = 65; }],
+    ["per-client depth", (value) => { value.per_client_peak_queue_depth[0] = 33; }],
+    ["undrained bytes", (value) => { value.buffered_bytes = 1; }],
+    ["accepted frames", (value) => { value.accepted_frames = 4_351; }],
+    ["adaptive ceiling", (value) => { value.within_absolute_adaptive_ceiling = false; }],
+    ["binary admission", (value) => { value.binary_pair_admission_watermark_violations = 1; }],
+    ["buffer schema", (value) => { delete value.per_client_peak_buffered_bytes; }],
+    ["binary buffer schema", (value) => { delete value.binary_pair_peak_buffered_bytes; }],
+    ["buffer ceiling", (value) => { value.per_client_peak_buffered_bytes[0] = 32_769; }],
+    ["binary buffer ceiling", (value) => {
+      value.binary_pair_peak_buffered_bytes[0] = 32_769;
+    }],
+    ["escape conservation", (value) => { value.one_frame_escape_bytes -= 1; }],
     ["missing latency", (value) => { delete value.p99_latency_us; }],
     ["missing callback", (value) => { delete value.max_poll_us; }],
+    ["summary send work", (value) => { value.max_poll_work_frames = 65; }],
+    ["summary receive work", (value) => { delete value.max_poll_receive_frames; }],
   ]) {
     const corrupted = structuredClone(summary);
     mutation(corrupted);
@@ -74,6 +110,17 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     sample.current_queue_age_ms = 1;
   });
   assert.equal(validateLoadSummary(summary, flatButNotDrained).ok, false);
+  for (const [label, field, value] of [
+    ["send frame work", "poll_work_frames", 65],
+    ["send byte work", "poll_work_bytes", 65_537],
+    ["receive work", "poll_receive_frames", 65],
+    ["budget schema", "send_budget_exhaustions", undefined],
+  ]) {
+    const overBudget = structuredClone(samples);
+    if (value === undefined) delete overBudget[0][field];
+    else overBudget[0][field] = value;
+    assert.equal(validateLoadSummary(summary, overBudget).ok, false, label);
+  }
 });
 
 test("Fortress oracle rejects each critical negative control", () => {
@@ -83,23 +130,41 @@ test("Fortress oracle rejects each critical negative control", () => {
   assert.equal(validateFortressPair(first, second).ok, true);
   const impairedBoundary = structuredClone(first);
   impairedBoundary.confirmation_lag_current = 13;
+  impairedBoundary.confirmation_lag_steady_max = 13;
   impairedBoundary.confirmation_lag_max = 13;
   assert.equal(validateFortressPeer(impairedBoundary, { lagLimit: 13 }).ok, true);
-  impairedBoundary.confirmation_lag_max = 14;
+  impairedBoundary.confirmation_lag_steady_max = 14;
   assert.equal(validateFortressPeer(impairedBoundary, { lagLimit: 13 }).ok, false);
+  const lifetimeBoundary = structuredClone(first);
+  lifetimeBoundary.confirmation_lag_max = 20;
+  lifetimeBoundary.confirmation_lag_warmup_max = 20;
+  assert.equal(validateFortressPeer(lifetimeBoundary).ok, true);
+  lifetimeBoundary.confirmation_lag_max = 21;
+  assert.equal(validateFortressPeer(lifetimeBoundary).ok, false);
 
   for (const [label, mutation] of [
     ["frame confirmation", (value) => { value.checksum_through = 599; }],
     ["current queue age", (value) => { value.current_queue_age_ms = 1; }],
     ["peak queue age", (value) => { value.peak_queue_age_ms = 501; }],
     ["current lag", (value) => { value.confirmation_lag_current = 9; }],
-    ["maximum lag", (value) => { value.confirmation_lag_max = 9; }],
+    ["steady maximum lag", (value) => { value.confirmation_lag_steady_max = 9; }],
+    ["warmup maximum lag", (value) => { value.confirmation_lag_warmup_max = 21; }],
+    ["warmup schema", (value) => { delete value.confirmation_lag_warmup_frames; }],
+    ["lifetime maximum lag", (value) => { value.confirmation_lag_max = 21; }],
+    ["stale phase accumulators", (value) => {
+      value.confirmation_lag_max = 20;
+      value.confirmation_lag_warmup_max = 0;
+      value.confirmation_lag_steady_max = 0;
+    }],
     ["wait", (value) => { value.wait_recommendation_count = 1; }],
     ["stall", (value) => { value.stall_count = 1; }],
     ["admission", (value) => { value.admission_watermark_violations = 1; }],
     ["settlement schema", (value) => { delete value.settlement_frame_limit; }],
     ["timeout schema", (value) => { delete value.session_timeout_ms; }],
     ["callback schema", (value) => { delete value.max_poll_us; }],
+    ["local identity schema", (value) => { delete value.local_id; }],
+    ["remote identity schema", (value) => { value.remote_id = ""; }],
+    ["distinct identities", (value) => { value.remote_id = value.local_id; }],
     ["startup completion", (value) => { value.startup_barrier_completed = false; }],
     ["startup local frame", (value) => { value.startup_barrier_release_local_frame = 1; }],
     ["startup elapsed time", (value) => { delete value.startup_barrier_elapsed_ms; }],
@@ -139,6 +204,12 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["checksum", (value) => { value.target_state_checksum = "different"; }],
     ["delivery count", (value) => { value.relay_decoded -= 1; }],
     ["teardown watermark", (value) => { value.peer_left_final_seq = 0; }],
+    ["teardown schema", (value) => { delete value.peer_left_epoch; }],
+    ["rollback schema", (value) => { delete value.rollback_count; }],
+    ["resimulation schema", (value) => { delete value.resimulated_frames; }],
+    ["prediction schema", (value) => { delete value.prediction_miss_count; }],
+    ["rollback depth schema", (value) => { delete value.max_rollback_depth; }],
+    ["load schema", (value) => { delete value.load_requests; }],
   ]) {
     const corrupted = structuredClone(first);
     mutation(corrupted);

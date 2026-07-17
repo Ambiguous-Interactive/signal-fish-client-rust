@@ -1,4 +1,4 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 use godot::prelude::*;
 use signal_fish_client::protocol::GameDataEncoding;
@@ -98,6 +98,9 @@ struct SmokePair {
     other_pair_admission_violations: u64,
     other_pair_one_frame_escape_bytes: u64,
     other_pair_within_absolute_ceiling: bool,
+    other_pair_peak_buffered_bytes: [u64; 2],
+    other_pair_effective_watermark_bytes: [u64; 2],
+    other_pair_per_client_escape_bytes: [u64; 2],
 }
 
 impl SmokePair {
@@ -148,6 +151,9 @@ impl SmokePair {
             other_pair_admission_violations: 0,
             other_pair_one_frame_escape_bytes: 0,
             other_pair_within_absolute_ceiling: true,
+            other_pair_peak_buffered_bytes: [0; 2],
+            other_pair_effective_watermark_bytes: [0; 2],
+            other_pair_per_client_escape_bytes: [0; 2],
         }
     }
 
@@ -606,8 +612,13 @@ impl SmokePair {
             && current_queue_age == Duration::ZERO
             && peak_queue_age <= Duration::from_millis(500)
             && self.peak_aggregate_depth <= 64
-            && per_client_peak_depth.into_iter().all(|depth| depth <= 64)
+            && per_client_peak_depth
+                .into_iter()
+                .all(|depth| depth <= LOAD_MAX_QUEUE_DEPTH_PER_CLIENT)
             && self.multi_frame_poll
+            && self.max_poll_work_frames <= 64
+            && self.max_poll_work_bytes <= 64 * 1024
+            && self.max_poll_receive_frames <= 64
             && self.max_poll_us.max(self.other_pair_max_poll_us) < 50_000
             && p99_us <= 500_000
             && buffering_safe;
@@ -621,6 +632,8 @@ impl SmokePair {
                 client.transport_diagnostics().effective_watermark_bytes
             })
         });
+        let per_client_escape_bytes = [self.first.as_ref(), self.second.as_ref()]
+            .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_bytes()));
         let passed = passed && !self.load_error;
         let summary = serde_json::json!({
             "passed": passed,
@@ -637,6 +650,9 @@ impl SmokePair {
             "accepted_frames": accepted,
             "admission_hits": admission_hits,
             "multi_frame_poll": self.multi_frame_poll,
+            "max_poll_work_frames": self.max_poll_work_frames,
+            "max_poll_work_bytes": self.max_poll_work_bytes,
+            "max_poll_receive_frames": self.max_poll_receive_frames,
             "max_poll_us": self.max_poll_us.max(self.other_pair_max_poll_us),
             "p99_latency_us": p99_us,
             "buffering_safe": buffering_safe,
@@ -645,8 +661,12 @@ impl SmokePair {
             "binary_pair_admission_watermark_violations": self.other_pair_admission_violations,
             "binary_pair_one_frame_escape_bytes": self.other_pair_one_frame_escape_bytes,
             "binary_pair_within_absolute_adaptive_ceiling": self.other_pair_within_absolute_ceiling,
+            "binary_pair_peak_buffered_bytes": self.other_pair_peak_buffered_bytes,
+            "binary_pair_effective_watermark_bytes": self.other_pair_effective_watermark_bytes,
+            "binary_pair_per_client_escape_bytes": self.other_pair_per_client_escape_bytes,
             "per_client_peak_buffered_bytes": per_client_peak_buffered,
             "per_client_effective_watermark_bytes": per_client_watermark,
+            "per_client_one_frame_escape_bytes": per_client_escape_bytes,
             "one_frame_escape_bytes": one_frame_escape_bytes,
             "load_error": self.load_error,
         });
@@ -753,11 +773,16 @@ impl INode for SignalFishSmoke {
         let binary_close_attributed = binary.close_attributed;
         let (binary_violations, binary_escape_bytes, binary_within_ceiling) =
             aggregate_godot_admission(binary.first.as_ref(), binary.second.as_ref());
+        let (binary_peaks, binary_watermarks, binary_per_client_escape) =
+            godot_admission_snapshots(binary.first.as_ref(), binary.second.as_ref());
         let Some(json) = &mut self.json else { return };
         json.other_pair_max_poll_us = binary_max_poll_us;
         json.other_pair_admission_violations = binary_violations;
         json.other_pair_one_frame_escape_bytes = binary_escape_bytes;
         json.other_pair_within_absolute_ceiling = binary_within_ceiling;
+        json.other_pair_peak_buffered_bytes = binary_peaks;
+        json.other_pair_effective_watermark_bytes = binary_watermarks;
+        json.other_pair_per_client_escape_bytes = binary_per_client_escape;
         json.poll();
         if json.shutdown_done && binary_close_attributed {
             godot_print!("SIGNAL_FISH_SMOKE complete");
@@ -888,6 +913,27 @@ fn aggregate_godot_admission(first: Option<&Client>, second: Option<&Client>) ->
                 within_ceiling && adaptive_peak_is_safe(peak),
             )
         },
+    )
+}
+
+fn godot_admission_snapshots(
+    first: Option<&Client>,
+    second: Option<&Client>,
+) -> ([u64; 2], [u64; 2], [u64; 2]) {
+    let clients = [first, second];
+    (
+        clients.map(|client| {
+            client.map_or(0, |client| {
+                client.transport_diagnostics().peak_buffered_bytes
+            })
+        }),
+        clients.map(|client| {
+            client.map_or(0, |client| {
+                client.transport_diagnostics().effective_watermark_bytes
+            })
+        }),
+        clients
+            .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_bytes())),
     )
 }
 

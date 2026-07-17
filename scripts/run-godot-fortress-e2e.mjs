@@ -30,7 +30,9 @@ const serverUrl = option("--server-url", "ws://127.0.0.1:3536/v2/ws");
 const serverAddress = new URL(serverUrl);
 const metricsUrl = `http://${serverAddress.host}/metrics/prom`;
 const targetFrames = scenario === "soak" ? 3_600 : 600;
-const lagLimit = scenario === "clean" ? 8 : scenario === "soak" ? 12 : 13;
+const lagLimit = scenario === "clean" ? 8 : 13;
+const lifetimeLagLimit = 20;
+const lagWarmupFrames = 60;
 const requireHitch = scenario !== "clean";
 const sessionTimeoutMs = scenario === "soak" ? 300_000 : scenario === "clean" ? 60_000 : 90_000;
 const exportDirectory = await realpath(resolve(exportDirectoryArgument));
@@ -217,6 +219,8 @@ function assertPeerSummary(peer) {
   const validation = validateFortressPeer(summary, {
     targetFrames,
     lagLimit,
+    lifetimeLagLimit,
+    lagWarmupFrames,
     requireHitch,
     sessionTimeoutMs,
   });

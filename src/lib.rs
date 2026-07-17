@@ -45,9 +45,11 @@
 //!   *relay-floor guarantee*: opt into nothing and nothing changes.
 //! - **v3 — additive mesh (opt-in).** [`SignalFishConfig::enable_mesh`] advertises
 //!   the WebRTC/relay transports and mesh/host/relay topologies, letting the
-//!   server form a peer-to-peer session. v3 is purely additive on v2: existing
-//!   code keeps working unchanged, and the server falls back to the relay floor
-//!   whenever it cannot form a session.
+//!   server form a peer-to-peer session. v3 capabilities are additive to the
+//!   v2 relay floor, and the server falls back to relay whenever it cannot form
+//!   a session. On current servers, an eligible client explicitly calls
+//!   [`SignalFishClient::start_game`] after readiness instead of relying on
+//!   automatic start.
 //!
 //! The negotiated version comes back in the server's `ProtocolInfo`; check it via
 //! [`SignalFishClient::negotiated_protocol_version`] /

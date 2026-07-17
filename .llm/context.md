@@ -89,6 +89,11 @@ buffered byte count to reach zero. `Pending` before acceptance leaves the
 caller's `Option` intact. Close polling is idempotent. See
 `skills/transport-abstraction/SKILL.md`.
 
+The Emscripten transport reports `Pending` while its browser WebSocket is still
+connecting and must not call `emscripten_websocket_send_*` or consume the
+caller's frame until `onopen`. Preparation or FFI send errors likewise leave
+the exact frame available to its caller.
+
 Godot defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
@@ -96,8 +101,10 @@ The blocking Godot workflow builds one official export and runs clean,
 seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
 0.4.0. It checksum-verifies and builds iproute2 6.6.0 for seeded netem rather
 than relying on the runner's older `tc`. A 20-frame Fortress prediction window
-leaves recovery headroom while scenario oracles still enforce eight-frame
-clean, 13-frame impaired, and 12-frame soak lag bounds. The fixture uses a
+leaves recovery headroom. Simulated frames 1 through 60 form an explicit
+renderer/JIT warm-up phase bounded by that window; steady-state and final
+confirmation lag are capped at eight frames clean or 13 frames impaired/soak.
+The fixture uses a
 peer-independent fixed 18 Hz simulation cadence that preserves elapsed
 deadline debt and catches up by at most one frame per rendered callback, plus
 a one-time proposal/ack/commit startup barrier that maps a shared same-host

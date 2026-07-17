@@ -118,7 +118,7 @@ For Godot 4.5 native and official web exports, enable the supported transport:
 ```toml
 [dependencies]
 godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
 ```
 
 Only for a custom Emscripten host that explicitly links its WebSocket library,
@@ -126,8 +126,13 @@ enable the advanced raw-FFI transport:
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-websocket-emscripten"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
+
+These snippets use `main` because the ownership, bounded-work, and admission
+guarantees documented below are listed under `Unreleased`. Use the published
+`0.8.0` dependency with its [versioned API docs](https://docs.rs/signal-fish-client/0.8.0/)
+when you do not need those fixes yet.
 
 ### Building
 
@@ -136,7 +141,8 @@ export GODOT4_BIN=/path/to/Godot_v4.5-stable_linux.x86_64
 export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
 export RUSTFLAGS="-Z unstable-options -C panic=immediate-abort -C link-arg=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no"
 cargo +nightly-2026-03-01 build -Zbuild-std=std \
-    --target wasm32-unknown-emscripten --release
+    --target wasm32-unknown-emscripten --release \
+    --no-default-features --features transport-godot
 ```
 
 Substitute `transport-websocket-emscripten` only for the custom-host path.
@@ -164,8 +170,9 @@ let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal"
 ```
 
 `connect()` is **synchronous** — the WebSocket object is created immediately,
-but the connection handshake completes asynchronously in the browser. Messages
-sent before the handshake finishes are buffered by the browser.
+but the connection handshake completes asynchronously in the browser. The
+transport returns `Pending` before `onopen`, so the polling client retains each
+queued command until Emscripten can accept it.
 
 Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. On failure the
 error is `SignalFishError::Io` (e.g., invalid URL or Emscripten API failure).
@@ -184,11 +191,18 @@ sequenceDiagram
     WS-->>EM: onmessage / onerror / onclose
     EM-->>T: std::sync::mpsc::Sender::send(IncomingEvent)
 
-    App->>PC: poll()
+    App->>PC: poll() before onopen
+    PC->>T: transport.poll_send(frame) [noop waker]
+    T-->>PC: Poll::Pending (frame remains caller-owned)
     PC->>T: transport.poll_recv() [noop waker]
     T->>T: mpsc::Receiver::try_recv()
-    T-->>PC: Poll::Ready(Some(Ok(message))) or Poll::Pending
-    PC->>T: transport.poll_send(json) [noop waker]
+    T-->>PC: Poll::Pending
+    WS-->>EM: onopen
+    EM-->>T: IncomingEvent::Open
+    App->>PC: poll() observes open
+    PC-->>App: SignalFishEvent::Connected
+    App->>PC: next poll()
+    PC->>T: transport.poll_send(frame) [noop waker]
     T->>EM: emscripten_websocket_send_utf8_text()
     EM->>WS: WebSocket.send()
     PC-->>App: Vec<SignalFishEvent>
@@ -226,15 +240,16 @@ bound and does not accept this main-thread transport.
 
 !!! info "Connection timing — `Connected` vs. WebSocket `onopen`"
     `SignalFishPollingClient` emits [`SignalFishEvent::Connected`] once the
-    transport's [`is_ready()`](../src/transport.rs) method returns `true`.
+    transport's [`Transport::is_ready()`](transport.md) method returns `true`.
     For `EmscriptenWebSocketTransport`, this happens after the browser's
     WebSocket `onopen` callback fires — meaning `Connected` genuinely
     reflects a completed handshake.
 
     Commands queued before `Connected` (including the automatic `Authenticate`
-    message) are flushed on every `poll()` call. For
-    `EmscriptenWebSocketTransport`, the browser buffers these messages and
-    delivers them once the connection opens — no data is lost.
+    message) remain owned by `SignalFishPollingClient`. The transport returns
+    `Pending` without consuming the frame until it observes `onopen`; a later
+    `poll()` retries the exact same frame, in order. The browser only receives
+    the command after its synchronous send API accepts it.
 
     This aligns with the async `SignalFishClient`, where the transport is
     passed to `start()` already connected (e.g., via
@@ -355,10 +370,13 @@ buffering after acceptance is backend-owned, not proof of peer delivery.
 
 ### API reference
 
-#### Command methods
+#### Driving, lifecycle, and command methods
 
-All command methods queue a `ClientMessage` for the next `poll()` cycle.
-They return `Err(SignalFishError::NotConnected)` if the transport has closed.
+Command methods queue protocol work for a later `poll()` cycle. They return
+`SignalFishError::SendBufferFull` without queuing when the bounded command queue
+is full, or `SignalFishError::NotConnected` if the transport has closed.
+Protocol-v3-only methods also return `SignalFishError::ProtocolUnsupported`
+until v3 is negotiated.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -366,12 +384,21 @@ They return `Err(SignalFishError::NotConnected)` if the transport has closed.
 | `join_room(params)` | `fn join_room(&mut self, params: JoinRoomParams) -> Result<()>` | Join or create a room. |
 | `leave_room()` | `fn leave_room(&mut self) -> Result<()>` | Leave the current room. |
 | `set_ready()` | `fn set_ready(&mut self) -> Result<()>` | Signal readiness. |
+| `start_game()` | `fn start_game(&mut self) -> Result<()>` | Request explicit game start using the v2 command semantics; this method is not v3-gated. |
 | `send_game_data(data)` | `fn send_game_data(&mut self, data: serde_json::Value) -> Result<()>` | Send JSON game data to other players. |
+| `send_game_data_with_delivery(data, delivery)` | `fn send_game_data_with_delivery(&mut self, data: serde_json::Value, delivery: GameDataDelivery) -> Result<()>` | Send JSON game data with an explicit delivery policy; `Latest` and `Volatile` require v3. |
+| `send_binary_game_data(payload)` | `fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()>` | Queue an opaque protocol-v3 binary game-data payload. |
 | `request_authority(flag)` | `fn request_authority(&mut self, become_authority: bool) -> Result<()>` | Request or relinquish authority. |
 | `provide_connection_info(info)` | `fn provide_connection_info(&mut self, info: ConnectionInfo) -> Result<()>` | Provide P2P connection info. |
 | `reconnect(player_id, room_id, auth_token)` | `fn reconnect(&mut self, player_id: PlayerId, room_id: RoomId, auth_token: String) -> Result<()>` | Reconnect to a room after disconnection. |
 | `join_as_spectator(game, room, name)` | `fn join_as_spectator(&mut self, game_name: String, room_code: String, spectator_name: String) -> Result<()>` | Join a room as a spectator. |
 | `leave_spectator()` | `fn leave_spectator(&mut self) -> Result<()>` | Leave spectator mode. |
+| `send_signal(to, signal)` | `fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()>` | Relay a typed WebRTC signal on protocol v3. |
+| `send_offer(to, sdp)` | `fn send_offer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()>` | Relay a protocol-v3 SDP offer. |
+| `send_answer(to, sdp)` | `fn send_answer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()>` | Relay a protocol-v3 SDP answer. |
+| `send_ice_candidate(to, candidate)` | `fn send_ice_candidate(&mut self, to: PlayerId, candidate: impl Into<String>) -> Result<()>` | Relay a protocol-v3 ICE candidate. |
+| `send_raw_signal(to, signal)` | `fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()>` | Relay an unmodeled protocol-v3 signal value. |
+| `report_transport_status(transport, connected)` | `fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()>` | Report protocol-v3 data-path connectivity. |
 | `ping()` | `fn ping(&mut self) -> Result<()>` | Send a heartbeat ping. |
 | `close()` | `fn close(&mut self)` | Start the configured bounded close lifecycle; keep polling while `is_closing()`. |
 
@@ -383,20 +410,28 @@ environment).
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `is_connected()` | `fn is_connected(&self) -> bool` | Whether the transport is still alive. |
+| `is_closing()` | `fn is_closing(&self) -> bool` | Whether the bounded close lifecycle still needs polling. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Whether the server confirmed authentication. |
 | `current_player_id()` | `fn current_player_id(&self) -> Option<PlayerId>` | The local player's ID, if assigned. |
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
+| `negotiated_protocol_version()` | `fn negotiated_protocol_version(&self) -> Option<u16>` | Negotiated protocol version; `None` before negotiation or for the v2 relay floor. |
+| `supports_mesh()` | `fn supports_mesh(&self) -> bool` | Whether protocol v3 and advertised WebRTC mesh support are both active. |
+| `send_capacity()` | `fn send_capacity(&self) -> usize` | Remaining slots in the bounded command queue. |
+| `max_send_capacity()` | `fn max_send_capacity(&self) -> usize` | Configured command-queue capacity. |
+| `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data and undecodable-message counters. |
 | `polling_stats()` | `fn polling_stats(&self) -> PollingStats` | Client queue, work-budget, abandonment, and deadline diagnostics. |
 | `queue_age_stats()` | `fn queue_age_stats(&self) -> PollingQueueAgeStats` | Sampled current/peak age of the oldest client-owned outbound item. |
 | `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Refresh current age and reset the sampled peak to it. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
+| `transport()` | `fn transport(&self) -> &T` | Borrow transport-specific read-only diagnostics; I/O still advances only through `poll()`. |
+| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, and quarantine state. |
 
 !!! tip "Comparison with `SignalFishClient`"
-    `SignalFishPollingClient` mirrors the same API surface as `SignalFishClient`
-    for common synchronous commands: both use `&mut self`, and state accessors
-    use `&self`. The polling client has no asynchronous waiting sends or
-    `shutdown()` — drive it with `poll()` and use `close()` instead.
+    `SignalFishPollingClient` mirrors `SignalFishClient`'s common synchronous
+    commands: both use `&mut self`, and state accessors use `&self`. The polling
+    client has no asynchronous waiting sends or `shutdown()` — drive it with
+    `poll()` and use `close()` instead.
 
 ---
 
@@ -419,7 +454,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { version = "0.4.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-godot"] }
+signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-godot"] }
 serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
@@ -582,6 +617,7 @@ for the full workflow. Key steps:
 |---------|---------|-------------|:------------------------:|:---------------------------:|
 | `transport-websocket` | Yes | WebSocket transport via `tokio-tungstenite` (TCP sockets) | No | No |
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
+| `transport-godot` | No | Godot 4.5 `WebSocketPeer`; enables `polling-client` | No | Yes |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
@@ -591,7 +627,8 @@ for the full workflow. Key steps:
 |--------|---------------------------|
 | Native (desktop/server) | `transport-websocket` (default) |
 | `wasm32-unknown-unknown` | `--no-default-features` (bring your own transport) |
-| `wasm32-unknown-emscripten` | `--no-default-features --features transport-websocket-emscripten` |
+| Godot 4.5 on `wasm32-unknown-emscripten` | `--no-default-features --features transport-godot` |
+| Custom link-enabled Emscripten host | `--no-default-features --features transport-websocket-emscripten` |
 
 !!! warning "Feature conflicts"
     Do not enable `transport-websocket` or `tokio-runtime` when targeting any
@@ -764,10 +801,10 @@ channel:
    raw pointer back to `&CallbackState` and pushes an `IncomingEvent` onto the
    channel.
 
-3. **Consumption** — `recv()` calls `try_recv()` on the channel's `Receiver`.
-   If a message is available, it returns immediately. If the channel is empty,
-   it returns `std::future::pending()`, which the polling client handles by
-   breaking out of the receive loop.
+3. **Consumption** — `poll_recv()` calls `try_recv()` on the channel's
+   `Receiver`. If a message is available, it returns immediately. If the
+   channel is empty, it returns `Poll::Pending`, which the polling client
+   handles by breaking out of the receive loop.
 
 4. **Cleanup** — on `Drop`, the transport calls `emscripten_websocket_close()`
    and `emscripten_websocket_delete()` (which unregisters all callbacks), then

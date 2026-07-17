@@ -83,7 +83,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::sync::mpsc as std_mpsc;
 
 use crate::error::SignalFishError;
-use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
+use crate::transport::{poll_accept_frame, Transport, TransportCloseInfo, TransportFrame};
 
 // ── FFI Bindings ────────────────────────────────────────────────────────────
 
@@ -274,8 +274,9 @@ impl EmscriptenWebSocketTransport {
     /// Create a new WebSocket connection to the given URL.
     ///
     /// This function is synchronous — the WebSocket is created immediately,
-    /// but the connection handshake completes asynchronously. Messages sent
-    /// before the connection opens are buffered by the browser.
+    /// but the connection handshake completes asynchronously. The transport
+    /// retains caller-owned messages until the browser reports that the
+    /// connection is open.
     ///
     /// # Errors
     ///
@@ -541,48 +542,41 @@ impl Transport for EmscriptenWebSocketTransport {
         if self.closed {
             return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
         }
-        let Some(frame) = frame.take() else {
-            return std::task::Poll::Ready(Ok(()));
-        };
-        let result = match frame {
-            TransportFrame::Text(message) => {
-                let c_msg = match std::ffi::CString::new(message) {
-                    Ok(message) => message,
-                    Err(error) => {
-                        return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
-                            error.to_string(),
-                        )));
-                    }
-                };
-                // SAFETY: `self.socket` is a live Emscripten WebSocket handle and
-                // `c_msg` remains allocated and NUL-terminated for the duration
-                // of this synchronous FFI call.
-                unsafe { emscripten_websocket_send_utf8_text(self.socket, c_msg.as_ptr()) }
-            }
-            TransportFrame::Binary(bytes) => {
-                let Ok(length) = u32::try_from(bytes.len()) else {
-                    return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
-                        "binary frame exceeds Emscripten u32 length".into(),
-                    )));
-                };
-                // SAFETY: `self.socket` is live, `bytes` remains allocated for
-                // this synchronous call, and `length` was checked to fit `u32`.
-                unsafe {
-                    emscripten_websocket_send_binary(
-                        self.socket,
-                        bytes.as_ptr().cast::<c_void>(),
-                        length,
-                    )
+        poll_accept_frame(self.opened, frame, |frame_ref| {
+            let result = match frame_ref {
+                TransportFrame::Text(message) => {
+                    let c_msg = std::ffi::CString::new(message.as_str())
+                        .map_err(|error| SignalFishError::TransportSend(error.to_string()))?;
+                    // SAFETY: `self.socket` is a live Emscripten WebSocket handle and
+                    // `c_msg` remains allocated and NUL-terminated for the duration
+                    // of this synchronous FFI call.
+                    unsafe { emscripten_websocket_send_utf8_text(self.socket, c_msg.as_ptr()) }
                 }
+                TransportFrame::Binary(bytes) => {
+                    let length = u32::try_from(bytes.len()).map_err(|_| {
+                        SignalFishError::TransportSend(
+                            "binary frame exceeds Emscripten u32 length".into(),
+                        )
+                    })?;
+                    // SAFETY: `self.socket` is live, `bytes` remains allocated for
+                    // this synchronous call, and `length` was checked to fit `u32`.
+                    unsafe {
+                        emscripten_websocket_send_binary(
+                            self.socket,
+                            bytes.as_ptr().cast::<c_void>(),
+                            length,
+                        )
+                    }
+                }
+            };
+            if result == EMSCRIPTEN_RESULT_SUCCESS {
+                Ok(())
+            } else {
+                Err(SignalFishError::TransportSend(format!(
+                    "Emscripten WebSocket send failed: {result}"
+                )))
             }
-        };
-        if result == EMSCRIPTEN_RESULT_SUCCESS {
-            std::task::Poll::Ready(Ok(()))
-        } else {
-            std::task::Poll::Ready(Err(SignalFishError::TransportSend(format!(
-                "Emscripten WebSocket send failed: {result}"
-            ))))
-        }
+        })
     }
 
     fn poll_recv(

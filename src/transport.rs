@@ -13,7 +13,7 @@ use crate::error::SignalFishError;
 pub enum TransportFrame {
     /// JSON protocol message.
     Text(String),
-    /// Opaque protocol-v3 binary game-data frame.
+    /// Opaque binary game-data frame; protocol decoding happens above the transport.
     Binary(Vec<u8>),
 }
 
@@ -115,6 +115,32 @@ pub trait Transport {
     }
 }
 
+/// Gate a synchronous backend send without transferring caller ownership until
+/// the backend accepts the borrowed frame.
+#[cfg(any(test, target_os = "emscripten"))]
+pub(crate) fn poll_accept_frame<F>(
+    ready: bool,
+    frame: &mut Option<TransportFrame>,
+    accept: F,
+) -> Poll<Result<(), SignalFishError>>
+where
+    F: FnOnce(&TransportFrame) -> Result<(), SignalFishError>,
+{
+    let Some(candidate) = frame.as_ref() else {
+        return Poll::Ready(Ok(()));
+    };
+    if !ready {
+        return Poll::Pending;
+    }
+    match accept(candidate) {
+        Ok(()) => {
+            let _ = frame.take();
+            Poll::Ready(Ok(()))
+        }
+        Err(error) => Poll::Ready(Err(error)),
+    }
+}
+
 /// Drive one transport send to completion from an async runtime.
 #[cfg(feature = "tokio-runtime")]
 pub(crate) async fn send_frame<T: Transport + ?Sized>(
@@ -139,4 +165,42 @@ pub(crate) async fn close_transport<T: Transport + ?Sized>(
     transport: &mut T,
 ) -> Result<(), SignalFishError> {
     std::future::poll_fn(|cx| transport.poll_close(cx)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::task::Poll;
+
+    use super::{poll_accept_frame, TransportFrame};
+    use crate::SignalFishError;
+
+    #[test]
+    fn synchronous_acceptance_retains_the_exact_frame_until_success() {
+        let original = TransportFrame::Binary(vec![1, 2, 3]);
+        let mut pending = Some(original.clone());
+        let called = Cell::new(false);
+
+        assert!(matches!(
+            poll_accept_frame(false, &mut pending, |_| {
+                called.set(true);
+                Ok(())
+            }),
+            Poll::Pending
+        ));
+        assert!(!called.get());
+        assert_eq!(pending, Some(original.clone()));
+
+        let refused = poll_accept_frame(true, &mut pending, |_| {
+            Err(SignalFishError::TransportSend("refused".into()))
+        });
+        assert!(matches!(refused, Poll::Ready(Err(_))));
+        assert_eq!(pending, Some(original));
+
+        assert!(matches!(
+            poll_accept_frame(true, &mut pending, |_| Ok(())),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(pending, None);
+    }
 }

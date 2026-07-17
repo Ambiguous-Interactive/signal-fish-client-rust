@@ -43,8 +43,38 @@ mod godot_issue_61_policy {
         assert!(fortress_fixture.contains("const PREDICTION_WINDOW_FRAMES: usize = 20;"));
         assert!(fortress_fixture.contains("with_max_prediction_window(PREDICTION_WINDOW_FRAMES)"));
         assert!(fortress_runner.contains("scenario === \"soak\" ? 3_600 : 600"));
-        assert!(fortress_runner
-            .contains("scenario === \"clean\" ? 8 : scenario === \"soak\" ? 12 : 13"));
+        assert!(fortress_runner.contains("scenario === \"clean\" ? 8 : 13"));
+        assert!(fortress_runner.contains("const lifetimeLagLimit = 20;"));
+        assert!(fortress_runner.contains("const lagWarmupFrames = 60;"));
+        assert!(fortress_fixture.contains("const CONFIRMATION_LAG_WARMUP_FRAMES: i32 = 60;"));
+        assert!(fortress_fixture.contains("confirmation_lag_steady_max"));
+        assert!(fortress_fixture.contains("confirmation_lag_warmup_max"));
+        let smoke_fixture = read_project_file("tests/godot-web-smoke/src/lib.rs");
+        let smoke_runner = read_project_file("scripts/run-godot-web-smoke.mjs");
+        let validators = read_project_file("scripts/godot-e2e-validators.mjs");
+        assert!(smoke_fixture.contains("burst_received == 4"));
+        assert!(smoke_fixture.contains("accepted_delta > 1"));
+        assert!(smoke_runner.contains("SIGNAL_FISH_SMOKE binary-four-one-poll"));
+        assert!(smoke_runner.contains("validateLoadSummary(loadSummary, samples)"));
+        assert!(workflow.contains("node --test scripts/test-godot-e2e-validators.mjs"));
+        assert!(workflow.contains("node scripts/run-godot-web-smoke.mjs"));
+        for required in [
+            "offered_per_client",
+            "received_per_client",
+            "multi_frame_poll",
+            "peak_aggregate_queue_depth",
+            "per_client_peak_buffered_bytes",
+            "binary_pair_admission_watermark_violations",
+            "binary_pair_peak_buffered_bytes",
+            "max_poll_work_frames",
+            "max_poll_work_bytes",
+            "max_poll_receive_frames",
+        ] {
+            assert!(
+                validators.contains(required),
+                "load validator must retain {required}"
+            );
+        }
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
             workflow.contains("SERVER_VERSION: \"0.4.0\"")
@@ -146,6 +176,14 @@ fn cargo_package_version() -> String {
         .and_then(toml::Value::as_str)
         .map(std::string::ToString::to_string)
         .expect("Cargo.toml must define [package].version as a string")
+}
+
+fn is_canonical_git_main_dependency(line: &str) -> bool {
+    line.contains(r#"git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust""#)
+        && !line.contains("version")
+        && !line.contains("branch")
+        && !line.contains("rev")
+        && !line.contains("tag")
 }
 
 /// Returns true if a file (not directory) exists relative to the project root.
@@ -1518,6 +1556,9 @@ mod crate_version_consistency {
                 }
 
                 if trimmed.contains('{') {
+                    if is_canonical_git_main_dependency(trimmed) {
+                        continue;
+                    }
                     assert!(
                         text_contains_version_value(trimmed, &cargo_version),
                         "{path}:{} has signal-fish-client inline table without canonical \
@@ -1852,6 +1893,9 @@ mod crate_version_consistency {
 
                 if trimmed.contains('{') {
                     // Inline-table form: signal-fish-client = { version = "X.Y.Z", ... }
+                    if is_canonical_git_main_dependency(trimmed) {
+                        continue;
+                    }
                     assert!(
                         text_contains_version_value(trimmed, &cargo_version),
                         "{rel}:{} has a signal-fish-client dependency snippet with a stale \
@@ -5088,6 +5132,25 @@ mod snippet_extraction_policy {
             );
         }
     }
+
+    #[test]
+    fn unicode_ellipsis_inside_rust_strings_is_not_treated_as_a_placeholder() {
+        let contents = read_project_file("scripts/extract-rust-snippets.sh");
+        assert!(
+            !contents.contains("grep -qF '…'"),
+            "a broad Unicode-ellipsis match skips complete programs containing user-facing strings"
+        );
+        assert!(
+            contents.contains("(//[[:space:]]*)?…[[:space:]]*$"),
+            "Unicode ellipsis skipping must be limited to standalone placeholder lines"
+        );
+        for document in ["docs/examples.md", "docs/events.md"] {
+            assert!(
+                read_project_file(document).contains('…'),
+                "{document} must retain a complete-program ellipsis regression fixture"
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5390,6 +5453,40 @@ mod ffi_safety_documentation {
         assert!(
             contents.contains("_not_send: std::marker::PhantomData,"),
             "Emscripten constructor must initialize its non-Send marker"
+        );
+    }
+
+    /// The raw Emscripten API is not runnable in native test jobs, so require it
+    /// to use the common, behaviorally unit-tested ownership helper instead of
+    /// manipulating the caller's slot in target-gated code.
+    #[test]
+    fn emscripten_send_preserves_frames_until_ffi_acceptance() {
+        let contents = read_project_file("src/transports/emscripten_websocket.rs");
+        let poll_send = contents
+            .find("    fn poll_send(")
+            .map(|start| &contents[start..])
+            .and_then(|tail| tail.find("    fn poll_recv(").map(|end| &tail[..end]))
+            .expect("Emscripten Transport implementation must define poll_send before poll_recv");
+
+        assert!(
+            poll_send.contains("poll_accept_frame(self.opened, frame"),
+            "Emscripten poll_send must delegate readiness and ownership to the tested helper"
+        );
+        assert!(
+            !poll_send.contains("frame.take()")
+                && !poll_send.contains("mem::take(frame)")
+                && !poll_send.contains("*frame = None"),
+            "target-gated Emscripten code must not bypass the tested ownership helper"
+        );
+        assert!(
+            poll_send.contains("CString::new(message.as_str())")
+                && poll_send.contains("u32::try_from(bytes.len())"),
+            "text and binary frames must be prepared through borrowed payloads so preparation errors retain ownership"
+        );
+        let common = read_project_file("src/transport.rs");
+        assert!(
+            common.contains("synchronous_acceptance_retains_the_exact_frame_until_success"),
+            "the common ownership helper must retain its behavioral regression test"
         );
     }
 

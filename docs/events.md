@@ -1,10 +1,10 @@
 # Events Reference
 
-Every message from the Signal Fish server — plus three synthetic
-transport-layer signals — is delivered as a [`SignalFishEvent`] variant
-through the event receiver returned by [`SignalFishClient::start`].
+Decoded messages from the Signal Fish server, plus locally generated lifecycle
+and diagnostic events, are surfaced as [`SignalFishEvent`] variants through the
+event receiver returned by [`SignalFishClient::start`].
 
-This page documents all **34 variants** grouped by category, with field
+This page documents all **35 variants** grouped by category, with field
 descriptions and usage examples.
 
 !!! info "Protocol v2 relay + v3 mesh"
@@ -19,21 +19,20 @@ descriptions and usage examples.
     `PlayerId` is an alias for `uuid::Uuid`.
     `RoomId` is an alias for `uuid::Uuid`.
 
-!!! note "Lossless delivery"
-    Events are **never dropped on overflow**. The event channel is bounded
+!!! note "Overflow backpressure and delivery boundaries"
+    Events are not dropped merely because the bounded event channel overflows
     (default **256**, via `SignalFishConfig::event_channel_capacity`), and a
     consumer that falls behind pauses the transport loop until the channel
     has room — backpressure propagates to the server instead of losing
     events. Inbound frames that fail to decode surface as
     [`DecodeFailed`](#decodefailed) events rather than being skipped. There
-    are exactly three ways an event can be missed — each one stops delivery
-    entirely; there is never selective loss: the event receiver is dropped,
-    the client handle is dropped without calling
+    Delivery can still stop or be preempted: the event receiver can be dropped,
+    the client handle can be dropped without calling
     [`shutdown()`](client.md#shutdown) (which aborts the loop immediately),
-    or `shutdown()` is invoked — a shutdown abandons at most the one event
-    delivery it interrupted, closes the transport gracefully, and delivers
-    the terminal `Disconnected` best-effort (the event channel closing is
-    the authoritative end-of-stream signal).
+    or `shutdown()` can abandon the one delivery currently blocked on channel
+    capacity. Shutdown attempts a graceful close and delivers the terminal
+    `Disconnected` best-effort; its configured deadline may abort that work.
+    The event channel closing is the authoritative end-of-stream signal.
 
 ---
 
@@ -62,9 +61,11 @@ Use these to track the raw connection lifecycle.
     is briefly behind. When the connection ends while a
     [`shutdown()`](client.md#shutdown) is pending (or the handle is dropped),
     the terminal `Disconnected` is delivered **best-effort**: the transport
-    loop races the shutdown signal so it can exit promptly, and if the event
-    channel is full at that moment the event **may be dropped** (it is sent
-    with a non-blocking `try_send`). The event channel closing (`recv()`
+    loop lets shutdown preempt a delivery blocked on channel capacity, and the
+    shutdown path attempts the terminal event with non-blocking admission. If
+    the channel is full, the event **may be omitted**. The configured shutdown
+    deadline may also abort the task before it reaches that attempt. The event
+    channel closing (`recv()`
     returns `None`) is the guaranteed end-of-stream signal — rely on it, not
     on always observing a final `Disconnected`.
 
@@ -135,7 +136,8 @@ commands (e.g., joining a room).
 
 The payload is wrapped as a single struct rather than flattened. Important
 fields include `platform`, `sdk_version`, `capabilities`, `game_data_formats`,
-and `player_name_rules`.
+`player_name_rules`, the negotiated protocol version/range, and available
+message transports.
 
 ### `AuthenticationError`
 
@@ -188,6 +190,7 @@ Events related to joining, failing to join, or leaving a room.
 | `ready_players` | `Vec<PlayerId>` | Players that have signaled readiness. |
 | `relay_type` | `String` | Relay transport type label (e.g., `"auto"`, `"tcp"`). |
 | `current_spectators` | `Vec<SpectatorInfo>` | Spectators currently watching. |
+| `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering; empty on the v2 floor. |
 | `reconnection_token` | `Option<String>` | Server-issued v3 secret retained by `ClientSnapshot` for unexpected-disconnect recovery. |
 
 ### `RoomJoinFailed`
@@ -225,7 +228,8 @@ Notifications about other players joining or leaving the room you are in.
 | `PlayerLeft` | `player_id: PlayerId`, `epoch: Option<u32>`, `final_seq: Option<u64>` | Another player left; v3 fields identify the incarnation and terminal relay watermark. |
 
 `PlayerInfo` contains `id`, `name`, `is_authority`, `is_ready`,
-`connected_at`, and an optional `connection_info`.
+`connected_at`, optional `connection_info`, and optional protocol-v3 `epoch`
+and `seq` snapshot metadata.
 
 ```rust,ignore
 match event {
@@ -309,8 +313,11 @@ match event {
 
 ## Lobby Events
 
-Lobby state tracks player readiness. Once all players are ready the server
-can finalize the lobby and emit `GameStarting` with peer connection details.
+Lobby state tracks player readiness. Readiness alone does not finalize the
+lobby: after `all_ready` becomes true, an eligible client must call
+`client.start_game()`. In an authority-enabled room, only the current authority
+is eligible. A successful request produces `GameStarting` with peer connection
+details.
 
 | Variant | Key Fields | Description |
 |---------|------------|-------------|
@@ -339,6 +346,12 @@ match event {
     _ => {}
 }
 ```
+
+Do not call `start_game()` on every repeated ready-state update. Keep a
+one-shot request latch, and in authority-enabled rooms re-evaluate eligibility
+when `AuthorityChanged` arrives. The compiling
+[`basic_lobby` example](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/basic_lobby.rs)
+shows that complete pattern.
 
 ---
 
@@ -471,6 +484,7 @@ Carries the same room-state fields as `RoomJoined` plus:
 | `missed_events` | `Vec<SignalFishEvent>` | Events that occurred while the client was disconnected. |
 | `replay` | `Option<ReplayStatus>` | Whether the replayed control-event suffix is complete or truncated. |
 | `sender_watermarks` | `Vec<SenderWatermark>` | Authoritative per-sender epoch/sequence baselines for resumed delivery. |
+| `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering. |
 | `reconnection_token` | `Option<String>` | Fresh secret replacing the consumed token; also stored in `ClientSnapshot`. |
 
 ### `ReconnectionFailed`
@@ -492,7 +506,7 @@ match event {
     SignalFishEvent::ReconnectionFailed { reason, error_code } => {
         eprintln!("Reconnection failed [{error_code}]: {reason}");
     }
-    SignalFishEvent::PlayerReconnected { player_id } => {
+    SignalFishEvent::PlayerReconnected { player_id, .. } => {
         println!("Player {player_id} reconnected");
     }
     _ => {}
@@ -603,6 +617,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transport = WebSocketTransport::connect(&url).await?;
     let config = SignalFishConfig::new("your-app-id");
     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
+    let mut start_request_sent = false;
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -625,25 +640,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SignalFishEvent::RoomJoined { room_code, current_players, .. } => {
                 println!("Joined room {room_code}");
                 println!("{} player(s) in room", current_players.len());
+                client.set_ready()?;
             }
 
             // ── Player presence ─────────────────────────────────
             SignalFishEvent::PlayerJoined { player } => {
                 println!("{} joined the room", player.name);
             }
-            SignalFishEvent::PlayerLeft { player_id } => {
+            SignalFishEvent::PlayerLeft { player_id, .. } => {
                 println!("Player {player_id} left");
             }
 
             // ── Game data ───────────────────────────────────────
-            SignalFishEvent::GameData { from_player, data } => {
+            SignalFishEvent::GameData { from_player, data, .. } => {
                 println!("Data from {from_player}: {data}");
             }
 
             // ── Lobby ───────────────────────────────────────────
             SignalFishEvent::LobbyStateChanged { all_ready, .. } => {
-                if all_ready {
+                if all_ready && !start_request_sent {
                     println!("All players ready!");
+                    // This example creates a non-authority room. Authority-enabled
+                    // rooms must additionally require that this client is authority.
+                    client.start_game()?;
+                    start_request_sent = true;
                 }
             }
             SignalFishEvent::GameStarting { peer_connections } => {
@@ -673,6 +693,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 !!! tip
-    All public enums in this crate are exhaustive. Match event enums with
-    explicit variant arms and avoid `_ => {}` catch-all arms so compiler errors
-    surface unhandled variants during upgrades.
+    All public enums in this crate are exhaustive. This introductory loop uses
+    `_ => {}` to focus on common events. Production code can enumerate every
+    variant and omit the catch-all when it wants compiler errors to surface new
+    variants during a breaking-version upgrade.
