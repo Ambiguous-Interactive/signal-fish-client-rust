@@ -41,6 +41,11 @@ exclude = [
     # route locally before publication.
     "^https://ambiguous-interactive\\.github\\.io/signal-fish-client-rust/fortress/?$",
 
+    # Same-site routes are validated against the just-built MkDocs site by
+    # scripts/check-docs-rendering.sh. Probing the live deployment here races
+    # docs-deploy on pushes to main and can transiently return 503.
+    "^https://[Aa]mbiguous-[Ii]nteractive\\.github\\.io/signal-fish-client-rust/",
+
     # Badge image URLs — shields.io can be flaky and badges may not
     # exist for unpublished crates
     "^https://img\\.shields\\.io/",

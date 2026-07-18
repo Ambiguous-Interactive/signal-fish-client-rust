@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Changed release preparation to infer the lockstep version and breaking policy
+  from `[Unreleased]`, discover every publishable workspace crate, and dispatch
+  required checks with the built-in `GITHUB_TOKEN`; no release App, PAT,
+  version input, or crate selector is required.
 - **Breaking:** Godot consumers now depend on the lockstep companion adapter and
   import the transport from that crate; the transport-agnostic core keeps its
   Rust 1.87 MSRV while the adapter requires Rust 1.94. The tested production

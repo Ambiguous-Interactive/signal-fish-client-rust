@@ -448,6 +448,31 @@ else
         else
             fail "site/llms.txt is missing or differs from the canonical root llms.txt"
         fi
+
+        # 4g. Validate same-site discovery URLs against this exact build. This
+        #     is stronger and less flaky than racing the concurrent Pages
+        #     deployment from the link-check job on pushes to main.
+        SAME_SITE_ROUTES_OK=true
+        while IFS= read -r url; do
+            route=$(printf '%s\n' "$url" | sed -E \
+                's#^https://[Aa]mbiguous-[Ii]nteractive\.github\.io/signal-fish-client-rust/##; s#[?#].*$##')
+            if [[ -z "$route" || "$route" == */ ]]; then
+                expected="$SITE_DIR/${route}index.html"
+            elif [[ -f "$SITE_DIR/$route" ]]; then
+                expected="$SITE_DIR/$route"
+            else
+                expected="$SITE_DIR/$route/index.html"
+            fi
+            if [[ ! -f "$expected" ]]; then
+                fail "Same-site llms.txt route has no local build output: $url"
+                SAME_SITE_ROUTES_OK=false
+            fi
+        done < <(grep -Eo \
+            'https://[Aa]mbiguous-[Ii]nteractive\.github\.io/signal-fish-client-rust/[^])[:space:]]*' \
+            "$REPO_ROOT/llms.txt" | sort -u)
+        if [[ "$SAME_SITE_ROUTES_OK" == true ]]; then
+            pass "Every same-site llms.txt route exists in the local build"
+        fi
     fi
 fi
 

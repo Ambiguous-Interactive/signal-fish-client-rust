@@ -3,26 +3,14 @@ name: Prepare Release
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version component to increment
-        required: true
-        type: choice
-        options:
-          - major
-          - minor
-          - patch
       dry_run:
         description: Validate and show the release changes without pushing a branch
         required: true
         default: true
         type: boolean
-      breaking:
-        description: This pre-1.0 minor or major release contains intentional API breaks
-        required: true
-        default: false
-        type: boolean
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -69,11 +57,22 @@ jobs:
           python3 -m unittest scripts/test_release.py scripts/test_required_checks.py
           scripts/test_audit_repository_rules.py
 
+      - name: Derive release intent
+        id: intent
+        run: |
+          python3 scripts/release.py release-intent > "$RUNNER_TEMP/release-intent.json"
+          jq . "$RUNNER_TEMP/release-intent.json"
+          {
+            printf 'bump=%s\n' "$(jq -r '.bump' "$RUNNER_TEMP/release-intent.json")"
+            printf 'breaking=%s\n' "$(jq -r '.breaking' "$RUNNER_TEMP/release-intent.json")"
+            printf 'target=%s\n' "$(jq -r '.target' "$RUNNER_TEMP/release-intent.json")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Prepare release files
         id: version
         env:
-          BUMP: ${{ inputs.bump }}
-          BREAKING: ${{ inputs.breaking }}
+          BUMP: ${{ steps.intent.outputs.bump }}
+          BREAKING: ${{ steps.intent.outputs.breaking }}
         run: |
           args=()
           if [ "$BREAKING" = true ]; then
@@ -108,7 +107,7 @@ jobs:
         env:
           BRANCH: ${{ steps.version.outputs.branch }}
           VERSION: ${{ steps.version.outputs.version }}
-          BREAKING: ${{ inputs.breaking }}
+          BREAKING: ${{ steps.intent.outputs.breaking }}
         run: |
           git switch -c "$BRANCH"
           git config user.name "github-actions[bot]"
@@ -133,7 +132,7 @@ jobs:
           BRANCH: ${{ steps.version.outputs.branch }}
           VERSION: ${{ steps.version.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          BREAKING: ${{ inputs.breaking }}
+          BREAKING: ${{ steps.intent.outputs.breaking }}
         run: |
           title="chore: prepare release ${VERSION}"
           if [ "$BREAKING" = true ]; then
@@ -142,11 +141,34 @@ jobs:
           {
             printf 'Automated release preparation for %s.\n\n' "$VERSION"
             printf '%s\n' \
-              'GitHub holds workflows triggered by this app-free automation for maintainer approval.' \
-              'Select **Approve workflows to run**, then merge only after every required check and review is green.'
+              'The built-in workflow token explicitly dispatches every required check for this commit.' \
+              'Merge only after every required check and review is green.'
           } > "$RUNNER_TEMP/release-pr.md"
-          gh pr create \
+          pr_url=$(gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$BRANCH" \
             --title "$title" \
-            --body-file "$RUNNER_TEMP/release-pr.md"
+            --body-file "$RUNNER_TEMP/release-pr.md")
+          printf 'Opened %s\n' "$pr_url"
+
+      - name: Dispatch required checks for the release pull request
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BREAKING: ${{ steps.intent.outputs.breaking }}
+        run: |
+          base_sha=$(git rev-parse HEAD^)
+          title="chore: prepare release ${VERSION}"
+          if [ "$BREAKING" = true ]; then
+            title="chore!: prepare release ${VERSION}"
+          fi
+          while IFS= read -r workflow; do
+            if [ "$workflow" = semver-checks.yml ]; then
+              gh workflow run "$workflow" --ref "$BRANCH" \
+                -f "base_sha=${base_sha}" -f "pr_title=${title}"
+            else
+              gh workflow run "$workflow" --ref "$BRANCH"
+            fi
+          done < <(jq -r '.required_checks[].file' .github/required-checks.json)

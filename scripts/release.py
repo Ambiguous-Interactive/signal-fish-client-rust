@@ -39,6 +39,15 @@ PROVENANCE_FILES = (
     "tests/server-spec/PROVENANCE.toml",
     "tests/wire-samples/PROVENANCE.toml",
 )
+CHANGELOG_CATEGORIES = (
+    "Added",
+    "Changed",
+    "Deprecated",
+    "Removed",
+    "Fixed",
+    "Security",
+)
+MINOR_CATEGORIES = frozenset(("Added", "Changed", "Deprecated", "Removed"))
 
 
 class ReleaseError(RuntimeError):
@@ -202,6 +211,65 @@ def previous_version(root: Path, version: str) -> str:
     previous = match.group(1)
     parse_version(previous)
     return previous
+
+
+def unreleased_changelog(root: Path) -> str:
+    """Return the complete Unreleased body without matching prefix headings."""
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = "## [Unreleased]"
+    start = changelog.find(heading)
+    if start < 0:
+        raise ReleaseError("CHANGELOG.md has no [Unreleased] section")
+    content_start = start + len(heading)
+    end = changelog.find("\n## [", content_start)
+    if end < 0:
+        raise ReleaseError("CHANGELOG.md has no released section after [Unreleased]")
+    return changelog[content_start:end].strip()
+
+
+def release_intent(root: Path) -> dict[str, Any]:
+    """Derive the next lockstep release solely from the canonical changelog."""
+    body = unreleased_changelog(root)
+    if not body:
+        raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
+    categories = re.findall(r"^### ([^\n]+)[ \t]*$", body, re.MULTILINE)
+    if not categories:
+        raise ReleaseError("CHANGELOG.md [Unreleased] has no Keep a Changelog category")
+    unsupported = [name for name in categories if name not in CHANGELOG_CATEGORIES]
+    if unsupported:
+        raise ReleaseError(
+            "CHANGELOG.md [Unreleased] has unsupported categories: "
+            + ", ".join(unsupported)
+        )
+    if len(categories) != len(set(categories)):
+        raise ReleaseError("CHANGELOG.md [Unreleased] has duplicate categories")
+
+    current = workspace_version(root)
+    major, _minor, _patch = parse_version(current)
+    breaking = bool(
+        re.search(
+            r"^-\s+\*\*Breaking:\*\*|^<!--\s*semver-checks:\s*major\s*-->$",
+            body,
+            re.MULTILINE,
+        )
+    )
+    if breaking:
+        bump = "major" if major > 0 else "minor"
+        policy = "major"
+    elif MINOR_CATEGORIES.intersection(categories):
+        bump = "minor"
+        policy = "minor"
+    else:
+        bump = "patch"
+        policy = "patch"
+    return {
+        "current": current,
+        "target": bump_version(current, bump),
+        "bump": bump,
+        "breaking": breaking,
+        "semver_policy": policy,
+        "categories": categories,
+    }
 
 
 def replace_required(path: Path, old: str, new: str) -> None:
@@ -620,6 +688,13 @@ def semver_policy(root: Path, version: str) -> str:
     raise ReleaseError("major semver policy is invalid for this version bump")
 
 
+def current_semver_policy(root: Path) -> str:
+    """Select policy for a main-branch release train or its just-cut release."""
+    if unreleased_changelog(root):
+        return str(release_intent(root)["semver_policy"])
+    return semver_policy(root, workspace_version(root))
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -699,6 +774,12 @@ def main(argv: list[str] | None = None) -> int:
     semver.add_argument("version")
     semver.add_argument("--root", type=Path, default=Path.cwd())
 
+    intent = subparsers.add_parser("release-intent")
+    intent.add_argument("--root", type=Path, default=Path.cwd())
+
+    current_policy = subparsers.add_parser("current-semver-policy")
+    current_policy.add_argument("--root", type=Path, default=Path.cwd())
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -735,8 +816,12 @@ def main(argv: list[str] | None = None) -> int:
             print(previous_version(args.root.resolve(), args.version))
         elif args.command == "release-type":
             print(release_type(args.base, args.target))
-        else:
+        elif args.command == "semver-policy":
             print(semver_policy(args.root.resolve(), args.version))
+        elif args.command == "release-intent":
+            print(json.dumps(release_intent(args.root.resolve()), indent=2))
+        else:
+            print(current_semver_policy(args.root.resolve()))
     except (OSError, ValueError, ReleaseError, subprocess.CalledProcessError) as error:
         print(f"release error: {error}", file=sys.stderr)
         return 1

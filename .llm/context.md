@@ -33,6 +33,9 @@ reproduce, attest, and publish every crates.io-publishable workspace member at
 the single `[workspace.package].version`. `scripts/release.py workspace-plan`
 discovers members with Cargo metadata and orders internal dependencies; Release
 has no version input and resumes only checksum-identical partial publication.
+Prepare Release derives its bump and breaking policy from `[Unreleased]`, so it
+also accepts no version, bump, breaking, or crate-selection input beyond its
+reversible dry-run switch.
 Release jobs pin Rust 1.96.1 and Ubuntu 24.04. See
 `skills/release-recovery/SKILL.md` and `docs/releasing.md`.
 
@@ -42,7 +45,8 @@ uniquely named aggregate `Required` job. The names and desired rules live in
 GitHub for visible drift with its authenticated built-in `GITHUB_TOKEN`.
 GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify
 an empty bypass list in the ruleset UI. Prepare Release also uses only
-`GITHUB_TOKEN`; maintainers approve the resulting PR workflows before they run.
+`GITHUB_TOKEN` and explicitly dispatches the required workflows on its generated
+branch because ordinary token-created pull-request events are suppressed.
 Path filters must not suppress a configured required gate.
 
 ## GitHub Tool Order

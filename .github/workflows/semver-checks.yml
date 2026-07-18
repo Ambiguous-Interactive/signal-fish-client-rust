@@ -20,6 +20,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Base commit for an explicitly dispatched candidate
+        required: true
+        type: string
+      pr_title:
+        description: Candidate title used to authorize breaking changes
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -66,9 +76,9 @@ jobs:
 
       - name: Classify PR release type
         id: pr-release-type
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'push'
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_TITLE: ${{ github.event.pull_request.title || inputs.pr_title }}
         run: |
           if [[ "$PR_TITLE" == *"!:"* ]]; then
             echo "release-type=major" >> "$GITHUB_OUTPUT"
@@ -78,9 +88,9 @@ jobs:
           fi
 
       - name: Check every publishable crate against the PR base
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'push'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
           RELEASE_TYPE: ${{ steps.pr-release-type.outputs.release-type }}
         run: |
           python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
@@ -101,6 +111,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          RELEASE_TYPE=$(python3 scripts/release.py current-semver-policy)
           while IFS= read -r package; do
             if ! search_output="$(
               CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search "$package" --limit 1 2>&1
@@ -109,7 +120,8 @@ jobs:
               exit 1
             fi
             if printf '%s\n' "$search_output" | grep -q "^${package} ="; then
-              cargo semver-checks check-release --package "$package"
+              cargo semver-checks check-release --package "$package" \
+                --release-type "$RELEASE_TYPE"
             else
               printf 'Skipping %s: no crates.io baseline exists.\n' "$package"
             fi

@@ -18,6 +18,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
   schedule:
     # Weekdays at 06:00 UTC — avoids weekend noise
     - cron: "0 6 * * 1-5"
