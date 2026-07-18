@@ -141,7 +141,9 @@ jobs:
           fi
           {
             printf 'Automated release preparation for %s.\n\n' "$VERSION"
-            printf '%s\n' 'GitHub holds workflows triggered by this app-free automation for maintainer approval. Select **Approve workflows to run**, then merge only after every required check and review is green.'
+            printf '%s\n' \
+              'GitHub holds workflows triggered by this app-free automation for maintainer approval.' \
+              'Select **Approve workflows to run**, then merge only after every required check and review is green.'
           } > "$RUNNER_TEMP/release-pr.md"
           gh pr create \
             --base "$DEFAULT_BRANCH" \
