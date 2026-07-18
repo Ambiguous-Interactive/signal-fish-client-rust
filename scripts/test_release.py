@@ -167,6 +167,10 @@ class WorkspacePlanTests(unittest.TestCase):
         )
         plan = release.workspace_plan(self.root, metadata)
         self.assertEqual(plan["packages"][1]["dependencies"], ["core"])
+        self.assertEqual(
+            plan["workspace_requirements"],
+            [{"key": "core_alias", "package": "core"}],
+        )
 
     def test_rejects_dependency_on_non_publishable_member(self) -> None:
         metadata = self.metadata(
@@ -264,6 +268,35 @@ class PreparationTests(unittest.TestCase):
         self.assertIn('synced = "2026-07-13"', compatibility)
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+
+    def test_prepare_updates_renamed_workspace_requirement(self) -> None:
+        root_manifest = self.root / "Cargo.toml"
+        root_manifest.write_text(
+            root_manifest.read_text(encoding="utf-8").replace(
+                'signal-fish-client = { version = "=1.2.3", path = "." }',
+                'core_alias = { package = "signal-fish-client", '
+                'version = "=1.2.3", path = "." }',
+            ),
+            encoding="utf-8",
+        )
+        adapter_manifest = self.root / "crates/signal-fish-client-godot/Cargo.toml"
+        adapter_manifest.write_text(
+            adapter_manifest.read_text(encoding="utf-8").replace(
+                "signal-fish-client.workspace = true",
+                "core_alias.workspace = true",
+            ),
+            encoding="utf-8",
+        )
+
+        version = release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+
+        self.assertEqual(version, "1.3.0")
+        cargo = root_manifest.read_text(encoding="utf-8")
+        self.assertIn(
+            'core_alias = { package = "signal-fish-client", '
+            'version = "=1.3.0", path = "." }',
+            cargo,
+        )
 
     def test_pre_one_minor_can_persist_intentional_breaking_policy(self) -> None:
         for path in self.root.rglob("*"):

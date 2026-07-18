@@ -53,9 +53,10 @@ The workspace owns one version at `[workspace.package].version`; publishable
 members set `version.workspace = true`. Preparation discovers crates through
 `cargo metadata`, verifies internal publishable dependencies inherit through
 `workspace = true`, updates the shared version and exact workspace
-requirements, then updates locks, documentation references, provenance, and
-the changelog. It fails before writing if the workspace graph, inventory, or
-`[Unreleased]` section is invalid.
+requirements by manifest key (including renamed dependencies), then updates
+locks, documentation references, provenance, and the changelog. It fails
+before writing if the workspace graph, inventory, or `[Unreleased]` section is
+invalid.
 
 ```sh
 python3 scripts/release.py workspace-plan

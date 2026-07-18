@@ -67,6 +67,9 @@ Never publish mismatched versions or a non-exact adapter-to-core requirement.
 Internal publishable dependencies must inherit with `workspace = true`; an
 inline exact version can look correct in Cargo metadata while becoming stale
 when the workspace version is prepared.
+The release plan keeps each workspace dependency key separate from its real
+package name so a renamed entry is bumped by its manifest key and published by
+its crates.io name.
 
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list

@@ -134,7 +134,7 @@ def replace_workspace_version(path: Path, old: str, new: str) -> None:
 
 
 def replace_workspace_requirements(
-    path: Path, package_names: list[str], old: str, new: str
+    path: Path, dependency_keys: list[str], old: str, new: str
 ) -> None:
     cargo = path.read_text(encoding="utf-8")
     workspace_dependencies = re.search(
@@ -145,16 +145,16 @@ def replace_workspace_requirements(
     if workspace_dependencies is None:
         raise ReleaseError("Cargo.toml has no [workspace.dependencies] section")
     updated = workspace_dependencies.group(1)
-    for name in package_names:
+    for key in dependency_keys:
         pattern = re.compile(
-            rf'^({re.escape(name)}\s*=\s*\{{[^\n]*version\s*=\s*")='
+            rf'^({re.escape(key)}\s*=\s*\{{[^\n]*version\s*=\s*")='
             rf'{re.escape(old)}("[^\n]*\}})$',
             re.MULTILINE,
         )
         updated, count = pattern.subn(rf"\g<1>={new}\2", updated, count=1)
         if count != 1:
             raise ReleaseError(
-                f"Cargo.toml has no exact workspace requirement for {name} ={old}"
+                f"Cargo.toml has no exact workspace requirement for {key} ={old}"
             )
     path.write_text(
         cargo[: workspace_dependencies.start(1)]
@@ -350,6 +350,7 @@ def workspace_plan(
         raise ReleaseError("workspace has no crates publishable to crates.io")
 
     dependencies: dict[str, set[str]] = {name: set() for name in publishable}
+    workspace_requirements: set[tuple[str, str]] = set()
     for name, package in publishable.items():
         raw_dependencies = package.get("dependencies", [])
         if not isinstance(raw_dependencies, list):
@@ -388,6 +389,12 @@ def workspace_plan(
                     "workspace = true"
                 )
             dependencies[name].add(dependency_name)
+            dependency_key = dependency.get("rename") or dependency_name
+            if not isinstance(dependency_key, str):
+                raise ReleaseError(
+                    f"cargo metadata returned an invalid dependency key for {name}"
+                )
+            workspace_requirements.add((dependency_key, dependency_name))
 
     ordered_names: list[str] = []
     remaining = {name: set(values) for name, values in dependencies.items()}
@@ -414,7 +421,14 @@ def workspace_plan(
                 "dependencies": sorted(dependencies[name]),
             }
         )
-    return {"version": expected_version, "packages": packages}
+    return {
+        "version": expected_version,
+        "packages": packages,
+        "workspace_requirements": [
+            {"key": key, "package": package}
+            for key, package in sorted(workspace_requirements)
+        ],
+    }
 
 
 def registry_plan(
@@ -485,13 +499,9 @@ def prepare(
     plan = workspace_plan(root)
     old = plan["version"]
     package_names = [package["name"] for package in plan["packages"]]
-    required_packages = sorted(
-        {
-            dependency
-            for package in plan["packages"]
-            for dependency in package["dependencies"]
-        }
-    )
+    required_workspace_keys = [
+        requirement["key"] for requirement in plan["workspace_requirements"]
+    ]
     new = bump_version(old, level)
     if breaking:
         policy = release_type(old, new)
@@ -544,7 +554,9 @@ def prepare(
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
     replace_workspace_version(root / CORE_MANIFEST, old, new)
-    replace_workspace_requirements(root / CORE_MANIFEST, required_packages, old, new)
+    replace_workspace_requirements(
+        root / CORE_MANIFEST, required_workspace_keys, old, new
+    )
     for relative in LOCKSTEP_LOCKFILES:
         replace_lockstep_package_versions(root / relative, package_names, old, new)
     for relative in VERSION_FILES:
