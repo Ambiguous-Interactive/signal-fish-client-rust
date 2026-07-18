@@ -45,6 +45,13 @@ shared version and exact requirements, updates locks, documentation,
 compatibility and provenance markers, and cuts the release. Update
 `scripts/test_release.py` when a release invariant changes.
 
+Push-time semver policy is relative to the exact latest crates.io version. If a
+cut workspace version is not published yet, combine that cut's policy with new
+`[Unreleased]` notes; once crates.io catches up, apply only the new notes. Reject
+registry lag beyond the changelog's immediate predecessor instead of silently
+weakening the check. Every changelog category must contain at least one list
+entry so empty headings cannot select a bump.
+
 ## Publishing order
 
 The release workflow must retain this order:

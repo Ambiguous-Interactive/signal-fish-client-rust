@@ -111,7 +111,6 @@ jobs:
         if: github.event_name == 'push'
         run: |
           python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
-          RELEASE_TYPE=$(python3 scripts/release.py current-semver-policy)
           while IFS= read -r package; do
             if ! search_output="$(
               CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search "$package" --limit 1 2>&1
@@ -120,6 +119,13 @@ jobs:
               exit 1
             fi
             if printf '%s\n' "$search_output" | grep -q "^${package} ="; then
+              baseline=$(printf '%s\n' "$search_output" | sed -n \
+                "s/^${package} = \"\([0-9][0-9.]*\)\".*/\1/p")
+              if [ -z "$baseline" ]; then
+                printf '::error::Could not parse the latest %s version from crates.io.\n' "$package"
+                exit 1
+              fi
+              RELEASE_TYPE=$(python3 scripts/release.py current-semver-policy "$baseline")
               cargo semver-checks check-release --package "$package" \
                 --release-type "$RELEASE_TYPE"
             else

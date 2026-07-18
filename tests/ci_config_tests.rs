@@ -228,6 +228,7 @@ mod godot_issue_61_policy {
     fn push_semver_policy_tracks_the_unreleased_release_train() {
         let workflow = read_project_file(".github/workflows/semver-checks.yml");
         assert!(workflow.contains("current-semver-policy"));
+        assert!(workflow.contains("current-semver-policy \"$baseline\""));
         assert!(workflow.contains("--release-type \"$RELEASE_TYPE\""));
         assert!(workflow.contains("workflow_dispatch:"));
         assert!(workflow.contains("base_sha:"));

@@ -243,6 +243,20 @@ def release_intent(root: Path) -> dict[str, Any]:
         )
     if len(categories) != len(set(categories)):
         raise ReleaseError("CHANGELOG.md [Unreleased] has duplicate categories")
+    category_headings = list(
+        re.finditer(r"^### ([^\n]+)[ \t]*$", body, re.MULTILINE)
+    )
+    for index, heading in enumerate(category_headings):
+        end = (
+            category_headings[index + 1].start()
+            if index + 1 < len(category_headings)
+            else len(body)
+        )
+        category_body = body[heading.end() : end]
+        if re.search(r"^-\s+\S", category_body, re.MULTILINE) is None:
+            raise ReleaseError(
+                f"CHANGELOG.md [Unreleased] has empty category {heading.group(1)}"
+            )
 
     current = workspace_version(root)
     major, _minor, _patch = parse_version(current)
@@ -688,11 +702,32 @@ def semver_policy(root: Path, version: str) -> str:
     raise ReleaseError("major semver policy is invalid for this version bump")
 
 
-def current_semver_policy(root: Path) -> str:
-    """Select policy for a main-branch release train or its just-cut release."""
-    if unreleased_changelog(root):
-        return str(release_intent(root)["semver_policy"])
-    return semver_policy(root, workspace_version(root))
+def current_semver_policy(root: Path, baseline: str) -> str:
+    """Select policy spanning the registry baseline through pending changes."""
+    current = workspace_version(root)
+    baseline_parts = parse_version(baseline)
+    current_parts = parse_version(current)
+    if baseline_parts > current_parts:
+        raise ReleaseError(
+            f"registry baseline {baseline} is newer than workspace version {current}"
+        )
+    pending = (
+        str(release_intent(root)["semver_policy"])
+        if unreleased_changelog(root)
+        else "patch"
+    )
+    if baseline == current:
+        return pending
+
+    previous = previous_version(root, current)
+    if baseline != previous:
+        raise ReleaseError(
+            f"registry baseline {baseline} is not the immediate predecessor {previous} "
+            f"of workspace version {current}"
+        )
+    cut = semver_policy(root, current)
+    rank = {"patch": 0, "minor": 1, "major": 2}
+    return max((cut, pending), key=rank.__getitem__)
 
 
 def sha256(path: Path) -> str:
@@ -778,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
     intent.add_argument("--root", type=Path, default=Path.cwd())
 
     current_policy = subparsers.add_parser("current-semver-policy")
+    current_policy.add_argument("baseline")
     current_policy.add_argument("--root", type=Path, default=Path.cwd())
 
     args = parser.parse_args(argv)
@@ -821,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "release-intent":
             print(json.dumps(release_intent(args.root.resolve()), indent=2))
         else:
-            print(current_semver_policy(args.root.resolve()))
+            print(current_semver_policy(args.root.resolve(), args.baseline))
     except (OSError, ValueError, ReleaseError, subprocess.CalledProcessError) as error:
         print(f"release error: {error}", file=sys.stderr)
         return 1

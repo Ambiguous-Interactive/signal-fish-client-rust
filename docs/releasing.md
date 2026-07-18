@@ -67,6 +67,9 @@ before writing if the workspace graph, inventory, or `[Unreleased]` section is
 invalid. Release intent is deterministic: a `**Breaking:**` entry selects a
 major bump (or a pre-1.0 minor bump); Added, Changed, Deprecated, or Removed
 select minor; Fixed/Security-only trains select patch.
+Every category must contain at least one list entry. Main-branch semver checks
+combine a not-yet-published cut with new notes relative to the exact crates.io
+baseline, then return to the new notes alone once the registry catches up.
 
 ```sh
 python3 scripts/release.py workspace-plan

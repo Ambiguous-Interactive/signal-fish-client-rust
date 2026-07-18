@@ -329,6 +329,18 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "unsupported.*Surprise"):
             release.release_intent(self.root)
 
+    def test_release_intent_rejects_empty_changelog_categories(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "## [1.2.3]", "### Fixed\n\n## [1.2.3]"
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "empty.*Fixed"):
+            release.release_intent(self.root)
+
     def test_current_semver_policy_prefers_unreleased_intent(self) -> None:
         changelog = self.root / "CHANGELOG.md"
         changelog.write_text(
@@ -338,7 +350,7 @@ class PreparationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(release.current_semver_policy(self.root), "major")
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
 
     def test_current_semver_policy_falls_back_to_cut_release(self) -> None:
         version = release.prepare(
@@ -350,7 +362,41 @@ class PreparationTests(unittest.TestCase):
         )
 
         self.assertEqual(version, "2.0.0")
-        self.assertEqual(release.current_semver_policy(self.root), "major")
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
+
+    def test_current_semver_policy_combines_unpublished_cut_and_new_notes(self) -> None:
+        version = release.prepare(
+            self.root,
+            "major",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "## [Unreleased]\n\n",
+                "## [Unreleased]\n\n### Fixed\n\n- Follow-up fix.\n\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(version, "2.0.0")
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
+        self.assertEqual(release.current_semver_policy(self.root, "2.0.0"), "patch")
+
+    def test_current_semver_policy_rejects_non_predecessor_registry_lag(self) -> None:
+        release.prepare(
+            self.root,
+            "major",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "immediate predecessor"):
+            release.current_semver_policy(self.root, "1.0.0")
 
     def test_prepare_updates_renamed_workspace_requirement(self) -> None:
         root_manifest = self.root / "Cargo.toml"
