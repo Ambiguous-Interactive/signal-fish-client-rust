@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-18
+
+<!-- semver-checks: major -->
+
 ### Added
 
 - Added the lockstep `signal-fish-client-godot` companion crate, which owns
@@ -400,5 +404,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - After: `SignalFishError::ServerError { message, error_code }` where `error_code` is `Option<ErrorCode>`
   - Recommended handling: `match error_code { Some(code) => ..., None => ... }`
 
-[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.6.0...v0.8.0

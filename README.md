@@ -63,7 +63,7 @@ rooms, and receive strongly typed events.
 
 ```toml
 [dependencies]
-signal-fish-client = "0.8.0"
+signal-fish-client = "0.9.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -71,10 +71,10 @@ Without the built-in WebSocket transport (bring your own):
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.8.0", default-features = false }
+signal-fish-client = { version = "0.9.0", default-features = false }
 ```
 
-The published `0.8.0` crate is the stable release. This `main`-branch README
+The published `0.9.0` crate is the stable release. This `main`-branch README
 also documents fixes listed under [`Unreleased`](CHANGELOG.md), including the
 issue #61 browser polling guarantees. Until the next release, test those APIs
 and fixes with:

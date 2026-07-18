@@ -10,8 +10,8 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 **A transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol.**
 
 !!! note "Release status"
-    **0.8.0** is the current crates.io release. This site follows unreleased
-    `main`; use the [0.8.0 API docs](https://docs.rs/signal-fish-client/0.8.0/)
+    **0.9.0** is the current crates.io release. This site follows unreleased
+    `main`; use the [0.9.0 API docs](https://docs.rs/signal-fish-client/0.9.0/)
     for the published surface.
 
 [![Crates.io](https://img.shields.io/crates/v/signal-fish-client?style=flat-square&logo=rust)](https://crates.io/crates/signal-fish-client)
@@ -93,7 +93,7 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 !!! tip "Feature flag"
     `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.9.0", default-features = false, features = ["transport-websocket"] }
     ```
 
 ---
