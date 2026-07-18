@@ -472,14 +472,20 @@ class WorkflowPolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
         cls.ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        cls.releasing = (root / "docs/releasing.md").read_text(encoding="utf-8")
 
-    def test_prepare_uses_app_token_and_supports_dry_run(self) -> None:
-        self.assertIn("actions/create-github-app-token@v3.2.0", self.prepare)
-        self.assertIn("RELEASE_APP_CLIENT_ID is not configured", self.prepare)
-        self.assertIn("RELEASE_APP_PRIVATE_KEY", self.prepare)
+    def test_prepare_uses_builtin_token_and_supports_dry_run(self) -> None:
+        self.assertNotIn("actions/create-github-app-token", self.prepare)
+        self.assertNotIn("RELEASE_APP_", self.prepare)
+        self.assertIn("contents: write", self.prepare)
+        self.assertIn("pull-requests: write", self.prepare)
+        self.assertIn("persist-credentials: true", self.prepare)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", self.prepare)
         self.assertIn("dry_run:", self.prepare)
         self.assertIn("branch=release/%s", self.prepare)
         self.assertIn("gh pr create", self.prepare)
+        self.assertIn("Approve workflows to run", self.prepare)
+        self.assertIn("Approve workflows to run", self.releasing)
 
     def test_publish_is_input_free_manual_only_and_protected(self) -> None:
         self.assertIn("workflow_dispatch:", self.publish)

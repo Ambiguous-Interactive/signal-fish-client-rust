@@ -34,6 +34,7 @@ class RepositoryRuleTests(unittest.TestCase):
     def ruleset() -> dict[str, object]:
         return {
             "enforcement": "active",
+            "bypass_actors": [],
             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
             "rules": [
                 {"type": "deletion"},
@@ -100,6 +101,14 @@ class RepositoryRuleTests(unittest.TestCase):
         self.assertIn("default-branch rulesets must not define bypass actors", failures)
         self.assertIn(
             "required status checks must require an up-to-date branch", failures
+        )
+
+    def test_fails_closed_when_github_hides_bypass_actors(self) -> None:
+        ruleset = self.ruleset()
+        del ruleset["bypass_actors"]
+        self.assertIn(
+            "could not verify bypass actors because GitHub omitted that protected field",
+            audit.audit(self.policy, [ruleset]),
         )
 
 

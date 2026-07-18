@@ -39,8 +39,10 @@ Release jobs pin Rust 1.96.1 and Ubuntu 24.04. See
 Every blocking workflow runs on PR and default-branch SHAs and ends in a
 uniquely named aggregate `Required` job. The names and desired rules live in
 `.github/required-checks.json`; the scheduled Repository Policy workflow audits
-GitHub for drift with a short-lived release-App token scoped to Administration
-read. Live ruleset audits must never rely on anonymous public API responses.
+GitHub for visible drift with its authenticated built-in `GITHUB_TOKEN`.
+GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify
+an empty bypass list in the ruleset UI. Prepare Release also uses only
+`GITHUB_TOKEN`; maintainers approve the resulting PR workflows before they run.
 Path filters must not suppress a configured required gate.
 
 ## GitHub Tool Order

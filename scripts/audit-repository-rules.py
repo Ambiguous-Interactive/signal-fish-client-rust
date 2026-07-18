@@ -81,10 +81,13 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     if not applicable:
         return ["no active ruleset targets ~DEFAULT_BRANCH"]
 
-    if expected.get("forbid_bypass_actors") and any(
-        ruleset.get("bypass_actors") for ruleset in applicable
-    ):
-        failures.append("default-branch rulesets must not define bypass actors")
+    if expected.get("forbid_bypass_actors"):
+        if any("bypass_actors" not in ruleset for ruleset in applicable):
+            failures.append(
+                "could not verify bypass actors because GitHub omitted that protected field"
+            )
+        elif any(ruleset.get("bypass_actors") for ruleset in applicable):
+            failures.append("default-branch rulesets must not define bypass actors")
 
     rules = [rule for ruleset in applicable for rule in ruleset.get("rules", [])]
     rule_types = {rule.get("type") for rule in rules}

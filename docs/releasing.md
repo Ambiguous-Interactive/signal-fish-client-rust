@@ -6,16 +6,17 @@ manual, protected, and fail-closed.
 
 ## One-time repository setup
 
-Create and install a GitHub App with repository **Contents: read and write**,
-**Pull requests: read and write**, and **Administration: read** permissions.
-The administration permission lets the scheduled policy audit inspect complete
-ruleset configuration using an authenticated, least-privilege token. Store its client ID as the
-`RELEASE_APP_CLIENT_ID` repository variable and its PEM private key as the
-`RELEASE_APP_PRIVATE_KEY` repository secret. These names and value types are
-exact: the prepare workflow reports a specific setup error before token
-generation when either is absent or malformed. An App token is used because
-events created with `GITHUB_TOKEN` do not reliably start the full PR workflow
-set.
+In **Settings > Actions > General > Workflow permissions**, enable **Allow
+GitHub Actions to create and approve pull requests**. Prepare Release uses only
+the run's built-in `GITHUB_TOKEN`, explicitly scoped to **Contents: write** and
+**Pull requests: write**. It requires no GitHub App, personal access token,
+repository variable, or release secret.
+
+GitHub places workflows triggered by a pull request created with
+`GITHUB_TOKEN` into an approval-required state. After Prepare Release opens the
+pull request, a maintainer with write access must select **Approve workflows to
+run**. This manual approval is the deliberate app-free replacement for an App
+token that could trigger checks automatically.
 
 Configure the protected `crates-io` environment with required reviewers, a
 default-branch deployment restriction, and a `CRATES_IO_TOKEN` secret. For the
@@ -32,10 +33,15 @@ requires:
 - every job named in `.github/required-checks.json`;
 - deletion and non-fast-forward protections.
 
-The weekly **Repository Policy** workflow audits the live rulesets against this
-checked-in policy with a short-lived release-App token. For a local live audit,
-set `GH_TOKEN` to a token with repository Administration read permission, then
-run `python3 scripts/audit-repository-rules.py`. Offline fixture audits with
+The weekly **Repository Policy** workflow audits the live, publicly readable
+ruleset fields against this checked-in policy using its built-in authenticated
+`GITHUB_TOKEN`. GitHub returns `bypass_actors` only to credentials with write
+access to the ruleset, which workflow tokens cannot request. Verify in the
+ruleset UI that **Bypass list** is empty during initial setup and repository
+ownership reviews; the workflow intentionally does not claim to automate that
+hidden check. For a local live audit, set `GH_TOKEN` to an authenticated token
+with repository Metadata read access, then run
+`python3 scripts/audit-repository-rules.py`. Offline fixture audits with
 `--rulesets FILE` do not require a token.
 
 ## Prepare a release
@@ -44,9 +50,10 @@ run `python3 scripts/audit-repository-rules.py`. Offline fixture audits with
 2. Select `major`, `minor`, or `patch`. Enable `breaking` only for an
    intentional major release or pre-1.0 breaking minor release.
 3. Inspect the generated diff and validation output.
-4. Run it again with `dry_run` disabled. The GitHub App creates
+4. Run it again with `dry_run` disabled. The built-in token creates
    `release/X.Y.Z` and opens the preparation pull request.
-5. Merge only after every aggregate required check, review, and thread is
+5. Open the pull request and select **Approve workflows to run**.
+6. Merge only after every aggregate required check, review, and thread is
    green.
 
 The workspace owns one version at `[workspace.package].version`; publishable

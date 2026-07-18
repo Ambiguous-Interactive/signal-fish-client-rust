@@ -12,8 +12,9 @@ recovery.
 
 `.github/workflows/prepare-release.yml` is reversible. Manual dispatch from the
 default branch accepts a version bump, deliberate breaking marker, and dry-run
-mode. A repository GitHub App creates `release/X.Y.Z` and its pull request so
-all normal PR workflows run.
+mode. Its built-in `GITHUB_TOKEN` creates `release/X.Y.Z` and its pull request.
+GitHub holds the resulting PR workflows for a maintainer to select **Approve
+workflows to run**; this approval is required before normal checks execute.
 
 `.github/workflows/publish.yml` is irreversible. It is manual-only, has no
 version input, derives the version from the merged workspace, and uses the
@@ -75,10 +76,10 @@ error; stop and investigate.
 
 ## Repository configuration
 
-The release App needs Contents and Pull requests read/write access plus
-Administration read access for authenticated ruleset audits. Store its client
-ID in `RELEASE_APP_CLIENT_ID` and PEM key in
-`RELEASE_APP_PRIVATE_KEY`. The prepare preflight diagnoses either missing value.
+Enable **Allow GitHub Actions to create and approve pull requests** in the
+repository's Actions settings. Prepare Release requests Contents and Pull
+requests write access for its built-in `GITHUB_TOKEN`; no App, personal access
+token, repository variable, or release secret is required.
 
 The protected `crates-io` environment holds `CRATES_IO_TOKEN`. Bootstrap new
 workspace crates with a token limited to `signal-fish-client*` and
@@ -86,6 +87,7 @@ workspace crates with a token limited to `signal-fish-client*` and
 publication.
 
 Default-branch rules must match `.github/required-checks.json`. The weekly
-Repository Policy workflow detects drift with an App token explicitly scoped to
-Administration read. Never make live audit requests anonymously. See
-`docs/releasing.md` for the operator runbook.
+Repository Policy workflow detects visible drift with its authenticated
+`GITHUB_TOKEN`. GitHub does not expose bypass actors to workflow tokens, so
+verify an empty bypass list in the ruleset UI during setup and ownership
+reviews. See `docs/releasing.md` for the operator runbook.

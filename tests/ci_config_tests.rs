@@ -79,12 +79,13 @@ mod required_check_policy {
     }
 
     #[test]
-    fn repository_policy_uses_an_authenticated_least_privilege_token() {
+    fn repository_policy_uses_the_authenticated_builtin_token() {
         let workflow = read_project_file(".github/workflows/repository-policy.yml");
         let audit = read_project_file("scripts/audit-repository-rules.py");
-        assert!(workflow.contains("uses: actions/create-github-app-token@v3.2.0"));
-        assert!(workflow.contains("permission-administration: read"));
-        assert!(workflow.contains("GH_TOKEN: ${{ steps.app-token.outputs.token }}"));
+        assert!(!workflow.contains("actions/create-github-app-token"));
+        assert!(!workflow.contains("RELEASE_APP_"));
+        assert!(!workflow.contains("permission-administration"));
+        assert!(workflow.contains("GH_TOKEN: ${{ github.token }}"));
         assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
     }
 }
@@ -3587,6 +3588,20 @@ mod ci_config_validation {
             }
         }
         results
+    }
+
+    #[test]
+    fn workflows_do_not_depend_on_release_apps() {
+        for (path, contents) in all_workflow_files() {
+            assert!(
+                !contents.contains("actions/create-github-app-token"),
+                "{path} must use the built-in GITHUB_TOKEN, not a GitHub App token"
+            );
+            assert!(
+                !contents.contains("RELEASE_APP_"),
+                "{path} must not require release-App variables or secrets"
+            );
+        }
     }
 
     /// Extract all `uses: owner/repo@version` references from workflow YAML,
