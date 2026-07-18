@@ -55,7 +55,8 @@ jobs:
             printf '::error::Checked-out SHA %s is not default-branch HEAD %s.\n' "$local_sha" "$remote_sha"
             exit 1
           fi
-          gh api "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
             > "$RUNNER_TEMP/check-runs.json"
           python3 scripts/check-required-checks.py \
             --check-runs "$RUNNER_TEMP/check-runs.json" \

@@ -140,9 +140,17 @@ jobs:
       - name: Create isolated core package tree
         run: |
           core_dir="$RUNNER_TEMP/signal-fish-core-msrv"
+          core_version=$(python3 scripts/release.py package-version)
           mkdir -p "$core_dir"
           git archive HEAD | tar -x -C "$core_dir"
-          awk '/^\[workspace\]$/ { exit } { print }' Cargo.toml > "$core_dir/Cargo.toml"
+          awk -v version="$core_version" '
+            /^\[workspace\]$/ { exit }
+            /^version\.workspace = true$/ {
+              printf "version = \"%s\"\n", version
+              next
+            }
+            { print }
+          ' Cargo.toml > "$core_dir/Cargo.toml"
       - name: Generate isolated core lockfile
         run: bash scripts/cargo-retry.sh generate-lockfile --manifest-path "$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml"
       - name: Verify isolated core metadata has no Godot packages

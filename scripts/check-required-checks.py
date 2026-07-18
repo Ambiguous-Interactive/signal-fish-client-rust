@@ -29,10 +29,13 @@ def required_jobs(policy: dict[str, Any]) -> list[str]:
     return jobs
 
 
-def check_results(policy: dict[str, Any], payload: dict[str, Any]) -> list[str]:
-    runs = payload.get("check_runs")
-    if not isinstance(runs, list):
-        raise ValueError("check-runs payload must define check_runs")
+def check_results(policy: dict[str, Any], payload: Any) -> list[str]:
+    pages = payload if isinstance(payload, list) else [payload]
+    runs: list[Any] = []
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
+            raise ValueError("check-runs payload must define check_runs on every page")
+        runs.extend(page["check_runs"])
     latest: dict[str, dict[str, Any]] = {}
     for run in runs:
         if not isinstance(run, dict) or not isinstance(run.get("name"), str):

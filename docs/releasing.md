@@ -6,8 +6,10 @@ manual, protected, and fail-closed.
 
 ## One-time repository setup
 
-Create and install a GitHub App with repository **Contents: read and write** and
-**Pull requests: read and write** permissions. Store its client ID as the
+Create and install a GitHub App with repository **Contents: read and write**,
+**Pull requests: read and write**, and **Administration: read** permissions.
+The administration permission lets the scheduled policy audit inspect complete
+ruleset configuration using an authenticated, least-privilege token. Store its client ID as the
 `RELEASE_APP_CLIENT_ID` repository variable and its PEM private key as the
 `RELEASE_APP_PRIVATE_KEY` repository secret. These names and value types are
 exact: the prepare workflow reports a specific setup error before token
@@ -31,8 +33,10 @@ requires:
 - deletion and non-fast-forward protections.
 
 The weekly **Repository Policy** workflow audits the live rulesets against this
-checked-in policy. Run `python3 scripts/audit-repository-rules.py` for the same
-read-only audit.
+checked-in policy with a short-lived release-App token. For a local live audit,
+set `GH_TOKEN` to a token with repository Administration read permission, then
+run `python3 scripts/audit-repository-rules.py`. Offline fixture audits with
+`--rulesets FILE` do not require a token.
 
 ## Prepare a release
 

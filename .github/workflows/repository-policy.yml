@@ -24,5 +24,25 @@ jobs:
       - name: Test policy audit
         run: python3 -m unittest scripts/test_audit_repository_rules.py scripts/test_required_checks.py
 
+      - name: Preflight policy-app configuration
+        env:
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CLIENT_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            printf '::error::Repository Policy requires RELEASE_APP_CLIENT_ID and RELEASE_APP_PRIVATE_KEY. See docs/releasing.md.\n'
+            exit 1
+          fi
+
+      - name: Create policy-audit token
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-administration: read
+
       - name: Audit live repository rulesets
         run: python3 scripts/audit-repository-rules.py
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}

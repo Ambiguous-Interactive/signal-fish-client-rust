@@ -104,6 +104,7 @@ fn adapter_declares_lockstep_core_and_supported_godot_range() {
     let core_dependency = dependency(&adapter, "signal-fish-client");
     let expected_core = format!("={core_version}");
     assert_eq!(core_dependency["workspace"].as_bool(), Some(true));
+    assert_eq!(core_dependency["default-features"].as_bool(), Some(false));
     assert_eq!(
         core["workspace"]["dependencies"]["signal-fish-client"]["version"].as_str(),
         Some(expected_core.as_str())

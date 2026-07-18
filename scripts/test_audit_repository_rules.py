@@ -59,6 +59,14 @@ class RepositoryRuleTests(unittest.TestCase):
     def test_accepts_matching_default_branch_rules(self) -> None:
         self.assertEqual(audit.audit(self.policy, [self.ruleset()]), [])
 
+    def test_live_api_request_requires_and_sends_authentication(self) -> None:
+        with self.assertRaisesRegex(ValueError, "authenticated GitHub token"):
+            audit.api_request("https://api.github.test/rulesets", "")
+
+        request = audit.api_request("https://api.github.test/rulesets", "test-token")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+        self.assertEqual(request.get_header("X-github-api-version"), audit.API_VERSION)
+
     def test_reports_missing_safety_rules_and_checks(self) -> None:
         ruleset = self.ruleset()
         ruleset["rules"] = []
@@ -70,11 +78,17 @@ class RepositoryRuleTests(unittest.TestCase):
     def test_rejects_bypass_and_non_strict_checks(self) -> None:
         ruleset = self.ruleset()
         ruleset["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
-        status = next(rule for rule in ruleset["rules"] if rule["type"] == "required_status_checks")
+        status = next(
+            rule
+            for rule in ruleset["rules"]
+            if rule["type"] == "required_status_checks"
+        )
         status["parameters"]["strict_required_status_checks_policy"] = False
         failures = audit.audit(self.policy, [ruleset])
         self.assertIn("default-branch rulesets must not define bypass actors", failures)
-        self.assertIn("required status checks must require an up-to-date branch", failures)
+        self.assertIn(
+            "required status checks must require an up-to-date branch", failures
+        )
 
 
 if __name__ == "__main__":

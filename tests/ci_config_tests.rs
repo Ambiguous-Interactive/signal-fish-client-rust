@@ -63,6 +63,26 @@ mod required_check_policy {
             );
         }
     }
+
+    #[test]
+    fn release_preflight_reads_every_page_of_commit_checks() {
+        let workflow = read_project_file(".github/workflows/publish.yml");
+        assert!(
+            workflow.contains("gh api --paginate --slurp"),
+            "release preflight must paginate check runs before enforcing required checks"
+        );
+        assert!(workflow.contains("check-runs?filter=latest&per_page=100"));
+    }
+
+    #[test]
+    fn repository_policy_uses_an_authenticated_least_privilege_token() {
+        let workflow = read_project_file(".github/workflows/repository-policy.yml");
+        let audit = read_project_file("scripts/audit-repository-rules.py");
+        assert!(workflow.contains("uses: actions/create-github-app-token@v3.2.0"));
+        assert!(workflow.contains("permission-administration: read"));
+        assert!(workflow.contains("GH_TOKEN: ${{ steps.app-token.outputs.token }}"));
+        assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1361,6 +1381,23 @@ mod ci_workflow_policy {
             validation
                 .err()
                 .unwrap_or_else(|| "unknown MSRV validation error".to_string())
+        );
+    }
+
+    #[test]
+    fn isolated_core_msrv_manifest_materializes_the_workspace_version() {
+        let ci = ci_contents();
+        let msrv_job =
+            extract_job_block(&ci, "msrv").expect("ci.yml must define the msrv job under jobs");
+
+        assert!(
+            msrv_job.contains("core_version=$(python3 scripts/release.py package-version)"),
+            "isolating the root package must read the canonical workspace version"
+        );
+        assert!(
+            msrv_job.contains(r#"/^version\.workspace = true$/"#)
+                && msrv_job.contains(r#"printf "version = \"%s\"\n", version"#),
+            "the standalone manifest must replace inherited package.version before removing [workspace]"
         );
     }
 

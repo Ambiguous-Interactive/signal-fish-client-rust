@@ -39,7 +39,9 @@ verify the exact default-branch SHA rather than only the pre-merge PR head.
 default-branch rules. Keep gate names unique and stable. Update the config, the
 workflow gate, and `required_check_policy` tests together. The scheduled
 Repository Policy workflow detects live GitHub ruleset drift; do not add bypass
-actors to make a failing gate mergeable.
+actors to make a failing gate mergeable. Live ruleset reads must use the
+release App's explicitly scoped Administration-read token; unauthenticated
+public API responses are not an adequate policy audit.
 
 ### lychee: TOML vs CLI syntax
 

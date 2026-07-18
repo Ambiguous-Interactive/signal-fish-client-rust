@@ -70,8 +70,9 @@ error; stop and investigate.
 
 ## Repository configuration
 
-The release App needs Contents and Pull requests read/write access. Store its
-client ID in `RELEASE_APP_CLIENT_ID` and PEM key in
+The release App needs Contents and Pull requests read/write access plus
+Administration read access for authenticated ruleset audits. Store its client
+ID in `RELEASE_APP_CLIENT_ID` and PEM key in
 `RELEASE_APP_PRIVATE_KEY`. The prepare preflight diagnoses either missing value.
 
 The protected `crates-io` environment holds `CRATES_IO_TOKEN`. Bootstrap new
@@ -80,5 +81,6 @@ workspace crates with a token limited to `signal-fish-client*` and
 publication.
 
 Default-branch rules must match `.github/required-checks.json`. The weekly
-Repository Policy workflow detects drift. See `docs/releasing.md` for the
-operator runbook.
+Repository Policy workflow detects drift with an App token explicitly scoped to
+Administration read. Never make live audit requests anonymously. See
+`docs/releasing.md` for the operator runbook.

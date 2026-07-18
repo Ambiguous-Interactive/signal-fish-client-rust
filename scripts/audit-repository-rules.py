@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 from pathlib import Path
@@ -18,25 +19,34 @@ def load_json(path: Path) -> Any:
         return json.load(stream)
 
 
-def fetch_json(url: str) -> Any:
-    request = urllib.request.Request(
+def api_request(url: str, token: str) -> urllib.request.Request:
+    if not token:
+        raise ValueError(
+            "an authenticated GitHub token is required for live ruleset audits"
+        )
+    return urllib.request.Request(
         url,
         headers={
             "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
             "User-Agent": "signal-fish-client-repository-policy-audit",
             "X-GitHub-Api-Version": API_VERSION,
         },
     )
+
+
+def fetch_json(url: str, token: str) -> Any:
+    request = api_request(url, token)
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 
 
-def fetch_rulesets(repository: str) -> list[dict[str, Any]]:
+def fetch_rulesets(repository: str, token: str) -> list[dict[str, Any]]:
     base = f"https://api.github.com/repos/{repository}/rulesets"
-    summaries = fetch_json(base)
+    summaries = fetch_json(f"{base}?per_page=100", token)
     if not isinstance(summaries, list):
         raise ValueError("GitHub rulesets response was not a list")
-    return [fetch_json(f"{base}/{summary['id']}") for summary in summaries]
+    return [fetch_json(f"{base}/{summary['id']}", token) for summary in summaries]
 
 
 def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
@@ -47,7 +57,9 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     if not expected_refs:
         raise ValueError("repository_rules.include must not be empty")
     required_checks = {
-        check["job"] for check in policy.get("required_checks", []) if isinstance(check, dict)
+        check["job"]
+        for check in policy.get("required_checks", [])
+        if isinstance(check, dict)
     }
     applicable = [
         ruleset
@@ -76,7 +88,10 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     if not pull_requests:
         failures.append("missing pull_request rule")
     else:
-        for key in ("dismiss_stale_reviews_on_push", "required_review_thread_resolution"):
+        for key in (
+            "dismiss_stale_reviews_on_push",
+            "required_review_thread_resolution",
+        ):
             actual = any(rule.get("parameters", {}).get(key) for rule in pull_requests)
             if actual is not expected.get(key):
                 failures.append(f"pull_request.{key} must be {expected.get(key)}")
@@ -89,7 +104,9 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
                 "pull_request.required_approving_review_count is below the checked-in policy"
             )
 
-    status_rules = [rule for rule in rules if rule.get("type") == "required_status_checks"]
+    status_rules = [
+        rule for rule in rules if rule.get("type") == "required_status_checks"
+    ]
     if not status_rules:
         failures.append("missing required_status_checks rule")
     else:
@@ -112,13 +129,22 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--policy", type=Path, default=Path(".github/required-checks.json"))
-    parser.add_argument("--repository", default="Ambiguous-Interactive/signal-fish-client-rust")
+    parser.add_argument(
+        "--policy", type=Path, default=Path(".github/required-checks.json")
+    )
+    parser.add_argument(
+        "--repository", default="Ambiguous-Interactive/signal-fish-client-rust"
+    )
     parser.add_argument("--rulesets", type=Path)
     args = parser.parse_args()
     try:
         policy = load_json(args.policy)
-        rulesets = load_json(args.rulesets) if args.rulesets else fetch_rulesets(args.repository)
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+        rulesets = (
+            load_json(args.rulesets)
+            if args.rulesets
+            else fetch_rulesets(args.repository, token)
+        )
         if not isinstance(policy, dict) or not isinstance(rulesets, list):
             raise ValueError("policy must be an object and rulesets must be a list")
         failures = audit(policy, rulesets)

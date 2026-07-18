@@ -25,19 +25,49 @@ class RequiredCheckTests(unittest.TestCase):
     }
 
     def test_accepts_latest_successful_checks(self) -> None:
-        payload = {
-            "check_runs": [
-                {"id": 1, "name": "CI Required", "status": "completed", "conclusion": "failure"},
-                {"id": 3, "name": "CI Required", "status": "completed", "conclusion": "success"},
-                {"id": 2, "name": "Docs Required", "status": "completed", "conclusion": "success"},
-            ]
-        }
+        payload = [
+            {
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "CI Required",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Docs Required",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ]
+            },
+            {
+                "check_runs": [
+                    {
+                        "id": 3,
+                        "name": "CI Required",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ]
+            },
+        ]
         self.assertEqual(checks.check_results(self.policy, payload), [])
+
+    def test_rejects_malformed_page_in_paginated_payload(self) -> None:
+        with self.assertRaisesRegex(ValueError, "every page"):
+            checks.check_results(self.policy, [{"check_runs": []}, {}])
 
     def test_reports_missing_pending_and_failed_checks(self) -> None:
         payload = {
             "check_runs": [
-                {"id": 1, "name": "CI Required", "status": "in_progress", "conclusion": None}
+                {
+                    "id": 1,
+                    "name": "CI Required",
+                    "status": "in_progress",
+                    "conclusion": None,
+                }
             ]
         }
         self.assertEqual(
