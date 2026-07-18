@@ -111,8 +111,8 @@ jobs:
           BREAKING: ${{ inputs.breaking }}
         run: |
           git switch -c "$BRANCH"
-          git config user.name "signal-fish-release[bot]"
-          git config user.email "signal-fish-release[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add --update
           git diff --cached --check
           if git diff --cached --quiet; then

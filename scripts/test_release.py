@@ -486,6 +486,12 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("gh pr create", self.prepare)
         self.assertIn("Approve workflows to run", self.prepare)
         self.assertIn("Approve workflows to run", self.releasing)
+        self.assertNotIn("signal-fish-release[bot]", self.prepare)
+        self.assertIn('git config user.name "github-actions[bot]"', self.prepare)
+        self.assertIn(
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            self.prepare,
+        )
 
     def test_publish_is_input_free_manual_only_and_protected(self) -> None:
         self.assertIn("workflow_dispatch:", self.publish)
