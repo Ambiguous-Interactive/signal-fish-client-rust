@@ -259,6 +259,17 @@ mod godot_issue_61_policy {
     }
 
     #[test]
+    fn prepare_release_survives_enterprise_pr_creation_policy() {
+        let workflow = read_project_file(".github/workflows/prepare-release.yml");
+        assert!(workflow.contains("id: open-pr"));
+        assert!(workflow.contains("continue-on-error: true"));
+        assert!(workflow.contains("steps.open-pr.outcome == 'failure'"));
+        assert!(workflow.contains("Open the prepared release pull request as a maintainer"));
+        assert!(workflow
+            .contains("steps.open-pr.outcome == 'success' || steps.open-pr.outcome == 'failure'"));
+    }
+
+    #[test]
     fn coverage_is_a_blocking_gate_with_a_measured_floor() {
         let workflow = read_project_file(".github/workflows/coverage.yml");
         assert!(!workflow.contains("continue-on-error: true"));
