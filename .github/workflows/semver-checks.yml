@@ -64,19 +64,6 @@ jobs:
       - name: Generate lockfile
         run: bash scripts/cargo-retry.sh generate-lockfile
 
-      - name: Check if adapter package exists on base branch
-        id: check-base-adapter
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if git show "$BASE_SHA":crates/signal-fish-client-godot/Cargo.toml >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping adapter semver check: package does not exist on base branch"
-          fi
-
       - name: Classify PR release type
         id: pr-release-type
         if: github.event_name == 'pull_request'
@@ -90,62 +77,57 @@ jobs:
             echo "release-type=auto" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check semver compliance (PR — against base branch)
-        if: github.event_name == 'pull_request' && steps.pr-release-type.outputs.release-type == 'auto'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: cargo semver-checks check-release --package signal-fish-client --baseline-rev "$BASE_SHA"
-
-      - name: Check intentional breaking API change (PR — against base branch)
-        if: github.event_name == 'pull_request' && steps.pr-release-type.outputs.release-type == 'major'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: cargo semver-checks check-release --package signal-fish-client --baseline-rev "$BASE_SHA" --release-type major
-
-      - name: Check adapter semver compliance (PR — against base branch)
-        if: github.event_name == 'pull_request' && steps.check-base-adapter.outputs.exists == 'true'
+      - name: Check every publishable crate against the PR base
+        if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RELEASE_TYPE: ${{ steps.pr-release-type.outputs.release-type }}
         run: |
-          args=()
-          if [ "$RELEASE_TYPE" = major ]; then
-            args+=(--release-type major)
-          fi
-          cargo semver-checks check-release --package signal-fish-client-godot \
-            --baseline-rev "$BASE_SHA" "${args[@]}"
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          while IFS=$'\t' read -r package manifest; do
+            if ! git cat-file -e "${BASE_SHA}:${manifest}" 2>/dev/null; then
+              printf 'Skipping %s: package does not exist on the base branch.\n' "$package"
+              continue
+            fi
+            args=(--package "$package" --baseline-rev "$BASE_SHA")
+            if [ "$RELEASE_TYPE" = major ]; then
+              args+=(--release-type major)
+            fi
+            cargo semver-checks check-release "${args[@]}"
+          done < <(jq -r '.packages[] | [.name, .manifest_path] | @tsv' \
+            "$RUNNER_TEMP/workspace-plan.json")
 
-      - name: Check which crates are published on crates.io
-        id: check-published
+      - name: Check every published crate against crates.io
         if: github.event_name == 'push'
         run: |
-          if ! search_output="$(CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search signal-fish-client --limit 1 2>&1)"; then
-            echo "::error::Could not query crates.io for signal-fish-client."
-            printf '%s\n' "$search_output"
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          while IFS= read -r package; do
+            if ! search_output="$(
+              CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search "$package" --limit 1 2>&1
+            )"; then
+              printf '::error::Could not query crates.io for %s.\n%s\n' "$package" "$search_output"
+              exit 1
+            fi
+            if printf '%s\n' "$search_output" | grep -qF "${package} ="; then
+              cargo semver-checks check-release --package "$package"
+            else
+              printf 'Skipping %s: no crates.io baseline exists.\n' "$package"
+            fi
+          done < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
+
+  required:
+    name: Semver Required
+    if: ${{ always() }}
+    needs: [semver-checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require semantic-version compatibility
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
             exit 1
           fi
-
-          if printf '%s\n' "$search_output" | grep -q '^signal-fish-client '; then
-            echo "core=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "core=false" >> "$GITHUB_OUTPUT"
-          fi
-          if ! adapter_search="$(CARGO_TERM_COLOR=never bash scripts/cargo-retry.sh search signal-fish-client-godot --limit 1 2>&1)"; then
-            echo "::error::Could not query crates.io for signal-fish-client-godot."
-            printf '%s\n' "$adapter_search"
-            exit 1
-          fi
-          if printf '%s\n' "$adapter_search" | grep -q '^signal-fish-client-godot '; then
-            echo "adapter=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "adapter=false" >> "$GITHUB_OUTPUT"
-            echo "Adapter not yet published — skipping its first-release baseline"
-          fi
-
-      - name: Check semver compliance (push — against crates.io)
-        if: github.event_name == 'push' && steps.check-published.outputs.core == 'true'
-        run: cargo semver-checks check-release --package signal-fish-client
-
-      - name: Check adapter semver compliance (push — against crates.io)
-        if: github.event_name == 'push' && steps.check-published.outputs.adapter == 'true'
-        run: cargo semver-checks check-release --package signal-fish-client-godot

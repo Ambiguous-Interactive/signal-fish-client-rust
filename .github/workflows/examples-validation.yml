@@ -85,3 +85,20 @@ jobs:
 
       - name: Extract and compile Rust snippets from markdown
         run: bash scripts/extract-rust-snippets.sh
+
+  required:
+    name: Examples Validation Required
+    if: ${{ always() }}
+    needs: [doc-tests, examples, snippet-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every examples validation job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

@@ -233,7 +233,27 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
       - name: Run publish dry-run
         run: |
-          cargo publish --dry-run -p signal-fish-client
-          core_path=$(pwd)
-          cargo package --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          mapfile -t packages < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
+          package_args=()
+          for package in "${packages[@]}"; do
+            package_args+=(-p "$package")
+          done
+          cargo publish --dry-run "${package_args[@]}"
+
+  required:
+    name: CI Required
+    if: ${{ always() }}
+    needs: [fmt, spell-check, clippy, test, msrv, adapter-msrv, doc, deny, publish-dry-run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

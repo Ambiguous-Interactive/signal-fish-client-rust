@@ -1,0 +1,24 @@
+{
+  "required_checks": [
+    { "workflow": "CI", "file": "ci.yml", "job": "CI Required" },
+    { "workflow": "Coverage", "file": "coverage.yml", "job": "Coverage Required" },
+    { "workflow": "Docs Validation", "file": "docs-validation.yml", "job": "Docs Validation Required" },
+    { "workflow": "Examples Validation", "file": "examples-validation.yml", "job": "Examples Validation Required" },
+    { "workflow": "Godot Web", "file": "godot-web.yml", "job": "Godot Web Required" },
+    { "workflow": "No Panics", "file": "no-panics.yml", "job": "No Panics Required" },
+    { "workflow": "Security", "file": "security-supply-chain.yml", "job": "Security Required" },
+    { "workflow": "Semver Checks", "file": "semver-checks.yml", "job": "Semver Required" },
+    { "workflow": "Unused Deps", "file": "unused-deps.yml", "job": "Unused Deps Required" },
+    { "workflow": "WASM", "file": "wasm.yml", "job": "WASM Required" },
+    { "workflow": "Workflow Lint", "file": "workflow-lint.yml", "job": "Workflow Lint Required" }
+  ],
+  "repository_rules": {
+    "enforcement": "active",
+    "include": ["~DEFAULT_BRANCH"],
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews_on_push": true,
+    "required_review_thread_resolution": true,
+    "strict_required_status_checks_policy": true,
+    "forbid_bypass_actors": true
+  }
+}

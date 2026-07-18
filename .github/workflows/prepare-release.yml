@@ -29,9 +29,12 @@ concurrency:
   group: prepare-release
   cancel-in-progress: false
 
+env:
+  RELEASE_RUST: "1.96.1"
+
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Require the default branch
@@ -43,6 +46,27 @@ jobs:
             printf '::error::Prepare Release must run from %s, not %s.\n' "$DEFAULT_BRANCH" "$REF_NAME"
             exit 1
           fi
+
+      - name: Preflight release-app configuration
+        if: ${{ !inputs.dry_run }}
+        env:
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CLIENT_ID" ]; then
+            printf '::error::Repository variable RELEASE_APP_CLIENT_ID is not configured. See docs/releasing.md.\n'
+            exit 1
+          fi
+          if [ -z "$PRIVATE_KEY" ]; then
+            printf '::error::Repository secret RELEASE_APP_PRIVATE_KEY is not configured. See docs/releasing.md.\n'
+            exit 1
+          fi
+          case "$PRIVATE_KEY" in
+            *"BEGIN"*"PRIVATE KEY"*"END"*"PRIVATE KEY"*) ;;
+            *)
+              printf '::error::RELEASE_APP_PRIVATE_KEY is not a PEM private key. See docs/releasing.md.\n'
+              exit 1 ;;
+          esac
 
       - name: Create release-app token
         id: app-token
@@ -59,16 +83,19 @@ jobs:
           token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
-      - name: Install Rust
+      - name: Install pinned release Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RELEASE_RUST }}
           components: rustfmt, clippy
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Test release tooling
-        run: python3 -m unittest scripts/test_release.py
+        run: >-
+          python3 -m unittest scripts/test_release.py scripts/test_required_checks.py
+          scripts/test_audit_repository_rules.py
 
       - name: Prepare release files
         id: version
@@ -87,13 +114,16 @@ jobs:
       - name: Run mandatory verification
         run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
-      - name: Verify package and documentation
+      - name: Verify every publishable package and documentation
         run: |
-          cargo package --allow-dirty -p signal-fish-client
-          core_path=$(pwd)
-          cargo package --allow-dirty --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
-          cargo publish --dry-run --allow-dirty -p signal-fish-client
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          mapfile -t packages < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
+          package_args=()
+          for package in "${packages[@]}"; do
+            package_args+=(-p "$package")
+          done
+          cargo package --allow-dirty "${package_args[@]}"
+          cargo publish --dry-run --allow-dirty "${package_args[@]}"
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
 
@@ -111,12 +141,12 @@ jobs:
           git switch -c "$BRANCH"
           git config user.name "signal-fish-release[bot]"
           git config user.email "signal-fish-release[bot]@users.noreply.github.com"
-          git add Cargo.toml crates/signal-fish-client-godot/Cargo.toml \
-            README.md CHANGELOG.md docs .llm tests/compatibility.toml \
-            tests/godot-compat-min/Cargo.lock \
-            tests/godot-web-smoke/Cargo.lock \
-            tests/server-spec/PROVENANCE.toml \
-            tests/wire-samples/PROVENANCE.toml
+          git add --update
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            printf '::error::Release preparation produced no tracked changes.\n'
+            exit 1
+          fi
           subject="chore: prepare release ${VERSION}"
           if [ "$BREAKING" = true ]; then
             subject="chore!: prepare release ${VERSION}"

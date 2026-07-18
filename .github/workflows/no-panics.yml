@@ -44,3 +44,20 @@ jobs:
 
       - name: Run panic-free policy check
         run: bash scripts/check-no-panics.sh
+
+  required:
+    name: No Panics Required
+    if: ${{ always() }}
+    needs: [panic-free-policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require panic-free policy
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

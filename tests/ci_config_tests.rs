@@ -20,6 +20,51 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+mod required_check_policy {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn every_blocking_pr_workflow_has_a_stable_aggregate_gate() {
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        let checks = policy["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array");
+        assert_eq!(checks.len(), 11);
+
+        let mut jobs = BTreeSet::new();
+        for check in checks {
+            let file = check["file"].as_str().expect("required check file");
+            let job = check["job"].as_str().expect("required check job");
+            assert!(
+                jobs.insert(job),
+                "required gate names must be unique: {job}"
+            );
+            let workflow = read_project_file(&format!(".github/workflows/{file}"));
+            assert!(
+                workflow.contains(&format!("name: {job}")),
+                "{file} must define aggregate gate {job}"
+            );
+            assert!(
+                workflow.contains("if: ${{ always() }}"),
+                "{file} aggregate gate must run even after a dependency failure"
+            );
+            assert!(
+                workflow.contains("NEEDS_JSON: ${{ toJSON(needs) }}"),
+                "{file} aggregate gate must inspect every dependency result"
+            );
+            assert!(
+                !workflow.contains("pull_request:\n    paths:")
+                    && !workflow.contains("branches: [main]\n    paths:"),
+                "{file} cannot use path filters when its gate must report on PR and main SHAs"
+            );
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module: Godot issue #61 system-regression policy
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,10 +133,10 @@ mod godot_issue_61_policy {
                 && workflow.contains("NETEM_SEED: \"6101\"")
                 && workflow.contains("IPROUTE2_VERSION: \"6.6.0\"")
                 && workflow.contains("sha256sum --check")
-                && workflow.contains("actions/download-artifact@v7.0.0")
+                && workflow.contains("actions/download-artifact@v8.0.1")
                 && workflow.contains("--locked")
         );
-        assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 2);
+        assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 3);
         assert_eq!(workflow.matches("name: godot-web-export").count(), 2);
         for required in [
             "needs: build-export",
@@ -135,7 +180,9 @@ mod godot_issue_61_policy {
     fn llms_txt_is_in_the_blocking_docs_validation_surface() {
         let workflow = read_project_file(".github/workflows/docs-validation.yml");
         let rendering = read_project_file("scripts/check-docs-rendering.sh");
-        assert!(workflow.matches("- \"llms.txt\"").count() >= 2);
+        assert_eq!(workflow.matches("- \"llms.txt\"").count(), 0);
+        assert!(workflow.contains("  pull_request:\n"));
+        assert!(workflow.contains("name: Docs Validation Required"));
         assert!(workflow.contains("            \"llms.txt\""));
         assert!(rendering.contains("cmp -s \"$REPO_ROOT/llms.txt\" \"$SITE_DIR/llms.txt\""));
     }
@@ -166,16 +213,17 @@ fn read_project_file(relative_path: &str) -> String {
     })
 }
 
-/// Reads Cargo.toml and returns package version.
+/// Reads Cargo.toml and returns the shared workspace package version.
 fn cargo_package_version() -> String {
     let cargo = read_project_file("Cargo.toml");
     let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
     parsed
-        .get("package")
+        .get("workspace")
+        .and_then(|v| v.get("package"))
         .and_then(|v| v.get("version"))
         .and_then(toml::Value::as_str)
         .map(std::string::ToString::to_string)
-        .expect("Cargo.toml must define [package].version as a string")
+        .expect("Cargo.toml must define [workspace.package].version as a string")
 }
 
 fn is_canonical_git_main_dependency(line: &str) -> bool {
@@ -358,6 +406,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/docs-deploy.yml",
     ".github/workflows/docs-validation.yml",
     ".github/workflows/examples-validation.yml",
+    ".github/workflows/godot-web.yml",
     ".github/workflows/no-panics.yml",
     ".github/workflows/security-supply-chain.yml",
     ".github/workflows/semver-checks.yml",
@@ -365,6 +414,8 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
     ".github/workflows/publish.yml",
+    ".github/workflows/prepare-release.yml",
+    ".github/workflows/repository-policy.yml",
     ".github/workflows/dependabot-auto-merge.yml",
     ".github/workflows/protocol-sync.yml",
 ];
@@ -1262,8 +1313,8 @@ mod ci_workflow_policy {
         );
         assert!(
             contents.contains("--release-type major")
-                && contents.contains("steps.pr-release-type.outputs.release-type == 'major'")
-                && contents.contains("steps.pr-release-type.outputs.release-type == 'auto'"),
+                && contents.contains("RELEASE_TYPE: ${{ steps.pr-release-type.outputs.release-type }}")
+                && contents.contains("if [ \"$RELEASE_TYPE\" = major ]; then"),
             "Semver CI must use major policy only for explicitly marked breaking PRs and retain inferred checks otherwise"
         );
     }

@@ -377,16 +377,17 @@ class TestCrateVersionSync:
     """Tests for Cargo version parsing and version-reference synchronization."""
 
     def test_read_cargo_package_version(self, tmp_path, monkeypatch):
-        """The package version is read from Cargo.toml [package]."""
+        """The package version is read from Cargo.toml [workspace.package]."""
         fake_root = tmp_path / "repo"
         fake_root.mkdir()
         (fake_root / "Cargo.toml").write_text(
             "[package]\n"
             'name = "signal-fish-client"\n'
-            'version = "1.2.3"\n'
+            "version.workspace = true\n"
             "\n"
-            "[dependencies]\n"
-            'tokio = "1"\n',
+            "[workspace]\n\n"
+            "[workspace.package]\n"
+            'version = "1.2.3"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)

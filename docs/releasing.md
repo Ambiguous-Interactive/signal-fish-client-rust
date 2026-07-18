@@ -1,80 +1,99 @@
 # Release Operations
 
-Signal Fish Client releases use two manually dispatched workflows. The split
-keeps ordinary version-file changes reviewable before the irreversible
-crates.io publish.
+Signal Fish Client uses separate preparation and publication workflows. The
+preparation stage is reversible and reviewable; the publication stage is
+manual, protected, and fail-closed.
 
 ## One-time repository setup
 
 Create and install a GitHub App with repository **Contents: read and write** and
-**Pull requests: read and write** permissions. Add its client ID as the
-`RELEASE_APP_CLIENT_ID` repository variable and its private key as the
-`RELEASE_APP_PRIVATE_KEY` repository secret. The App token is required because
-branches and pull requests created with the normal workflow token do not
-reliably trigger the repository's full CI policy.
+**Pull requests: read and write** permissions. Store its client ID as the
+`RELEASE_APP_CLIENT_ID` repository variable and its PEM private key as the
+`RELEASE_APP_PRIVATE_KEY` repository secret. These names and value types are
+exact: the prepare workflow reports a specific setup error before token
+generation when either is absent or malformed. An App token is used because
+events created with `GITHUB_TOKEN` do not reliably start the full PR workflow
+set.
 
-Configure the protected `crates-io` environment with required reviewers and a
-`CRATES_IO_TOKEN` secret authorized for both `signal-fish-client` and
-`signal-fish-client-godot`, including first publication of the adapter.
-Restrict the environment to the default branch. Artifact attestations also
-require GitHub Actions and attestations to be enabled in repository settings.
+Configure the protected `crates-io` environment with required reviewers, a
+default-branch deployment restriction, and a `CRATES_IO_TOKEN` secret. For the
+first adapter release, create a crates.io token scoped to the
+`signal-fish-client*` crate pattern with both `publish-new` and
+`publish-update`. After every crate has been published once, rotate it to
+`publish-update` only. Artifact attestations must also be enabled.
+
+Protect the default branch with an active ruleset that has no bypass actors and
+requires:
+
+- pull requests, one approval, stale-review dismissal, and resolved threads;
+- a branch updated with its base before merging;
+- every job named in `.github/required-checks.json`;
+- deletion and non-fast-forward protections.
+
+The weekly **Repository Policy** workflow audits the live rulesets against this
+checked-in policy. Run `python3 scripts/audit-repository-rules.py` for the same
+read-only audit.
 
 ## Prepare a release
 
-1. Run **Prepare Release** from the default branch.
-2. Select `major`, `minor`, or `patch` and leave `dry_run` enabled first. Enable
-   `breaking` only for an intentional major release or pre-1.0 breaking minor
-   release; this persists the stricter semver-checks policy in the changelog.
+1. Run **Prepare Release** from the default branch with `dry_run` enabled.
+2. Select `major`, `minor`, or `patch`. Enable `breaking` only for an
+   intentional major release or pre-1.0 breaking minor release.
 3. Inspect the generated diff and validation output.
-4. Run it again with `dry_run` disabled. The workflow creates
-   `release/X.Y.Z`, updates both package versions, the adapter's exact core
-   requirement, fixture locks, and every provenance marker, cuts the changelog,
-   and opens a pull request.
-5. Review and merge only after all required CI and reviewer feedback is green.
+4. Run it again with `dry_run` disabled. The GitHub App creates
+   `release/X.Y.Z` and opens the preparation pull request.
+5. Merge only after every aggregate required check, review, and thread is
+   green.
 
-Preparation fails if the default branch is not selected, the worktree is not
-clean, a version reference is missing, or `[Unreleased]` has no content. The
-underlying deterministic command is:
+The workspace owns one version at `[workspace.package].version`; publishable
+members set `version.workspace = true`. Preparation discovers crates through
+`cargo metadata`, updates that version and exact internal workspace
+requirements, then updates locks, documentation references, provenance, and
+the changelog. It fails before writing if the workspace graph, inventory, or
+`[Unreleased]` section is invalid.
 
 ```sh
+python3 scripts/release.py workspace-plan
 python3 scripts/release.py prepare minor
 ```
 
 ## Publish a release
 
-Run **Release** from the default branch and enter the strict `X.Y.Z` version
-from the merged preparation pull request. After the protected-environment
-approval, the workflow verifies default-branch HEAD and its checks, package and
-changelog versions, the full Rust suite, docs.rs compatibility, semver policy,
-and the core `cargo publish --dry-run`. The first adapter release has no semver
-baseline; every later release checks both crates.
+Run **Release** from the default branch. It has no version input: the workflow
+derives the strict lockstep version and dependency-first package order from the
+merged workspace. The protected-environment approval is the authorization to
+publish.
 
-The workflow then reproduces both `.crate` files, verifies the packaged adapter
-against the extracted packaged core through `[patch.crates-io]`, creates both
-CycloneDX SBOMs and one checksum manifest, and creates the annotated `vX.Y.Z`
-tag. It attests both packages, publishes core first, waits for its exact
-registry checksum, then dry-runs and publishes the adapter and waits for its
-checksum. One GitHub Release carries both crates and both SBOMs.
+The workflow verifies default-branch HEAD and all configured aggregate checks,
+runs the complete Rust, semver, and docs.rs suites, and uses Cargo's
+multi-package support to package every crates.io-publishable workspace member.
+It creates one `.crate` and CycloneDX SBOM per discovered package plus one
+checksum manifest. The release jobs use pinned Rust 1.96.1 and Ubuntu 24.04 so
+multi-package behavior cannot drift with `stable` or `ubuntu-latest`.
+
+Before mutation, `registry-plan` queries every exact crate version. It publishes
+only absent packages, in dependency order, and verifies every resulting
+registry checksum. One annotated tag, attestation set, and GitHub Release cover
+the whole workspace release.
 
 ## Recovery rules
 
-Re-run **Release** with the same version after a transient failure. Recovery is
-allowed only when every existing artifact agrees with the current
-default-branch commit:
+Re-run **Release** after a transient failure; do not enter or change a version.
+A rerun proceeds only when:
 
-- An existing tag must target the current SHA.
-- Each existing crates.io package must have the exact checksum of its locally
-  reproduced package. A matching core with an unpublished adapter is a valid
-  recovery state; the rerun resumes with the adapter.
-- An existing GitHub Release must have the matching tag.
+- an existing tag targets the current default-branch SHA;
+- every published crate checksum equals the locally reproduced `.crate`;
+- a published dependent never has an unpublished internal dependency;
+- any existing GitHub Release has the matching tag.
 
-The workflow fails closed on any mismatch. It never overwrites a crate version;
-when registry publication already matches, it skips that crate and repairs only
-the GitHub Release assets. If a tag or either registry checksum points
-elsewhere, stop and investigate rather than deleting or moving release state.
+Matching registry packages are skipped, absent packages are resumed, and an
+existing matching GitHub Release has its assets repaired. A tag mismatch,
+checksum mismatch, impossible dependency state, missing required check, or a
+default-branch move stops the run. Never delete or move release state to make a
+rerun pass.
 
-After success, confirm the version and assets on crates.io and GitHub, confirm
-docs.rs built the same version, and verify the package attestation with:
+After success, confirm crates.io and docs.rs show every planned package and
+verify each downloaded crate attestation:
 
 ```sh
 gh attestation verify signal-fish-client-X.Y.Z.crate \

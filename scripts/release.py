@@ -10,13 +10,14 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any, Callable
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CORE_MANIFEST = "Cargo.toml"
-ADAPTER_MANIFEST = "crates/signal-fish-client-godot/Cargo.toml"
 LOCKSTEP_LOCKFILES = (
     "tests/godot-compat-min/Cargo.lock",
     "tests/godot-web-smoke/Cargo.lock",
@@ -75,35 +76,42 @@ def release_type(base: str, target: str) -> str:
     return "patch"
 
 
-def manifest_package_version(path: Path) -> str:
-    cargo = path.read_text(encoding="utf-8")
-    package = re.search(
-        r"^\[package\][ \t]*$\n(.*?)(?=^\[|\Z)",
-        cargo,
-        re.MULTILINE | re.DOTALL,
-    )
-    if package is None:
-        raise ReleaseError(f"{path} has no [package] section")
-    match = re.search(r'^version = "([^"]+)"$', package.group(1), re.MULTILINE)
-    if match is None:
-        raise ReleaseError(f"{path} has no package version")
-    parse_version(match.group(1))
-    return match.group(1)
+def read_toml(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        return tomllib.load(stream)
+
+
+def workspace_version(root: Path) -> str:
+    value = read_toml(root / CORE_MANIFEST).get("workspace", {}).get("package", {}).get("version")
+    if not isinstance(value, str):
+        raise ReleaseError("Cargo.toml has no [workspace.package] version")
+    parse_version(value)
+    return value
+
+
+def manifest_package_version(path: Path, inherited_version: str | None = None) -> str:
+    value = read_toml(path).get("package", {}).get("version")
+    if isinstance(value, str):
+        parse_version(value)
+        return value
+    if value == {"workspace": True} and inherited_version is not None:
+        return inherited_version
+    raise ReleaseError(f"{path} must inherit its package version from the workspace")
 
 
 def package_version(root: Path) -> str:
-    return manifest_package_version(root / CORE_MANIFEST)
+    return workspace_version(root)
 
 
-def replace_package_version(path: Path, old: str, new: str) -> None:
+def replace_workspace_version(path: Path, old: str, new: str) -> None:
     cargo = path.read_text(encoding="utf-8")
     package = re.search(
-        r"^\[package\][ \t]*$\n(.*?)(?=^\[|\Z)",
+        r"^\[workspace\.package\][ \t]*$\n(.*?)(?=^\[|\Z)",
         cargo,
         re.MULTILINE | re.DOTALL,
     )
     if package is None:
-        raise ReleaseError("Cargo.toml has no [package] section")
+        raise ReleaseError("Cargo.toml has no [workspace.package] section")
     updated, count = re.subn(
         rf'^version = "{re.escape(old)}"$',
         f'version = "{new}"',
@@ -112,26 +120,42 @@ def replace_package_version(path: Path, old: str, new: str) -> None:
         flags=re.MULTILINE,
     )
     if count != 1:
-        raise ReleaseError(f"Cargo.toml [package] does not contain version {old!r}")
+        raise ReleaseError(f"Cargo.toml [workspace.package] does not contain version {old!r}")
     path.write_text(cargo[: package.start(1)] + updated + cargo[package.end(1) :], encoding="utf-8")
 
 
-def replace_adapter_core_requirement(path: Path, old: str, new: str) -> None:
+def replace_workspace_requirements(path: Path, package_names: list[str], old: str, new: str) -> None:
     cargo = path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        rf'^(signal-fish-client\s*=\s*\{{[^\n]*version\s*=\s*")='
-        rf'{re.escape(old)}("[^\n]*\}})$',
-        re.MULTILINE,
+    workspace_dependencies = re.search(
+        r"^\[workspace\.dependencies\][ \t]*$\n(.*?)(?=^\[|\Z)",
+        cargo,
+        re.MULTILINE | re.DOTALL,
     )
-    updated, count = pattern.subn(rf"\g<1>={new}\2", cargo, count=1)
-    if count != 1:
-        raise ReleaseError(f"{path} has no exact core requirement ={old}")
-    path.write_text(updated, encoding="utf-8")
+    if workspace_dependencies is None:
+        raise ReleaseError("Cargo.toml has no [workspace.dependencies] section")
+    updated = workspace_dependencies.group(1)
+    for name in package_names:
+        pattern = re.compile(
+            rf'^({re.escape(name)}\s*=\s*\{{[^\n]*version\s*=\s*")='
+            rf'{re.escape(old)}("[^\n]*\}})$',
+            re.MULTILINE,
+        )
+        updated, count = pattern.subn(rf"\g<1>={new}\2", updated, count=1)
+        if count != 1:
+            raise ReleaseError(f"Cargo.toml has no exact workspace requirement for {name} ={old}")
+    path.write_text(
+        cargo[: workspace_dependencies.start(1)]
+        + updated
+        + cargo[workspace_dependencies.end(1) :],
+        encoding="utf-8",
+    )
 
 
-def replace_lockstep_package_versions(path: Path, old: str, new: str) -> None:
+def replace_lockstep_package_versions(
+    path: Path, package_names: list[str], old: str, new: str
+) -> None:
     lock = path.read_text(encoding="utf-8")
-    for package in ("signal-fish-client", "signal-fish-client-godot"):
+    for package in package_names:
         pattern = re.compile(
             rf'(^\[\[package\]\]\nname = "{re.escape(package)}"\nversion = ")'
             rf'{re.escape(old)}("$)',
@@ -224,6 +248,166 @@ def require_clean(root: Path) -> None:
         raise ReleaseError("worktree must be clean before release preparation")
 
 
+def cargo_metadata(root: Path) -> dict[str, Any]:
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise ReleaseError("cargo metadata did not return an object")
+    return value
+
+
+def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Discover publishable crates and order them dependency-first."""
+    root = root.resolve()
+    metadata = cargo_metadata(root) if metadata is None else metadata
+    members = set(metadata.get("workspace_members", []))
+    raw_packages = metadata.get("packages")
+    if not isinstance(raw_packages, list):
+        raise ReleaseError("cargo metadata has no package list")
+
+    workspace_packages: dict[str, dict[str, Any]] = {}
+    publishable: dict[str, dict[str, Any]] = {}
+    expected_version = workspace_version(root)
+    for package in raw_packages:
+        if not isinstance(package, dict) or package.get("id") not in members:
+            continue
+        name = package.get("name")
+        manifest_value = package.get("manifest_path")
+        if not isinstance(name, str) or not isinstance(manifest_value, str):
+            raise ReleaseError("cargo metadata returned an invalid workspace package")
+        if name in workspace_packages:
+            raise ReleaseError(f"duplicate workspace package name {name}")
+        workspace_packages[name] = package
+        publish = package.get("publish")
+        if publish is not None and (
+            not isinstance(publish, list) or "crates-io" not in publish
+        ):
+            continue
+        if package.get("version") != expected_version:
+            raise ReleaseError(
+                f"publishable package {name} must use workspace version {expected_version}"
+            )
+        manifest = Path(manifest_value).resolve()
+        try:
+            manifest.relative_to(root)
+        except ValueError as error:
+            raise ReleaseError(f"workspace package {name} is outside the workspace") from error
+        if read_toml(manifest).get("package", {}).get("version") != {"workspace": True}:
+            raise ReleaseError(f"publishable package {name} must set version.workspace = true")
+        publishable[name] = package
+
+    if not publishable:
+        raise ReleaseError("workspace has no crates publishable to crates.io")
+
+    dependencies: dict[str, set[str]] = {name: set() for name in publishable}
+    for name, package in publishable.items():
+        raw_dependencies = package.get("dependencies", [])
+        if not isinstance(raw_dependencies, list):
+            raise ReleaseError(f"cargo metadata returned invalid dependencies for {name}")
+        for dependency in raw_dependencies:
+            if not isinstance(dependency, dict) or dependency.get("kind") == "dev":
+                continue
+            dependency_name = dependency.get("name")
+            if dependency.get("source") is not None or dependency_name not in workspace_packages:
+                continue
+            if dependency_name not in publishable:
+                raise ReleaseError(
+                    f"publishable package {name} depends on non-publishable workspace package "
+                    f"{dependency_name}"
+                )
+            expected_requirement = f"={expected_version}"
+            if dependency.get("req") != expected_requirement:
+                raise ReleaseError(
+                    f"{name} must require workspace package {dependency_name} exactly at "
+                    f"{expected_requirement}"
+                )
+            dependencies[name].add(dependency_name)
+
+    ordered_names: list[str] = []
+    remaining = {name: set(values) for name, values in dependencies.items()}
+    while remaining:
+        ready = sorted(name for name, values in remaining.items() if not values)
+        if not ready:
+            cycle = ", ".join(sorted(remaining))
+            raise ReleaseError(f"publishable workspace dependency cycle: {cycle}")
+        for name in ready:
+            ordered_names.append(name)
+            del remaining[name]
+        for values in remaining.values():
+            values.difference_update(ready)
+
+    packages: list[dict[str, Any]] = []
+    for name in ordered_names:
+        manifest = Path(publishable[name]["manifest_path"]).resolve()
+        packages.append(
+            {
+                "name": name,
+                "version": expected_version,
+                "manifest_path": manifest.relative_to(root).as_posix(),
+                "artifact": f"{name}-{expected_version}.crate",
+                "dependencies": sorted(dependencies[name]),
+            }
+        )
+    return {"version": expected_version, "packages": packages}
+
+
+def registry_plan(
+    plan: dict[str, Any],
+    artifacts_dir: Path,
+    checksum_fetcher: Callable[[str, str], str | None] | None = None,
+) -> dict[str, Any]:
+    """Classify an interrupted release without ever overwriting registry state."""
+    if checksum_fetcher is None:
+        checksum_fetcher = registry_checksum
+    states: dict[str, str] = {}
+    packages: list[dict[str, Any]] = []
+    for package in plan["packages"]:
+        name = package["name"]
+        version = package["version"]
+        artifact = artifacts_dir / package["artifact"]
+        local_checksum = verify_artifact(artifact, None)
+        remote_checksum = checksum_fetcher(name, version)
+        if remote_checksum is None:
+            state = "unpublished"
+        elif remote_checksum.lower() == local_checksum:
+            state = "published-matching"
+        else:
+            raise ReleaseError(
+                f"published {name} {version} checksum does not match the local artifact"
+            )
+        if state == "published-matching":
+            incomplete = [
+                dependency
+                for dependency in package["dependencies"]
+                if states.get(dependency) != "published-matching"
+            ]
+            if incomplete:
+                raise ReleaseError(
+                    f"published {name} {version} has unpublished workspace dependencies: "
+                    + ", ".join(incomplete)
+                )
+        states[name] = state
+        packages.append(
+            {
+                **package,
+                "checksum": local_checksum,
+                "registry_checksum": remote_checksum,
+                "state": state,
+            }
+        )
+    return {
+        "version": plan["version"],
+        "packages": packages,
+        "pending": [package["name"] for package in packages if package["state"] == "unpublished"],
+    }
+
+
 def prepare(
     root: Path,
     level: str,
@@ -236,13 +420,16 @@ def prepare(
     dt.date.fromisoformat(date)
     if not allow_dirty:
         require_clean(root)
-    old = package_version(root)
-    adapter = root / ADAPTER_MANIFEST
-    if manifest_package_version(adapter) != old:
-        raise ReleaseError("core and adapter package versions must match before preparation")
-    adapter_text = adapter.read_text(encoding="utf-8")
-    if len(re.findall(rf'version\s*=\s*"={re.escape(old)}"', adapter_text)) != 1:
-        raise ReleaseError(f"adapter must require core exactly at ={old}")
+    plan = workspace_plan(root)
+    old = plan["version"]
+    package_names = [package["name"] for package in plan["packages"]]
+    required_packages = sorted(
+        {
+            dependency
+            for package in plan["packages"]
+            for dependency in package["dependencies"]
+        }
+    )
     new = bump_version(old, level)
     if breaking:
         policy = release_type(old, new)
@@ -257,7 +444,7 @@ def prepare(
             raise ReleaseError(f"{relative} does not contain required value {old!r}")
     for relative in LOCKSTEP_LOCKFILES:
         lock = (root / relative).read_text(encoding="utf-8")
-        for package in ("signal-fish-client", "signal-fish-client-godot"):
+        for package in package_names:
             marker = f'name = "{package}"\nversion = "{old}"'
             if lock.count(marker) != 1:
                 raise ReleaseError(f"{relative} has no unique locked {package} {old}")
@@ -278,11 +465,10 @@ def prepare(
     if release_heading(new).search(changelog_text) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
-    replace_package_version(root / CORE_MANIFEST, old, new)
-    replace_package_version(adapter, old, new)
-    replace_adapter_core_requirement(adapter, old, new)
+    replace_workspace_version(root / CORE_MANIFEST, old, new)
+    replace_workspace_requirements(root / CORE_MANIFEST, required_packages, old, new)
     for relative in LOCKSTEP_LOCKFILES:
-        replace_lockstep_package_versions(root / relative, old, new)
+        replace_lockstep_package_versions(root / relative, package_names, old, new)
     for relative in VERSION_FILES:
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
@@ -388,6 +574,13 @@ def main(argv: list[str] | None = None) -> int:
     package.add_argument("--root", type=Path, default=Path.cwd())
     package.add_argument("--manifest", type=Path, default=Path(CORE_MANIFEST))
 
+    workspace = subparsers.add_parser("workspace-plan")
+    workspace.add_argument("--root", type=Path, default=Path.cwd())
+
+    registry_state = subparsers.add_parser("registry-plan")
+    registry_state.add_argument("--root", type=Path, default=Path.cwd())
+    registry_state.add_argument("--artifacts-dir", type=Path, required=True)
+
     registry = subparsers.add_parser("registry-checksum")
     registry.add_argument("crate_name")
     registry.add_argument("version")
@@ -411,7 +604,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
         elif args.command == "package-version":
-            print(manifest_package_version(args.root.resolve() / args.manifest))
+            root = args.root.resolve()
+            print(manifest_package_version(root / args.manifest, workspace_version(root)))
+        elif args.command == "workspace-plan":
+            print(json.dumps(workspace_plan(args.root.resolve()), indent=2))
+        elif args.command == "registry-plan":
+            root = args.root.resolve()
+            print(
+                json.dumps(
+                    registry_plan(workspace_plan(root), args.artifacts_dir.resolve()),
+                    indent=2,
+                )
+            )
         elif args.command == "registry-checksum":
             value = registry_checksum(args.crate_name, args.version)
             print(value or "UNPUBLISHED")

@@ -101,3 +101,20 @@ jobs:
           --no-default-features
           --features transport-websocket-emscripten
           -- -D warnings
+
+  required:
+    name: WASM Required
+    if: ${{ always() }}
+    needs: [wasm, emscripten]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every WASM job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

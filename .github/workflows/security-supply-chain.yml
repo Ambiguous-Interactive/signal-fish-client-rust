@@ -122,3 +122,20 @@ jobs:
           path: ./**/*.cdx.json
           if-no-files-found: error
           retention-days: 90
+
+  required:
+    name: Security Required
+    if: ${{ always() }}
+    needs: [cargo-audit, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every PR security job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

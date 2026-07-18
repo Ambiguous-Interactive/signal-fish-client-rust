@@ -25,6 +25,22 @@ Reference for CI/CD tool configuration, common pitfalls, identifier boundary mat
 
 Use `uses: owner/action@vN` (or `@vN.N.N`) and do not use commit-SHA refs. Only `dtolnay/rust-toolchain` may use channels (`@stable`, `@nightly`, `@beta`); policy is enforced by `scripts/check-workflows.sh` and `tests/ci_config_tests.rs`.
 
+### Required checks need aggregate gates
+
+GitHub can merge a PR when individual matrix jobs are not the stable contexts
+named in branch policy, and a required path-filtered workflow may never report
+a check. Every blocking workflow therefore runs on every PR and default-branch
+push, and ends with a uniquely named aggregate gate. The gate uses
+`if: always()`, declares every blocking job in `needs`, and fails unless every
+dependency result is `success`. Running on the push is necessary so Release can
+verify the exact default-branch SHA rather than only the pre-merge PR head.
+
+`.github/required-checks.json` is the canonical list of gate names and desired
+default-branch rules. Keep gate names unique and stable. Update the config, the
+workflow gate, and `required_check_policy` tests together. The scheduled
+Repository Policy workflow detects live GitHub ruleset drift; do not add bypass
+actors to make a failing gate mergeable.
+
 ### lychee: TOML vs CLI syntax
 
 The lychee link checker has different syntax for TOML config vs CLI flags.

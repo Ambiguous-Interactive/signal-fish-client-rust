@@ -85,3 +85,20 @@ jobs:
         # Measured at 93.70% after the issue #61 regression expansion. Keep a
         # little platform/toolchain rounding headroom while preventing drift.
         run: cargo llvm-cov report --summary-only --fail-under-lines 93
+
+  required:
+    name: Coverage Required
+    if: ${{ always() }}
+    needs: [coverage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require coverage
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

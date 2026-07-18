@@ -13,7 +13,8 @@ publishing of the core and Godot adapter crates.
 ```toml
 [package]
 name = "signal-fish-client"
-version = "0.8.0"
+version.workspace = true
+publish = ["crates-io"]
 edition = "2021"
 rust-version = "1.87.0"          # MSRV — enforced by cargo
 license = "MIT"                   # SPDX identifier
@@ -37,18 +38,29 @@ include = [
 ]
 ```
 
-The adapter manifest uses the same package version, Rust 1.94.0, its own
-docs.rs URL, and an exact core requirement:
+The workspace owns the lockstep version and exact internal requirement:
+
+```toml
+[workspace.package]
+version = "0.8.0"
+
+[workspace.dependencies]
+signal-fish-client = { version = "=0.8.0", path = ".", default-features = false }
+```
+
+The adapter inherits that version and dependency, uses Rust 1.94.0, and has its
+own docs.rs URL:
 
 ```toml
 [package]
 name = "signal-fish-client-godot"
-version = "0.8.0"
+version.workspace = true
+publish = ["crates-io"]
 rust-version = "1.94.0"
 
 [dependencies]
 godot = { version = ">=0.4.5, <0.6", features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "=0.8.0", default-features = false, features = ["polling-client"] }
+signal-fish-client = { workspace = true, default-features = false, features = ["polling-client"] }
 ```
 
 Never publish mismatched versions or a non-exact adapter-to-core requirement.
@@ -147,79 +159,49 @@ cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warning
 # 2. Check deny policies
 cargo deny check
 
-# 3. Verify what will be published
-cargo package --list -p signal-fish-client
-cargo package --list -p signal-fish-client-godot
+# 3. Inspect the discovered dependency-first publication plan
+python3 scripts/release.py workspace-plan
 
-# 4. Dry-run core. Adapter dry-run follows core registry visibility.
-cargo publish --dry-run --allow-dirty -p signal-fish-client
+# 4. Package and dry-run all planned crates together (Rust 1.96.1)
+cargo package -p signal-fish-client -p signal-fish-client-godot
+cargo publish --dry-run -p signal-fish-client -p signal-fish-client-godot
 
 # 5. Check docs build cleanly (stable + docs.rs nightly simulation)
 cargo doc --all-features --no-deps
 bash scripts/check-docsrs.sh
 
-# 6. Verify version in Cargo.toml matches tag
-grep '^version' Cargo.toml
+# 6. Verify the derived version and registry recovery plan
+python3 scripts/release.py package-version
 ```
 
-Before publication, reproduce both `.crate` files. Package the adapter with
-`--no-verify`, extract both archives into a temporary consumer, and use
-`[patch.crates-io]` to point its exact core requirement at the extracted core
-package. This verifies packaged contents without depending on an unpublished
-registry version. Publish core first and wait for its exact crates.io checksum;
-only then dry-run and publish the adapter. Attach both crates, checksums, SBOMs,
-and attestations to one tag and GitHub Release.
+Cargo 1.90+ can package and publish multiple interdependent workspace members.
+The workflows pin Rust 1.96.1, derive package arguments from `workspace-plan`,
+and do not carry a special-case local patch for the adapter. Before publication,
+`registry-plan` reproduces every `.crate`, verifies already-published checksums,
+and returns only absent packages in dependency order. Attach every crate,
+checksum, SBOM, and attestation to one tag and GitHub Release.
 
 ## CI Publishing Workflow
 
-Example GitHub Actions workflow (`.github/workflows/publish.yml`):
-
-```yaml
-name: Publish
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Run tests
-        run: cargo test --workspace --all-features
-
-      - name: Check deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
-```
+`.github/workflows/publish.yml` is manual-only, derives its version from the
+workspace, requires the protected `crates-io` environment, and treats the tag
+as an output rather than a trigger. Do not add a version input or tag-push
+publication path.
 
 ## Versioning Workflow
 
 ```shell
-# Bump version (0.1.0 → 0.2.0)
-# 1. Update version in ALL locations (see checklist below)
-# 2. Update CHANGELOG.md (user-visible changes only; exclude internal tooling/test/CI details)
-# 3. Commit: "chore: release 0.2.0"
-# 4. Tag: git tag -s v0.2.0 -m "Release 0.2.0"
-# 5. Push: git push && git push --tags
-# CI then publishes automatically
+# Preview and prepare a lockstep release.
+python3 scripts/release.py prepare minor
+# In normal operations, dispatch Prepare Release instead; it creates the PR.
 ```
 
 ### Version bump checklist
 
 A version bump must update **all** references, not just `Cargo.toml`:
 
-- `Cargo.toml` and `crates/signal-fish-client-godot/Cargo.toml` (`version`)
-- the adapter's exact `signal-fish-client` requirement
+- `Cargo.toml` (`[workspace.package].version` and exact workspace requirements)
+- every publishable member continues to set `version.workspace = true`
 - root and standalone fixture lockfile path-package versions
 - `README.md` (dependency snippet, badge if present)
 - `docs/getting-started.md` (dependency snippets)

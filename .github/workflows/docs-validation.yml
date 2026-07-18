@@ -1,7 +1,7 @@
 # Docs validation pipeline for signal-fish-client
 #
-# Runs on every push to main and on all pull requests that touch
-# markdown files, documentation config, or this workflow itself.
+# Runs on every push to main and on all pull requests so its stable aggregate
+# gate reports on every protected-branch candidate.
 # Jobs: markdownlint, link-check, rendering-check
 #
 # Spell checking (typos) lives in ci.yml instead: typos scans the whole
@@ -14,31 +14,7 @@ name: Docs Validation
 on:
   push:
     branches: [main]
-    paths:
-      - "**/*.md"
-      - "docs/**"
-      - ".markdownlint.json"
-      - ".markdownlint-cli2.jsonc"
-      - ".lychee.toml"
-      - "mkdocs.yml"
-      - "hooks/**"
-      - "llms.txt"
-      - "requirements-docs.txt"
-      - "scripts/check-docs-rendering.sh"
-      - ".github/workflows/docs-validation.yml"
   pull_request:
-    paths:
-      - "**/*.md"
-      - "docs/**"
-      - ".markdownlint.json"
-      - ".markdownlint-cli2.jsonc"
-      - ".lychee.toml"
-      - "mkdocs.yml"
-      - "hooks/**"
-      - "llms.txt"
-      - "requirements-docs.txt"
-      - "scripts/check-docs-rendering.sh"
-      - ".github/workflows/docs-validation.yml"
 
 permissions:
   contents: read
@@ -116,3 +92,20 @@ jobs:
 
       - name: Run docs rendering check
         run: bash scripts/check-docs-rendering.sh
+
+  required:
+    name: Docs Validation Required
+    if: ${{ always() }}
+    needs: [markdownlint, link-check, rendering-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every docs validation job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi
