@@ -687,6 +687,23 @@ esac
         blocks
     }
 
+    fn retry_wrapper_generates_lockfile(line: &str) -> bool {
+        let tokens: Vec<_> = line.split_whitespace().collect();
+        let Some(wrapper) = tokens
+            .iter()
+            .position(|token| *token == "scripts/cargo-retry.sh")
+        else {
+            return false;
+        };
+        let cargo_args = &tokens[wrapper + 1..];
+
+        cargo_args.first() == Some(&"generate-lockfile")
+            || cargo_args
+                .first()
+                .is_some_and(|token| token.starts_with('+'))
+                && cargo_args.get(1) == Some(&"generate-lockfile")
+    }
+
     #[test]
     fn cargo_network_retry_is_configured_for_ci_resilience() {
         let contents = read_project_file(".cargo/config.toml");
@@ -789,9 +806,7 @@ esac
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
             let contents = read_project_file(workflow_path);
             for (line_num, line) in contents.lines().enumerate() {
-                if line.contains("generate-lockfile")
-                    && !line.contains("scripts/cargo-retry.sh generate-lockfile")
-                {
+                if line.contains("generate-lockfile") && !retry_wrapper_generates_lockfile(line) {
                     violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
                 }
             }
@@ -804,6 +819,22 @@ esac
              Violations:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn lockfile_retry_policy_accepts_optional_cargo_toolchain_selector() {
+        assert!(retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh generate-lockfile"
+        ));
+        assert!(retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 generate-lockfile"
+        ));
+        assert!(!retry_wrapper_generates_lockfile(
+            "run: cargo +1.96.1 generate-lockfile"
+        ));
+        assert!(!retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 metadata # generate-lockfile"
+        ));
     }
 
     #[test]
@@ -1408,6 +1439,16 @@ mod ci_workflow_policy {
                 "cargo +1.96.1 package --locked --package signal-fish-client --no-verify"
             ) && msrv_job.contains("--strip-components=1"),
             "MSRV must test Cargo's publishable package, not a hand-edited source manifest"
+        );
+        let lockfile = msrv_job
+            .find("bash scripts/cargo-retry.sh +1.96.1 generate-lockfile")
+            .expect("MSRV package isolation must generate the gitignored root lockfile");
+        let package = msrv_job
+            .find("cargo +1.96.1 package --locked")
+            .expect("MSRV package isolation must package with the lockfile");
+        assert!(
+            lockfile < package,
+            "lockfile generation must precede --locked packaging"
         );
         assert!(
             msrv_job.contains("--all-features --no-run")

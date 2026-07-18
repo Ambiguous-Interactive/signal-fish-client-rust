@@ -141,6 +141,8 @@ jobs:
           toolchain: 1.96.1
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
+      - name: Generate workspace lockfile for packaging
+        run: bash scripts/cargo-retry.sh +1.96.1 generate-lockfile
       - name: Create isolated core package tree
         run: |
           core_dir="$RUNNER_TEMP/signal-fish-core-msrv"
