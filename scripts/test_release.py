@@ -269,6 +269,135 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
 
+    def test_release_intent_derives_minor_from_added_entries(self) -> None:
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(
+            intent,
+            {
+                "current": "1.2.3",
+                "target": "1.3.0",
+                "bump": "minor",
+                "breaking": False,
+                "semver_policy": "minor",
+                "categories": ["Added"],
+            },
+        )
+
+    def test_release_intent_derives_patch_from_fix_only_entries(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace("### Added", "### Fixed"),
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["target"], "1.2.4")
+        self.assertEqual(intent["bump"], "patch")
+        self.assertEqual(intent["semver_policy"], "patch")
+
+    def test_release_intent_derives_pre_one_breaking_minor(self) -> None:
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                path.write_text(
+                    path.read_text(encoding="utf-8").replace("1.2.3", "0.7.0"),
+                    encoding="utf-8",
+                )
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.", "- **Breaking:** Good thing."
+            ),
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["target"], "0.8.0")
+        self.assertEqual(intent["bump"], "minor")
+        self.assertTrue(intent["breaking"])
+        self.assertEqual(intent["semver_policy"], "major")
+
+    def test_release_intent_rejects_unknown_changelog_categories(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace("### Added", "### Surprise"),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "unsupported.*Surprise"):
+            release.release_intent(self.root)
+
+    def test_release_intent_rejects_empty_changelog_categories(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "## [1.2.3]", "### Fixed\n\n## [1.2.3]"
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "empty.*Fixed"):
+            release.release_intent(self.root)
+
+    def test_current_semver_policy_prefers_unreleased_intent(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.", "- **Breaking:** Good thing."
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
+
+    def test_current_semver_policy_falls_back_to_cut_release(self) -> None:
+        version = release.prepare(
+            self.root,
+            "major",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+
+        self.assertEqual(version, "2.0.0")
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
+
+    def test_current_semver_policy_combines_unpublished_cut_and_new_notes(self) -> None:
+        version = release.prepare(
+            self.root,
+            "major",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "## [Unreleased]\n\n",
+                "## [Unreleased]\n\n### Fixed\n\n- Follow-up fix.\n\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(version, "2.0.0")
+        self.assertEqual(release.current_semver_policy(self.root, "1.2.3"), "major")
+        self.assertEqual(release.current_semver_policy(self.root, "2.0.0"), "patch")
+
+    def test_current_semver_policy_rejects_non_predecessor_registry_lag(self) -> None:
+        release.prepare(
+            self.root,
+            "major",
+            "2026-07-13",
+            allow_dirty=True,
+            breaking=True,
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "immediate predecessor"):
+            release.current_semver_policy(self.root, "1.0.0")
+
     def test_prepare_updates_renamed_workspace_requirement(self) -> None:
         root_manifest = self.root / "Cargo.toml"
         root_manifest.write_text(
@@ -479,13 +608,24 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("RELEASE_APP_", self.prepare)
         self.assertIn("contents: write", self.prepare)
         self.assertIn("pull-requests: write", self.prepare)
+        self.assertIn("actions: write", self.prepare)
         self.assertIn("persist-credentials: true", self.prepare)
         self.assertIn("GH_TOKEN: ${{ github.token }}", self.prepare)
         self.assertIn("dry_run:", self.prepare)
+        dispatch = self.prepare.split("workflow_dispatch:", 1)[1].split(
+            "permissions:", 1
+        )[0]
+        self.assertNotIn("bump:", dispatch)
+        self.assertNotIn("breaking:", dispatch)
+        self.assertIn("release-intent", self.prepare)
+        self.assertIn("steps.intent.outputs.bump", self.prepare)
+        self.assertIn("steps.intent.outputs.breaking", self.prepare)
         self.assertIn("branch=release/%s", self.prepare)
         self.assertIn("gh pr create", self.prepare)
-        self.assertIn("Approve workflows to run", self.prepare)
-        self.assertIn("Approve workflows to run", self.releasing)
+        self.assertIn(".github/required-checks.json", self.prepare)
+        self.assertIn('gh workflow run "$workflow" --ref "$BRANCH"', self.prepare)
+        self.assertNotIn("Approve workflows to run", self.prepare)
+        self.assertNotIn("Approve workflows to run", self.releasing)
         self.assertNotIn("signal-fish-release[bot]", self.prepare)
         self.assertIn('git config user.name "github-actions[bot]"', self.prepare)
         bot_email = (

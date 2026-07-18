@@ -199,9 +199,17 @@ publication path.
 
 ```shell
 # Preview and prepare a lockstep release.
-python3 scripts/release.py prepare minor
+python3 scripts/release.py release-intent
 # In normal operations, dispatch Prepare Release instead; it creates the PR.
 ```
+
+Prepare Release takes no version, bump, breaking, or crate-selection input.
+`release-intent` derives the lockstep target from `[Unreleased]`: an explicit
+`**Breaking:**` entry selects major (pre-1.0 minor), feature-facing Keep a
+Changelog categories select minor, and Fixed/Security-only content selects
+patch. The workflow discovers every publishable crate and explicitly dispatches
+the checked-in required-check workflow list with its built-in token; never add a
+release App or PAT to restore implicit pull-request events.
 
 ### Version bump checklist
 

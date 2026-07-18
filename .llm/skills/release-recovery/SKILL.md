@@ -11,10 +11,12 @@ recovery.
 ## Workflow split
 
 `.github/workflows/prepare-release.yml` is reversible. Manual dispatch from the
-default branch accepts a version bump, deliberate breaking marker, and dry-run
-mode. Its built-in `GITHUB_TOKEN` creates `release/X.Y.Z` and its pull request.
-GitHub holds the resulting PR workflows for a maintainer to select **Approve
-workflows to run**; this approval is required before normal checks execute.
+default branch accepts only a dry-run switch. It derives version and breaking
+policy from `[Unreleased]`, and its built-in `GITHUB_TOKEN` creates
+`release/X.Y.Z` and its pull request. Because GitHub suppresses ordinary events
+caused by that token, the workflow explicitly dispatches every entry in
+`.github/required-checks.json` against the release branch with Actions write
+permission. Do not restore an App or PAT for implicit event triggering.
 
 `.github/workflows/publish.yml` is irreversible. It is manual-only, has no
 version input, derives the version from the merged workspace, and uses the
@@ -34,11 +36,21 @@ dependency-first plan. It also reads each member manifest to require
 `workspace = true`; metadata's resolved exact requirement alone cannot prove
 that preparation will update the member on the next version bump.
 
-`python3 scripts/release.py prepare <major|minor|patch>` validates the complete
-inventory before writing, changes the shared version and exact requirements,
-updates locks, documentation, compatibility and provenance markers, and cuts a
-non-empty changelog release. Update `scripts/test_release.py` when a release
-invariant changes.
+`python3 scripts/release.py release-intent` derives the next version from the
+non-empty Keep a Changelog categories. `**Breaking:**` selects major (or minor
+for pre-1.0); Added, Changed, Deprecated, or Removed select minor; a
+Fixed/Security-only train selects patch. The workflow feeds that result to
+`prepare`, which validates the complete inventory before writing, changes the
+shared version and exact requirements, updates locks, documentation,
+compatibility and provenance markers, and cuts the release. Update
+`scripts/test_release.py` when a release invariant changes.
+
+Push-time semver policy is relative to the exact latest crates.io version. If a
+cut workspace version is not published yet, combine that cut's policy with new
+`[Unreleased]` notes; once crates.io catches up, apply only the new notes. Reject
+registry lag beyond the changelog's immediate predecessor instead of silently
+weakening the check. Every changelog category must contain at least one list
+entry so empty headings cannot select a bump.
 
 ## Publishing order
 
@@ -78,8 +90,8 @@ error; stop and investigate.
 
 Enable **Allow GitHub Actions to create and approve pull requests** in the
 repository's Actions settings. Prepare Release requests Contents and Pull
-requests write access for its built-in `GITHUB_TOKEN`; no App, personal access
-token, repository variable, or release secret is required.
+requests write plus Actions write access for its built-in `GITHUB_TOKEN`; no
+App, personal access token, repository variable, or release secret is required.
 
 The protected `crates-io` environment holds `CRATES_IO_TOKEN`. Bootstrap new
 workspace crates with a token limited to `signal-fish-client*` and

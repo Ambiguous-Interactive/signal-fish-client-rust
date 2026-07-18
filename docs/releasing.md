@@ -8,15 +8,15 @@ manual, protected, and fail-closed.
 
 In **Settings > Actions > General > Workflow permissions**, enable **Allow
 GitHub Actions to create and approve pull requests**. Prepare Release uses only
-the run's built-in `GITHUB_TOKEN`, explicitly scoped to **Contents: write** and
-**Pull requests: write**. It requires no GitHub App, personal access token,
-repository variable, or release secret.
+the run's built-in `GITHUB_TOKEN`, explicitly scoped to **Actions: write**,
+**Contents: write**, and **Pull requests: write**. It requires no GitHub App,
+personal access token, repository variable, or release secret.
 
-GitHub places workflows triggered by a pull request created with
-`GITHUB_TOKEN` into an approval-required state. After Prepare Release opens the
-pull request, a maintainer with write access must select **Approve workflows to
-run**. This manual approval is the deliberate app-free replacement for an App
-token that could trigger checks automatically.
+GitHub suppresses ordinary workflow events created by `GITHUB_TOKEN`. Prepare
+Release therefore has **Actions: write** permission and explicitly dispatches
+every workflow listed in `.github/required-checks.json` against the release
+branch after opening the pull request. Explicit `workflow_dispatch` runs are
+the supported exception, so checks start automatically without an App or PAT.
 
 Configure the protected `crates-io` environment with required reviewers, a
 default-branch deployment restriction, and a `CRATES_IO_TOKEN` secret. For the
@@ -46,14 +46,15 @@ with repository Metadata read access, then run
 
 ## Prepare a release
 
-1. Run **Prepare Release** from the default branch with `dry_run` enabled.
-2. Select `major`, `minor`, or `patch`. Enable `breaking` only for an
-   intentional major release or pre-1.0 breaking minor release.
-3. Inspect the generated diff and validation output.
-4. Run it again with `dry_run` disabled. The built-in token creates
+1. Keep `[Unreleased]` organized under Keep a Changelog categories and mark
+   intentional API breaks with `**Breaking:**`.
+2. Run **Prepare Release** from the default branch with `dry_run` enabled and
+   inspect the inferred version, generated diff, and validation output.
+3. Run it again with `dry_run` disabled. The built-in token creates
    `release/X.Y.Z` and opens the preparation pull request.
-5. Open the pull request and select **Approve workflows to run**.
-6. Merge only after every aggregate required check, review, and thread is
+4. The workflow explicitly dispatches every required check against the release
+   commit; no workflow approval or release App is needed.
+5. Merge only after every aggregate required check, review, and thread is
    green.
 
 The workspace owns one version at `[workspace.package].version`; publishable
@@ -63,11 +64,16 @@ members set `version.workspace = true`. Preparation discovers crates through
 requirements by manifest key (including renamed dependencies), then updates
 locks, documentation references, provenance, and the changelog. It fails
 before writing if the workspace graph, inventory, or `[Unreleased]` section is
-invalid.
+invalid. Release intent is deterministic: a `**Breaking:**` entry selects a
+major bump (or a pre-1.0 minor bump); Added, Changed, Deprecated, or Removed
+select minor; Fixed/Security-only trains select patch.
+Every category must contain at least one list entry. Main-branch semver checks
+combine a not-yet-published cut with new notes relative to the exact crates.io
+baseline, then return to the new notes alone once the registry catches up.
 
 ```sh
 python3 scripts/release.py workspace-plan
-python3 scripts/release.py prepare minor
+python3 scripts/release.py release-intent
 ```
 
 ## Publish a release

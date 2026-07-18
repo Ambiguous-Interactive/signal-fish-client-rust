@@ -212,11 +212,50 @@ mod godot_issue_61_policy {
     fn llms_txt_is_in_the_blocking_docs_validation_surface() {
         let workflow = read_project_file(".github/workflows/docs-validation.yml");
         let rendering = read_project_file("scripts/check-docs-rendering.sh");
+        let lychee = read_project_file(".lychee.toml");
         assert_eq!(workflow.matches("- \"llms.txt\"").count(), 0);
         assert!(workflow.contains("  pull_request:\n"));
         assert!(workflow.contains("name: Docs Validation Required"));
         assert!(workflow.contains("            \"llms.txt\""));
         assert!(rendering.contains("cmp -s \"$REPO_ROOT/llms.txt\" \"$SITE_DIR/llms.txt\""));
+        assert!(rendering.contains("Every same-site llms.txt route exists in the local build"));
+        assert!(
+            rendering.contains("SAME_SITE_ROUTE_COUNT"),
+            "same-site route validation must fail closed when llms.txt contains no matching routes"
+        );
+        assert!(rendering.contains("No same-site discovery routes found in llms.txt"));
+        assert!(lychee.contains(
+            "^https://[Aa]mbiguous-[Ii]nteractive\\\\.github\\\\.io/signal-fish-client-rust/"
+        ));
+    }
+
+    #[test]
+    fn push_semver_policy_tracks_the_unreleased_release_train() {
+        let workflow = read_project_file(".github/workflows/semver-checks.yml");
+        assert!(workflow.contains("current-semver-policy"));
+        assert!(workflow.contains("current-semver-policy \"$baseline\""));
+        assert!(workflow.contains("--release-type \"$RELEASE_TYPE\""));
+        assert!(workflow.contains("workflow_dispatch:"));
+        assert!(workflow.contains("base_sha:"));
+        assert!(workflow.contains("pr_title:"));
+    }
+
+    #[test]
+    fn every_required_workflow_supports_app_free_dispatch() {
+        let policy = read_project_file(".github/required-checks.json");
+        let policy: serde_json::Value =
+            serde_json::from_str(&policy).expect("required checks policy must be JSON");
+        for check in policy["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array")
+        {
+            let file = check["file"].as_str().expect("check file must be a string");
+            let workflow = read_project_file(&format!(".github/workflows/{file}"));
+            assert!(
+                workflow.contains("  workflow_dispatch:"),
+                "{file} must support app-free explicit dispatch"
+            );
+        }
     }
 
     #[test]
@@ -1379,7 +1418,9 @@ mod ci_workflow_policy {
     fn semver_workflow_requires_explicit_breaking_marker_for_major_policy() {
         let contents = read_project_file(".github/workflows/semver-checks.yml");
         assert!(
-            contents.contains("PR_TITLE: ${{ github.event.pull_request.title }}")
+            contents.contains(
+                "PR_TITLE: ${{ github.event.pull_request.title || inputs.pr_title }}"
+            )
                 && contents.contains(r#"[[ "$PR_TITLE" == *"!:"* ]]"#),
             "Semver CI must derive intentional breaking changes from the explicit conventional-commit `!:` marker"
         );
