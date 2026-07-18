@@ -29,7 +29,9 @@ publishable dependencies inherit an exact `=X.Y.Z` requirement from
 `python3 scripts/release.py workspace-plan` uses `cargo metadata` to discover
 eligible members, reject version or dependency-policy drift, reject cycles and
 dependencies on non-publishable workspace crates, and return a deterministic
-dependency-first plan.
+dependency-first plan. It also reads each member manifest to require
+`workspace = true`; metadata's resolved exact requirement alone cannot prove
+that preparation will update the member on the next version bump.
 
 `python3 scripts/release.py prepare <major|minor|patch>` validates the complete
 inventory before writing, changes the shared version and exact requirements,

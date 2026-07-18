@@ -82,7 +82,12 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 
 def workspace_version(root: Path) -> str:
-    value = read_toml(root / CORE_MANIFEST).get("workspace", {}).get("package", {}).get("version")
+    value = (
+        read_toml(root / CORE_MANIFEST)
+        .get("workspace", {})
+        .get("package", {})
+        .get("version")
+    )
     if not isinstance(value, str):
         raise ReleaseError("Cargo.toml has no [workspace.package] version")
     parse_version(value)
@@ -120,11 +125,17 @@ def replace_workspace_version(path: Path, old: str, new: str) -> None:
         flags=re.MULTILINE,
     )
     if count != 1:
-        raise ReleaseError(f"Cargo.toml [workspace.package] does not contain version {old!r}")
-    path.write_text(cargo[: package.start(1)] + updated + cargo[package.end(1) :], encoding="utf-8")
+        raise ReleaseError(
+            f"Cargo.toml [workspace.package] does not contain version {old!r}"
+        )
+    path.write_text(
+        cargo[: package.start(1)] + updated + cargo[package.end(1) :], encoding="utf-8"
+    )
 
 
-def replace_workspace_requirements(path: Path, package_names: list[str], old: str, new: str) -> None:
+def replace_workspace_requirements(
+    path: Path, package_names: list[str], old: str, new: str
+) -> None:
     cargo = path.read_text(encoding="utf-8")
     workspace_dependencies = re.search(
         r"^\[workspace\.dependencies\][ \t]*$\n(.*?)(?=^\[|\Z)",
@@ -142,7 +153,9 @@ def replace_workspace_requirements(path: Path, package_names: list[str], old: st
         )
         updated, count = pattern.subn(rf"\g<1>={new}\2", updated, count=1)
         if count != 1:
-            raise ReleaseError(f"Cargo.toml has no exact workspace requirement for {name} ={old}")
+            raise ReleaseError(
+                f"Cargo.toml has no exact workspace requirement for {name} ={old}"
+            )
     path.write_text(
         cargo[: workspace_dependencies.start(1)]
         + updated
@@ -198,7 +211,9 @@ def replace_required(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-def cut_changelog(path: Path, old: str, new: str, date: str, breaking: bool = False) -> None:
+def cut_changelog(
+    path: Path, old: str, new: str, date: str, breaking: bool = False
+) -> None:
     text = path.read_text(encoding="utf-8")
     heading = "## [Unreleased]"
     start = text.find(heading)
@@ -262,7 +277,29 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
     return value
 
 
-def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def manifest_dependency_spec(
+    manifest: dict[str, Any], dependency: dict[str, Any]
+) -> Any:
+    kind = dependency.get("kind")
+    section = "build-dependencies" if kind == "build" else "dependencies"
+    table: Any = manifest
+    target = dependency.get("target")
+    if target is not None:
+        if not isinstance(target, str):
+            return None
+        table = manifest.get("target", {}).get(target, {})
+    if not isinstance(table, dict):
+        return None
+    dependencies = table.get(section)
+    if not isinstance(dependencies, dict):
+        return None
+    key = dependency.get("rename") or dependency.get("name")
+    return dependencies.get(key) if isinstance(key, str) else None
+
+
+def workspace_plan(
+    root: Path, metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Discover publishable crates and order them dependency-first."""
     root = root.resolve()
     metadata = cargo_metadata(root) if metadata is None else metadata
@@ -272,6 +309,7 @@ def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[s
         raise ReleaseError("cargo metadata has no package list")
 
     workspace_packages: dict[str, dict[str, Any]] = {}
+    package_manifests: dict[str, dict[str, Any]] = {}
     publishable: dict[str, dict[str, Any]] = {}
     expected_version = workspace_version(root)
     for package in raw_packages:
@@ -297,9 +335,15 @@ def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[s
         try:
             manifest.relative_to(root)
         except ValueError as error:
-            raise ReleaseError(f"workspace package {name} is outside the workspace") from error
-        if read_toml(manifest).get("package", {}).get("version") != {"workspace": True}:
-            raise ReleaseError(f"publishable package {name} must set version.workspace = true")
+            raise ReleaseError(
+                f"workspace package {name} is outside the workspace"
+            ) from error
+        manifest_data = read_toml(manifest)
+        package_manifests[name] = manifest_data
+        if manifest_data.get("package", {}).get("version") != {"workspace": True}:
+            raise ReleaseError(
+                f"publishable package {name} must set version.workspace = true"
+            )
         publishable[name] = package
 
     if not publishable:
@@ -309,12 +353,17 @@ def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[s
     for name, package in publishable.items():
         raw_dependencies = package.get("dependencies", [])
         if not isinstance(raw_dependencies, list):
-            raise ReleaseError(f"cargo metadata returned invalid dependencies for {name}")
+            raise ReleaseError(
+                f"cargo metadata returned invalid dependencies for {name}"
+            )
         for dependency in raw_dependencies:
             if not isinstance(dependency, dict) or dependency.get("kind") == "dev":
                 continue
             dependency_name = dependency.get("name")
-            if dependency.get("source") is not None or dependency_name not in workspace_packages:
+            if (
+                dependency.get("source") is not None
+                or dependency_name not in workspace_packages
+            ):
                 continue
             if dependency_name not in publishable:
                 raise ReleaseError(
@@ -326,6 +375,17 @@ def workspace_plan(root: Path, metadata: dict[str, Any] | None = None) -> dict[s
                 raise ReleaseError(
                     f"{name} must require workspace package {dependency_name} exactly at "
                     f"{expected_requirement}"
+                )
+            specification = manifest_dependency_spec(
+                package_manifests[name], dependency
+            )
+            if (
+                not isinstance(specification, dict)
+                or specification.get("workspace") is not True
+            ):
+                raise ReleaseError(
+                    f"{name} must inherit workspace package {dependency_name} with "
+                    "workspace = true"
                 )
             dependencies[name].add(dependency_name)
 
@@ -404,7 +464,9 @@ def registry_plan(
     return {
         "version": plan["version"],
         "packages": packages,
-        "pending": [package["name"] for package in packages if package["state"] == "unpublished"],
+        "pending": [
+            package["name"] for package in packages if package["state"] == "unpublished"
+        ],
     }
 
 
@@ -435,7 +497,9 @@ def prepare(
         policy = release_type(old, new)
         old_major = parse_version(old)[0]
         if policy != "major" and not (old_major == 0 and policy == "minor"):
-            raise ReleaseError("breaking releases require a major bump or a pre-1.0 minor bump")
+            raise ReleaseError(
+                "breaking releases require a major bump or a pre-1.0 minor bump"
+            )
 
     # Validate every required source before writing any file. A stale inventory
     # must not leave a plausible-looking partial release bump behind.
@@ -449,18 +513,32 @@ def prepare(
             if lock.count(marker) != 1:
                 raise ReleaseError(f"{relative} has no unique locked {package} {old}")
     compatibility_text = (root / "tests/compatibility.toml").read_text(encoding="utf-8")
-    if len(re.findall(r'^client_version = "[^"]+"$', compatibility_text, re.MULTILINE)) != 1:
+    if (
+        len(re.findall(r'^client_version = "[^"]+"$', compatibility_text, re.MULTILINE))
+        != 1
+    ):
         raise ReleaseError("tests/compatibility.toml has no unique client_version")
     for relative in PROVENANCE_FILES:
         provenance = (root / relative).read_text(encoding="utf-8")
-        if len(re.findall(r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$', provenance, re.MULTILINE)) != 1:
+        if (
+            len(
+                re.findall(
+                    r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$', provenance, re.MULTILINE
+                )
+            )
+            != 1
+        ):
             raise ReleaseError(f"{relative} has no unique synced date")
     changelog_text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     unreleased_start = changelog_text.find("## [Unreleased]")
-    next_release = changelog_text.find("\n## [", unreleased_start + len("## [Unreleased]"))
+    next_release = changelog_text.find(
+        "\n## [", unreleased_start + len("## [Unreleased]")
+    )
     if unreleased_start < 0 or next_release < 0:
         raise ReleaseError("CHANGELOG.md has no complete [Unreleased] section")
-    if not changelog_text[unreleased_start + len("## [Unreleased]") : next_release].strip():
+    if not changelog_text[
+        unreleased_start + len("## [Unreleased]") : next_release
+    ].strip():
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
     if release_heading(new).search(changelog_text) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
@@ -504,11 +582,15 @@ def semver_policy(root: Path, version: str) -> str:
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     heading = release_heading(version).search(changelog)
     if heading is None:
-        raise ReleaseError(f"CHANGELOG.md has no complete release section for {version}")
+        raise ReleaseError(
+            f"CHANGELOG.md has no complete release section for {version}"
+        )
     start = heading.start()
     end = changelog.find("\n## [", heading.end())
     if end < 0:
-        raise ReleaseError(f"CHANGELOG.md has no complete release section for {version}")
+        raise ReleaseError(
+            f"CHANGELOG.md has no complete release section for {version}"
+        )
     breaking = "<!-- semver-checks: major -->" in changelog[start:end]
     if not breaking:
         return policy
@@ -600,12 +682,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
-            print(prepare(args.root.resolve(), args.bump, args.date, args.allow_dirty, args.breaking))
+            print(
+                prepare(
+                    args.root.resolve(),
+                    args.bump,
+                    args.date,
+                    args.allow_dirty,
+                    args.breaking,
+                )
+            )
         elif args.command == "checksum":
             print(verify_artifact(args.crate, args.expected))
         elif args.command == "package-version":
             root = args.root.resolve()
-            print(manifest_package_version(root / args.manifest, workspace_version(root)))
+            print(
+                manifest_package_version(root / args.manifest, workspace_version(root))
+            )
         elif args.command == "workspace-plan":
             print(json.dumps(workspace_plan(args.root.resolve()), indent=2))
         elif args.command == "registry-plan":

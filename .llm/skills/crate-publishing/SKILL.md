@@ -64,6 +64,9 @@ signal-fish-client = { workspace = true, default-features = false, features = ["
 ```
 
 Never publish mismatched versions or a non-exact adapter-to-core requirement.
+Internal publishable dependencies must inherit with `workspace = true`; an
+inline exact version can look correct in Cargo metadata while becoming stale
+when the workspace version is prepared.
 
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list

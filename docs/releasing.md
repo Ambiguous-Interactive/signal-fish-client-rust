@@ -51,7 +51,8 @@ run `python3 scripts/audit-repository-rules.py`. Offline fixture audits with
 
 The workspace owns one version at `[workspace.package].version`; publishable
 members set `version.workspace = true`. Preparation discovers crates through
-`cargo metadata`, updates that version and exact internal workspace
+`cargo metadata`, verifies internal publishable dependencies inherit through
+`workspace = true`, updates the shared version and exact workspace
 requirements, then updates locks, documentation references, provenance, and
 the changelog. It fails before writing if the workspace graph, inventory, or
 `[Unreleased]` section is invalid.

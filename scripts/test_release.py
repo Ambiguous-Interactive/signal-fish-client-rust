@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
+SPEC = importlib.util.spec_from_file_location(
+    "release", Path(__file__).with_name("release.py")
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load scripts/release.py for testing")
 release = importlib.util.module_from_spec(SPEC)
@@ -74,8 +76,18 @@ class WorkspacePlanTests(unittest.TestCase):
             name = str(package["name"])
             manifest = self.root / name / "Cargo.toml"
             manifest.parent.mkdir(exist_ok=True)
+            dependency_lines = [
+                f"{dependency.get('rename') or dependency['name']} = {{ workspace = true }}"
+                for dependency in package.get("dependencies", [])
+                if dependency.get("kind") != "dev"
+            ]
+            dependencies = (
+                "\n[dependencies]\n" + "\n".join(dependency_lines) + "\n"
+                if dependency_lines
+                else ""
+            )
             manifest.write_text(
-                f'[package]\nname = "{name}"\nversion.workspace = true\n',
+                f'[package]\nname = "{name}"\nversion.workspace = true\n{dependencies}',
                 encoding="utf-8",
             )
             values.append(
@@ -88,7 +100,10 @@ class WorkspacePlanTests(unittest.TestCase):
                     "dependencies": package.get("dependencies", []),
                 }
             )
-        return {"workspace_members": [value["id"] for value in values], "packages": values}
+        return {
+            "workspace_members": [value["id"] for value in values],
+            "packages": values,
+        }
 
     @staticmethod
     def dependency(name: str, requirement: str = "=1.2.3") -> dict[str, object]:
@@ -103,18 +118,55 @@ class WorkspacePlanTests(unittest.TestCase):
             ]
         )
         plan = release.workspace_plan(self.root, metadata)
-        self.assertEqual([package["name"] for package in plan["packages"]], ["core", "adapter"])
+        self.assertEqual(
+            [package["name"] for package in plan["packages"]], ["core", "adapter"]
+        )
         self.assertEqual(plan["packages"][1]["dependencies"], ["core"])
 
     def test_rejects_non_exact_internal_requirement(self) -> None:
         metadata = self.metadata(
             [
                 {"name": "core"},
-                {"name": "adapter", "dependencies": [self.dependency("core", "^1.2.3")]},
+                {
+                    "name": "adapter",
+                    "dependencies": [self.dependency("core", "^1.2.3")],
+                },
             ]
         )
         with self.assertRaisesRegex(release.ReleaseError, "exactly"):
             release.workspace_plan(self.root, metadata)
+
+    def test_rejects_inline_exact_internal_requirement(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "core"},
+                {"name": "adapter", "dependencies": [self.dependency("core")]},
+            ]
+        )
+        (self.root / "adapter" / "Cargo.toml").write_text(
+            '[package]\nname = "adapter"\nversion.workspace = true\n\n'
+            '[dependencies]\ncore = { version = "=1.2.3", path = "../core" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "workspace = true"):
+            release.workspace_plan(self.root, metadata)
+
+    def test_accepts_renamed_target_workspace_dependency(self) -> None:
+        dependency = self.dependency("core")
+        dependency.update({"rename": "core_alias", "target": "cfg(unix)"})
+        metadata = self.metadata(
+            [
+                {"name": "core"},
+                {"name": "adapter", "dependencies": [dependency]},
+            ]
+        )
+        (self.root / "adapter" / "Cargo.toml").write_text(
+            '[package]\nname = "adapter"\nversion.workspace = true\n\n'
+            "[target.'cfg(unix)'.dependencies]\ncore_alias = { workspace = true }\n",
+            encoding="utf-8",
+        )
+        plan = release.workspace_plan(self.root, metadata)
+        self.assertEqual(plan["packages"][1]["dependencies"], ["core"])
 
     def test_rejects_dependency_on_non_publishable_member(self) -> None:
         metadata = self.metadata(
@@ -146,7 +198,7 @@ class PreparationTests(unittest.TestCase):
             'publish = ["crates-io"]\nedition = "2021"\n\n'
             '[workspace]\nmembers = ["crates/signal-fish-client-godot"]\nresolver = "2"\n\n'
             '[workspace.package]\nversion = "1.2.3"\n\n'
-            '[workspace.dependencies]\n'
+            "[workspace.dependencies]\n"
             'signal-fish-client = { version = "=1.2.3", path = "." }\n',
             encoding="utf-8",
         )
@@ -157,7 +209,7 @@ class PreparationTests(unittest.TestCase):
         adapter.write_text(
             '[package]\nname = "signal-fish-client-godot"\nversion.workspace = true\n'
             'publish = ["crates-io"]\nedition = "2021"\n\n'
-            '[dependencies]\nsignal-fish-client.workspace = true\n',
+            "[dependencies]\nsignal-fish-client.workspace = true\n",
             encoding="utf-8",
         )
         (adapter.parent / "src").mkdir()
@@ -169,7 +221,9 @@ class PreparationTests(unittest.TestCase):
         for relative in release.PROVENANCE_FILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('client_version = "1.2.3"\nsynced = "2020-01-01"\n', encoding="utf-8")
+            path.write_text(
+                'client_version = "1.2.3"\nsynced = "2020-01-01"\n', encoding="utf-8"
+            )
         for relative in release.LOCKSTEP_LOCKFILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +257,9 @@ class PreparationTests(unittest.TestCase):
         self.assertIn("## [Unreleased]\n\n## [1.3.0] - 2026-07-13", changelog)
         self.assertIn("compare/v1.2.3...v1.3.0", changelog)
         self.assertIn("compare/v1.3.0...HEAD", changelog)
-        compatibility = (self.root / "tests/compatibility.toml").read_text(encoding="utf-8")
+        compatibility = (self.root / "tests/compatibility.toml").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('client_version = "1.3.0"', compatibility)
         self.assertIn('synced = "2026-07-13"', compatibility)
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
@@ -282,7 +338,9 @@ class PreparationTests(unittest.TestCase):
 
     def test_release_heading_does_not_prefix_match(self) -> None:
         changelog = self.root / "CHANGELOG.md"
-        text = changelog.read_text(encoding="utf-8").replace("## [1.2.3]", "## [1.2.30]")
+        text = changelog.read_text(encoding="utf-8").replace(
+            "## [1.2.3]", "## [1.2.30]"
+        )
         changelog.write_text(text, encoding="utf-8")
         self.assertIsNone(release.release_heading("1.2.3").search(text))
 
@@ -306,7 +364,9 @@ class ArtifactTests(unittest.TestCase):
 
     @mock.patch.object(release.urllib.request, "urlopen")
     def test_registry_404_means_unpublished(self, urlopen: mock.Mock) -> None:
-        urlopen.side_effect = release.urllib.error.HTTPError("url", 404, "missing", {}, None)
+        urlopen.side_effect = release.urllib.error.HTTPError(
+            "url", 404, "missing", {}, None
+        )
         self.assertIsNone(release.registry_checksum("demo", "1.2.3"))
 
     def test_registry_plan_state_matrix_and_publish_order(self) -> None:
@@ -353,7 +413,9 @@ class ArtifactTests(unittest.TestCase):
                 release.registry_plan(
                     plan,
                     artifacts,
-                    lambda name, _version: checksums["adapter"] if name == "adapter" else None,
+                    lambda name, _version: (
+                        checksums["adapter"] if name == "adapter" else None
+                    ),
                 )
             with self.assertRaisesRegex(release.ReleaseError, "does not match"):
                 release.registry_plan(
@@ -380,12 +442,14 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("RELEASE_APP_CLIENT_ID is not configured", self.prepare)
         self.assertIn("RELEASE_APP_PRIVATE_KEY", self.prepare)
         self.assertIn("dry_run:", self.prepare)
-        self.assertIn('branch=release/%s', self.prepare)
+        self.assertIn("branch=release/%s", self.prepare)
         self.assertIn("gh pr create", self.prepare)
 
     def test_publish_is_input_free_manual_only_and_protected(self) -> None:
         self.assertIn("workflow_dispatch:", self.publish)
-        dispatch = self.publish.split("workflow_dispatch:", 1)[1].split("permissions:", 1)[0]
+        dispatch = self.publish.split("workflow_dispatch:", 1)[1].split(
+            "permissions:", 1
+        )[0]
         self.assertNotIn("inputs:", dispatch)
         self.assertNotIn("push:\n", self.publish)
         self.assertIn("environment: crates-io", self.publish)
@@ -415,14 +479,18 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(self.publish.count("check-runs?filter=latest"), 1)
         self.assertIn("scripts/check-required-checks.py", self.publish)
         self.assertIn("Expected one CycloneDX file", self.publish)
-        self.assertIn('$RUNNER_TEMP/release-assets', self.publish)
+        self.assertIn("$RUNNER_TEMP/release-assets", self.publish)
         self.assertIn("Release tooling dirtied the checkout", self.publish)
         self.assertIn("Release publication", self.publish)
         self.assertIn("fetch-tags: true", self.publish)
         self.assertIn("scripts/release.py workspace-plan", self.publish)
 
     def test_workflows_enumerate_publishable_workspace_crates(self) -> None:
-        for marker in ("workspace-plan", "mapfile -t packages", 'package_args+=(-p "$package")'):
+        for marker in (
+            "workspace-plan",
+            "mapfile -t packages",
+            'package_args+=(-p "$package")',
+        ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
                 self.assertIn(marker, self.prepare)
