@@ -89,9 +89,15 @@ error; stop and investigate.
 ## Repository configuration
 
 Enable **Allow GitHub Actions to create and approve pull requests** in the
-repository's Actions settings. Prepare Release requests Contents and Pull
-requests write plus Actions write access for its built-in `GITHUB_TOKEN`; no
-App, personal access token, repository variable, or release secret is required.
+repository's Actions settings when organization policy permits it. Prepare
+Release requests Contents and Pull requests write plus Actions write access for
+its built-in `GITHUB_TOKEN`; no App, personal access token, repository variable,
+or release secret is required. If enterprise policy forbids PR creation, the
+workflow must treat only that step as recoverable, continue dispatching every
+required check for the pushed release branch, and emit a maintainer compare
+link plus `gh pr create` command in the job summary. Never add an App or stored
+PAT to evade that policy. Match GitHub's exact enterprise-policy denial and
+fail closed with the original error for every other PR-creation failure.
 
 The protected `crates-io` environment holds `CRATES_IO_TOKEN`. Bootstrap new
 workspace crates with a token limited to `signal-fish-client*` and

@@ -670,6 +670,10 @@ class WorkflowPolicyTests(unittest.TestCase):
             "both resumed dry-run and publish must tolerate crates.io index lag",
         )
 
+    def test_pinned_cyclonedx_uses_its_workspace_flag(self) -> None:
+        self.assertIn("cargo cyclonedx --format json --all", self.publish)
+        self.assertNotIn("cargo cyclonedx --format json --workspace", self.publish)
+
     def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
         self.assertIn('semver-policy "$version"', self.publish)
         self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)

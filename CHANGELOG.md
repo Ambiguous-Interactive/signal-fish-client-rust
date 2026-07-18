@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed release preparation failing after successfully verifying and pushing a
+  release branch when enterprise policy forbids `GITHUB_TOKEN` from opening
+  pull requests; required checks now still dispatch and the successful run
+  emits an app-free maintainer PR link and command.
+- Fixed release asset generation using Cargo's unsupported `--workspace` flag
+  with pinned `cargo-cyclonedx` 0.5.7; the workflow now uses the tool's `--all`
+  workspace flag and policy-tests that exact invocation.
+
 ## [0.9.0] - 2026-07-18
 
 <!-- semver-checks: major -->

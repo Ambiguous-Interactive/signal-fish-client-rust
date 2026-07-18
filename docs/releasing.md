@@ -6,11 +6,20 @@ manual, protected, and fail-closed.
 
 ## One-time repository setup
 
-In **Settings > Actions > General > Workflow permissions**, enable **Allow
-GitHub Actions to create and approve pull requests**. Prepare Release uses only
-the run's built-in `GITHUB_TOKEN`, explicitly scoped to **Actions: write**,
-**Contents: write**, and **Pull requests: write**. It requires no GitHub App,
-personal access token, repository variable, or release secret.
+If organization policy permits it, enable **Allow GitHub Actions to create and
+approve pull requests** in **Settings > Actions > General > Workflow
+permissions**. Prepare Release uses only the run's built-in `GITHUB_TOKEN`,
+explicitly scoped to **Actions: write**, **Contents: write**, and **Pull
+requests: write**. It requires no GitHub App, personal access token, repository
+variable, or release secret.
+
+Some enterprise policies forbid that setting. In that mode, Prepare Release
+still succeeds after pushing the fully verified release branch and dispatching
+all required checks. Its job summary provides a compare link and an exact
+`gh pr create` command; a maintainer opens the PR with their existing GitHub
+authentication. Do not add an App or stored PAT to bypass the enterprise
+policy. Only GitHub's exact enterprise-policy denial is recoverable; every
+other PR-creation error fails the workflow with its original diagnostic.
 
 GitHub suppresses ordinary workflow events created by `GITHUB_TOKEN`. Prepare
 Release therefore has **Actions: write** permission and explicitly dispatches
@@ -51,9 +60,12 @@ with repository Metadata read access, then run
 2. Run **Prepare Release** from the default branch with `dry_run` enabled and
    inspect the inferred version, generated diff, and validation output.
 3. Run it again with `dry_run` disabled. The built-in token creates
-   `release/X.Y.Z` and opens the preparation pull request.
-4. The workflow explicitly dispatches every required check against the release
-   commit; no workflow approval or release App is needed.
+   `release/X.Y.Z` and attempts to open the preparation pull request. If
+   enterprise policy blocks PR creation, use the maintainer link or command in
+   the successful run's job summary.
+4. Whether PR creation is automatic or maintainer-authenticated, the workflow
+   explicitly dispatches every required check against the release commit; no
+   workflow approval or release App is needed.
 5. Merge only after every aggregate required check, review, and thread is
    green.
 

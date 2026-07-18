@@ -259,6 +259,20 @@ mod godot_issue_61_policy {
     }
 
     #[test]
+    fn prepare_release_survives_enterprise_pr_creation_policy() {
+        let workflow = read_project_file(".github/workflows/prepare-release.yml");
+        assert!(workflow.contains("id: open-pr"));
+        assert!(!workflow.contains("continue-on-error: true"));
+        assert!(workflow.contains("enterprise_blocked=true"));
+        assert!(
+            workflow.contains("GitHub Actions is not permitted to create or approve pull requests")
+        );
+        assert!(workflow.contains("exit \"$status\""));
+        assert!(workflow.contains("steps.open-pr.outputs.enterprise_blocked == 'true'"));
+        assert!(workflow.contains("Open the prepared release pull request as a maintainer"));
+    }
+
+    #[test]
     fn coverage_is_a_blocking_gate_with_a_measured_floor() {
         let workflow = read_project_file(".github/workflows/coverage.yml");
         assert!(!workflow.contains("continue-on-error: true"));
