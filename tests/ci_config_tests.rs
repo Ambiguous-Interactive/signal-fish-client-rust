@@ -233,17 +233,26 @@ fn read_project_file(relative_path: &str) -> String {
     })
 }
 
-/// Reads Cargo.toml and returns the shared workspace package version.
-fn cargo_package_version() -> String {
-    let cargo = read_project_file("Cargo.toml");
-    let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
+/// Reads the version from a workspace source manifest or a standalone package manifest.
+fn manifest_package_version(cargo: &str) -> Option<String> {
+    let parsed: toml::Value = toml::from_str(cargo).expect("Cargo.toml must be valid TOML");
     parsed
         .get("workspace")
         .and_then(|v| v.get("package"))
         .and_then(|v| v.get("version"))
         .and_then(toml::Value::as_str)
+        .or_else(|| {
+            parsed
+                .get("package")
+                .and_then(|v| v.get("version"))
+                .and_then(toml::Value::as_str)
+        })
         .map(std::string::ToString::to_string)
-        .expect("Cargo.toml must define [workspace.package].version as a string")
+}
+
+fn cargo_package_version() -> String {
+    manifest_package_version(&read_project_file("Cargo.toml"))
+        .expect("Cargo.toml must define [workspace.package].version or package.version as a string")
 }
 
 fn is_canonical_git_main_dependency(line: &str) -> bool {
@@ -1385,20 +1394,28 @@ mod ci_workflow_policy {
     }
 
     #[test]
-    fn isolated_core_msrv_manifest_materializes_the_workspace_version() {
+    fn isolated_core_msrv_uses_the_publishable_package_artifact() {
         let ci = ci_contents();
         let msrv_job =
             extract_job_block(&ci, "msrv").expect("ci.yml must define the msrv job under jobs");
 
         assert!(
             msrv_job.contains("core_version=$(python3 scripts/release.py package-version)"),
-            "isolating the root package must read the canonical workspace version"
+            "isolating the root package must locate the versioned crate artifact"
         );
         assert!(
-            msrv_job.contains(r#"/^version\.workspace = true$/"#)
-                && msrv_job.contains(r#"printf "version = \"%s\"\n", version"#),
-            "the standalone manifest must replace inherited package.version before removing [workspace]"
+            msrv_job.contains(
+                "cargo +1.96.1 package --locked --package signal-fish-client --no-verify"
+            ) && msrv_job.contains("--strip-components=1"),
+            "MSRV must test Cargo's publishable package, not a hand-edited source manifest"
         );
+        assert!(
+            msrv_job.contains("--all-features --no-run")
+                && msrv_job.contains("--all-features --lib"),
+            "MSRV must compile every test target and execute package-independent library tests"
+        );
+        assert!(!msrv_job.contains("git archive HEAD"));
+        assert!(!msrv_job.contains("awk -v version"));
     }
 
     #[test]
@@ -1528,6 +1545,22 @@ mod ci_workflow_policy {
 
 mod crate_version_consistency {
     use super::*;
+
+    #[test]
+    fn version_reader_accepts_workspace_source_and_standalone_package_manifests() {
+        assert_eq!(
+            manifest_package_version(
+                "[package]\nname = \"demo\"\nversion.workspace = true\n\n[workspace.package]\nversion = \"1.2.3\"\n"
+            )
+            .as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            manifest_package_version("[package]\nname = \"demo\"\nversion = \"1.2.3\"\n")
+                .as_deref(),
+            Some("1.2.3")
+        );
+    }
 
     fn is_semver(value: &str) -> bool {
         let mut parts = value.split('.');

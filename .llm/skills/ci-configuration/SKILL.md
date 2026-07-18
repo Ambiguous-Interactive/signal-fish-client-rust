@@ -43,6 +43,18 @@ actors to make a failing gate mergeable. Live ruleset reads must use the
 release App's explicitly scoped Administration-read token; unauthenticated
 public API responses are not an adequate policy audit.
 
+### Workspace MSRV isolation
+
+The core MSRV job must test Cargo's actual publishable `.crate` artifact. Do
+not recreate a standalone manifest by truncating or rewriting workspace TOML;
+that diverges from Cargo normalization and breaks inherited fields. Package
+with pinned release Cargo, extract the artifact, compile every packaged test
+target with `--no-run` under the core MSRV, and execute the package-independent
+library tests with `--lib`. Repository-policy tests that require `.github`,
+`.llm`, or sibling crates must stay excluded from `package.include`. Keep
+`isolated_core_msrv_uses_the_publishable_package_artifact` and the package
+exclusion policy test in sync with this workflow.
+
 ### lychee: TOML vs CLI syntax
 
 The lychee link checker has different syntax for TOML config vs CLI flags.

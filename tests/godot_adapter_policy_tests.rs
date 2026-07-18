@@ -50,14 +50,20 @@ fn core_manifest_is_godot_independent() {
     assert!(!dependencies.contains_key("godot"));
     assert!(!features.contains_key("transport-godot"));
     assert!(!root().join("src/transports/godot_websocket.rs").exists());
-    assert!(
-        manifest["package"]["include"]
-            .as_array()
-            .expect("core package.include must be an array")
-            .iter()
-            .any(|value| value.as_str() == Some("!/tests/godot_adapter_policy_tests.rs")),
-        "repository-only adapter policy tests must not be shipped without their workspace inputs"
-    );
+    let package_include = manifest["package"]["include"]
+        .as_array()
+        .expect("core package.include must be an array");
+    for repository_only_test in [
+        "!/tests/ci_config_tests.rs",
+        "!/tests/godot_adapter_policy_tests.rs",
+    ] {
+        assert!(
+            package_include
+                .iter()
+                .any(|value| value.as_str() == Some(repository_only_test)),
+            "{repository_only_test} must not ship without its repository inputs"
+        );
+    }
 
     let library = fs::read_to_string(root().join("src/lib.rs")).expect("read core crate root");
     assert!(!library.contains("GodotWebSocketTransport"));
