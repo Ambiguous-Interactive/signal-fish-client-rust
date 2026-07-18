@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed release preparation failing after successfully verifying and pushing a
+  release branch when enterprise policy forbids `GITHUB_TOKEN` from opening
+  pull requests; required checks now still dispatch and the successful run
+  emits an app-free maintainer PR link and command.
+
 ## [0.9.0] - 2026-07-18
 
 <!-- semver-checks: major -->
@@ -60,10 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fixed release preparation failing after successfully verifying and pushing a
-  release branch when enterprise policy forbids `GITHUB_TOKEN` from opening
-  pull requests; required checks now still dispatch and the successful run
-  emits an app-free maintainer PR link and command.
 - Fixed the Emscripten WebSocket transport consuming a queued frame while the
   browser socket was still connecting; pre-open and failed-send frames now
   remain owned by the caller for ordered retry.
