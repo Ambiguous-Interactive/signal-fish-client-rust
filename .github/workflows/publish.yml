@@ -207,7 +207,12 @@ jobs:
           for package in "${pending[@]}"; do
             publish_args+=(-p "$package")
           done
-          cargo publish --dry-run "${publish_args[@]}"
+          resume_args=()
+          if jq -e '.resume_requires_no_verify' "$RUNNER_TEMP/registry-plan.json" >/dev/null; then
+            printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
+            resume_args+=(--no-verify)
+          fi
+          cargo publish --dry-run "${resume_args[@]}" "${publish_args[@]}"
 
       - name: Attest package provenance
         uses: actions/attest@v4.2.0
@@ -234,7 +239,12 @@ jobs:
           for package in "${pending[@]}"; do
             publish_args+=(-p "$package")
           done
-          cargo publish "${publish_args[@]}"
+          resume_args=()
+          if jq -e '.resume_requires_no_verify' "$RUNNER_TEMP/registry-plan.json" >/dev/null; then
+            printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
+            resume_args+=(--no-verify)
+          fi
+          cargo publish "${resume_args[@]}" "${publish_args[@]}"
 
       - name: Wait for crates.io and verify every checksum
         run: |

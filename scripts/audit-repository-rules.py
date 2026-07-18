@@ -56,11 +56,19 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     expected_refs = set(expected.get("include", []))
     if not expected_refs:
         raise ValueError("repository_rules.include must not be empty")
-    required_checks = {
-        check["job"]
-        for check in policy.get("required_checks", [])
-        if isinstance(check, dict)
-    }
+    configured_checks = policy.get("required_checks")
+    if not isinstance(configured_checks, list) or not configured_checks:
+        raise ValueError("policy must define a non-empty required_checks list")
+    if any(
+        not isinstance(check, dict)
+        or not isinstance(check.get("job"), str)
+        or not check["job"]
+        for check in configured_checks
+    ):
+        raise ValueError("every required check must define a non-empty job name")
+    required_checks = {check["job"] for check in configured_checks}
+    if len(required_checks) != len(configured_checks):
+        raise ValueError("required check job names must be unique")
     applicable = [
         ruleset
         for ruleset in rulesets

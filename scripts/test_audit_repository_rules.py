@@ -75,6 +75,13 @@ class RepositoryRuleTests(unittest.TestCase):
         self.assertIn("missing pull_request rule", failures)
         self.assertIn("missing required_status_checks rule", failures)
 
+    def test_rejects_empty_or_malformed_required_check_policy(self) -> None:
+        for required_checks in ([], None, [{"workflow": "CI"}]):
+            with self.subTest(required_checks=required_checks):
+                policy = {**self.policy, "required_checks": required_checks}
+                with self.assertRaisesRegex(ValueError, "required.check"):
+                    audit.audit(policy, [self.ruleset()])
+
     def test_rejects_bypass_and_non_strict_checks(self) -> None:
         ruleset = self.ruleset()
         ruleset["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]

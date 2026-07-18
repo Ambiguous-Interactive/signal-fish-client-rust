@@ -481,6 +481,14 @@ def registry_plan(
         "pending": [
             package["name"] for package in packages if package["state"] == "unpublished"
         ],
+        "resume_requires_no_verify": any(
+            package["state"] == "unpublished"
+            and any(
+                states.get(dependency) == "published-matching"
+                for dependency in package["dependencies"]
+            )
+            for package in packages
+        ),
     }
 
 

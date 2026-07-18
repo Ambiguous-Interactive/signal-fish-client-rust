@@ -64,7 +64,10 @@ artifact.
 `registry-plan` classifies each package as `unpublished` or
 `published-matching`. It rejects a checksum mismatch and rejects any published
 dependent whose internal dependency is absent. A rerun skips matching packages
-and publishes only the dependency-ordered absent set.
+and publishes only the dependency-ordered absent set. When a pending dependent
+has a checksum-matched published dependency, the plan enables `--no-verify`
+only for that resume invocation; the full workspace tests and reproducible
+package build have already passed, and this avoids crates.io sparse-index lag.
 
 An existing tag must target current default-branch HEAD. An existing GitHub
 Release must have that tag. A mismatch is an integrity incident, not a retryable

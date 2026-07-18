@@ -431,16 +431,19 @@ class ArtifactTests(unittest.TestCase):
                 "adapter": release.sha256(artifacts / "adapter-1.2.3.crate"),
             }
             cases = (
-                ({}, ["core", "adapter"]),
-                ({"core": checksums["core"]}, ["adapter"]),
-                (checksums, []),
+                ({}, ["core", "adapter"], False),
+                ({"core": checksums["core"]}, ["adapter"], True),
+                (checksums, [], False),
             )
-            for published, expected in cases:
+            for published, expected, requires_no_verify in cases:
                 with self.subTest(published=published):
                     state = release.registry_plan(
                         plan, artifacts, lambda name, _version: published.get(name)
                     )
                     self.assertEqual(state["pending"], expected)
+                    self.assertEqual(
+                        state["resume_requires_no_verify"], requires_no_verify
+                    )
 
             with self.assertRaisesRegex(release.ReleaseError, "unpublished workspace"):
                 release.registry_plan(
@@ -503,6 +506,11 @@ class WorkflowPolicyTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
+        self.assertEqual(
+            self.publish.count("resume_args+=(--no-verify)"),
+            2,
+            "both resumed dry-run and publish must tolerate crates.io index lag",
+        )
 
     def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
         self.assertIn('semver-policy "$version"', self.publish)

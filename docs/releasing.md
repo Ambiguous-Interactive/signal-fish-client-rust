@@ -96,7 +96,9 @@ Matching registry packages are skipped, absent packages are resumed, and an
 existing matching GitHub Release has its assets repaired. A tag mismatch,
 checksum mismatch, impossible dependency state, missing required check, or a
 default-branch move stops the run. Never delete or move release state to make a
-rerun pass.
+rerun pass. If only a dependent remains unpublished, the rerun uses
+`--no-verify` after full workspace verification and exact dependency checksum
+matching so crates.io sparse-index propagation cannot strand recovery.
 
 After success, confirm crates.io and docs.rs show every planned package and
 verify each downloaded crate attestation:
