@@ -133,7 +133,7 @@ signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fi
 
 These snippets use `main` because the ownership, bounded-work, and admission
 guarantees documented below are listed under `Unreleased`. Use the published
-`0.8.0` dependency with its [versioned API docs](https://docs.rs/signal-fish-client/0.8.0/)
+`0.9.0` dependency with its [versioned API docs](https://docs.rs/signal-fish-client/0.9.0/)
 when you do not need those fixes yet.
 
 The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94 or

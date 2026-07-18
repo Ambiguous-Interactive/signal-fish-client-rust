@@ -5,7 +5,7 @@
 - **Company:** Ambiguous Interactive
 - **Product:** Signal Fish Client SDK
 - **Crates:** `signal-fish-client` (core) and `signal-fish-client-godot` (adapter)
-- **Version:** 0.8.0 lockstep across both crates
+- **Version:** 0.9.0 lockstep across both crates
 - **Edition:** 2021
 - **MSRV:** Rust 1.87.0 for core; Rust 1.94.0 for the Godot adapter
 - **License:** MIT

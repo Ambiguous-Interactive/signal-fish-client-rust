@@ -11,7 +11,7 @@ drive the whole handshake for you.
     `tokio-runtime` feature.
 
     ```toml
-    signal-fish-client = { version = "0.8.0", features = ["mesh"] }
+    signal-fish-client = { version = "0.9.0", features = ["mesh"] }
     ```
 
 ---
