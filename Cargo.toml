@@ -19,6 +19,7 @@ include = [
     "/tests/**",
     "!/tests/ci_config_tests.rs",
     "!/tests/godot_adapter_policy_tests.rs",
+    "!/tests/shared_core_policy_tests.rs",
     "/Cargo.toml",
     "/LICENSE",
     "/README.md",

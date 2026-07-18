@@ -108,7 +108,7 @@ jobs:
               printf '::error::Could not query crates.io for %s.\n%s\n' "$package" "$search_output"
               exit 1
             fi
-            if printf '%s\n' "$search_output" | grep -qF "${package} ="; then
+            if printf '%s\n' "$search_output" | grep -q "^${package} ="; then
               cargo semver-checks check-release --package "$package"
             else
               printf 'Skipping %s: no crates.io baseline exists.\n' "$package"

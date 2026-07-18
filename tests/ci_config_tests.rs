@@ -1380,6 +1380,19 @@ mod ci_workflow_policy {
     }
 
     #[test]
+    fn semver_registry_search_matches_only_the_requested_crate_name() {
+        let workflow = read_project_file(".github/workflows/semver-checks.yml");
+        assert!(
+            workflow.contains(r#"grep -q "^${package} =""#),
+            "crates.io search results must be anchored at the start of a result line"
+        );
+        assert!(
+            !workflow.contains(r#"grep -qF "${package} =""#),
+            "a suffix crate name must not be mistaken for the requested crate"
+        );
+    }
+
+    #[test]
     fn ci_has_concurrency_block() {
         let contents = ci_contents();
         assert!(

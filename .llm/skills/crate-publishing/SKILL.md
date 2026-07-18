@@ -73,7 +73,8 @@ its crates.io name.
 
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list
-- `include`: excludes `.llm/`, `scripts/`, `.github/`, target from the published package
+- `include`: excludes `.llm/`, `scripts/`, `.github/`, target, and any
+  repository-policy test that reads those paths from the published package
 - `homepage`: project website / user guide (GitHub Pages URL)
 - `documentation`: API reference (docs.rs URL)
 - `.llm/context.md` must list **both** URLs separately so that LLM

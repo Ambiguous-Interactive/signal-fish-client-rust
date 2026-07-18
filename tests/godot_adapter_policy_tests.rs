@@ -56,6 +56,7 @@ fn core_manifest_is_godot_independent() {
     for repository_only_test in [
         "!/tests/ci_config_tests.rs",
         "!/tests/godot_adapter_policy_tests.rs",
+        "!/tests/shared_core_policy_tests.rs",
     ] {
         assert!(
             package_include
