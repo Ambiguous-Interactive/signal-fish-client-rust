@@ -453,7 +453,18 @@ else
         #     is stronger and less flaky than racing the concurrent Pages
         #     deployment from the link-check job on pushes to main.
         SAME_SITE_ROUTES_OK=true
+        SAME_SITE_ROUTES=()
         while IFS= read -r url; do
+            SAME_SITE_ROUTES+=("$url")
+        done < <(grep -Eo \
+            'https://[Aa]mbiguous-[Ii]nteractive\.github\.io/signal-fish-client-rust/[^])[:space:]]*' \
+            "$REPO_ROOT/llms.txt" | sort -u)
+        SAME_SITE_ROUTE_COUNT=${#SAME_SITE_ROUTES[@]}
+        if (( SAME_SITE_ROUTE_COUNT == 0 )); then
+            fail "No same-site discovery routes found in llms.txt"
+            SAME_SITE_ROUTES_OK=false
+        fi
+        for url in "${SAME_SITE_ROUTES[@]}"; do
             route=$(printf '%s\n' "$url" | sed -E \
                 's#^https://[Aa]mbiguous-[Ii]nteractive\.github\.io/signal-fish-client-rust/##; s#[?#].*$##')
             if [[ -z "$route" || "$route" == */ ]]; then
@@ -467,9 +478,7 @@ else
                 fail "Same-site llms.txt route has no local build output: $url"
                 SAME_SITE_ROUTES_OK=false
             fi
-        done < <(grep -Eo \
-            'https://[Aa]mbiguous-[Ii]nteractive\.github\.io/signal-fish-client-rust/[^])[:space:]]*' \
-            "$REPO_ROOT/llms.txt" | sort -u)
+        done
         if [[ "$SAME_SITE_ROUTES_OK" == true ]]; then
             pass "Every same-site llms.txt route exists in the local build"
         fi

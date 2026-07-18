@@ -219,6 +219,11 @@ mod godot_issue_61_policy {
         assert!(workflow.contains("            \"llms.txt\""));
         assert!(rendering.contains("cmp -s \"$REPO_ROOT/llms.txt\" \"$SITE_DIR/llms.txt\""));
         assert!(rendering.contains("Every same-site llms.txt route exists in the local build"));
+        assert!(
+            rendering.contains("SAME_SITE_ROUTE_COUNT"),
+            "same-site route validation must fail closed when llms.txt contains no matching routes"
+        );
+        assert!(rendering.contains("No same-site discovery routes found in llms.txt"));
         assert!(lychee.contains(
             "^https://[Aa]mbiguous-[Ii]nteractive\\\\.github\\\\.io/signal-fish-client-rust/"
         ));
