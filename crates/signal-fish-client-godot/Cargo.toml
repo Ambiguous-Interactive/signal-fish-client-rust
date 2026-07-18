@@ -1,6 +1,7 @@
 [package]
 name = "signal-fish-client-godot"
-version = "0.8.0"
+version.workspace = true
+publish = ["crates-io"]
 edition = "2021"
 license = "MIT"
 authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
@@ -16,7 +17,7 @@ include = ["/src/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 [dependencies]
 godot = { version = ">=0.4.5, <0.6", features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { version = "=0.8.0", path = "../..", default-features = false, features = ["polling-client"] }
+signal-fish-client = { workspace = true, default-features = false, features = ["polling-client"] }
 tracing = "0.1"
 
 [package.metadata.docs.rs]

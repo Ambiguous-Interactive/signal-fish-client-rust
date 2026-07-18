@@ -1,0 +1,30 @@
+name: Repository Policy
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-policy
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit default-branch rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Test policy audit
+        run: python3 -m unittest scripts/test_audit_repository_rules.py scripts/test_required_checks.py
+
+      - name: Audit live repository rulesets
+        run: python3 scripts/audit-repository-rules.py
+        env:
+          GH_TOKEN: ${{ github.token }}

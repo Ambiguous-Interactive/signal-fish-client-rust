@@ -3,7 +3,7 @@
 Pre-commit hook for .llm/ folder enforcement.
 
 Checks include:
-- Sync selected crate-version references to Cargo.toml package version.
+- Sync selected crate-version references to Cargo.toml workspace package version.
 - Enforce .llm markdown line limits.
 - Validate folder-based Agent Skills metadata and naming.
 - Auto-generate .llm/skills/index.md from SKILL.md metadata and headings.
@@ -150,7 +150,7 @@ def validate_github_tool_order(repo_root: Path = REPO_ROOT) -> List[str]:
 
 
 def read_cargo_package_version() -> str:
-    """Read `[package].version` from Cargo.toml."""
+    """Read `[workspace.package].version` from Cargo.toml."""
     cargo_toml = REPO_ROOT / "Cargo.toml"
     try:
         content = cargo_toml.read_text(encoding="utf-8")
@@ -162,7 +162,7 @@ def read_cargo_package_version() -> str:
         stripped = line.strip()
 
         if stripped.startswith("[") and stripped.endswith("]"):
-            in_package_section = stripped == "[package]"
+            in_package_section = stripped == "[workspace.package]"
             continue
 
         if not in_package_section:
@@ -172,7 +172,7 @@ def read_cargo_package_version() -> str:
         if match:
             return match.group(1)
 
-    raise RuntimeError("Cargo.toml [package].version is missing or invalid.")
+    raise RuntimeError("Cargo.toml [workspace.package].version is missing or invalid.")
 
 
 def sync_crate_version_references(crate_version: str) -> Tuple[List[str], List[Path]]:

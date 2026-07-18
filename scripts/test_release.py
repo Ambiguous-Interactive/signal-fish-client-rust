@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
+SPEC = importlib.util.spec_from_file_location(
+    "release", Path(__file__).with_name("release.py")
+)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load scripts/release.py for testing")
 release = importlib.util.module_from_spec(SPEC)
@@ -27,19 +29,19 @@ class VersionTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(release.ReleaseError):
                 release.parse_version(value)
 
-    def test_package_version_is_scoped_to_package_section(self) -> None:
+    def test_package_version_is_scoped_to_workspace_package_section(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "Cargo.toml").write_text(
-                '[workspace.package]\nversion = "9.9.9"\n\n'
-                '[package]\nname = "demo"\nversion = "1.2.3"\n\n'
-                '[dependencies]\ndemo = { version = "8.8.8" }\n',
+                '[package]\nname = "demo"\nversion.workspace = true\n\n'
+                '[dependencies]\ndemo = { version = "8.8.8" }\n'
+                '\n[workspace]\n\n[workspace.package]\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
             self.assertEqual(release.package_version(root), "1.2.3")
-            release.replace_package_version(root / "Cargo.toml", "1.2.3", "1.2.4")
+            release.replace_workspace_version(root / "Cargo.toml", "1.2.3", "1.2.4")
             cargo = (root / "Cargo.toml").read_text(encoding="utf-8")
-            self.assertIn('[workspace.package]\nversion = "9.9.9"', cargo)
+            self.assertIn("version.workspace = true", cargo)
             self.assertIn('demo = { version = "8.8.8" }', cargo)
             self.assertEqual(release.package_version(root), "1.2.4")
 
@@ -56,18 +58,166 @@ class VersionTests(unittest.TestCase):
                 release.release_type("1.2.3", target)
 
 
+class WorkspacePlanTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\n\n[workspace.package]\nversion = "1.2.3"\n',
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def metadata(self, packages: list[dict[str, object]]) -> dict[str, object]:
+        values = []
+        for package in packages:
+            name = str(package["name"])
+            manifest = self.root / name / "Cargo.toml"
+            manifest.parent.mkdir(exist_ok=True)
+            dependency_lines = [
+                f"{dependency.get('rename') or dependency['name']} = {{ workspace = true }}"
+                for dependency in package.get("dependencies", [])
+                if dependency.get("kind") != "dev"
+            ]
+            dependencies = (
+                "\n[dependencies]\n" + "\n".join(dependency_lines) + "\n"
+                if dependency_lines
+                else ""
+            )
+            manifest.write_text(
+                f'[package]\nname = "{name}"\nversion.workspace = true\n{dependencies}',
+                encoding="utf-8",
+            )
+            values.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "version": package.get("version", "1.2.3"),
+                    "manifest_path": str(manifest),
+                    "publish": package.get("publish", ["crates-io"]),
+                    "dependencies": package.get("dependencies", []),
+                }
+            )
+        return {
+            "workspace_members": [value["id"] for value in values],
+            "packages": values,
+        }
+
+    @staticmethod
+    def dependency(name: str, requirement: str = "=1.2.3") -> dict[str, object]:
+        return {"name": name, "req": requirement, "kind": None, "source": None}
+
+    def test_discovers_publishable_crates_in_dependency_order(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "adapter", "dependencies": [self.dependency("core")]},
+                {"name": "tool", "publish": []},
+                {"name": "core"},
+            ]
+        )
+        plan = release.workspace_plan(self.root, metadata)
+        self.assertEqual(
+            [package["name"] for package in plan["packages"]], ["core", "adapter"]
+        )
+        self.assertEqual(plan["packages"][1]["dependencies"], ["core"])
+
+    def test_rejects_non_exact_internal_requirement(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "core"},
+                {
+                    "name": "adapter",
+                    "dependencies": [self.dependency("core", "^1.2.3")],
+                },
+            ]
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "exactly"):
+            release.workspace_plan(self.root, metadata)
+
+    def test_rejects_inline_exact_internal_requirement(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "core"},
+                {"name": "adapter", "dependencies": [self.dependency("core")]},
+            ]
+        )
+        (self.root / "adapter" / "Cargo.toml").write_text(
+            '[package]\nname = "adapter"\nversion.workspace = true\n\n'
+            '[dependencies]\ncore = { version = "=1.2.3", path = "../core" }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "workspace = true"):
+            release.workspace_plan(self.root, metadata)
+
+    def test_accepts_renamed_target_workspace_dependency(self) -> None:
+        dependency = self.dependency("core")
+        dependency.update({"rename": "core_alias", "target": "cfg(unix)"})
+        metadata = self.metadata(
+            [
+                {"name": "core"},
+                {"name": "adapter", "dependencies": [dependency]},
+            ]
+        )
+        (self.root / "adapter" / "Cargo.toml").write_text(
+            '[package]\nname = "adapter"\nversion.workspace = true\n\n'
+            "[target.'cfg(unix)'.dependencies]\ncore_alias = { workspace = true }\n",
+            encoding="utf-8",
+        )
+        plan = release.workspace_plan(self.root, metadata)
+        self.assertEqual(plan["packages"][1]["dependencies"], ["core"])
+        self.assertEqual(
+            plan["workspace_requirements"],
+            [{"key": "core_alias", "package": "core"}],
+        )
+
+    def test_rejects_dependency_on_non_publishable_member(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "tool", "publish": []},
+                {"name": "adapter", "dependencies": [self.dependency("tool")]},
+            ]
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "non-publishable"):
+            release.workspace_plan(self.root, metadata)
+
+    def test_rejects_publish_dependency_cycle(self) -> None:
+        metadata = self.metadata(
+            [
+                {"name": "a", "dependencies": [self.dependency("b")]},
+                {"name": "b", "dependencies": [self.dependency("a")]},
+            ]
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "cycle"):
+            release.workspace_plan(self.root, metadata)
+
+
 class PreparationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        (self.root / "Cargo.toml").write_text('[package]\nversion = "1.2.3"\n', encoding="utf-8")
-        adapter = self.root / release.ADAPTER_MANIFEST
-        adapter.parent.mkdir(parents=True, exist_ok=True)
-        adapter.write_text(
-            '[package]\nname = "signal-fish-client-godot"\nversion = "1.2.3"\n\n'
-            '[dependencies]\nsignal-fish-client = { version = "=1.2.3", path = "../.." }\n',
+        (self.root / "Cargo.toml").write_text(
+            '[package]\nname = "signal-fish-client"\nversion.workspace = true\n'
+            'publish = ["crates-io"]\nedition = "2021"\n\n'
+            '[workspace]\nmembers = ["crates/signal-fish-client-godot"]\nresolver = "2"\n\n'
+            '[workspace.package]\nversion = "1.2.3"\n\n'
+            "[workspace.dependencies]\n"
+            'signal-fish-client = { version = "=1.2.3", path = "." }\n',
             encoding="utf-8",
         )
+        (self.root / "src").mkdir()
+        (self.root / "src/lib.rs").write_text("", encoding="utf-8")
+        adapter = self.root / "crates/signal-fish-client-godot/Cargo.toml"
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        adapter.write_text(
+            '[package]\nname = "signal-fish-client-godot"\nversion.workspace = true\n'
+            'publish = ["crates-io"]\nedition = "2021"\n\n'
+            "[dependencies]\nsignal-fish-client.workspace = true\n",
+            encoding="utf-8",
+        )
+        (adapter.parent / "src").mkdir()
+        (adapter.parent / "src/lib.rs").write_text("", encoding="utf-8")
         for relative in release.VERSION_FILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +225,9 @@ class PreparationTests(unittest.TestCase):
         for relative in release.PROVENANCE_FILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('client_version = "1.2.3"\nsynced = "2020-01-01"\n', encoding="utf-8")
+            path.write_text(
+                'client_version = "1.2.3"\nsynced = "2020-01-01"\n', encoding="utf-8"
+            )
         for relative in release.LOCKSTEP_LOCKFILES:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,9 +251,9 @@ class PreparationTests(unittest.TestCase):
         version = release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
         self.assertEqual(version, "1.3.0")
         self.assertEqual(release.package_version(self.root), "1.3.0")
-        adapter = (self.root / release.ADAPTER_MANIFEST).read_text(encoding="utf-8")
-        self.assertIn('version = "1.3.0"', adapter)
-        self.assertIn('version = "=1.3.0"', adapter)
+        cargo = (self.root / "Cargo.toml").read_text(encoding="utf-8")
+        self.assertIn('version = "1.3.0"', cargo)
+        self.assertIn('version = "=1.3.0"', cargo)
         for relative in release.LOCKSTEP_LOCKFILES:
             lock = (self.root / relative).read_text(encoding="utf-8")
             self.assertEqual(lock.count('version = "1.3.0"'), 2)
@@ -109,11 +261,42 @@ class PreparationTests(unittest.TestCase):
         self.assertIn("## [Unreleased]\n\n## [1.3.0] - 2026-07-13", changelog)
         self.assertIn("compare/v1.2.3...v1.3.0", changelog)
         self.assertIn("compare/v1.3.0...HEAD", changelog)
-        compatibility = (self.root / "tests/compatibility.toml").read_text(encoding="utf-8")
+        compatibility = (self.root / "tests/compatibility.toml").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('client_version = "1.3.0"', compatibility)
         self.assertIn('synced = "2026-07-13"', compatibility)
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+
+    def test_prepare_updates_renamed_workspace_requirement(self) -> None:
+        root_manifest = self.root / "Cargo.toml"
+        root_manifest.write_text(
+            root_manifest.read_text(encoding="utf-8").replace(
+                'signal-fish-client = { version = "=1.2.3", path = "." }',
+                'core_alias = { package = "signal-fish-client", '
+                'version = "=1.2.3", path = "." }',
+            ),
+            encoding="utf-8",
+        )
+        adapter_manifest = self.root / "crates/signal-fish-client-godot/Cargo.toml"
+        adapter_manifest.write_text(
+            adapter_manifest.read_text(encoding="utf-8").replace(
+                "signal-fish-client.workspace = true",
+                "core_alias.workspace = true",
+            ),
+            encoding="utf-8",
+        )
+
+        version = release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+
+        self.assertEqual(version, "1.3.0")
+        cargo = root_manifest.read_text(encoding="utf-8")
+        self.assertIn(
+            'core_alias = { package = "signal-fish-client", '
+            'version = "=1.3.0", path = "." }',
+            cargo,
+        )
 
     def test_pre_one_minor_can_persist_intentional_breaking_policy(self) -> None:
         for path in self.root.rglob("*"):
@@ -160,13 +343,15 @@ class PreparationTests(unittest.TestCase):
             release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
         self.assertEqual(release.package_version(self.root), "1.2.3")
 
-    def test_mismatched_adapter_version_fails_before_writes(self) -> None:
-        adapter = self.root / release.ADAPTER_MANIFEST
+    def test_explicit_member_version_fails_before_writes(self) -> None:
+        adapter = self.root / "crates/signal-fish-client-godot/Cargo.toml"
         adapter.write_text(
-            adapter.read_text(encoding="utf-8").replace('version = "1.2.3"', 'version = "1.2.4"', 1),
+            adapter.read_text(encoding="utf-8").replace(
+                "version.workspace = true", 'version = "1.2.3"', 1
+            ),
             encoding="utf-8",
         )
-        with self.assertRaisesRegex(release.ReleaseError, "versions must match"):
+        with self.assertRaisesRegex(release.ReleaseError, "version.workspace"):
             release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
         self.assertEqual(release.package_version(self.root), "1.2.3")
 
@@ -186,7 +371,9 @@ class PreparationTests(unittest.TestCase):
 
     def test_release_heading_does_not_prefix_match(self) -> None:
         changelog = self.root / "CHANGELOG.md"
-        text = changelog.read_text(encoding="utf-8").replace("## [1.2.3]", "## [1.2.30]")
+        text = changelog.read_text(encoding="utf-8").replace(
+            "## [1.2.3]", "## [1.2.30]"
+        )
         changelog.write_text(text, encoding="utf-8")
         self.assertIsNone(release.release_heading("1.2.3").search(text))
 
@@ -210,8 +397,68 @@ class ArtifactTests(unittest.TestCase):
 
     @mock.patch.object(release.urllib.request, "urlopen")
     def test_registry_404_means_unpublished(self, urlopen: mock.Mock) -> None:
-        urlopen.side_effect = release.urllib.error.HTTPError("url", 404, "missing", {}, None)
+        urlopen.side_effect = release.urllib.error.HTTPError(
+            "url", 404, "missing", {}, None
+        )
         self.assertIsNone(release.registry_checksum("demo", "1.2.3"))
+
+    def test_registry_plan_state_matrix_and_publish_order(self) -> None:
+        plan = {
+            "version": "1.2.3",
+            "packages": [
+                {
+                    "name": "core",
+                    "version": "1.2.3",
+                    "manifest_path": "Cargo.toml",
+                    "artifact": "core-1.2.3.crate",
+                    "dependencies": [],
+                },
+                {
+                    "name": "adapter",
+                    "version": "1.2.3",
+                    "manifest_path": "adapter/Cargo.toml",
+                    "artifact": "adapter-1.2.3.crate",
+                    "dependencies": ["core"],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            (artifacts / "core-1.2.3.crate").write_bytes(b"core")
+            (artifacts / "adapter-1.2.3.crate").write_bytes(b"adapter")
+            checksums = {
+                "core": release.sha256(artifacts / "core-1.2.3.crate"),
+                "adapter": release.sha256(artifacts / "adapter-1.2.3.crate"),
+            }
+            cases = (
+                ({}, ["core", "adapter"], False),
+                ({"core": checksums["core"]}, ["adapter"], True),
+                (checksums, [], False),
+            )
+            for published, expected, requires_no_verify in cases:
+                with self.subTest(published=published):
+                    state = release.registry_plan(
+                        plan, artifacts, lambda name, _version: published.get(name)
+                    )
+                    self.assertEqual(state["pending"], expected)
+                    self.assertEqual(
+                        state["resume_requires_no_verify"], requires_no_verify
+                    )
+
+            with self.assertRaisesRegex(release.ReleaseError, "unpublished workspace"):
+                release.registry_plan(
+                    plan,
+                    artifacts,
+                    lambda name, _version: (
+                        checksums["adapter"] if name == "adapter" else None
+                    ),
+                )
+            with self.assertRaisesRegex(release.ReleaseError, "does not match"):
+                release.registry_plan(
+                    plan,
+                    artifacts,
+                    lambda name, _version: "0" * 64 if name == "core" else None,
+                )
 
 
 class WorkflowPolicyTests(unittest.TestCase):
@@ -225,90 +472,103 @@ class WorkflowPolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
         cls.ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        cls.releasing = (root / "docs/releasing.md").read_text(encoding="utf-8")
 
-    def test_prepare_uses_app_token_and_supports_dry_run(self) -> None:
-        self.assertIn("actions/create-github-app-token@v3.2.0", self.prepare)
-        self.assertIn("RELEASE_APP_PRIVATE_KEY", self.prepare)
+    def test_prepare_uses_builtin_token_and_supports_dry_run(self) -> None:
+        self.assertNotIn("actions/create-github-app-token", self.prepare)
+        self.assertNotIn("RELEASE_APP_", self.prepare)
+        self.assertIn("contents: write", self.prepare)
+        self.assertIn("pull-requests: write", self.prepare)
+        self.assertIn("persist-credentials: true", self.prepare)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", self.prepare)
         self.assertIn("dry_run:", self.prepare)
-        self.assertIn('branch=release/%s', self.prepare)
+        self.assertIn("branch=release/%s", self.prepare)
         self.assertIn("gh pr create", self.prepare)
+        self.assertIn("Approve workflows to run", self.prepare)
+        self.assertIn("Approve workflows to run", self.releasing)
+        self.assertNotIn("signal-fish-release[bot]", self.prepare)
+        self.assertIn('git config user.name "github-actions[bot]"', self.prepare)
+        bot_email = (
+            'git config user.email '
+            '"41898282+github-actions[bot]@users.noreply.github.com"'
+        )
+        self.assertIn(bot_email, self.prepare)
+        self.assertIn(bot_email, self.publish)
+        self.assertNotIn(
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            self.prepare + self.publish,
+        )
 
-    def test_publish_is_manual_only_and_protected(self) -> None:
+    def test_publish_is_input_free_manual_only_and_protected(self) -> None:
         self.assertIn("workflow_dispatch:", self.publish)
+        dispatch = self.publish.split("workflow_dispatch:", 1)[1].split(
+            "permissions:", 1
+        )[0]
+        self.assertNotIn("inputs:", dispatch)
         self.assertNotIn("push:\n", self.publish)
         self.assertIn("environment: crates-io", self.publish)
         self.assertIn("cancel-in-progress: false", self.publish)
-        self.assertIn("expected strict X.Y.Z", self.publish)
         self.assertIn("checks: read", self.publish)
+        self.assertIn("Require the default branch", self.publish)
 
     def test_publish_has_fail_closed_recovery_and_assets(self) -> None:
         for marker in (
             "Existing tag",
-            "Published core checksum",
-            "registry-checksum",
+            "registry-plan",
             "SHA256SUMS",
             "cargo cyclonedx",
-            "actions/attest@v4.1.1",
+            "actions/attest@v4.2.0",
             "cargo publish --dry-run",
             "cargo publish",
             "gh release create",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
-
-    def test_unpublished_registry_sentinel_is_compared_as_a_literal(self) -> None:
-        self.assertIn(
-            'if [ "$adapter_baseline" = "UNPUBLISHED" ]; then', self.publish
-        )
-        self.assertIn(
-            'if [ "$core_registry" = "UNPUBLISHED" ] '
-            '&& [ "$adapter_registry" != "UNPUBLISHED" ]; then',
-            self.publish,
+        self.assertEqual(
+            self.publish.count("resume_args+=(--no-verify)"),
+            2,
+            "both resumed dry-run and publish must tolerate crates.io index lag",
         )
 
     def test_semver_policy_is_derived_and_check_runs_are_latest_only(self) -> None:
-        self.assertIn('semver-policy "$VERSION"', self.publish)
+        self.assertIn('semver-policy "$version"', self.publish)
         self.assertIn('--release-type "$RELEASE_TYPE"', self.publish)
         self.assertIn('if [ "$BREAKING" = true ]', self.prepare)
         self.assertIn("chore!: prepare release", self.prepare)
-        self.assertEqual(self.publish.count("check-runs?filter=latest"), 2)
-        self.assertIn("Expected two CycloneDX JSON files", self.publish)
-        self.assertIn('$RUNNER_TEMP/release-assets', self.publish)
+        self.assertEqual(self.publish.count("check-runs?filter=latest"), 1)
+        self.assertIn("scripts/check-required-checks.py", self.publish)
+        self.assertIn("Expected one CycloneDX file", self.publish)
+        self.assertIn("$RUNNER_TEMP/release-assets", self.publish)
         self.assertIn("Release tooling dirtied the checkout", self.publish)
         self.assertIn("Release publication", self.publish)
         self.assertIn("fetch-tags: true", self.publish)
-        self.assertIn("github.run_id", self.publish)
-        self.assertIn("scripts/release.py package-version", self.publish)
+        self.assertIn("scripts/release.py workspace-plan", self.publish)
 
-    def test_publish_reproduces_and_publishes_both_lockstep_crates(self) -> None:
+    def test_workflows_enumerate_publishable_workspace_crates(self) -> None:
         for marker in (
-            "signal-fish-client-godot-${VERSION}.crate",
-            "[patch.crates-io]",
-            "cargo publish -p signal-fish-client",
-            "cargo publish --dry-run --no-verify -p signal-fish-client-godot",
-            "cargo publish --no-verify -p signal-fish-client-godot",
-            "core_published",
-            "adapter_published",
-            "ADAPTER_CHECKSUM",
+            "workspace-plan",
+            "mapfile -t packages",
+            'package_args+=(-p "$package")',
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.publish)
+                self.assertIn(marker, self.prepare)
+        self.assertIn("workspace-plan", self.ci)
 
-    def test_unpublished_adapter_packaging_patches_to_local_core(self) -> None:
-        marker = "patch.crates-io.signal-fish-client.path='$core_path'"
-        for workflow in (self.ci, self.prepare, self.publish):
+    def test_release_toolchain_and_runner_are_pinned(self) -> None:
+        for workflow in (self.prepare, self.publish):
             with self.subTest(workflow=workflow[:40]):
-                self.assertIn(marker, workflow)
+                self.assertIn('RELEASE_RUST: "1.96.1"', workflow)
+                self.assertIn("runs-on: ubuntu-24.04", workflow)
+                self.assertIn("toolchain: ${{ env.RELEASE_RUST }}", workflow)
 
-    def test_adapter_publish_reuses_the_reproduced_local_core_patch(self) -> None:
-        publish_adapter = self.publish.split(
-            "- name: Dry-run and publish adapter to crates.io", 1
-        )[1].split("- name: Wait for adapter visibility", 1)[0]
-        self.assertIn("cargo publish --dry-run --no-verify", publish_adapter)
-        self.assertIn("cargo publish --no-verify", publish_adapter)
-        self.assertIn(
-            "patch.crates-io.signal-fish-client.path='$core_path'", publish_adapter
-        )
+    def test_ci_publish_dry_run_uses_the_release_toolchain(self) -> None:
+        publish_job = self.ci.split("  publish-dry-run:", 1)[1].split(
+            "\n  required:", 1
+        )[0]
+        self.assertIn("toolchain: ${{ env.RELEASE_RUST }}", publish_job)
+        self.assertIn('cargo +"${RELEASE_RUST}" publish --dry-run', publish_job)
+        self.assertIn('RELEASE_RUST: "1.96.1"', self.ci)
 
 
 if __name__ == "__main__":

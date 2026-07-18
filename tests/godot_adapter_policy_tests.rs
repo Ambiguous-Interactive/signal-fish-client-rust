@@ -31,10 +31,10 @@ fn dependency<'a>(manifest: &'a toml::Value, name: &str) -> &'a toml::Value {
         .unwrap_or_else(|| panic!("missing dependency {name}"))
 }
 
-fn package_version(manifest: &toml::Value) -> &str {
-    manifest["package"]["version"]
+fn workspace_version(manifest: &toml::Value) -> &str {
+    manifest["workspace"]["package"]["version"]
         .as_str()
-        .unwrap_or_else(|| panic!("package.version must be a string"))
+        .unwrap_or_else(|| panic!("workspace.package.version must be a string"))
 }
 
 #[test]
@@ -50,14 +50,21 @@ fn core_manifest_is_godot_independent() {
     assert!(!dependencies.contains_key("godot"));
     assert!(!features.contains_key("transport-godot"));
     assert!(!root().join("src/transports/godot_websocket.rs").exists());
-    assert!(
-        manifest["package"]["include"]
-            .as_array()
-            .expect("core package.include must be an array")
-            .iter()
-            .any(|value| value.as_str() == Some("!/tests/godot_adapter_policy_tests.rs")),
-        "repository-only adapter policy tests must not be shipped without their workspace inputs"
-    );
+    let package_include = manifest["package"]["include"]
+        .as_array()
+        .expect("core package.include must be an array");
+    for repository_only_test in [
+        "!/tests/ci_config_tests.rs",
+        "!/tests/godot_adapter_policy_tests.rs",
+        "!/tests/shared_core_policy_tests.rs",
+    ] {
+        assert!(
+            package_include
+                .iter()
+                .any(|value| value.as_str() == Some(repository_only_test)),
+            "{repository_only_test} must not ship without its repository inputs"
+        );
+    }
 
     let library = fs::read_to_string(root().join("src/lib.rs")).expect("read core crate root");
     assert!(!library.contains("GodotWebSocketTransport"));
@@ -67,9 +74,21 @@ fn core_manifest_is_godot_independent() {
 fn adapter_declares_lockstep_core_and_supported_godot_range() {
     let core = parse_toml(root().join("Cargo.toml"));
     let adapter = parse_toml(root().join(ADAPTER_MANIFEST));
-    let core_version = package_version(&core);
+    let core_version = workspace_version(&core);
 
-    assert_eq!(package_version(&adapter), core_version);
+    assert_eq!(
+        core["package"]["version"]["workspace"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        adapter["package"]["version"]["workspace"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(core["package"]["publish"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        adapter["package"]["publish"].as_array().map(Vec::len),
+        Some(1)
+    );
     assert_eq!(adapter["package"]["rust-version"].as_str(), Some("1.94.0"));
 
     let godot = dependency(&adapter, "godot");
@@ -91,11 +110,16 @@ fn adapter_declares_lockstep_core_and_supported_godot_range() {
 
     let core_dependency = dependency(&adapter, "signal-fish-client");
     let expected_core = format!("={core_version}");
+    assert_eq!(core_dependency["workspace"].as_bool(), Some(true));
+    assert_eq!(core_dependency["default-features"].as_bool(), Some(false));
     assert_eq!(
-        core_dependency["version"].as_str(),
+        core["workspace"]["dependencies"]["signal-fish-client"]["version"].as_str(),
         Some(expected_core.as_str())
     );
-    assert_eq!(core_dependency["default-features"].as_bool(), Some(false));
+    assert_eq!(
+        core["workspace"]["dependencies"]["signal-fish-client"]["default-features"].as_bool(),
+        Some(false)
+    );
     assert_eq!(
         core_dependency["features"].as_array(),
         Some(&vec![toml::Value::String("polling-client".to_string())])
@@ -105,7 +129,7 @@ fn adapter_declares_lockstep_core_and_supported_godot_range() {
 #[test]
 fn minimum_and_latest_fixtures_pin_the_contract_endpoints() {
     let core = parse_toml(root().join("Cargo.toml"));
-    let expected_client = package_version(&core);
+    let expected_client = workspace_version(&core);
 
     for (fixture, expected_godot) in [(MIN_FIXTURE, "0.4.5"), (LATEST_FIXTURE, "0.5.4")] {
         let manifest = parse_toml(root().join(fixture).join("Cargo.toml"));

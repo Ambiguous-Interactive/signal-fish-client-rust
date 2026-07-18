@@ -1,6 +1,7 @@
 [package]
 name = "signal-fish-client"
-version = "0.8.0"
+version.workspace = true
+publish = ["crates-io"]
 edition = "2021"
 license = "MIT"
 authors = ["Ambiguous Interactive <eli@theambiguous.co>"]
@@ -16,7 +17,9 @@ include = [
     "/src/**",
     "/examples/**",
     "/tests/**",
+    "!/tests/ci_config_tests.rs",
     "!/tests/godot_adapter_policy_tests.rs",
+    "!/tests/shared_core_policy_tests.rs",
     "/Cargo.toml",
     "/LICENSE",
     "/README.md",
@@ -113,3 +116,9 @@ indexing_slicing = "deny"
 [workspace]
 members = ["crates/signal-fish-client-godot"]
 resolver = "2"
+
+[workspace.package]
+version = "0.8.0"
+
+[workspace.dependencies]
+signal-fish-client = { version = "=0.8.0", path = ".", default-features = false }

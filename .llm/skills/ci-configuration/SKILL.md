@@ -25,6 +25,39 @@ Reference for CI/CD tool configuration, common pitfalls, identifier boundary mat
 
 Use `uses: owner/action@vN` (or `@vN.N.N`) and do not use commit-SHA refs. Only `dtolnay/rust-toolchain` may use channels (`@stable`, `@nightly`, `@beta`); policy is enforced by `scripts/check-workflows.sh` and `tests/ci_config_tests.rs`.
 
+### Required checks need aggregate gates
+
+GitHub can merge a PR when individual matrix jobs are not the stable contexts
+named in branch policy, and a required path-filtered workflow may never report
+a check. Every blocking workflow therefore runs on every PR and default-branch
+push, and ends with a uniquely named aggregate gate. The gate uses
+`if: always()`, declares every blocking job in `needs`, and fails unless every
+dependency result is `success`. Running on the push is necessary so Release can
+verify the exact default-branch SHA rather than only the pre-merge PR head.
+
+`.github/required-checks.json` is the canonical list of gate names and desired
+default-branch rules. Keep gate names unique and stable. Update the config, the
+workflow gate, and `required_check_policy` tests together. The scheduled
+Repository Policy workflow detects live GitHub ruleset drift; do not add bypass
+actors to make a failing gate mergeable. Live ruleset reads use the workflow's
+authenticated built-in `GITHUB_TOKEN`. GitHub hides bypass actors from workflow
+tokens, so the operator runbook requires manual verification of an empty bypass
+list and the automated policy must not claim it checked that hidden field. One
+applicable ruleset must satisfy the complete checked-in policy; never combine
+partial guarantees from separate rulesets into a passing audit.
+
+### Workspace MSRV isolation
+
+The core MSRV job must test Cargo's actual publishable `.crate` artifact. Do
+not recreate a standalone manifest by truncating or rewriting workspace TOML;
+that diverges from Cargo normalization and breaks inherited fields. Package
+with pinned release Cargo, extract the artifact, compile every packaged test
+target with `--no-run` under the core MSRV, and execute the package-independent
+library tests with `--lib`. Repository-policy tests that require `.github`,
+`.llm`, or sibling crates must stay excluded from `package.include`. Keep
+`isolated_core_msrv_uses_the_publishable_package_artifact` and the package
+exclusion policy test in sync with this workflow.
+
 ### lychee: TOML vs CLI syntax
 
 The lychee link checker has different syntax for TOML config vs CLI flags.

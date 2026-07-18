@@ -29,8 +29,21 @@ Run this before every commit. All three steps must pass with zero warnings.
 ## Release Automation
 
 Use the manual **Prepare Release** and **Release** workflows. They prepare,
-reproduce, attest, and publish both crates at one version, core first and the
-adapter second; see `skills/release-recovery/SKILL.md` and `docs/releasing.md`.
+reproduce, attest, and publish every crates.io-publishable workspace member at
+the single `[workspace.package].version`. `scripts/release.py workspace-plan`
+discovers members with Cargo metadata and orders internal dependencies; Release
+has no version input and resumes only checksum-identical partial publication.
+Release jobs pin Rust 1.96.1 and Ubuntu 24.04. See
+`skills/release-recovery/SKILL.md` and `docs/releasing.md`.
+
+Every blocking workflow runs on PR and default-branch SHAs and ends in a
+uniquely named aggregate `Required` job. The names and desired rules live in
+`.github/required-checks.json`; the scheduled Repository Policy workflow audits
+GitHub for visible drift with its authenticated built-in `GITHUB_TOKEN`.
+GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify
+an empty bypass list in the ruleset UI. Prepare Release also uses only
+`GITHUB_TOKEN`; maintainers approve the resulting PR workflows before they run.
+Path filters must not suppress a configured required gate.
 
 ## GitHub Tool Order
 
@@ -243,7 +256,8 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 
 The core manifest must never depend on `godot` or expose godot-rust types.
 `signal-fish-client-godot` depends exactly on the same core version with
-`default-features = false` and `polling-client`, and declares
+an inherited workspace dependency, `default-features = false`, and
+`polling-client`, and declares
 `godot = ">=0.4.5, <0.6"` with no-thread WASM and lazy-function-table support.
 Its minimum 0.4.5 and latest 0.5.4 standalone fixtures must each lock exactly
 one `godot` and one version of every `godot-*` family crate.

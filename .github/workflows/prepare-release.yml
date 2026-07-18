@@ -23,15 +23,19 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: prepare-release
   cancel-in-progress: false
 
+env:
+  RELEASE_RUST: "1.96.1"
+
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Require the default branch
@@ -44,31 +48,26 @@ jobs:
             exit 1
           fi
 
-      - name: Create release-app token
-        id: app-token
-        if: ${{ !inputs.dry_run }}
-        uses: actions/create-github-app-token@v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
       - name: Checkout default-branch HEAD
         uses: actions/checkout@v7.0.0
         with:
           ref: ${{ github.event.repository.default_branch }}
-          token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Install Rust
+      - name: Install pinned release Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RELEASE_RUST }}
           components: rustfmt, clippy
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Test release tooling
-        run: python3 -m unittest scripts/test_release.py
+        run: >-
+          python3 -m unittest scripts/test_release.py scripts/test_required_checks.py
+          scripts/test_audit_repository_rules.py
 
       - name: Prepare release files
         id: version
@@ -87,13 +86,16 @@ jobs:
       - name: Run mandatory verification
         run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 
-      - name: Verify package and documentation
+      - name: Verify every publishable package and documentation
         run: |
-          cargo package --allow-dirty -p signal-fish-client
-          core_path=$(pwd)
-          cargo package --allow-dirty --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
-          cargo publish --dry-run --allow-dirty -p signal-fish-client
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          mapfile -t packages < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
+          package_args=()
+          for package in "${packages[@]}"; do
+            package_args+=(-p "$package")
+          done
+          cargo package --allow-dirty "${package_args[@]}"
+          cargo publish --dry-run --allow-dirty "${package_args[@]}"
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
 
@@ -109,14 +111,14 @@ jobs:
           BREAKING: ${{ inputs.breaking }}
         run: |
           git switch -c "$BRANCH"
-          git config user.name "signal-fish-release[bot]"
-          git config user.email "signal-fish-release[bot]@users.noreply.github.com"
-          git add Cargo.toml crates/signal-fish-client-godot/Cargo.toml \
-            README.md CHANGELOG.md docs .llm tests/compatibility.toml \
-            tests/godot-compat-min/Cargo.lock \
-            tests/godot-web-smoke/Cargo.lock \
-            tests/server-spec/PROVENANCE.toml \
-            tests/wire-samples/PROVENANCE.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --update
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            printf '::error::Release preparation produced no tracked changes.\n'
+            exit 1
+          fi
           subject="chore: prepare release ${VERSION}"
           if [ "$BREAKING" = true ]; then
             subject="chore!: prepare release ${VERSION}"
@@ -127,7 +129,7 @@ jobs:
       - name: Open release pull request
         if: ${{ !inputs.dry_run }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.version.outputs.branch }}
           VERSION: ${{ steps.version.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -137,8 +139,14 @@ jobs:
           if [ "$BREAKING" = true ]; then
             title="chore!: prepare release ${VERSION}"
           fi
+          {
+            printf 'Automated release preparation for %s.\n\n' "$VERSION"
+            printf '%s\n' \
+              'GitHub holds workflows triggered by this app-free automation for maintainer approval.' \
+              'Select **Approve workflows to run**, then merge only after every required check and review is green.'
+          } > "$RUNNER_TEMP/release-pr.md"
           gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$BRANCH" \
             --title "$title" \
-            --body "Automated release preparation for \`${VERSION}\`. Merge only after every required check and review is green."
+            --body-file "$RUNNER_TEMP/release-pr.md"

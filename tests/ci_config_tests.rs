@@ -20,6 +20,83 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+mod required_check_policy {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn every_blocking_pr_workflow_has_a_stable_aggregate_gate() {
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        let checks = policy["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array");
+        assert_eq!(checks.len(), 11);
+
+        let mut jobs = BTreeSet::new();
+        for check in checks {
+            let file = check["file"].as_str().expect("required check file");
+            let job = check["job"].as_str().expect("required check job");
+            assert!(
+                !job.trim().is_empty(),
+                "required check job names must not be blank"
+            );
+            assert!(
+                jobs.insert(job),
+                "required gate names must be unique: {job}"
+            );
+            let workflow = read_project_file(&format!(".github/workflows/{file}"));
+            assert!(
+                workflow.contains(&format!("name: {job}")),
+                "{file} must define aggregate gate {job}"
+            );
+            assert!(
+                workflow.contains("if: ${{ always() }}"),
+                "{file} aggregate gate must run even after a dependency failure"
+            );
+            assert!(
+                workflow.contains("NEEDS_JSON: ${{ toJSON(needs) }}"),
+                "{file} aggregate gate must inspect every dependency result"
+            );
+            assert!(
+                !workflow.contains("pull_request:\n    paths:")
+                    && !workflow.contains("branches: [main]\n    paths:"),
+                "{file} cannot use path filters when its gate must report on PR and main SHAs"
+            );
+        }
+    }
+
+    #[test]
+    fn release_preflight_reads_every_page_of_commit_checks() {
+        let workflow = read_project_file(".github/workflows/publish.yml");
+        assert!(
+            workflow.contains("gh api --paginate --slurp"),
+            "release preflight must paginate check runs before enforcing required checks"
+        );
+        assert!(workflow.contains("check-runs?filter=latest&per_page=100"));
+    }
+
+    #[test]
+    fn repository_policy_uses_the_authenticated_builtin_token() {
+        let workflow = read_project_file(".github/workflows/repository-policy.yml");
+        let audit = read_project_file("scripts/audit-repository-rules.py");
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        assert!(!workflow.contains("actions/create-github-app-token"));
+        assert!(!workflow.contains("RELEASE_APP_"));
+        assert!(!workflow.contains("permission-administration"));
+        assert!(workflow.contains("GH_TOKEN: ${{ github.token }}"));
+        assert!(!audit.contains("forbid_bypass_actors"));
+        assert!(policy["repository_rules"]
+            .get("forbid_bypass_actors")
+            .is_none());
+        assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module: Godot issue #61 system-regression policy
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,10 +165,10 @@ mod godot_issue_61_policy {
                 && workflow.contains("NETEM_SEED: \"6101\"")
                 && workflow.contains("IPROUTE2_VERSION: \"6.6.0\"")
                 && workflow.contains("sha256sum --check")
-                && workflow.contains("actions/download-artifact@v7.0.0")
+                && workflow.contains("actions/download-artifact@v8.0.1")
                 && workflow.contains("--locked")
         );
-        assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 2);
+        assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 3);
         assert_eq!(workflow.matches("name: godot-web-export").count(), 2);
         for required in [
             "needs: build-export",
@@ -135,7 +212,9 @@ mod godot_issue_61_policy {
     fn llms_txt_is_in_the_blocking_docs_validation_surface() {
         let workflow = read_project_file(".github/workflows/docs-validation.yml");
         let rendering = read_project_file("scripts/check-docs-rendering.sh");
-        assert!(workflow.matches("- \"llms.txt\"").count() >= 2);
+        assert_eq!(workflow.matches("- \"llms.txt\"").count(), 0);
+        assert!(workflow.contains("  pull_request:\n"));
+        assert!(workflow.contains("name: Docs Validation Required"));
         assert!(workflow.contains("            \"llms.txt\""));
         assert!(rendering.contains("cmp -s \"$REPO_ROOT/llms.txt\" \"$SITE_DIR/llms.txt\""));
     }
@@ -166,16 +245,26 @@ fn read_project_file(relative_path: &str) -> String {
     })
 }
 
-/// Reads Cargo.toml and returns package version.
-fn cargo_package_version() -> String {
-    let cargo = read_project_file("Cargo.toml");
-    let parsed: toml::Value = toml::from_str(&cargo).expect("Cargo.toml must be valid TOML");
+/// Reads the version from a workspace source manifest or a standalone package manifest.
+fn manifest_package_version(cargo: &str) -> Option<String> {
+    let parsed: toml::Value = toml::from_str(cargo).expect("Cargo.toml must be valid TOML");
     parsed
-        .get("package")
+        .get("workspace")
+        .and_then(|v| v.get("package"))
         .and_then(|v| v.get("version"))
         .and_then(toml::Value::as_str)
+        .or_else(|| {
+            parsed
+                .get("package")
+                .and_then(|v| v.get("version"))
+                .and_then(toml::Value::as_str)
+        })
         .map(std::string::ToString::to_string)
-        .expect("Cargo.toml must define [package].version as a string")
+}
+
+fn cargo_package_version() -> String {
+    manifest_package_version(&read_project_file("Cargo.toml"))
+        .expect("Cargo.toml must define [workspace.package].version or package.version as a string")
 }
 
 fn is_canonical_git_main_dependency(line: &str) -> bool {
@@ -358,6 +447,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/docs-deploy.yml",
     ".github/workflows/docs-validation.yml",
     ".github/workflows/examples-validation.yml",
+    ".github/workflows/godot-web.yml",
     ".github/workflows/no-panics.yml",
     ".github/workflows/security-supply-chain.yml",
     ".github/workflows/semver-checks.yml",
@@ -365,6 +455,8 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/wasm.yml",
     ".github/workflows/workflow-lint.yml",
     ".github/workflows/publish.yml",
+    ".github/workflows/prepare-release.yml",
+    ".github/workflows/repository-policy.yml",
     ".github/workflows/dependabot-auto-merge.yml",
     ".github/workflows/protocol-sync.yml",
 ];
@@ -607,6 +699,23 @@ esac
         blocks
     }
 
+    fn retry_wrapper_generates_lockfile(line: &str) -> bool {
+        let tokens: Vec<_> = line.split_whitespace().collect();
+        let Some(wrapper) = tokens
+            .iter()
+            .position(|token| *token == "scripts/cargo-retry.sh")
+        else {
+            return false;
+        };
+        let cargo_args = &tokens[wrapper + 1..];
+
+        cargo_args.first() == Some(&"generate-lockfile")
+            || cargo_args
+                .first()
+                .is_some_and(|token| token.starts_with('+'))
+                && cargo_args.get(1) == Some(&"generate-lockfile")
+    }
+
     #[test]
     fn cargo_network_retry_is_configured_for_ci_resilience() {
         let contents = read_project_file(".cargo/config.toml");
@@ -709,9 +818,7 @@ esac
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
             let contents = read_project_file(workflow_path);
             for (line_num, line) in contents.lines().enumerate() {
-                if line.contains("generate-lockfile")
-                    && !line.contains("scripts/cargo-retry.sh generate-lockfile")
-                {
+                if line.contains("generate-lockfile") && !retry_wrapper_generates_lockfile(line) {
                     violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
                 }
             }
@@ -724,6 +831,22 @@ esac
              Violations:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn lockfile_retry_policy_accepts_optional_cargo_toolchain_selector() {
+        assert!(retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh generate-lockfile"
+        ));
+        assert!(retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 generate-lockfile"
+        ));
+        assert!(!retry_wrapper_generates_lockfile(
+            "run: cargo +1.96.1 generate-lockfile"
+        ));
+        assert!(!retry_wrapper_generates_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 metadata # generate-lockfile"
+        ));
     }
 
     #[test]
@@ -1262,9 +1385,22 @@ mod ci_workflow_policy {
         );
         assert!(
             contents.contains("--release-type major")
-                && contents.contains("steps.pr-release-type.outputs.release-type == 'major'")
-                && contents.contains("steps.pr-release-type.outputs.release-type == 'auto'"),
+                && contents.contains("RELEASE_TYPE: ${{ steps.pr-release-type.outputs.release-type }}")
+                && contents.contains("if [ \"$RELEASE_TYPE\" = major ]; then"),
             "Semver CI must use major policy only for explicitly marked breaking PRs and retain inferred checks otherwise"
+        );
+    }
+
+    #[test]
+    fn semver_registry_search_matches_only_the_requested_crate_name() {
+        let workflow = read_project_file(".github/workflows/semver-checks.yml");
+        assert!(
+            workflow.contains(r#"grep -q "^${package} =""#),
+            "crates.io search results must be anchored at the start of a result line"
+        );
+        assert!(
+            !workflow.contains(r#"grep -qF "${package} =""#),
+            "a suffix crate name must not be mistaken for the requested crate"
         );
     }
 
@@ -1311,6 +1447,41 @@ mod ci_workflow_policy {
                 .err()
                 .unwrap_or_else(|| "unknown MSRV validation error".to_string())
         );
+    }
+
+    #[test]
+    fn isolated_core_msrv_uses_the_publishable_package_artifact() {
+        let ci = ci_contents();
+        let msrv_job =
+            extract_job_block(&ci, "msrv").expect("ci.yml must define the msrv job under jobs");
+
+        assert!(
+            msrv_job.contains("core_version=$(python3 scripts/release.py package-version)"),
+            "isolating the root package must locate the versioned crate artifact"
+        );
+        assert!(
+            msrv_job.contains(
+                "cargo +1.96.1 package --locked --package signal-fish-client --no-verify"
+            ) && msrv_job.contains("--strip-components=1"),
+            "MSRV must test Cargo's publishable package, not a hand-edited source manifest"
+        );
+        let lockfile = msrv_job
+            .find("bash scripts/cargo-retry.sh +1.96.1 generate-lockfile")
+            .expect("MSRV package isolation must generate the gitignored root lockfile");
+        let package = msrv_job
+            .find("cargo +1.96.1 package --locked")
+            .expect("MSRV package isolation must package with the lockfile");
+        assert!(
+            lockfile < package,
+            "lockfile generation must precede --locked packaging"
+        );
+        assert!(
+            msrv_job.contains("--all-features --no-run")
+                && msrv_job.contains("--all-features --lib"),
+            "MSRV must compile every test target and execute package-independent library tests"
+        );
+        assert!(!msrv_job.contains("git archive HEAD"));
+        assert!(!msrv_job.contains("awk -v version"));
     }
 
     #[test]
@@ -1440,6 +1611,22 @@ mod ci_workflow_policy {
 
 mod crate_version_consistency {
     use super::*;
+
+    #[test]
+    fn version_reader_accepts_workspace_source_and_standalone_package_manifests() {
+        assert_eq!(
+            manifest_package_version(
+                "[package]\nname = \"demo\"\nversion.workspace = true\n\n[workspace.package]\nversion = \"1.2.3\"\n"
+            )
+            .as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            manifest_package_version("[package]\nname = \"demo\"\nversion = \"1.2.3\"\n")
+                .as_deref(),
+            Some("1.2.3")
+        );
+    }
 
     fn is_semver(value: &str) -> bool {
         let mut parts = value.split('.');
@@ -3408,6 +3595,20 @@ mod ci_config_validation {
             }
         }
         results
+    }
+
+    #[test]
+    fn workflows_do_not_depend_on_release_apps() {
+        for (path, contents) in all_workflow_files() {
+            assert!(
+                !contents.contains("actions/create-github-app-token"),
+                "{path} must use the built-in GITHUB_TOKEN, not a GitHub App token"
+            );
+            assert!(
+                !contents.contains("RELEASE_APP_"),
+                "{path} must not require release-App variables or secrets"
+            );
+        }
     }
 
     /// Extract all `uses: owner/repo@version` references from workflow YAML,

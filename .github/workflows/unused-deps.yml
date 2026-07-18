@@ -97,3 +97,20 @@ jobs:
 
       - name: Run cargo udeps
         run: cargo +nightly udeps --all-targets --all-features
+
+  required:
+    name: Unused Deps Required
+    if: ${{ always() }}
+    needs: [cargo-machete]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require cargo-machete
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

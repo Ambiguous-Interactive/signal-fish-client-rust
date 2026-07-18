@@ -2,11 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Release version in strict X.Y.Z form
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -21,25 +16,21 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RELEASE_RUST: "1.96.1"
   RUSTDOCFLAGS: "-D warnings"
 
 jobs:
   release:
     name: Release publication
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: crates-io
     steps:
-      - name: Validate strict version input
+      - name: Require the default branch
         env:
-          VERSION: ${{ inputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          if ! printf '%s\n' "$VERSION" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
-            printf '::error::Invalid version %s; expected strict X.Y.Z.\n' "$VERSION"
-            exit 1
-          fi
           if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
             printf '::error::Release must run from %s, not %s.\n' "$DEFAULT_BRANCH" "$REF_NAME"
             exit 1
@@ -52,12 +43,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Verify default-branch HEAD and successful checks
+      - name: Verify default-branch HEAD and required checks
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
           local_sha=$(git rev-parse HEAD)
@@ -65,33 +55,17 @@ jobs:
             printf '::error::Checked-out SHA %s is not default-branch HEAD %s.\n' "$local_sha" "$remote_sha"
             exit 1
           fi
-          current_run="/actions/runs/${RUN_ID}/"
-          checks=$(
-            gh api --paginate \
-              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
-              --jq "[.check_runs[] | select(
-                ((.details_url // \"\") | contains(\"${current_run}\")) | not)] | length" |
-              awk '{ total += $1 } END { print total + 0 }'
-          )
-          failures=$(
-            gh api --paginate \
-              "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
-              --jq "[.check_runs[] | select(
-                ((.details_url // \"\") | contains(\"${current_run}\")) | not) | select(
-                  .status != \"completed\" or
-                  (.conclusion != \"success\" and
-                   .conclusion != \"neutral\" and
-                   .conclusion != \"skipped\"))] | length" |
-              awk '{ total += $1 } END { print total + 0 }'
-          )
-          if [ "$checks" -eq 0 ] || [ "$failures" -ne 0 ]; then
-            printf '::error::Default-branch HEAD has %s check runs and %s non-successful runs.\n' "$checks" "$failures"
-            exit 1
-          fi
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${local_sha}/check-runs?filter=latest&per_page=100" \
+            > "$RUNNER_TEMP/check-runs.json"
+          python3 scripts/check-required-checks.py \
+            --check-runs "$RUNNER_TEMP/check-runs.json" \
+            --policy .github/required-checks.json
 
-      - name: Install Rust
+      - name: Install pinned release Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RELEASE_RUST }}
           components: rustfmt, clippy
 
       - name: Cache Cargo artifacts
@@ -102,129 +76,82 @@ jobs:
         with:
           tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
 
-      - name: Validate release files
+      - name: Derive and validate release metadata
         id: release-metadata
-        env:
-          VERSION: ${{ inputs.version }}
         run: |
-          cargo_version=$(python3 scripts/release.py package-version)
-          if [ "$VERSION" != "$cargo_version" ]; then
-            printf '::error::Input %s does not match Cargo.toml %s.\n' "$VERSION" "$cargo_version"
+          python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"
+          version=$(jq -r '.version' "$RUNNER_TEMP/workspace-plan.json")
+          if ! grep -qF "## [${version}] - " CHANGELOG.md; then
+            printf '::error::CHANGELOG.md has no dated %s section.\n' "$version"
             exit 1
           fi
-          adapter_version=$(python3 scripts/release.py package-version \
-            --manifest crates/signal-fish-client-godot/Cargo.toml)
-          if [ "$VERSION" != "$adapter_version" ]; then
-            printf '::error::Input %s does not match adapter Cargo.toml %s.\n' \
-              "$VERSION" "$adapter_version"
-            exit 1
-          fi
-          if ! grep -qF "version = \"=${VERSION}\"" \
-            crates/signal-fish-client-godot/Cargo.toml; then
-            printf '::error::Adapter does not require core exactly at =%s.\n' "$VERSION"
-            exit 1
-          fi
-          if ! grep -qF "## [${VERSION}] - " CHANGELOG.md; then
-            printf '::error::CHANGELOG.md has no dated %s section.\n' "$VERSION"
-            exit 1
-          fi
-          release_type=$(python3 scripts/release.py semver-policy "$VERSION")
-          printf 'release_type=%s\n' "$release_type" >> "$GITHUB_OUTPUT"
-          python3 -m unittest scripts/test_release.py
+          release_type=$(python3 scripts/release.py semver-policy "$version")
+          {
+            printf 'version=%s\n' "$version"
+            printf 'release_type=%s\n' "$release_type"
+          } >> "$GITHUB_OUTPUT"
+          python3 -m unittest scripts/test_release.py scripts/test_required_checks.py \
+            scripts/test_audit_repository_rules.py
 
       - name: Run complete release verification
         env:
           RELEASE_TYPE: ${{ steps.release-metadata.outputs.release_type }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace --all-features
-          cargo semver-checks check-release --package signal-fish-client \
-            --release-type "$RELEASE_TYPE"
-          previous=$(python3 scripts/release.py previous-version "${{ inputs.version }}")
-          adapter_baseline=$(python3 scripts/release.py registry-checksum \
-            signal-fish-client-godot "$previous")
-          if [ "$adapter_baseline" = "UNPUBLISHED" ]; then
-            echo "Skipping adapter semver baseline for its first release."
-          else
-            cargo semver-checks check-release --package signal-fish-client-godot \
-              --release-type "$RELEASE_TYPE"
-          fi
+          previous=$(python3 scripts/release.py previous-version "$VERSION")
+          while IFS= read -r package; do
+            baseline=$(python3 scripts/release.py registry-checksum "$package" "$previous")
+            if [ "$baseline" = "UNPUBLISHED" ]; then
+              printf 'Skipping %s semver baseline for its first release.\n' "$package"
+            else
+              cargo semver-checks check-release --package "$package" \
+                --release-type "$RELEASE_TYPE"
+            fi
+          done < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
-          cargo publish --dry-run -p signal-fish-client
 
-      - name: Build release artifacts
-        id: artifact
+      - name: Build reproducible release assets
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
-          cargo package -p signal-fish-client
-          core_path=$(pwd)
-          cargo package --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
+          mapfile -t packages < <(jq -r '.packages[].name' "$RUNNER_TEMP/workspace-plan.json")
+          package_args=()
+          for package in "${packages[@]}"; do
+            package_args+=(-p "$package")
+          done
+          cargo package "${package_args[@]}"
           cargo cyclonedx --format json --workspace
+
           asset_dir="$RUNNER_TEMP/release-assets"
           mkdir -p "$asset_dir"
-          core_crate="target/package/signal-fish-client-${VERSION}.crate"
-          adapter_crate="target/package/signal-fish-client-godot-${VERSION}.crate"
-          mapfile -t sboms < <(find . -type f -name '*.cdx.json' -not -path './target/*' -print)
-          if [ "${#sboms[@]}" -ne 2 ]; then
-            printf '::error::Expected two CycloneDX JSON files, found %s.\n' "${#sboms[@]}"
-            exit 1
-          fi
-          cp "$core_crate" "$adapter_crate" "$asset_dir/"
-          for sbom in "${sboms[@]}"; do
-            case "$sbom" in
-              *signal-fish-client-godot.cdx.json)
-                mv "$sbom" "$asset_dir/signal-fish-client-godot-${VERSION}.cdx.json" ;;
-              *signal-fish-client.cdx.json)
-                mv "$sbom" "$asset_dir/signal-fish-client-${VERSION}.cdx.json" ;;
-              *)
-                printf '::error::Unexpected CycloneDX file %s.\n' "$sbom"
-                exit 1 ;;
-            esac
+          : > "$asset_dir/SHA256SUMS"
+          for package in "${packages[@]}"; do
+            crate="target/package/${package}-${VERSION}.crate"
+            cp "$crate" "$asset_dir/"
+            checksum=$(python3 scripts/release.py checksum "$crate")
+            printf '%s  %s\n' "$checksum" "${package}-${VERSION}.crate" \
+              >> "$asset_dir/SHA256SUMS"
+
+            mapfile -t sboms < <(
+              find . -type f -name "${package}.cdx.json" -not -path './target/*' -print
+            )
+            if [ "${#sboms[@]}" -ne 1 ]; then
+              printf '::error::Expected one CycloneDX file for %s, found %s.\n' \
+                "$package" "${#sboms[@]}"
+              exit 1
+            fi
+            mv "${sboms[0]}" "$asset_dir/${package}-${VERSION}.cdx.json"
           done
-          core_checksum=$(python3 scripts/release.py checksum "$core_crate")
-          adapter_checksum=$(python3 scripts/release.py checksum "$adapter_crate")
-          {
-            printf '%s  %s\n' "$core_checksum" "signal-fish-client-${VERSION}.crate"
-            printf '%s  %s\n' "$adapter_checksum" "signal-fish-client-godot-${VERSION}.crate"
-          } > "$asset_dir/SHA256SUMS"
 
-          verify_dir="$RUNNER_TEMP/packaged-consumer"
-          mkdir -p "$verify_dir/core" "$verify_dir/adapter" "$verify_dir/consumer/src"
-          tar -xzf "$core_crate" -C "$verify_dir/core" --strip-components=1
-          tar -xzf "$adapter_crate" -C "$verify_dir/adapter" --strip-components=1
-          cat > "$verify_dir/consumer/Cargo.toml" <<EOF
-          [package]
-          name = "signal-fish-packaged-adapter-check"
-          version = "0.0.0"
-          edition = "2021"
-          publish = false
-
-          [dependencies]
-          signal-fish-client-godot = { path = "$verify_dir/adapter" }
-
-          [patch.crates-io]
-          signal-fish-client = { path = "$verify_dir/core" }
-          EOF
-          printf 'fn main() {}\n' > "$verify_dir/consumer/src/main.rs"
-          cargo check --manifest-path "$verify_dir/consumer/Cargo.toml"
-          {
-            printf 'core_crate=%s\n' "$core_crate"
-            printf 'core_checksum=%s\n' "$core_checksum"
-            printf 'adapter_crate=%s\n' "$adapter_crate"
-            printf 'adapter_checksum=%s\n' "$adapter_checksum"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Validate recovery state
+      - name: Validate fail-closed recovery state
         id: state
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          CORE_CHECKSUM: ${{ steps.artifact.outputs.core_checksum }}
-          ADAPTER_CHECKSUM: ${{ steps.artifact.outputs.adapter_checksum }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -245,70 +172,99 @@ jobs:
             printf '::error::Existing tag %s targets %s, not %s.\n' "$tag" "$tag_sha" "$head_sha"
             exit 1
           fi
-          core_registry=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
-          adapter_registry=$(python3 scripts/release.py registry-checksum signal-fish-client-godot "$VERSION")
-          if [ "$core_registry" != "UNPUBLISHED" ] && [ "$core_registry" != "$CORE_CHECKSUM" ]; then
-            printf '::error::Published core checksum does not match the reproduced package.\n'
-            exit 1
-          fi
-          if [ "$adapter_registry" != "UNPUBLISHED" ] && [ "$adapter_registry" != "$ADAPTER_CHECKSUM" ]; then
-            printf '::error::Published adapter checksum does not match the reproduced package.\n'
-            exit 1
-          fi
-          if [ "$core_registry" = "UNPUBLISHED" ] && [ "$adapter_registry" != "UNPUBLISHED" ]; then
-            printf '::error::Adapter is published while its exact core version is absent.\n'
-            exit 1
-          fi
           if gh release view "$tag" >/dev/null 2>&1 && [ -z "$tag_sha" ]; then
-            printf '::error::GitHub release %s exists without a matching local tag.\n' "$tag"
+            printf '::error::GitHub release %s exists without a matching tag.\n' "$tag"
             exit 1
           fi
+
+          python3 scripts/release.py registry-plan \
+            --artifacts-dir "$RUNNER_TEMP/release-assets" \
+            > "$RUNNER_TEMP/registry-plan.json"
+          pending_count=$(jq '.pending | length' "$RUNNER_TEMP/registry-plan.json")
           tag_exists=$([ -n "$tag_sha" ] && printf true || printf false)
-          core_published=$([ "$core_registry" != "UNPUBLISHED" ] && printf true || printf false)
-          adapter_published=$([ "$adapter_registry" != "UNPUBLISHED" ] && printf true || printf false)
           release_exists=$(gh release view "$tag" >/dev/null 2>&1 && printf true || printf false)
           {
+            printf 'pending_count=%s\n' "$pending_count"
             printf 'tag_exists=%s\n' "$tag_exists"
-            printf 'core_published=%s\n' "$core_published"
-            printf 'adapter_published=%s\n' "$adapter_published"
             printf 'release_exists=%s\n' "$release_exists"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create annotated tag
-        if: steps.state.outputs.tag_exists != 'true'
+      - name: Preflight crates.io publishing token
+        if: steps.state.outputs.pending_count != '0'
         env:
-          VERSION: ${{ inputs.version }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release ${VERSION}"
-          git push origin "v${VERSION}"
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            printf '::error::Environment secret CRATES_IO_TOKEN is not configured. See docs/releasing.md.\n'
+            exit 1
+          fi
+
+      - name: Dry-run every unpublished crate
+        if: steps.state.outputs.pending_count != '0'
+        run: |
+          mapfile -t pending < <(jq -r '.pending[]' "$RUNNER_TEMP/registry-plan.json")
+          publish_args=()
+          for package in "${pending[@]}"; do
+            publish_args+=(-p "$package")
+          done
+          resume_args=()
+          if jq -e '.resume_requires_no_verify' "$RUNNER_TEMP/registry-plan.json" >/dev/null; then
+            printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
+            resume_args+=(--no-verify)
+          fi
+          cargo publish --dry-run "${resume_args[@]}" "${publish_args[@]}"
 
       - name: Attest package provenance
         uses: actions/attest@v4.2.0
         with:
           subject-path: ${{ runner.temp }}/release-assets/*.crate
 
-      - name: Publish core to crates.io
-        if: steps.state.outputs.core_published != 'true'
+      - name: Create annotated tag
+        if: steps.state.outputs.tag_exists != 'true'
+        env:
+          VERSION: ${{ steps.release-metadata.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release ${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Publish every unpublished crate
+        if: steps.state.outputs.pending_count != '0'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: cargo publish -p signal-fish-client
+        run: |
+          mapfile -t pending < <(jq -r '.pending[]' "$RUNNER_TEMP/registry-plan.json")
+          publish_args=()
+          for package in "${pending[@]}"; do
+            publish_args+=(-p "$package")
+          done
+          resume_args=()
+          if jq -e '.resume_requires_no_verify' "$RUNNER_TEMP/registry-plan.json" >/dev/null; then
+            printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
+            resume_args+=(--no-verify)
+          fi
+          cargo publish "${resume_args[@]}" "${publish_args[@]}"
 
-      - name: Wait for core visibility and verify checksum
-        env:
-          VERSION: ${{ inputs.version }}
-          CHECKSUM: ${{ steps.artifact.outputs.core_checksum }}
+      - name: Wait for crates.io and verify every checksum
         run: |
           attempt=1
           while [ "$attempt" -le 30 ]; do
-            registry_checksum=$(python3 scripts/release.py registry-checksum signal-fish-client "$VERSION")
-            if [ "$registry_checksum" = "$CHECKSUM" ]; then
+            missing=0
+            while IFS=$'\t' read -r package version checksum; do
+              registry_checksum=$(python3 scripts/release.py registry-checksum "$package" "$version")
+              if [ "$registry_checksum" = "$checksum" ]; then
+                continue
+              fi
+              if [ "$registry_checksum" != "UNPUBLISHED" ]; then
+                printf '::error::Registry checksum for %s %s does not match.\n' "$package" "$version"
+                exit 1
+              fi
+              missing=1
+            done < <(jq -r '.packages[] | [.name, .version, .checksum] | @tsv' \
+              "$RUNNER_TEMP/registry-plan.json")
+            if [ "$missing" -eq 0 ]; then
               exit 0
-            fi
-            if [ "$registry_checksum" != "UNPUBLISHED" ]; then
-              printf '::error::Registry checksum changed to an unexpected value.\n'
-              exit 1
             fi
             sleep 10
             attempt=$((attempt + 1))
@@ -316,42 +272,9 @@ jobs:
           printf '::error::Timed out waiting for crates.io visibility.\n'
           exit 1
 
-      - name: Dry-run and publish adapter to crates.io
-        if: steps.state.outputs.adapter_published != 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: |
-          core_path=$(pwd)
-          cargo publish --dry-run --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
-          cargo publish --no-verify -p signal-fish-client-godot \
-            --config "patch.crates-io.signal-fish-client.path='$core_path'"
-
-      - name: Wait for adapter visibility and verify checksum
-        env:
-          VERSION: ${{ inputs.version }}
-          CHECKSUM: ${{ steps.artifact.outputs.adapter_checksum }}
-        run: |
-          attempt=1
-          while [ "$attempt" -le 30 ]; do
-            registry_checksum=$(python3 scripts/release.py registry-checksum \
-              signal-fish-client-godot "$VERSION")
-            if [ "$registry_checksum" = "$CHECKSUM" ]; then
-              exit 0
-            fi
-            if [ "$registry_checksum" != "UNPUBLISHED" ]; then
-              printf '::error::Adapter registry checksum changed unexpectedly.\n'
-              exit 1
-            fi
-            sleep 10
-            attempt=$((attempt + 1))
-          done
-          printf '::error::Timed out waiting for adapter crates.io visibility.\n'
-          exit 1
-
       - name: Extract release notes
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
           awk -v version="$VERSION" '
             $0 ~ "^## \\[" version "\\]" { found=1; next }
@@ -367,7 +290,7 @@ jobs:
         if: steps.state.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
           gh release create "v${VERSION}" \
             "$RUNNER_TEMP"/release-assets/*.crate \
@@ -381,7 +304,7 @@ jobs:
         if: steps.state.outputs.release_exists == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
           gh release upload "v${VERSION}" \
             "$RUNNER_TEMP"/release-assets/*.crate \
