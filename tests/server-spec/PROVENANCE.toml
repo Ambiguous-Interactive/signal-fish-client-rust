@@ -9,7 +9,7 @@ path = "spec"
 # Exact server commit the spec bytes were copied from.
 commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
 # ISO 8601 date of the last refresh.
-synced = "2026-07-13"
+synced = "2026-07-18"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).

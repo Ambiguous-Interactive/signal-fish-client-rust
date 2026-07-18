@@ -590,7 +590,7 @@ serde_json = "1.0"  # Required for send_game_data(serde_json::Value)
 ```
 
 The stable crates.io dependency is
-`signal-fish-client = { version = "0.8.0", ... }`, but 0.8.0 predates the
+`signal-fish-client = { version = "0.9.0", ... }`, but 0.9.0 predates the
 issue #61 polling-throughput fix documented in this current-`main` guide.
 
 ### Source

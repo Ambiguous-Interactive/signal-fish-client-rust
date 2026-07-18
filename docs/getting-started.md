@@ -21,21 +21,21 @@ cargo add signal-fish-client
 cargo add tokio --features macros,rt-multi-thread,signal
 ```
 
-The first command installs the stable crates.io release, currently **0.8.0**.
+The first command installs the stable crates.io release, currently **0.9.0**.
 The second is a direct Tokio dependency for the async example below; Rust code
 cannot use the SDK's transitive Tokio dependency directly.
 
 !!! note "Current-main documentation"
     This guide tracks the repository's unreleased `main` branch. To use
-    post-0.8.0 APIs such as polling work budgets, queue-age diagnostics, and
+    post-0.9.0 APIs such as polling work budgets, queue-age diagnostics, and
     the issue #61 Godot admission fix, use:
 
     ```toml
     signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
     ```
 
-    For the published 0.8.0 surface, use the version dependency below and the
-    [0.8.0 docs.rs pages](https://docs.rs/signal-fish-client/0.8.0/).
+    For the published 0.9.0 surface, use the version dependency below and the
+    [0.9.0 docs.rs pages](https://docs.rs/signal-fish-client/0.9.0/).
 
 ### Feature Flags
 
@@ -51,7 +51,7 @@ cannot use the SDK's transitive Tokio dependency directly.
 
 ```toml
 [dependencies]
-signal-fish-client = "0.8.0"
+signal-fish-client = "0.9.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 ```
 
@@ -59,7 +59,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.8.0", default-features = false }
+signal-fish-client = { version = "0.9.0", default-features = false }
 ```
 
 !!! tip
@@ -153,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 !!! note
     `WebSocketTransport` requires the `transport-websocket` feature, which is enabled by default. If you disabled default features you will need to re-enable it explicitly:
     ```toml
-    signal-fish-client = { version = "0.8.0", default-features = false, features = ["transport-websocket"] }
+    signal-fish-client = { version = "0.9.0", default-features = false, features = ["transport-websocket"] }
     ```
 
 ## What Happens Under the Hood

@@ -42,10 +42,10 @@ The workspace owns the lockstep version and exact internal requirement:
 
 ```toml
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 
 [workspace.dependencies]
-signal-fish-client = { version = "=0.8.0", path = ".", default-features = false }
+signal-fish-client = { version = "=0.9.0", path = ".", default-features = false }
 ```
 
 The adapter inherits that version and dependency, uses Rust 1.94.0, and has its
