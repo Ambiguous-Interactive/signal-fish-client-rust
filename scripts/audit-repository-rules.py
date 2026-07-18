@@ -62,7 +62,7 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     if any(
         not isinstance(check, dict)
         or not isinstance(check.get("job"), str)
-        or not check["job"]
+        or not check["job"].strip()
         for check in configured_checks
     ):
         raise ValueError("every required check must define a non-empty job name")

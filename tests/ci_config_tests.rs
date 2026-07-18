@@ -40,6 +40,10 @@ mod required_check_policy {
             let file = check["file"].as_str().expect("required check file");
             let job = check["job"].as_str().expect("required check job");
             assert!(
+                !job.trim().is_empty(),
+                "required check job names must not be blank"
+            );
+            assert!(
                 jobs.insert(job),
                 "required gate names must be unique: {job}"
             );

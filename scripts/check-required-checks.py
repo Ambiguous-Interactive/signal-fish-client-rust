@@ -21,8 +21,12 @@ def required_jobs(policy: dict[str, Any]) -> list[str]:
         raise ValueError("policy must define a non-empty required_checks list")
     jobs: list[str] = []
     for check in checks:
-        if not isinstance(check, dict) or not isinstance(check.get("job"), str):
-            raise ValueError("every required check must define a job name")
+        if (
+            not isinstance(check, dict)
+            or not isinstance(check.get("job"), str)
+            or not check["job"].strip()
+        ):
+            raise ValueError("every required check must define a non-empty job name")
         jobs.append(check["job"])
     if len(jobs) != len(set(jobs)):
         raise ValueError("required check job names must be unique")

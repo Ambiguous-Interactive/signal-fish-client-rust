@@ -76,7 +76,12 @@ class RepositoryRuleTests(unittest.TestCase):
         self.assertIn("missing required_status_checks rule", failures)
 
     def test_rejects_empty_or_malformed_required_check_policy(self) -> None:
-        for required_checks in ([], None, [{"workflow": "CI"}]):
+        for required_checks in (
+            [],
+            None,
+            [{"workflow": "CI"}],
+            [{"workflow": "CI", "job": "   "}],
+        ):
             with self.subTest(required_checks=required_checks):
                 policy = {**self.policy, "required_checks": required_checks}
                 with self.assertRaisesRegex(ValueError, "required.check"):

@@ -88,6 +88,13 @@ class RequiredCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unique"):
             checks.required_jobs(policy)
 
+    def test_rejects_empty_or_whitespace_job_names(self) -> None:
+        for job in ("", "   "):
+            with self.subTest(job=job), self.assertRaisesRegex(ValueError, "job name"):
+                checks.required_jobs(
+                    {"required_checks": [{"workflow": "CI", "job": job}]}
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
