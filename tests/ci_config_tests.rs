@@ -82,10 +82,17 @@ mod required_check_policy {
     fn repository_policy_uses_the_authenticated_builtin_token() {
         let workflow = read_project_file(".github/workflows/repository-policy.yml");
         let audit = read_project_file("scripts/audit-repository-rules.py");
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
         assert!(!workflow.contains("actions/create-github-app-token"));
         assert!(!workflow.contains("RELEASE_APP_"));
         assert!(!workflow.contains("permission-administration"));
         assert!(workflow.contains("GH_TOKEN: ${{ github.token }}"));
+        assert!(!audit.contains("forbid_bypass_actors"));
+        assert!(policy["repository_rules"]
+            .get("forbid_bypass_actors")
+            .is_none());
         assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
     }
 }

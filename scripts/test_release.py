@@ -550,6 +550,14 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertIn("runs-on: ubuntu-24.04", workflow)
                 self.assertIn("toolchain: ${{ env.RELEASE_RUST }}", workflow)
 
+    def test_ci_publish_dry_run_uses_the_release_toolchain(self) -> None:
+        publish_job = self.ci.split("  publish-dry-run:", 1)[1].split(
+            "\n  required:", 1
+        )[0]
+        self.assertIn("toolchain: ${{ env.RELEASE_RUST }}", publish_job)
+        self.assertIn('cargo +"${RELEASE_RUST}" publish --dry-run', publish_job)
+        self.assertIn('RELEASE_RUST: "1.96.1"', self.ci)
+
 
 if __name__ == "__main__":
     unittest.main()

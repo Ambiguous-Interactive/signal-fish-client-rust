@@ -26,7 +26,6 @@ class RepositoryRuleTests(unittest.TestCase):
             "dismiss_stale_reviews_on_push": True,
             "required_review_thread_resolution": True,
             "strict_required_status_checks_policy": True,
-            "forbid_bypass_actors": True,
         },
     }
 
@@ -34,7 +33,6 @@ class RepositoryRuleTests(unittest.TestCase):
     def ruleset() -> dict[str, object]:
         return {
             "enforcement": "active",
-            "bypass_actors": [],
             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
             "rules": [
                 {"type": "deletion"},
@@ -88,9 +86,19 @@ class RepositoryRuleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "required.check"):
                     audit.audit(policy, [self.ruleset()])
 
-    def test_rejects_bypass_and_non_strict_checks(self) -> None:
+    def test_rejects_repository_rule_fields_the_token_cannot_audit(self) -> None:
+        policy = {
+            **self.policy,
+            "repository_rules": {
+                **self.policy["repository_rules"],
+                "forbid_bypass_actors": True,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "unsupported repository_rules keys"):
+            audit.audit(policy, [self.ruleset()])
+
+    def test_rejects_non_strict_checks(self) -> None:
         ruleset = self.ruleset()
-        ruleset["bypass_actors"] = [{"actor_type": "OrganizationAdmin"}]
         status = next(
             rule
             for rule in ruleset["rules"]
@@ -98,17 +106,20 @@ class RepositoryRuleTests(unittest.TestCase):
         )
         status["parameters"]["strict_required_status_checks_policy"] = False
         failures = audit.audit(self.policy, [ruleset])
-        self.assertIn("default-branch rulesets must not define bypass actors", failures)
         self.assertIn(
             "required status checks must require an up-to-date branch", failures
         )
 
-    def test_fails_closed_when_github_hides_bypass_actors(self) -> None:
-        ruleset = self.ruleset()
-        del ruleset["bypass_actors"]
+    def test_rejects_policy_split_across_multiple_rulesets(self) -> None:
+        review_ruleset = self.ruleset()
+        review_ruleset["name"] = "reviews-only"
+        review_ruleset["rules"] = review_ruleset["rules"][:-1]
+        status_ruleset = self.ruleset()
+        status_ruleset["name"] = "checks-only"
+        status_ruleset["rules"] = status_ruleset["rules"][-1:]
         self.assertIn(
-            "could not verify bypass actors because GitHub omitted that protected field",
-            audit.audit(self.policy, [ruleset]),
+            "no single default-branch ruleset satisfies the complete checked-in policy",
+            audit.audit(self.policy, [review_ruleset, status_ruleset]),
         )
 
 

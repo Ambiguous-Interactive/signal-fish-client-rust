@@ -42,7 +42,9 @@ Repository Policy workflow detects live GitHub ruleset drift; do not add bypass
 actors to make a failing gate mergeable. Live ruleset reads use the workflow's
 authenticated built-in `GITHUB_TOKEN`. GitHub hides bypass actors from workflow
 tokens, so the operator runbook requires manual verification of an empty bypass
-list and the automated policy must not claim it checked that hidden field.
+list and the automated policy must not claim it checked that hidden field. One
+applicable ruleset must satisfy the complete checked-in policy; never combine
+partial guarantees from separate rulesets into a passing audit.
 
 ### Workspace MSRV isolation
 

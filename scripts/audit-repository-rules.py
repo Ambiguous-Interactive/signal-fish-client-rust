@@ -49,47 +49,11 @@ def fetch_rulesets(repository: str, token: str) -> list[dict[str, Any]]:
     return [fetch_json(f"{base}/{summary['id']}", token) for summary in summaries]
 
 
-def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
-    expected = policy.get("repository_rules")
-    if not isinstance(expected, dict):
-        raise ValueError("policy has no repository_rules object")
-    expected_refs = set(expected.get("include", []))
-    if not expected_refs:
-        raise ValueError("repository_rules.include must not be empty")
-    configured_checks = policy.get("required_checks")
-    if not isinstance(configured_checks, list) or not configured_checks:
-        raise ValueError("policy must define a non-empty required_checks list")
-    if any(
-        not isinstance(check, dict)
-        or not isinstance(check.get("job"), str)
-        or not check["job"].strip()
-        for check in configured_checks
-    ):
-        raise ValueError("every required check must define a non-empty job name")
-    required_checks = {check["job"] for check in configured_checks}
-    if len(required_checks) != len(configured_checks):
-        raise ValueError("required check job names must be unique")
-    applicable = [
-        ruleset
-        for ruleset in rulesets
-        if ruleset.get("enforcement") == expected.get("enforcement")
-        and expected_refs.issubset(
-            ruleset.get("conditions", {}).get("ref_name", {}).get("include", [])
-        )
-    ]
+def audit_ruleset(
+    expected: dict[str, Any], required_checks: set[str], ruleset: dict[str, Any]
+) -> list[str]:
     failures: list[str] = []
-    if not applicable:
-        return ["no active ruleset targets ~DEFAULT_BRANCH"]
-
-    if expected.get("forbid_bypass_actors"):
-        if any("bypass_actors" not in ruleset for ruleset in applicable):
-            failures.append(
-                "could not verify bypass actors because GitHub omitted that protected field"
-            )
-        elif any(ruleset.get("bypass_actors") for ruleset in applicable):
-            failures.append("default-branch rulesets must not define bypass actors")
-
-    rules = [rule for ruleset in applicable for rule in ruleset.get("rules", [])]
+    rules = ruleset.get("rules", [])
     rule_types = {rule.get("type") for rule in rules}
     for rule_type in ("deletion", "non_fast_forward"):
         if rule_type not in rule_types:
@@ -136,6 +100,62 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
         if strict is not expected.get("strict_required_status_checks_policy"):
             failures.append("required status checks must require an up-to-date branch")
     return failures
+
+
+def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
+    expected = policy.get("repository_rules")
+    if not isinstance(expected, dict):
+        raise ValueError("policy has no repository_rules object")
+    supported_keys = {
+        "enforcement",
+        "include",
+        "required_approving_review_count",
+        "dismiss_stale_reviews_on_push",
+        "required_review_thread_resolution",
+        "strict_required_status_checks_policy",
+    }
+    unsupported_keys = sorted(set(expected) - supported_keys)
+    if unsupported_keys:
+        raise ValueError(
+            "unsupported repository_rules keys: " + ", ".join(unsupported_keys)
+        )
+    expected_refs = set(expected.get("include", []))
+    if not expected_refs:
+        raise ValueError("repository_rules.include must not be empty")
+    configured_checks = policy.get("required_checks")
+    if not isinstance(configured_checks, list) or not configured_checks:
+        raise ValueError("policy must define a non-empty required_checks list")
+    if any(
+        not isinstance(check, dict)
+        or not isinstance(check.get("job"), str)
+        or not check["job"].strip()
+        for check in configured_checks
+    ):
+        raise ValueError("every required check must define a non-empty job name")
+    required_checks = {check["job"] for check in configured_checks}
+    if len(required_checks) != len(configured_checks):
+        raise ValueError("required check job names must be unique")
+    applicable = [
+        ruleset
+        for ruleset in rulesets
+        if ruleset.get("enforcement") == expected.get("enforcement")
+        and expected_refs.issubset(
+            ruleset.get("conditions", {}).get("ref_name", {}).get("include", [])
+        )
+    ]
+    if not applicable:
+        return ["no active ruleset targets ~DEFAULT_BRANCH"]
+
+    candidate_failures = [
+        audit_ruleset(expected, required_checks, ruleset) for ruleset in applicable
+    ]
+    if any(not failures for failures in candidate_failures):
+        return []
+    closest = min(candidate_failures, key=len)
+    return [
+        "no single default-branch ruleset satisfies the complete checked-in policy",
+        *closest,
+    ]
 
 
 def main() -> int:
