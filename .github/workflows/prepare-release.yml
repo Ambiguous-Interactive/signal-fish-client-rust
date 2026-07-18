@@ -128,7 +128,6 @@ jobs:
       - name: Open release pull request
         id: open-pr
         if: ${{ !inputs.dry_run }}
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.version.outputs.branch }}
@@ -146,15 +145,29 @@ jobs:
               'The built-in workflow token explicitly dispatches every required check for this commit.' \
               'Merge only after every required check and review is green.'
           } > "$RUNNER_TEMP/release-pr.md"
-          pr_url=$(gh pr create \
+          set +e
+          pr_output=$(gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$BRANCH" \
             --title "$title" \
-            --body-file "$RUNNER_TEMP/release-pr.md")
-          printf 'Opened %s\n' "$pr_url"
+            --body-file "$RUNNER_TEMP/release-pr.md" 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            printf 'enterprise_blocked=false\n' >> "$GITHUB_OUTPUT"
+            printf 'Opened %s\n' "$pr_output"
+          elif grep -qF \
+            'GitHub Actions is not permitted to create or approve pull requests' \
+            <<< "$pr_output"; then
+            printf 'enterprise_blocked=true\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$pr_output" >&2
+          else
+            printf '%s\n' "$pr_output" >&2
+            exit "$status"
+          fi
 
       - name: Explain enterprise pull-request fallback
-        if: ${{ !inputs.dry_run && steps.open-pr.outcome == 'failure' }}
+        if: ${{ !inputs.dry_run && steps.open-pr.outputs.enterprise_blocked == 'true' }}
         env:
           BRANCH: ${{ steps.version.outputs.branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -173,12 +186,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch required checks for the release pull request
-        if: >-
-          ${{
-            !inputs.dry_run
-            && always()
-            && (steps.open-pr.outcome == 'success' || steps.open-pr.outcome == 'failure')
-          }}
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ steps.version.outputs.branch }}

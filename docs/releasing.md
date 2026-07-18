@@ -18,7 +18,8 @@ still succeeds after pushing the fully verified release branch and dispatching
 all required checks. Its job summary provides a compare link and an exact
 `gh pr create` command; a maintainer opens the PR with their existing GitHub
 authentication. Do not add an App or stored PAT to bypass the enterprise
-policy.
+policy. Only GitHub's exact enterprise-policy denial is recoverable; every
+other PR-creation error fails the workflow with its original diagnostic.
 
 GitHub suppresses ordinary workflow events created by `GITHUB_TOKEN`. Prepare
 Release therefore has **Actions: write** permission and explicitly dispatches
