@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Test policy audit
         run: python3 -m unittest scripts/test_audit_repository_rules.py scripts/test_required_checks.py

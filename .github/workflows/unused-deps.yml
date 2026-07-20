@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -58,7 +58,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@v2.83.4
+        uses: taiki-e/install-action@v2.84.0
         with:
           tool: cargo-machete@0.9.1
 
@@ -80,7 +80,7 @@ jobs:
     if: github.event_name == 'schedule'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -92,7 +92,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@v2.83.4
+        uses: taiki-e/install-action@v2.84.0
         with:
           tool: cargo-udeps@0.1.60
 
