@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Install Rust nightly with rust-src
         uses: dtolnay/rust-toolchain@nightly
@@ -163,7 +163,7 @@ jobs:
             timeout: 75
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Download exported browser fixture
         uses: actions/download-artifact@v8.0.1
