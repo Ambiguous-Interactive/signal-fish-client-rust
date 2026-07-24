@@ -138,7 +138,9 @@ a one-time proposal/ack/commit startup barrier that maps a shared same-host
 wall-clock deadline to each browser's monotonic clock, preventing process-launch
 order from becoming frame advantage. A bounded causal relay hold and the polling-hitch
 oracle then require rollback and forward gameplay progress. These controls must prove
-rollback/resimulation, bounded confirmation lag with zero waits/stalls, exact
+rollback/resimulation, bounded confirmation lag with zero stalls (advisory
+frame-advantage wait recommendations are observed but not required to be zero —
+they fire inside the lag bound and the fixed cadence never acts on them), exact
 state checksum convergence, drained queue age/depth with a non-positive final
 eight-sample soak age slope, relay/server conservation, and v3 peer departure.
 

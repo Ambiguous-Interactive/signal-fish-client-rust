@@ -142,6 +142,13 @@ test("Fortress oracle rejects each critical negative control", () => {
   lifetimeBoundary.confirmation_lag_max = 21;
   assert.equal(validateFortressPeer(lifetimeBoundary).ok, false);
 
+  // A nonzero wait_recommendation_count is an advisory the fixed-cadence driver
+  // ignores; it must NOT fail the oracle (the deterministic guard for the soak
+  // flake). Only a malformed/missing count or a real stall fails.
+  const advisedWait = structuredClone(first);
+  advisedWait.wait_recommendation_count = 5;
+  assert.equal(validateFortressPeer(advisedWait).ok, true);
+
   for (const [label, mutation] of [
     ["frame confirmation", (value) => { value.checksum_through = 599; }],
     ["current queue age", (value) => { value.current_queue_age_ms = 1; }],
@@ -156,7 +163,7 @@ test("Fortress oracle rejects each critical negative control", () => {
       value.confirmation_lag_warmup_max = 0;
       value.confirmation_lag_steady_max = 0;
     }],
-    ["wait", (value) => { value.wait_recommendation_count = 1; }],
+    ["wait schema", (value) => { delete value.wait_recommendation_count; }],
     ["stall", (value) => { value.stall_count = 1; }],
     ["admission", (value) => { value.admission_watermark_violations = 1; }],
     ["settlement schema", (value) => { delete value.settlement_frame_limit; }],
