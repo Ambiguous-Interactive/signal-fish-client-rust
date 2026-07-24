@@ -58,7 +58,7 @@ use signal_fish_client::{
 
 #[tokio::main]
 async fn main() -> Result<(), signal_fish_client::SignalFishError> {
-    let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
+    let transport = WebSocketTransport::connect("ws://example.com/signal").await?;
     let config = SignalFishConfig::new("mb_app_abc123");
     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
     let mut start_request_sent = false;

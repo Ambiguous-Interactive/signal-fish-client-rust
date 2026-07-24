@@ -33,6 +33,14 @@ transport-websocket = [
     "dep:futures-util",
     "tokio-runtime",
 ]
+# Optional TLS (wss://) for the built-in WebSocket transport: rustls with the
+# ring crypto provider and bundled Mozilla webpki roots. Opt-in so the default
+# build stays free of the heavier TLS/crypto dependency tree.
+tls = [
+    "transport-websocket",
+    "dep:rustls",
+    "tokio-tungstenite/rustls-tls-webpki-roots",
+]
 # Requires --target wasm32-unknown-emscripten; compile_error!() fires on other targets.
 transport-websocket-emscripten = ["polling-client"]
 polling-client = []
@@ -67,6 +75,11 @@ tracing = "0.1"
 # Optional: WebSocket transport
 tokio-tungstenite = { version = "0.30", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
+# Optional: rustls with the ring crypto provider for the `tls` feature. We call
+# `ring::default_provider().install_default()` in `connect_with_options` so the
+# wss:// path always has a provider — even when the dependency graph also pulls
+# rustls' aws_lc_rs provider, whose auto-detection otherwise panics on ambiguity.
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["v4", "serde", "js"] }

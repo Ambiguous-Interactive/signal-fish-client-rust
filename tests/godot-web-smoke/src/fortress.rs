@@ -1283,7 +1283,14 @@ impl FortressScenario {
                             .confirmation_lag_warmup_max
                             .max(self.confirmation_lag_steady_max)
                     && metrics.stall_count == 0
-                    && metrics.wait_recommendations == 0
+                // Advisory frame-advantage wait recommendations are intentionally not
+                // required to be zero. This fixed-cadence driver never acts on them,
+                // and fortress-rollback emits one whenever transient frame advantage
+                // reaches MIN_RECOMMENDATION (3) — inside the confirmation-lag bound
+                // asserted just above. Requiring zero contradicted that lag bound and
+                // flaked on browser/relay timing jitter. `wait_recommendation_count`
+                // is still reported in the summary for observability; `stall_count`
+                // (a real progress stall) stays strict.
             })
             && relay_messages_per_simulated_frame >= 2.0;
         let summary = serde_json::json!({

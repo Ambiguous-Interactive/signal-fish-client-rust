@@ -220,8 +220,16 @@ export function validateFortressPeer(summary, options = {}) {
       summary.confirmation_lag_warmup_max,
       summary.confirmation_lag_steady_max,
     ) ||
-    summary?.wait_recommendation_count !== 0 || summary?.stall_count !== 0
-  ) errors.push("phase-aware confirmation lag, wait, or stall bound failed");
+    // wait_recommendation_count is schema-checked (present, non-negative) but is
+    // intentionally NOT required to be zero. It is an advisory the fixed-cadence
+    // driver never acts on, and fortress-rollback emits one whenever transient
+    // frame advantage reaches its MIN_RECOMMENDATION (3) — well inside the
+    // confirmation-lag envelope asserted above (steady <= lagLimit). Requiring
+    // exactly zero was stricter than, and inconsistent with, that lag bound, and
+    // flaked on sub-frame browser/relay jitter. stall_count (an actual progress
+    // stall, distinct from an advisory) stays strict.
+    !isNonnegativeInteger(summary?.wait_recommendation_count) || summary?.stall_count !== 0
+  ) errors.push("phase-aware confirmation lag or stall bound failed");
   if (
     !isNonnegativeNumber(summary?.relay_messages_per_simulated_frame) ||
     summary.relay_messages_per_simulated_frame < 2

@@ -148,7 +148,7 @@ pub use signal::PeerSignal;
 pub use transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};
 
 #[cfg(feature = "transport-websocket")]
-pub use transports::WebSocketTransport;
+pub use transports::{WebSocketConnectOptions, WebSocketTransport};
 
 #[cfg(feature = "polling-client")]
 pub mod polling_client;

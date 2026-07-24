@@ -31,7 +31,7 @@
 pub mod websocket;
 
 #[cfg(feature = "transport-websocket")]
-pub use websocket::WebSocketTransport;
+pub use websocket::{WebSocketConnectOptions, WebSocketTransport};
 
 // Gated on both feature and target: this module uses Emscripten's C WebSocket API,
 // which only exists on wasm32-unknown-emscripten. The dual gate keeps `--all-features`

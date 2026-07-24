@@ -120,7 +120,9 @@ the pinned, checksum-verified iproute2 6.6.0 `tc` because the runner's packaged
 version cannot apply a deterministic netem seed.
 
 The gates require exact checksum convergence, in-sync health, bounded
-phase-aware confirmation lag, zero waits/stalls, at least two relay messages per simulated
+phase-aware confirmation lag, zero stalls (advisory frame-advantage wait
+recommendations are reported but not required to be zero), at least two relay
+messages per simulated
 frame, final queue depth and age of zero, a sampled queue-age peak no greater
 than 500 ms, a non-positive final eight-sample queue-age slope for the soak,
 exact client/server conservation, and an observable v3 `PlayerLeft` terminal
