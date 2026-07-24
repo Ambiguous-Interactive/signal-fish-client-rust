@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in `tls` feature that enables `wss://` for the built-in
+  `WebSocketTransport` (rustls with the ring crypto provider and bundled webpki
+  roots). Without it, a `wss://` connect now fails cleanly with
+  `SignalFishError::Io` rather than the previously documented — but never
+  functional — "TLS handled transparently" behavior.
+- Added `WebSocketConnectOptions` and `WebSocketTransport::connect_with_options`
+  for controlling connection socket tuning — currently whether Nagle's algorithm
+  is disabled (`TCP_NODELAY`).
+
 ### Fixed
 
+- Fixed the built-in `WebSocketTransport` leaving TCP's Nagle algorithm enabled,
+  which added roughly 30-35 ms of latency to the small request/reply messages
+  typical of game traffic. `connect` and `connect_with_timeout` now set
+  `TCP_NODELAY` by default; opt out with
+  `WebSocketConnectOptions::with_disable_nagle(false)`.
 - Fixed release preparation failing after successfully verifying and pushing a
   release branch when enterprise policy forbids `GITHUB_TOKEN` from opening
   pull requests; required checks now still dispatch and the successful run

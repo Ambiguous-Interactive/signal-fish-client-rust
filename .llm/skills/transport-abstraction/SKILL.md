@@ -214,10 +214,24 @@ dropping it each call.
 - retains an accepted outbound message until `poll_flush` completes;
 - records close code/reason in `TransportCloseInfo`;
 - drives `poll_close` idempotently;
-- flushes tungstenite's automatically queued Pong before reading again.
+- flushes tungstenite's automatically queued Pong before reading again;
+- disables Nagle's algorithm (`TCP_NODELAY`) by default on the socket it owns.
 
 Do not treat Ping/Pong as application frames. Do not skip binary application
 frames.
+
+### Low-latency socket options (class-level rule)
+
+A transport that **owns its TCP socket** — the built-in WebSocket transport, or a
+future QUIC / raw-TCP backend — must disable Nagle's algorithm (`TCP_NODELAY`) so
+small, latency-sensitive game frames are not held back by TCP's delayed-ACK timer
+(a stall worth tens of milliseconds per round trip). A transport that **delegates
+its socket** to a browser or game engine — the Emscripten and Godot
+`WebSocketPeer` backends — cannot reach the socket and need not: the platform
+owns that tuning. When adding any socket-owning transport, apply this rule (and
+add a regression test asserting the option) rather than rediscovering the stall
+in integration testing. The `websocket-client` skill has the concrete
+`WebSocketTransport` implementation and its caller opt-out.
 
 ## Checklist
 
@@ -230,3 +244,5 @@ frames.
 - [ ] `is_ready` matches handshake state.
 - [ ] Non-`Send` transports compile with the polling client.
 - [ ] `Send + 'static` is imposed only by async-client construction.
+- [ ] A transport that owns its TCP socket disables Nagle (`TCP_NODELAY`);
+      browser/engine-delegated backends are exempt.

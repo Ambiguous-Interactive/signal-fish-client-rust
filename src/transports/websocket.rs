@@ -1,9 +1,13 @@
 //! WebSocket transport implementation using `tokio-tungstenite`.
 //!
 //! This module provides [`WebSocketTransport`], a [`Transport`]
-//! implementation that communicates over a WebSocket connection. Both `ws://` and
-//! `wss://` URLs are supported — TLS is handled transparently via
-//! [`MaybeTlsStream`](tokio_tungstenite::MaybeTlsStream).
+//! implementation that communicates over a WebSocket connection. `ws://` is
+//! always available; `wss://` requires the optional `tls` feature (rustls with
+//! the ring provider and bundled webpki roots), after which TLS is handled
+//! transparently via [`MaybeTlsStream`](tokio_tungstenite::MaybeTlsStream).
+//!
+//! Connections disable Nagle's algorithm (`TCP_NODELAY`) by default for low
+//! latency; see [`WebSocketConnectOptions`] to override.
 //!
 //! # Feature gate
 //!
@@ -37,6 +41,64 @@ use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
 /// existing stream via [`WebSocketTransport::from_stream`].
 pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Options controlling how a [`WebSocketTransport`] connection is established.
+///
+/// Construct with [`new`](Self::new) (or [`Default`]) and adjust with the
+/// `with_*` builders:
+///
+/// ```rust,no_run
+/// # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
+/// use signal_fish_client::{WebSocketConnectOptions, WebSocketTransport};
+///
+/// // Restore the OS default (Nagle enabled) for a throughput-oriented link.
+/// let options = WebSocketConnectOptions::new().with_disable_nagle(false);
+/// let transport =
+///     WebSocketTransport::connect_with_options("ws://localhost:3536/ws", options).await?;
+/// # let _ = transport;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSocketConnectOptions {
+    /// Disable Nagle's algorithm (`TCP_NODELAY`) on the underlying TCP socket.
+    ///
+    /// Defaults to `true`. Small, latency-sensitive game messages are then sent
+    /// immediately instead of waiting on TCP's delayed-ACK timer (the classic
+    /// Nagle + delayed-ACK stall, worth tens of milliseconds per round trip).
+    /// Set to `false` to restore the OS default — Nagle enabled — which favors
+    /// throughput for bulk transfers.
+    ///
+    /// Applied to the raw socket before any TLS handshake, so it covers both
+    /// `ws://` and `wss://`.
+    pub disable_nagle: bool,
+}
+
+impl Default for WebSocketConnectOptions {
+    fn default() -> Self {
+        // NB: a *derived* `Default` would yield `false`; the low-latency default is `true`.
+        Self {
+            disable_nagle: true,
+        }
+    }
+}
+
+impl WebSocketConnectOptions {
+    /// Create options with the default low-latency settings (Nagle disabled).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set whether Nagle's algorithm is disabled (`TCP_NODELAY`) on connect.
+    ///
+    /// See [`disable_nagle`](Self::disable_nagle). Defaults to `true`.
+    #[must_use]
+    pub fn with_disable_nagle(mut self, disable_nagle: bool) -> Self {
+        self.disable_nagle = disable_nagle;
+        self
+    }
+}
 
 /// A [`Transport`] implementation backed by a WebSocket connection.
 ///
@@ -76,8 +138,12 @@ pub struct WebSocketTransport {
 impl WebSocketTransport {
     /// Establish a new WebSocket connection to the given URL.
     ///
-    /// Supports both `ws://` and `wss://` schemes. TLS is handled automatically
-    /// by `tokio-tungstenite` via [`MaybeTlsStream`](tokio_tungstenite::MaybeTlsStream).
+    /// `ws://` is always supported. `wss://` requires the optional `tls` feature;
+    /// without it a `wss://` URL fails with [`SignalFishError::Io`].
+    ///
+    /// Nagle's algorithm is **disabled by default** (`TCP_NODELAY`) so small,
+    /// latency-sensitive game messages are sent without delay. Use
+    /// [`connect_with_options`](Self::connect_with_options) to override that.
     ///
     /// # Errors
     ///
@@ -86,15 +152,57 @@ impl WebSocketTransport {
     /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
     /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other).
     pub async fn connect(url: &str) -> Result<Self, SignalFishError> {
-        tracing::debug!(url = %url, "connecting to WebSocket server");
+        Self::connect_with_options(url, WebSocketConnectOptions::default()).await
+    }
 
-        let (stream, _response) = tokio_tungstenite::connect_async(url).await.map_err(|e| {
-            let kind = match &e {
-                tokio_tungstenite::tungstenite::Error::Io(io) => io.kind(),
-                _ => std::io::ErrorKind::Other,
-            };
-            SignalFishError::Io(std::io::Error::new(kind, e))
-        })?;
+    /// Establish a new WebSocket connection using explicit
+    /// [`WebSocketConnectOptions`].
+    ///
+    /// Behaves like [`connect`](Self::connect) but lets the caller control
+    /// socket tuning — currently whether Nagle's algorithm is disabled
+    /// (`TCP_NODELAY`). The option is applied to the raw socket before any TLS
+    /// handshake, so it covers both `ws://` and `wss://`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::Io`] if the URL is invalid or the connection
+    /// cannot be established. When the underlying error is an I/O error its
+    /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
+    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other).
+    pub async fn connect_with_options(
+        url: &str,
+        options: WebSocketConnectOptions,
+    ) -> Result<Self, SignalFishError> {
+        #[cfg(feature = "tls")]
+        {
+            // Ensure a rustls crypto provider is installed process-wide so the
+            // wss:// path below cannot panic when the dependency graph enables
+            // both `ring` and `aws_lc_rs` (rustls' auto-detection panics on that
+            // ambiguity). Idempotent and first-wins: yields to any provider the
+            // application already installed.
+            use std::sync::Once;
+            static INSTALL: Once = Once::new();
+            INSTALL.call_once(|| {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+            });
+        }
+
+        tracing::debug!(
+            url = %url,
+            disable_nagle = options.disable_nagle,
+            "connecting to WebSocket server"
+        );
+
+        let (stream, _response) =
+            tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
+                .await
+                .map_err(|e| {
+                    let kind = match &e {
+                        tokio_tungstenite::tungstenite::Error::Io(io) => io.kind(),
+                        _ => std::io::ErrorKind::Other,
+                    };
+                    SignalFishError::Io(std::io::Error::new(kind, e))
+                })?;
 
         tracing::info!(url = %url, "WebSocket connection established");
 
@@ -112,6 +220,10 @@ impl WebSocketTransport {
     ///
     /// This is useful when you need custom TLS configuration, proxy headers, or
     /// any other connection setup that [`connect`](Self::connect) does not expose.
+    ///
+    /// Unlike [`connect`](Self::connect), this does **not** touch socket options:
+    /// the caller owns the stream and is responsible for `TCP_NODELAY` (Nagle) or
+    /// any other tuning on the underlying socket before wrapping it here.
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
             stream: Some(stream),
@@ -128,6 +240,10 @@ impl WebSocketTransport {
     /// Behaves identically to [`connect`](Self::connect) but fails with
     /// [`SignalFishError::Timeout`] if the connection is not established within
     /// the given duration.
+    ///
+    /// To pair a timeout with custom [`WebSocketConnectOptions`], wrap
+    /// [`connect_with_options`](Self::connect_with_options), e.g.
+    /// `tokio::time::timeout(dur, WebSocketTransport::connect_with_options(url, opts))`.
     ///
     /// # Errors
     ///
@@ -412,7 +528,92 @@ mod tests {
         format!("ws://{addr}")
     }
 
+    /// Read `TCP_NODELAY` from the underlying socket of a `ws://` (non-TLS)
+    /// transport. The inline test module can reach the private `stream` field,
+    /// and a `ws://` client always resolves to the plain (non-TLS) variant.
+    fn plain_tcp_nodelay(transport: &WebSocketTransport) -> bool {
+        match transport
+            .stream
+            .as_ref()
+            .expect("transport must hold a live stream after connect")
+            .get_ref()
+        {
+            tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp
+                .nodelay()
+                .expect("querying TCP_NODELAY on the loopback socket must succeed"),
+            _ => panic!("a ws:// connection must use the plain (non-TLS) stream variant"),
+        }
+    }
+
     // ── Mock-stream tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn connect_disables_nagle_by_default() {
+        let url = start_mock_server(|mut ws| async move {
+            // Hold the connection open until the client disconnects.
+            while let Some(Ok(_)) = ws.next().await {}
+        })
+        .await;
+
+        let transport = WebSocketTransport::connect(&url)
+            .await
+            .expect("WebSocket connect must succeed");
+
+        assert!(
+            plain_tcp_nodelay(&transport),
+            "connect() must disable Nagle (TCP_NODELAY) by default for low-latency game traffic"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_with_options_controls_nagle() {
+        // (disable_nagle requested, expected TCP_NODELAY on the socket)
+        for (disable_nagle, expected_nodelay) in [(true, true), (false, false)] {
+            let url =
+                start_mock_server(
+                    |mut ws| async move { while let Some(Ok(_)) = ws.next().await {} },
+                )
+                .await;
+
+            let options = WebSocketConnectOptions::new().with_disable_nagle(disable_nagle);
+            let transport = WebSocketTransport::connect_with_options(&url, options)
+                .await
+                .expect("WebSocket connect_with_options must succeed");
+
+            assert_eq!(
+                plain_tcp_nodelay(&transport),
+                expected_nodelay,
+                "disable_nagle={disable_nagle} must produce TCP_NODELAY={expected_nodelay}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn wss_has_a_working_tls_provider() {
+        // A plain-TCP loopback that never speaks TLS. A `wss://` connect must
+        // attempt a real TLS handshake — proving a rustls crypto provider is
+        // wired — and fail with an error rather than panicking with
+        // "no process-level CryptoProvider available".
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener must bind to localhost");
+        let addr = listener
+            .local_addr()
+            .expect("listener must have an address");
+        tokio::spawn(async move {
+            // Accept one connection and drop it so the client's TLS handshake
+            // fails cleanly instead of hanging.
+            let _ = listener.accept().await;
+        });
+
+        let result = WebSocketTransport::connect(&format!("wss://{addr}")).await;
+        assert!(
+            result.is_err(),
+            "wss:// to a non-TLS peer must fail via a TLS/IO error (proving the provider is wired), \
+             not succeed"
+        );
+    }
 
     #[tokio::test]
     async fn recv_receives_text_messages() {

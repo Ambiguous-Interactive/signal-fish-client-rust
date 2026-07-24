@@ -14,13 +14,34 @@ machine.
 Connection setup remains outside `Transport`:
 
 ```rust,ignore
-let transport = WebSocketTransport::connect("wss://signal.example/ws").await?;
+let transport = WebSocketTransport::connect("ws://signal.example/ws").await?;
 let transport = WebSocketTransport::connect_with_timeout(url, timeout).await?;
 ```
+
+`wss://` needs the optional `tls` feature (see the [TLS](#tls) section).
 
 `from_stream(WsStream)` wraps a stream built with custom TLS, proxy, headers,
 or cookies. Connection failures map to `SignalFishError::Io`, preserving an
 underlying I/O error kind when possible.
+
+## Low-Latency Socket Defaults
+
+`connect` and `connect_with_timeout` disable Nagle's algorithm (`TCP_NODELAY`)
+by default via `connect_async_with_config(url, None, /*disable_nagle=*/ true)`.
+Small, latency-sensitive game messages are then sent without waiting on TCP's
+delayed-ACK timer — the Nagle + delayed-ACK stall costs tens of milliseconds per
+round trip. The flag is applied to the raw socket *before* any TLS handshake, so
+it covers both `ws://` and `wss://`.
+
+Callers opt out with
+`connect_with_options(url, WebSocketConnectOptions::new().with_disable_nagle(false))`
+(e.g. for bulk/throughput links). `from_stream` leaves all socket options to the
+caller.
+
+Never route a new connection through the bare `connect_async(url)` — it leaves
+Nagle enabled. Any new connect entry point must go through
+`connect_async_with_config(..)` (or set `TCP_NODELAY` on the socket directly).
+See the class-level rule in the `transport-abstraction` skill.
 
 ## Frame Mapping
 
@@ -101,9 +122,16 @@ polling the blocked primitive can strand the async driver.
 
 ## TLS
 
-The crate uses Tokio Tungstenite with Rustls roots for `wss://`; `ws://` is
-unencrypted. Keep TLS features aligned with `Cargo.toml` rather than duplicating
-an alternative stack in the transport.
+`ws://` is always available and unencrypted. `wss://` requires the optional
+`tls` feature, which enables `tokio-tungstenite/rustls-tls-webpki-roots` and a
+direct `rustls` dependency with the **ring** provider. `connect_with_options`
+installs ring as the process-default provider once (idempotent; yields to any
+provider the application already installed) so tokio-tungstenite's
+`ClientConfig::builder()` never hits rustls' ambiguous feature auto-detection —
+which panics when both `ring` and `aws_lc_rs` are in the dependency graph.
+Without the `tls` feature, a `wss://` connect fails cleanly with
+`SignalFishError::Io` (never a panic). Keep TLS features aligned with
+`Cargo.toml` rather than duplicating an alternative stack in the transport.
 
 ## Reconnection
 
@@ -122,6 +150,8 @@ closed WebSocket object.
 - Ping causes the automatically queued Pong to be flushed.
 - Transport send/receive errors map to the matching `SignalFishError` variant.
 - A real waker is notified when socket readiness changes.
+- The connected TCP socket has `TCP_NODELAY` set by default; `connect_with_options`
+  can turn it off.
 
 ## Common Errors
 
@@ -132,3 +162,4 @@ closed WebSocket object.
 | Duplicate application message | `start_send` was repeated after `Pending`. |
 | Async task never wakes | Blocked sink/stream was not polled with `cx`. |
 | Close code lost | Metadata was not copied before returning `None`. |
+| ~30-35 ms added per small request/reply | Nagle left enabled; a connect path skipped `disable_nagle` / `TCP_NODELAY`. |

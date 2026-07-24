@@ -240,6 +240,7 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
+| `tls` | off | `wss://` TLS for the built-in WebSocket transport (rustls + ring provider + webpki roots) |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
 | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
@@ -282,6 +283,15 @@ constructors, backend behavior, and godot-rust public types belong to the
 lockstep adapter. A Godot Engine version, godot-rust version, Rust MSRV, and
 Emscripten SDK version are independent compatibility axes.
 
+### Low-Latency Socket Defaults
+
+Transports that own their TCP socket disable Nagle's algorithm (`TCP_NODELAY`)
+by default so small game messages avoid TCP's delayed-ACK stall (tens of ms per
+round trip). `WebSocketTransport::connect` does this; callers override with
+`WebSocketConnectOptions::with_disable_nagle(false)`. Backends that delegate the
+socket to a browser/engine (Emscripten, Godot) leave the tuning to the platform.
+See the `transport-abstraction` and `websocket-client` skills.
+
 ### Wire Compatibility
 
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
@@ -309,6 +319,8 @@ until a new authoritative room/reconnect snapshot.
 
 No `chrono` (timestamps remain `String` from the server), no `bytes` (binary
 payloads are `Vec<u8>` with `serde_bytes`), no `reqwest` (HTTP is out of scope).
+TLS is opt-in: the default build pulls no crypto stack; `wss://` support
+(rustls + ring) is gated behind the `tls` feature.
 
 ### UUID Convention
 

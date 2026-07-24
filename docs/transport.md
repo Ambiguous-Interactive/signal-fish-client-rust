@@ -128,13 +128,16 @@ ready; the polling client defers its synthetic `Connected` event accordingly.
 ## Built-in `WebSocketTransport`
 
 The default `transport-websocket` feature provides `WebSocketTransport`, backed
-by `tokio-tungstenite` with `ws://` and `wss://` support.
+by `tokio-tungstenite`. `ws://` is always available; `wss://` requires the
+optional `tls` feature (rustls with bundled webpki roots). Connections disable
+Nagle's algorithm (`TCP_NODELAY`) by default; see `WebSocketConnectOptions` to
+override.
 
 ```rust,ignore
-let transport = WebSocketTransport::connect("wss://example.com/signal").await?;
+let transport = WebSocketTransport::connect("ws://example.com/signal").await?;
 
 let transport = WebSocketTransport::connect_with_timeout(
-    "wss://example.com/signal",
+    "ws://example.com/signal",
     std::time::Duration::from_secs(5),
 )
 .await?;
