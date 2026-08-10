@@ -51,7 +51,7 @@ jobs:
           version: ${{ env.EMSDK_VERSION }}
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.1
+        uses: Swatinem/rust-cache@v2.9.2
 
       - name: Install official Godot editor and templates
         run: |
