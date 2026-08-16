@@ -46,6 +46,9 @@ the now-merged Server 0.7 delivery.
 - Made all Deep Safety analyzers fail closed. Miri now runs only the 125
   production protocol tests; repository-policy subprocess tests remain in
   their appropriate required workflow.
+- Added path-scoped PR triggers for Deep Safety and Protocol Sync so changes to
+  analyzer or protocol-evidence inputs produce immediate hosted proof without
+  making either variable-runtime workflow a required check for unrelated PRs.
 - Selected cargo-fuzz's target from the nightly host triple, ran all three fuzz
   targets, isolated writable corpora under `mktemp`, retained seed directories
   as read-only inputs, uploaded crash artifacts, ignored nested fuzz build
@@ -85,8 +88,8 @@ the now-merged Server 0.7 delivery.
 
 ## Hosted Work Remaining
 
-- Open one PR, run all required aggregates, dispatch Deep Safety and Protocol
-  Sync, and resolve every actionable review finding.
+- Complete PR #91's required aggregates, change-scoped Deep Safety and Protocol
+  Sync runs, and resolve every actionable review finding.
 - Confirm the combined Cargo updater succeeds after the configuration reaches
   the default branch.
 - Maintainer administration is still required for issue #90: restore the live

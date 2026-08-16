@@ -77,11 +77,13 @@ In `tests/ci_config_tests.rs` (`protocol_wire_conformance_policy`):
 
 ## Drift Detection
 
-`.github/workflows/protocol-sync.yml` runs weekly: it re-fetches the upstream
-samples **and the AsyncAPI spec** and **fails loudly** if the vendored copies have drifted from the recorded
-commit (fail-closed, no auto-PR). When it fails, follow the refresh procedure
-above. This catches the "upstream changed but nobody refreshed us" case that the
-offline checksum test cannot.
+`.github/workflows/protocol-sync.yml` runs weekly, on manual dispatch, and on
+pull requests that change the workflow or vendored protocol evidence. It
+re-fetches the upstream samples **and the AsyncAPI spec** and **fails loudly**
+if the vendored copies have drifted from the recorded commit (fail-closed, no
+auto-PR). When it fails, follow the refresh procedure above. This catches the
+"upstream changed but nobody refreshed us" case that the offline checksum test
+cannot, while the path-scoped PR trigger proves changes immediately.
 
 ## Why Fail-Closed
 

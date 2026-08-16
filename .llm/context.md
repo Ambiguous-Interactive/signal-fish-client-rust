@@ -77,14 +77,14 @@ the sole documented exception because it binds the platform C API. The
 required WASM workflow runs the Emscripten FFI policy checker and its negative
 self-test before compiling and linting the actual target.
 
-The scheduled/manual Deep Safety workflow provides fail-closed evidence from
-Miri protocol tests, all three protocol fuzz targets, and a narrow mutation
-scope. Fuzzing selects the nightly host explicitly and writes discoveries only
-to temporary corpora; committed seeds are read-only inputs. The binary target
-exercises raw, valid, and perturbed protocol-v2 and protocol-v3 MessagePack
-envelopes. Deep Safety is intentionally not a PR-required workflow because of
-nightly/runtime variability; required Clippy and WASM aggregates enforce the
-compiler safety and warning policies on every PR.
+The change-scoped PR, scheduled, and manual Deep Safety workflow provides
+fail-closed evidence from Miri protocol tests, all three protocol fuzz targets,
+and a narrow mutation scope. Fuzzing selects the nightly host explicitly and
+writes discoveries only to temporary corpora; committed seeds are read-only
+inputs. The binary target exercises raw, valid, and perturbed protocol-v2 and
+protocol-v3 MessagePack envelopes. Deep Safety is intentionally not a required
+PR workflow because of nightly/runtime variability; required Clippy and WASM
+aggregates enforce the compiler safety and warning policies on every PR.
 
 Native ASan is deferred because the only owned unsafe implementation is
 Emscripten-only, so a native sanitizer lane would not execute it. The fuzz

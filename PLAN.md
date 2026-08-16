@@ -59,11 +59,14 @@ into one evidence-backed hardening milestone.
 - Deep Safety is being repaired to fail closed: Miri runs the 125 production
   protocol tests; fuzz uses the actual host, isolated writable corpora, and all
   JSON/binary v2/v3 targets; mutation testing has zero surviving mutants.
+  Path-scoped PR triggers provide immediate hosted proof when analyzer or
+  covered-code inputs change without making the variable-runtime lane required.
 - The incompatible standalone-fixture Dependabot updater is consolidated with
   the root workspace so its file set can include local path dependencies;
   default-branch updater confirmation remains pending.
-- Local evidence is green. Hosted Deep Safety and PR aggregate evidence remain
-  before #78 can close; #84 then closes as the duplicate milestone.
+- Local evidence is green. PR #91 aggregate and change-scoped Deep Safety
+  evidence remain before #78 can close; #84 then closes as the duplicate
+  milestone.
 
 ## Next Major Milestone — Negotiated Token Binding
 

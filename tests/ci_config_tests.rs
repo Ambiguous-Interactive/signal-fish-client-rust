@@ -3108,6 +3108,27 @@ mod safety_analysis_policy {
         let local = read_project_file("scripts/check-all.sh");
 
         assert!(!workflow.contains("continue-on-error"));
+        assert!(workflow.contains("pull_request:"));
+        for path in [
+            ".cargo/**",
+            ".github/workflows/deep-safety.yml",
+            "Cargo.lock",
+            "Cargo.toml",
+            "fuzz/**",
+            "scripts/cargo-retry.sh",
+            "src/error.rs",
+            "src/error_codes.rs",
+            "src/lib.rs",
+            "src/protocol.rs",
+            "src/protocol/**",
+            "src/signal.rs",
+            "tests/protocol_tests.rs",
+        ] {
+            assert!(
+                workflow.contains(&format!("- {path}")),
+                "Deep Safety PR trigger must cover {path}"
+            );
+        }
         assert!(!workflow.contains("miri test --test ci_config_tests"));
         assert!(workflow.contains("miri test --test protocol_tests --all-features"));
         assert!(workflow.contains("fuzz_host=$(rustc +nightly -vV"));
@@ -3151,6 +3172,33 @@ mod safety_analysis_policy {
         let wasm = read_project_file(".github/workflows/wasm.yml");
         assert!(wasm.contains("bash scripts/test_check_ffi_safety.sh"));
         assert!(wasm.contains("bash scripts/check-ffi-safety.sh"));
+
+        let protocol_sync = read_project_file(".github/workflows/protocol-sync.yml");
+        assert!(protocol_sync.contains("pull_request:"));
+        for path in [
+            ".github/workflows/protocol-sync.yml",
+            "tests/server-spec/PROVENANCE.toml",
+            "tests/server-spec/signal-fish-protocol.asyncapi.yaml",
+            "tests/wire-samples/PROVENANCE.toml",
+            "tests/wire-samples/*.jsonl",
+        ] {
+            assert!(
+                protocol_sync.contains(&format!("- {path}")),
+                "Protocol Sync PR trigger must cover {path}"
+            );
+        }
+
+        let required: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks.json must parse");
+        let required_files: Vec<_> = required["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array")
+            .iter()
+            .filter_map(|check| check["file"].as_str())
+            .collect();
+        assert!(!required_files.contains(&"deep-safety.yml"));
+        assert!(!required_files.contains(&"protocol-sync.yml"));
     }
 }
 

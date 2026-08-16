@@ -1,8 +1,9 @@
 # Deep safety analysis for signal-fish-client
 #
-# Scheduled lanes for thorough safety and quality analysis that would be too
-# slow for every PR. Every lane fails closed when its analyzer finds a defect
-# or cannot execute, so a green run is usable evidence.
+# Thorough safety and quality analysis that would be too slow for every PR.
+# Pull requests run it only when analyzer or covered-code inputs change; the
+# weekday schedule catches ecosystem drift. Every lane fails closed when its
+# analyzer finds a defect or cannot execute, so a green run is usable evidence.
 #
 # Jobs:
 #   miri    — Miri undefined behavior detection (nightly, protocol tests)
@@ -15,6 +16,23 @@
 name: Deep Safety
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .cargo/**
+      - .github/workflows/deep-safety.yml
+      - Cargo.lock
+      - Cargo.toml
+      - fuzz/**
+      - scripts/cargo-retry.sh
+      - src/error.rs
+      - src/error_codes.rs
+      - src/lib.rs
+      - src/protocol.rs
+      - src/protocol/**
+      - src/signal.rs
+      - tests/protocol_tests.rs
   schedule:
     # Weekdays at 04:00 UTC — staggered from unused-deps at 05:00 and security at 06:00
     - cron: "0 4 * * 1-5"
