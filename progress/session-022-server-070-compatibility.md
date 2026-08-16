@@ -96,7 +96,7 @@ compatibility.
 
 ## Remaining Delivery
 
-Validate and push the hosted-origin fix, wait for every required hosted check
-and reviewer approval, then merge/close #86. The separate token-binding-v2
-follow-up is tracked in
+The hosted-origin fix is pushed as `192477c`; wait for every required hosted
+check and reviewer approval, then merge/close #86. The separate
+token-binding-v2 follow-up is tracked in
 [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).

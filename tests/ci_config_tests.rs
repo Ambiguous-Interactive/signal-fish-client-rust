@@ -166,16 +166,30 @@ mod godot_issue_61_policy {
                 && workflow.contains("rate 10mbit")
                 && workflow.contains("NETEM_SEED: \"6101\"")
                 && workflow.contains("IPROUTE2_VERSION: \"6.6.0\"")
-                && workflow
-                    .matches("SIGNAL_FISH__SECURITY__CORS_ORIGINS='*'")
-                    .count()
-                    == 2
                 && workflow.contains("sha256sum --check")
                 && workflow.contains("actions/download-artifact@v8.0.1")
                 && workflow.contains("--locked")
         );
         assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 3);
         assert_eq!(workflow.matches("name: godot-web-export").count(), 2);
+        let netns_origin = r#"sudo ip netns exec sf-server env \
+              SIGNAL_FISH__PORT=3536 \
+              SIGNAL_FISH__LOGGING__LEVEL=debug \
+              SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+              SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \"#;
+        let local_origin = r#"else
+            SIGNAL_FISH__PORT=3536 \
+            SIGNAL_FISH__LOGGING__LEVEL=debug \
+            SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+            SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \"#;
+        assert!(
+            workflow.contains(netns_origin),
+            "network-namespace server launch must allow the ephemeral browser origin"
+        );
+        assert!(
+            workflow.contains(local_origin),
+            "local server launch must allow the ephemeral browser origin"
+        );
         for required in [
             "needs: build-export",
             "fail-fast: false",
