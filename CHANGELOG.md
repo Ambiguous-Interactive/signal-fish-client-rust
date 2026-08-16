@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the required Godot browser matrix starting Signal Fish Server 0.7 with
+  its restrictive default origin allowlist, which rejected the harness's
+  ephemeral HTTP origin before the WebSocket protocol handshake.
 - Fixed protocol-v3 accountability rejecting coalesced or mixed-reason
   `unsupported_format` gap reports emitted by newer Signal Fish servers;
   optional rate-limited advisories now require a prior causal report without

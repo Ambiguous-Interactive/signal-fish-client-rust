@@ -166,6 +166,10 @@ mod godot_issue_61_policy {
                 && workflow.contains("rate 10mbit")
                 && workflow.contains("NETEM_SEED: \"6101\"")
                 && workflow.contains("IPROUTE2_VERSION: \"6.6.0\"")
+                && workflow
+                    .matches("SIGNAL_FISH__SECURITY__CORS_ORIGINS='*'")
+                    .count()
+                    == 2
                 && workflow.contains("sha256sum --check")
                 && workflow.contains("actions/download-artifact@v8.0.1")
                 && workflow.contains("--locked")

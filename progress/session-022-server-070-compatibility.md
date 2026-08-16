@@ -47,6 +47,14 @@ compatibility.
    regression tests prove stale output is refused rather than retagged in both
    async and polling clients. The same pass tightened `NewPeer` to require an
    authoritative WebRTC plan and expanded parity comparison to every new field.
+6. The first hosted Godot matrix passed the shared build/export and legacy 0.4
+   browser job, while all three Server 0.7 scenarios failed before protocol
+   traffic with HTTP 403. Uploaded server evidence identified
+   `outcome="rejected_origin"`: 0.7 enforces its default fixed-port browser
+   allowlist on WebSocket upgrades, but the harness uses an ephemeral HTTP
+   port. The workflow now opts its isolated test server into wildcard origins
+   in both clean and network-namespace launch paths, with a policy regression
+   assertion covering both paths.
 
 ## Delivered Surface
 
@@ -80,10 +88,15 @@ compatibility.
 - Final adversarial review found no production-code blockers. Its remaining
   documentation and common-command parity observations were folded in before
   publication.
+- Draft [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89)
+  is open. Ten hosted workflows, the Godot build/export job, and the legacy
+  Server 0.4 browser scenario passed on the first revision; Server 0.7 browser
+  evidence exposed and localized the origin-policy launch defect described
+  above.
 
 ## Remaining Delivery
 
-Run the mandatory workspace gate, complete adversarial review, open the single
-breaking-change PR, wait for every required hosted check and reviewer approval,
-then merge/close #86. Open a detailed token-binding-v2 follow-up issue rather
-than expanding this compatibility PR.
+Validate and push the hosted-origin fix, wait for every required hosted check
+and reviewer approval, then merge/close #86. The separate token-binding-v2
+follow-up is tracked in
+[issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
