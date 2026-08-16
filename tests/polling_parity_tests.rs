@@ -23,12 +23,14 @@ use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
 use signal_fish_client::error::SignalFishError;
 use signal_fish_client::polling_client::SignalFishPollingClient;
 use signal_fish_client::protocol::{
-    ConnectionInfo, GameDataEncoding, LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload,
-    ReconnectedPayload, RoomJoinedPayload, ServerMessage, TransportKind, V2BinaryGameDataFrame,
+    ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap, DeliveryGapReason,
+    DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState, PlayerId,
+    PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
+    RoomJoinedPayload, ServerMessage, SpectatorJoinedPayload, TransportKind, V2BinaryGameDataFrame,
     V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
-use signal_fish_client::ProtocolViolationPolicy;
+use signal_fish_client::{ErrorCode, ProtocolViolationPolicy};
 use signal_fish_client::{
     GameDataDelivery, JoinRoomParams, PeerSignal, SignalFishClientApi, SignalFishEvent, Transport,
 };
@@ -633,7 +635,10 @@ fn canonical_event(event: &SignalFishEvent) -> String {
     }
 }
 
-async fn assert_frame_trace_parity(frames: Vec<TransportFrame>, config: SignalFishConfig) {
+async fn assert_frame_trace_parity(
+    frames: Vec<TransportFrame>,
+    config: SignalFishConfig,
+) -> Vec<String> {
     let make_mock = || TraceMock::new(frames.clone());
 
     let async_mock = make_mock();
@@ -664,6 +669,7 @@ async fn assert_frame_trace_parity(frames: Vec<TransportFrame>, config: SignalFi
     assert_eq!(async_events, polling_events);
     assert_eq!(async_client.snapshot(), polling_client.snapshot());
     assert_eq!(async_client.stats(), polling_client.stats());
+    async_events
 }
 
 async fn assert_server_trace_parity(lines: &str, config: SignalFishConfig) {
@@ -672,7 +678,7 @@ async fn assert_server_trace_parity(lines: &str, config: SignalFishConfig) {
         .filter(|line| !line.trim().is_empty())
         .map(|line| TransportFrame::Text(line.to_owned()))
         .collect();
-    assert_frame_trace_parity(frames, config).await;
+    let _ = assert_frame_trace_parity(frames, config).await;
 }
 
 // ── PARITY 1: relay-floor Authenticate byte-identity ─────────────────
@@ -771,6 +777,82 @@ fn binary_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
     ]
 }
 
+fn spectator_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
+    let spectator_joined = ServerMessage::SpectatorJoined(Box::new(SpectatorJoinedPayload {
+        room_id: uuid::Uuid::from_u128(201),
+        room_code: "SPECTATOR".into(),
+        spectator_id: uuid::Uuid::from_u128(101),
+        game_name: "spectator-parity".into(),
+        current_players: vec![PlayerInfo {
+            id: player_id,
+            name: "sender".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        }],
+        current_spectators: vec![],
+        lobby_state: LobbyState::Lobby,
+        reason: None,
+    }));
+    vec![
+        TransportFrame::Text(PI_V3.into()),
+        TransportFrame::Text(
+            serde_json::to_string(&spectator_joined)
+                .expect("serialize spectator accountability prefix"),
+        ),
+    ]
+}
+
+fn text_server_frame(message: ServerMessage) -> TransportFrame {
+    TransportFrame::Text(
+        serde_json::to_string(&message).expect("serialize accountability parity fixture"),
+    )
+}
+
+fn mixed_coalesced_unsupported_report(sender: PlayerId) -> TransportFrame {
+    text_server_frame(ServerMessage::DeliveryReport(Box::new(
+        DeliveryReportPayload {
+            per_class: DeliveryCountersByClass {
+                reliable: ReliableDeliveryCounters {
+                    unsupported_format: 2,
+                    ..ReliableDeliveryCounters::default()
+                },
+                latest: LatestDeliveryCounters {
+                    superseded: 1,
+                    ..LatestDeliveryCounters::default()
+                },
+                ..DeliveryCountersByClass::default()
+            },
+            gaps: vec![
+                DeliveryGap {
+                    from_player: sender,
+                    epoch: 1,
+                    from_seq: 1,
+                    to_seq: 1,
+                    reason: DeliveryGapReason::LatestSuperseded,
+                },
+                DeliveryGap {
+                    from_player: sender,
+                    epoch: 1,
+                    from_seq: 2,
+                    to_seq: 3,
+                    reason: DeliveryGapReason::UnsupportedFormat,
+                },
+            ],
+        },
+    )))
+}
+
+fn unsupported_format_advisory() -> TransportFrame {
+    text_server_frame(ServerMessage::Error {
+        message: "unsupported payload format".into(),
+        error_code: Some(ErrorCode::UnsupportedGameDataFormat),
+    })
+}
+
 #[tokio::test]
 async fn inbound_binary_events_decode_failures_and_accountability_have_complete_parity() {
     let v2 = V2BinaryGameDataFrame {
@@ -780,7 +862,7 @@ async fn inbound_binary_events_decode_failures_and_accountability_have_complete_
     };
     let mut v2_config = SignalFishConfig::new("app");
     v2_config.game_data_format = Some(GameDataEncoding::MessagePack);
-    assert_frame_trace_parity(
+    let _ = assert_frame_trace_parity(
         vec![
             TransportFrame::Text(PI_V2.into()),
             TransportFrame::Binary(rmp_serde::to_vec_named(&v2).unwrap()),
@@ -813,7 +895,136 @@ async fn inbound_binary_events_decode_failures_and_accountability_have_complete_
             .enable_v3()
             .with_protocol_violation_policy(policy);
         config.game_data_format = Some(GameDataEncoding::MessagePack);
-        assert_frame_trace_parity(frames, config).await;
+        let _ = assert_frame_trace_parity(frames, config).await;
+    }
+}
+
+#[tokio::test]
+async fn mixed_coalesced_unsupported_advisory_trace_has_complete_policy_parity() {
+    let sender = uuid::Uuid::from_u128(302);
+
+    let mut frames = binary_accountability_prefix(sender);
+    frames.extend([
+        mixed_coalesced_unsupported_report(sender),
+        text_server_frame(ServerMessage::GameData {
+            from_player: sender,
+            data: serde_json::json!({"seq": 4}),
+            seq: Some(4),
+            epoch: Some(1),
+            class: Some(DeliveryClass::Reliable),
+            key: None,
+        }),
+        unsupported_format_advisory(),
+    ]);
+
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let events = assert_frame_trace_parity(
+            frames.clone(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        let event_kinds = events
+            .iter()
+            .map(|event| {
+                event
+                    .split('|')
+                    .next()
+                    .expect("event projection has a kind")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_kinds,
+            [
+                "ProtocolInfo",
+                "RoomJoined",
+                "DeliveryReport",
+                "GameData",
+                "Error",
+                "Disconnected",
+            ],
+            "{policy:?} must accept and deliver the complete delayed-advisory trace"
+        );
+    }
+}
+
+#[tokio::test]
+async fn room_exit_clears_unsupported_advisory_authorization_in_both_drivers() {
+    let sender = uuid::Uuid::from_u128(303);
+    let cases = [
+        (
+            "RoomJoined",
+            "RoomLeft",
+            binary_accountability_prefix(sender),
+            text_server_frame(ServerMessage::RoomLeft),
+        ),
+        (
+            "SpectatorJoined",
+            "SpectatorLeft",
+            spectator_accountability_prefix(sender),
+            text_server_frame(ServerMessage::SpectatorLeft {
+                room_id: None,
+                room_code: None,
+                reason: None,
+                current_spectators: vec![],
+            }),
+        ),
+    ];
+
+    for (joined_kind, left_kind, prefix, leave_frame) in cases {
+        let mut frames = prefix;
+        frames.extend([
+            mixed_coalesced_unsupported_report(sender),
+            leave_frame,
+            unsupported_format_advisory(),
+        ]);
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let events = assert_frame_trace_parity(
+                frames.clone(),
+                SignalFishConfig::new("app")
+                    .enable_v3()
+                    .with_protocol_violation_policy(policy),
+            )
+            .await;
+            assert!(
+                events.iter().any(|event| {
+                    event.starts_with("ProtocolViolation|Causality|")
+                        && event.contains("lacked a prior causal DeliveryReport")
+                }),
+                "{left_kind} under {policy:?} must revoke old-room advisory authorization: {events:?}"
+            );
+
+            let mut expected_kinds = vec![
+                "ProtocolInfo",
+                joined_kind,
+                "DeliveryReport",
+                left_kind,
+                "ProtocolViolation",
+            ];
+            if policy == ProtocolViolationPolicy::Observe {
+                expected_kinds.push("Error");
+            }
+            expected_kinds.push("Disconnected");
+            let event_kinds = events
+                .iter()
+                .map(|event| {
+                    event
+                        .split('|')
+                        .next()
+                        .expect("event projection has a kind")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(event_kinds, expected_kinds, "{left_kind} under {policy:?}");
+        }
     }
 }
 

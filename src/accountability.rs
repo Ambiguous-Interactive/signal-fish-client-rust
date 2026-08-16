@@ -1,4 +1,7 @@
-// Ported from Signal Fish Server v0.4.0 native reference client (50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8).
+// Ported from Signal Fish Server v0.4.0 native reference client
+// (50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8). Rate-limited unsupported-format
+// advisories synced from 522c9c6ba10f171957f49abda434d3c37425748d; coalesced
+// ranges from 970be936c8438a892be987257604fe073ae73564.
 //! Client-side protocol-v3 delivery accountability.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,7 +50,7 @@ pub struct DeliveryAccountability {
     stale_senders: BTreeSet<PlayerId>,
     departed_senders: BTreeMap<(PlayerId, u32), DepartedSender>,
     pending_gaps: BTreeMap<(PlayerId, u32), Vec<DeliveryGap>>,
-    pending_unsupported_error: Option<DeliveryGap>,
+    unadvised_unsupported_gap: Option<DeliveryGap>,
     counters: Option<DeliveryCountersByClass>,
     last_relay_stats: Option<RelayStatsSnapshot>,
 }
@@ -67,7 +70,7 @@ impl DeliveryAccountability {
             stale_senders: BTreeSet::new(),
             departed_senders: BTreeMap::new(),
             pending_gaps: BTreeMap::new(),
-            pending_unsupported_error: None,
+            unadvised_unsupported_gap: None,
             counters: None,
             last_relay_stats: None,
         }
@@ -81,13 +84,13 @@ impl DeliveryAccountability {
         self.stale_senders.clear();
         self.departed_senders.clear();
         self.pending_gaps.clear();
+        self.unadvised_unsupported_gap = None;
     }
 
     /// Start accountability for a new physical connection.
     #[cfg(test)]
     pub fn reset_connection(&mut self) {
         self.reset_room();
-        self.pending_unsupported_error = None;
         self.counters = None;
         self.last_relay_stats = None;
     }
@@ -314,8 +317,9 @@ impl DeliveryAccountability {
         self.try_retire_departed(player_id, epoch)
     }
 
-    /// Enforce the inline unsupported-format replacement pair on the next
-    /// server frame. The boolean identifies Error(UnsupportedGameDataFormat).
+    /// Accept an optional rate-limited unsupported-format advisory only after
+    /// a causal exact report. The boolean identifies
+    /// Error(UnsupportedGameDataFormat).
     pub fn observe_server_message(
         &mut self,
         is_unsupported_format_error: bool,
@@ -323,21 +327,16 @@ impl DeliveryAccountability {
         if !self.protocol_v3 {
             return Ok(());
         }
-        match (self.pending_unsupported_error.take(), is_unsupported_format_error) {
-            (Some(_gap), true) => Ok(()),
-            (Some(gap), false) => Err(format!(
-                "delivery accountability violation: unsupported-format report for {} epoch {}, seq {} was not immediately followed by Error(UnsupportedGameDataFormat)",
-                gap.from_player, gap.epoch, gap.from_seq
-            )),
-            (None, true) => Err("delivery accountability violation: Error(UnsupportedGameDataFormat) lacked an immediately preceding causal DeliveryReport".to_string()),
-            (None, false) => Ok(()),
+        if is_unsupported_format_error && self.unadvised_unsupported_gap.take().is_none() {
+            return Err("delivery accountability violation: Error(UnsupportedGameDataFormat) lacked a prior causal DeliveryReport".to_string());
         }
+        Ok(())
     }
 
     /// A terminal socket outcome ends the observable stream, so no
     /// supplemental error is required after the final report.
     pub fn observe_terminal(&mut self) {
-        self.pending_unsupported_error = None;
+        self.unadvised_unsupported_gap = None;
     }
 
     pub fn record_relay_stats(
@@ -450,9 +449,6 @@ impl DeliveryAccountability {
                     .to_string(),
             );
         }
-        if self.pending_unsupported_error.is_some() {
-            return Err("delivery accountability violation: unsupported-format DeliveryReport was not immediately followed by its supplemental Error".to_string());
-        }
         if report.gaps.len() > DELIVERY_REPORT_MAX_GAPS {
             return Err(format!(
                 "delivery accountability violation: DeliveryReport contains {} gap ranges, limit is {DELIVERY_REPORT_MAX_GAPS}",
@@ -466,7 +462,7 @@ impl DeliveryAccountability {
         // that overlap another range in this same report.
         let mut report_ranges: BTreeMap<(PlayerId, u32), Vec<(u64, u64)>> = BTreeMap::new();
         let mut causal_counts = [0u64; 4];
-        let mut unsupported_seen = false;
+        let mut unsupported_gap = None;
         for gap in &report.gaps {
             self.validate_gap(gap)?;
             let count = gap
@@ -480,11 +476,13 @@ impl DeliveryAccountability {
                 DeliveryGapReason::LatestSuperseded => 0,
                 DeliveryGapReason::LatestDroppedFull => 1,
                 DeliveryGapReason::VolatileDropped => 2,
+                // The server coalesces consecutive undeliverable omissions so
+                // one report may contain multiple unsupported-format ranges,
+                // and each range may span multiple sequences (server issue
+                // #212). `validate_gap`, the overlap check below, and the
+                // counter-delta comparison still enforce exactness.
                 DeliveryGapReason::UnsupportedFormat => {
-                    if unsupported_seen || gap.from_seq != gap.to_seq || report.gaps.len() != 1 {
-                        return Err("delivery accountability violation: unsupported-format report must name exactly one sequence".to_string());
-                    }
-                    unsupported_seen = true;
+                    unsupported_gap = Some(gap.clone());
                     3
                 }
             };
@@ -551,8 +549,10 @@ impl DeliveryAccountability {
             gaps.push(gap.clone());
             gaps.sort_unstable_by_key(|candidate| candidate.from_seq);
         }
-        if unsupported_seen {
-            self.pending_unsupported_error = report.gaps.first().cloned();
+        if unsupported_gap.is_some() {
+            // Arm causality from an unsupported-format range regardless of its
+            // position in a potentially mixed-reason report.
+            self.unadvised_unsupported_gap = unsupported_gap;
         }
         self.counters = Some(report.per_class);
         for gap in &report.gaps {
@@ -1167,11 +1167,15 @@ mod tests {
     }
 
     fn unsupported_gap(sender: PlayerId, seq: u64) -> DeliveryGap {
+        unsupported_gap_range(sender, seq, seq)
+    }
+
+    fn unsupported_gap_range(sender: PlayerId, from_seq: u64, to_seq: u64) -> DeliveryGap {
         DeliveryGap {
             from_player: sender,
             epoch: 1,
-            from_seq: seq,
-            to_seq: seq,
+            from_seq,
+            to_seq,
             reason: DeliveryGapReason::UnsupportedFormat,
         }
     }
@@ -1737,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_report_requires_the_immediate_error_or_terminal() {
+    fn unsupported_advisory_requires_a_prior_report_but_not_adjacency() {
         let sender = id(9);
         let report = DeliveryReportPayload {
             per_class: counters_with_unsupported(1),
@@ -1747,35 +1751,99 @@ mod tests {
         let mut paired = DeliveryAccountability::default();
         paired.note_player_joined(&player(sender, 1)).unwrap();
         paired.record_report(&report).unwrap();
+        paired.observe_server_message(false).unwrap();
         paired.observe_server_message(true).unwrap();
         paired.observe_server_message(false).unwrap();
         assert!(paired.observe_server_message(true).is_err());
 
-        let mut missing = DeliveryAccountability::default();
-        missing.note_player_joined(&player(sender, 1)).unwrap();
-        missing.record_report(&report).unwrap();
-        assert!(missing.observe_server_message(false).is_err());
-        // The intervening frame consumed the pending adjacency obligation;
-        // a later supplemental Error is now independently invalid.
-        assert!(missing.observe_server_message(true).is_err());
+        let mut rollover = DeliveryAccountability::default();
+        rollover.note_player_joined(&player(sender, 1)).unwrap();
+        rollover.record_report(&report).unwrap();
+        rollover
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_unsupported(2),
+                gaps: vec![unsupported_gap(sender, 2)],
+            })
+            .unwrap();
+        rollover.observe_server_message(true).unwrap();
+
+        let mut room_reset = DeliveryAccountability::default();
+        room_reset.note_player_joined(&player(sender, 1)).unwrap();
+        room_reset.record_report(&report).unwrap();
+        room_reset.reset_room();
+        assert!(room_reset.observe_server_message(true).is_err());
 
         let mut terminal = DeliveryAccountability::default();
         terminal.note_player_joined(&player(sender, 1)).unwrap();
         terminal.record_report(&report).unwrap();
         terminal.observe_terminal();
 
+        // The server can absorb an unsupported range into an already-queued
+        // mixed report, so the unsupported range need not be first.
+        let mixed_unsupported = unsupported_gap(sender, 7);
         let mut mixed = DeliveryAccountability::default();
         mixed.note_player_joined(&player(sender, 1)).unwrap();
-        assert!(mixed
+        mixed
             .record_report(&DeliveryReportPayload {
                 per_class: {
                     let mut value = counters_with_unsupported(1);
                     value.latest.superseded = 1;
                     value
                 },
-                gaps: vec![unsupported_gap(sender, 1), gap(sender, 2, 2)],
+                gaps: vec![gap(sender, 2, 2), mixed_unsupported.clone()],
             })
-            .is_err());
+            .unwrap();
+        assert_eq!(
+            mixed.unadvised_unsupported_gap.as_ref(),
+            Some(&mixed_unsupported)
+        );
+        mixed.observe_server_message(true).unwrap();
+    }
+
+    #[test]
+    fn coalesced_unsupported_ranges_are_accepted_only_when_counters_match() {
+        let sender = id(10);
+        let coalesced = |count: u64| DeliveryReportPayload {
+            per_class: counters_with_unsupported(count),
+            gaps: vec![unsupported_gap_range(sender, 4, 6)],
+        };
+
+        let mut exact = DeliveryAccountability::default();
+        exact.note_player_joined(&player(sender, 1)).unwrap();
+        exact.record_report(&coalesced(3)).unwrap();
+        exact.observe_server_message(true).unwrap();
+
+        for skewed_count in [2, 4] {
+            let mut skewed = DeliveryAccountability::default();
+            skewed.note_player_joined(&player(sender, 1)).unwrap();
+            assert!(
+                skewed.record_report(&coalesced(skewed_count)).is_err(),
+                "a {skewed_count}-count report for a 3-sequence range must be rejected"
+            );
+            assert!(
+                skewed.observe_server_message(true).is_err(),
+                "a rejected report must not authorize an unsupported-format advisory"
+            );
+            skewed
+                .record_report(&coalesced(3))
+                .expect("a rejected report must not commit counters or gap ranges");
+            skewed
+                .observe_server_message(true)
+                .expect("the accepted exact report must authorize its advisory");
+        }
+
+        let mut split = DeliveryAccountability::default();
+        split.note_player_joined(&player(sender, 1)).unwrap();
+        split
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_unsupported(5),
+                gaps: vec![
+                    unsupported_gap_range(sender, 1, 2),
+                    unsupported_gap_range(sender, 7, 9),
+                ],
+            })
+            .unwrap();
+        split.observe_server_message(true).unwrap();
     }
 
     #[test]

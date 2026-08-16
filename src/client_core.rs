@@ -534,6 +534,7 @@ impl ClientCore {
     }
 
     fn clear_room(&mut self) {
+        self.accountability.reset_room();
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
         self.snapshot.reconnection_token = None;

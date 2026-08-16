@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed protocol-v3 accountability rejecting coalesced or mixed-reason
+  `unsupported_format` gap reports emitted by newer Signal Fish servers;
+  optional rate-limited advisories now require a prior causal report without
+  requiring adjacency. Range validity, non-overlap, and exact counter-delta
+  validation remain enforced, and room/spectator exits discard old-room gap
+  and advisory authorization.
+
 ## [0.10.0] - 2026-07-24
 
 ### Added

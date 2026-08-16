@@ -355,7 +355,7 @@ loop as server messages arrive:
 | `room_code` | `Option<String>` | `RoomJoined` / `RoomLeft` / `Reconnected` / spectator lifecycle |
 | `reconnection_token` | `Option<String>` | `RoomJoined` / `Reconnected` / room exit |
 | `negotiated_protocol_version` | `Option<u16>` | `ProtocolInfo` / disconnect |
-| `delivery_quarantined` | `bool` | Protocol-v3 accountability policy / authoritative reset |
+| `quarantined` | `bool` | Protocol-v3 accountability policy / authoritative room baseline or exit |
 
 State flows **one direction**: the background task writes, your code reads
 through the accessors. You never set state directly.

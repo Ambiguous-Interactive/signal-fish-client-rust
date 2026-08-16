@@ -556,7 +556,9 @@ pub enum ProtocolViolationKind {
 impl ProtocolViolationKind {
     #[cfg(any(test, feature = "tokio-runtime", feature = "polling-client"))]
     pub(crate) fn from_diagnostic(diagnostic: &str) -> Self {
-        if diagnostic.contains("immediately followed") || diagnostic.contains("preceding causal") {
+        if diagnostic.contains("immediately followed")
+            || diagnostic.contains("causal DeliveryReport")
+        {
             Self::Causality
         } else if diagnostic.contains("PlayerLeft")
             || diagnostic.contains("PlayerReconnected")
@@ -944,7 +946,7 @@ mod tests {
                 ProtocolViolationKind::Lifecycle,
             ),
             (
-                "DeliveryReport was not immediately followed by Error",
+                "Error(UnsupportedGameDataFormat) lacked a prior causal DeliveryReport",
                 ProtocolViolationKind::Causality,
             ),
             (
