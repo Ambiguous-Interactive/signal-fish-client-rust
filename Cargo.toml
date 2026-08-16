@@ -96,7 +96,7 @@ sha2 = "0.11"
 proptest = "1.7"
 # Parses production sources in the offline sole-unsafe-exception policy test.
 proc-macro2 = "1"
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 
 [[example]]
 name = "basic_lobby"

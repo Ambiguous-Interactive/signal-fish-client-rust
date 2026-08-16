@@ -107,13 +107,16 @@ the inventory produced more than 170 mostly stylistic/documentation findings,
 and its only suspicious correctness warning was verified as a false positive.
 Add either class only when it demonstrates a stable, actionable defect.
 
-Dependabot monitors the root Cargo workspace, the Godot adapter manifest, and
-the standalone Godot web fixture in one updater entry. All three directories
-are explicit so its temporary file set can resolve the fixture's `../..` path
-dependencies while updating exact compatibility versions. A successful
-default-branch updater run is required after any change to this arrangement;
-the first two-directory attempt failed because Dependabot omitted the adapter
-manifest and then opened a zero-file PR.
+Dependabot monitors the root Cargo workspace from one root updater; Cargo
+discovers the Godot adapter as a real workspace member. Hosted run 31964370221
+proved that a multi-directory Cargo updater does not combine directory file
+sets: adapter processing lost the workspace root, fixture processing lost its
+sibling path dependency, and Dependabot opened the second zero-file PR #96.
+The minimum and latest Godot fixtures therefore remain deliberately standalone
+and are updated only with their locked compatibility/browser E2E evidence;
+putting them in the root workspace would unify incompatible Godot types and
+expand ordinary `--workspace --all-features` builds into engine-dependent
+fixtures. A fresh default-branch root updater run remains required hosted proof.
 
 ## Architecture — Core Modules
 

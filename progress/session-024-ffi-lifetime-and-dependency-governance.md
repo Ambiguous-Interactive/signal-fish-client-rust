@@ -75,9 +75,12 @@ continuing the negotiated token-binding milestone.
 
 ## Hosted Follow-up
 
-- A default-branch Dependabot run must prove that the explicit root, adapter,
-  and fixture directory set resolves successfully. Do not treat configuration
-  shape alone as proof.
+- Default-branch Dependabot run 31964370221 disproved the three-directory
+  design after this session merged. It failed with eleven resolution errors
+  because each directory received an isolated temporary file set, then opened
+  zero-file PR #96. Session 025 records the replacement root-workspace design;
+  do not treat either configuration shape as proof without a successful hosted
+  updater run.
 - Issue #90 remains a maintainer-admin blocker: restore the live ruleset,
   remove the quota-broken Copilot gate or fund it, and dispatch Repository
   Policy to green.
