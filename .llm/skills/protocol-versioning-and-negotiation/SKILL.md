@@ -29,7 +29,8 @@ MUST be `Option` + `skip_serializing_if` (or `Vec` + `default` + `skip_if-empty`
 1. The client advertises what it can fulfill in `Authenticate`:
    `protocol_version: Option<u16>`, `supported_transports: Option<Vec<TransportKind>>`,
    `supported_topologies: Option<Vec<Topology>>`.
-2. The server clamps to its own `[min, max]` and echoes the result in `ProtocolInfo`
+2. The server caps at its maximum, rejects a client maximum below its minimum
+   with `UNSUPPORTED_PROTOCOL_VERSION`, and echoes the result in `ProtocolInfo`
    (`protocol_version` / `min_protocol_version` / `max_protocol_version`, all
    `Option<u16>`, omitted for a v2 negotiation so v2 bytes stay identical).
 3. If the negotiation is < v3, or transports/topologies were omitted, the server
@@ -62,6 +63,12 @@ handshake ordering): `"relay-only"` (a `ProtocolInfo` arrived but negotiated
 below v3 — a terminal relay floor) or `"pre-negotiation"` (no `ProtocolInfo`
 yet — negotiation still in flight). `start_game` is **not** guarded — it is the
 universal v2 change.
+
+Signal sends additionally require a `SessionPlan`: before one arrives they
+return `SignalFishError::SessionPlanUnavailable`. Server 0.6+ plans/signals use
+a UUID generation. Keep it optional on the wire solely for 0.4 compatibility;
+omission decodes as `None`, but a present `null` or malformed UUID must fail.
+Stamp outgoing signals from the current plan and discard stale inbound ones.
 
 The guard threshold is `>= 3` (the version that introduced mesh signaling), NOT
 `>= PROTOCOL_VERSION` — a future SDK version bump must not reject a v3-negotiated

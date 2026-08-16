@@ -240,6 +240,11 @@ assert_eq!(value["data"]["game_name"], "my-game");
   direct construction is structurally infallible. `signal.rs`'s
   `from_matches_serialize_for_every_variant` test pins it against the derived
   `Serialize` so the two representations cannot drift.
+- Server 0.6+ requires `SessionPlan.generation` and `Signal.generation`, but the
+  protocol version stayed at 3. Model these as `Option<Uuid>` with `default`,
+  skip-if-none, and the presence-sensitive `deserialize_present_optional`
+  helper. Omission remains `None` for legacy 0.4 traffic, while explicit `null`
+  and invalid present UUID strings fail decoding as required by Server 0.7.
 
 ### The v2-byte-identical rule
 

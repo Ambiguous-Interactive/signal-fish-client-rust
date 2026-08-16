@@ -85,9 +85,12 @@ impl Transport for NeverSendMock {
 impl FrameMock {
     fn v3() -> Self {
         Self {
-            incoming: Arc::new(Mutex::new(VecDeque::from([TransportFrame::Text(
-                PI_V3.into(),
-            )]))),
+            incoming: Arc::new(Mutex::new(VecDeque::from([
+                TransportFrame::Text(PI_V3.into()),
+                TransportFrame::Text(
+                    r#"{"type":"SessionPlan","data":{"generation":"00000000-0000-0000-0000-00000000000c","topology":"mesh","transport":"webrtc","peers":[{"player_id":"00000000-0000-0000-0000-000000000007","player_name":"peer","is_authority":false,"initiate":true}],"fallback":"relay"}}"#.into(),
+                ),
+            ]))),
             sent: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -140,10 +143,12 @@ enum CommonCommandCase {
     LeaveSpectator,
     Ping,
     Signal,
+    SignalForGeneration,
     Offer,
     Answer,
     IceCandidate,
     RawSignal,
+    RawSignalForGeneration,
     TransportStatus,
 }
 
@@ -182,10 +187,20 @@ impl CommonCommandCase {
             Self::LeaveSpectator => client.leave_spectator(),
             Self::Ping => client.ping(),
             Self::Signal => client.send_signal(peer, PeerSignal::Offer("sdp".into())),
+            Self::SignalForGeneration => client.send_signal_for_generation(
+                peer,
+                Some(uuid::Uuid::from_u128(12)),
+                PeerSignal::Offer("bound-sdp".into()),
+            ),
             Self::Offer => client.send_offer(peer, "offer".into()),
             Self::Answer => client.send_answer(peer, "answer".into()),
             Self::IceCandidate => client.send_ice_candidate(peer, "candidate".into()),
             Self::RawSignal => client.send_raw_signal(peer, serde_json::json!({"Custom": 1})),
+            Self::RawSignalForGeneration => client.send_raw_signal_for_generation(
+                peer,
+                Some(uuid::Uuid::from_u128(12)),
+                serde_json::json!({"BoundCustom": 1}),
+            ),
             Self::TransportStatus => client.report_transport_status(TransportKind::WebRtc, true),
         }
     }
@@ -483,17 +498,21 @@ fn canonical_event(event: &SignalFishEvent) -> String {
             event_fields!("GameStarting", peer_connections)
         }
         SignalFishEvent::SessionPlan {
+            generation,
             topology,
             transport,
             host,
+            direct_endpoint,
             peers,
             ice_servers,
             fallback,
         } => event_fields!(
             "SessionPlan",
+            generation,
             topology,
             transport,
             host,
+            direct_endpoint,
             peers,
             ice_servers,
             fallback
@@ -502,8 +521,12 @@ fn canonical_event(event: &SignalFishEvent) -> String {
             peer_id,
             you_initiate,
         } => event_fields!("NewPeer", peer_id, you_initiate),
-        SignalFishEvent::SignalReceived { from, signal } => {
-            event_fields!("SignalReceived", from, signal)
+        SignalFishEvent::SignalReceived {
+            from,
+            generation,
+            signal,
+        } => {
+            event_fields!("SignalReceived", from, generation, signal)
         }
         SignalFishEvent::PeerTransportStatus {
             peer_id,
@@ -1046,10 +1069,12 @@ async fn every_common_command_produces_identical_physical_frames() {
         CommonCommandCase::LeaveSpectator,
         CommonCommandCase::Ping,
         CommonCommandCase::Signal,
+        CommonCommandCase::SignalForGeneration,
         CommonCommandCase::Offer,
         CommonCommandCase::Answer,
         CommonCommandCase::IceCandidate,
         CommonCommandCase::RawSignal,
+        CommonCommandCase::RawSignalForGeneration,
         CommonCommandCase::TransportStatus,
     ];
 
@@ -1061,7 +1086,7 @@ async fn every_common_command_produces_identical_physical_frames() {
         let async_sent = Arc::clone(&async_mock.sent);
         let (mut async_client, mut async_events) =
             SignalFishClient::start(async_mock, config.clone());
-        for _ in 0..2 {
+        for _ in 0..3 {
             tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
                 .await
                 .unwrap_or_else(|_| panic!("{case:?}: async negotiation event timed out"));
@@ -1176,10 +1201,12 @@ async fn disconnected_common_commands_consistently_return_not_connected() {
         CommonCommandCase::LeaveSpectator,
         CommonCommandCase::Ping,
         CommonCommandCase::Signal,
+        CommonCommandCase::SignalForGeneration,
         CommonCommandCase::Offer,
         CommonCommandCase::Answer,
         CommonCommandCase::IceCandidate,
         CommonCommandCase::RawSignal,
+        CommonCommandCase::RawSignalForGeneration,
         CommonCommandCase::TransportStatus,
     ] {
         assert!(matches!(

@@ -277,7 +277,7 @@ async fn e2e_slow_consumer_eviction_is_observable() {
     }
 }
 
-/// Exercises the complete v3 reconnect-token lifecycle against server 0.4.0:
+/// Exercises the complete v3 reconnect-token lifecycle against server 0.4+:
 /// capture the issued token, reconnect after an unexpected disconnect, and
 /// observe the rotated replacement token and sender watermarks.
 #[tokio::test]
@@ -344,7 +344,7 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
         ..
     } = response
     else {
-        panic!("server 0.4.0 must accept its issued reconnect token")
+        panic!("a compatible server must accept its issued reconnect token")
     };
     let rotated_token = reconnection_token.expect("Reconnected must rotate the token");
     assert_ne!(rotated_token, first_token, "reconnect token must rotate");
@@ -359,6 +359,306 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
         Some(rotated_token.as_str()),
         "snapshot must expose the replacement token"
     );
+    b.shutdown().await;
+}
+
+/// Server 0.7 WebRTC smoke: signals carry the authoritative plan generation,
+/// and host failover publishes a new generation to every survivor.
+#[tokio::test]
+#[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
+async fn e2e_server_070_generation_signal_and_host_replan() {
+    let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
+        Some(url) => (None, url),
+        None => match spawn_server(&[("SIGNAL_FISH__SESSION__DEFAULT_TOPOLOGY", "host")]).await {
+            Some((guard, url)) => (Some(guard), url),
+            None => {
+                eprintln!("skipping: neither SIGNAL_FISH_E2E_URL nor SIGNAL_FISH_SERVER_BIN set");
+                return;
+            }
+        },
+    };
+
+    let config = || SignalFishConfig::new(app_id()).enable_mesh();
+    let (mut a, mut a_events) = connect_authenticated(&url, config()).await;
+    a.join_room(JoinRoomParams::new("e2e-generation", "alpha"))
+        .expect("A join_room");
+    let a_joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        room_code,
+        player_id: a_id,
+        ..
+    } = a_joined
+    else {
+        unreachable!()
+    };
+
+    let (mut b, mut b_events) = connect_authenticated(&url, config()).await;
+    b.join_room(JoinRoomParams::new("e2e-generation", "bravo").with_room_code(&room_code))
+        .expect("B join_room");
+    let b_joined = wait_for_event(&mut b_events, "B RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        player_id: b_id, ..
+    } = b_joined
+    else {
+        unreachable!()
+    };
+
+    let (mut c, mut c_events) = connect_authenticated(&url, config()).await;
+    c.join_room(JoinRoomParams::new("e2e-generation", "charlie").with_room_code(&room_code))
+        .expect("C join_room");
+    let c_joined = wait_for_event(&mut c_events, "C RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        player_id: c_id, ..
+    } = c_joined
+    else {
+        unreachable!()
+    };
+
+    for client in [&mut a, &mut b, &mut c] {
+        client.set_ready().expect("set_ready");
+        client.ping().expect("queue readiness fence ping");
+    }
+    for events in [&mut a_events, &mut b_events, &mut c_events] {
+        wait_for_event(
+            events,
+            "readiness fence Pong",
+            Duration::from_secs(5),
+            |e| matches!(e, SignalFishEvent::Pong),
+        )
+        .await;
+    }
+    a.start_game().expect("start game");
+
+    let first_a = wait_for_event(
+        &mut a_events,
+        "A SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    let SignalFishEvent::SessionPlan {
+        generation: Some(first_generation),
+        peers,
+        ..
+    } = first_a
+    else {
+        panic!("server 0.7 SessionPlan must carry generation")
+    };
+    assert!(peers.iter().any(|peer| peer.player_id == b_id));
+
+    for (events, who) in [
+        (&mut b_events, "B SessionPlan"),
+        (&mut c_events, "C SessionPlan"),
+    ] {
+        let plan = wait_for_event(events, who, Duration::from_secs(5), |e| {
+            matches!(e, SignalFishEvent::SessionPlan { .. })
+        })
+        .await;
+        assert!(matches!(
+            plan,
+            SignalFishEvent::SessionPlan {
+                generation: Some(generation),
+                ..
+            } if generation == first_generation
+        ));
+    }
+
+    a.send_offer(b_id, "first-generation-offer")
+        .expect("send first-generation offer");
+    let first_signal = wait_for_event(
+        &mut b_events,
+        "first-generation Signal",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SignalReceived { .. }),
+    )
+    .await;
+    assert!(matches!(
+        first_signal,
+        SignalFishEvent::SignalReceived {
+            from,
+            generation: Some(generation),
+            ..
+        } if from == a_id && generation == first_generation
+    ));
+
+    a.leave_room().expect("host A leave room");
+    let second_b = wait_for_event(
+        &mut b_events,
+        "B replacement SessionPlan",
+        Duration::from_secs(5),
+        |e| {
+            matches!(
+                e,
+                SignalFishEvent::SessionPlan {
+                    generation: Some(generation),
+                    ..
+                } if *generation != first_generation
+            )
+        },
+    )
+    .await;
+    let SignalFishEvent::SessionPlan {
+        generation: Some(second_generation),
+        peers,
+        ..
+    } = second_b
+    else {
+        unreachable!()
+    };
+    assert_ne!(second_generation, first_generation);
+    assert!(peers.iter().any(|peer| peer.player_id == c_id));
+
+    let second_c = wait_for_event(
+        &mut c_events,
+        "C replacement SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(matches!(
+        second_c,
+        SignalFishEvent::SessionPlan {
+            generation: Some(generation),
+            ..
+        } if generation == second_generation
+    ));
+
+    b.send_offer(c_id, "second-generation-offer")
+        .expect("send second-generation offer");
+    let second_signal = wait_for_event(
+        &mut c_events,
+        "second-generation Signal",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SignalReceived { .. }),
+    )
+    .await;
+    assert!(matches!(
+        second_signal,
+        SignalFishEvent::SignalReceived {
+            from,
+            generation: Some(generation),
+            ..
+        } if from == b_id && generation == second_generation
+    ));
+
+    a.shutdown().await;
+    b.shutdown().await;
+    c.shutdown().await;
+}
+
+/// Server 0.4 compatibility smoke: authoritative plans and relayed signals
+/// remain generation-less end to end.
+#[tokio::test]
+#[ignore = "requires Signal Fish Server 0.4; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
+async fn e2e_server_040_generationless_mesh_signal() {
+    let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
+        Some(url) => (None, url),
+        None => match spawn_server(&[("SIGNAL_FISH__SESSION__DEFAULT_TOPOLOGY", "mesh")]).await {
+            Some((guard, url)) => (Some(guard), url),
+            None => {
+                eprintln!("skipping: neither SIGNAL_FISH_E2E_URL nor SIGNAL_FISH_SERVER_BIN set");
+                return;
+            }
+        },
+    };
+
+    let config = || SignalFishConfig::new(app_id()).enable_mesh();
+    let (mut a, mut a_events) = connect_authenticated(&url, config()).await;
+    a.join_room(JoinRoomParams::new("e2e-legacy-mesh", "alpha"))
+        .expect("A join_room");
+    let a_joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined { room_code, .. } = a_joined else {
+        unreachable!()
+    };
+
+    let (mut b, mut b_events) = connect_authenticated(&url, config()).await;
+    b.join_room(JoinRoomParams::new("e2e-legacy-mesh", "bravo").with_room_code(&room_code))
+        .expect("B join_room");
+    let b_joined = wait_for_event(&mut b_events, "B RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        player_id: b_id, ..
+    } = b_joined
+    else {
+        unreachable!()
+    };
+
+    for client in [&mut a, &mut b] {
+        client.set_ready().expect("set_ready");
+        client.ping().expect("queue readiness fence ping");
+    }
+    for events in [&mut a_events, &mut b_events] {
+        wait_for_event(
+            events,
+            "readiness fence Pong",
+            Duration::from_secs(5),
+            |e| matches!(e, SignalFishEvent::Pong),
+        )
+        .await;
+    }
+    a.start_game().expect("start game");
+
+    let a_plan = wait_for_event(
+        &mut a_events,
+        "A generation-less SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(matches!(
+        a_plan,
+        SignalFishEvent::SessionPlan {
+            generation: None,
+            ..
+        }
+    ));
+    let b_plan = wait_for_event(
+        &mut b_events,
+        "B generation-less SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(matches!(
+        b_plan,
+        SignalFishEvent::SessionPlan {
+            generation: None,
+            ..
+        }
+    ));
+
+    a.send_offer(b_id, "legacy-generationless-offer")
+        .expect("send legacy offer");
+    let signal = wait_for_event(
+        &mut b_events,
+        "generation-less Signal",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SignalReceived { .. }),
+    )
+    .await;
+    assert!(matches!(
+        signal,
+        SignalFishEvent::SignalReceived {
+            generation: None,
+            ..
+        }
+    ));
+
+    a.shutdown().await;
     b.shutdown().await;
 }
 

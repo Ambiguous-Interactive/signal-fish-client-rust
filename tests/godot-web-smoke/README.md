@@ -2,7 +2,7 @@
 
 This no-GDScript GDExtension fixture exercises the supported
 `GodotWebSocketTransport` path with official Godot 4.5 web templates. It starts
-separate JSON and MessagePack client pairs against server 0.4.0 on
+separate JSON and MessagePack client pairs against the CI-selected server on
 `127.0.0.1:3536`, authenticates, joins rooms, verifies application Ping/Pong
 plus text and binary relays, gracefully shuts down the JSON pair, then waits
 for a server drain and verifies WebSocket close code 4000 attribution on the
@@ -21,7 +21,7 @@ watermark violations and reports empty-buffer single-frame escape bytes
 separately from the immutable 32 KiB ceiling. Server 0.4.0 does not expose an
 internal queue/sojourn gauge, so the
 fixture uses timestamped end-to-end latency and available conservation/drop
-metrics instead of a client-side proxy.
+metrics instead of a client-side proxy when the legacy server-0.4 job runs.
 
 CI also builds a negative-control variant that calls the raw
 `EmscriptenWebSocketTransport` during extension initialization. The official
@@ -36,7 +36,8 @@ commands do not try to link a GDExtension test binary outside Godot.
 The same fixture also contains a deterministic two-player
 `fortress-rollback` 0.10.0 game. CI launches two independent Chromium
 processes, each hosting its own Godot runtime and Signal Fish client, against
-one real Signal Fish server 0.4.0 process. Player A creates a room and player B
+one real Signal Fish server process. The primary clean, impaired, and soak jobs
+pin 0.7.0, while a clean compatibility job pins 0.4.0. Player A creates a room and player B
 joins the exact room code reported by A.
 
 Each rendered callback polls Signal Fish exactly once, pumps a bounded relay

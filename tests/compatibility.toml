@@ -1,15 +1,25 @@
 # Canonical client/server protocol compatibility binding.
 client_version = "0.10.0"
-server_version = "0.4.0"
-server_tag = "v0.4.0"
-server_commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
-synced = "2026-07-24"
+server_version = "0.7.0"
+server_tag = "v0.7.0"
+server_commit = "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333"
+synced = "2026-08-16"
+
+[legacy_server]
+version = "0.4.0"
+tag = "v0.4.0"
+commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
+generation = "omitted"
+
+[server_release_artifacts]
+"signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz" = "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+"signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz" = "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
 
 [wire_samples]
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
-"v2-server-messages.jsonl" = "9ca02863958bf8c388b36a7ab700fb01904c58c7181917e97c9d17d307120511"
-"v3-client-messages.jsonl" = "ce5e9da99677ea867c1573113dad7a1ad5f2f1719ef7fa28221a750e2b92419c"
-"v3-server-messages.jsonl" = "43fab3a377739996f80a7747b5aab0886bc7a48b6efd55aba3821c69f2ab1340"
+"v2-server-messages.jsonl" = "b5aee60d2cbd410c1088da1bbd1142d88d89600bc600f00b2d1849586f1654cd"
+"v3-client-messages.jsonl" = "68b173b4e0075f12c7dd31d2b6935ee043c7bdf0b12ce7f78ed026405fa92820"
+"v3-server-messages.jsonl" = "139f6e3539818f6295635357e2361286af2bdff12c053b82ee5aa31b0c25554d"
 
 [server_spec]
-"signal-fish-protocol.asyncapi.yaml" = "29886ec76f8bd38021ea78799655615188be7d6caba53c886568767a3f264df1"
+"signal-fish-protocol.asyncapi.yaml" = "f3320f31946f44c55f16067585a2909086afece1e0bff303e0aa6e314e5fef69"

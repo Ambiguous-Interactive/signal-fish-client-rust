@@ -26,6 +26,12 @@ pub type PlayerId = Uuid;
 /// Unique identifier for rooms.
 pub type RoomId = Uuid;
 
+/// Opaque server-authored generation fencing one authoritative session plan.
+///
+/// Protocol-v3 signals carry this value so delayed offer/answer/ICE traffic
+/// cannot cross a retained-pair rebuild.
+pub type SessionGeneration = Uuid;
+
 // ── Enums ───────────────────────────────────────────────────────────
 
 /// Relay transport protocol selection.
@@ -423,6 +429,18 @@ pub struct SessionPeer {
     pub initiate: bool,
 }
 
+/// A syntactically usable direct host endpoint selected by the server.
+///
+/// This is copied from the elected host's self-declared direct metadata. It is
+/// not proof of reachability, so callers must retain the relay fallback.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectEndpoint {
+    /// Hostname or IP address to connect to.
+    pub host: String,
+    /// Non-zero transport port.
+    pub port: u16,
+}
+
 // ── Payload structs ─────────────────────────────────────────────────
 
 /// Payload for the `RoomJoined` server message.
@@ -507,12 +525,22 @@ pub struct SpectatorJoinedPayload {
 /// Payload for the `SessionPlan` server message (protocol v3).
 /// Boxed in `ServerMessage` to reduce enum size.
 ///
-/// Sent per-recipient when a room finalizes to a non-relay session (and again
-/// on late-join or host re-election). Each recipient receives a plan tailored
-/// to it: `peers` excludes the recipient, and each `initiate` flag is set from
-/// the recipient's perspective.
+/// Sent per-recipient when a room finalizes and again for relay resets, late
+/// joins, host re-election, or reconnect replay. Each recipient receives a plan
+/// tailored to it: `peers` excludes the recipient, and each `initiate` flag is
+/// set from the recipient's perspective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionPlanPayload {
+    /// Opaque generation shared by this authoritative plan publication.
+    ///
+    /// Server 0.7 and newer always send this. `None` represents the legacy
+    /// Server 0.4 protocol-v3 shape so those deployments remain decodable.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
+    pub generation: Option<SessionGeneration>,
     /// Chosen session topology (`relay`, `host`, or `mesh`).
     pub topology: Topology,
     /// Chosen data-path transport (`relay`, `direct`, or `webrtc`).
@@ -520,6 +548,9 @@ pub struct SessionPlanPayload {
     /// The elected host, present only for `host` topology.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<PlayerId>,
+    /// Validated connect target for a `host + direct` plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_endpoint: Option<DirectEndpoint>,
     /// Peers this recipient should connect to (excludes the recipient itself).
     pub peers: Vec<SessionPeer>,
     /// ICE (STUN/TURN) servers for WebRTC; omitted for non-WebRTC plans.
@@ -620,8 +651,9 @@ pub enum ClientMessage {
     ///
     /// Accepted only when every current player is ready. If the room has a
     /// designated authority, only that authority may start; otherwise any
-    /// member may. On success the server broadcasts `GameStarting` (and, for a
-    /// negotiated v3 non-relay room, a per-recipient `SessionPlan`).
+    /// member may. On success the server broadcasts `GameStarting` and, for a
+    /// negotiated v3 room, a per-recipient authoritative `SessionPlan`
+    /// (including an explicit relay plan when selected).
     StartGame,
     /// Relay an opaque WebRTC signal to a single peer.
     ///
@@ -634,6 +666,13 @@ pub enum ClientMessage {
     Signal {
         /// The recipient peer.
         to: PlayerId,
+        /// Generation from the sender's latest authoritative session plan.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_present_optional"
+        )]
+        generation: Option<SessionGeneration>,
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
     },
@@ -805,6 +844,13 @@ pub enum ServerMessage {
     Signal {
         /// The peer the signal came from.
         from: PlayerId,
+        /// Generation copied from the sender's authoritative session plan.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_present_optional"
+        )]
+        generation: Option<SessionGeneration>,
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
     },
@@ -818,11 +864,11 @@ pub enum ServerMessage {
         /// Server-assigned; obey verbatim.
         you_initiate: bool,
     },
-    /// Per-recipient session plan for a finalized non-relay room.
+    /// Per-recipient authoritative session plan, including explicit relay resets.
     ///
     /// **Protocol v3 only.** Boxed to reduce enum size. May be received multiple
-    /// times (host re-election / late-join); each one fully replaces the
-    /// previous plan.
+    /// times (relay reset / host re-election / late join / reconnect replay);
+    /// each one fully replaces the previous plan.
     SessionPlan(Box<SessionPlanPayload>),
     /// A peer's data-path transport state changed. Informational.
     ///

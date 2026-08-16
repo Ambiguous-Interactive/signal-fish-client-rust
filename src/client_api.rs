@@ -2,7 +2,7 @@
 
 use crate::client::{ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams};
 use crate::error::Result;
-use crate::protocol::{ConnectionInfo, PlayerId, RoomId, TransportKind};
+use crate::protocol::{ConnectionInfo, PlayerId, RoomId, SessionGeneration, TransportKind};
 use crate::signal::PeerSignal;
 
 /// Object-safe synchronous command and state surface shared by both clients.
@@ -51,8 +51,22 @@ pub trait SignalFishClientApi {
     fn ping(&mut self) -> Result<()>;
     /// Relay a typed WebRTC signal.
     fn send_signal(&mut self, to: PlayerId, signal: PeerSignal) -> Result<()>;
+    /// Relay a typed WebRTC signal only while its originating generation remains current.
+    fn send_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: PeerSignal,
+    ) -> Result<()>;
     /// Relay an unmodeled WebRTC signal.
     fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()>;
+    /// Relay an unmodeled signal only while its originating generation remains current.
+    fn send_raw_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: serde_json::Value,
+    ) -> Result<()>;
     /// Report data-path transport status.
     fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()>;
     /// Remaining command-queue capacity.

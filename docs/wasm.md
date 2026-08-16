@@ -293,6 +293,13 @@ let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
+!!! warning "Allow the browser's exact Origin on Server 0.7"
+    Browsers attach an `Origin` header to the WebSocket upgrade, and Signal Fish
+    Server 0.7 validates it. Configure the server's `security.cors_origins`
+    (or `SIGNAL_FISH__SECURITY__CORS_ORIGINS`) with the exact HTTPS origin that
+    serves the game. Use `'*'` only for isolated local or CI fixtures, never as
+    the production default.
+
 For Godot buffering control, use
 `GodotWebSocketTransport::connect_with_options`. The default adaptive policy
 targets 50 ms of backend buffering with a 4 KiB floor and 32 KiB ceiling.
@@ -400,10 +407,12 @@ until v3 is negotiated.
 | `join_as_spectator(game, room, name)` | `fn join_as_spectator(&mut self, game_name: String, room_code: String, spectator_name: String) -> Result<()>` | Join a room as a spectator. |
 | `leave_spectator()` | `fn leave_spectator(&mut self) -> Result<()>` | Leave spectator mode. |
 | `send_signal(to, signal)` | `fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()>` | Relay a typed WebRTC signal on protocol v3. |
+| `send_signal_for_generation(to, generation, signal)` | `fn send_signal_for_generation(&mut self, to: PlayerId, generation: Option<SessionGeneration>, signal: impl Into<PeerSignal>) -> Result<()>` | Relay driver output only while its authoritative plan generation remains current. |
 | `send_offer(to, sdp)` | `fn send_offer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()>` | Relay a protocol-v3 SDP offer. |
 | `send_answer(to, sdp)` | `fn send_answer(&mut self, to: PlayerId, sdp: impl Into<String>) -> Result<()>` | Relay a protocol-v3 SDP answer. |
 | `send_ice_candidate(to, candidate)` | `fn send_ice_candidate(&mut self, to: PlayerId, candidate: impl Into<String>) -> Result<()>` | Relay a protocol-v3 ICE candidate. |
 | `send_raw_signal(to, signal)` | `fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()>` | Relay an unmodeled protocol-v3 signal value. |
+| `send_raw_signal_for_generation(to, generation, signal)` | `fn send_raw_signal_for_generation(&mut self, to: PlayerId, generation: Option<SessionGeneration>, signal: serde_json::Value) -> Result<()>` | Generation-bound raw signaling escape hatch. |
 | `report_transport_status(transport, connected)` | `fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()>` | Report protocol-v3 data-path connectivity. |
 | `ping()` | `fn ping(&mut self) -> Result<()>` | Send a heartbeat ping. |
 | `close()` | `fn close(&mut self)` | Start the configured bounded close lifecycle; keep polling while `is_closing()`. |
@@ -431,7 +440,7 @@ environment).
 | `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Refresh current age and reset the sampled peak to it. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 | `transport()` | `fn transport(&self) -> &T` | Borrow transport-specific read-only diagnostics; I/O still advances only through `poll()`. |
-| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, and quarantine state. |
+| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, current session generation, and quarantine state. |
 
 !!! tip "Comparison with `SignalFishClient`"
     `SignalFishPollingClient` mirrors `SignalFishClient`'s common synchronous

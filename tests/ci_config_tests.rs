@@ -154,7 +154,9 @@ mod godot_issue_61_policy {
         }
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
-            workflow.contains("SERVER_VERSION: \"0.4.0\"")
+            workflow.contains("server_version: \"0.4.0\"")
+                && workflow.contains("server_version: \"0.7.0\"")
+                && workflow.contains("SERVER_VERSION: ${{ matrix.server_version }}")
                 && workflow.contains("run-godot-fortress-e2e.mjs")
                 && workflow.contains("scenario: clean")
                 && workflow.contains("scenario: impaired")
@@ -170,6 +172,24 @@ mod godot_issue_61_policy {
         );
         assert_eq!(workflow.matches("runs-on: ubuntu-24.04").count(), 3);
         assert_eq!(workflow.matches("name: godot-web-export").count(), 2);
+        let netns_origin = r#"sudo ip netns exec sf-server env \
+              SIGNAL_FISH__PORT=3536 \
+              SIGNAL_FISH__LOGGING__LEVEL=debug \
+              SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+              SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \"#;
+        let local_origin = r#"else
+            SIGNAL_FISH__PORT=3536 \
+            SIGNAL_FISH__LOGGING__LEVEL=debug \
+            SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+            SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \"#;
+        assert!(
+            workflow.contains(netns_origin),
+            "network-namespace server launch must allow the ephemeral browser origin"
+        );
+        assert!(
+            workflow.contains(local_origin),
+            "local server launch must allow the ephemeral browser origin"
+        );
         for required in [
             "needs: build-export",
             "fail-fast: false",
@@ -1320,6 +1340,7 @@ mod ci_workflow_policy {
         "spell-check",
         "clippy",
         "test",
+        "server-mesh-e2e",
         "msrv",
         "doc",
         "deny",
@@ -1426,6 +1447,46 @@ mod ci_workflow_policy {
                  The main CI pipeline must include all of: {REQUIRED_JOBS:?}."
             );
         }
+    }
+
+    #[test]
+    fn ci_pins_live_mesh_compatibility_seams() {
+        let contents = ci_contents();
+        let compatibility: toml::Value =
+            toml::from_str(&read_project_file("tests/compatibility.toml"))
+                .expect("compatibility manifest must parse");
+        let release_artifacts = compatibility["server_release_artifacts"]
+            .as_table()
+            .expect("server_release_artifacts must be a table");
+        for (asset, version, test_name) in [
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_generation_signal_and_host_replan",
+            ),
+            (
+                "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.4.0",
+                "e2e_server_040_generationless_mesh_signal",
+            ),
+        ] {
+            let digest = release_artifacts[asset]
+                .as_str()
+                .unwrap_or_else(|| panic!("{asset} release digest must be a string"));
+            let matrix_row = format!(
+                "- server_version: \"{version}\"\n            server_sha256: \"{digest}\"\n            test_name: {test_name}"
+            );
+            assert!(
+                contents.contains(&matrix_row),
+                "CI must bind {asset} digest {digest} to {test_name} in one matrix row"
+            );
+        }
+        let checksum_command =
+            "printf '%s  %s\\n' \"${SERVER_SHA256}\" \"${asset}\" | sha256sum --check";
+        assert!(
+            contents.contains(checksum_command),
+            "CI must verify the matrix-bound release digest"
+        );
     }
 
     #[test]

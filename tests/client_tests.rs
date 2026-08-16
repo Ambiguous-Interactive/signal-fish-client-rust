@@ -2079,19 +2079,168 @@ async fn send_signal_after_v3_negotiation_is_sent() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(session_plan_json(peer, true))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    while !matches!(
+        events.recv().await.expect("SessionPlan event"),
+        SignalFishEvent::SessionPlan { .. }
+    ) {}
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
     client.send_offer(peer, "the-sdp").expect("send_offer");
     wait_for_sent_len(&sent, 2).await;
 
     let signal = sent_messages(&sent).into_iter().find_map(|m| match m {
-        ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+        ClientMessage::Signal {
+            to,
+            generation,
+            signal,
+        } if to == peer => Some((generation, signal)),
         _ => None,
     });
-    assert_eq!(signal, Some(serde_json::json!({ "Offer": "the-sdp" })));
+    assert_eq!(
+        signal,
+        Some((
+            Some(uuid::Uuid::from_u128(12)),
+            serde_json::json!({ "Offer": "the-sdp" })
+        ))
+    );
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_signal_after_v3_but_before_plan_fails_locally() {
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+    ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+
+    assert!(matches!(
+        client.send_offer(uuid::Uuid::from_u128(2), "too-early"),
+        Err(SignalFishError::SessionPlanUnavailable)
+    ));
+    assert!(!sent_messages(&sent)
+        .iter()
+        .any(|message| matches!(message, ClientMessage::Signal { .. })));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn generation_bound_typed_and_raw_signals_refuse_stale_plan() {
+    let peer = uuid::Uuid::from_u128(2);
+    let first = uuid::Uuid::from_u128(12);
+    let second = uuid::Uuid::from_u128(13);
+    let replacement =
+        session_plan_json(peer, true).replace(&first.to_string(), &second.to_string());
+    let (mut client, _events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(session_plan_json(peer, true))),
+        Some(Ok(replacement)),
+    ]);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while client.snapshot().session_generation != Some(second) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("replacement plan was not folded");
+
+    for result in [
+        client.send_signal_for_generation(peer, Some(first), PeerSignal::Offer("old".into())),
+        client.send_raw_signal_for_generation(
+            peer,
+            Some(first),
+            serde_json::json!({"Custom": "old"}),
+        ),
+    ] {
+        assert!(matches!(
+            result,
+            Err(SignalFishError::StaleSessionGeneration {
+                attempted: Some(value),
+                current: Some(now),
+            }) if value == first && now == second
+        ));
+    }
+    assert!(!sent_messages(&sent)
+        .iter()
+        .any(|message| matches!(message, ClientMessage::Signal { .. })));
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn stale_and_preplan_signals_are_suppressed() {
+    let peer = uuid::Uuid::from_u128(2);
+    let preplan = serde_json::to_string(&ServerMessage::Signal {
+        from: peer,
+        generation: Some(uuid::Uuid::from_u128(12)),
+        signal: serde_json::json!({ "Offer": "preplan" }),
+    })
+    .unwrap();
+    let stale = serde_json::to_string(&ServerMessage::Signal {
+        from: peer,
+        generation: Some(uuid::Uuid::from_u128(13)),
+        signal: serde_json::json!({ "Offer": "stale" }),
+    })
+    .unwrap();
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(preplan)),
+        Some(Ok(session_plan_json(peer, false))),
+        Some(Ok(stale)),
+        Some(Ok(signal_json(
+            peer,
+            serde_json::json!({ "Offer": "current" }),
+        ))),
+    ]);
+
+    let mut received = Vec::new();
+    while received.is_empty() {
+        if let SignalFishEvent::SignalReceived { signal, .. } =
+            events.recv().await.expect("event stream")
+        {
+            received.push(signal);
+        }
+    }
+    assert_eq!(received, vec![serde_json::json!({ "Offer": "current" })]);
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_generationless_plan_keeps_generationless_signal_wire() {
+    let peer = uuid::Uuid::from_u128(2);
+    let legacy_plan = r#"{"type":"SessionPlan","data":{"topology":"mesh","transport":"webrtc","peers":[{"player_id":"00000000-0000-0000-0000-000000000002","player_name":"peer","is_authority":false,"initiate":true}],"fallback":"relay"}}"#;
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(legacy_plan.into())),
+    ]);
+    while !matches!(
+        events.recv().await.expect("SessionPlan event"),
+        SignalFishEvent::SessionPlan {
+            generation: None,
+            ..
+        }
+    ) {}
+
+    client.send_offer(peer, "legacy").expect("legacy signal");
+    wait_for_sent_len(&sent, 2).await;
+    let message = sent_messages(&sent)
+        .into_iter()
+        .find(|message| matches!(message, ClientMessage::Signal { .. }))
+        .expect("Signal frame");
+    assert!(matches!(
+        message,
+        ClientMessage::Signal {
+            generation: None,
+            ..
+        }
+    ));
     client.shutdown().await;
 }
 
@@ -2172,7 +2321,7 @@ async fn v3_session_plan_and_signal_events_are_emitted() {
                 assert!(peers[0].initiate);
                 saw_plan = true;
             }
-            SignalFishEvent::SignalReceived { from, signal } => {
+            SignalFishEvent::SignalReceived { from, signal, .. } => {
                 assert_eq!(from, peer);
                 assert_eq!(
                     PeerSignal::try_from(&signal).expect("typed signal"),
@@ -2336,11 +2485,16 @@ async fn v4_negotiation_still_enables_mesh() {
         vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_json(Some(4)))),
+            Some(Ok(session_plan_json(uuid::Uuid::from_u128(2), true))),
         ],
         SignalFishConfig::new("mb_test_integration").enable_mesh(),
     );
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    while !matches!(
+        events.recv().await.expect("SessionPlan event"),
+        SignalFishEvent::SessionPlan { .. }
+    ) {}
     assert_eq!(client.negotiated_protocol_version(), Some(4));
     assert!(client.supports_mesh());
     client
@@ -2355,9 +2509,14 @@ async fn send_answer_ice_and_raw_signal_wire_shapes() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(session_plan_json(peer, true))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    while !matches!(
+        events.recv().await.expect("SessionPlan event"),
+        SignalFishEvent::SessionPlan { .. }
+    ) {}
 
     client.send_answer(peer, "ans").expect("send_answer");
     client
@@ -2371,7 +2530,7 @@ async fn send_answer_ice_and_raw_signal_wire_shapes() {
     let signals: Vec<serde_json::Value> = sent_messages(&sent)
         .into_iter()
         .filter_map(|m| match m {
-            ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+            ClientMessage::Signal { to, signal, .. } if to == peer => Some(signal),
             _ => None,
         })
         .collect();

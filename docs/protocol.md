@@ -459,16 +459,19 @@ pub struct SessionPeer {
 
 ### `SessionPlanPayload` (protocol v3)
 
-The per-recipient plan the server sends when a room finalizes to a non-relay
-session (delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3)
-event). Sent again on late-join or host re-election; each one **fully replaces**
-the previous plan.
+The per-recipient authoritative plan the server sends when a room finalizes
+(delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3) event).
+Relay plans can explicitly reset a prior peer-to-peer plan. A plan is also sent
+again on late join, host re-election, or reconnect replay; each one **fully
+replaces** the previous plan.
 
 ```rust,ignore
 pub struct SessionPlanPayload {
+    pub generation: Option<SessionGeneration>,
     pub topology: Topology,
     pub transport: TransportKind,
     pub host: Option<PlayerId>,
+    pub direct_endpoint: Option<DirectEndpoint>,
     pub peers: Vec<SessionPeer>,
     pub ice_servers: Vec<IceServer>,
     pub fallback: TransportKind,
@@ -477,9 +480,11 @@ pub struct SessionPlanPayload {
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `generation` | `Option<SessionGeneration>` | Server 0.6+ handshake generation. Required on server 0.7; optional in the SDK only to decode generation-less 0.4 plans. |
 | `topology` | `Topology` | Chosen session topology (`relay`, `host`, or `mesh`). |
 | `transport` | `TransportKind` | Chosen data-path transport (`relay`, `direct`, or `webrtc`). |
 | `host` | `Option<PlayerId>` | The elected host, present only for `host` topology. |
+| `direct_endpoint` | `Option<DirectEndpoint>` | Server-validated host and port for a `host + direct` plan. The built-in WebRTC controller exposes this value but does not open a direct socket. |
 | `peers` | `Vec<SessionPeer>` | Peers this recipient should connect to (excludes the recipient itself). |
 | `ice_servers` | `Vec<IceServer>` | ICE (STUN/TURN) servers for WebRTC; omitted for non-WebRTC plans. |
 | `fallback` | `TransportKind` | The universal fallback transport — always `Relay`, the floor. |
@@ -493,6 +498,11 @@ The typed convenience view over the opaque `signal` field carried by
 `serde_json::Value` so an unknown future signal shape can never break
 deserialization; `PeerSignal` lets you work with the common shapes ergonomically
 via its `From`/`TryFrom` conversions.
+
+Every server 0.6+ client/server `Signal` also carries the current session
+generation. The client stamps outgoing signals from its latest plan and drops
+incoming signals before a plan or from another generation. Server 0.4 traffic
+omits the field and remains generation-less end to end.
 
 `PeerSignal` is **externally tagged** (serde's default for enums), byte-identical
 to `matchbox_socket::PeerSignal`:
@@ -604,7 +614,7 @@ pub enum ServerMessage { /* ... */ }
 | `Error` | Generic server error. |
 | `Signal` | **(v3)** An opaque WebRTC signal relayed from a peer. |
 | `NewPeer` | **(v3)** A late-joining peer to connect to after the session was finalized. |
-| `SessionPlan` | **(v3)** The per-recipient session plan for a finalized non-relay room. |
+| `SessionPlan` | **(v3)** The per-recipient authoritative plan for a finalized room, including an explicit relay reset when selected. |
 | `PeerTransportStatus` | **(v3)** A peer's data-path transport state changed (informational). |
 | `DeliveryReport` | **(v3)** Cumulative per-class outcomes plus exact omitted sequence ranges. |
 | `RelayStats` | **(v3)** Optional cumulative connection-level relay diagnostics. |

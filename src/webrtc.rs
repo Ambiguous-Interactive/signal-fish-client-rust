@@ -15,7 +15,7 @@
 //! client still "obeys the server": the controller passes the server-assigned
 //! `initiate` flag straight through and never computes who offers.
 
-use crate::protocol::{IceServer, PlayerId};
+use crate::protocol::{IceServer, PlayerId, SessionGeneration};
 use crate::signal::PeerSignal;
 
 /// A pluggable WebRTC backend the [`MeshController`] drives through the signaling
@@ -34,10 +34,15 @@ pub trait WebRtcDriver {
     /// emit it via [`poll`](Self::poll) as [`DriverEvent::Signal`]; otherwise
     /// wait for the remote offer. Obey `initiate` verbatim — it is the server's
     /// deterministic offerer assignment.
-    fn connect(&mut self, peer: PlayerId, initiate: bool);
+    fn connect(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, initiate: bool);
 
     /// Feed a remote signal (offer/answer/ICE candidate) received from `peer`.
-    fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal);
+    fn on_signal(
+        &mut self,
+        peer: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: PeerSignal,
+    );
 
     /// Send application bytes to `peer` over its data channel (best-effort).
     fn send(&mut self, peer: PlayerId, data: &[u8]);
@@ -97,6 +102,8 @@ pub enum DriverEvent {
     Signal {
         /// The peer this signal is destined for.
         peer: PlayerId,
+        /// Authoritative session generation that produced the signal.
+        generation: Option<SessionGeneration>,
         /// The signal payload.
         signal: PeerSignal,
     },
@@ -104,16 +111,22 @@ pub enum DriverEvent {
     Connected {
         /// The peer whose channel opened.
         peer: PlayerId,
+        /// Authoritative session generation whose channel opened.
+        generation: Option<SessionGeneration>,
     },
     /// The data channel to `peer` closed or failed.
     Disconnected {
         /// The peer whose channel closed.
         peer: PlayerId,
+        /// Authoritative session generation whose channel closed.
+        generation: Option<SessionGeneration>,
     },
     /// Application bytes arrived from `peer`.
     Data {
         /// The sending peer.
         peer: PlayerId,
+        /// Authoritative session generation that delivered the bytes.
+        generation: Option<SessionGeneration>,
         /// The received bytes.
         data: Vec<u8>,
     },
@@ -157,7 +170,7 @@ mod controller {
     use crate::client::{SignalFishClient, SignalFishConfig};
     use crate::event::SignalFishEvent;
     use crate::mesh::MeshSession;
-    use crate::protocol::{PlayerId, TransportKind};
+    use crate::protocol::{PlayerId, SessionGeneration, TransportKind};
     use crate::signal::PeerSignal;
     use crate::transport::Transport;
 
@@ -173,6 +186,7 @@ mod controller {
     #[derive(Clone, Copy)]
     struct KnownPeer {
         id: PlayerId,
+        generation: Option<SessionGeneration>,
         initiate: bool,
     }
 
@@ -226,7 +240,7 @@ mod controller {
         /// cancellable future. Cleared when the controller tears down the
         /// target peer (see `disconnect_peer`) — an abandoned handshake's
         /// signal must not be relayed stale.
-        pending_signal: Option<(PlayerId, PeerSignal)>,
+        pending_signal: Option<(PlayerId, Option<SessionGeneration>, PeerSignal)>,
     }
 
     impl<D: WebRtcDriver> MeshController<D> {
@@ -346,9 +360,19 @@ mod controller {
         fn choreograph(&mut self, event: &SignalFishEvent) {
             match event {
                 SignalFishEvent::SessionPlan {
-                    peers, ice_servers, ..
+                    generation,
+                    transport,
+                    peers,
+                    ice_servers,
+                    ..
                 } => {
                     // The plan is authoritative even when empty (relay reset).
+                    if *transport != TransportKind::WebRtc {
+                        for peer in std::mem::take(&mut self.known_peers) {
+                            self.disconnect_peer(peer.id);
+                        }
+                        return;
+                    }
                     self.driver.set_ice_servers(ice_servers);
                     let new_ids: Vec<PlayerId> = peers.iter().map(|p| p.player_id).collect();
                     // Disconnect peers dropped from the new plan (host re-election
@@ -363,22 +387,53 @@ mod controller {
                         self.disconnect_peer(old);
                     }
                     self.known_peers.retain(|k| new_ids.contains(&k.id));
-                    // Connect peers newly named by this plan; a survivor whose
-                    // offerer role changed is restarted in the new role, and one
-                    // whose role is unchanged keeps its existing connection.
+                    // Connect peers newly named by this plan. Every survivor is
+                    // restarted when the generation changes; within one generation,
+                    // only an offerer-role change requires a restart.
                     for peer in peers {
-                        self.ensure_peer(peer.player_id, peer.initiate);
+                        self.ensure_peer(peer.player_id, *generation, peer.initiate);
                     }
                 }
                 SignalFishEvent::NewPeer {
                     peer_id,
                     you_initiate,
                 } => {
-                    self.ensure_peer(*peer_id, *you_initiate);
+                    if self.session.transport() == Some(TransportKind::WebRtc) {
+                        self.ensure_peer(*peer_id, self.session.generation(), *you_initiate);
+                    }
                 }
-                SignalFishEvent::SignalReceived { from, signal } => {
+                SignalFishEvent::SignalReceived {
+                    from,
+                    generation,
+                    signal,
+                } => {
+                    if self.session.transport() != Some(TransportKind::WebRtc) {
+                        debug!(%from, "discarding WebRTC signal while the current plan is not WebRTC");
+                        return;
+                    }
+                    if *generation != self.session.generation() {
+                        debug!(
+                            %from,
+                            ?generation,
+                            current_generation = ?self.session.generation(),
+                            "discarding stale WebRTC signal"
+                        );
+                        return;
+                    }
+                    if !self
+                        .known_peers
+                        .iter()
+                        .any(|known| known.id == *from && known.generation == *generation)
+                    {
+                        debug!(
+                            %from,
+                            ?generation,
+                            "discarding WebRTC signal from a peer outside the current plan"
+                        );
+                        return;
+                    }
                     match PeerSignal::try_from(signal) {
-                        Ok(sig) => self.driver.on_signal(*from, sig),
+                        Ok(sig) => self.driver.on_signal(*from, *generation, sig),
                         Err(_) => warn!("dropping unrecognized signal shape from {from}"),
                     }
                 }
@@ -443,7 +498,7 @@ mod controller {
             if self
                 .pending_signal
                 .as_ref()
-                .is_some_and(|(to, _)| *to == peer)
+                .is_some_and(|(to, _, _)| *to == peer)
             {
                 self.pending_signal = None;
             }
@@ -458,32 +513,46 @@ mod controller {
         /// restarted in the new role: leaving the stale role in place would let
         /// the two sides glare (both offer) or stall (both wait), because the SDK
         /// obeys the server verbatim and runs no perfect-negotiation rollback. A
-        /// known peer whose role is unchanged keeps its live connection untouched
-        /// (the common re-plan case — survivors are never needlessly re-driven).
+        /// Generation changes are hard handshake barriers: every retained peer is
+        /// rebuilt even when its role is unchanged. Within one generation, a known
+        /// peer whose role is unchanged keeps its live connection untouched.
         ///
         /// If a restarted peer's data channel was already open, the teardown's
         /// `1->0` edge reports `TransportStatus(false)` (and the re-handshake's
         /// `0->1` edge later reports it back up) — a real, observable data-path flap.
-        fn ensure_peer(&mut self, peer: PlayerId, initiate: bool) {
+        fn ensure_peer(
+            &mut self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+            initiate: bool,
+        ) {
             let current = self
                 .known_peers
                 .iter()
                 .find(|k| k.id == peer)
-                .map(|k| k.initiate);
+                .map(|k| (k.generation, k.initiate));
             match current {
                 None => {
-                    self.driver.connect(peer, initiate);
-                    self.known_peers.push(KnownPeer { id: peer, initiate });
+                    self.driver.connect(peer, generation, initiate);
+                    self.known_peers.push(KnownPeer {
+                        id: peer,
+                        generation,
+                        initiate,
+                    });
                 }
-                Some(prev) if prev != initiate => {
+                Some((previous_generation, previous_initiate))
+                    if previous_generation != generation || previous_initiate != initiate =>
+                {
                     debug!(
                         %peer,
+                        ?generation,
                         initiate,
-                        "server reassigned the offerer role; restarting handshake"
+                        "server changed the session generation or offerer role; restarting handshake"
                     );
                     self.disconnect_peer(peer);
-                    self.driver.connect(peer, initiate);
+                    self.driver.connect(peer, generation, initiate);
                     if let Some(k) = self.known_peers.iter_mut().find(|k| k.id == peer) {
+                        k.generation = generation;
                         k.initiate = initiate;
                     }
                 }
@@ -501,13 +570,25 @@ mod controller {
         /// lost offer/answer/ICE candidate stalls the WebRTC handshake, so
         /// congestion buffers the signal instead of dropping it.
         fn relay_pending_signal(&mut self) -> bool {
-            let Some((peer, signal)) = self.pending_signal.take() else {
+            let Some((peer, generation, signal)) = self.pending_signal.take() else {
                 return true;
             };
-            match self.client.send_signal(peer, signal.clone()) {
+            if generation != self.session.generation()
+                || !self
+                    .known_peers
+                    .iter()
+                    .any(|known| known.id == peer && known.generation == generation)
+            {
+                debug!(%peer, ?generation, "discarding stale pending WebRTC signal");
+                return true;
+            }
+            match self
+                .client
+                .send_signal_for_generation(peer, generation, signal.clone())
+            {
                 Ok(()) => true,
                 Err(crate::error::SignalFishError::SendBufferFull { .. }) => {
-                    self.pending_signal = Some((peer, signal));
+                    self.pending_signal = Some((peer, generation, signal));
                     false
                 }
                 Err(e) => {
@@ -535,24 +616,60 @@ mod controller {
                 }
                 let driver_event = self.driver.poll()?;
                 match driver_event {
-                    DriverEvent::Signal { peer, signal } => {
+                    DriverEvent::Signal {
+                        peer,
+                        generation,
+                        signal,
+                    } => {
+                        if !self.driver_event_is_current(peer, generation) {
+                            debug!(%peer, ?generation, "discarding stale driver signal");
+                            continue;
+                        }
                         // Buffer, then immediately attempt the relay on the
                         // next loop iteration.
-                        self.pending_signal = Some((peer, signal));
+                        self.pending_signal = Some((peer, generation, signal));
                     }
-                    DriverEvent::Connected { peer } => {
+                    DriverEvent::Connected { peer, generation } => {
+                        if !self.driver_event_is_current(peer, generation) {
+                            debug!(%peer, ?generation, "discarding stale driver connected event");
+                            continue;
+                        }
                         self.mark_connected(peer);
                         return Some(MeshEvent::PeerConnected(peer));
                     }
-                    DriverEvent::Disconnected { peer } => {
+                    DriverEvent::Disconnected { peer, generation } => {
+                        if !self.driver_event_is_current(peer, generation) {
+                            debug!(%peer, ?generation, "discarding stale driver disconnected event");
+                            continue;
+                        }
                         self.mark_disconnected(peer);
                         return Some(MeshEvent::PeerDisconnected(peer));
                     }
-                    DriverEvent::Data { peer, data } => {
+                    DriverEvent::Data {
+                        peer,
+                        generation,
+                        data,
+                    } => {
+                        if !self.driver_event_is_current(peer, generation) {
+                            debug!(%peer, ?generation, "discarding stale driver data event");
+                            continue;
+                        }
                         return Some(MeshEvent::Data { from: peer, data });
                     }
                 }
             }
+        }
+
+        fn driver_event_is_current(
+            &self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+        ) -> bool {
+            generation == self.session.generation()
+                && self
+                    .known_peers
+                    .iter()
+                    .any(|known| known.id == peer && known.generation == generation)
         }
 
         fn mark_connected(&mut self, peer: PlayerId) {
@@ -661,6 +778,7 @@ mod controller {
 mod tests {
     use super::*;
     use crate::client::SignalFishConfig;
+    use crate::protocol::TransportKind;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -678,7 +796,9 @@ mod tests {
     enum DriverCall {
         SetIceServers(usize),
         Connect(PlayerId, bool),
+        ConnectGeneration(PlayerId, Option<SessionGeneration>),
         OnSignal(PlayerId, PeerSignal),
+        OnSignalGeneration(PlayerId, Option<SessionGeneration>),
         Send(PlayerId, Vec<u8>),
         Disconnect(PlayerId),
     }
@@ -705,31 +825,49 @@ mod tests {
         fn set_ice_servers(&mut self, servers: &[IceServer]) {
             self.calls.push(DriverCall::SetIceServers(servers.len()));
         }
-        fn connect(&mut self, peer: PlayerId, initiate: bool) {
+        fn connect(
+            &mut self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+            initiate: bool,
+        ) {
             self.calls.push(DriverCall::Connect(peer, initiate));
+            self.calls
+                .push(DriverCall::ConnectGeneration(peer, generation));
             // A realistic driver: the initiator immediately produces an offer to
             // relay; the answerer waits for the remote offer.
             if initiate {
                 self.outputs.push_back(DriverEvent::Signal {
                     peer,
+                    generation,
                     signal: PeerSignal::Offer("local-sdp".into()),
                 });
             }
         }
-        fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal) {
+        fn on_signal(
+            &mut self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+            signal: PeerSignal,
+        ) {
             self.calls.push(DriverCall::OnSignal(peer, signal.clone()));
+            self.calls
+                .push(DriverCall::OnSignalGeneration(peer, generation));
             // Model the handshake completing: an answerer responds to an offer
             // and the channel opens; an initiator's channel opens on the answer.
             match signal {
                 PeerSignal::Offer(_) => {
                     self.outputs.push_back(DriverEvent::Signal {
                         peer,
+                        generation,
                         signal: PeerSignal::Answer("local-answer".into()),
                     });
-                    self.outputs.push_back(DriverEvent::Connected { peer });
+                    self.outputs
+                        .push_back(DriverEvent::Connected { peer, generation });
                 }
                 PeerSignal::Answer(_) => {
-                    self.outputs.push_back(DriverEvent::Connected { peer });
+                    self.outputs
+                        .push_back(DriverEvent::Connected { peer, generation });
                 }
                 PeerSignal::IceCandidate(_) => {}
             }
@@ -778,11 +916,21 @@ mod tests {
         fn set_ice_servers(&mut self, servers: &[IceServer]) {
             self.0.lock().unwrap().set_ice_servers(servers);
         }
-        fn connect(&mut self, peer: PlayerId, initiate: bool) {
-            self.0.lock().unwrap().connect(peer, initiate);
+        fn connect(
+            &mut self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+            initiate: bool,
+        ) {
+            self.0.lock().unwrap().connect(peer, generation, initiate);
         }
-        fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal) {
-            self.0.lock().unwrap().on_signal(peer, signal);
+        fn on_signal(
+            &mut self,
+            peer: PlayerId,
+            generation: Option<SessionGeneration>,
+            signal: PeerSignal,
+        ) {
+            self.0.lock().unwrap().on_signal(peer, generation, signal);
         }
         fn send(&mut self, peer: PlayerId, data: &[u8]) {
             self.0.lock().unwrap().send(peer, data);
@@ -883,11 +1031,21 @@ mod tests {
     }
 
     fn session_plan(peer: PlayerId, initiate: bool) -> String {
+        session_plan_with_generation(peer, initiate, uuid(12))
+    }
+
+    fn session_plan_with_generation(
+        peer: PlayerId,
+        initiate: bool,
+        generation: SessionGeneration,
+    ) -> String {
         use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
         let payload = SessionPlanPayload {
+            generation: Some(generation),
             topology: Topology::Mesh,
             transport: TransportKind::WebRtc,
             host: None,
+            direct_endpoint: None,
             peers: vec![SessionPeer {
                 player_id: peer,
                 player_name: "P".into(),
@@ -899,6 +1057,37 @@ mod tests {
                 username: None,
                 credential: None,
             }],
+            fallback: TransportKind::Relay,
+        };
+        serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload))).unwrap()
+    }
+
+    fn non_webrtc_plan(
+        peer: PlayerId,
+        generation: SessionGeneration,
+        transport: TransportKind,
+    ) -> String {
+        use crate::protocol::{DirectEndpoint, SessionPeer, SessionPlanPayload, Topology};
+        let payload = SessionPlanPayload {
+            generation: Some(generation),
+            topology: if transport == TransportKind::Direct {
+                Topology::Host
+            } else {
+                Topology::Relay
+            },
+            transport,
+            host: (transport == TransportKind::Direct).then_some(peer),
+            direct_endpoint: (transport == TransportKind::Direct).then_some(DirectEndpoint {
+                host: "203.0.113.9".into(),
+                port: 7000,
+            }),
+            peers: vec![SessionPeer {
+                player_id: peer,
+                player_name: "P".into(),
+                is_authority: false,
+                initiate: false,
+            }],
+            ice_servers: vec![],
             fallback: TransportKind::Relay,
         };
         serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload))).unwrap()
@@ -934,7 +1123,12 @@ mod tests {
     }
 
     fn signal_from(peer: PlayerId, signal: serde_json::Value) -> String {
-        serde_json::to_string(&ServerMessage::Signal { from: peer, signal }).unwrap()
+        serde_json::to_string(&ServerMessage::Signal {
+            from: peer,
+            generation: Some(uuid(12)),
+            signal,
+        })
+        .unwrap()
     }
 
     /// A `SessionPlan` over several peers with an explicit ICE-server set (use an
@@ -944,9 +1138,11 @@ mod tests {
             IceServer, SessionPeer, SessionPlanPayload, Topology, TransportKind,
         };
         let payload = SessionPlanPayload {
+            generation: Some(uuid(12)),
             topology: Topology::Mesh,
             transport: TransportKind::WebRtc,
             host: None,
+            direct_endpoint: None,
             peers: peers
                 .iter()
                 .map(|(id, initiate)| SessionPeer {
@@ -1232,18 +1428,11 @@ mod tests {
         mesh.shutdown().await;
     }
 
-    /// A buffered signal whose target peer is torn down (here: `PlayerLeft`
-    /// while the command queue is congested) must be discarded, not relayed
-    /// stale after the congestion clears.
+    /// A buffered signal from an old generation must be discarded on re-plan,
+    /// not retagged as current after command-queue congestion clears.
     #[tokio::test]
-    async fn peer_teardown_discards_buffered_signal_for_that_peer() {
+    async fn generation_change_discards_buffered_signal_without_retagging() {
         let peer = uuid(9);
-        let player_left = serde_json::to_string(&ServerMessage::PlayerLeft {
-            player_id: peer,
-            epoch: Some(1),
-            final_seq: Some(0),
-        })
-        .expect("PlayerLeft serializes");
         // One permit: exactly the Authenticate send is allowed through.
         let permits = Arc::new(tokio::sync::Semaphore::new(1));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1256,7 +1445,7 @@ mod tests {
                 Some(Ok(session_plan(peer, true))),
                 // Queued in the event channel behind the SessionPlan; the
                 // controller folds it while the Offer sits buffered below.
-                Some(Ok(player_left)),
+                Some(Ok(session_plan_with_generation(peer, true, uuid(13)))),
             ]),
             sent: Arc::clone(&sent),
             permits: Arc::clone(&permits),
@@ -1268,7 +1457,7 @@ mod tests {
         let mut mesh = MeshController::start(transport, config, driver.clone());
 
         // Fold the SessionPlan (driver told to connect; Offer queued in the
-        // driver, not yet drained). The PlayerLeft event is still undelivered.
+        // driver, not yet drained). The replacement plan is still undelivered.
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .iter()
@@ -1294,35 +1483,58 @@ mod tests {
             .unwrap();
 
         // Pump: the Offer is popped, refused (queue full), and buffered; the
-        // select then delivers PlayerLeft, whose teardown must clear the
-        // buffered signal for that peer.
-        let saw_player_left = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // select then delivers the replacement plan, whose generation barrier
+        // must clear the buffered old-generation signal.
+        let saw_replan = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if let Some(MeshEvent::Signaling(ev)) = mesh.recv().await {
-                    if matches!(*ev, SignalFishEvent::PlayerLeft { .. }) {
+                    if matches!(
+                        *ev,
+                        SignalFishEvent::SessionPlan {
+                            generation: Some(generation),
+                            ..
+                        } if generation == uuid(13)
+                    ) {
                         break;
                     }
                 }
             }
         })
         .await;
-        assert!(saw_player_left.is_ok(), "never surfaced PlayerLeft");
+        assert!(saw_replan.is_ok(), "never surfaced replacement SessionPlan");
         assert!(
             driver
                 .calls()
                 .iter()
                 .any(|c| matches!(c, DriverCall::Disconnect(p) if *p == peer)),
-            "driver never told to disconnect the departed peer"
+            "driver never rebuilt the peer at the generation barrier"
         );
 
-        // Clear the congestion and keep pumping: the stale Offer must never
-        // reach the wire.
+        // Clear congestion. The replacement handshake may emit one current
+        // Offer, but the buffered generation-12 Offer must never be retagged.
         permits.add_permits(64);
         drain(&mut mesh, 5).await;
         assert_eq!(
-            sent_count(&sent, &[r#""type":"Signal""#]),
+            sent_count(
+                &sent,
+                &[
+                    r#""type":"Signal""#,
+                    &format!(r#""generation":"{}""#, uuid(12)),
+                ],
+            ),
             0,
-            "a buffered signal for a torn-down peer must be discarded, not relayed"
+            "an old-generation buffered signal must not be relayed or retagged"
+        );
+        assert_eq!(
+            sent_count(
+                &sent,
+                &[
+                    r#""type":"Signal""#,
+                    &format!(r#""generation":"{}""#, uuid(13)),
+                ],
+            ),
+            1,
+            "the replacement generation should relay exactly one fresh Offer"
         );
 
         mesh.shutdown().await;
@@ -1465,13 +1677,23 @@ mod tests {
     async fn data_from_driver_is_surfaced() {
         let peer = uuid(5);
         let driver = SharedDriver::default();
-        driver.emit(DriverEvent::Data {
-            peer,
-            data: vec![1, 2, 3],
-        });
-        let (transport, _sent) = MockTransport::new(vec![Some(Ok(authed()))]);
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(peer, false))),
+        ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .contains(&DriverCall::Connect(peer, false)))
+            .await
+        );
+        driver.emit(DriverEvent::Data {
+            peer,
+            generation: Some(uuid(12)),
+            data: vec![1, 2, 3],
+        });
 
         let mut got = None;
         for _ in 0..6 {
@@ -1490,7 +1712,11 @@ mod tests {
     async fn send_to_forwards_to_driver() {
         let peer = uuid(6);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![Some(Ok(authed()))]);
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(uuid(1), false))),
+        ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
         mesh.send_to(peer, &[9, 9]);
@@ -1538,7 +1764,10 @@ mod tests {
         .expect("stream closed");
 
         // The driver now reports the channel closed.
-        driver.emit(DriverEvent::Disconnected { peer });
+        driver.emit(DriverEvent::Disconnected {
+            peer,
+            generation: Some(uuid(12)),
+        });
         let mut got = false;
         for _ in 0..6 {
             if let Ok(Some(MeshEvent::PeerDisconnected(p))) =
@@ -1569,6 +1798,7 @@ mod tests {
         let (transport, _sent) = MockTransport::new(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[], &[]))),
             Some(Ok(new_peer)),
         ]);
         let mut mesh =
@@ -1710,11 +1940,26 @@ mod tests {
         .await;
 
         for ev in [
-            DriverEvent::Connected { peer: a },    // 0->1 : true
-            DriverEvent::Connected { peer: b },    // 1->2 : no report
-            DriverEvent::Disconnected { peer: a }, // 2->1 : no report
-            DriverEvent::Disconnected { peer: b }, // 1->0 : false
-            DriverEvent::Connected { peer: a },    // 0->1 : true
+            DriverEvent::Connected {
+                peer: a,
+                generation: Some(uuid(12)),
+            }, // 0->1 : true
+            DriverEvent::Connected {
+                peer: b,
+                generation: Some(uuid(12)),
+            }, // 1->2 : no report
+            DriverEvent::Disconnected {
+                peer: a,
+                generation: Some(uuid(12)),
+            }, // 2->1 : no report
+            DriverEvent::Disconnected {
+                peer: b,
+                generation: Some(uuid(12)),
+            }, // 1->0 : false
+            DriverEvent::Connected {
+                peer: a,
+                generation: Some(uuid(12)),
+            }, // 0->1 : true
         ] {
             driver.emit(ev);
         }
@@ -1801,6 +2046,205 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generation_change_restarts_surviving_peer_with_same_role() {
+        let peer = uuid(70);
+        let first = uuid(12);
+        let second = uuid(13);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_with_generation(peer, false, first))),
+            Some(Ok(session_plan_with_generation(peer, false, second))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .contains(&DriverCall::ConnectGeneration(peer, Some(second))))
+            .await
+        );
+        assert_eq!(
+            count_calls(
+                &driver,
+                |call| matches!(call, DriverCall::Connect(id, false) if *id == peer)
+            ),
+            2,
+            "a generation barrier must rebuild a retained same-role pair"
+        );
+        assert!(driver.calls().contains(&DriverCall::Disconnect(peer)));
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_driver_outputs_are_discarded_after_generation_change() {
+        let peer = uuid(71);
+        let first = uuid(12);
+        let second = uuid(13);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_with_generation(peer, false, first))),
+            Some(Ok(session_plan_with_generation(peer, false, second))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .contains(&DriverCall::ConnectGeneration(peer, Some(second))))
+            .await
+        );
+
+        for event in [
+            DriverEvent::Signal {
+                peer,
+                generation: Some(first),
+                signal: PeerSignal::Offer("stale".into()),
+            },
+            DriverEvent::Connected {
+                peer,
+                generation: Some(first),
+            },
+            DriverEvent::Data {
+                peer,
+                generation: Some(first),
+                data: vec![1],
+            },
+        ] {
+            driver.emit(event);
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_millis(80), mesh.recv()).await;
+        assert!(
+            result.is_err(),
+            "stale driver output must not surface: {result:?}"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn core_replan_cannot_retag_driver_signal_before_controller_receives_plan() {
+        let peer = uuid(74);
+        let first = uuid(12);
+        let second = uuid(13);
+        let driver = SharedDriver::default();
+        let (transport, sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_with_generation(peer, true, first))),
+            Some(Ok(session_plan_with_generation(peer, true, second))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+
+        loop {
+            if matches!(
+                mesh.recv().await,
+                Some(MeshEvent::Signaling(event))
+                    if matches!(*event, SignalFishEvent::SessionPlan {
+                        generation: Some(generation), ..
+                    } if generation == first)
+            ) {
+                break;
+            }
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while mesh.client().snapshot().session_generation != Some(second) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("core never observed replacement generation");
+
+        // recv() drains the driver's generation-12 offer before consuming the
+        // replacement event. The generation-bound send must refuse it rather
+        // than stamping generation 13.
+        let event = mesh.recv().await;
+        assert!(matches!(
+            event,
+            Some(MeshEvent::Signaling(event))
+                if matches!(*event, SignalFishEvent::SessionPlan {
+                    generation: Some(generation), ..
+                } if generation == second)
+        ));
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#]),
+            0,
+            "the old driver offer must not be retagged by the newer core snapshot"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn signal_from_peer_outside_current_plan_is_not_given_to_driver() {
+        let planned = uuid(72);
+        let outsider = uuid(73);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(planned, false))),
+            Some(Ok(signal_from(
+                outsider,
+                serde_json::json!({ "Offer": "unplanned" }),
+            ))),
+        ]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        drain(&mut mesh, 8).await;
+        assert!(!driver
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DriverCall::OnSignal(id, _) if *id == outsider)));
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn direct_and_relay_plans_never_connect_through_webrtc_driver() {
+        for transport_kind in [TransportKind::Direct, TransportKind::Relay] {
+            let old_peer = uuid(74);
+            let planned_peer = uuid(75);
+            let late_peer = uuid(76);
+            let driver = SharedDriver::default();
+            let (transport, _sent) = MockTransport::new(vec![
+                Some(Ok(authed())),
+                Some(Ok(protocol_info_v3())),
+                Some(Ok(session_plan_with_generation(old_peer, false, uuid(12)))),
+                Some(Ok(non_webrtc_plan(planned_peer, uuid(13), transport_kind))),
+                Some(Ok(new_peer_msg(late_peer, true))),
+                Some(Ok(serde_json::to_string(&ServerMessage::Signal {
+                    from: late_peer,
+                    generation: Some(uuid(13)),
+                    signal: serde_json::json!({ "Offer": "not-webrtc" }),
+                })
+                .unwrap())),
+            ]);
+            let mut mesh =
+                MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+            drain(&mut mesh, 10).await;
+            let calls = driver.calls();
+            assert!(calls.contains(&DriverCall::Disconnect(old_peer)));
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| matches!(call, DriverCall::SetIceServers(_)))
+                    .count(),
+                1,
+                "only the preceding WebRTC plan may configure ICE"
+            );
+            assert!(!calls
+                .iter()
+                .any(|call| matches!(call, DriverCall::Connect(id, _) if *id == planned_peer || *id == late_peer)));
+            assert!(!calls
+                .iter()
+                .any(|call| matches!(call, DriverCall::OnSignal(id, _) if *id == late_peer)));
+            mesh.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
     async fn plan_then_new_peer_for_same_peer_connects_once() {
         // A SessionPlan names a peer, then a NewPeer arrives for the SAME peer:
         // it must not be connected twice (idempotent on known peers).
@@ -1837,6 +2281,7 @@ mod tests {
         let (transport, _sent) = MockTransport::new(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[], &[]))),
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(new_peer_msg(p, true))),
@@ -1925,6 +2370,7 @@ mod tests {
         let (transport, _sent) = MockTransport::new(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(&[], &[]))),
             Some(Ok(new_peer_msg(p, false))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
@@ -2145,9 +2591,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_peer_only_peer_is_torn_down_by_later_plan_omitting_it() {
-        // A peer that arrived only via NewPeer (never in a plan) must still be torn
-        // down by a later SessionPlan that omits it (no known/connected desync).
+    async fn new_peer_before_authoritative_plan_does_not_drive_webrtc() {
+        // A NewPeer is incremental to an authoritative SessionPlan, never a
+        // substitute for one. Do not start a generation-less connection before
+        // the plan identifies WebRTC as the chosen transport.
         let p = uuid(15);
         let q = uuid(16);
         let driver = SharedDriver::default();
@@ -2160,12 +2607,19 @@ mod tests {
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
         let ok = pump_until(&mut mesh, &driver, |c| {
-            c.contains(&DriverCall::Disconnect(p)) && c.contains(&DriverCall::Connect(q, true))
+            c.contains(&DriverCall::Connect(q, true))
         })
         .await;
         assert!(
             ok,
-            "a NewPeer-only peer absent from a later plan must be disconnected"
+            "the authoritative WebRTC plan must drive its named peer"
+        );
+        assert!(
+            !driver
+                .calls()
+                .iter()
+                .any(|call| matches!(call, DriverCall::Connect(id, _) if *id == p)),
+            "a pre-plan NewPeer must not drive the WebRTC backend"
         );
         mesh.shutdown().await;
     }
@@ -2180,9 +2634,11 @@ mod tests {
         let b = uuid(52);
         let driver = SharedDriver::default();
         let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+            generation: Some(uuid(12)),
             topology: Topology::Mesh,
             transport: TransportKind::WebRtc,
             host: None,
+            direct_endpoint: None,
             peers: vec![SessionPeer {
                 player_id: a,
                 player_name: "A".into(),
@@ -2222,7 +2678,11 @@ mod tests {
         // recv() is parked must still surface promptly because the driver wakes
         // the controller via its MeshWaker (no up-to-one-pump-interval latency).
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![Some(Ok(authed()))]);
+        let (transport, _sent) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(uuid(1), false))),
+        ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone())
                 .with_pump_interval(std::time::Duration::from_secs(30));
@@ -2238,6 +2698,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             d2.emit_and_wake(DriverEvent::Data {
                 peer: uuid(1),
+                generation: Some(uuid(12)),
                 data: vec![7],
             });
         });

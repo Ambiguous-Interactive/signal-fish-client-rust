@@ -103,9 +103,23 @@ pub enum ErrorCode {
     ServerDraining,
     /// The requested protocol-v3 delivery class/key combination is invalid.
     InvalidDeliveryClass,
+    /// The client's highest supported protocol version is below the server's
+    /// configured minimum.
+    UnsupportedProtocolVersion,
 }
 
 impl ErrorCode {
+    /// Compatibility variants retained for servers older than 0.7.0 even
+    /// though the 0.7 AsyncAPI no longer declares them as emitted tokens.
+    pub const NON_EMITTED: &'static [Self] = &[
+        Self::InvalidToken,
+        Self::AuthenticationRequired,
+        Self::AppIdExpired,
+        Self::AppIdRevoked,
+        Self::AppIdSuspended,
+        Self::ServiceUnavailable,
+    ];
+
     /// Returns a human-readable description of this error code.
     ///
     /// This method provides actionable error messages that SDK developers
@@ -290,6 +304,9 @@ impl ErrorCode {
             }
             Self::InvalidDeliveryClass => {
                 "The requested game-data delivery class and key combination is invalid. Latest requires a key; reliable and volatile forbid one."
+            }
+            Self::UnsupportedProtocolVersion => {
+                "The client's highest supported protocol version is below this server's configured minimum. Upgrade the client or connect to a compatible deployment."
             }
         }
     }

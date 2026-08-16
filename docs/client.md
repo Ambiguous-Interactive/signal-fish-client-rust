@@ -545,8 +545,9 @@ Useful for keeping the connection alive through proxies or load balancers.
 
 `snapshot()` synchronously returns one coherent `ClientSnapshot`, including
 connection/authentication state, room/player IDs, room code, the latest
-reconnection token, negotiated protocol version, and whether delivery is
-quarantined. Prefer it whenever multiple fields must describe the same instant.
+reconnection token, negotiated protocol version, current session generation,
+and whether delivery is quarantined. Prefer it whenever multiple fields must
+describe the same instant.
 
 Synchronous accessors use atomics; async accessors acquire an internal mutex.
 
@@ -734,8 +735,10 @@ configured capacity.
 | `ping()` | Send a heartbeat ping. |
 | `join_as_spectator(game, room, name)` | Join a room as a spectator. |
 | `leave_spectator()` | Leave spectator mode. |
-| `send_signal(to, signal)` / `send_offer` / `send_answer` / `send_ice_candidate` | Send typed protocol-v3 WebRTC signaling. |
+| `send_signal(to, signal)` / `send_offer` / `send_answer` / `send_ice_candidate` | Send typed protocol-v3 WebRTC signaling using the current plan generation. |
+| `send_signal_for_generation(to, generation, signal)` | Send driver-produced signaling only if its originating plan generation is still current. |
 | `send_raw_signal(to, value)` | Send an unmodeled protocol-v3 signal shape. |
+| `send_raw_signal_for_generation(to, generation, value)` | Generation-bound form of the raw signaling escape hatch. |
 | `report_transport_status(transport, connected)` | Report protocol-v3 data-path status. |
 
 All methods return `Err(SignalFishError::NotConnected)` if the transport has

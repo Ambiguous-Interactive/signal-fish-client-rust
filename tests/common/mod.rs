@@ -324,9 +324,15 @@ pub fn reconnected_with_protocol_info_json(protocol_version: Option<u16>) -> Str
         relay_type: "tcp".into(),
         current_spectators: vec![],
         ice_servers: vec![],
-        missed_events: vec![ServerMessage::ProtocolInfo(protocol_info_payload(
-            protocol_version,
-        ))],
+        missed_events: {
+            let mut events = vec![ServerMessage::ProtocolInfo(protocol_info_payload(
+                protocol_version,
+            ))];
+            if protocol_version.is_some_and(|version| version >= 3) {
+                events.push(session_plan_message(uuid::Uuid::from_u128(2), true));
+            }
+            events
+        },
         replay: None,
         sender_watermarks: vec![],
         reconnection_token: None,
@@ -357,10 +363,17 @@ pub async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: 
 
 /// Returns the JSON for a `SessionPlan` (mesh + webrtc) naming a single peer.
 pub fn session_plan_json(peer_id: PlayerId, initiate: bool) -> String {
+    serde_json::to_string(&session_plan_message(peer_id, initiate))
+        .expect("session_plan_json serialization")
+}
+
+fn session_plan_message(peer_id: PlayerId, initiate: bool) -> ServerMessage {
     let payload = SessionPlanPayload {
+        generation: Some(uuid::Uuid::from_u128(12)),
         topology: Topology::Mesh,
         transport: TransportKind::WebRtc,
         host: None,
+        direct_endpoint: None,
         peers: vec![SessionPeer {
             player_id: peer_id,
             player_name: "Peer".into(),
@@ -370,14 +383,17 @@ pub fn session_plan_json(peer_id: PlayerId, initiate: bool) -> String {
         ice_servers: vec![],
         fallback: TransportKind::Relay,
     };
-    serde_json::to_string(&ServerMessage::SessionPlan(Box::new(payload)))
-        .expect("session_plan_json serialization")
+    ServerMessage::SessionPlan(Box::new(payload))
 }
 
 /// Returns the JSON for a server `Signal` relayed from `from`.
 pub fn signal_json(from: PlayerId, signal: serde_json::Value) -> String {
-    serde_json::to_string(&ServerMessage::Signal { from, signal })
-        .expect("signal_json serialization")
+    serde_json::to_string(&ServerMessage::Signal {
+        from,
+        generation: Some(uuid::Uuid::from_u128(12)),
+        signal,
+    })
+    .expect("signal_json serialization")
 }
 
 /// Returns the JSON for a `NewPeer` (late-join) message.

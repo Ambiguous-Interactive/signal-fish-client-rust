@@ -3,8 +3,9 @@
 ## Current State
 
 - Latest released client: 0.10.0.
-- Canonical protocol fixture: Signal Fish Server 0.4.0 at commit
-  `50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8`.
+- Canonical protocol fixture: Signal Fish Server 0.7.0 at commit
+  `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`; server 0.4 generation-less
+  signaling remains an explicit compatibility case.
 - The async and polling clients share protocol behavior through `ClientCore`.
 - The lockstep Godot adapter supports native and official Godot 4.5 web
   exports, with blocking real-server gameplay coverage.
@@ -25,52 +26,30 @@ Work open issues in gameplay-impact order:
 Finish one coherent PR and make it fully green before starting the next. Do
 not stack dependent PRs.
 
-## Next Major Milestone — Signal Fish Server 0.7 Compatibility
+## In-flight Delivery — Signal Fish Server 0.7 Compatibility
 
 Track [issue #86](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/86).
-The client must interoperate cleanly with Signal Fish Server 0.7.0 and adopt
-reference-client behavior where it strengthens the Rust SDK without weakening
-the transport abstraction or the v2 relay floor.
+The breaking 0.11-compatible source and conformance work is complete locally:
+generation-fenced signaling, Direct endpoint exposure, 0.7 error coverage,
+exact fixture provenance, async/polling parity, a pinned live 0.7 host-replan
+smoke, and both 0.7 and legacy-0.4 Godot gates. Remaining delivery work is
+hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89).
+All eleven project-owned aggregate workflows are green at completion-audit
+commit `44a7054`, including null-generation hardening, exact 0.4/0.7
+release-digest binding, and the pinned live 0.4 mesh seam. Independent protocol
+and adversarial reviews report zero remaining findings. The final audit found
+that the live default-branch
+ruleset no longer enforces the checked-in approval and required-check policy,
+the scheduled repository-policy audit is therefore red, and an external
+Copilot quota check is red while the PR has no human approval.
+[Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
+tracks restoring the live ruleset, resolving the non-actionable Copilot gate,
+and obtaining the required approval before maintainer merge closes #86.
+[Token-binding-v2](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88)
+remains a separate negotiated correctness/security milestone because server
+0.7 leaves it disabled by default.
 
-### Discovery and Contract
-
-- Pin the exact server 0.7.0 tag and commit before changing code.
-- Diff the 0.4.0 and 0.7.0 AsyncAPI, golden wire samples, protocol guide,
-  error-code registry, and both upstream reference clients.
-- Classify every delta as wire-required, negotiated/additive, server-internal,
-  test-only, or intentionally out of scope.
-- Record the resulting compatibility contract and migration impact before
-  choosing a client release version.
-
-### Implementation
-
-- Refresh vendored protocol artifacts and their provenance/checksums as one
-  atomic conformance change.
-- Implement every required protocol, accountability, lifecycle, transport,
-  and error-model delta in the shared core so async and polling drivers remain
-  behaviorally identical.
-- Preserve byte-identical default v2 authentication and relay behavior unless
-  the new server contract proves that impossible.
-- Keep public types exhaustive; treat any required new enum variant as a
-  deliberate semver-breaking change.
-- Sweep documentation, examples, `.llm/context.md`, focused skills, and the
-  changelog for every changed guarantee.
-
-### Verification
-
-- Add red-green golden, malformed-input, negotiation, accountability, and
-  async/polling parity tests for every observable delta.
-- Run pinned-server E2E for the v2 relay floor and every negotiated v3 path,
-  including JSON/binary exchange, classified delivery, reconnect, graceful
-  drain, close metadata, and Godot browser gameplay.
-- Make fixture provenance and compatibility markers agree through offline
-  policy tests.
-- Run packaging, docs, MSRV, coverage, fuzz/mutation, and mandatory Rust gates
-  before publication.
-
-## Following Milestones
-
-### Safety and Static Analysis
+## Next Major Milestone — Safety and Static Analysis
 
 Consolidate [issue #78](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/78)
 and [issue #84](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/84)
@@ -86,7 +65,7 @@ into one evidence-backed hardening milestone.
 - Close or re-scope the duplicate issue once one canonical implementation plan
   is accepted.
 
-### Allocation and Performance Evidence
+## Following Milestone — Allocation and Performance Evidence
 
 Track [issue #82](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/82).
 
@@ -99,7 +78,7 @@ Track [issue #82](https://github.com/Ambiguous-Interactive/signal-fish-client-ru
 - Preserve frame ownership, backpressure, exact accountability, and event
   delivery invariants in every optimization.
 
-### Documentation Design System
+## Later Milestone — Documentation Design System
 
 Track [issue #80](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/80).
 

@@ -22,7 +22,7 @@
 
 use std::collections::VecDeque;
 
-use signal_fish_client::protocol::{IceServer, PlayerId};
+use signal_fish_client::protocol::{IceServer, PlayerId, SessionGeneration};
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::webrtc::{DriverEvent, MeshController, MeshEvent, WebRtcDriver};
 use signal_fish_client::{
@@ -49,30 +49,40 @@ impl WebRtcDriver for DemoDriver {
         println!("  driver: using {} ICE server(s)", servers.len());
     }
 
-    fn connect(&mut self, peer: PlayerId, initiate: bool) {
+    fn connect(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, initiate: bool) {
         // REAL DRIVER: create an RTCPeerConnection for `peer`. If `initiate`,
         // create an offer and surface it via `poll` as DriverEvent::Signal.
         println!("  driver: connect to {peer} (initiate={initiate})");
         if initiate {
             self.outbox.push_back(DriverEvent::Signal {
                 peer,
+                generation,
                 signal: PeerSignal::Offer("<sdp-offer>".into()),
             });
         }
     }
 
-    fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal) {
+    fn on_signal(
+        &mut self,
+        peer: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: PeerSignal,
+    ) {
         // REAL DRIVER: apply the remote description / add the ICE candidate.
         println!("  driver: got {signal:?} from {peer}");
         match signal {
             PeerSignal::Offer(_) => {
                 self.outbox.push_back(DriverEvent::Signal {
                     peer,
+                    generation,
                     signal: PeerSignal::Answer("<sdp-answer>".into()),
                 });
-                self.outbox.push_back(DriverEvent::Connected { peer });
+                self.outbox
+                    .push_back(DriverEvent::Connected { peer, generation });
             }
-            PeerSignal::Answer(_) => self.outbox.push_back(DriverEvent::Connected { peer }),
+            PeerSignal::Answer(_) => self
+                .outbox
+                .push_back(DriverEvent::Connected { peer, generation }),
             PeerSignal::IceCandidate(_) => {}
         }
     }

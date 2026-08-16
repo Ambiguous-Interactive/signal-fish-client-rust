@@ -261,6 +261,13 @@ close details come from `Transport::close_info()`.
   and `MessageTransport`; `ServerMessage`/`SignalFishEvent` add stamped game
   data, `DeliveryReport`, `RelayStats`, and `GoingAway`. `ErrorCode` adds
   `ServerDraining` and `InvalidDeliveryClass`.
+- **Server 0.7 compatibility is breaking for this 0.x crate.** Public protocol
+  and event shapes expose `SessionGeneration`/`DirectEndpoint`; snapshots expose
+  the current generation; `WebRtcDriver` and every `DriverEvent` bind work to a
+  generation; generation-bound typed/raw signal methods prevent custom drivers
+  from relabeling stale output; `SignalFishError::SessionPlanUnavailable`,
+  `SignalFishError::StaleSessionGeneration`, and
+  `ErrorCode::UnsupportedProtocolVersion` are new exhaustive variants.
 - **Client policy/state API.** `GameDataDelivery` makes class/key combinations
   valid by construction; `ProtocolViolationPolicy` defaults to `Quarantine`;
   `ProtocolViolationKind` categorizes the emitted event; `ClientSnapshot`

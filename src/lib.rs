@@ -140,9 +140,10 @@ pub use event::{
 };
 pub use protocol::{
     decode_v3_binary_game_data, ClientMessage, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
-    DeliveryGapReason, DeliveryReportPayload, IceServer, LatestDeliveryCounters, MessageTransport,
-    ReliableDeliveryCounters, ReplayStatus, SenderWatermark, ServerMessage, SessionPeer,
-    SessionPlanPayload, Topology, TransportKind, V3BinaryGameDataFrame, VolatileDeliveryCounters,
+    DeliveryGapReason, DeliveryReportPayload, DirectEndpoint, IceServer, LatestDeliveryCounters,
+    MessageTransport, ReliableDeliveryCounters, ReplayStatus, SenderWatermark, ServerMessage,
+    SessionGeneration, SessionPeer, SessionPlanPayload, Topology, TransportKind,
+    V3BinaryGameDataFrame, VolatileDeliveryCounters,
 };
 pub use signal::PeerSignal;
 pub use transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};

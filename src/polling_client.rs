@@ -24,12 +24,16 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error};
 
 use crate::client::{ClientSnapshot, GameDataDelivery, JoinRoomParams, SignalFishConfig};
-use crate::client_core::{ClientCore, ClientOperation, CoreCommand as PollingCommand};
+use crate::client_core::{
+    ClientCore, ClientOperation, CoreCommand as PollingCommand, SignalGeneration,
+};
 use crate::error::{Result, SignalFishError};
 use crate::event::SignalFishEvent;
 #[cfg(test)]
 use crate::protocol::GameDataEncoding;
-use crate::protocol::{ClientMessage, ConnectionInfo, PlayerId, RoomId, TransportKind};
+use crate::protocol::{
+    ClientMessage, ConnectionInfo, PlayerId, RoomId, SessionGeneration, TransportKind,
+};
 use crate::signal::PeerSignal;
 use crate::transport::{Transport, TransportDiagnostics, TransportFrame};
 
@@ -583,11 +587,35 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
-    /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
-    /// outgoing command queue is full.
+    /// negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
+    /// before the current room's first authoritative plan,
+    /// [`SignalFishError::NotConnected`] if the transport has closed, or
+    /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
-        self.queue_operation(ClientOperation::Signal(to, signal.into()))
+        self.queue_operation(ClientOperation::Signal(
+            to,
+            SignalGeneration::Current,
+            signal.into(),
+        ))
+    }
+
+    /// Send a typed WebRTC signal only while `generation` remains current.
+    ///
+    /// # Errors
+    ///
+    /// In addition to [`send_signal`](Self::send_signal) errors, returns
+    /// [`SignalFishError::StaleSessionGeneration`] after a re-plan.
+    pub fn send_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: impl Into<PeerSignal>,
+    ) -> Result<()> {
+        self.queue_operation(ClientOperation::Signal(
+            to,
+            SignalGeneration::Exact(generation),
+            signal.into(),
+        ))
     }
 
     /// Send an SDP offer to a peer. **Protocol v3 only.**
@@ -626,7 +654,29 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// See [`send_signal`](Self::send_signal).
     pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
-        self.queue_operation(ClientOperation::RawSignal(to, signal))
+        self.queue_operation(ClientOperation::RawSignal(
+            to,
+            SignalGeneration::Current,
+            signal,
+        ))
+    }
+
+    /// Relay an unmodeled signal only while `generation` remains current.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal_for_generation`](Self::send_signal_for_generation).
+    pub fn send_raw_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: serde_json::Value,
+    ) -> Result<()> {
+        self.queue_operation(ClientOperation::RawSignal(
+            to,
+            SignalGeneration::Exact(generation),
+            signal,
+        ))
     }
 
     /// Report whether a data-path transport is established. **Protocol v3 only.**
@@ -1200,8 +1250,26 @@ impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingC
         SignalFishPollingClient::send_signal(self, to, signal)
     }
 
+    fn send_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: PeerSignal,
+    ) -> Result<()> {
+        SignalFishPollingClient::send_signal_for_generation(self, to, generation, signal)
+    }
+
     fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
         SignalFishPollingClient::send_raw_signal(self, to, signal)
+    }
+
+    fn send_raw_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: serde_json::Value,
+    ) -> Result<()> {
+        SignalFishPollingClient::send_raw_signal_for_generation(self, to, generation, signal)
     }
 
     fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()> {
@@ -1964,19 +2032,20 @@ mod tests {
 
     #[test]
     fn send_signal_after_v3_is_queued() {
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
+            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
         client.send_offer(peer, "the-sdp").expect("send_offer");
         client.poll();
         let signal = last_sent(&client).into_iter().find_map(|m| match m {
-            ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+            ClientMessage::Signal { to, signal, .. } if to == peer => Some(signal),
             _ => None,
         });
         assert_eq!(signal, Some(serde_json::json!({ "Offer": "the-sdp" })));
@@ -1984,13 +2053,14 @@ mod tests {
 
     #[test]
     fn send_answer_ice_and_raw_signal_wire_shapes() {
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
+            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll();
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
         client.send_answer(peer, "ans").expect("send_answer");
         client.send_ice_candidate(peer, "cand").expect("send_ice");
         client
@@ -2000,7 +2070,7 @@ mod tests {
         let signals: Vec<serde_json::Value> = last_sent(&client)
             .into_iter()
             .filter_map(|m| match m {
-                ClientMessage::Signal { to, signal } if to == peer => Some(signal),
+                ClientMessage::Signal { to, signal, .. } if to == peer => Some(signal),
                 _ => None,
             })
             .collect();
@@ -2061,7 +2131,10 @@ mod tests {
             relay_type: "tcp".into(),
             current_spectators: vec![],
             ice_servers: vec![],
-            missed_events: vec![ServerMessage::ProtocolInfo(protocol_info_v3())],
+            missed_events: vec![
+                ServerMessage::ProtocolInfo(protocol_info_v3()),
+                session_plan_message(PEER_UUID.parse().unwrap(), Some(uuid::Uuid::from_u128(12))),
+            ],
             replay: None,
             sender_watermarks: vec![],
             reconnection_token: None,
@@ -2091,16 +2164,40 @@ mod tests {
     fn v4_negotiation_still_enables_mesh() {
         // `>= 3` (not `== 3`): a future v4 negotiation must still enable mesh.
         let pi_v4 = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":4,"min_protocol_version":2,"max_protocol_version":4}}"#;
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(pi_v4.to_string())),
+            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(4));
         assert!(client.supports_mesh());
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
         client.send_offer(peer, "sdp").expect("v4 must enable mesh");
+    }
+
+    fn session_plan_json(peer: PlayerId, generation: Option<uuid::Uuid>) -> String {
+        serde_json::to_string(&session_plan_message(peer, generation)).unwrap()
+    }
+
+    fn session_plan_message(peer: PlayerId, generation: Option<uuid::Uuid>) -> ServerMessage {
+        use crate::protocol::{SessionPeer, SessionPlanPayload, Topology};
+        ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+            generation,
+            topology: Topology::Mesh,
+            transport: TransportKind::WebRtc,
+            host: None,
+            direct_endpoint: None,
+            peers: vec![SessionPeer {
+                player_id: peer,
+                player_name: "peer".into(),
+                is_authority: false,
+                initiate: true,
+            }],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        }))
     }
 
     /// A `ProtocolInfoPayload` negotiating v3 (for missed_events fixtures).
@@ -2146,12 +2243,49 @@ mod tests {
         )));
         // Decode the received signal payload (not just match the variant).
         let received = events.iter().find_map(|e| match e {
-            SignalFishEvent::SignalReceived { from, signal } if *from == peer => {
+            SignalFishEvent::SignalReceived { from, signal, .. } if *from == peer => {
                 Some(PeerSignal::try_from(signal).expect("typed signal"))
             }
             _ => None,
         });
         assert_eq!(received, Some(PeerSignal::Offer("remote-sdp".into())));
+    }
+
+    #[test]
+    fn generation_bound_typed_and_raw_signals_refuse_stale_plan() {
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        let first = uuid::Uuid::from_u128(12);
+        let second = uuid::Uuid::from_u128(13);
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
+            Some(Ok(session_plan_json(peer, Some(first)))),
+            Some(Ok(session_plan_json(peer, Some(second)))),
+        ]);
+        let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
+        client.poll();
+        assert_eq!(client.snapshot().session_generation, Some(second));
+
+        for result in [
+            client.send_signal_for_generation(peer, Some(first), PeerSignal::Offer("old".into())),
+            client.send_raw_signal_for_generation(
+                peer,
+                Some(first),
+                serde_json::json!({"Custom": "old"}),
+            ),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SignalFishError::StaleSessionGeneration {
+                    attempted: Some(value),
+                    current: Some(now),
+                }) if value == first && now == second
+            ));
+        }
+        client.poll();
+        assert!(last_sent(&client)
+            .iter()
+            .all(|message| !matches!(message, ClientMessage::Signal { .. })));
     }
 
     #[test]

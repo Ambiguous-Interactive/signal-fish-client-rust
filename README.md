@@ -46,12 +46,12 @@ rooms, and receive strongly typed events.
 
 - **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
-- **Protocol support: v2 relay + server 0.4.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and WebRTC mesh signaling; the default remains byte-identical to v2. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
+- **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver. Server 0.7 compatibility currently targets the default token-binding-disabled deployment profile.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Typed events for both drivers** — receive `SignalFishEvent`s through the
   async driver's bounded Tokio MPSC channel or directly from each polling call
 - **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
-- **Full protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
+- **Typed negotiated-protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
 - **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` counters make relay-path loss observable
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
@@ -76,13 +76,18 @@ signal-fish-client = { version = "0.10.0", default-features = false }
 
 The published `0.10.0` crate is the stable release. This `main`-branch README
 also documents fixes listed under [`Unreleased`](CHANGELOG.md), including the
-issue #61 browser polling guarantees. Until the next release, test those APIs
-and fixes with:
+issue #61 browser polling guarantees and the breaking Server 0.7 surface planned
+for 0.11. Until the next release, test those APIs and fixes with:
 
 ```toml
 [dependencies]
 signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
+
+> Server deployments that require the optional
+> `signalfish.tokenbinding.v2` WebSocket extension are not supported yet and
+> will reject this client. That negotiated transport feature is tracked in
+> [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
 
 ## Quick Start
 
@@ -283,6 +288,11 @@ for event in client.poll() {
     }
 }
 ```
+
+Browser and Godot-web handshakes include an `Origin` header. Signal Fish Server
+0.7 validates it, so production deployments must allow the exact HTTPS origin
+that serves the game. The wildcard `SIGNAL_FISH__SECURITY__CORS_ORIGINS='*'`
+setting is appropriate only for isolated local/CI fixtures.
 
 Enable it in a Godot GDExtension crate with:
 

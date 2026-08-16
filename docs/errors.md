@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **12
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **14
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -33,6 +33,8 @@ variants**:
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
+| `SessionPlanUnavailable` | — | WebRTC signaling was attempted before the server supplied a session plan for the current room. |
+| `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
@@ -73,8 +75,10 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **52 variants** representing
-structured error codes returned by the Signal Fish server. It derives `Debug`,
+`ErrorCode` is a protocol-level enum with **53 variants** representing
+structured error codes returned by compatible Signal Fish servers. Server 0.7
+currently emits 47 of them; six variants remain decodable for older servers and
+are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
 - Serializes as **`SCREAMING_SNAKE_CASE`** (e.g., `"ROOM_NOT_FOUND"`) to match
@@ -210,6 +214,12 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 | `ActivityTimeout` | The server closed the connection after prolonged protocol inactivity. Send periodic pings to keep the connection alive. |
 | `ServerDraining` | The server is draining and will close the connection; preserve the current reconnect snapshot and honor retry guidance. |
 | `InvalidDeliveryClass` | A classified `GameData` request used an invalid class/key shape or unsupported delivery token. Prefer the invalid-state-proof `GameDataDelivery` API. |
+
+### Protocol Negotiation (1)
+
+| Variant | Description |
+|---------|-------------|
+| `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum. |
 
 !!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five `Signal*` codes plus `ConnectionIdleTimeout` are **server-sent**

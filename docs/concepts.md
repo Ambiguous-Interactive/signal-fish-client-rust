@@ -128,8 +128,9 @@ one universal v2 change and is **not** guarded.
 
 ### Topology and transport
 
-When the server forms a non-relay session it sends a `SessionPlan` naming the
-chosen **topology** and data-path **transport**:
+When the server finalizes a v3 session it sends a `SessionPlan` naming the
+chosen **topology** and data-path **transport**. This includes an explicit
+relay/relay plan that resets any prior peer-to-peer state:
 
 | `Topology` | Meaning |
 |------------|---------|
@@ -436,8 +437,9 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 52-variant enum that arrives inside events. The server sends
-these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
+`ErrorCode` is a 53-variant enum that arrives inside events. Server 0.7 emits
+47 variants; six compatibility variants remain decodable for older servers.
+The wire uses `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore
 match event {
@@ -467,6 +469,7 @@ Error codes are grouped by category:
 | **Signaling (v3)** | `CrossRoomSignal`, `UnsupportedTransport`, `SignalTargetNotFound`, `SignalRateLimited`, `SignalTooLarge` |
 | **Connection Lifecycle (v3)** | `ConnectionIdleTimeout` |
 | **Delivery & Liveness** | `SlowConsumer`, `ActivityTimeout`, `ServerDraining`, `InvalidDeliveryClass` |
+| **Protocol Negotiation** | `UnsupportedProtocolVersion` |
 
 See [Errors](errors.md) for the full table with descriptions.
 
