@@ -47,7 +47,13 @@ GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify
 an empty bypass list in the ruleset UI. Prepare Release also uses only
 `GITHUB_TOKEN` and explicitly dispatches the required workflows on its generated
 branch because ordinary token-created pull-request events are suppressed.
-Path filters must not suppress a configured required gate.
+Path filters must not suppress a configured required gate. No checked-in
+`GITHUB_TOKEN` workflow may auto-merge Dependabot PRs: besides relying on live
+rules that may drift, such a merge can suppress push CI on the resulting
+default-branch SHA. The fail-closed workflow policy therefore rejects any
+Dependabot-specific workflow, all automated-merge primitives, and write
+permissions outside the release/docs allowlist. Reviewed merges remain
+repository policy but are not live enforcement until issue #90 is resolved.
 
 ## GitHub Tool Order
 
@@ -75,7 +81,14 @@ Production Rust is safe by default. The core manifest denies `unsafe_code`, the
 Godot adapter forbids it, and the target-gated Emscripten WebSocket module is
 the sole documented exception because it binds the platform C API. The
 required WASM workflow runs the Emscripten FFI policy checker and its negative
-self-test before compiling and linting the actual target.
+self-test before compiling and linting the actual target. Registered browser
+callback state is reclaimed only by its owning wrapper after it consumes a
+non-forgeable authorization emitted when native close was attempted or observed and
+`emscripten_websocket_delete` reports success. Cleanup retries deletion where
+possible and intentionally leaks the small state allocation after a terminal
+failure rather than allowing a late callback to access freed memory; logical
+receive errors do not skip the native close attempt. The host-tested ownership
+state machine and source checker with its 43-case self-test enforce that guard.
 
 The change-scoped PR, scheduled, and manual Deep Safety workflow provides
 fail-closed evidence from Miri protocol tests, all three protocol fuzz targets,
@@ -94,11 +107,13 @@ the inventory produced more than 170 mostly stylistic/documentation findings,
 and its only suspicious correctness warning was verified as a false positive.
 Add either class only when it demonstrates a stable, actionable defect.
 
-Dependabot monitors the root Cargo workspace and the standalone Godot web
-fixture in one updater entry. They stay in the same updater file set so it can
-include the fixture's `../..` path dependencies while updating exact
-compatibility versions; a successful default-branch updater run is required
-after any change to this arrangement.
+Dependabot monitors the root Cargo workspace, the Godot adapter manifest, and
+the standalone Godot web fixture in one updater entry. All three directories
+are explicit so its temporary file set can resolve the fixture's `../..` path
+dependencies while updating exact compatibility versions. A successful
+default-branch updater run is required after any change to this arrangement;
+the first two-directory attempt failed because Dependabot omitted the adapter
+manifest and then opened a zero-file PR.
 
 ## Architecture — Core Modules
 

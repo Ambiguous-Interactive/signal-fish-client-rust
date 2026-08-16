@@ -85,13 +85,13 @@ the now-merged Server 0.7 delivery.
    `cargo fmt`, workspace/all-target/all-feature Clippy with `-D warnings`, and
    workspace/all-feature tests (including 212 CI-policy and 125 protocol
    integration tests).
-7. PR #91 implementation head `b97fb6f` passed all eleven required aggregate
+7. PR #91 final implementation head `1625fae` passed all eleven required aggregate
    workflows. The
    first Workflow Lint run exposed actionlint SC2317 on an indirectly invoked
    trap handler; commit `85be886` replaced it with an equivalent inline EXIT
    trap, and the final-head Workflow Lint run passed.
-8. Change-scoped Protocol Sync run 31955120960 passed against the current
-   server samples and AsyncAPI spec. Deep Safety run 31955120978 passed all
+8. Change-scoped Protocol Sync run 31956069553 passed against the current
+   server samples and AsyncAPI spec. Deep Safety run 31956069524 passed all
    three fail-closed jobs: Miri, mutation testing, and all-target fuzz smoke.
 9. Cursor Bugbot and the final independent adversarial review reported no
    actionable findings or open threads. Across 58 checks, 54 succeeded and
@@ -100,13 +100,15 @@ the now-merged Server 0.7 delivery.
    These are the external enforcement conditions tracked in issue #90, not
    code defects or actionable feedback.
 
-## Hosted Follow-up
+## Post-merge Outcome
 
-- Do not merge PR #91 until a maintainer restores the ruleset and obtains the
-  approval/quota evidence required by issue #90, or explicitly re-scopes that
-  acceptance criterion. Issues #78 and #84 close with the eventual merge.
-- Confirm the combined Cargo updater succeeds after the configuration reaches
-  the default branch. Dependabot cannot execute PR-branch configuration.
+- PR #91 merged as `963a9fc` without the approval/quota evidence that this
+  session required; issues #78 and #84 closed with it. Issue #90 remains open
+  because the live ruleset did not enforce the documented acceptance state.
+- The combined Cargo updater did not succeed after merge. Run 31958655375
+  omitted the adapter manifest needed by the standalone fixture's path
+  dependency, then opened zero-file PR #92. Session 024 records the corrective
+  configuration and removal of unsafe dependency auto-merge.
 - Maintainer administration is still required for issue #90: restore the live
   ruleset, resolve the Copilot quota gate, and dispatch a green Repository
   Policy audit. The available connector can inspect but cannot mutate rulesets.

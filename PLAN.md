@@ -35,44 +35,55 @@ not stack dependent PRs.
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
 tracks live drift from `.github/required-checks.json`. Ruleset #14801090 still
 lacks approval and required-status-check rules, the scheduled Repository Policy
-workflow is genuinely red, and PR #89 demonstrated the impact by merging
-without the intended enforcement. Restoring the ruleset, resolving the
-non-actionable Copilot quota gate, and dispatching a green policy audit require
-maintainer-level repository administration. The next open PR is the enforcement
-proof because #89 is already merged.
+workflow is genuinely red, and PRs #91 and #92 demonstrated the impact by
+merging without an approval or enforced required checks. PR #92 auto-merged
+while a required aggregate was still running, then produced no push CI on its
+zero-file merge commit. The checked-in `GITHUB_TOKEN` Dependabot auto-merge path
+is now removed; repository policy rejects Dependabot-specific workflows,
+automated-merge primitives, and non-allowlisted workflow write permissions.
+Ordinary reviewed merges remain policy but are not enforced until issue #90 is
+fixed. Restoring
+the live ruleset, disabling or funding the quota-broken Copilot review gate,
+and dispatching a green policy audit still require maintainer administration.
+The next open PR remains the end-to-end enforcement proof.
 
-## In-flight Milestone — Safety and Static Analysis
+## Completed Milestone — Safety and Static Analysis
 
-Consolidate [issue #78](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/78)
-and [issue #84](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/84)
-into one evidence-backed hardening milestone.
+[Issues #78](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/78)
+and [#84](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/84)
+were delivered by PR #91 and closed when it merged as `963a9fc`.
 
-- The analyzer inventory is complete: required Clippy, rustdoc, dependency,
-  panic, coverage, target-build, and FFI gates plus scheduled fail-closed Miri,
-  fuzz, and mutation lanes cover the useful defect classes. Broad
-  pedantic/nursery lint expansion was rejected after more than 170 mostly
-  stylistic findings and one verified false positive; native ASan cannot
-  exercise the Emscripten-only owned unsafe path.
-- Compiler policy now denies unsafe Rust in the core, forbids it in the Godot
-  adapter, and documents the sole Emscripten FFI exception. The required WASM
-  workflow hosts the FFI checker and its 25-case self-test.
-- Deep Safety is being repaired to fail closed: Miri runs the 125 production
-  protocol tests; fuzz uses the actual host, isolated writable corpora, and all
-  JSON/binary v2/v3 targets; mutation testing has zero surviving mutants.
-  Path-scoped PR triggers provide immediate hosted proof when analyzer or
-  covered-code inputs change without making the variable-runtime lane required.
-- The incompatible standalone-fixture Dependabot updater is consolidated with
-  the root workspace so its file set can include local path dependencies;
-  default-branch updater confirmation remains pending.
-- Local evidence is green. PR #91 has all eleven required project-owned
-  aggregates green plus green change-scoped Deep Safety and Protocol Sync runs.
-  Independent and Bugbot reviews report no actionable findings. Literal
-  all-checks-green acceptance remains externally blocked: Copilot's reviewer
-  check failed on quota, there is no approval, and the live ruleset still does
-  not enforce either condition. Issue #90 requires this next open PR to prove
-  that governance before merge. Issues #78 and #84 close with the PR once that
-  blocker is resolved or explicitly re-scoped by a maintainer. Default-branch
-  Dependabot confirmation remains after merge.
+- Required compiler, rustdoc, dependency, panic, coverage, target-build, and
+  FFI gates are complemented by scheduled fail-closed Miri, fuzz, and mutation
+  lanes. Broad pedantic/nursery lint expansion remains rejected as noisy, and
+  native ASan still cannot execute the Emscripten-only owned unsafe path.
+- Core unsafe Rust is denied by default, the Godot adapter forbids it, and the
+  sole Emscripten FFI exception is source-audited and target-compiled.
+- Deep Safety runs the 125 production protocol tests under Miri, all JSON and
+  binary v2/v3 fuzz targets with isolated corpora, and a zero-survivor mutation
+  scope. Change-scoped PR triggers provide hosted evidence when covered inputs
+  change.
+- PR #91 passed all eleven project aggregates plus Deep Safety and Protocol
+  Sync, but merged without the approval and quota-green state it explicitly
+  required. That governance failure remains tracked in issue #90.
+
+## Current Correctness Follow-up — FFI and Dependency Automation
+
+- Emscripten callback state is reclaimed only when its owner consumes a typed
+  authorization produced after native close was attempted or observed and browser callback
+  unregistration succeeded. Logical receive failures still drive native close,
+  deletion failures remain retryable, and terminal cleanup deliberately leaks
+  the small allocation instead of risking a late-callback use-after-free. The
+  host-tested state machine and required FFI checker enforce this condition
+  with 43 checker self-tests.
+- Dependabot's first default-branch Cargo run after PR #91 failed because its
+  temporary file set omitted `crates/signal-fish-client-godot/Cargo.toml`, then
+  opened the zero-file PR #92. The combined Cargo updater now lists the root,
+  adapter, and standalone fixture explicitly; a subsequent updater run must
+  prove all three resolve together.
+- The checked-in `GITHUB_TOKEN` Dependabot auto-merge path is removed. Until
+  issue #90 is fixed, dependency PRs must not bypass review/check policy or
+  suppress CI for their merge SHA.
 
 ## Next Major Milestone — Negotiated Token Binding
 

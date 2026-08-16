@@ -402,62 +402,357 @@ echo "=== close()-must-also-delete tests ==="
 
 # -- Should FAIL: close() calls emscripten_websocket_close but NOT emscripten_websocket_delete --
 setup_fake_repo
-cat > "$FAKE_REPO/src/close_without_delete.rs" << 'RUST'
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
 #[cfg(not(target_os = "emscripten"))]
 compile_error!("This module requires the emscripten target.");
 
-struct Transport {
-    socket: i32,
-    closed: bool,
-}
-
 impl Transport {
-    async fn close(&mut self) -> Result<(), ()> {
-        if self.closed {
-            return Ok(());
-        }
-        self.closed = true;
-        unsafe {
-            emscripten_websocket_close(self.socket, 1000, std::ptr::null());
-        }
-        Ok(())
+    fn poll_close(&mut self) {
+        let close_error = self.close_native_socket().err();
+    }
+
+    fn is_ready(&self) -> bool {
+        true
     }
 }
 RUST
 run_check
-assert_exit "close() with emscripten_websocket_close but no delete should FAIL" 1
+assert_exit "poll_close with native close but no delete should FAIL" 1
 
 # -- Should PASS: close() calls both emscripten_websocket_close AND emscripten_websocket_delete --
 setup_fake_repo
-cat > "$FAKE_REPO/src/close_with_delete.rs" << 'RUST'
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
 #[cfg(not(target_os = "emscripten"))]
 compile_error!("This module requires the emscripten target.");
 
-struct Transport {
-    socket: i32,
-    closed: bool,
-    deleted: bool,
-}
-
 impl Transport {
-    async fn close(&mut self) -> Result<(), ()> {
-        if self.closed {
-            return Ok(());
-        }
-        self.closed = true;
-        unsafe {
-            emscripten_websocket_close(self.socket, 1000, std::ptr::null());
-            emscripten_websocket_delete(self.socket);
-        }
-        self.deleted = true;
-        Ok(())
+    fn poll_close(&mut self) {
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+    }
+
+    fn is_ready(&self) -> bool {
+        true
     }
 }
 RUST
 run_check
-assert_exit "close() with both emscripten_websocket_close and delete should PASS" 0
+assert_exit "poll_close with ordered top-level close and delete should PASS" 0
 
-echo ""
+# -- Should FAIL: the real Transport contract uses a multiline poll_close --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+impl Transport {
+    fn poll_close(&mut self) {
+        let close_error = self.close_native_socket().err();
+        if false {
+        let delete_result = self.delete_after_close_attempt();
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "nested unreachable delete must not satisfy poll_close cleanup" 1
+
+# -- Should PASS: poll_close funnels through both audited helpers --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+impl Transport {
+    fn poll_close(&mut self) {
+        let delete_result = self.delete_after_close_attempt();
+        let close_error = self.close_native_socket().err();
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "delete before close must FAIL" 1
+
+# -- Should FAIL: exact cleanup lines inside a raw string are not executable --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+impl Transport {
+    fn poll_close(&mut self) {
+        let _spoof = r#"
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+"#;
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "raw-string cleanup lines must not satisfy poll_close" 1
+
+# -- Should FAIL: ordinary multiline string contents are not executable --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+impl Transport {
+    fn poll_close(&mut self) {
+        let _spoof = "
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+";
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "ordinary multiline-string cleanup lines must not satisfy poll_close" 1
+
+# -- Should FAIL: exact cleanup lines inside a block comment are not executable --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+impl Transport {
+    fn poll_close(&mut self) {
+/*
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+*/
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "block-comment cleanup lines must not satisfy poll_close" 1
+
+printf '\n'
+printf '%s\n' "=== callback-state reclamation tests ==="
+
+# -- Should FAIL: deletion failure can fall through to unconditional reclamation --
+setup_fake_repo
+cat > "$FAKE_REPO/src/unconditional_callback_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let delete_result = emscripten_websocket_delete(socket);
+    if delete_result != EMSCRIPTEN_RESULT_SUCCESS {
+        warn_delete_failed(delete_result);
+    }
+    drop(Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "callback state reclaimed after an unchecked delete failure should FAIL" 1
+
+# -- Should FAIL: a comment cannot spoof the required success guard --
+setup_fake_repo
+cat > "$FAKE_REPO/src/comment_spoofed_callback_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let delete_result = emscripten_websocket_delete(socket);
+    // if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+    warn_delete_result(delete_result);
+    drop(Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "commented success guard must not authorize callback reclamation" 1
+
+# -- Should FAIL: a closed success block does not dominate later reclamation --
+setup_fake_repo
+cat > "$FAKE_REPO/src/closed_success_guard.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let delete_result = emscripten_websocket_delete(socket);
+    if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+        note_success();
+    }
+    drop(Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "closed success guard must not authorize later reclamation" 1
+
+# -- Should FAIL: a block comment cannot spoof the required success branch --
+setup_fake_repo
+cat > "$FAKE_REPO/src/block_comment_spoofed_callback_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let delete_result = emscripten_websocket_delete(socket);
+    /* if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+       this is not executable code
+    } */
+    drop(Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "block-commented success guard must not authorize reclamation" 1
+
+# -- Should FAIL: a closed pre-registration branch cannot exempt later free --
+setup_fake_repo
+cat > "$FAKE_REPO/src/closed_creation_failure_guard.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    if socket <= 0 {
+        report_creation_failure();
+    }
+    let _delete_result = emscripten_websocket_delete(socket);
+    drop(Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "closed creation-failure guard must not authorize later reclamation" 1
+
+# -- Should FAIL: qualified/aliased from_raw spellings remain audited --
+setup_fake_repo
+cat > "$FAKE_REPO/src/qualified_unconditional_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let _delete_result = emscripten_websocket_delete(socket);
+    drop(std::boxed::Box::from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "qualified unconditional from_raw must still FAIL" 1
+
+# -- Should FAIL: taking from_raw as a function item still reconstructs ownership --
+setup_fake_repo
+cat > "$FAKE_REPO/src/from_raw_function_alias.rs" << 'RUST'
+unsafe fn cleanup(state_ptr: *mut CallbackState) {
+    let reclaim: unsafe fn(*mut CallbackState) -> Box<CallbackState> = Box::from_raw;
+    drop(reclaim(state_ptr));
+}
+RUST
+run_check
+assert_exit "from_raw function-item alias must FAIL" 1
+
+# -- Should FAIL: comments cannot split the ownership reconstruction token --
+setup_fake_repo
+cat > "$FAKE_REPO/src/comment_split_from_raw.rs" << 'RUST'
+unsafe fn cleanup(state_ptr: *mut CallbackState) {
+    drop(Box:: /* audit gap */ from_raw(state_ptr));
+}
+RUST
+run_check
+assert_exit "comment-split from_raw ownership reconstruction must FAIL" 1
+
+# -- Should FAIL: allocator deallocation aliases bypass the typed owner --
+setup_fake_repo
+cat > "$FAKE_REPO/src/dealloc_function_alias.rs" << 'RUST'
+unsafe fn cleanup(state_ptr: *mut u8, layout: Layout) {
+    let release = std::alloc::dealloc;
+    release(state_ptr, layout);
+}
+RUST
+run_check
+assert_exit "allocator deallocation alias must FAIL" 1
+
+# -- Should FAIL: transmute can reconstruct owning state without authorization --
+setup_fake_repo
+cat > "$FAKE_REPO/src/transmute_reclaim.rs" << 'RUST'
+unsafe fn cleanup(state_ptr: *mut CallbackState) {
+    let state: Box<CallbackState> = std::mem::transmute(state_ptr);
+    drop(state);
+}
+RUST
+run_check
+assert_exit "transmute ownership reconstruction must FAIL" 1
+
+# -- Should FAIL: branch-local raw reclamation bypasses the typed owner --
+setup_fake_repo
+cat > "$FAKE_REPO/src/guarded_callback_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn cleanup(socket: i32, state_ptr: *mut u8) {
+    let delete_result = emscripten_websocket_delete(socket);
+    if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+        drop(Box::from_raw(state_ptr));
+    }
+}
+RUST
+run_check
+assert_exit "raw branch-local reclamation must use the typed owner" 1
+
+# -- Should FAIL: callback allocation must not precede socket creation --
+setup_fake_repo
+cat > "$FAKE_REPO/src/pre_registration_reclaim.rs" << 'RUST'
+#[cfg(not(target_os = "emscripten"))]
+compile_error!("This module requires the emscripten target.");
+
+unsafe fn connect(socket: i32, state_ptr: *mut u8) {
+    if socket <= 0 {
+        drop(Box::from_raw(state_ptr));
+        return;
+    }
+    let _ = emscripten_websocket_delete(socket);
+}
+RUST
+run_check
+assert_exit "pre-registration raw reclamation is no longer permitted" 1
+
+# -- Should PASS: the sole owner consumes typed authorization and takes once --
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src/transports"
+cat > "$FAKE_REPO/src/transports/emscripten_websocket.rs" << 'RUST'
+struct ReclaimAuthorization(());
+struct RegisteredCallbackState(Option<NonNull<u8>>);
+
+impl RegisteredCallbackState {
+    fn reclaim(&mut self, _authorization: ReclaimAuthorization) {
+        let Some(state_ptr) = self.0.take() else {
+            return;
+        };
+        unsafe { drop(Box::from_raw(state_ptr.as_ptr())) };
+    }
+}
+
+impl Transport {
+    fn poll_close(&mut self) {
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+RUST
+run_check
+assert_exit "typed exactly-once reclamation boundary should PASS" 0
+
+printf '\n'
 echo "=== will_wake() reference argument tests (Check 6 retired) ==="
 echo "  Check 6 is retired — .will_wake ref enforcement is now handled by clippy."
 echo "  All will_wake test cases should PASS since Check 6 is a no-op."

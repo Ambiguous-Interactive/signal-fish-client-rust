@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the deprecated Emscripten WebSocket transport reclaiming callback
+  state after the browser failed to unregister it, which could let a late
+  callback access freed memory. Native cleanup now closes after logical
+  receive errors, reports deletion failures, retries during teardown, and
+  deliberately leaks the small callback allocation if unregistering never
+  succeeds.
 - Fixed explicit JSON `null` generations being interpreted as legacy omitted
   generations. Omission remains accepted only for Server 0.4 compatibility;
   present generations must decode as UUIDs.

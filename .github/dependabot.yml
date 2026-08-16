@@ -3,9 +3,10 @@
 # Goal: prefer fewer, larger ecosystem-based PRs over many tiny per-package PRs.
 #
 # Strategy:
-#   - One broad Cargo PR that batches root-workspace and standalone Godot
-#     fixture updates together, so Dependabot resolves the fixture's path
-#     dependencies from the same repository file set.
+#   - One broad Cargo PR that groups a dependency name across the root
+#     workspace, its Godot adapter, and the standalone Godot fixture. Listing
+#     the adapter explicitly keeps its manifest in Dependabot's temporary file
+#     set when resolving the fixture's local path dependency.
 #   - One broad GitHub Actions PR that batches ALL version updates.
 #   - open-pull-requests-limit: 1 per ecosystem so Dependabot can only open
 #     one consolidated batch PR at a time; once that batch is merged a fresh
@@ -20,6 +21,7 @@ updates:
   - package-ecosystem: cargo
     directories:
       - /
+      - /crates/signal-fish-client-godot
       - /tests/godot-web-smoke
     schedule:
       interval: weekly
@@ -32,6 +34,7 @@ updates:
     open-pull-requests-limit: 1
     groups:
       cargo-all-dependencies:
+        group-by: dependency-name
         patterns:
           - "*"
         update-types:

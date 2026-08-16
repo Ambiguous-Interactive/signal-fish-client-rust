@@ -18,12 +18,15 @@
 #   4. In files with a callback SAFETY block comment, every `extern "C" fn`
 #      must have a per-function `// SAFETY:` comment on the line immediately
 #      preceding its declaration.
-#   5. Any `fn close()` method that calls `emscripten_websocket_close` must also
-#      call `emscripten_websocket_delete` in that same method (not just in Drop)
-#      to prevent late callback delivery between close() returning and Drop.
+#   5. Any transport `close`/`poll_close` method that closes an Emscripten socket
+#      must also delete it in that same method, directly or through the audited
+#      cleanup helpers, to prevent late callback delivery after close returns.
 #   6. (Retired) Previously enforced explicit `&` in `.will_wake()` calls.
 #      Retired because nightly clippy flags the explicit `&` as `needless_borrow`
 #      and the emscripten CI job now runs clippy on the actual target.
+#   7. Callback state has one owning wrapper and one raw reclaim site. Reclaim
+#      consumes a non-forgeable authorization emitted only after close was
+#      attempted and Emscripten socket deletion succeeded.
 #
 # Exit codes:
 #   0 — no violations found
@@ -217,7 +220,7 @@ fi
 VIOLATIONS=$((VIOLATIONS + CHECK2_VIOLATIONS))
 
 if [ "$CHECK2_VIOLATIONS" -eq 0 ]; then
-    echo -e "${GREEN}  Check 2: PASS — all FFI return values are checked.${NC}"
+    echo -e "${GREEN}  Check 2: PASS — all callback-registration return values are checked.${NC}"
 fi
 echo ""
 
@@ -326,76 +329,61 @@ if [ "$CHECK4_VIOLATIONS" -eq 0 ]; then
 fi
 echo ""
 
-# ── Check 5: close() must also call delete to unregister callbacks ────
-# If a file calls emscripten_websocket_close inside a Transport trait impl
-# close() method, it must also call emscripten_websocket_delete in that same
-# method. Without this, callbacks remain registered between close() and Drop,
-# creating a window for late callback delivery.
-echo -e "${YELLOW}Check 5: Scanning for close() methods that close but do not delete...${NC}"
+# ── Check 5: transport close must also delete/unregister callbacks ────
+printf '%b\n' "${YELLOW}Check 5: Scanning transport close methods for close/delete cleanup...${NC}"
 
 CHECK5_VIOLATIONS=0
+CLOSE_FILE='src/transports/emscripten_websocket.rs'
+CLOSE_LINE='        let close_error = self.close_native_socket().err();'
+DELETE_LINE='        let delete_result = self.delete_after_close_attempt();'
 
-CLOSE_FILES=$(grep -rl 'emscripten_websocket_close' src/ 2>/dev/null || true)
-
-if [ -z "$CLOSE_FILES" ]; then
-    echo -e "${GREEN}  No files with emscripten_websocket_close found — nothing to check.${NC}"
+if [ ! -f "$CLOSE_FILE" ]; then
+    printf '%b\n' "${GREEN}  Emscripten transport absent — nothing to check.${NC}"
 else
-    for file in $CLOSE_FILES; do
-        # Find all fn close() method bodies and check if they contain both
-        # emscripten_websocket_close AND emscripten_websocket_delete.
-        # Use awk to extract close() method bodies.
-        in_close_fn=false
-        brace_depth=0
-        has_ws_close=false
-        has_ws_delete=false
-        close_start_line=0
-
-        lineno=0
-        while IFS= read -r line; do
-            line="${line//$'\r'/}"
-            lineno=$((lineno + 1))
-
-            # Detect `async fn close` or `fn close` method signature
-            if printf '%s\n' "$line" | grep -qE '(async[[:space:]]+)?fn[[:space:]]+close[[:space:]]*\('; then
-                in_close_fn=true
-                brace_depth=0
-                has_ws_close=false
-                has_ws_delete=false
-                close_start_line=$lineno
-            fi
-
-            if [ "$in_close_fn" = true ]; then
-                opens=$(printf '%s\n' "$line" | tr -cd '{' | wc -c)
-                closes=$(printf '%s\n' "$line" | tr -cd '}' | wc -c)
-                brace_depth=$((brace_depth + opens - closes))
-
-                if printf '%s\n' "$line" | grep -qv '^[[:space:]]*//' && printf '%s\n' "$line" | grep -q 'emscripten_websocket_close'; then
-                    has_ws_close=true
-                fi
-                if printf '%s\n' "$line" | grep -qv '^[[:space:]]*//' && printf '%s\n' "$line" | grep -q 'emscripten_websocket_delete'; then
-                    has_ws_delete=true
-                fi
-
-                if [ "$brace_depth" -le 0 ] && [ "$close_start_line" -ne "$lineno" ]; then
-                    if [ "$has_ws_close" = true ] && [ "$has_ws_delete" = false ]; then
-                        echo -e "${RED}VIOLATION:${NC} $file:$close_start_line: close() calls emscripten_websocket_close but NOT emscripten_websocket_delete"
-                        echo "  close() must also call emscripten_websocket_delete to unregister callbacks."
-                        echo "  Without this, callbacks can fire between close() returning and Drop running."
-                        CHECK5_VIOLATIONS=$((CHECK5_VIOLATIONS + 1))
-                    fi
-                    in_close_fn=false
-                fi
-            fi
-        done < "$file"
-    done
+    close_matches=$(grep -nFx "$CLOSE_LINE" "$CLOSE_FILE" || true)
+    delete_matches=$(grep -nFx "$DELETE_LINE" "$CLOSE_FILE" || true)
+    poll_start=$(grep -nE '^[[:space:]]*fn poll_close\(' "$CLOSE_FILE" | cut -d: -f1 | head -1)
+    poll_end=$(grep -nE '^[[:space:]]*fn is_ready\(' "$CLOSE_FILE" | cut -d: -f1 | head -1)
+    close_count=$(printf '%s\n' "$close_matches" | grep -c . || true)
+    delete_count=$(printf '%s\n' "$delete_matches" | grep -c . || true)
+    if [ "$close_count" -ne 1 ] || [ "$delete_count" -ne 1 ]; then
+        printf '%b\n' "${RED}VIOLATION:${NC} poll_close must contain one unconditional top-level close and one unconditional top-level delete"
+        CHECK5_VIOLATIONS=$((CHECK5_VIOLATIONS + 1))
+    else
+        close_lineno=${close_matches%%:*}
+        delete_lineno=${delete_matches%%:*}
+        poll_block=$(sed -n "${poll_start},${poll_end}p" "$CLOSE_FILE")
+        cleanup_gap=""
+        if [ "$delete_lineno" -gt $((close_lineno + 1)) ]; then
+            cleanup_gap=$(sed -n "$((close_lineno + 1)),$((delete_lineno - 1))p" "$CLOSE_FILE")
+        fi
+        multiline_string=false
+        if printf '%s\n' "$poll_block" | awk '
+            {
+                line = $0
+                gsub(/\\\"/, "", line)
+                if (gsub(/\"/, "", line) % 2 == 1) found = 1
+            }
+            END { exit found ? 0 : 1 }
+        '; then
+            multiline_string=true
+        fi
+        if [ -z "$poll_start" ] || [ -z "$poll_end" ] ||
+            [ "$close_lineno" -le "$poll_start" ] || [ "$delete_lineno" -ge "$poll_end" ] ||
+            [ "$close_lineno" -ge "$delete_lineno" ] || [ -n "$cleanup_gap" ] ||
+            "$multiline_string" || printf '%s\n' "$poll_block" | grep -Eq 'r#*"|/\*|\*/'; then
+            printf '%b\n' "${RED}VIOLATION:${NC} poll_close must attempt native close before callback deletion"
+            CHECK5_VIOLATIONS=$((CHECK5_VIOLATIONS + 1))
+        fi
+    fi
 fi
 
 VIOLATIONS=$((VIOLATIONS + CHECK5_VIOLATIONS))
 
 if [ "$CHECK5_VIOLATIONS" -eq 0 ]; then
-    echo -e "${GREEN}  Check 5: PASS — all close() methods that close also delete/unregister.${NC}"
+    printf '%b\n' "${GREEN}  Check 5: PASS — all transport close methods that close also delete/unregister.${NC}"
 fi
-echo ""
+printf '\n'
 
 # ── Check 6: (retired) ────────────────────────────────────────────────
 # Previously scanned for .will_wake() calls missing an explicit &
@@ -408,6 +396,60 @@ echo ""
 #      the former is preferred by clippy to avoid needless borrows.
 echo -e "${GREEN}  Check 6: SKIP — retired (.will_wake ref check now handled by clippy).${NC}"
 echo ""
+
+# ── Check 7: callback reclamation requires typed authorization ───────
+# The owning wrapper consumes a private capability emitted by CleanupState.
+printf '%b\n' "${YELLOW}Check 7: Scanning callback reclamation capability boundary...${NC}"
+
+CHECK7_VIOLATIONS=0
+EXPECTED_RECLAIM='unsafe { drop(Box::from_raw(state_ptr.as_ptr())) };'
+EXPECTED_FILE='src/transports/emscripten_websocket.rs'
+EXPECTED_COUNT=0
+RECLAIM_FOUND=0
+
+while IFS=: read -r file lineno line; do
+    [ -n "$file" ] || continue
+    trimmed=$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//')
+    case "$trimmed" in
+        '//'*) continue ;;
+    esac
+    # Borrowed slice construction is not ownership reclamation.
+    if printf '%s\n' "$line" | grep -q 'std::slice::from_raw_parts'; then
+        continue
+    fi
+    RECLAIM_FOUND=1
+    if [ "$file" = "$EXPECTED_FILE" ] && [ "$trimmed" = "$EXPECTED_RECLAIM" ]; then
+        EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
+        continue
+    fi
+    printf '%b\n' "${RED}VIOLATION:${NC} $file:$lineno: raw ownership reclamation bypasses RegisteredCallbackState authorization"
+    printf '  %s\n' "$line"
+    CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
+done < <(grep -rnE 'from_raw(_parts)?|drop_in_place|std::alloc::dealloc|std::mem::transmute|(^|[^[:alnum:]_])(dealloc|free|transmute)[[:space:]]*\(' src/ 2>/dev/null || true)
+
+if [ "$RECLAIM_FOUND" -eq 1 ] && [ "$EXPECTED_COUNT" -ne 1 ]; then
+    printf '%b\n' "${RED}VIOLATION:${NC} expected exactly one authorized callback-state reclaim, found $EXPECTED_COUNT"
+    CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
+fi
+
+if [ "$RECLAIM_FOUND" -eq 1 ] &&
+    { ! grep -qF 'fn reclaim(&mut self, _authorization: ReclaimAuthorization)' "$EXPECTED_FILE" ||
+        ! grep -qF 'let Some(state_ptr) = self.0.take()' "$EXPECTED_FILE"; }; then
+    printf '%b\n' "${RED}VIOLATION:${NC} RegisteredCallbackState::reclaim must consume authorization and take ownership exactly once"
+    CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
+fi
+
+if grep -rnE '(dealloc|free|from_raw|transmute)[[:space:]]+as[[:space:]]+' src/ >/dev/null 2>&1; then
+    printf '%b\n' "${RED}VIOLATION:${NC} raw reclamation functions must not be aliased"
+    CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
+fi
+
+VIOLATIONS=$((VIOLATIONS + CHECK7_VIOLATIONS))
+
+if [ "$CHECK7_VIOLATIONS" -eq 0 ]; then
+    printf '%b\n' "${GREEN}  Check 7: PASS — callback state has one typed, exactly-once reclamation boundary.${NC}"
+fi
+printf '\n'
 
 # ── Result ────────────────────────────────────────────────────────────
 if [ "$VIOLATIONS" -gt 0 ]; then
