@@ -2656,6 +2656,20 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         reconnection_token: Some("reconnect-secret".into()),
     };
 
+    for (debug, safe_marker) in [
+        (format!("{relay:?}"), "ConnectionInfo::Relay"),
+        (format!("{ice:?}"), "IceServer"),
+        (format!("{joined:?}"), "RoomJoinedPayload"),
+        (format!("{reconnected:?}"), "ReconnectedPayload"),
+        (format!("{:?}", ClientMessage::Ping), "Ping"),
+        (format!("{:?}", ServerMessage::Pong), "Pong"),
+    ] {
+        assert!(
+            debug.contains(safe_marker),
+            "Debug output omitted safe structural marker {safe_marker:?}: {debug:?}"
+        );
+    }
+
     let outputs = [
         format!("{relay:?}"),
         format!("{unity:?}"),

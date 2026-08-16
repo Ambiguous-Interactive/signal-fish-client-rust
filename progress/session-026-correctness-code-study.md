@@ -97,6 +97,10 @@ TCP_NODELAY, TLS behavior, and async/polling shared-core parity.
 - Polling-only Clippy passes with `-D warnings`, proving async-only binding
   state does not leak dead code into runtime-less feature builds.
 - Workspace/all-target/all-feature Clippy passes with `-D warnings`.
+- The hosted mutation scope is reproducible locally: all 14 viable mutants in
+  `protocol.rs`, `error_codes.rs`, and `error.rs` are caught; one is unviable.
+  Redaction regressions assert both secret absence and safe structural output,
+  so an empty custom formatter cannot satisfy the tests.
 - The mandatory workflow passes: formatting, workspace/all-target/all-feature
   Clippy with `-D warnings`, and workspace/all-feature tests. The latter runs
   294 core unit tests, 35 Godot adapter tests, all integration/policy suites,
