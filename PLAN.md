@@ -11,8 +11,12 @@
   exports, with blocking real-server gameplay coverage.
 - Release preparation and publication are workspace-aware, reproducible, and
   protected by required aggregate checks.
+- Signal Fish Server 0.7 compatibility shipped on `main` in
+  [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89),
+  closing issue #86.
 
-Completed milestone history and verification evidence live in `progress/`.
+Curated milestone history and verification evidence live in tracked files
+under `progress/`.
 
 ## Priority Order
 
@@ -26,44 +30,52 @@ Work open issues in gameplay-impact order:
 Finish one coherent PR and make it fully green before starting the next. Do
 not stack dependent PRs.
 
-## In-flight Delivery — Signal Fish Server 0.7 Compatibility
+## Hosted Governance Blocker
 
-Track [issue #86](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/86).
-The breaking 0.11-compatible source and conformance work is complete locally:
-generation-fenced signaling, Direct endpoint exposure, 0.7 error coverage,
-exact fixture provenance, async/polling parity, a pinned live 0.7 host-replan
-smoke, and both 0.7 and legacy-0.4 Godot gates. Remaining delivery work is
-hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89).
-All eleven project-owned aggregate workflows are green at completion-audit
-commit `44a7054`, including null-generation hardening, exact 0.4/0.7
-release-digest binding, and the pinned live 0.4 mesh seam. Independent protocol
-and adversarial reviews report zero remaining findings. The final audit found
-that the live default-branch
-ruleset no longer enforces the checked-in approval and required-check policy,
-the scheduled repository-policy audit is therefore red, and an external
-Copilot quota check is red while the PR has no human approval.
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
-tracks restoring the live ruleset, resolving the non-actionable Copilot gate,
-and obtaining the required approval before maintainer merge closes #86.
-[Token-binding-v2](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88)
-remains a separate negotiated correctness/security milestone because server
-0.7 leaves it disabled by default.
+tracks live drift from `.github/required-checks.json`. Ruleset #14801090 still
+lacks approval and required-status-check rules, the scheduled Repository Policy
+workflow is genuinely red, and PR #89 demonstrated the impact by merging
+without the intended enforcement. Restoring the ruleset, resolving the
+non-actionable Copilot quota gate, and dispatching a green policy audit require
+maintainer-level repository administration. The next open PR is the enforcement
+proof because #89 is already merged.
 
-## Next Major Milestone — Safety and Static Analysis
+## In-flight Milestone — Safety and Static Analysis
 
 Consolidate [issue #78](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/78)
 and [issue #84](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/84)
 into one evidence-backed hardening milestone.
 
-- Inventory existing lint, unsafe-code, dependency, fuzz, and mutation gates
-  before adding tools.
-- Add only analyzers that find an actionable defect class with acceptable
-  runtime and stable Rust/MSRV behavior.
-- Prefer crate-level unsafe policy and narrowly justified exceptions over
-  source-text heuristics.
-- Keep warnings denied in every supported feature/target combination.
-- Close or re-scope the duplicate issue once one canonical implementation plan
-  is accepted.
+- The analyzer inventory is complete: required Clippy, rustdoc, dependency,
+  panic, coverage, target-build, and FFI gates plus scheduled fail-closed Miri,
+  fuzz, and mutation lanes cover the useful defect classes. Broad
+  pedantic/nursery lint expansion was rejected after more than 170 mostly
+  stylistic findings and one verified false positive; native ASan cannot
+  exercise the Emscripten-only owned unsafe path.
+- Compiler policy now denies unsafe Rust in the core, forbids it in the Godot
+  adapter, and documents the sole Emscripten FFI exception. The required WASM
+  workflow hosts the FFI checker and its 25-case self-test.
+- Deep Safety is being repaired to fail closed: Miri runs the 125 production
+  protocol tests; fuzz uses the actual host, isolated writable corpora, and all
+  JSON/binary v2/v3 targets; mutation testing has zero surviving mutants.
+- The incompatible standalone-fixture Dependabot updater is consolidated with
+  the root workspace so its file set can include local path dependencies;
+  default-branch updater confirmation remains pending.
+- Local evidence is green. Hosted Deep Safety and PR aggregate evidence remain
+  before #78 can close; #84 then closes as the duplicate milestone.
+
+## Next Major Milestone — Negotiated Token Binding
+
+Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
+
+- Preserve byte-for-byte default connections while adding explicit disabled,
+  optional, and required token-binding-v2 modes.
+- Bind the native proof algorithm and negative cases to one exact server
+  release/commit, including replay, tamper, downgrade, and malformed envelopes.
+- Make handshake-material capability differences explicit for native, browser,
+  Godot, polling, and custom transports, with typed required-mode failures.
+- Keep keys, proofs, and handshake secrets out of `Debug`, tracing, and errors.
 
 ## Following Milestone — Allocation and Performance Evidence
 

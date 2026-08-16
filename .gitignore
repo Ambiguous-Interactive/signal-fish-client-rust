@@ -66,6 +66,7 @@ logs/
 # Fuzz artifacts
 fuzz/artifacts/
 fuzz/corpus/
+/fuzz/target/
 
 progress/
 PLAN.md

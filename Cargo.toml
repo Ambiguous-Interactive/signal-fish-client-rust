@@ -94,6 +94,9 @@ toml = "1.0"
 sha2 = "0.11"
 # Generates and shrinks polling-driver scheduler transition sequences.
 proptest = "1.7"
+# Parses production sources in the offline sole-unsafe-exception policy test.
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit"] }
 
 [[example]]
 name = "basic_lobby"
@@ -125,6 +128,11 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+
+[lints.rust]
+# Production Rust is safe by default. The Emscripten transport has the only
+# narrowly scoped exception because it binds the platform C WebSocket API.
+unsafe_code = "deny"
 
 [workspace]
 members = ["crates/signal-fish-client-godot"]

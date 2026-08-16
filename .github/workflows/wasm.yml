@@ -84,6 +84,10 @@ jobs:
           version: 3.1.74
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
+      - name: Validate Emscripten FFI safety policy
+        run: |
+          bash scripts/test_check_ffi_safety.sh
+          bash scripts/check-ffi-safety.sh
       - name: Build (no default features)
         run: >-
           cargo +nightly build -Zbuild-std

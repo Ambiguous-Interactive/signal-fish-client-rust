@@ -67,6 +67,10 @@
 //! let events = client.poll();
 //! ```
 
+// This target-only module is the core crate's sole unsafe-code exception. Its
+// raw calls, pointer lifetimes, callbacks, and cleanup paths are audited by
+// scripts/check-ffi-safety.sh and the Emscripten target CI lane.
+#![allow(unsafe_code)]
 #![allow(deprecated)]
 
 // Compile-time guard: this module requires the wasm32-unknown-emscripten target.

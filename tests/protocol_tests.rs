@@ -2530,14 +2530,17 @@ fn player_name_rules_payload_round_trip() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// ErrorCode::description smoke test
+// ErrorCode::description behavior
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn error_code_description_not_empty() {
+fn error_code_description_is_actionable() {
     let code = ErrorCode::Unauthorized;
     let desc = code.description();
-    assert!(!desc.is_empty());
+    assert_eq!(
+        desc,
+        "Access denied. Authentication credentials are missing or invalid."
+    );
 }
 
 #[test]

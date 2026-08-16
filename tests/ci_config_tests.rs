@@ -2868,10 +2868,12 @@ mod workflow_security {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Module: panic_policy
+// Module: safety_analysis_policy
 // ─────────────────────────────────────────────────────────────────────────────
 
-mod panic_policy {
+mod safety_analysis_policy {
+    use syn::visit::Visit;
+
     use super::*;
 
     const REQUIRED_DENY_LINTS: &[&str] = &[
@@ -2883,30 +2885,272 @@ mod panic_policy {
         "indexing_slicing",
     ];
 
+    fn manifest(path: &str) -> toml::Value {
+        toml::from_str(&read_project_file(path))
+            .unwrap_or_else(|error| panic!("{path} must be valid TOML: {error}"))
+    }
+
+    fn collect_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", directory.display()))
+        {
+            let entry = entry.expect("source directory entry");
+            let file_type = entry
+                .file_type()
+                .unwrap_or_else(|error| panic!("failed to inspect {:?}: {error}", entry.path()));
+            let path = entry.path();
+            if file_type.is_dir() {
+                collect_rust_sources(&path, sources);
+            } else if file_type.is_file()
+                && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+            {
+                sources.push(path);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct UnsafeSyntax {
+        findings: Vec<&'static str>,
+    }
+
+    fn token_stream_contains_unsafe_policy(tokens: proc_macro2::TokenStream) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(identifier) => matches!(
+                identifier.to_string().as_str(),
+                "unsafe" | "unsafe_code" | "no_mangle" | "export_name" | "link_section"
+            ),
+            proc_macro2::TokenTree::Group(group) => {
+                token_stream_contains_unsafe_policy(group.stream())
+            }
+            proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
+        })
+    }
+
+    impl<'ast> Visit<'ast> for UnsafeSyntax {
+        fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
+            let unsafe_path = ["unsafe", "no_mangle", "export_name", "link_section"]
+                .iter()
+                .any(|name| attribute.path().is_ident(name));
+            let unsafe_nested_meta = match &attribute.meta {
+                syn::Meta::List(list) => token_stream_contains_unsafe_policy(list.tokens.clone()),
+                syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
+            };
+            if unsafe_path || unsafe_nested_meta {
+                self.findings.push("unsafe attribute or lint exception");
+            }
+            syn::visit::visit_attribute(self, attribute);
+        }
+
+        fn visit_macro(&mut self, macro_item: &'ast syn::Macro) {
+            if token_stream_contains_unsafe_policy(macro_item.tokens.clone()) {
+                self.findings.push("unsafe token in macro");
+            }
+            syn::visit::visit_macro(self, macro_item);
+        }
+
+        fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+            self.findings.push("unsafe block");
+            syn::visit::visit_expr_unsafe(self, expression);
+        }
+
+        fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+            if function.sig.unsafety.is_some() {
+                self.findings.push("unsafe function");
+            }
+            syn::visit::visit_item_fn(self, function);
+        }
+
+        fn visit_impl_item_fn(&mut self, function: &'ast syn::ImplItemFn) {
+            if function.sig.unsafety.is_some() {
+                self.findings.push("unsafe implementation method");
+            }
+            syn::visit::visit_impl_item_fn(self, function);
+        }
+
+        fn visit_trait_item_fn(&mut self, function: &'ast syn::TraitItemFn) {
+            if function.sig.unsafety.is_some() {
+                self.findings.push("unsafe trait method");
+            }
+            syn::visit::visit_trait_item_fn(self, function);
+        }
+
+        fn visit_foreign_item_fn(&mut self, function: &'ast syn::ForeignItemFn) {
+            if function.sig.unsafety.is_some() {
+                self.findings.push("unsafe foreign function");
+            }
+            syn::visit::visit_foreign_item_fn(self, function);
+        }
+
+        fn visit_item_impl(&mut self, implementation: &'ast syn::ItemImpl) {
+            if implementation.unsafety.is_some() {
+                self.findings.push("unsafe implementation");
+            }
+            syn::visit::visit_item_impl(self, implementation);
+        }
+
+        fn visit_item_trait(&mut self, trait_item: &'ast syn::ItemTrait) {
+            if trait_item.unsafety.is_some() {
+                self.findings.push("unsafe trait");
+            }
+            syn::visit::visit_item_trait(self, trait_item);
+        }
+
+        fn visit_item_foreign_mod(&mut self, foreign: &'ast syn::ItemForeignMod) {
+            if foreign.unsafety.is_some() {
+                self.findings.push("unsafe extern block");
+            }
+            syn::visit::visit_item_foreign_mod(self, foreign);
+        }
+
+        fn visit_type_bare_fn(&mut self, function: &'ast syn::TypeBareFn) {
+            if function.unsafety.is_some() {
+                self.findings.push("unsafe function pointer");
+            }
+            syn::visit::visit_type_bare_fn(self, function);
+        }
+    }
+
+    fn unsafe_syntax_findings(contents: &str) -> Vec<&'static str> {
+        let syntax = syn::parse_file(contents).expect("production Rust source must parse");
+        let mut visitor = UnsafeSyntax::default();
+        visitor.visit_file(&syntax);
+        visitor.findings
+    }
+
+    #[test]
+    fn production_crates_deny_unsafe_code_by_default() {
+        let core = manifest("Cargo.toml");
+        let adapter = manifest("crates/signal-fish-client-godot/Cargo.toml");
+
+        assert_eq!(core["lints"]["rust"]["unsafe_code"].as_str(), Some("deny"));
+        assert_eq!(
+            adapter["lints"]["rust"]["unsafe_code"].as_str(),
+            Some("forbid")
+        );
+
+        let emscripten = read_project_file("src/transports/emscripten_websocket.rs");
+        assert!(emscripten.contains("#![allow(unsafe_code)]"));
+        assert!(emscripten.contains("sole unsafe-code exception"));
+    }
+
+    #[test]
+    fn emscripten_transport_is_the_only_owned_unsafe_source_or_exception() {
+        let root = project_root();
+        let allowed = root.join("src/transports/emscripten_websocket.rs");
+        let mut sources = Vec::new();
+        collect_rust_sources(&root.join("src"), &mut sources);
+        collect_rust_sources(
+            &root.join("crates/signal-fish-client-godot/src"),
+            &mut sources,
+        );
+
+        for source in sources {
+            if source == allowed {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&source)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", source.display()));
+            let findings = unsafe_syntax_findings(&contents);
+            assert!(findings.is_empty(), "{} contains {findings:?}; the Emscripten transport is the only permitted owned unsafe source or lint exception", source.display());
+        }
+    }
+
+    #[test]
+    fn unsafe_policy_scan_ignores_prose_but_detects_rust_tokens() {
+        assert!(unsafe_syntax_findings(
+            r####"
+            /// Documents an unsafe upstream behavior.
+            const DIAGNOSTIC: &str = r##"
+                unsafe_code must remain isolated
+                /* nested prose about unsafe behavior */
+            "##;
+            "####
+        )
+        .is_empty());
+        assert_eq!(
+            unsafe_syntax_findings("fn call() { unsafe { external_call(); } }"),
+            vec!["unsafe block"]
+        );
+        assert_eq!(
+            unsafe_syntax_findings("#![allow(unsafe_code)]"),
+            vec!["unsafe attribute or lint exception"]
+        );
+        assert!(!unsafe_syntax_findings(
+            "macro_rules! local { () => { #[allow(unsafe_code)] unsafe { call(); } } }"
+        )
+        .is_empty());
+        assert_eq!(
+            unsafe_syntax_findings("#[cfg_attr(target_os = \"none\", no_mangle)] fn hidden() {}"),
+            vec!["unsafe attribute or lint exception"]
+        );
+    }
+
     #[test]
     fn cargo_toml_has_all_panic_free_lints() {
-        let cargo = read_project_file("Cargo.toml");
+        let cargo = manifest("Cargo.toml");
+        let clippy = cargo["lints"]["clippy"]
+            .as_table()
+            .expect("Cargo.toml must define [lints.clippy]");
 
         for lint in REQUIRED_DENY_LINTS {
-            let pattern = format!("{lint} = \"deny\"");
-            assert!(
-                cargo.contains(&pattern),
-                "Cargo.toml is missing `{pattern}` in [lints.clippy]. \
-                 All panic-prone lints must be set to deny level to enforce \
-                 the project's panic-free policy in library code."
+            assert_eq!(
+                clippy.get(*lint).and_then(toml::Value::as_str),
+                Some("deny"),
+                "Cargo.toml must deny clippy::{lint}"
             );
         }
     }
 
     #[test]
-    fn cargo_toml_has_lints_clippy_section() {
-        let cargo = read_project_file("Cargo.toml");
-        assert!(
-            cargo.contains("[lints.clippy]"),
-            "Cargo.toml is missing [lints.clippy] section. \
-             This section is required to declare deny-level lints for \
-             the panic-free policy."
-        );
+    fn deep_safety_runs_every_analyzer_fail_closed() {
+        let workflow = read_project_file(".github/workflows/deep-safety.yml");
+        let local = read_project_file("scripts/check-all.sh");
+
+        assert!(!workflow.contains("continue-on-error"));
+        assert!(!workflow.contains("miri test --test ci_config_tests"));
+        assert!(workflow.contains("miri test --test protocol_tests --all-features"));
+        assert!(workflow.contains("fuzz_host=$(rustc +nightly -vV"));
+        assert!(workflow.contains("--target \"$fuzz_host\""));
+        assert!(workflow.contains("fuzz_corpus=$(mktemp -d)"));
+        assert!(workflow.contains("\"$corpus\" \"${seed_args[@]}\""));
+        assert!(workflow.contains("if-no-files-found: ignore"));
+        assert!(workflow.contains("cargo mutants --gitignore true"));
+        assert!(local.contains("FUZZ_CORPUS=$(mktemp -d)"));
+        assert!(local.contains("\"$corpus\" \"${seed_args[@]}\""));
+        assert!(local.contains("cargo mutants --gitignore true"));
+
+        let binary_target = read_project_file("fuzz/fuzz_targets/fuzz_binary_game_data.rs");
+        assert!(binary_target.contains("decode_v2_binary_game_data"));
+        assert!(binary_target.contains("decode_v3_binary_game_data"));
+        assert!(binary_target.contains("V2_ENVELOPE"));
+        assert!(binary_target.contains("V3_ENVELOPE"));
+
+        for target in [
+            "fuzz_server_message",
+            "fuzz_client_message",
+            "fuzz_binary_game_data",
+        ] {
+            assert!(
+                workflow.contains(target),
+                "Deep Safety must execute {target}"
+            );
+            assert!(
+                local.contains(target),
+                "scripts/check-all.sh must execute {target}"
+            );
+        }
+
+        for phase in [15, 16, 17] {
+            assert!(
+                local.contains(&format!("mark_phase_fail {phase}")),
+                "installed deep analyzer phase {phase} must fail closed"
+            );
+        }
+
+        let wasm = read_project_file(".github/workflows/wasm.yml");
+        assert!(wasm.contains("bash scripts/test_check_ffi_safety.sh"));
+        assert!(wasm.contains("bash scripts/check-ffi-safety.sh"));
     }
 }
 
@@ -2945,6 +3189,27 @@ mod dependency_policy {
              Dependabot must monitor Cargo dependencies to receive automated \
              security and version update PRs for Rust crates."
         );
+    }
+
+    #[test]
+    fn dependabot_includes_standalone_fixture_with_the_root_workspace() {
+        let contents = read_project_file(".github/dependabot.yml");
+        let cargo_sections: Vec<_> = dependabot_ecosystem_sections(&contents)
+            .into_iter()
+            .filter(|(ecosystem, _)| ecosystem == "cargo")
+            .collect();
+
+        assert_eq!(
+            cargo_sections.len(),
+            1,
+            "Cargo manifests must share one Dependabot updater file set"
+        );
+        let section = &cargo_sections[0].1;
+        assert!(section.contains("directories:"));
+        assert!(section.lines().any(|line| line.trim() == "- /"));
+        assert!(section
+            .lines()
+            .any(|line| line.trim() == "- /tests/godot-web-smoke"));
     }
 
     #[test]
