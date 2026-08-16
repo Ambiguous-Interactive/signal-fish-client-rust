@@ -72,7 +72,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Install release tools
-        uses: taiki-e/install-action@v2.85.10
+        uses: taiki-e/install-action@v2.85.13
         with:
           tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
 
