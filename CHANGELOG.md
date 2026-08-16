@@ -46,6 +46,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed public `Debug` implementations and built-in transport tracing exposing
+  reconnect and relay credentials, TURN userinfo, WebRTC signaling material,
+  peer-controlled close reasons, buffered protocol frames, arbitrary game
+  payloads, and credential-bearing WebSocket URLs. Ambient diagnostics now
+  retain only safe variant, state, and payload-length metadata.
+- Fixed the async transport loop allowing an indefinitely pending send to hide
+  inbound frames, peer close, and shutdown. Send and receive now make
+  bidirectional progress, backend-owned sends finish before close, terminal
+  state and events do not wait for graceful close, and close/abort progress is
+  bounded even when the event channel is full. A peer close discovered while
+  a send is flushing also retains its close metadata instead of being
+  misclassified as a generic send failure.
+- Fixed async `*_reliable` sends retaining validation decisions made before a
+  full command queue drained. Waiting sends now preserve immediate validation
+  errors but revalidate connection, negotiation, binary-format, and current
+  session-plan state atomically when queue capacity is actually reserved.
+  Generation-bearing and legacy generation-less re-plans cannot relabel or
+  admit stale signaling, while an idempotent plan reassertion stays valid.
 - Fixed the deprecated Emscripten WebSocket transport reclaiming callback
   state after the browser failed to unregister it, which could let a late
   callback access freed memory. Native cleanup now closes after logical

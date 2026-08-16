@@ -125,7 +125,6 @@ impl WebSocketConnectOptions {
 ///
 /// [`poll_recv`](Transport::poll_recv) preserves the WebSocket stream's partial
 /// receive state across `Poll::Pending` and registers the supplied waker.
-#[derive(Debug)]
 pub struct WebSocketTransport {
     stream: Option<WsStream>,
     closed: bool,
@@ -133,6 +132,21 @@ pub struct WebSocketTransport {
     send_started: bool,
     control_flush_pending: bool,
     peer_close_pending: bool,
+}
+
+impl std::fmt::Debug for WebSocketTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The stream codec can retain raw inbound/outbound protocol frames,
+        // and close reasons are peer-controlled. Expose state only.
+        f.debug_struct("WebSocketTransport")
+            .field("has_stream", &self.stream.is_some())
+            .field("closed", &self.closed)
+            .field("has_close_info", &self.close_info.is_some())
+            .field("send_started", &self.send_started)
+            .field("control_flush_pending", &self.control_flush_pending)
+            .field("peer_close_pending", &self.peer_close_pending)
+            .finish()
+    }
 }
 
 impl WebSocketTransport {
@@ -188,7 +202,7 @@ impl WebSocketTransport {
         }
 
         tracing::debug!(
-            url = %url,
+            secure = url.starts_with("wss://"),
             disable_nagle = options.disable_nagle,
             "connecting to WebSocket server"
         );
@@ -204,7 +218,10 @@ impl WebSocketTransport {
                     SignalFishError::Io(std::io::Error::new(kind, e))
                 })?;
 
-        tracing::info!(url = %url, "WebSocket connection established");
+        tracing::info!(
+            secure = url.starts_with("wss://"),
+            "WebSocket connection established"
+        );
 
         Ok(Self {
             stream: Some(stream),
@@ -361,7 +378,11 @@ impl Transport for WebSocketTransport {
                     return Poll::Ready(Some(Ok(TransportFrame::Binary(bytes.to_vec()))))
                 }
                 Message::Close(frame) => {
-                    tracing::debug!(?frame, "received WebSocket close frame");
+                    tracing::debug!(
+                        code = frame.as_ref().map(|frame| u16::from(frame.code)),
+                        has_reason = frame.as_ref().is_some_and(|frame| !frame.reason.is_empty()),
+                        "received WebSocket close frame"
+                    );
                     // Remember structured close metadata so the client can
                     // attribute the disconnect via `close_info()`.
                     if let Some(frame) = frame {
@@ -543,6 +564,30 @@ mod tests {
                 .expect("querying TCP_NODELAY on the loopback socket must succeed"),
             _ => panic!("a ws:// connection must use the plain (non-TLS) stream variant"),
         }
+    }
+
+    #[test]
+    fn debug_omits_stream_contents_and_peer_close_reason() {
+        let secret = "websocket-debug-secret";
+        let transport = WebSocketTransport {
+            stream: None,
+            closed: true,
+            close_info: Some(TransportCloseInfo {
+                reason: Some(secret.into()),
+                ..TransportCloseInfo::default()
+            }),
+            send_started: false,
+            control_flush_pending: false,
+            peer_close_pending: false,
+        };
+
+        let output = format!("{transport:?}");
+        assert!(!output.contains(secret), "debug output leaked: {output}");
+        assert_eq!(
+            output,
+            "WebSocketTransport { has_stream: false, closed: true, has_close_info: true, \
+             send_started: false, control_flush_pending: false, peer_close_pending: false }"
+        );
     }
 
     // ── Mock-stream tests ────────────────────────────────────────────────

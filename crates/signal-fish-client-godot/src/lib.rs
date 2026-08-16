@@ -1452,6 +1452,23 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_peer_close_reason_transitively() {
+        let secret = "godot-close-secret";
+        let mut transport =
+            GodotWebSocketTransport::from_backend(Box::new(FakeBackend::new(PeerState::Closed)));
+        transport.close_info = Some(TransportCloseInfo {
+            code: Some(4000),
+            reason: Some(secret.into()),
+            clean: Some(true),
+            initiated_by_peer: true,
+        });
+
+        let output = format!("{transport:?}");
+        assert!(!output.contains(secret), "debug output leaked: {output}");
+        assert!(output.contains("has_reason: true"));
+    }
+
+    #[test]
     fn closing_and_closed_states_drain_already_buffered_packets() {
         let mut backend = FakeBackend::new(PeerState::Open);
         backend

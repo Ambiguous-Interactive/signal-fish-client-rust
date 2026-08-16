@@ -345,6 +345,29 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_nested_ice_credentials() {
+        let secret = "mesh-turn-secret";
+        let mut s = MeshSession::new();
+        s.apply(&plan(
+            Topology::Mesh,
+            None,
+            vec![peer(1, true)],
+            vec![IceServer {
+                urls: vec![format!("turn://user:{secret}@relay.example")],
+                username: Some("mesh-user".into()),
+                credential: Some(secret.into()),
+            }],
+        ));
+
+        let output = format!("{s:?}");
+        assert!(!output.contains(secret), "debug output leaked: {output}");
+        assert!(
+            !output.contains("mesh-user"),
+            "debug output leaked: {output}"
+        );
+    }
+
+    #[test]
     fn exposes_generation_and_direct_endpoint() {
         let mut s = MeshSession::new();
         let generation = uuid(12);

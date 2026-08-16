@@ -61,13 +61,18 @@ update behind zero-file PR #96, and restore truthful roadmap evidence.
   quota; it produced no actionable feedback or unresolved threads and remains
   an issue #90 maintainer-administration blocker.
 
-## Hosted Follow-up
+## Hosted Proof
 
 - Zero-file PR #96 was closed without merging after PR #98 incorporated the
   real Syn 3 update and the updater correction.
-- After merge, dispatch or observe a default-branch Cargo updater run and link
-  a successful result in issue #95. It must contain no dependency resolution
-  errors and must not create another zero-file PR.
+- Default-branch Cargo updater run
+  [31969079956](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/runs/31969079956)
+  completed successfully on merged `main` commit `3461789`. Its dependency
+  snapshot included both the root `signal-fish-client` package and the
+  workspace-member `godot` dependency, reported no
+  `dependency_file_not_resolvable` errors, and completed without creating a
+  Cargo dependency PR. This satisfies issue #95's hosted proof without another
+  empty update.
 - Issue #90 still requires maintainer administration and an eligible
   independent reviewer before repository review/check enforcement can pass.
 - Begin issue #97 as bounded subsystem audits after this single PR is green.
