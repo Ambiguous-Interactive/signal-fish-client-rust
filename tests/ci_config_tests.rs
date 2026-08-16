@@ -2900,13 +2900,41 @@ mod safety_analysis_policy {
         tokens.into_iter().any(|token| match token {
             proc_macro2::TokenTree::Ident(identifier) => matches!(
                 identifier.to_string().as_str(),
-                "unsafe" | "unsafe_code" | "no_mangle" | "export_name" | "link_section"
+                "unsafe"
+                    | "unsafe_code"
+                    | "no_mangle"
+                    | "export_name"
+                    | "link_section"
+                    | "asm"
+                    | "global_asm"
+                    | "naked_asm"
             ),
             proc_macro2::TokenTree::Group(group) => {
                 token_stream_contains_unsafe_policy(group.stream())
             }
             proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
         })
+    }
+
+    fn use_tree_contains_unsafe_assembly(tree: &syn::UseTree) -> bool {
+        match tree {
+            syn::UseTree::Path(path) => {
+                matches!(
+                    path.ident.to_string().as_str(),
+                    "asm" | "global_asm" | "naked_asm"
+                ) || use_tree_contains_unsafe_assembly(&path.tree)
+            }
+            syn::UseTree::Name(name) => matches!(
+                name.ident.to_string().as_str(),
+                "asm" | "global_asm" | "naked_asm"
+            ),
+            syn::UseTree::Rename(rename) => matches!(
+                rename.ident.to_string().as_str(),
+                "asm" | "global_asm" | "naked_asm"
+            ),
+            syn::UseTree::Group(group) => group.items.iter().any(use_tree_contains_unsafe_assembly),
+            syn::UseTree::Glob(_) => false,
+        }
     }
 
     impl<'ast> Visit<'ast> for UnsafeSyntax {
@@ -2921,14 +2949,35 @@ mod safety_analysis_policy {
             if unsafe_path || unsafe_nested_meta {
                 self.findings.push("unsafe attribute or lint exception");
             }
-            syn::visit::visit_attribute(self, attribute);
+            if let syn::Meta::NameValue(name_value) = &attribute.meta {
+                self.visit_expr(&name_value.value);
+            }
         }
 
         fn visit_macro(&mut self, macro_item: &'ast syn::Macro) {
-            if token_stream_contains_unsafe_policy(macro_item.tokens.clone()) {
-                self.findings.push("unsafe token in macro");
+            let unsafe_macro = macro_item.path.segments.last().is_some_and(|segment| {
+                matches!(
+                    segment.ident.to_string().as_str(),
+                    "asm" | "global_asm" | "naked_asm"
+                )
+            });
+            if unsafe_macro {
+                self.findings.push("unsafe assembly macro");
             }
             syn::visit::visit_macro(self, macro_item);
+        }
+
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            if use_tree_contains_unsafe_assembly(&item.tree) {
+                self.findings.push("unsafe assembly macro import");
+            }
+            syn::visit::visit_item_use(self, item);
+        }
+
+        fn visit_token_stream(&mut self, tokens: &'ast proc_macro2::TokenStream) {
+            if token_stream_contains_unsafe_policy(tokens.clone()) {
+                self.findings.push("unsafe token in unparsed syntax");
+            }
         }
 
         fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
@@ -2937,28 +2986,28 @@ mod safety_analysis_policy {
         }
 
         fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
-            if function.sig.unsafety.is_some() {
+            if matches!(function.sig.safety, syn::Safety::Unsafe(_)) {
                 self.findings.push("unsafe function");
             }
             syn::visit::visit_item_fn(self, function);
         }
 
         fn visit_impl_item_fn(&mut self, function: &'ast syn::ImplItemFn) {
-            if function.sig.unsafety.is_some() {
+            if matches!(function.sig.safety, syn::Safety::Unsafe(_)) {
                 self.findings.push("unsafe implementation method");
             }
             syn::visit::visit_impl_item_fn(self, function);
         }
 
         fn visit_trait_item_fn(&mut self, function: &'ast syn::TraitItemFn) {
-            if function.sig.unsafety.is_some() {
+            if matches!(function.sig.safety, syn::Safety::Unsafe(_)) {
                 self.findings.push("unsafe trait method");
             }
             syn::visit::visit_trait_item_fn(self, function);
         }
 
         fn visit_foreign_item_fn(&mut self, function: &'ast syn::ForeignItemFn) {
-            if function.sig.unsafety.is_some() {
+            if matches!(function.sig.safety, syn::Safety::Unsafe(_)) {
                 self.findings.push("unsafe foreign function");
             }
             syn::visit::visit_foreign_item_fn(self, function);
@@ -2985,11 +3034,25 @@ mod safety_analysis_policy {
             syn::visit::visit_item_foreign_mod(self, foreign);
         }
 
-        fn visit_type_bare_fn(&mut self, function: &'ast syn::TypeBareFn) {
+        fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+            if module.unsafety.is_some() {
+                self.findings.push("unsafe module");
+            }
+            syn::visit::visit_item_mod(self, module);
+        }
+
+        fn visit_foreign_item_static(&mut self, item: &'ast syn::ForeignItemStatic) {
+            if matches!(item.safety, syn::Safety::Unsafe(_)) {
+                self.findings.push("unsafe foreign static");
+            }
+            syn::visit::visit_foreign_item_static(self, item);
+        }
+
+        fn visit_type_fn_ptr(&mut self, function: &'ast syn::TypeFnPtr) {
             if function.unsafety.is_some() {
                 self.findings.push("unsafe function pointer");
             }
-            syn::visit::visit_type_bare_fn(self, function);
+            syn::visit::visit_type_fn_ptr(self, function);
         }
     }
 
@@ -3066,6 +3129,61 @@ mod safety_analysis_policy {
             unsafe_syntax_findings("#[cfg_attr(target_os = \"none\", no_mangle)] fn hidden() {}"),
             vec!["unsafe attribute or lint exception"]
         );
+        assert_eq!(
+            unsafe_syntax_findings("#[doc = unsafe { \"hidden\" }] fn hidden() {}"),
+            vec!["unsafe block"]
+        );
+        assert!(!unsafe_syntax_findings(
+            "macro_rules! hidden { () => { core::arch::global_asm!(\"\"); } }"
+        )
+        .is_empty());
+        assert!(!unsafe_syntax_findings(
+            "use core::arch::global_asm as emit; #[cfg(any())] emit!(\"\");"
+        )
+        .is_empty());
+        let mut verbatim_visitor = UnsafeSyntax::default();
+        let verbatim_tokens = "unsafe<'a> fn()"
+            .parse::<proc_macro2::TokenStream>()
+            .expect("verbatim test tokens must lex");
+        verbatim_visitor.visit_token_stream(&verbatim_tokens);
+        assert_eq!(
+            verbatim_visitor.findings,
+            vec!["unsafe token in unparsed syntax"]
+        );
+
+        for (source, expected) in [
+            ("unsafe fn direct() {}", "unsafe function"),
+            (
+                "struct S; impl S { unsafe fn method() {} }",
+                "unsafe implementation method",
+            ),
+            ("trait T { unsafe fn method(); }", "unsafe trait method"),
+            (
+                "unsafe extern \"C\" { unsafe fn foreign(); }",
+                "unsafe extern block",
+            ),
+            (
+                "unsafe extern \"C\" { unsafe fn foreign(); }",
+                "unsafe foreign function",
+            ),
+            (
+                "unsafe extern \"C\" { unsafe static FOREIGN: u8; }",
+                "unsafe foreign static",
+            ),
+            (
+                "trait T {} struct S; unsafe impl T for S {}",
+                "unsafe implementation",
+            ),
+            ("unsafe trait T {}", "unsafe trait"),
+            ("unsafe mod ffi {}", "unsafe module"),
+            ("type Callback = unsafe fn();", "unsafe function pointer"),
+            ("core::arch::global_asm!(\"\");", "unsafe assembly macro"),
+        ] {
+            assert!(
+                unsafe_syntax_findings(source).contains(&expected),
+                "{source:?} must produce {expected:?}"
+            );
+        }
     }
 
     #[test]
@@ -3313,7 +3431,7 @@ mod dependency_policy {
     }
 
     #[test]
-    fn dependabot_includes_standalone_fixture_with_the_root_workspace() {
+    fn dependabot_uses_one_resolvable_root_workspace() {
         let contents = read_project_file(".github/dependabot.yml");
         let cargo_sections: Vec<_> = dependabot_ecosystem_sections(&contents)
             .into_iter()
@@ -3323,55 +3441,46 @@ mod dependency_policy {
         assert_eq!(
             cargo_sections.len(),
             1,
-            "Cargo manifests must share one Dependabot updater file set"
+            "Cargo dependencies must use one Dependabot updater"
         );
         let section = &cargo_sections[0].1;
-        let configured: std::collections::BTreeSet<_> =
-            dependabot_directory_values(section).into_iter().collect();
-        let expected = std::collections::BTreeSet::from([
-            "/".to_string(),
-            "/crates/signal-fish-client-godot".to_string(),
-            "/tests/godot-web-smoke".to_string(),
-        ]);
-        assert_eq!(configured, expected);
+        assert_eq!(
+            dependabot_directory_values(section),
+            vec!["/"],
+            "the Cargo updater must start at the root workspace; subdirectory updaters cannot \
+             resolve inherited workspace metadata or sibling path dependencies"
+        );
 
-        let fixture_dir = project_root().join("tests/godot-web-smoke");
-        let fixture: toml::Value =
-            toml::from_str(&read_project_file("tests/godot-web-smoke/Cargo.toml"))
-                .expect("standalone fixture manifest must parse");
-        let dependencies = fixture
-            .get("dependencies")
-            .and_then(toml::Value::as_table)
-            .expect("fixture dependencies must be a table");
-        for (name, dependency) in dependencies {
-            let Some(relative_path) = dependency.get("path").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            let target = std::fs::canonicalize(fixture_dir.join(relative_path))
-                .expect("fixture path dependency target must exist");
-            let relative = target
-                .strip_prefix(project_root())
-                .expect("fixture path dependency must remain inside the repository");
-            let updater_directory = if relative.as_os_str().is_empty() {
-                "/".to_string()
-            } else {
-                format!("/{}", relative.to_string_lossy().replace('\\', "/"))
-            };
+        let root = cargo_toml();
+        let members: std::collections::BTreeSet<_> = root["workspace"]["members"]
+            .as_array()
+            .expect("root workspace members must be an array")
+            .iter()
+            .map(|member| {
+                member
+                    .as_str()
+                    .expect("workspace member paths must be strings")
+            })
+            .collect();
+        assert!(
+            members.contains("crates/signal-fish-client-godot"),
+            "the root updater must cover the adapter through real Cargo workspace membership; \
+             exact-version compatibility fixtures must remain standalone"
+        );
+        for fixture in ["tests/godot-compat-min", "tests/godot-web-smoke"] {
             assert!(
-                configured.contains(&updater_directory),
-                "fixture dependency {name} resolves to {updater_directory}, which must be an \
-                 explicit Dependabot directory so its manifest enters the updater file set"
+                !members.contains(fixture),
+                "{fixture} must not be a root workspace member"
+            );
+            let fixture_manifest: toml::Value =
+                toml::from_str(&read_project_file(&format!("{fixture}/Cargo.toml")))
+                    .unwrap_or_else(|error| panic!("{fixture} manifest must parse: {error}"));
+            assert!(
+                fixture_manifest["workspace"].is_table(),
+                "{fixture} must remain a standalone workspace so Cargo cannot unify its exact \
+                 Godot version with the adapter or the other compatibility endpoint"
             );
         }
-
-        assert_eq!(
-            dependabot_group_by_values(section),
-            vec![(
-                "cargo-all-dependencies".to_string(),
-                "dependency-name".to_string()
-            )],
-            "the Cargo group must structurally group matching dependency names across directories"
-        );
     }
 
     #[test]
@@ -3414,14 +3523,20 @@ mod dependency_policy {
         sections
     }
 
-    /// Reads only list values structurally nested under the updater's
-    /// top-level `directories:` key (four-space key, six-space list items).
+    /// Reads updater roots from either a top-level `directory:` scalar or the
+    /// list values structurally nested under a top-level `directories:` key.
     fn dependabot_directory_values(section: &str) -> Vec<String> {
         let mut in_directories = false;
         let mut directories = Vec::new();
         for line in section.lines() {
             let trimmed = line.trim();
             let indent = line.len() - line.trim_start().len();
+            if indent == 4 {
+                if let Some(value) = trimmed.strip_prefix("directory:") {
+                    directories.push(value.trim().trim_matches(['\'', '"']).to_string());
+                    continue;
+                }
+            }
             if indent == 4 && trimmed == "directories:" {
                 in_directories = true;
                 continue;
@@ -3439,40 +3554,6 @@ mod dependency_policy {
             }
         }
         directories
-    }
-
-    /// Reads `group-by` only when it is structurally nested beneath a named
-    /// entry of the updater's top-level `groups` mapping.
-    fn dependabot_group_by_values(section: &str) -> Vec<(String, String)> {
-        let mut in_groups = false;
-        let mut current_group: Option<String> = None;
-        let mut values = Vec::new();
-        for line in section.lines() {
-            let trimmed = line.trim();
-            let indent = line.len() - line.trim_start().len();
-            if indent == 4 && trimmed == "groups:" {
-                in_groups = true;
-                continue;
-            }
-            if !in_groups || trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if indent <= 4 {
-                break;
-            }
-            if indent == 6 && trimmed.ends_with(':') {
-                current_group = Some(trimmed.trim_end_matches(':').to_string());
-                continue;
-            }
-            if indent == 8 {
-                if let (Some(group), Some(value)) =
-                    (&current_group, trimmed.strip_prefix("group-by:"))
-                {
-                    values.push((group.clone(), value.trim().to_string()));
-                }
-            }
-        }
-        values
     }
 
     #[test]

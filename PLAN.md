@@ -35,17 +35,19 @@ not stack dependent PRs.
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
 tracks live drift from `.github/required-checks.json`. Ruleset #14801090 still
 lacks approval and required-status-check rules, the scheduled Repository Policy
-workflow is genuinely red, and PRs #91 and #92 demonstrated the impact by
-merging without an approval or enforced required checks. PR #92 auto-merged
+workflow is genuinely red, and PRs #91, #92, and #94 demonstrated the impact
+by merging without an approval or enforced required checks. PR #92 auto-merged
 while a required aggregate was still running, then produced no push CI on its
 zero-file merge commit. The checked-in `GITHUB_TOKEN` Dependabot auto-merge path
 is now removed; repository policy rejects Dependabot-specific workflows,
 automated-merge primitives, and non-allowlisted workflow write permissions.
+PR #94 then merged despite its explicit do-not-merge gates and zero approvals.
 Ordinary reviewed merges remain policy but are not enforced until issue #90 is
-fixed. Restoring
-the live ruleset, disabling or funding the quota-broken Copilot review gate,
-and dispatching a green policy audit still require maintainer administration.
-The next open PR remains the end-to-end enforcement proof.
+fixed. Restoring the live ruleset, disabling or funding the quota-broken
+Copilot review gate, adding an eligible independent reviewer (the repository
+currently has only the PR author's collaborator account), and dispatching a
+green policy audit still require maintainer administration. The next valid
+non-bot PR remains the end-to-end enforcement proof.
 
 ## Completed Milestone — Safety and Static Analysis
 
@@ -78,14 +80,30 @@ were delivered by PR #91 and closed when it merged as `963a9fc`.
   with 43 checker self-tests.
 - Dependabot's first default-branch Cargo run after PR #91 failed because its
   temporary file set omitted `crates/signal-fish-client-godot/Cargo.toml`, then
-  opened the zero-file PR #92. The combined Cargo updater now lists the root,
-  adapter, and standalone fixture explicitly; a subsequent updater run must
-  prove all three resolve together.
+  opened zero-file PR #92. The three-directory attempt also failed in run
+  31964370221 with eleven resolution errors and opened zero-file PR #96:
+  Dependabot processes each Cargo directory independently rather than as one
+  file set. The corrective updater now starts only at `/`, where Cargo
+  discovers the adapter workspace member. The exact minimum/latest Godot
+  fixtures stay standalone and are maintained through their dedicated locked
+  E2E compatibility evidence. Issue #95 tracks fresh default-branch proof.
 - The checked-in `GITHUB_TOKEN` Dependabot auto-merge path is removed. Until
   issue #90 is fixed, dependency PRs must not bypass review/check policy or
   suppress CI for their merge SHA.
 
-## Next Major Milestone — Negotiated Token Binding
+## Next Major Milestone — Correctness Code Study
+
+Track [issue #97](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/97).
+
+- Audit the implementation, public API, distributed-state behavior, network
+  resilience, server/reference-client parity, and unexpected-input handling.
+- Decompose the broad study into bounded subsystem matrices with an explicit
+  invariant, authoritative reference, executable evidence, and follow-up issue
+  for every unresolved finding.
+- Fix correctness defects before usability, performance, or presentation work;
+  do not treat an absence of current test failures as proof of completeness.
+
+## Following Milestone — Negotiated Token Binding
 
 Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
 
@@ -97,7 +115,7 @@ Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-ru
   Godot, polling, and custom transports, with typed required-mode failures.
 - Keep keys, proofs, and handshake secrets out of `Debug`, tracing, and errors.
 
-## Following Milestone — Allocation and Performance Evidence
+## Later Milestone — Allocation and Performance Evidence
 
 Track [issue #82](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/82).
 
