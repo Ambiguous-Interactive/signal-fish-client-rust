@@ -51,6 +51,9 @@ through repeated adversarial review and correction.
 - Core state is terminal before the Disconnected event. Event delivery and
   close progress run concurrently, so a full event channel cannot delay close
   or abort forever.
+- A peer close discovered while a send is still flushing remains a peer-close
+  terminal path with structured close metadata; a consequential send refusal
+  cannot overwrite that attribution.
 - The task watchdog includes scheduling grace beyond the transport deadline,
   letting the loop invoke `Transport::abort` before task abortion.
 - Retained-frame, stored-waker, full-event-channel, hanging-close, and abort

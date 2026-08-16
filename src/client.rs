@@ -1493,8 +1493,19 @@ async fn poll_transport_io(
                     return std::task::Poll::Ready(TransportIo::Sent { is_game_data });
                 }
                 std::task::Poll::Ready(Err(error)) => {
+                    let peer_closed = transport
+                        .close_info()
+                        .is_some_and(|info| info.initiated_by_peer);
                     *pending_send = None;
-                    return std::task::Poll::Ready(TransportIo::SendFailed(error));
+                    return std::task::Poll::Ready(if peer_closed {
+                        // A duplex transport can discover a peer close while
+                        // an accepted send is still flushing. Prefer the
+                        // authoritative terminal receive state and its close
+                        // metadata over the consequential send refusal.
+                        TransportIo::Received(None)
+                    } else {
+                        TransportIo::SendFailed(error)
+                    });
                 }
                 std::task::Poll::Pending => {}
             }
@@ -2557,6 +2568,100 @@ mod tests {
             self.retained_frame = None;
             self.controls.abort_called.store(true, Ordering::Release);
         }
+    }
+
+    /// Models a WebSocket peer close discovered while an accepted send is
+    /// still flushing. The close response needs another poll, so receive first
+    /// returns `Pending`; meanwhile further sends are terminally refused.
+    struct PeerCloseDuringSendTransport {
+        send_accepted: bool,
+        peer_close_observed: bool,
+        close_called: Arc<AtomicBool>,
+    }
+
+    impl PeerCloseDuringSendTransport {
+        fn new() -> (Self, Arc<AtomicBool>) {
+            let close_called = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    send_accepted: false,
+                    peer_close_observed: false,
+                    close_called: Arc::clone(&close_called),
+                },
+                close_called,
+            )
+        }
+    }
+
+    impl Transport for PeerCloseDuringSendTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            if self.peer_close_observed {
+                return Poll::Ready(Err(SignalFishError::TransportClosed));
+            }
+            if !self.send_accepted {
+                assert!(frame.take().is_some());
+                self.send_accepted = true;
+            }
+            Poll::Pending
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            if self.send_accepted && !self.peer_close_observed {
+                self.peer_close_observed = true;
+                cx.waker().wake_by_ref();
+            }
+            Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            self.close_called.store(true, Ordering::Release);
+            Poll::Ready(Ok(()))
+        }
+
+        fn close_info(&self) -> Option<crate::transport::TransportCloseInfo> {
+            self.peer_close_observed
+                .then(|| crate::transport::TransportCloseInfo {
+                    code: Some(1000),
+                    reason: Some("normal closure".into()),
+                    clean: Some(true),
+                    initiated_by_peer: true,
+                })
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_close_during_pending_send_uses_close_metadata() {
+        let (transport, close_called) = PeerCloseDuringSendTransport::new();
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("app"));
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        let terminal = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("peer close must surface")
+            .expect("terminal event channel must remain open");
+        assert!(matches!(
+            terminal,
+            SignalFishEvent::Disconnected { reason, .. }
+                if reason.as_deref()
+                    == Some("closed by server: code=Some(1000), reason=Some(\"normal closure\")")
+        ));
+        wait_until(|| close_called.load(Ordering::Acquire)).await;
+
+        client.shutdown().await;
     }
 
     #[tokio::test]

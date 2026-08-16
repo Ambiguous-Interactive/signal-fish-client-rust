@@ -55,7 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inbound frames, peer close, and shutdown. Send and receive now make
   bidirectional progress, backend-owned sends finish before close, terminal
   state and events do not wait for graceful close, and close/abort progress is
-  bounded even when the event channel is full.
+  bounded even when the event channel is full. A peer close discovered while
+  a send is flushing also retains its close metadata instead of being
+  misclassified as a generic send failure.
 - Fixed async `*_reliable` sends retaining validation decisions made before a
   full command queue drained. Waiting sends now preserve immediate validation
   errors but revalidate connection, negotiation, binary-format, and current
