@@ -64,12 +64,15 @@ into one evidence-backed hardening milestone.
 - The incompatible standalone-fixture Dependabot updater is consolidated with
   the root workspace so its file set can include local path dependencies;
   default-branch updater confirmation remains pending.
-- Local evidence is green. PR #91 at `a61522c` has all eleven required
+- Local evidence is green. PR #91 has all eleven required project-owned
   aggregates green plus green change-scoped Deep Safety and Protocol Sync runs.
-  Independent and Bugbot reviews report no actionable findings; Copilot's only
-  response is the tracked quota-limit condition from issue #90. Issues #78 and
-  #84 close with the PR. Default-branch Dependabot confirmation remains after
-  merge.
+  Independent and Bugbot reviews report no actionable findings. Literal
+  all-checks-green acceptance remains externally blocked: Copilot's reviewer
+  check failed on quota, there is no approval, and the live ruleset still does
+  not enforce either condition. Issue #90 requires this next open PR to prove
+  that governance before merge. Issues #78 and #84 close with the PR once that
+  blocker is resolved or explicitly re-scoped by a maintainer. Default-branch
+  Dependabot confirmation remains after merge.
 
 ## Next Major Milestone — Negotiated Token Binding
 
