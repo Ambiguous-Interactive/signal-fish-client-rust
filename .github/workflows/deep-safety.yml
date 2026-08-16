@@ -106,10 +106,7 @@ jobs:
             exit 1
           fi
           fuzz_corpus=$(mktemp -d)
-          cleanup() {
-            rm -rf "$fuzz_corpus"
-          }
-          trap cleanup EXIT
+          trap 'rm -rf "$fuzz_corpus"' EXIT
           status=0
           for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data; do
             corpus="$fuzz_corpus/$target"
