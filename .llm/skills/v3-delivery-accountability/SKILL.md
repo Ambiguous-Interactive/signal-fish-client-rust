@@ -33,15 +33,19 @@ One report carries at most `DELIVERY_REPORT_MAX_GAPS` (256) ranges.
 ## State Machine
 
 `src/accountability.rs` is ported from the server v0.4.0 native reference client
-at commit `50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8`. Preserve that provenance
-when changing it. The validator covers:
+at commit `50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8`, with unsupported-format
+advisory semantics synced from
+`522c9c6ba10f171957f49abda434d3c37425748d` and coalesced ranges from
+`970be936c8438a892be987257604fe073ae73564`. Preserve that provenance when
+changing it. The validator covers:
 
 - exact v2/v3 snapshot metadata shapes and duplicate members;
 - announced lifecycle epochs and same-epoch idempotence;
 - exact prior gap coverage and monotonic per-class counters;
 - `PlayerLeft.final_seq` retirement and lifecycle-overtaken stale tails;
 - reconnect snapshot/watermark equality;
-- immediate unsupported-format error/report causality;
+- optional rate-limited unsupported-format advisories with a prior causal
+  exact report;
 - positive, stable, cumulative relay statistics.
 
 Validate decoded text and binary messages through the same path before state or
@@ -58,8 +62,9 @@ are `ProtocolViolation` and must never be conflated.
 - `Observe`: emit the violation and still deliver the offending decoded
   message, leaving recovery to the application.
 
-Quarantine resets only on a new physical client state or an authoritative
-`RoomJoined`, `SpectatorJoined`, or `Reconnected` baseline.
+Quarantine resets only on a new physical client state, an authoritative
+`RoomJoined`, `SpectatorJoined`, or `Reconnected` baseline, or an authoritative
+`RoomLeft`/`SpectatorLeft` exit from the affected room.
 
 ## Reconnect Tokens
 

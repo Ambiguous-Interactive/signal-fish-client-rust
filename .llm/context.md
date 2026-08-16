@@ -144,6 +144,15 @@ they fire inside the lag bound and the fixed cadence never acts on them), exact
 state checksum convergence, drained queue age/depth with a non-positive final
 eight-sample soak age slope, relay/server conservation, and v3 peer departure.
 
+Delivery accountability accepts coalesced, mixed-reason
+`unsupported_format` gap ranges emitted by newer servers. Their inclusive
+sequence counts must still exactly match cumulative counter deltas, ranges may
+not overlap, and an optional rate-limited supplemental advisory is accepted
+only after an actual unsupported-format range, without requiring adjacency.
+Authoritative room and spectator exits discard all room-scoped gap, sender,
+advisory-authorization, and quarantine state while retaining connection-wide
+counters.
+
 ### Client Usage Pattern
 
 Connect a transport, construct `SignalFishConfig`, and pass both to `SignalFishClient::start`, which returns the handle and event receiver and
