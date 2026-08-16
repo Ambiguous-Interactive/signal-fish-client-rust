@@ -60,6 +60,21 @@ pub enum SignalFishError {
     #[error("operation requires a negotiated protocol v3 session ...")]
     ProtocolUnsupported { mode: &'static str },
 
+    /// Signaling was attempted before the current room's first SessionPlan.
+    #[error("WebRTC signaling requires an authoritative SessionPlan ...")]
+    SessionPlanUnavailable,
+
+    /// A generation-bound driver signal raced with a replacement plan.
+    #[error("WebRTC signal belongs to stale session generation ...")]
+    StaleSessionGeneration {
+        attempted: Option<SessionGeneration>,
+        current: Option<SessionGeneration>,
+    },
+
+    /// Binary payload requested while JSON was negotiated.
+    #[error("binary game data requires ...")]
+    BinaryFormatNotNegotiated,
+
     /// An operation timed out.
     #[error("operation timed out")]
     Timeout,
@@ -115,7 +130,12 @@ async fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-Defined in `src/error_codes.rs`. This enum is exhaustive. 50 variants:
+Server 0.7 declares 47 emitted tokens. The public client enum has 53 variants:
+`UnsupportedProtocolVersion` is current, while the six values in
+`ErrorCode::NON_EMITTED` are retained for older-server decoding. Conformance
+must use that explicit compatibility set rather than removing public variants.
+
+Defined in `src/error_codes.rs`. This enum is exhaustive. 53 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

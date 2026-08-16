@@ -371,9 +371,9 @@ offerer via the `initiate` / `you_initiate` flags, which you must obey verbatim
 
 | Variant | Key Fields | Description |
 |---------|------------|-------------|
-| `SessionPlan` | `topology`, `transport`, `host`, `peers`, `ice_servers`, `fallback` | The server's per-recipient plan for a finalized non-relay session. |
+| `SessionPlan` | `generation`, `topology`, `transport`, `host`, `direct_endpoint`, `peers`, `ice_servers`, `fallback` | The server's per-recipient authoritative session plan. |
 | `NewPeer` | `peer_id: PlayerId`, `you_initiate: bool` | A late-joining peer to connect to after the session was finalized. |
-| `SignalReceived` | `from: PlayerId`, `signal: serde_json::Value` | An opaque WebRTC signal (offer/answer/ICE candidate) relayed from a peer. |
+| `SignalReceived` | `from: PlayerId`, `generation`, `signal: serde_json::Value` | A generation-validated opaque WebRTC signal relayed from a peer. |
 | `PeerTransportStatus` | `peer_id: PlayerId`, `transport: TransportKind`, `connected: bool` | A peer's data-path transport state changed (informational). |
 
 ### `SessionPlan`
@@ -383,9 +383,11 @@ May arrive multiple times (host re-election, late-join re-plan); each one
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `generation` | `Option<SessionGeneration>` | Handshake generation. `Some` on server 0.7; `None` only for legacy generation-less plans. |
 | `topology` | `Topology` | Chosen session topology (`Relay`, `Host`, or `Mesh`). |
 | `transport` | `TransportKind` | Chosen data-path transport (`Relay`, `Direct`, or `WebRtc`). |
 | `host` | `Option<PlayerId>` | The elected host (present for `Host` topology). |
+| `direct_endpoint` | `Option<DirectEndpoint>` | Validated endpoint for `Host + Direct`; opening the socket remains the application's responsibility. |
 | `peers` | `Vec<SessionPeer>` | Peers this client should connect to, each with its server-assigned `initiate` flag. |
 | `ice_servers` | `Vec<IceServer>` | ICE (STUN/TURN) servers for WebRTC. |
 | `fallback` | `TransportKind` | The universal fallback transport (always `Relay`). |
@@ -397,22 +399,44 @@ common `Offer` / `Answer` / `IceCandidate` shapes; the raw `Value` is preserved
 for any other shape.
 
 ```rust,ignore
-use signal_fish_client::PeerSignal;
+use std::collections::HashSet;
+use signal_fish_client::{PeerSignal, PlayerId, TransportKind};
 
+let mut current_generation = None;
+let mut webrtc_plan_active = false;
+let mut connected_peers = HashSet::<PlayerId>::new();
 match event {
-    SignalFishEvent::SessionPlan { topology, peers, ice_servers, .. } => {
+    SignalFishEvent::SessionPlan {
+        generation, topology, transport, peers, ice_servers, ..
+    } => {
+        // Every plan replaces the previous physical graph, including Direct
+        // and Relay reset plans.
+        for peer in connected_peers.drain() {
+            my_driver.disconnect(peer);
+        }
+        webrtc_plan_active = transport == TransportKind::WebRtc;
+        current_generation = webrtc_plan_active.then_some(generation).flatten();
         println!("Session plan: {topology:?} with {} peer(s)", peers.len());
-        for peer in &peers {
-            // Obey the server's offerer assignment verbatim.
-            my_driver.connect(peer.player_id, peer.initiate);
+        if webrtc_plan_active {
+            my_driver.set_ice_servers(&ice_servers);
+            for peer in &peers {
+                connected_peers.insert(peer.player_id);
+                my_driver.connect(peer.player_id, generation, peer.initiate);
+            }
         }
     }
-    SignalFishEvent::NewPeer { peer_id, you_initiate } => {
-        my_driver.connect(peer_id, you_initiate);
+    SignalFishEvent::NewPeer { peer_id, you_initiate } if webrtc_plan_active => {
+        connected_peers.insert(peer_id);
+        my_driver.connect(peer_id, current_generation, you_initiate);
     }
-    SignalFishEvent::SignalReceived { from, signal } => {
-        if let Ok(peer_signal) = PeerSignal::try_from(&signal) {
-            my_driver.on_signal(from, peer_signal);
+    SignalFishEvent::SignalReceived { from, generation, signal } => {
+        if webrtc_plan_active
+            && generation == current_generation
+            && connected_peers.contains(&from)
+        {
+            if let Ok(peer_signal) = PeerSignal::try_from(&signal) {
+                my_driver.on_signal(from, generation, peer_signal);
+            }
         }
     }
     SignalFishEvent::PeerTransportStatus { peer_id, connected, .. } => {

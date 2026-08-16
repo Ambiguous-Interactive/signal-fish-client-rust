@@ -33,6 +33,11 @@ enum covers the spec's error-code token space in both directions. This closes
 the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
+The canonical corpus currently pins server 0.7.0 commit
+`3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`. The client retains six legacy
+`ErrorCode::NON_EMITTED` variants outside the 0.7 emitted-token set; conformance
+must compare the spec plus that explicit compatibility marker, not delete them.
+
 ## The Refresh Procedure
 
 When the server protocol changes, refresh the vendored corpus:

@@ -46,7 +46,7 @@ rooms, and receive strongly typed events.
 
 - **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
-- **Protocol support: v2 relay + server 0.4.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and WebRTC mesh signaling; the default remains byte-identical to v2. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
+- **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
 - **Typed events for both drivers** — receive `SignalFishEvent`s through the
   async driver's bounded Tokio MPSC channel or directly from each polling call

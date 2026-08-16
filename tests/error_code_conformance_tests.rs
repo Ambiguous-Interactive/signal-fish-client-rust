@@ -28,10 +28,16 @@ const SPEC: &str = include_str!("server-spec/signal-fish-protocol.asyncapi.yaml"
 
 /// Client-only codes intentionally absent from the server spec.
 ///
-/// Kept empty on purpose: every client variant is expected to exist because
-/// the server can send it. Add a token here only with a comment explaining
-/// why the client models a code the server does not declare.
-const CLIENT_ONLY_ALLOWLIST: &[&str] = &[];
+/// Server 0.7 stopped declaring these tokens as emitted, but older compatible
+/// servers may still send them. Keep the public enum backward-compatible.
+const CLIENT_ONLY_ALLOWLIST: &[&str] = &[
+    "INVALID_TOKEN",
+    "AUTHENTICATION_REQUIRED",
+    "APP_ID_EXPIRED",
+    "APP_ID_REVOKED",
+    "APP_ID_SUSPENDED",
+    "SERVICE_UNAVAILABLE",
+];
 
 /// Extracts the wire tokens of the spec's `ErrorCode` enum with a plain line
 /// scan (no YAML dependency).
@@ -136,6 +142,7 @@ fn all_client_error_codes() -> Vec<ErrorCode> {
         ErrorCode::ActivityTimeout,
         ErrorCode::ServerDraining,
         ErrorCode::InvalidDeliveryClass,
+        ErrorCode::UnsupportedProtocolVersion,
     ]
 }
 
@@ -196,7 +203,8 @@ fn exhaustiveness_guard(code: &ErrorCode) {
         | ErrorCode::SlowConsumer
         | ErrorCode::ActivityTimeout
         | ErrorCode::ServerDraining
-        | ErrorCode::InvalidDeliveryClass => {}
+        | ErrorCode::InvalidDeliveryClass
+        | ErrorCode::UnsupportedProtocolVersion => {}
     }
 }
 
@@ -206,12 +214,24 @@ fn wire_token(code: &ErrorCode) -> String {
 }
 
 #[test]
-fn server_0_4_error_codes_use_the_expected_wire_tokens() {
+fn delivery_error_codes_use_the_expected_wire_tokens() {
     assert_eq!(wire_token(&ErrorCode::ServerDraining), "SERVER_DRAINING");
     assert_eq!(
         wire_token(&ErrorCode::InvalidDeliveryClass),
         "INVALID_DELIVERY_CLASS"
     );
+}
+
+#[test]
+fn compatibility_only_error_codes_match_the_public_marker() {
+    let mut public: Vec<String> = ErrorCode::NON_EMITTED.iter().map(wire_token).collect();
+    public.sort();
+    let mut expected: Vec<String> = CLIENT_ONLY_ALLOWLIST
+        .iter()
+        .map(|token| (*token).to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(public, expected);
 }
 
 #[test]
@@ -311,8 +331,8 @@ fn public_documentation_covers_every_error_code_variant_and_current_count() {
 fn spec_error_code_extraction_finds_a_plausible_count() {
     let tokens = extract_spec_error_tokens();
     assert!(
-        tokens.len() >= 50,
-        "expected at least 50 error-code tokens in the vendored spec, found {} — \
+        tokens.len() >= 47,
+        "expected at least 47 error-code tokens in the vendored spec, found {} — \
          the line-scan extractor likely no longer matches the spec's structure",
         tokens.len()
     );

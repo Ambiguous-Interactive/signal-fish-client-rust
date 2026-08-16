@@ -6,14 +6,16 @@
 # WebSocket; every text message is a `{ "type": <Variant>, "data": <payload> }` envelope (serde
 # `#[serde(tag = "type", content = "data")]`). Variants WITHOUT a payload
 # (e.g. LeaveRoom, Ping, RoomLeft, Pong) are sent as `{ "type": <Variant> }`
-# with no `data` field. `GameDataBinary` is the one physical binary-frame
-# exception and is modeled explicitly as a MessagePack map below.
+# with no `data` field. Binary frames are modeled explicitly below: the core
+# server-to-client `GameDataBinary` delivery and the negotiated token-binding-v2
+# client envelope that carries an existing binary payload plus its proof.
 #
 # It models EVERY `ClientMessage` (send / client -> server) and `ServerMessage`
 # (receive / server -> client) variant from `src/protocol/messages.rs`, plus the
-# full `ErrorCode` enum from `src/protocol/error_codes.rs`. A Rust consistency
-# test — `tests/protocol_spec_consistency.rs` — fails the build if this file
-# drifts from those Rust types, so codegen consumers can trust it.
+# server-emitted subset of `ErrorCode` from `src/protocol/error_codes.rs`. A
+# Rust consistency test — `tests/protocol_spec_consistency.rs` — subtracts the
+# explicit non-emitted compatibility reserve and fails the build if this file
+# drifts from the emitted set, so codegen consumers can trust it.
 #
 # ---------------------------------------------------------------------------
 # HOW TO USE FOR CODEGEN
@@ -87,7 +89,8 @@ servers:
     description: |
       v3 endpoint. Defaults the omitted Authenticate.protocol_version to 3, but a
       client is relay-only unless it also advertises supported_transports /
-      supported_topologies. Server clamps to its configured protocol range.
+      supported_topologies. The server caps downward at its configured maximum
+      and rejects a result below its configured minimum.
 
 channels:
   signaling:
@@ -109,7 +112,10 @@ channels:
       JoinAsSpectator: { $ref: '#/components/messages/JoinAsSpectator' }
       LeaveSpectator: { $ref: '#/components/messages/LeaveSpectator' }
       TransportStatus: { $ref: '#/components/messages/TransportStatus' }
+      ClientTokenBoundJson: { $ref: '#/components/messages/ClientTokenBoundJson' }
+      ClientTokenBoundBinary: { $ref: '#/components/messages/ClientTokenBoundBinary' }
       # ----- receive: server -> client -----
+      TokenBindingChallenge: { $ref: '#/components/messages/TokenBindingChallenge' }
       Authenticated: { $ref: '#/components/messages/Authenticated' }
       ProtocolInfo: { $ref: '#/components/messages/ProtocolInfo' }
       AuthenticationError: { $ref: '#/components/messages/AuthenticationError' }
@@ -162,11 +168,14 @@ operations:
       - { $ref: '#/channels/signaling/messages/JoinAsSpectator' }
       - { $ref: '#/channels/signaling/messages/LeaveSpectator' }
       - { $ref: '#/channels/signaling/messages/TransportStatus' }
+      - { $ref: '#/channels/signaling/messages/ClientTokenBoundJson' }
+      - { $ref: '#/channels/signaling/messages/ClientTokenBoundBinary' }
   receiveFromServer:
     action: receive
     channel: { $ref: '#/channels/signaling' }
     title: Server -> Client messages (ServerMessage)
     messages:
+      - { $ref: '#/channels/signaling/messages/TokenBindingChallenge' }
       - { $ref: '#/channels/signaling/messages/Authenticated' }
       - { $ref: '#/channels/signaling/messages/ProtocolInfo' }
       - { $ref: '#/channels/signaling/messages/AuthenticationError' }
@@ -222,7 +231,7 @@ components:
       payload: { $ref: '#/components/schemas/ClientGameData' }
     ClientSignal:
       title: Signal
-      summary: 'v3: relay an opaque WebRTC signal to a specific peer. Forwarded verbatim.'
+      summary: 'v3: relay a generation-scoped opaque WebRTC signal to a specific peer.'
       payload: { $ref: '#/components/schemas/ClientSignal' }
     AuthorityRequest:
       title: AuthorityRequest
@@ -263,10 +272,32 @@ components:
       title: TransportStatus
       summary: 'v3: report this client''s data-path transport state (informational).'
       payload: { $ref: '#/components/schemas/TransportStatus' }
+    ClientTokenBoundJson:
+      title: Token-bound JSON client message
+      summary: >-
+        Token-binding-v2 extension: any ordinary client message with the proof
+        added as a top-level token_binding member.
+      x-websocket-subprotocol: signalfish.tokenbinding.v2
+      payload: { $ref: '#/components/schemas/ClientTokenBoundJson' }
+    ClientTokenBoundBinary:
+      title: Token-bound binary client frame
+      contentType: application/msgpack
+      summary: >-
+        Token-binding-v2 extension: named-field MessagePack envelope carrying a
+        proof and the exact legacy binary client payload bytes.
+      x-websocket-subprotocol: signalfish.tokenbinding.v2
+      x-websocket-binary-envelope: messagepack
+      payload: { $ref: '#/components/schemas/ClientTokenBoundBinary' }
 
     # =====================================================================
     # SERVER -> CLIENT (ServerMessage)
     # =====================================================================
+    TokenBindingChallenge:
+      title: TokenBindingChallenge
+      summary: >-
+        Token-binding-v2 extension: first application message after a
+        negotiated token-bound WebSocket upgrade.
+      payload: { $ref: '#/components/schemas/TokenBindingChallenge' }
     Authenticated:
       title: Authenticated
       payload: { $ref: '#/components/schemas/Authenticated' }
@@ -326,7 +357,7 @@ components:
       payload: { $ref: '#/components/schemas/GameStarting' }
     ServerSignal:
       title: Signal
-      summary: 'v3: relayed opaque WebRTC signal from another peer. Verbatim.'
+      summary: 'v3: generation-scoped opaque WebRTC signal relayed from another peer.'
       payload: { $ref: '#/components/schemas/ServerSignal' }
     NewPeer:
       title: NewPeer
@@ -338,8 +369,9 @@ components:
       title: SessionPlan
       summary: >-
         v3: per-recipient authoritative session directive at lobby finalization
-        and finalized membership refreshes. Latest SessionPlan wins. The relay
-        floor is an explicit relay/relay plan with no peers.
+        and finalized membership refreshes. Latest SessionPlan generation wins
+        and fences Signal traffic. The relay floor is an explicit relay/relay
+        plan with no peers.
       payload: { $ref: '#/components/schemas/SessionPlan' }
     Pong:
       title: Pong
@@ -393,7 +425,7 @@ components:
 
   schemas:
     # ---------------------------------------------------------------------
-    # Shared token enums (Appendix A wire tokens)
+    # Shared token enums (protocol v3 wire tokens)
     # ---------------------------------------------------------------------
     Transport:
       type: string
@@ -442,6 +474,13 @@ components:
       type: string
       format: uuid
       description: Player UUID.
+    SessionGeneration:
+      type: string
+      format: uuid
+      description: >-
+        Opaque generation fence shared by one authoritative SessionPlan
+        publication. Clients send and accept Signal messages only for the
+        generation in their latest SessionPlan.
     BinaryPlayerId:
       type: string
       contentEncoding: binary
@@ -458,16 +497,11 @@ components:
     ErrorCode:
       type: string
       description: >-
-        Structured error code (SCREAMING_SNAKE_CASE). Mirrors the ErrorCode enum
-        in src/protocol/error_codes.rs; guarded by tests/protocol_spec_consistency.rs.
+        Structured error code (SCREAMING_SNAKE_CASE) emitted by Signal Fish
+        Server; guarded by tests/protocol_spec_consistency.rs.
       enum:
         - UNAUTHORIZED
-        - INVALID_TOKEN
-        - AUTHENTICATION_REQUIRED
         - INVALID_APP_ID
-        - APP_ID_EXPIRED
-        - APP_ID_REVOKED
-        - APP_ID_SUSPENDED
         - MISSING_APP_ID
         - AUTHENTICATION_TIMEOUT
         - SDK_VERSION_UNSUPPORTED
@@ -500,7 +534,6 @@ components:
         - SPECTATOR_JOIN_FAILED
         - INTERNAL_ERROR
         - STORAGE_ERROR
-        - SERVICE_UNAVAILABLE
         - CROSS_ROOM_SIGNAL
         - UNSUPPORTED_TRANSPORT
         - SIGNAL_TARGET_NOT_FOUND
@@ -513,9 +546,11 @@ components:
         - ACTIVITY_TIMEOUT
         - SERVER_DRAINING
         - INVALID_DELIVERY_CLASS
+        - UNSUPPORTED_PROTOCOL_VERSION
 
     ReliableDeliveryCounters:
       type: object
+      additionalProperties: false
       required: [delivered, abandoned, unsupported_format]
       properties:
         delivered: { type: integer, minimum: 0 }
@@ -526,6 +561,7 @@ components:
         unsupported_format: { type: integer, minimum: 0 }
     LatestDeliveryCounters:
       type: object
+      additionalProperties: false
       required: [delivered, superseded, dropped_full, abandoned, unsupported_format]
       properties:
         delivered: { type: integer, minimum: 0 }
@@ -538,6 +574,7 @@ components:
         unsupported_format: { type: integer, minimum: 0 }
     VolatileDeliveryCounters:
       type: object
+      additionalProperties: false
       required: [delivered, dropped, abandoned, unsupported_format]
       properties:
         delivered: { type: integer, minimum: 0 }
@@ -549,6 +586,7 @@ components:
         unsupported_format: { type: integer, minimum: 0 }
     DeliveryCountersByClass:
       type: object
+      additionalProperties: false
       required: [reliable, latest, volatile]
       properties:
         reliable: { $ref: '#/components/schemas/ReliableDeliveryCounters' }
@@ -556,6 +594,7 @@ components:
         volatile: { $ref: '#/components/schemas/VolatileDeliveryCounters' }
     DeliveryGap:
       type: object
+      additionalProperties: false
       description: >-
         Exact inclusive server-stamped sequence range omitted for one recipient.
         from_seq must not exceed to_seq.
@@ -637,6 +676,7 @@ components:
             epoch for pre-v3 recipients (byte-identical wire).
     SenderWatermark:
       type: object
+      additionalProperties: false
       required: [player_id, epoch, seq]
       description: >-
         v3 only: authoritative reconnect baseline for one current room
@@ -656,6 +696,7 @@ components:
           minimum: 0
     SpectatorInfo:
       type: object
+      additionalProperties: false
       required: [id, name, connected_at]
       properties:
         id: { $ref: '#/components/schemas/PlayerId' }
@@ -683,16 +724,70 @@ components:
         relay_type: { type: string }
         connection_info: { $ref: '#/components/schemas/ConnectionInfo' }
     ConnectionInfo:
-      type: object
       description: >-
         Legacy self-declared peer metadata (tagged by an inner `type` field:
-        direct | unity_relay | relay | webrtc | custom). Not v3 negotiation.
-      required: [type]
+        direct | unity_relay | relay | webrtc | custom). Visible in room member
+        snapshots and GameStarting; not v3 capability negotiation. A validated
+        direct value is also used to elect an executable Direct host.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, host, port]
+          properties:
+            type: { const: direct }
+            host: { type: string }
+            port: { type: integer, minimum: 0, maximum: 65535 }
+        - type: object
+          additionalProperties: false
+          required: [type, allocation_id, connection_data, key]
+          properties:
+            type: { const: unity_relay }
+            allocation_id: { type: string }
+            connection_data: { type: string }
+            key: { type: string }
+        - type: object
+          additionalProperties: false
+          required: [type, host, port, allocation_id, token]
+          properties:
+            type: { const: relay }
+            host: { type: string }
+            port: { type: integer, minimum: 0, maximum: 65535 }
+            transport: { $ref: '#/components/schemas/RelayTransport' }
+            allocation_id: { type: string }
+            token: { type: string }
+            client_id: { type: integer, minimum: 0, maximum: 65535 }
+        - type: object
+          additionalProperties: false
+          required: [type, ice_candidates]
+          properties:
+            type: { const: webrtc }
+            sdp: { type: string, nullable: true }
+            ice_candidates:
+              type: array
+              items: { type: string }
+        - type: object
+          additionalProperties: false
+          required: [type, data]
+          properties:
+            type: { const: custom }
+            data: {}
+    DirectEndpoint:
+      type: object
+      additionalProperties: false
+      description: >-
+        Syntactically usable, self-declared connect target for the elected
+        Direct host. Validation does not prove resolution or reachability.
+      required: [host, port]
       properties:
-        type:
+        host:
           type: string
-          enum: [direct, unity_relay, relay, webrtc, custom]
-      additionalProperties: true
+          minLength: 1
+          maxLength: 253
+          description: Non-unspecified IP address or conservative DNS hostname.
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
     PlayerNameRulesPayload:
       type: object
       required:
@@ -797,14 +892,15 @@ components:
       required: [type, data]
     ClientSignal:
       type: object
-      description: 'v3 only.'
+      description: 'v3 only. Scoped to the latest authoritative SessionPlan generation.'
       properties:
         type: { const: Signal }
         data:
           type: object
-          required: [to, signal]
+          required: [to, generation, signal]
           properties:
             to: { $ref: '#/components/schemas/PlayerId' }
+            generation: { $ref: '#/components/schemas/SessionGeneration' }
             signal:
               description: >-
                 Opaque, forwarded verbatim. By convention matchbox-compatible:
@@ -896,9 +992,97 @@ components:
             connected: { type: boolean }
       required: [type, data]
 
+    TokenBindingProof:
+      type: object
+      additionalProperties: false
+      required: [version, scheme, sequence, signature]
+      properties:
+        version: { const: 2 }
+        scheme: { const: server_nonce_hkdf_sha256 }
+        sequence:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+          description: Shared monotonically increasing frontier for text and binary frames.
+        signature:
+          type: string
+          description: Standard-base64 HMAC-SHA256 signature.
+        fingerprint:
+          type: string
+          nullable: true
+          description: >-
+            Required only when verified client-certificate fingerprint binding
+            is configured; null (or accepted as omitted) otherwise.
+    ClientMessageEnvelope:
+      oneOf:
+        - { $ref: '#/components/schemas/Authenticate' }
+        - { $ref: '#/components/schemas/JoinRoom' }
+        - { $ref: '#/components/schemas/LeaveRoom' }
+        - { $ref: '#/components/schemas/ClientGameData' }
+        - { $ref: '#/components/schemas/ClientSignal' }
+        - { $ref: '#/components/schemas/AuthorityRequest' }
+        - { $ref: '#/components/schemas/PlayerReady' }
+        - { $ref: '#/components/schemas/StartGame' }
+        - { $ref: '#/components/schemas/ProvideConnectionInfo' }
+        - { $ref: '#/components/schemas/Ping' }
+        - { $ref: '#/components/schemas/Reconnect' }
+        - { $ref: '#/components/schemas/JoinAsSpectator' }
+        - { $ref: '#/components/schemas/LeaveSpectator' }
+        - { $ref: '#/components/schemas/TransportStatus' }
+    ClientTokenBoundJson:
+      allOf:
+        - { $ref: '#/components/schemas/ClientMessageEnvelope' }
+        - type: object
+          required: [token_binding]
+          properties:
+            token_binding: { $ref: '#/components/schemas/TokenBindingProof' }
+      description: >-
+        Text frame used only after negotiating signalfish.tokenbinding.v2. The
+        HMAC covers the RFC 8785 canonical form after removing token_binding.
+        Every number must use integer syntax within the interoperable safe
+        range; negative-zero, fractional, and exponent-form numbers are
+        rejected recursively.
+      x-json-number-contract: safe-integers-only
+    ClientTokenBoundBinary:
+      type: object
+      additionalProperties: false
+      description: >-
+        Physical client-to-server MessagePack frame used only after negotiating
+        signalfish.tokenbinding.v2. Field names are encoded as strings.
+      required: [token_binding, payload]
+      properties:
+        token_binding: { $ref: '#/components/schemas/TokenBindingProof' }
+        payload:
+          type: string
+          contentEncoding: binary
+          x-messagepack-type: bin
+          description: Exact legacy binary game-data frame bytes.
+
     # ---------------------------------------------------------------------
     # ServerMessage payloads
     # ---------------------------------------------------------------------
+    TokenBindingChallenge:
+      type: object
+      additionalProperties: false
+      description: >-
+        Present only when the signalfish.tokenbinding.v2 WebSocket extension
+        was negotiated; ordinary protocol-v2 and protocol-v3 flows omit it.
+      properties:
+        type: { const: TokenBindingChallenge }
+        data:
+          type: object
+          additionalProperties: false
+          required: [version, scheme, nonce, first_sequence]
+          properties:
+            version: { const: 2 }
+            scheme: { const: server_nonce_hkdf_sha256 }
+            nonce:
+              type: string
+              description: Standard-base64 encoding of 32 server-random bytes.
+            first_sequence:
+              type: integer
+              const: 1
+      required: [type, data]
     Authenticated:
       type: object
       properties:
@@ -956,12 +1140,22 @@ components:
             error_code: { $ref: '#/components/schemas/ErrorCode' }
       required: [type, data]
     RoomJoined:
+      oneOf:
+        - { $ref: '#/components/schemas/V2RoomJoined' }
+        - { $ref: '#/components/schemas/V3RoomJoined' }
+      description: >-
+        Exact recipient-version projection of the flattened RoomJoinedPayload.
+        The v2 branch forbids every v3-only field; the v3 branch requires
+        version-uniform player snapshots.
+    V2RoomJoined:
       type: object
-      description: Payload is a flattened RoomJoinedPayload (boxed newtype variant).
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: RoomJoined }
         data:
           type: object
+          additionalProperties: false
           required:
             - room_id
             - room_code
@@ -974,6 +1168,7 @@ components:
             - lobby_state
             - ready_players
             - relay_type
+            - current_spectators
           properties:
             room_id: { $ref: '#/components/schemas/RoomId' }
             room_code: { type: string }
@@ -983,7 +1178,51 @@ components:
             supports_authority: { type: boolean }
             current_players:
               type: array
-              items: { $ref: '#/components/schemas/PlayerInfo' }
+              minItems: 1
+              items: { $ref: '#/components/schemas/V2PlayerInfo' }
+            is_authority: { type: boolean }
+            lobby_state: { $ref: '#/components/schemas/LobbyState' }
+            ready_players:
+              type: array
+              items: { $ref: '#/components/schemas/PlayerId' }
+            relay_type: { type: string }
+            current_spectators:
+              type: array
+              items: { $ref: '#/components/schemas/SpectatorInfo' }
+      required: [type, data]
+    V3RoomJoined:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: RoomJoined }
+        data:
+          type: object
+          additionalProperties: false
+          required:
+            - room_id
+            - room_code
+            - player_id
+            - game_name
+            - max_players
+            - supports_authority
+            - current_players
+            - is_authority
+            - lobby_state
+            - ready_players
+            - relay_type
+            - current_spectators
+          properties:
+            room_id: { $ref: '#/components/schemas/RoomId' }
+            room_code: { type: string }
+            player_id: { $ref: '#/components/schemas/PlayerId' }
+            game_name: { type: string }
+            max_players: { type: integer }
+            supports_authority: { type: boolean }
+            current_players:
+              type: array
+              minItems: 1
+              items: { $ref: '#/components/schemas/V3PlayerInfo' }
             is_authority: { type: boolean }
             lobby_state: { $ref: '#/components/schemas/LobbyState' }
             ready_players:
@@ -995,18 +1234,16 @@ components:
               items: { $ref: '#/components/schemas/SpectatorInfo' }
             ice_servers:
               type: array
+              minItems: 1
               description: 'v3 pre-gather only; superseded by SessionPlan.ice_servers.'
               items: { $ref: '#/components/schemas/IceServer' }
             reconnection_token:
               type: string
               description: >-
-                Reconnection token for this room, minted at join (v3+
-                recipients only; absent on the v2 wire). Present it in a later
-                Reconnect after an unexpected disconnect. The string is stable
-                from join through the disconnect, but it only becomes
-                claimable for server.reconnection_window seconds counted from
-                the DISCONNECT. Rotated on every join and every successful
-                reconnect.
+                Reconnection token for this room, minted at join when
+                reconnection is enabled. Present it in a later Reconnect after
+                an unexpected disconnect. The token is absent when the
+                deployment disables reconnection.
       required: [type, data]
     RoomJoinFailed:
       type: object
@@ -1026,26 +1263,67 @@ components:
         type: { const: RoomLeft }
       required: [type]
     PlayerJoined:
+      oneOf:
+        - { $ref: '#/components/schemas/V2PlayerJoined' }
+        - { $ref: '#/components/schemas/V3PlayerJoined' }
+    V2PlayerJoined:
       type: object
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: PlayerJoined }
         data:
           type: object
+          additionalProperties: false
           required: [player]
           properties:
-            player: { $ref: '#/components/schemas/PlayerInfo' }
+            player: { $ref: '#/components/schemas/V2PlayerInfo' }
+      required: [type, data]
+    V3PlayerJoined:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: PlayerJoined }
+        data:
+          type: object
+          additionalProperties: false
+          required: [player]
+          properties:
+            player: { $ref: '#/components/schemas/V3PlayerInfo' }
       required: [type, data]
     PlayerLeft:
-      type: object
+      oneOf:
+        - { $ref: '#/components/schemas/V2PlayerLeft' }
+        - { $ref: '#/components/schemas/V3PlayerLeft' }
       description: >-
-        v3 adds a terminal sender watermark so the recipient can retain any
-        priority-overtaken data tail until delivered frames plus exact prior
-        gaps cover final_seq, then retire that sender's accounting state. The
-        frozen v2 form contains player_id only.
+        Protocol v3 adds a terminal sender watermark so the recipient can
+        retain any priority-overtaken data tail until delivered frames plus
+        exact prior gaps cover final_seq. The frozen v2 form contains only
+        player_id.
+    V2PlayerLeft:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: PlayerLeft }
         data:
           type: object
+          additionalProperties: false
+          required: [player_id]
+          properties:
+            player_id: { $ref: '#/components/schemas/PlayerId' }
+      required: [type, data]
+    V3PlayerLeft:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: PlayerLeft }
+        data:
+          type: object
+          additionalProperties: false
+          required: [player_id, epoch, final_seq]
           properties:
             player_id: { $ref: '#/components/schemas/PlayerId' }
             epoch:
@@ -1055,29 +1333,45 @@ components:
             final_seq:
               type: integer
               minimum: 0
-          oneOf:
-            - required: [player_id]
-              not:
-                anyOf:
-                  - required: [epoch]
-                  - required: [final_seq]
-            - required: [player_id, epoch, final_seq]
       required: [type, data]
     ServerGameData:
-      type: object
+      oneOf:
+        - { $ref: '#/components/schemas/V2ServerGameData' }
+        - { $ref: '#/components/schemas/V3ServerGameData' }
       description: >-
-        DELIVERY CONTRACT: pre-v3 traffic and v3 reliable traffic preserve every
-        message or disconnect the recipient loudly. Protocol-v3 latest and
-        volatile traffic may omit data only under their documented queue policy;
-        every omission is counted and named by an exact, causally-prioritized
-        DeliveryReport gap range before later data exposes the discontinuity.
-        class omission means reliable. A recipient closed with SLOW_CONSUMER must
-        resynchronize after reconnecting.
+        Exact recipient projection of relayed JSON GameData. Protocol v2
+        forbids accountability metadata. Protocol v3 requires the paired
+        epoch/seq stamp and enforces the delivery class/key combinations.
+    V2ServerGameData:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: GameData }
         data:
           type: object
+          additionalProperties: false
           required: [from_player, data]
+          properties:
+            from_player: { $ref: '#/components/schemas/PlayerId' }
+            data:
+              description: Opaque application game data (any JSON value).
+      required: [type, data]
+    V3ServerGameData:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      description: >-
+        DELIVERY CONTRACT: reliable traffic preserves every message or closes
+        the recipient loudly. Latest and volatile traffic may omit data only
+        under their queue policy, with every omission covered by a causally
+        prior exact DeliveryReport gap range.
+      properties:
+        type: { const: GameData }
+        data:
+          type: object
+          additionalProperties: false
+          required: [from_player, data, seq, epoch]
           properties:
             from_player: { $ref: '#/components/schemas/PlayerId' }
             data:
@@ -1086,57 +1380,46 @@ components:
               type: integer
               minimum: 1
               description: >-
-                v3 only: server-stamped relay sequence number, per (sender,
-                room). Starts at 1 and advances once for every accepted send.
-                Within an epoch, surviving frames are strictly increasing; a
-                discontinuity is legal only when every missing sequence is
-                covered by the union of earlier exact DeliveryReport gaps, the
-                recipient disconnected loudly, or the receiver re-baselined
-                from Reconnected.sender_watermarks. Priority lifecycle control
-                may overtake queued old-epoch data: validate that tail but do not
-                apply it after the lifecycle change. A future epoch must be
-                announced; after data advances, older epochs are invalid. A new
-                sender incarnation bumps epoch and restarts seq at 1.
-                Absent for pre-v3 recipients (their bytes are byte-identical).
-                Client-to-server GameData carries no seq or epoch; stamping is
-                purely server-side.
+                Server-stamped relay sequence number paired with epoch. It
+                starts at 1 and advances for every accepted send in the
+                sender's current room incarnation.
             epoch:
               type: integer
               minimum: 1
               maximum: 4294967295
               description: >-
-                v3 only: server-tracked incarnation epoch. A single monotonic
-                per-connection counter that increments once per incarnation (the
-                first join is 1; each join-after-leave or reconnect increments
-                it; NOT reset when the same connection switches rooms), while seq
-                restarts at 1 within each epoch. Data-lane stamps increase
-                lexicographically per (sender, room), but priority lifecycle
-                control may be observed before a queued old-epoch tail. The
-                absolute value is not meaningful: baseline each sender from the
-                epoch first observed in a snapshot, require lifecycle announcement
-                of future epochs, and compare relatively. Stamped together with
-                seq; absent for pre-v3 recipients (byte-identical wire). Also
-                carried on room snapshots (see PlayerInfo.epoch,
-                PlayerReconnected.epoch).
+                Server-tracked sender incarnation, always stamped together
+                with seq and announced by snapshot/lifecycle control.
             class:
               allOf: [{ $ref: '#/components/schemas/DeliveryClass' }]
               description: >-
-                v3 only: the sender-requested delivery class, echoed when the
-                client supplied it. Absence means reliable.
+                Echoed only when the sender supplied a v3 delivery class.
+                Omission means reliable.
             key:
               type: integer
               minimum: 0
               maximum: 4294967295
-              description: 'v3 only: sender-defined coalescing key for class latest.'
-          allOf:
-            - if:
-                required: [class]
-                properties:
-                  class: { const: latest }
-              then:
-                required: [key]
-              else:
-                not: { required: [key] }
+              description: Sender-defined coalescing key, legal only with latest.
+          oneOf:
+            - type: object
+              not:
+                anyOf:
+                  - required: [class]
+                  - required: [key]
+            - type: object
+              required: [class]
+              properties:
+                class: { const: reliable }
+              not: { required: [key] }
+            - type: object
+              required: [class]
+              properties:
+                class: { const: volatile }
+              not: { required: [key] }
+            - type: object
+              required: [class, key]
+              properties:
+                class: { const: latest }
       required: [type, data]
     V2BinaryGameDataEnvelope:
       type: object
@@ -1181,13 +1464,17 @@ components:
           maximum: 4294967295
     AuthorityChanged:
       type: object
+      additionalProperties: false
       properties:
         type: { const: AuthorityChanged }
         data:
           type: object
-          required: [you_are_authority]
+          additionalProperties: false
+          required: [authority_player, you_are_authority]
           properties:
-            authority_player: { $ref: '#/components/schemas/PlayerId' }
+            authority_player:
+              allOf: [{ $ref: '#/components/schemas/PlayerId' }]
+              nullable: true
             you_are_authority: { type: boolean }
       required: [type, data]
     AuthorityResponse:
@@ -1196,18 +1483,20 @@ components:
         type: { const: AuthorityResponse }
         data:
           type: object
-          required: [granted]
+          required: [granted, reason]
           properties:
             granted: { type: boolean }
-            reason: { type: string }
+            reason: { type: string, nullable: true }
             error_code: { $ref: '#/components/schemas/ErrorCode' }
       required: [type, data]
     LobbyStateChanged:
       type: object
+      additionalProperties: false
       properties:
         type: { const: LobbyStateChanged }
         data:
           type: object
+          additionalProperties: false
           required: [lobby_state, ready_players, all_ready]
           properties:
             lobby_state: { $ref: '#/components/schemas/LobbyState' }
@@ -1230,14 +1519,15 @@ components:
       required: [type, data]
     ServerSignal:
       type: object
-      description: 'v3 only.'
+      description: 'v3 only. Scoped to the authoritative SessionPlan generation.'
       properties:
         type: { const: Signal }
         data:
           type: object
-          required: [from, signal]
+          required: [from, generation, signal]
           properties:
             from: { $ref: '#/components/schemas/PlayerId' }
+            generation: { $ref: '#/components/schemas/SessionGeneration' }
             signal:
               description: Opaque WebRTC signal forwarded verbatim from a peer.
       required: [type, data]
@@ -1269,34 +1559,69 @@ components:
       properties:
         type: { const: SessionPlan }
         data:
-          type: object
-          required: [topology, transport, peers, fallback]
-          properties:
-            topology: { $ref: '#/components/schemas/Topology' }
-            transport: { $ref: '#/components/schemas/Transport' }
-            host:
-              allOf: [{ $ref: '#/components/schemas/PlayerId' }]
-              description: Present only for host topology.
-            peers:
-              type: array
-              items: { $ref: '#/components/schemas/SessionPeer' }
-            ice_servers:
-              type: array
-              items: { $ref: '#/components/schemas/IceServer' }
-            fallback:
-              const: relay
-              description: Universal fallback transport; always relay (the floor).
-          allOf:
-            - if:
-                required: [topology]
-                properties:
-                  topology: { const: relay }
-              then:
-                properties:
-                  transport: { const: relay }
-                  peers: { maxItems: 0 }
-                  ice_servers: { maxItems: 0 }
-                not: { required: [host] }
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [generation, topology, transport, peers, fallback]
+              properties:
+                generation: { $ref: '#/components/schemas/SessionGeneration' }
+                topology: { const: relay }
+                transport: { const: relay }
+                peers:
+                  type: array
+                  maxItems: 0
+                  items: { $ref: '#/components/schemas/SessionPeer' }
+                ice_servers:
+                  type: array
+                  maxItems: 0
+                  items: { $ref: '#/components/schemas/IceServer' }
+                fallback: { const: relay }
+            - type: object
+              additionalProperties: false
+              required: [generation, topology, transport, host, direct_endpoint, peers, fallback]
+              properties:
+                generation: { $ref: '#/components/schemas/SessionGeneration' }
+                topology: { const: host }
+                transport: { const: direct }
+                host: { $ref: '#/components/schemas/PlayerId' }
+                direct_endpoint: { $ref: '#/components/schemas/DirectEndpoint' }
+                peers:
+                  type: array
+                  items: { $ref: '#/components/schemas/SessionPeer' }
+                ice_servers:
+                  type: array
+                  maxItems: 0
+                  items: { $ref: '#/components/schemas/IceServer' }
+                fallback: { const: relay }
+            - type: object
+              additionalProperties: false
+              required: [generation, topology, transport, host, peers, fallback]
+              properties:
+                generation: { $ref: '#/components/schemas/SessionGeneration' }
+                topology: { const: host }
+                transport: { const: webrtc }
+                host: { $ref: '#/components/schemas/PlayerId' }
+                peers:
+                  type: array
+                  items: { $ref: '#/components/schemas/SessionPeer' }
+                ice_servers:
+                  type: array
+                  items: { $ref: '#/components/schemas/IceServer' }
+                fallback: { const: relay }
+            - type: object
+              additionalProperties: false
+              required: [generation, topology, transport, peers, fallback]
+              properties:
+                generation: { $ref: '#/components/schemas/SessionGeneration' }
+                topology: { const: mesh }
+                transport: { const: webrtc }
+                peers:
+                  type: array
+                  items: { $ref: '#/components/schemas/SessionPeer' }
+                ice_servers:
+                  type: array
+                  items: { $ref: '#/components/schemas/IceServer' }
+                fallback: { const: relay }
       required: [type, data]
     Pong:
       type: object
@@ -1305,12 +1630,41 @@ components:
         type: { const: Pong }
       required: [type]
     Reconnected:
+      oneOf:
+        - { $ref: '#/components/schemas/V2Reconnected' }
+        - { $ref: '#/components/schemas/V3Reconnected' }
+      description: >-
+        Exact recipient-version projection of the flattened ReconnectedPayload.
+        Missed controls are version-uniform and GameData is never replayed.
+    V2ReplayableServerMessageEnvelope:
+      oneOf:
+        - { $ref: '#/components/schemas/V2PlayerJoined' }
+        - { $ref: '#/components/schemas/V2PlayerLeft' }
+        - { $ref: '#/components/schemas/V2PlayerReconnected' }
+        - { $ref: '#/components/schemas/NewSpectatorJoined' }
+        - { $ref: '#/components/schemas/SpectatorDisconnected' }
+        - { $ref: '#/components/schemas/LobbyStateChanged' }
+        - { $ref: '#/components/schemas/AuthorityChanged' }
+      description: Exact room-uniform control subset replayable to a v2 reconnector.
+    V3ReplayableServerMessageEnvelope:
+      oneOf:
+        - { $ref: '#/components/schemas/V3PlayerJoined' }
+        - { $ref: '#/components/schemas/V3PlayerLeft' }
+        - { $ref: '#/components/schemas/V3PlayerReconnected' }
+        - { $ref: '#/components/schemas/NewSpectatorJoined' }
+        - { $ref: '#/components/schemas/SpectatorDisconnected' }
+        - { $ref: '#/components/schemas/LobbyStateChanged' }
+        - { $ref: '#/components/schemas/AuthorityChanged' }
+      description: Exact room-uniform control subset replayable to a v3 reconnector.
+    V2Reconnected:
       type: object
-      description: Payload is a flattened ReconnectedPayload (boxed newtype variant).
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: Reconnected }
         data:
           type: object
+          additionalProperties: false
           required:
             - room_id
             - room_code
@@ -1323,6 +1677,7 @@ components:
             - lobby_state
             - ready_players
             - relay_type
+            - current_spectators
             - missed_events
           properties:
             room_id: { $ref: '#/components/schemas/RoomId' }
@@ -1333,7 +1688,58 @@ components:
             supports_authority: { type: boolean }
             current_players:
               type: array
-              items: { $ref: '#/components/schemas/PlayerInfo' }
+              minItems: 1
+              items: { $ref: '#/components/schemas/V2PlayerInfo' }
+            is_authority: { type: boolean }
+            lobby_state: { $ref: '#/components/schemas/LobbyState' }
+            ready_players:
+              type: array
+              items: { $ref: '#/components/schemas/PlayerId' }
+            relay_type: { type: string }
+            current_spectators:
+              type: array
+              items: { $ref: '#/components/schemas/SpectatorInfo' }
+            missed_events:
+              type: array
+              items: { $ref: '#/components/schemas/V2ReplayableServerMessageEnvelope' }
+      required: [type, data]
+    V3Reconnected:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: Reconnected }
+        data:
+          type: object
+          additionalProperties: false
+          required:
+            - room_id
+            - room_code
+            - player_id
+            - game_name
+            - max_players
+            - supports_authority
+            - current_players
+            - is_authority
+            - lobby_state
+            - ready_players
+            - relay_type
+            - current_spectators
+            - missed_events
+            - replay
+            - sender_watermarks
+            - reconnection_token
+          properties:
+            room_id: { $ref: '#/components/schemas/RoomId' }
+            room_code: { type: string }
+            player_id: { $ref: '#/components/schemas/PlayerId' }
+            game_name: { type: string }
+            max_players: { type: integer }
+            supports_authority: { type: boolean }
+            current_players:
+              type: array
+              minItems: 1
+              items: { $ref: '#/components/schemas/V3PlayerInfo' }
             is_authority: { type: boolean }
             lobby_state: { $ref: '#/components/schemas/LobbyState' }
             ready_players:
@@ -1345,37 +1751,29 @@ components:
               items: { $ref: '#/components/schemas/SpectatorInfo' }
             ice_servers:
               type: array
+              minItems: 1
+              description: Optional v3 pre-gather list; a later SessionPlan supersedes it.
               items: { $ref: '#/components/schemas/IceServer' }
             missed_events:
               type: array
               description: >-
-                Room-uniform control events broadcast while disconnected
-                (ServerMessage values: PlayerJoined, PlayerLeft,
-                PlayerReconnected, NewSpectatorJoined, SpectatorDisconnected,
-                LobbyStateChanged, AuthorityChanged), oldest first. GameData,
-                Signal, and the per-recipient GameStarting are never replayed —
-                resync from this payload's snapshot fields and, for started
-                sessions, the late-join SessionPlan.
-              items: { type: object }
-            replay:
-              # Completeness of missed_events; v3+ recipients only (absent on
-              # the v2 wire). See the ReplayStatus schema for the contract.
-              $ref: '#/components/schemas/ReplayStatus'
+                Exact room-uniform control subset broadcast while disconnected,
+                oldest first. GameData, Signal, and per-recipient GameStarting
+                are never replayed.
+              items: { $ref: '#/components/schemas/V3ReplayableServerMessageEnvelope' }
+            replay: { $ref: '#/components/schemas/ReplayStatus' }
             sender_watermarks:
               type: array
+              minItems: 1
               description: >-
-                v3+ recipients only (absent on the v2 wire). Authoritative
-                per-sender `(epoch, seq)` baselines for current room members;
-                required to classify gaps after GameData skipped during the
-                reconnecting client's absence.
+                Authoritative per-sender epoch/seq baselines for every current
+                room member, including the reconnector.
               items: { $ref: '#/components/schemas/SenderWatermark' }
             reconnection_token:
               type: string
               description: >-
-                Fresh (rotated) reconnection token replacing the one just
-                used (v3+ recipients only; absent on the v2 wire). Store it
-                for the next unexpected disconnect; the previous token is no
-                longer claimable.
+                Fresh rotated token for the next unexpected disconnect. A
+                successful v3 reconnect necessarily has reconnection enabled.
       required: [type, data]
     ReconnectionFailed:
       type: object
@@ -1389,12 +1787,32 @@ components:
             error_code: { $ref: '#/components/schemas/ErrorCode' }
       required: [type, data]
     PlayerReconnected:
+      oneOf:
+        - { $ref: '#/components/schemas/V2PlayerReconnected' }
+        - { $ref: '#/components/schemas/V3PlayerReconnected' }
+    V2PlayerReconnected:
       type: object
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: PlayerReconnected }
         data:
           type: object
+          additionalProperties: false
           required: [player_id]
+          properties:
+            player_id: { $ref: '#/components/schemas/PlayerId' }
+      required: [type, data]
+    V3PlayerReconnected:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: PlayerReconnected }
+        data:
+          type: object
+          additionalProperties: false
+          required: [player_id, epoch]
           properties:
             player_id: { $ref: '#/components/schemas/PlayerId' }
             epoch:
@@ -1402,19 +1820,27 @@ components:
               minimum: 1
               maximum: 4294967295
               description: >-
-                v3 only: the reconnector's new incarnation epoch (see
-                ServerGameData.epoch) — the same value now stamped on its relayed
-                GameData — so recipients re-baseline the per-sender (epoch, seq)
-                stream immediately. Absent for pre-v3 recipients (byte-identical
-                wire).
+                The reconnector's new incarnation epoch, announced before its
+                first post-reconnect GameData frame.
       required: [type, data]
     SpectatorJoined:
+      oneOf:
+        - { $ref: '#/components/schemas/V2SpectatorJoined' }
+        - { $ref: '#/components/schemas/V3SpectatorJoined' }
+        - { $ref: '#/components/schemas/EmptySpectatorJoined' }
+      description: >-
+        Versioned player snapshots when a room has players. A spectator-only
+        room has an empty snapshot whose bytes do not identify the recipient
+        protocol, so that shared shape is a third disjoint branch.
+    V2SpectatorJoined:
       type: object
-      description: Payload is a flattened SpectatorJoinedPayload (boxed newtype variant).
+      additionalProperties: false
+      x-protocol-version: 2
       properties:
         type: { const: SpectatorJoined }
         data:
           type: object
+          additionalProperties: false
           required:
             - room_id
             - room_code
@@ -1430,6 +1856,73 @@ components:
             game_name: { type: string }
             current_players:
               type: array
+              minItems: 1
+              items: { $ref: '#/components/schemas/V2PlayerInfo' }
+            current_spectators:
+              type: array
+              items: { $ref: '#/components/schemas/SpectatorInfo' }
+            lobby_state: { $ref: '#/components/schemas/LobbyState' }
+            reason: { $ref: '#/components/schemas/SpectatorStateChangeReason' }
+      required: [type, data]
+    V3SpectatorJoined:
+      type: object
+      additionalProperties: false
+      x-protocol-version: 3
+      properties:
+        type: { const: SpectatorJoined }
+        data:
+          type: object
+          additionalProperties: false
+          required:
+            - room_id
+            - room_code
+            - spectator_id
+            - game_name
+            - current_players
+            - current_spectators
+            - lobby_state
+          properties:
+            room_id: { $ref: '#/components/schemas/RoomId' }
+            room_code: { type: string }
+            spectator_id: { $ref: '#/components/schemas/PlayerId' }
+            game_name: { type: string }
+            current_players:
+              type: array
+              minItems: 1
+              items: { $ref: '#/components/schemas/V3PlayerInfo' }
+            current_spectators:
+              type: array
+              items: { $ref: '#/components/schemas/SpectatorInfo' }
+            lobby_state: { $ref: '#/components/schemas/LobbyState' }
+            reason: { $ref: '#/components/schemas/SpectatorStateChangeReason' }
+      required: [type, data]
+    EmptySpectatorJoined:
+      type: object
+      additionalProperties: false
+      description: >-
+        Shared v2/v3 wire shape for a spectator-only room. No PlayerInfo value
+        is present from which to infer recipient protocol.
+      properties:
+        type: { const: SpectatorJoined }
+        data:
+          type: object
+          additionalProperties: false
+          required:
+            - room_id
+            - room_code
+            - spectator_id
+            - game_name
+            - current_players
+            - current_spectators
+            - lobby_state
+          properties:
+            room_id: { $ref: '#/components/schemas/RoomId' }
+            room_code: { type: string }
+            spectator_id: { $ref: '#/components/schemas/PlayerId' }
+            game_name: { type: string }
+            current_players:
+              type: array
+              maxItems: 0
               items: { $ref: '#/components/schemas/PlayerInfo' }
             current_spectators:
               type: array
@@ -1464,11 +1957,13 @@ components:
       required: [type, data]
     NewSpectatorJoined:
       type: object
+      additionalProperties: false
       properties:
         type: { const: NewSpectatorJoined }
         data:
           type: object
-          required: [spectator]
+          additionalProperties: false
+          required: [spectator, current_spectators]
           properties:
             spectator: { $ref: '#/components/schemas/SpectatorInfo' }
             current_spectators:
@@ -1478,11 +1973,13 @@ components:
       required: [type, data]
     SpectatorDisconnected:
       type: object
+      additionalProperties: false
       properties:
         type: { const: SpectatorDisconnected }
         data:
           type: object
-          required: [spectator_id]
+          additionalProperties: false
+          required: [spectator_id, current_spectators]
           properties:
             spectator_id: { $ref: '#/components/schemas/PlayerId' }
             reason: { $ref: '#/components/schemas/SpectatorStateChangeReason' }
@@ -1516,6 +2013,7 @@ components:
       required: [type, data]
     RelayStats:
       type: object
+      additionalProperties: false
       description: >-
         v3 only, config-gated (websocket.delivery_stats_interval_secs > 0;
         default 0 = disabled) and never emitted to a connection that
@@ -1532,6 +2030,7 @@ components:
         type: { const: RelayStats }
         data:
           type: object
+          additionalProperties: false
           required: [interval_ms, sent_to_you, dropped_for_you, backpressure_events]
           properties:
             interval_ms:
@@ -1580,6 +2079,7 @@ components:
       required: [type, data]
     DeliveryReport:
       type: object
+      additionalProperties: false
       description: >-
         Protocol-v3 delivery accountability for this connection. Per-class
         counters are cumulative. Each gaps entry is a newly-accounted exact
@@ -1592,6 +2092,7 @@ components:
         type: { const: DeliveryReport }
         data:
           type: object
+          additionalProperties: false
           required: [per_class]
           properties:
             per_class: { $ref: '#/components/schemas/DeliveryCountersByClass' }

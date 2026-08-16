@@ -45,12 +45,14 @@ re-election or topology change flips `initiate`/`you_initiate` for a peer that
 survives the re-plan — `MeshController` restarts that peer's handshake in the new
 role (`disconnect` then `connect`) instead of leaving the driver in the stale one,
 which would otherwise glare (both offer) or stall (both wait). A survivor whose
-role is unchanged keeps its live connection.
+role is unchanged keeps its live connection only within the same generation.
+Every generation change rebuilds all retained physical pairs, drops buffered
+signals, and rejects late driver output from the prior generation.
 
 ## MeshSession Tracker (no WebRTC)
 
 `MeshSession` folds the v3 events into a consistent view (`topology`/`transport`/
-`host`/`peers`/`ice_servers`, each peer with `initiate` + `connected`). It handles
+`generation`/`host`/`direct_endpoint`/`peers`/`ice_servers`, each peer with `initiate` + `connected`). It handles
 late joins (`NewPeer`), host re-election (a new `SessionPlan` **replaces** peers and
 ICE wholesale, never merges), `PlayerLeft` removal, and reconnect replay
 idempotently. `apply(&event) -> bool` returns whether the view changed.
@@ -62,22 +64,24 @@ Implement this sync, poll-based trait against your backend:
 ```rust
 pub trait WebRtcDriver {
     fn set_ice_servers(&mut self, servers: &[IceServer]);
-    fn connect(&mut self, peer: PlayerId, initiate: bool); // obey `initiate`
-    fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal);
+    fn connect(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, initiate: bool);
+    fn on_signal(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, signal: PeerSignal);
     fn send(&mut self, peer: PlayerId, data: &[u8]);
     fn disconnect(&mut self, peer: PlayerId);
     fn poll(&mut self) -> Option<DriverEvent>; // do real I/O here
 }
 ```
 
-`poll` returns `DriverEvent::{Signal, Connected, Disconnected, Data}`. It is
+`poll` returns generation-bearing
+`DriverEvent::{Signal, Connected, Disconnected, Data}`. It is
 sync + poll-based so it fits the async client, the WASM/polling client, and
 sans-I/O backends like str0m.
 
 ## MeshController (batteries-included)
 
 `MeshController::start(transport, config, driver)` drives the whole handshake:
-on `SessionPlan`/`NewPeer` it calls `connect(peer, initiate)` and `set_ice_servers`;
+on WebRTC `SessionPlan`/`NewPeer` it calls
+`connect(peer, generation, initiate)` and `set_ice_servers`;
 on `SignalReceived` it feeds `on_signal`; it relays the driver's outbound `Signal`s
 via the client, reports `TransportStatus` on the 0↔1 connected boundary, tears down
 peers on re-election/`PlayerLeft`/`RoomLeft`/`Disconnected`, and surfaces a
@@ -85,6 +89,10 @@ peers on re-election/`PlayerLeft`/`RoomLeft`/`Disconnected`, and surfaces a
 `start` auto-enables mesh if the config didn't. `MeshController<D>` is `Send` when
 `D` is (spawnable); a `!Send` driver must be driven on the current task. See
 `examples/mesh_session.rs` for the full runnable flow.
+
+Direct and Relay plans never drive `WebRtcDriver`; they clear controller WebRTC
+state. Applications may implement Direct separately from the validated
+`MeshSession::direct_endpoint()` while retaining Relay fallback.
 
 ## Integrating a Real Backend
 

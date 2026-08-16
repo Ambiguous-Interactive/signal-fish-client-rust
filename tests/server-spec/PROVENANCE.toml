@@ -7,11 +7,11 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
+commit = "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333"
 # ISO 8601 date of the last refresh.
-synced = "2026-07-24"
+synced = "2026-08-16"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "29886ec76f8bd38021ea78799655615188be7d6caba53c886568767a3f264df1"
+"signal-fish-protocol.asyncapi.yaml" = "f3320f31946f44c55f16067585a2909086afece1e0bff303e0aa6e314e5fef69"

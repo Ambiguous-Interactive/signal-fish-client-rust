@@ -68,14 +68,14 @@ it can fulfill.
 and sans-I/O backends like str0m.
 
 ```rust,ignore
-use signal_fish_client::protocol::{IceServer, PlayerId};
+use signal_fish_client::protocol::{IceServer, PlayerId, SessionGeneration};
 use signal_fish_client::webrtc::{DriverEvent, WebRtcDriver};
 use signal_fish_client::PeerSignal;
 
 pub trait WebRtcDriver {
     fn set_ice_servers(&mut self, servers: &[IceServer]);
-    fn connect(&mut self, peer: PlayerId, initiate: bool); // obey `initiate`
-    fn on_signal(&mut self, peer: PlayerId, signal: PeerSignal);
+    fn connect(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, initiate: bool);
+    fn on_signal(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, signal: PeerSignal);
     fn send(&mut self, peer: PlayerId, data: &[u8]);
     fn disconnect(&mut self, peer: PlayerId);
     fn poll(&mut self) -> Option<DriverEvent>; // do real I/O here
@@ -85,8 +85,8 @@ pub trait WebRtcDriver {
 | Method | What you do |
 |--------|-------------|
 | `set_ice_servers` | Configure your peer connections' STUN/TURN servers. |
-| `connect` | Begin connecting to `peer`. If `initiate` is `true`, create an offer; otherwise wait for the remote offer. **Obey `initiate` verbatim.** |
-| `on_signal` | Apply a remote offer/answer (`set_remote_description`) or add an ICE candidate. |
+| `connect` | Begin a connection owned by `generation`. If `initiate` is `true`, create an offer; otherwise wait. **Obey `initiate` verbatim.** |
+| `on_signal` | Apply a remote signal only to the connection for the supplied generation. |
 | `send` | Send application bytes over `peer`'s data channel. |
 | `disconnect` | Tear down the connection to `peer`. |
 | `poll` | Pump your stack's I/O and return the next `DriverEvent` (see below), or `None` when idle. |
@@ -95,10 +95,10 @@ pub trait WebRtcDriver {
 
 | Variant | Meaning |
 |---------|---------|
-| `Signal { peer, signal }` | A locally-produced offer/answer/ICE to relay to `peer` (the controller forwards it via the server). |
-| `Connected { peer }` | The data channel to `peer` opened. |
-| `Disconnected { peer }` | The data channel to `peer` closed or failed. |
-| `Data { peer, data }` | Application bytes arrived from `peer`. |
+| `Signal { peer, generation, signal }` | A locally-produced offer/answer/ICE bound to its plan generation. |
+| `Connected { peer, generation }` | The generation-owned data channel opened. |
+| `Disconnected { peer, generation }` | The generation-owned data channel closed or failed. |
+| `Data { peer, generation, data }` | Application bytes arrived on that generation's channel. |
 
 !!! danger "Obey `initiate` — never both-offer"
     The server assigns the deterministic WebRTC offerer (lesser-UUID-initiates in
@@ -143,15 +143,23 @@ timer.
 ## Using `MeshController` (batteries-included)
 
 `MeshController` drives the **entire** v3 handshake against your driver on top of
-a `SignalFishClient`. On `SessionPlan`/`NewPeer` it calls `connect(peer,
-initiate)` and `set_ice_servers`; on a received signal it feeds `on_signal`; it
+a `SignalFishClient`. On a WebRTC `SessionPlan`/`NewPeer` it calls
+`connect(peer, generation, initiate)` and `set_ice_servers`; on a received
+signal it feeds `on_signal`; it
 relays the driver's outbound signals via the client (a signal the command
 queue refuses is buffered and retried, in order, until the queue accepts it —
 congestion never drops a signal, and a buffered signal survives `recv()`
 cancellation; it is discarded only if the connection ends or its target
-peer's handshake is torn down first, so nothing stale is relayed), reports `TransportStatus` on the 0↔1 connected boundary, tears
+peer's handshake is torn down or its generation changes, so nothing stale is
+retagged), reports `TransportStatus` on the 0↔1 connected boundary, tears
 down peers on re-election / `PlayerLeft` / `RoomLeft` / `Disconnected`, and
 surfaces a clean `MeshEvent` stream.
+
+When integrating a driver without `MeshController`, relay its output with
+`send_signal_for_generation(peer, generation, signal)` (or the corresponding
+raw method). The client atomically refuses the send if a replacement plan has
+already arrived, preventing old driver output from being relabeled with the new
+generation.
 
 ```rust,ignore
 use signal_fish_client::webrtc::{MeshController, MeshEvent};
@@ -262,9 +270,16 @@ stays correct against servers that batch mesh state there instead.
 
 !!! important "Treat each `SessionPlan` as a full replacement"
     A `SessionPlan` **fully replaces** the peer set — replace, never merge. This
-    is how host re-election and topology changes work: peers absent from the new
-    plan are dropped, survivors keep their existing connections. `MeshSession` and
-    `MeshController` handle this for you.
+    is how host re-election and topology changes work. Peers absent from the new
+    plan are dropped. When `generation` changes, every surviving physical pair
+    is also disconnected and rebuilt even if its `initiate` role is unchanged.
+    Queued and late driver outputs from the prior generation are discarded.
+
+!!! note "Direct and relay plans are not WebRTC"
+    `MeshController` disconnects its WebRTC state for `Direct` and `Relay`
+    plans and never passes those peers to `WebRtcDriver`. Read
+    `MeshSession::direct_endpoint()` to implement a direct socket separately;
+    relay remains the universal fallback.
 
 ---
 
@@ -273,7 +288,8 @@ stays correct against servers that batch mesh state there instead.
 If you don't want the full `MeshController`, `MeshSession` is a zero-dependency,
 no-I/O state tracker. Fold every event into it with `apply(&event) -> bool` (which
 returns whether the view changed) and read the accessors (`topology`,
-`transport`, `host`, `peers`, `ice_servers`, `is_p2p`). It handles late joins,
+`generation`, `transport`, `host`, `direct_endpoint`, `peers`, `ice_servers`,
+`is_p2p`). It handles late joins,
 host re-election, `PlayerLeft` removal, and reconnect replay idempotently — but it
 contains no WebRTC and does no signaling. You still "obey the server": every
 `initiate` flag is copied verbatim.

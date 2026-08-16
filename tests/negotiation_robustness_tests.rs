@@ -20,7 +20,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use signal_fish_client::protocol::{LobbyState, ReconnectedPayload, ServerMessage};
+use signal_fish_client::protocol::{
+    LobbyState, ReconnectedPayload, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
+    TransportKind,
+};
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
@@ -106,6 +109,24 @@ fn protocol_info_msg(version: Option<u16>) -> ServerMessage {
     ServerMessage::ProtocolInfo(protocol_info_payload(version))
 }
 
+fn session_plan_msg() -> ServerMessage {
+    ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(uuid::Uuid::from_u128(12)),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: uuid::Uuid::from_u128(9),
+            player_name: "peer".into(),
+            is_authority: false,
+            initiate: true,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }))
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Reconnect must never silently downgrade an active v3 negotiation
 // ════════════════════════════════════════════════════════════════════
@@ -117,7 +138,10 @@ async fn reconnect_v2_protocol_info_does_not_downgrade_active_v3() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3
-        Some(Ok(reconnected_with_missed(vec![protocol_info_msg(None)]))),
+        Some(Ok(reconnected_with_missed(vec![
+            protocol_info_msg(None),
+            session_plan_msg(),
+        ]))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
@@ -188,7 +212,7 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3 first
-        Some(Ok(reconnected_with_missed(vec![]))), // reconnect, NO ProtocolInfo
+        Some(Ok(reconnected_with_missed(vec![session_plan_msg()]))), // reconnect, NO ProtocolInfo
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;

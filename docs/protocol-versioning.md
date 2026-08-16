@@ -103,9 +103,11 @@ Negotiation is a single round trip layered onto the existing handshake:
 
 1. The client **advertises** what it can fulfill in `Authenticate`
    (`protocol_version`, `supported_transports`, `supported_topologies`).
-2. The server **clamps** to its own `[min, max]` range and echoes the negotiated
-   `protocol_version` (plus min/max) back in `ProtocolInfo`. A v2 negotiation
-   omits these fields entirely, so v2 bytes stay identical.
+2. The server caps the advertised version at its configured maximum and echoes
+   the negotiated `protocol_version` (plus min/max) back in `ProtocolInfo`. If
+   the client's maximum is below the server minimum, authentication fails with
+   `UNSUPPORTED_PROTOCOL_VERSION`; the server never upgrades the client above
+   what it advertised. A v2 negotiation omits these fields entirely.
 3. If the negotiation is below v3 (or transports/topologies were omitted), the
    server keeps the room on the relay floor and emits no v3 messages.
 
@@ -139,6 +141,10 @@ the negotiated version **before** sending. If v3 has not been negotiated, they
 return [`SignalFishError::ProtocolUnsupported`](errors.md) immediately rather
 than letting the server reject the message asynchronously (an unattributed
 `Error` event would be much harder to debug).
+
+Signaling has a second guard: after v3 negotiation but before an authoritative
+`SessionPlan`, signal sends return `SignalFishError::SessionPlanUnavailable`.
+Once a plan exists, every outgoing signal uses its generation.
 
 The `mode` field tells you why:
 

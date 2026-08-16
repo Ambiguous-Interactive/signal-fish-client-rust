@@ -78,7 +78,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 | `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
 | `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 52 variants from server |
+| `src/error_codes.rs` | `ErrorCode` enum — 53 variants from server (47 emitted by 0.7, 6 compatibility-only) |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |
@@ -126,7 +126,8 @@ The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound ad
 transfers ownership immediately; browser buffering is observed separately.
 The blocking Godot workflow builds one official export and runs clean,
 seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
-0.4.0. It checksum-verifies and builds iproute2 6.6.0 for seeded netem rather
+0.7.0, plus a clean 0.4.0 legacy gate. It checksum-verifies and builds iproute2
+6.6.0 for seeded netem rather
 than relying on the runner's older `tc`. A 20-frame Fortress prediction window
 leaves recovery headroom. Simulated frames 1 through 60 form an explicit
 renderer/JIT warm-up phase bounded by that window; steady-state and final
@@ -227,6 +228,13 @@ client.snapshot() -> ClientSnapshot // coherent state/token/quarantine view
 client.shutdown().await      // async, graceful
 ```
 
+WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.7
+plans/signals carry a UUID generation; the shared core stamps outgoing signals,
+suppresses stale/unknown inbound generations, and exposes the current value in
+the snapshot. `MeshController` generation-binds driver work and rebuilds every
+retained physical pair when the generation changes. Optional generation fields
+exist only to keep server 0.4 traffic wire-compatible.
+
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
 full (message refused, never silently dropped). Events are never dropped either:
@@ -307,8 +315,10 @@ See the `transport-abstraction` and `websocket-client` skills.
 
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
-v2 JSON protocol. Never change serde attributes without verifying against
-the server spec. See `skills/serde-patterns/SKILL.md` for details.
+v2 JSON protocol. Never change serde attributes without verifying against the
+server 0.7.0 spec and pinned wire samples at commit
+`3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`. See
+`skills/serde-patterns/SKILL.md` for details.
 
 ### Exhaustive Public Types
 

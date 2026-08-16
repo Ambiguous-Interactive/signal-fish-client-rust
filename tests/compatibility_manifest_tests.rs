@@ -13,7 +13,7 @@ fn sha256(path: &Path) -> String {
 }
 
 #[test]
-fn compatibility_manifest_binds_exact_server_040_artifacts() {
+fn compatibility_manifest_binds_exact_server_070_artifacts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest: toml::Value = toml::from_str(
         &fs::read_to_string(root.join("tests/compatibility.toml"))
@@ -40,12 +40,12 @@ fn compatibility_manifest_binds_exact_server_040_artifacts() {
         version_parts.next().is_none(),
         "client_version must be strict X.Y.Z"
     );
-    assert_eq!(manifest["server_version"].as_str(), Some("0.4.0"));
-    assert_eq!(manifest["server_tag"].as_str(), Some("v0.4.0"));
+    assert_eq!(manifest["server_version"].as_str(), Some("0.7.0"));
+    assert_eq!(manifest["server_tag"].as_str(), Some("v0.7.0"));
     let commit = manifest["server_commit"]
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
-    assert_eq!(commit, "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8");
+    assert_eq!(commit, "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333");
 
     let wire_provenance: toml::Value = toml::from_str(
         &fs::read_to_string(root.join("tests/wire-samples/PROVENANCE.toml"))
@@ -79,7 +79,7 @@ fn compatibility_manifest_binds_exact_server_040_artifacts() {
         assert_eq!(
             sha256(&root.join("tests/wire-samples").join(name)),
             expected,
-            "{name} must remain byte-identical to server v0.4.0"
+            "{name} must remain byte-identical to server v0.7.0"
         );
         assert_eq!(
             wire_provenance["files"][name].as_str(),
@@ -98,7 +98,7 @@ fn compatibility_manifest_binds_exact_server_040_artifacts() {
         assert_eq!(
             sha256(&root.join("tests/server-spec").join(name)),
             expected,
-            "{name} must remain byte-identical to server v0.4.0"
+            "{name} must remain byte-identical to server v0.7.0"
         );
         assert_eq!(
             spec_provenance["files"][name].as_str(),

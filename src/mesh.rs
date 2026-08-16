@@ -15,7 +15,9 @@
 //! Enabled by the `mesh` feature.
 
 use crate::event::SignalFishEvent;
-use crate::protocol::{IceServer, PlayerId, Topology, TransportKind};
+use crate::protocol::{
+    DirectEndpoint, IceServer, PlayerId, SessionGeneration, Topology, TransportKind,
+};
 
 /// A peer within a [`MeshSession`], enriched with last-known data-path liveness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,10 +39,12 @@ pub struct MeshPeer {
 /// purely from [`SignalFishEvent`]s. See the [module docs](crate::mesh).
 #[derive(Debug, Clone, Default)]
 pub struct MeshSession {
+    generation: Option<SessionGeneration>,
     topology: Option<Topology>,
     transport: Option<TransportKind>,
     fallback: Option<TransportKind>,
     host: Option<PlayerId>,
+    direct_endpoint: Option<DirectEndpoint>,
     peers: Vec<MeshPeer>,
     ice_servers: Vec<IceServer>,
 }
@@ -64,17 +68,22 @@ impl MeshSession {
     pub fn apply(&mut self, event: &SignalFishEvent) -> bool {
         match event {
             SignalFishEvent::SessionPlan {
+                generation,
                 topology,
                 transport,
                 host,
+                direct_endpoint,
                 peers,
                 ice_servers,
                 fallback,
             } => {
+                let generation_changed = self.generation != *generation;
+                self.generation = *generation;
                 self.topology = Some(*topology);
                 self.transport = Some(*transport);
                 self.fallback = Some(*fallback);
                 self.host = *host;
+                self.direct_endpoint = direct_endpoint.clone();
                 // A plan fully REPLACES the peer set (handles host re-election
                 // and topology change), preserving each surviving peer's
                 // liveness; peers absent from the new plan are dropped.
@@ -85,7 +94,8 @@ impl MeshSession {
                         player_name: p.player_name.clone(),
                         is_authority: p.is_authority,
                         initiate: p.initiate,
-                        connected: self.peer(p.player_id).is_some_and(|e| e.connected),
+                        connected: !generation_changed
+                            && self.peer(p.player_id).is_some_and(|e| e.connected),
                     })
                     .collect();
                 // Every SessionPlan is authoritative. In particular, an
@@ -196,6 +206,14 @@ impl MeshSession {
         self.topology
     }
 
+    /// The latest authoritative session-plan generation.
+    ///
+    /// `None` before a plan and for legacy Server 0.4 protocol-v3 plans.
+    #[must_use]
+    pub fn generation(&self) -> Option<SessionGeneration> {
+        self.generation
+    }
+
     /// The chosen data-path transport, or `None` before any plan.
     #[must_use]
     pub fn transport(&self) -> Option<TransportKind> {
@@ -212,6 +230,12 @@ impl MeshSession {
     #[must_use]
     pub fn host(&self) -> Option<PlayerId> {
         self.host
+    }
+
+    /// The validated connect target for a `host + direct` plan.
+    #[must_use]
+    pub fn direct_endpoint(&self) -> Option<&DirectEndpoint> {
+        self.direct_endpoint.as_ref()
     }
 
     /// The peers this client should connect to.
@@ -281,9 +305,11 @@ mod tests {
         ice_servers: Vec<IceServer>,
     ) -> SignalFishEvent {
         SignalFishEvent::SessionPlan {
+            generation: None,
             topology,
             transport: TransportKind::WebRtc,
             host,
+            direct_endpoint: None,
             peers,
             ice_servers,
             fallback: TransportKind::Relay,
@@ -316,6 +342,54 @@ mod tests {
         assert!(s.peer(uuid(1)).unwrap().initiate);
         assert!(!s.peer(uuid(2)).unwrap().initiate);
         assert_eq!(s.ice_servers(), &[ice("stun:a")]);
+    }
+
+    #[test]
+    fn exposes_generation_and_direct_endpoint() {
+        let mut s = MeshSession::new();
+        let generation = uuid(12);
+        let endpoint = DirectEndpoint {
+            host: "203.0.113.8".into(),
+            port: 7000,
+        };
+        s.apply(&SignalFishEvent::SessionPlan {
+            generation: Some(generation),
+            topology: Topology::Host,
+            transport: TransportKind::Direct,
+            host: Some(uuid(1)),
+            direct_endpoint: Some(endpoint.clone()),
+            peers: vec![],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        });
+        assert_eq!(s.generation(), Some(generation));
+        assert_eq!(s.direct_endpoint(), Some(&endpoint));
+    }
+
+    #[test]
+    fn generation_change_clears_surviving_peer_liveness() {
+        let mut s = MeshSession::new();
+        for generation in [uuid(12), uuid(13)] {
+            s.apply(&SignalFishEvent::SessionPlan {
+                generation: Some(generation),
+                topology: Topology::Mesh,
+                transport: TransportKind::WebRtc,
+                host: None,
+                direct_endpoint: None,
+                peers: vec![peer(1, false)],
+                ice_servers: vec![],
+                fallback: TransportKind::Relay,
+            });
+            if generation == uuid(12) {
+                s.apply(&SignalFishEvent::PeerTransportStatus {
+                    peer_id: uuid(1),
+                    transport: TransportKind::WebRtc,
+                    connected: true,
+                });
+                assert!(s.peer(uuid(1)).unwrap().connected);
+            }
+        }
+        assert!(!s.peer(uuid(1)).unwrap().connected);
     }
 
     #[test]

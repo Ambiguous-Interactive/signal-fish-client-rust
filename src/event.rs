@@ -15,10 +15,10 @@
 
 use crate::error_codes::ErrorCode;
 use crate::protocol::{
-    DeliveryClass, DeliveryReportPayload, GameDataEncoding, IceServer, LobbyState,
+    DeliveryClass, DeliveryReportPayload, DirectEndpoint, GameDataEncoding, IceServer, LobbyState,
     PeerConnectionInfo, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReplayStatus,
-    RoomId, SenderWatermark, ServerMessage, SessionPeer, SpectatorInfo, SpectatorStateChangeReason,
-    Topology, TransportKind,
+    RoomId, SenderWatermark, ServerMessage, SessionGeneration, SessionPeer, SpectatorInfo,
+    SpectatorStateChangeReason, Topology, TransportKind,
 };
 
 /// Events emitted by the Signal Fish client.
@@ -292,12 +292,17 @@ pub enum SignalFishEvent {
     ///
     /// [`SessionPlanPayload`]: crate::protocol::SessionPlanPayload
     SessionPlan {
+        /// Generation fencing this authoritative plan publication.
+        /// `None` only for legacy Server 0.4 protocol-v3 plans.
+        generation: Option<SessionGeneration>,
         /// Chosen session topology.
         topology: Topology,
         /// Chosen data-path transport.
         transport: TransportKind,
         /// The elected host (present for `host` topology).
         host: Option<PlayerId>,
+        /// Validated endpoint for a `host + direct` plan.
+        direct_endpoint: Option<DirectEndpoint>,
         /// Peers this client should connect to, each with its `initiate` flag.
         peers: Vec<SessionPeer>,
         /// ICE (STUN/TURN) servers for WebRTC.
@@ -326,6 +331,8 @@ pub enum SignalFishEvent {
     SignalReceived {
         /// The peer the signal came from.
         from: PlayerId,
+        /// Generation copied from the sender's authoritative session plan.
+        generation: Option<SessionGeneration>,
         /// The opaque signal payload.
         signal: serde_json::Value,
     },
@@ -842,7 +849,15 @@ impl From<ServerMessage> for SignalFishEvent {
                 message,
                 error_code,
             },
-            ServerMessage::Signal { from, signal } => Self::SignalReceived { from, signal },
+            ServerMessage::Signal {
+                from,
+                generation,
+                signal,
+            } => Self::SignalReceived {
+                from,
+                generation,
+                signal,
+            },
             ServerMessage::NewPeer {
                 peer_id,
                 you_initiate,
@@ -853,9 +868,11 @@ impl From<ServerMessage> for SignalFishEvent {
             ServerMessage::SessionPlan(payload) => {
                 let p = *payload;
                 Self::SessionPlan {
+                    generation: p.generation,
                     topology: p.topology,
                     transport: p.transport,
                     host: p.host,
+                    direct_endpoint: p.direct_endpoint,
                     peers: p.peers,
                     ice_servers: p.ice_servers,
                     fallback: p.fallback,

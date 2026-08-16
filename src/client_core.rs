@@ -12,7 +12,7 @@ use crate::client::{
 use crate::event::{ProtocolViolationKind, ServerErrorInfo, SignalFishEvent};
 use crate::protocol::{
     ClientMessage, ConnectionInfo, DeliveryClass, GameDataEncoding, PlayerId, RoomId,
-    ServerMessage, TransportKind,
+    ServerMessage, SessionGeneration, TransportKind,
 };
 use crate::signal::PeerSignal;
 use crate::transport::TransportFrame;
@@ -42,9 +42,15 @@ pub(crate) enum ClientOperation {
     JoinAsSpectator(String, String, String),
     LeaveSpectator,
     Ping,
-    Signal(PlayerId, PeerSignal),
-    RawSignal(PlayerId, serde_json::Value),
+    Signal(PlayerId, SignalGeneration, PeerSignal),
+    RawSignal(PlayerId, SignalGeneration, serde_json::Value),
     TransportStatus(TransportKind, bool),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum SignalGeneration {
+    Current,
+    Exact(Option<SessionGeneration>),
 }
 
 impl FrameOutcome {
@@ -66,6 +72,7 @@ pub(crate) struct ClientCore {
     last_server_error: Option<ServerErrorInfo>,
     violation_policy: ProtocolViolationPolicy,
     accountability: DeliveryAccountability,
+    session_plan_seen: bool,
 }
 
 impl ClientCore {
@@ -98,6 +105,7 @@ impl ClientCore {
             last_server_error: None,
             violation_policy,
             accountability: DeliveryAccountability::new(false),
+            session_plan_seen: false,
         }
     }
 
@@ -206,11 +214,50 @@ impl ClientCore {
             }
             ClientOperation::LeaveSpectator => ClientMessage::LeaveSpectator,
             ClientOperation::Ping => ClientMessage::Ping,
-            ClientOperation::Signal(to, signal) => ClientMessage::Signal {
-                to,
-                signal: signal.into(),
-            },
-            ClientOperation::RawSignal(to, signal) => ClientMessage::Signal { to, signal },
+            ClientOperation::Signal(to, requested_generation, signal) => {
+                if !self.session_plan_seen {
+                    return Err(crate::SignalFishError::SessionPlanUnavailable);
+                }
+                let generation = match requested_generation {
+                    SignalGeneration::Current => self.snapshot.session_generation,
+                    SignalGeneration::Exact(generation) => {
+                        if generation != self.snapshot.session_generation {
+                            return Err(crate::SignalFishError::StaleSessionGeneration {
+                                attempted: generation,
+                                current: self.snapshot.session_generation,
+                            });
+                        }
+                        generation
+                    }
+                };
+                ClientMessage::Signal {
+                    to,
+                    generation,
+                    signal: signal.into(),
+                }
+            }
+            ClientOperation::RawSignal(to, requested_generation, signal) => {
+                if !self.session_plan_seen {
+                    return Err(crate::SignalFishError::SessionPlanUnavailable);
+                }
+                let generation = match requested_generation {
+                    SignalGeneration::Current => self.snapshot.session_generation,
+                    SignalGeneration::Exact(generation) => {
+                        if generation != self.snapshot.session_generation {
+                            return Err(crate::SignalFishError::StaleSessionGeneration {
+                                attempted: generation,
+                                current: self.snapshot.session_generation,
+                            });
+                        }
+                        generation
+                    }
+                };
+                ClientMessage::Signal {
+                    to,
+                    generation,
+                    signal,
+                }
+            }
             ClientOperation::TransportStatus(transport, connected) => {
                 ClientMessage::TransportStatus {
                     transport,
@@ -247,8 +294,10 @@ impl ClientCore {
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
         self.snapshot.reconnection_token = None;
+        self.snapshot.session_generation = None;
         self.snapshot.quarantined = false;
         self.protocol_info_seen = false;
+        self.session_plan_seen = false;
     }
 
     pub(crate) fn disconnect(&mut self, reason: Option<String>) -> SignalFishEvent {
@@ -343,6 +392,16 @@ impl ClientCore {
         }
         if duplicate_protocol_info {
             return outcome;
+        }
+        if let ServerMessage::Signal { generation, .. } = &server_msg {
+            if !self.session_plan_seen || *generation != self.snapshot.session_generation {
+                tracing::debug!(
+                    ?generation,
+                    current_generation = ?self.snapshot.session_generation,
+                    "discarding signal for a stale or unknown session generation"
+                );
+                return outcome;
+            }
         }
         let is_game_data = matches!(
             server_msg,
@@ -502,6 +561,16 @@ impl ClientCore {
                     self.snapshot.negotiated_protocol_version = Some(version);
                     self.protocol_info_seen = true;
                 }
+                if let Some(generation) = payload.missed_events.iter().rev().find_map(|event| {
+                    if let ServerMessage::SessionPlan(plan) = event {
+                        Some(plan.generation)
+                    } else {
+                        None
+                    }
+                }) {
+                    self.snapshot.session_generation = generation;
+                    self.session_plan_seen = true;
+                }
             }
             ServerMessage::SpectatorJoined(payload) => {
                 self.set_room(
@@ -512,6 +581,10 @@ impl ClientCore {
                 );
             }
             ServerMessage::SpectatorLeft { .. } => self.clear_room(),
+            ServerMessage::SessionPlan(payload) => {
+                self.snapshot.session_generation = payload.generation;
+                self.session_plan_seen = true;
+            }
             ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
                 self.stats.game_data_received = self.stats.game_data_received.saturating_add(1);
             }
@@ -530,7 +603,9 @@ impl ClientCore {
         self.snapshot.room_id = Some(room_id);
         self.snapshot.room_code = Some(room_code);
         self.snapshot.reconnection_token = reconnection_token;
+        self.snapshot.session_generation = None;
         self.snapshot.quarantined = false;
+        self.session_plan_seen = false;
     }
 
     fn clear_room(&mut self) {
@@ -538,6 +613,8 @@ impl ClientCore {
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
         self.snapshot.reconnection_token = None;
+        self.snapshot.session_generation = None;
         self.snapshot.quarantined = false;
+        self.session_plan_seen = false;
     }
 }

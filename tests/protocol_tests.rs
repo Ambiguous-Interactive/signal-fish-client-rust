@@ -14,10 +14,11 @@
 
 use signal_fish_client::error_codes::ErrorCode;
 use signal_fish_client::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, IceServer, LobbyState, PeerConnectionInfo,
-    PlayerInfo, PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
-    RelayTransport, RoomJoinedPayload, ServerMessage, SessionPeer, SessionPlanPayload,
-    SpectatorInfo, SpectatorJoinedPayload, SpectatorStateChangeReason, Topology, TransportKind,
+    ClientMessage, ConnectionInfo, DirectEndpoint, GameDataEncoding, IceServer, LobbyState,
+    PeerConnectionInfo, PlayerInfo, PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo,
+    ReconnectedPayload, RelayTransport, RoomJoinedPayload, ServerMessage, SessionPeer,
+    SessionPlanPayload, SpectatorInfo, SpectatorJoinedPayload, SpectatorStateChangeReason,
+    Topology, TransportKind,
 };
 use signal_fish_client::PeerSignal;
 
@@ -1011,12 +1012,14 @@ fn transport_kind_serializes_with_webrtc_rename() {
 fn peer_signal_is_externally_tagged_on_client_signal() {
     let msg = ClientMessage::Signal {
         to: test_uuid(3),
+        generation: Some(test_uuid(12)),
         signal: PeerSignal::Offer("SDP".into()).into(),
     };
     let val: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
     assert_eq!(val["type"], "Signal");
     assert_eq!(val["data"]["to"], test_uuid(3).to_string());
+    assert_eq!(val["data"]["generation"], test_uuid(12).to_string());
     assert_eq!(val["data"]["signal"], serde_json::json!({ "Offer": "SDP" }));
     let deser: ClientMessage =
         serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("deser");
@@ -1078,9 +1081,11 @@ fn session_peer_round_trip_preserves_initiate() {
 #[test]
 fn session_plan_omits_host_and_empty_ice() {
     let plan = SessionPlanPayload {
+        generation: Some(test_uuid(12)),
         topology: Topology::Mesh,
         transport: TransportKind::WebRtc,
         host: None,
+        direct_endpoint: None,
         peers: vec![SessionPeer {
             player_id: test_uuid(2),
             player_name: "B".into(),
@@ -1103,9 +1108,11 @@ fn session_plan_omits_host_and_empty_ice() {
 #[test]
 fn session_plan_includes_host_and_ice_for_host_topology() {
     let plan = SessionPlanPayload {
+        generation: Some(test_uuid(12)),
         topology: Topology::Host,
         transport: TransportKind::WebRtc,
         host: Some(test_uuid(7)),
+        direct_endpoint: None,
         peers: vec![],
         ice_servers: vec![IceServer {
             urls: vec!["stun:x".into()],
@@ -1118,6 +1125,55 @@ fn session_plan_includes_host_and_ice_for_host_topology() {
         serde_json::from_str(&serde_json::to_string(&plan).expect("ser")).expect("parse");
     assert_eq!(val["host"], test_uuid(7).to_string());
     assert_eq!(val["ice_servers"][0]["urls"][0], "stun:x");
+}
+
+#[test]
+fn direct_session_plan_round_trips_endpoint() {
+    let plan = SessionPlanPayload {
+        generation: Some(test_uuid(12)),
+        topology: Topology::Host,
+        transport: TransportKind::Direct,
+        host: Some(test_uuid(7)),
+        direct_endpoint: Some(DirectEndpoint {
+            host: "203.0.113.8".into(),
+            port: 7000,
+        }),
+        peers: vec![],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    let decoded = round_trip(&plan);
+    assert_eq!(decoded.direct_endpoint, plan.direct_endpoint);
+}
+
+#[test]
+fn legacy_session_plan_and_signal_omit_generation() {
+    let plan = SessionPlanPayload {
+        generation: None,
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    let plan_json = serde_json::to_value(&plan).expect("serialize legacy plan");
+    assert!(plan_json.get("generation").is_none());
+
+    let signal = ClientMessage::Signal {
+        to: test_uuid(2),
+        generation: None,
+        signal: serde_json::json!({ "Offer": "legacy" }),
+    };
+    let signal_json = serde_json::to_value(&signal).expect("serialize legacy signal");
+    assert!(signal_json["data"].get("generation").is_none());
+}
+
+#[test]
+fn malformed_session_generation_is_rejected() {
+    let json = r#"{"type":"SessionPlan","data":{"generation":"not-a-uuid","topology":"mesh","transport":"webrtc","peers":[],"fallback":"relay"}}"#;
+    assert!(serde_json::from_str::<ServerMessage>(json).is_err());
 }
 
 #[test]
@@ -1158,6 +1214,7 @@ fn reconnected_missed_events_carry_v3_messages() {
             },
             ServerMessage::Signal {
                 from: test_uuid(2),
+                generation: Some(test_uuid(12)),
                 signal: serde_json::json!({ "Offer": "SDP" }),
             },
         ],
@@ -1204,6 +1261,7 @@ fn client_message_transport_status_round_trip() {
 fn server_message_signal_round_trip() {
     let msg = ServerMessage::Signal {
         from: test_uuid(4),
+        generation: Some(test_uuid(12)),
         signal: serde_json::json!({ "Answer": "SDP" }),
     };
     // Pin the `from` wire KEY (not just round-trip) so a consistent rename
@@ -1212,6 +1270,7 @@ fn server_message_signal_round_trip() {
         serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
     assert_eq!(val["type"], "Signal");
     assert_eq!(val["data"]["from"], test_uuid(4).to_string());
+    assert_eq!(val["data"]["generation"], test_uuid(12).to_string());
     assert_eq!(
         val["data"]["signal"],
         serde_json::json!({ "Answer": "SDP" })
@@ -1223,12 +1282,19 @@ fn server_message_signal_round_trip() {
 
     // Also lock the contract by deserializing a hand-written server-shaped literal.
     let literal = format!(
-        r#"{{"type":"Signal","data":{{"from":"{}","signal":{{"Answer":"SDP"}}}}}}"#,
-        test_uuid(4)
+        r#"{{"type":"Signal","data":{{"from":"{}","generation":"{}","signal":{{"Answer":"SDP"}}}}}}"#,
+        test_uuid(4),
+        test_uuid(12)
     );
     let deser: ServerMessage = serde_json::from_str(&literal).expect("deser literal");
-    if let ServerMessage::Signal { from, signal } = deser {
+    if let ServerMessage::Signal {
+        from,
+        generation,
+        signal,
+    } = deser
+    {
         assert_eq!(from, test_uuid(4));
+        assert_eq!(generation, Some(test_uuid(12)));
         assert_eq!(signal, serde_json::json!({ "Answer": "SDP" }));
     } else {
         panic!("expected Signal variant");
@@ -1270,9 +1336,11 @@ fn server_message_peer_transport_status_round_trip() {
 #[test]
 fn server_message_session_plan_round_trip() {
     let payload = SessionPlanPayload {
+        generation: Some(test_uuid(12)),
         topology: Topology::Mesh,
         transport: TransportKind::WebRtc,
         host: None,
+        direct_endpoint: None,
         peers: vec![SessionPeer {
             player_id: test_uuid(2),
             player_name: "B".into(),
@@ -1457,6 +1525,7 @@ fn signal_payload_round_trips_as_opaque_value() {
     // An unmodeled signal shape survives round-trip because the wire field is a Value.
     let msg = ServerMessage::Signal {
         from: nil_uuid(),
+        generation: Some(test_uuid(12)),
         signal: serde_json::json!({ "Renegotiate": { "foo": 1 } }),
     };
     if let ServerMessage::Signal { signal, .. } = round_trip(&msg) {

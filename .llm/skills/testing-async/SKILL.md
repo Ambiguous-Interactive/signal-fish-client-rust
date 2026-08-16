@@ -304,6 +304,7 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
   assert malformed binary becomes `DecodeFailed`, while valid accountability
   failures become `ProtocolViolation` and follow the configured policy.
 - **`MeshController`**: test the choreography with a recording `WebRtcDriver` mock
-  (see `src/webrtc.rs` tests) — drive the handshake, assert `connect(peer, initiate)`
+  (see `src/webrtc.rs` tests) — drive the handshake, assert
+  `connect(peer, generation, initiate)`
   obeys the server, signals are relayed, and `PeerConnected`/`PeerDisconnected`
   surface with correct transport-status reports.

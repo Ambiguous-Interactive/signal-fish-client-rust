@@ -436,8 +436,9 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 52-variant enum that arrives inside events. The server sends
-these as `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
+`ErrorCode` is a 53-variant enum that arrives inside events. Server 0.7 emits
+47 variants; six compatibility variants remain decodable for older servers.
+The wire uses `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore
 match event {
@@ -467,6 +468,7 @@ Error codes are grouped by category:
 | **Signaling (v3)** | `CrossRoomSignal`, `UnsupportedTransport`, `SignalTargetNotFound`, `SignalRateLimited`, `SignalTooLarge` |
 | **Connection Lifecycle (v3)** | `ConnectionIdleTimeout` |
 | **Delivery & Liveness** | `SlowConsumer`, `ActivityTimeout`, `ServerDraining`, `InvalidDeliveryClass` |
+| **Protocol Negotiation** | `UnsupportedProtocolVersion` |
 
 See [Errors](errors.md) for the full table with descriptions.
 

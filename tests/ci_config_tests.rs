@@ -154,7 +154,9 @@ mod godot_issue_61_policy {
         }
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
-            workflow.contains("SERVER_VERSION: \"0.4.0\"")
+            workflow.contains("server_version: \"0.4.0\"")
+                && workflow.contains("server_version: \"0.7.0\"")
+                && workflow.contains("SERVER_VERSION: ${{ matrix.server_version }}")
                 && workflow.contains("run-godot-fortress-e2e.mjs")
                 && workflow.contains("scenario: clean")
                 && workflow.contains("scenario: impaired")
@@ -1320,6 +1322,7 @@ mod ci_workflow_policy {
         "spell-check",
         "clippy",
         "test",
+        "server-070-e2e",
         "msrv",
         "doc",
         "deny",

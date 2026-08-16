@@ -78,7 +78,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
 #[cfg(feature = "tokio-runtime")]
-use crate::client_core::{ClientCore, ClientOperation, CoreCommand as ClientCommand};
+use crate::client_core::{
+    ClientCore, ClientOperation, CoreCommand as ClientCommand, SignalGeneration,
+};
 #[cfg(feature = "tokio-runtime")]
 use crate::error::{Result, SignalFishError};
 #[cfg(feature = "tokio-runtime")]
@@ -89,6 +91,8 @@ use crate::protocol::ClientMessage;
 use crate::protocol::ConnectionInfo;
 #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 use crate::protocol::ServerMessage;
+#[cfg(feature = "tokio-runtime")]
+use crate::protocol::SessionGeneration;
 use crate::protocol::{
     GameDataEncoding, PlayerId, RelayTransport, RoomId, Topology, TransportKind,
 };
@@ -518,6 +522,10 @@ pub struct ClientSnapshot {
     pub player_id: Option<PlayerId>,
     pub room_id: Option<RoomId>,
     pub room_code: Option<String>,
+    /// Generation from the latest authoritative session plan.
+    ///
+    /// `None` before a plan and for legacy Server 0.4 protocol-v3 plans.
+    pub session_generation: Option<crate::protocol::SessionGeneration>,
     /// Latest server-issued room reconnection token.
     pub reconnection_token: Option<String>,
     /// Whether accountability policy currently suppresses room game data.
@@ -536,6 +544,7 @@ impl std::fmt::Debug for ClientSnapshot {
             .field("player_id", &self.player_id)
             .field("room_id", &self.room_id)
             .field("room_code", &self.room_code)
+            .field("session_generation", &self.session_generation)
             .field(
                 "reconnection_token",
                 &self.reconnection_token.as_ref().map(|_| "<redacted>"),
@@ -933,12 +942,44 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
     /// negotiated protocol v3 (fail-fast — the server would otherwise reject it),
+    /// [`SignalFishError::SessionPlanUnavailable`] before the current room's
+    /// first authoritative plan,
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is
     /// full (see [`send_signal_reliable`](Self::send_signal_reliable) for a
     /// waiting variant).
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
-        self.send_operation(ClientOperation::Signal(to, signal.into()))
+        self.send_operation(ClientOperation::Signal(
+            to,
+            SignalGeneration::Current,
+            signal.into(),
+        ))
+    }
+
+    /// Send a typed WebRTC signal only if `generation` is still the current
+    /// authoritative session-plan generation.
+    ///
+    /// Driver integrations should use this generation-bound form so an offer
+    /// or ICE candidate produced just before a re-plan can never be relabeled
+    /// with the new generation. [`MeshController`](crate::MeshController) uses
+    /// this automatically.
+    ///
+    /// # Errors
+    ///
+    /// In addition to [`send_signal`](Self::send_signal) errors, returns
+    /// [`SignalFishError::StaleSessionGeneration`] when the plan changed before
+    /// the signal could be queued.
+    pub fn send_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: impl Into<PeerSignal>,
+    ) -> Result<()> {
+        self.send_operation(ClientOperation::Signal(
+            to,
+            SignalGeneration::Exact(generation),
+            signal.into(),
+        ))
     }
 
     /// Send a typed WebRTC signal, waiting for space in the outgoing command
@@ -955,15 +996,20 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has
-    /// not negotiated protocol v3, or [`SignalFishError::NotConnected`] if the
-    /// transport has closed.
+    /// not negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
+    /// before the current room's first authoritative plan, or
+    /// [`SignalFishError::NotConnected`] if the transport has closed.
     pub async fn send_signal_reliable(
         &self,
         to: PlayerId,
         signal: impl Into<PeerSignal>,
     ) -> Result<()> {
-        self.send_operation_reliable(ClientOperation::Signal(to, signal.into()))
-            .await
+        self.send_operation_reliable(ClientOperation::Signal(
+            to,
+            SignalGeneration::Current,
+            signal.into(),
+        ))
+        .await
     }
 
     /// Send an SDP offer to a peer. **Protocol v3 only.**
@@ -1007,7 +1053,29 @@ impl SignalFishClient {
     ///
     /// See [`send_signal`](Self::send_signal).
     pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
-        self.send_operation(ClientOperation::RawSignal(to, signal))
+        self.send_operation(ClientOperation::RawSignal(
+            to,
+            SignalGeneration::Current,
+            signal,
+        ))
+    }
+
+    /// Relay an unmodeled signal only while `generation` remains current.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_signal_for_generation`](Self::send_signal_for_generation).
+    pub fn send_raw_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: serde_json::Value,
+    ) -> Result<()> {
+        self.send_operation(ClientOperation::RawSignal(
+            to,
+            SignalGeneration::Exact(generation),
+            signal,
+        ))
     }
 
     /// Report to the server whether a data-path transport is established.
@@ -1107,21 +1175,20 @@ impl SignalFishClient {
     // ── Internal helpers ────────────────────────────────────────────
 
     fn send_operation(&self, operation: ClientOperation) -> Result<()> {
-        let command = lock_core(&self.state).prepare(operation)?;
-        self.send_command(command)
-    }
-
-    fn send_command(&self, command: ClientCommand) -> Result<()> {
-        if !lock_core(&self.state).is_connected() {
-            return Err(SignalFishError::NotConnected);
-        }
-        match self.cmd_tx.try_send(command) {
+        // Keep the state lock through nonblocking queue admission. In
+        // particular, an exact-generation signal must not pass validation and
+        // then race with a replacement SessionPlan before it is queued.
+        let core = lock_core(&self.state);
+        let command = core.prepare(operation)?;
+        let result = match self.cmd_tx.try_send(command) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
                 capacity: self.cmd_tx.max_capacity(),
             }),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(SignalFishError::NotConnected),
-        }
+        };
+        drop(core);
+        result
     }
 
     async fn send_operation_reliable(&self, operation: ClientOperation) -> Result<()> {
@@ -1224,8 +1291,26 @@ impl crate::client_api::SignalFishClientApi for SignalFishClient {
         SignalFishClient::send_signal(self, to, signal)
     }
 
+    fn send_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: PeerSignal,
+    ) -> Result<()> {
+        SignalFishClient::send_signal_for_generation(self, to, generation, signal)
+    }
+
     fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
         SignalFishClient::send_raw_signal(self, to, signal)
+    }
+
+    fn send_raw_signal_for_generation(
+        &mut self,
+        to: PlayerId,
+        generation: Option<SessionGeneration>,
+        signal: serde_json::Value,
+    ) -> Result<()> {
+        SignalFishClient::send_raw_signal_for_generation(self, to, generation, signal)
     }
 
     fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()> {
@@ -2339,6 +2424,26 @@ mod tests {
         .unwrap()
     }
 
+    fn session_plan_v3_json(peer: PlayerId) -> String {
+        use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
+        serde_json::to_string(&ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+            generation: Some(uuid::Uuid::from_u128(12)),
+            topology: Topology::Mesh,
+            transport: TransportKind::WebRtc,
+            host: None,
+            direct_endpoint: None,
+            peers: vec![SessionPeer {
+                player_id: peer,
+                player_name: "peer".into(),
+                is_authority: false,
+                initiate: true,
+            }],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        })))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn async_binary_send_requires_a_negotiated_binary_format() {
         let (transport, _sent, _closed) =
@@ -2462,6 +2567,7 @@ mod tests {
         let (transport, sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
+            Some(Ok(session_plan_v3_json(uuid::Uuid::from_u128(5)))),
         ]);
 
         let config = SignalFishConfig::new("mb_test").enable_mesh();
@@ -2470,6 +2576,7 @@ mod tests {
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
         let _ = events.recv().await; // ProtocolInfo (negotiates v3)
+        let _ = events.recv().await; // SessionPlan (establishes generation)
 
         client
             .send_signal_reliable(uuid::Uuid::from_u128(5), PeerSignal::Offer("sdp".into()))

@@ -80,6 +80,8 @@ frames and events rather than selected fields. Cover:
 - full queues, pending sends, disconnects, and close metadata;
 - all violation policies and authoritative quarantine rebaselines;
 - coherent snapshots and cumulative statistics.
+- authoritative session generations, pre-plan send refusal, and stale-signal
+  suppression across both drivers.
 
 `Connected` timing and driver lifecycle calls are intentionally different and
 belong in driver-specific tests.

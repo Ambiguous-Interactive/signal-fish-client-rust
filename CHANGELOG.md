@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added Signal Fish Server 0.7.0 protocol conformance, including
+  `SessionGeneration`, `DirectEndpoint`, generation-bearing session/signal
+  events and snapshots, `MeshSession` accessors, typed
+  `UNSUPPORTED_PROTOCOL_VERSION`, and a pinned live server generation/replan
+  smoke. The six error codes no longer emitted by 0.7 remain available through
+  `ErrorCode::NON_EMITTED` for older-server compatibility.
+- Added generation-bound typed and raw signal sends so custom drivers can
+  atomically refuse stale output when a replacement session plan races their
+  event loop.
+
+### Changed
+
+- **Breaking:** `WebRtcDriver::connect`/`on_signal` and every `DriverEvent`
+  carry the authoritative session generation. `MeshController` now rebuilds
+  every retained peer when a generation changes, discards stale inbound,
+  buffered, and driver-produced signals, rejects senders outside the current
+  plan, and never routes `Direct` or `Relay` plans through a WebRTC driver.
+  Protocol-v3 signal sends before the first `SessionPlan` now fail locally with
+  `SignalFishError::SessionPlanUnavailable`. Generation-less server 0.4 plans
+  and signals remain supported adaptively.
+
 ### Fixed
 
 - Fixed protocol-v3 accountability rejecting coalesced or mixed-reason
