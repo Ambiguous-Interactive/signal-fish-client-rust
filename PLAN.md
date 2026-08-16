@@ -34,9 +34,10 @@ generation-fenced signaling, Direct endpoint exposure, 0.7 error coverage,
 exact fixture provenance, async/polling parity, a pinned live 0.7 host-replan
 smoke, and both 0.7 and legacy-0.4 Godot gates. Remaining delivery work is
 hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89):
-pass every required check, obtain reviewer approval, merge, and close #86.
-Token-binding-v2 remains a separate negotiated
-transport feature because server 0.7 leaves it disabled by default.
+all eleven required workflows are green, every adversarial-review finding is
+resolved, and the PR is ready and mergeable. Maintainer merge will close #86.
+Token-binding-v2 remains a separate negotiated transport feature because
+server 0.7 leaves it disabled by default.
 
 ## Next Major Milestone — Safety and Static Analysis
 

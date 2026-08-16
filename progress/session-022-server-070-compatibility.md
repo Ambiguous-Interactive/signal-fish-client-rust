@@ -88,15 +88,22 @@ compatibility.
 - Final adversarial review found no production-code blockers. Its remaining
   documentation and common-command parity observations were folded in before
   publication.
-- Draft [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89)
-  is open. Ten hosted workflows, the Godot build/export job, and the legacy
-  Server 0.4 browser scenario passed on the first revision; Server 0.7 browser
-  evidence exposed and localized the origin-policy launch defect described
-  above.
+- [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89)
+  was opened as a draft. Ten hosted workflows, the Godot build/export job, and
+  the legacy Server 0.4 browser scenario passed on the first revision; Server
+  0.7 browser evidence exposed and localized the origin-policy launch defect
+  described above.
+- The final Server 0.7 clean, impaired, and soak browser scenarios all passed,
+  as did the retained Server 0.4 clean scenario and `Godot Web Required`.
+  Every one of the repository's eleven required workflows is green at the PR
+  head. PR #89 is ready for review and mergeable with no review threads.
+- The final adversarial consensus pass reported zero findings across
+  production behavior, legacy compatibility, public API/docs, tests, CI,
+  provenance, and wire goldens.
 
-## Remaining Delivery
+## Outcome
 
-The hosted-origin fix is pushed as `192477c`; wait for every required hosted
-check and reviewer approval, then merge/close #86. The separate
-token-binding-v2 follow-up is tracked in
+The session objective is complete: PR #89 is a fully green, review-ready
+breaking-change PR. Maintainer merge will close #86. The separate
+token-binding-v2 follow-up remains tracked in
 [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
