@@ -1,9 +1,10 @@
 # Protocol wire-sample drift detector for signal-fish-client
 #
-# Weekly (and on demand) re-fetches the Signal Fish server's published protocol
-# samples and fails loudly if the vendored copies under tests/wire-samples/ have
-# drifted from upstream. Fail-closed: a human runs the refresh procedure in
-# .llm/skills/protocol-wire-conformance/SKILL.md and reconciles any client type changes.
+# Weekly, on demand, and when protocol evidence changes in a pull request,
+# re-fetches the Signal Fish server's published protocol samples and fails
+# loudly if vendored copies have drifted from upstream. Fail-closed: a human
+# runs the refresh procedure in .llm/skills/protocol-wire-conformance/SKILL.md
+# and reconciles any client type changes.
 #
 # The concurrency group includes the event name so scheduled and manual runs on
 # the same ref do not cancel each other.
@@ -11,6 +12,15 @@
 name: Protocol Sync
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/protocol-sync.yml
+      - tests/server-spec/PROVENANCE.toml
+      - tests/server-spec/signal-fish-protocol.asyncapi.yaml
+      - tests/wire-samples/PROVENANCE.toml
+      - tests/wire-samples/*.jsonl
   schedule:
     # Mondays at 05:00 UTC — staggered from the other scheduled workflows.
     - cron: "0 5 * * 1"

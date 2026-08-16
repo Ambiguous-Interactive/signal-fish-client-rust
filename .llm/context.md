@@ -69,6 +69,37 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 - Include: public API, behavior, protocol, feature flags, error-model, MSRV/dependency changes that affect consumers, and contributor-facing environment fixes that unblock using the repository.
 - Exclude: internal-only updates such as CI/script/pre-commit automation, refactors, tests, and non-behavioral maintenance.
 
+## Safety Analysis Policy
+
+Production Rust is safe by default. The core manifest denies `unsafe_code`, the
+Godot adapter forbids it, and the target-gated Emscripten WebSocket module is
+the sole documented exception because it binds the platform C API. The
+required WASM workflow runs the Emscripten FFI policy checker and its negative
+self-test before compiling and linting the actual target.
+
+The change-scoped PR, scheduled, and manual Deep Safety workflow provides
+fail-closed evidence from Miri protocol tests, all three protocol fuzz targets,
+and a narrow mutation scope. Fuzzing selects the nightly host explicitly and
+writes discoveries only to temporary corpora; committed seeds are read-only
+inputs. The binary target exercises raw, valid, and perturbed protocol-v2 and
+protocol-v3 MessagePack envelopes. Deep Safety is intentionally not a required
+PR workflow because of nightly/runtime variability; required Clippy and WASM
+aggregates enforce the compiler safety and warning policies on every PR.
+
+Native ASan is deferred because the only owned unsafe implementation is
+Emscripten-only, so a native sanitizer lane would not execute it. The fuzz
+lane's sanitizer instrumentation instead covers the owned protocol parsers it
+actually drives. Blanket Clippy pedantic/nursery/cargo groups are also deferred:
+the inventory produced more than 170 mostly stylistic/documentation findings,
+and its only suspicious correctness warning was verified as a false positive.
+Add either class only when it demonstrates a stable, actionable defect.
+
+Dependabot monitors the root Cargo workspace and the standalone Godot web
+fixture in one updater entry. They stay in the same updater file set so it can
+include the fixture's `../..` path dependencies while updating exact
+compatibility versions; a successful default-branch updater run is required
+after any change to this arrangement.
+
 ## Architecture — Core Modules
 
 | File | Purpose |

@@ -3,7 +3,9 @@
 # Goal: prefer fewer, larger ecosystem-based PRs over many tiny per-package PRs.
 #
 # Strategy:
-#   - One broad Cargo PR that batches ALL version updates (major/minor/patch).
+#   - One broad Cargo PR that batches root-workspace and standalone Godot
+#     fixture updates together, so Dependabot resolves the fixture's path
+#     dependencies from the same repository file set.
 #   - One broad GitHub Actions PR that batches ALL version updates.
 #   - open-pull-requests-limit: 1 per ecosystem so Dependabot can only open
 #     one consolidated batch PR at a time; once that batch is merged a fresh
@@ -16,7 +18,9 @@ version: 2
 updates:
   # ── Cargo (Rust) dependencies ──────────────────────────────────
   - package-ecosystem: cargo
-    directory: /
+    directories:
+      - /
+      - /tests/godot-web-smoke
     schedule:
       interval: weekly
       day: monday
@@ -36,30 +40,6 @@ updates:
           - patch
     commit-message:
       prefix: "deps"
-      include: scope
-
-  # ── Exact latest Godot compatibility fixture ──────────────────
-  - package-ecosystem: cargo
-    directory: /tests/godot-web-smoke
-    schedule:
-      interval: weekly
-      day: monday
-      timezone: America/New_York
-    labels:
-      - dependencies
-      - security
-    # Limit to 1 so compatibility evidence changes remain reviewable as one PR.
-    open-pull-requests-limit: 1
-    groups:
-      godot-latest-all:
-        patterns:
-          - "*"
-        update-types:
-          - major
-          - minor
-          - patch
-    commit-message:
-      prefix: "deps(godot-latest)"
       include: scope
 
   # ── GitHub Actions ─────────────────────────────────────────────

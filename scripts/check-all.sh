@@ -520,35 +520,21 @@ fi
 echo ""
 
 # ── Phase 15: Miri (UB detection) ─────────────────────────────────
-# Miri is scoped to synchronous test targets only (protocol_tests,
-# ci_config_tests). Async/tokio tests are excluded because Miri does
-# not support tokio's runtime internals.
+# Miri is scoped to the synchronous production protocol tests. Async/tokio
+# tests are excluded because Miri does not support tokio's runtime internals;
+# repository-policy tests exercise shell processes, not production memory.
 echo -e "${YELLOW}Phase 15/$TOTAL_PHASES: Miri undefined behavior detection (nightly)...${NC}"
 if ! rustup run nightly cargo miri --version &>/dev/null 2>&1; then
     echo -e "${YELLOW}SKIP: Miri is not available (requires nightly + rustup component add miri --toolchain nightly).${NC}"
     echo "  Install: rustup component add miri --toolchain nightly"
     PHASE_RESULTS[15]="SKIP"
 else
-    PHASE15_FAIL=false
     if MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --test protocol_tests --all-features 2>&1; then
         echo -e "${GREEN}  Miri (protocol_tests): PASS${NC}"
+        PHASE_RESULTS[15]="PASS"
     else
         echo -e "${RED}  Miri (protocol_tests): FAIL${NC}"
-        PHASE15_FAIL=true
-    fi
-    if MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --test ci_config_tests 2>&1; then
-        echo -e "${GREEN}  Miri (ci_config_tests): PASS${NC}"
-    else
-        echo -e "${RED}  Miri (ci_config_tests): FAIL${NC}"
-        PHASE15_FAIL=true
-    fi
-    if [ "$PHASE15_FAIL" = true ]; then
-        # Miri failures are informational — do not count as hard failures
-        echo -e "${YELLOW}Phase 15: WARN (Miri found issues — informational only)${NC}"
-        PHASE_RESULTS[15]="WARN"
-    else
-        echo -e "${GREEN}Phase 15: PASS${NC}"
-        PHASE_RESULTS[15]="PASS"
+        mark_phase_fail 15
     fi
 fi
 echo ""
@@ -569,26 +555,40 @@ else
     PHASE16_FAIL=false
     FUZZ_DIR="$REPO_ROOT/fuzz"
     if [ -d "$FUZZ_DIR" ]; then
-        if (cd "$FUZZ_DIR" && cargo +nightly fuzz run fuzz_server_message seeds/fuzz_server_message -- -max_total_time=10) 2>&1; then
-            echo -e "${GREEN}  fuzz_server_message: PASS${NC}"
-        else
-            echo -e "${RED}  fuzz_server_message: FAIL${NC}"
+        FUZZ_HOST=$(rustc +nightly -vV | sed -n 's/^host: //p')
+        if [ -z "$FUZZ_HOST" ]; then
+            echo -e "${RED}  Unable to determine the nightly Rust host target.${NC}"
             PHASE16_FAIL=true
-        fi
-        if (cd "$FUZZ_DIR" && cargo +nightly fuzz run fuzz_client_message seeds/fuzz_client_message -- -max_total_time=10) 2>&1; then
-            echo -e "${GREEN}  fuzz_client_message: PASS${NC}"
         else
-            echo -e "${RED}  fuzz_client_message: FAIL${NC}"
-            PHASE16_FAIL=true
+            FUZZ_CORPUS=$(mktemp -d)
+            # shellcheck disable=SC2317  # trap handler invoked indirectly
+            cleanup_fuzz_corpus() {
+                rm -rf "$FUZZ_CORPUS"
+            }
+            trap cleanup_fuzz_corpus EXIT
+            for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data; do
+                corpus="$FUZZ_CORPUS/$target"
+                mkdir -p "$corpus"
+                seed_args=()
+                if [ -d "$FUZZ_DIR/seeds/$target" ]; then
+                    seed_args+=("seeds/$target")
+                fi
+                if (cd "$FUZZ_DIR" && cargo +nightly fuzz run "$target" --target "$FUZZ_HOST" "$corpus" "${seed_args[@]}" -- -max_total_time=10) 2>&1; then
+                    echo -e "${GREEN}  $target: PASS${NC}"
+                else
+                    echo -e "${RED}  $target: FAIL${NC}"
+                    PHASE16_FAIL=true
+                fi
+            done
+            cleanup_fuzz_corpus
+            trap - EXIT
         fi
     else
         echo -e "${YELLOW}SKIP: fuzz/ directory not found.${NC}"
         PHASE_RESULTS[16]="SKIP"
     fi
     if [ "$PHASE16_FAIL" = true ]; then
-        # Fuzz failures are informational — do not count as hard failures
-        echo -e "${YELLOW}Phase 16: WARN (fuzz found issues — informational only)${NC}"
-        PHASE_RESULTS[16]="WARN"
+        mark_phase_fail 16
     elif [ "${PHASE_RESULTS[16]}" != "SKIP" ]; then
         echo -e "${GREEN}Phase 16: PASS${NC}"
         PHASE_RESULTS[16]="PASS"
@@ -597,23 +597,20 @@ fi
 echo ""
 
 # ── Phase 17: Mutation testing ───────────────────────────────────
-# Runs cargo-mutants on pure-logic modules. This is slow (several
-# minutes) and informational only — mutations that survive indicate
-# potential gaps in test coverage.
+# Runs cargo-mutants on pure-logic modules. Mutations that survive are
+# actionable gaps in test coverage and fail the phase.
 echo -e "${YELLOW}Phase 17/$TOTAL_PHASES: Mutation testing (cargo-mutants)...${NC}"
 if ! command -v cargo-mutants &>/dev/null; then
     echo -e "${YELLOW}SKIP: cargo-mutants is not installed.${NC}"
     echo "  Install: cargo install cargo-mutants"
     PHASE_RESULTS[17]="SKIP"
 else
-    if cargo mutants --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs 2>&1; then
+    if cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs 2>&1; then
         echo -e "${GREEN}Phase 17: PASS${NC}"
         PHASE_RESULTS[17]="PASS"
     else
-        # Mutation testing failures are informational — surviving mutants
-        # indicate test coverage gaps, not code defects.
-        echo -e "${YELLOW}Phase 17: WARN (surviving mutants found — informational only)${NC}"
-        PHASE_RESULTS[17]="WARN"
+        echo -e "${RED}Phase 17: FAIL (surviving mutants found)${NC}"
+        mark_phase_fail 17
     fi
 fi
 echo ""

@@ -31,3 +31,7 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+
+[lints.rust]
+# This adapter uses godot-rust's safe API and has no FFI exception of its own.
+unsafe_code = "forbid"

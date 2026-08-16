@@ -1,22 +1,38 @@
 # Deep safety analysis for signal-fish-client
 #
-# Non-blocking scheduled lanes for thorough safety and quality analysis
-# that would be too slow or noisy for every PR.
+# Thorough safety and quality analysis that would be too slow for every PR.
+# Pull requests run it only when analyzer or covered-code inputs change; the
+# weekday schedule catches ecosystem drift. Every lane fails closed when its
+# analyzer finds a defect or cannot execute, so a green run is usable evidence.
 #
 # Jobs:
-#   miri    — Miri undefined behavior detection (nightly, sync tests only)
+#   miri    — Miri undefined behavior detection (nightly, protocol tests)
 #   fuzz    — Fuzz smoke tests for protocol parsing (nightly)
 #   mutants — Mutation testing on pure-logic modules (stable)
 #
 # Schedule: Weekdays at 04:00 UTC — staggered from unused-deps (05:00)
 # and security (06:00).
 #
-# All jobs use continue-on-error: true because these are informational
-# lanes — failures here are signals, not blockers.
-
 name: Deep Safety
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .cargo/**
+      - .github/workflows/deep-safety.yml
+      - Cargo.lock
+      - Cargo.toml
+      - fuzz/**
+      - scripts/cargo-retry.sh
+      - src/error.rs
+      - src/error_codes.rs
+      - src/lib.rs
+      - src/protocol.rs
+      - src/protocol/**
+      - src/signal.rs
+      - tests/protocol_tests.rs
   schedule:
     # Weekdays at 04:00 UTC — staggered from unused-deps at 05:00 and security at 06:00
     - cron: "0 4 * * 1-5"
@@ -37,18 +53,14 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # Miri — detect undefined behavior via interpretation
   #
-  # Scoped to synchronous test targets only. Miri does not support
-  # tokio's async runtime, so client_tests (all #[tokio::test])
-  # are excluded. protocol_tests and ci_config_tests are pure
-  # synchronous logic and run cleanly under Miri.
-  #
-  # This is an informational lane; failures do not block merges.
+  # Scoped to the synchronous protocol conformance target. Miri does not
+  # support tokio's async runtime, and repository-policy tests exercise shell
+  # processes rather than production memory safety.
   # ──────────────────────────────────────────────────────────────
   miri:
     name: Miri
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -69,12 +81,6 @@ jobs:
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
 
-      - name: Run Miri on CI config tests
-        if: always()
-        run: cargo +nightly miri test --test ci_config_tests
-        env:
-          MIRIFLAGS: "-Zmiri-disable-isolation"
-
   # ──────────────────────────────────────────────────────────────
   # Fuzz — smoke test protocol parsers with random input
   #
@@ -82,15 +88,13 @@ jobs:
   # or crashes in the JSON deserialization paths. This is a smoke
   # test, not a deep fuzzing campaign.
   #
-  # Fuzz targets exercise both UTF-8 (from_str) and raw byte
-  # (from_slice) deserialization paths for ServerMessage and
-  # ClientMessage.
+  # JSON targets exercise both UTF-8 and raw-byte deserialization. The binary
+  # target exercises the strict physical MessagePack envelope decoder.
   # ──────────────────────────────────────────────────────────────
   fuzz:
     name: Fuzz smoke tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -111,12 +115,41 @@ jobs:
       - name: Generate lockfile
         run: bash scripts/cargo-retry.sh generate-lockfile --manifest-path fuzz/Cargo.toml
 
-      - name: Fuzz ServerMessage parsing
-        run: cd fuzz && cargo +nightly fuzz run fuzz_server_message seeds/fuzz_server_message -- -max_total_time=30
+      - name: Run every protocol fuzz target
+        run: |
+          set -euo pipefail
+          fuzz_host=$(rustc +nightly -vV | sed -n 's/^host: //p')
+          if [ -z "$fuzz_host" ]; then
+            printf 'Unable to determine the nightly Rust host target.\n' >&2
+            exit 1
+          fi
+          fuzz_corpus=$(mktemp -d)
+          trap 'rm -rf "$fuzz_corpus"' EXIT
+          status=0
+          for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data; do
+            corpus="$fuzz_corpus/$target"
+            mkdir -p "$corpus"
+            seed_args=()
+            if [ -d "seeds/$target" ]; then
+              seed_args+=("seeds/$target")
+            fi
+            if ! cargo +nightly fuzz run "$target" \
+              --target "$fuzz_host" \
+              "$corpus" "${seed_args[@]}" -- -max_total_time=30; then
+              status=1
+            fi
+          done
+          exit "$status"
+        working-directory: fuzz
 
-      - name: Fuzz ClientMessage parsing
+      - name: Upload fuzz crash artifacts
         if: always()
-        run: cd fuzz && cargo +nightly fuzz run fuzz_client_message seeds/fuzz_client_message -- -max_total_time=30
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: fuzz-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────────
   # Mutation testing — verify test suite catches injected faults
@@ -129,7 +162,6 @@ jobs:
     name: Mutation testing
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -149,7 +181,7 @@ jobs:
           tool: cargo-mutants@26.2.0
 
       - name: Run mutation tests
-        run: cargo mutants --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs
+        run: cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs
 
       - name: Upload mutation results
         if: always()
