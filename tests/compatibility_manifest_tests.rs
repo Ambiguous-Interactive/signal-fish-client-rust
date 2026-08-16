@@ -13,7 +13,7 @@ fn sha256(path: &Path) -> String {
 }
 
 #[test]
-fn compatibility_manifest_binds_exact_server_070_artifacts() {
+fn compatibility_manifest_binds_exact_server_artifacts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest: toml::Value = toml::from_str(
         &fs::read_to_string(root.join("tests/compatibility.toml"))
@@ -46,6 +46,28 @@ fn compatibility_manifest_binds_exact_server_070_artifacts() {
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
     assert_eq!(commit, "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333");
+    assert_eq!(manifest["legacy_server"]["version"].as_str(), Some("0.4.0"));
+    assert_eq!(manifest["legacy_server"]["tag"].as_str(), Some("v0.4.0"));
+    assert_eq!(
+        manifest["legacy_server"]["commit"].as_str(),
+        Some("50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8")
+    );
+    assert_eq!(
+        manifest["legacy_server"]["generation"].as_str(),
+        Some("omitted")
+    );
+    assert_eq!(
+        manifest["server_release_artifacts"]
+            ["signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz"]
+            .as_str(),
+        Some("70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e")
+    );
+    assert_eq!(
+        manifest["server_release_artifacts"]
+            ["signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz"]
+            .as_str(),
+        Some("971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9")
+    );
 
     let wire_provenance: toml::Value = toml::from_str(
         &fs::read_to_string(root.join("tests/wire-samples/PROVENANCE.toml"))

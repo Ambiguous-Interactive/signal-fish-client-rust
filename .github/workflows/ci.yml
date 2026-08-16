@@ -123,16 +123,28 @@ jobs:
         run: cargo test --workspace ${{ matrix.flags }}
 
   # ──────────────────────────────────────────────────────────────
-  # Pinned server 0.7 mesh wire smoke — generation-aware signaling
-  # and a retained-pair replan against the released server binary.
+  # Pinned server mesh wire smokes — generation-less 0.4 compatibility plus
+  # generation-aware signaling and retained-pair replan on 0.7.
   # ──────────────────────────────────────────────────────────────
-  server-070-e2e:
-    name: Server 0.7 mesh E2E
+  server-mesh-e2e:
+    name: Server mesh E2E (${{ matrix.server_version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: fmt
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - server_version: "0.7.0"
+            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+            test_name: e2e_server_070_generation_signal_and_host_replan
+          - server_version: "0.4.0"
+            server_sha256: "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
+            test_name: e2e_server_040_generationless_mesh_signal
     env:
-      SERVER_VERSION: "0.7.0"
+      SERVER_VERSION: ${{ matrix.server_version }}
+      SERVER_SHA256: ${{ matrix.server_sha256 }}
+      SERVER_TEST: ${{ matrix.test_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -146,18 +158,17 @@ jobs:
           asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
           curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
-          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
-          sha256sum --check "${asset}.sha256"
+          printf '%s  %s\n' "${SERVER_SHA256}" "${asset}" | sha256sum --check
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server
-      - name: Run generation signaling and replan smoke
+      - name: Run pinned mesh compatibility smoke
         run: |
           set -euo pipefail
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
           chmod +x "${server_bin}"
           SIGNAL_FISH_SERVER_BIN="${PWD}/${server_bin}" \
             cargo test --all-features --test real_server_e2e \
-              e2e_server_070_generation_signal_and_host_replan \
+              "${SERVER_TEST}" \
               -- --ignored --exact --test-threads=1
 
   # ──────────────────────────────────────────────────────────────
@@ -292,7 +303,7 @@ jobs:
   required:
     name: CI Required
     if: ${{ always() }}
-    needs: [fmt, spell-check, clippy, test, server-070-e2e, msrv, adapter-msrv, doc, deny, publish-dry-run]
+    needs: [fmt, spell-check, clippy, test, server-mesh-e2e, msrv, adapter-msrv, doc, deny, publish-dry-run]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -55,6 +55,17 @@ compatibility.
    port. The workflow now opts its isolated test server into wildcard origins
    in both clean and network-namespace launch paths, with a policy regression
    assertion covering both paths.
+7. Completion review found that ordinary `Option` deserialization treated an
+   explicit JSON `null` generation like an omitted legacy field. The three
+   generation-bearing wire fields now preserve omission for Server 0.4 while
+   rejecting present null/malformed values, matching Server 0.7's UUID
+   requirement. Public docs now delimit optional token-binding support,
+   production browser-origin policy, and the forthcoming 0.11 API surface.
+8. The legacy browser gate exercised relay gameplay but not generation-less
+   WebRTC signaling. A pinned Server 0.4 live smoke now proves omitted plan and
+   signal generations end to end; the required CI job matrices it beside the
+   Server 0.7 generation/replan smoke and verifies both release archives against
+   repository-recorded SHA-256 digests.
 
 ## Delivered Surface
 
@@ -66,12 +77,12 @@ compatibility.
   `MeshController` choreography.
 - Exact 0.7 wire/spec bytes, SHA-256 provenance, compatibility manifest, error
   conformance, docs, examples, focused skills, and changelog migration notes.
-- Required pinned 0.7 live host-replan CI plus Godot clean/impaired/soak on 0.7
-  and a retained clean Godot 0.4 legacy gate.
+- Required pinned 0.7 live host-replan and 0.4 generation-less mesh CI plus
+  Godot clean/impaired/soak on 0.7 and a retained clean Godot 0.4 relay gate.
 
 ## Evidence
 
-- `cargo test --test ci_config_tests`: 207 passed.
+- `cargo test --test ci_config_tests`: 208 passed.
 - `bash scripts/check-workflows.sh`: all blocking phases passed (actionlint was
   unavailable locally; the workflow policy tests and YAML lint passed).
 - The mandatory `cargo fmt` + all-target/all-feature Clippy + workspace tests
@@ -82,12 +93,16 @@ compatibility.
   Optional tools absent locally remain delegated to hosted CI.
 - Pinned native server 0.7 source build plus
   `e2e_server_070_generation_signal_and_host_replan`: passed.
+- Pinned native server 0.4 source build at commit `50b28a9` plus
+  `e2e_server_040_generationless_mesh_signal`: passed on the local ARM host.
+  The x86_64 release archives for 0.4 and 0.7 were checksum-verified against
+  the digests now recorded in `tests/compatibility.toml`.
 - Targeted unit/integration/conformance suites passed, including 31 WebRTC
-  tests, 68 async client tests, 124 protocol tests, polling parity, exact wire
+  tests, 68 async client tests, 125 protocol tests, polling parity, exact wire
   goldens, compatibility checks, and error-code conformance.
-- Final adversarial review found no production-code blockers. Its remaining
-  documentation and common-command parity observations were folded in before
-  publication.
+- Pre-publication adversarial review found no production-code blockers. Its
+  remaining documentation and common-command parity observations were folded
+  in before publication.
 - [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89)
   was opened as a draft. Ten hosted workflows, the Godot build/export job, and
   the legacy Server 0.4 browser scenario passed on the first revision; Server
@@ -95,15 +110,28 @@ compatibility.
   described above.
 - The final Server 0.7 clean, impaired, and soak browser scenarios all passed,
   as did the retained Server 0.4 clean scenario and `Godot Web Required`.
-  Every one of the repository's eleven required workflows is green at the PR
-  head. PR #89 is ready for review and mergeable with no review threads.
-- The final adversarial consensus pass reported zero findings across
-  production behavior, legacy compatibility, public API/docs, tests, CI,
-  provenance, and wire goldens.
+  Every one of the repository's eleven project-owned aggregate workflows is
+  green at the PR head, and PR #89 has no review threads.
+- A completion-audit revision then closed the null-generation, public
+  compatibility-boundary, release-digest, and live-0.4-mesh evidence gaps. Its
+  hosted workflow rerun and final adversarial consensus are the remaining
+  code-delivery checks.
+- The final repository-governance audit found that the live default-branch
+  ruleset contains deletion, non-fast-forward, and Copilot-review rules but no
+  pull-request or required-status-check rule. The scheduled `Repository Policy`
+  workflow consequently fails its live audit even though its unit tests pass.
+  The PR also has no human approval and its external Copilot check reports an
+  account quota failure. The checked-in policy remains strict; these live
+  configuration and coordination tasks are tracked in
+  [issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90).
 
-## Outcome
+## Remaining Delivery
 
-The session objective is complete: PR #89 is a fully green, review-ready
-breaking-change PR. Maintainer merge will close #86. The separate
-token-binding-v2 follow-up remains tracked in
-[issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
+The Server 0.7 implementation is locally green, and all project-owned PR
+aggregates passed at the prior hosted head. The delivery objective is not
+complete until the completion-audit revision passes its hosted rerun and final
+consensus review, the live ruleset again enforces the checked-in policy,
+`Repository Policy` passes, the Copilot quota failure is removed from the gate
+or made actionable, and PR #89 receives its required human approval. Maintainer
+merge can then close #86. The separate token-binding-v2 milestone remains
+tracked in [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).

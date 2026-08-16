@@ -555,6 +555,113 @@ async fn e2e_server_070_generation_signal_and_host_replan() {
     c.shutdown().await;
 }
 
+/// Server 0.4 compatibility smoke: authoritative plans and relayed signals
+/// remain generation-less end to end.
+#[tokio::test]
+#[ignore = "requires Signal Fish Server 0.4; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
+async fn e2e_server_040_generationless_mesh_signal() {
+    let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
+        Some(url) => (None, url),
+        None => match spawn_server(&[("SIGNAL_FISH__SESSION__DEFAULT_TOPOLOGY", "mesh")]).await {
+            Some((guard, url)) => (Some(guard), url),
+            None => {
+                eprintln!("skipping: neither SIGNAL_FISH_E2E_URL nor SIGNAL_FISH_SERVER_BIN set");
+                return;
+            }
+        },
+    };
+
+    let config = || SignalFishConfig::new(app_id()).enable_mesh();
+    let (mut a, mut a_events) = connect_authenticated(&url, config()).await;
+    a.join_room(JoinRoomParams::new("e2e-legacy-mesh", "alpha"))
+        .expect("A join_room");
+    let a_joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined { room_code, .. } = a_joined else {
+        unreachable!()
+    };
+
+    let (mut b, mut b_events) = connect_authenticated(&url, config()).await;
+    b.join_room(JoinRoomParams::new("e2e-legacy-mesh", "bravo").with_room_code(&room_code))
+        .expect("B join_room");
+    let b_joined = wait_for_event(&mut b_events, "B RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        player_id: b_id, ..
+    } = b_joined
+    else {
+        unreachable!()
+    };
+
+    for client in [&mut a, &mut b] {
+        client.set_ready().expect("set_ready");
+        client.ping().expect("queue readiness fence ping");
+    }
+    for events in [&mut a_events, &mut b_events] {
+        wait_for_event(
+            events,
+            "readiness fence Pong",
+            Duration::from_secs(5),
+            |e| matches!(e, SignalFishEvent::Pong),
+        )
+        .await;
+    }
+    a.start_game().expect("start game");
+
+    let a_plan = wait_for_event(
+        &mut a_events,
+        "A generation-less SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(matches!(
+        a_plan,
+        SignalFishEvent::SessionPlan {
+            generation: None,
+            ..
+        }
+    ));
+    let b_plan = wait_for_event(
+        &mut b_events,
+        "B generation-less SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(matches!(
+        b_plan,
+        SignalFishEvent::SessionPlan {
+            generation: None,
+            ..
+        }
+    ));
+
+    a.send_offer(b_id, "legacy-generationless-offer")
+        .expect("send legacy offer");
+    let signal = wait_for_event(
+        &mut b_events,
+        "generation-less Signal",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SignalReceived { .. }),
+    )
+    .await;
+    assert!(matches!(
+        signal,
+        SignalFishEvent::SignalReceived {
+            generation: None,
+            ..
+        }
+    ));
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
 /// Smoke check that a flooding sender's own control plane stays healthy:
 /// Pings sent during a sustained GameData flood still get Pongs promptly
 /// (the sender's outbound queue is not the congested one).

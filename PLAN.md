@@ -34,10 +34,19 @@ generation-fenced signaling, Direct endpoint exposure, 0.7 error coverage,
 exact fixture provenance, async/polling parity, a pinned live 0.7 host-replan
 smoke, and both 0.7 and legacy-0.4 Godot gates. Remaining delivery work is
 hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89):
-all eleven required workflows are green, every adversarial-review finding is
-resolved, and the PR is ready and mergeable. Maintainer merge will close #86.
-Token-binding-v2 remains a separate negotiated transport feature because
-server 0.7 leaves it disabled by default.
+all eleven project-owned aggregate workflows were green at the prior PR head.
+The completion audit then added null-generation hardening, exact 0.4/0.7
+release-digest binding, and a pinned live 0.4 mesh seam; this revision still
+needs its hosted rerun. The same audit found that the live default-branch
+ruleset no longer enforces the checked-in approval and required-check policy,
+the scheduled repository-policy audit is therefore red, and an external
+Copilot quota check is red while the PR has no human approval.
+[Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
+tracks restoring the live ruleset, resolving the non-actionable Copilot gate,
+and obtaining the required approval before maintainer merge closes #86.
+[Token-binding-v2](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88)
+remains a separate negotiated correctness/security milestone because server
+0.7 leaves it disabled by default.
 
 ## Next Major Milestone — Safety and Static Analysis
 
