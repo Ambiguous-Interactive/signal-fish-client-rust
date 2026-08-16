@@ -66,4 +66,7 @@ weakening protocol-v3 accountability.
   rate-limited advisories, diagnostic classification, authoritative room-exit
   reset, public driver parity, transactional rejection proof, and lifecycle
   documentation.
-- Hosted PR checks and reviewer feedback remain to be recorded after publish.
+- PR #87's initial revision passed all 11 hosted workflows: CI, Coverage, Docs
+  Validation, Examples Validation, Godot Web, No Panics, Security, Semver
+  Checks, Unused Deps, WASM, and Workflow Lint. No review comments or unresolved
+  threads were present when the revision was promoted from draft.
