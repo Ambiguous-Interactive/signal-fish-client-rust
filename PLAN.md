@@ -33,11 +33,12 @@ The breaking 0.11-compatible source and conformance work is complete locally:
 generation-fenced signaling, Direct endpoint exposure, 0.7 error coverage,
 exact fixture provenance, async/polling parity, a pinned live 0.7 host-replan
 smoke, and both 0.7 and legacy-0.4 Godot gates. Remaining delivery work is
-hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89):
-all eleven project-owned aggregate workflows were green at the prior PR head.
-The completion audit then added null-generation hardening, exact 0.4/0.7
-release-digest binding, and a pinned live 0.4 mesh seam; this revision still
-needs its hosted rerun. The same audit found that the live default-branch
+hosted in [PR #89](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/89).
+All eleven project-owned aggregate workflows are green at completion-audit
+commit `44a7054`, including null-generation hardening, exact 0.4/0.7
+release-digest binding, and the pinned live 0.4 mesh seam. Independent protocol
+and adversarial reviews report zero remaining findings. The final audit found
+that the live default-branch
 ruleset no longer enforces the checked-in approval and required-check policy,
 the scheduled repository-policy audit is therefore red, and an external
 Copilot quota check is red while the PR has no human approval.
