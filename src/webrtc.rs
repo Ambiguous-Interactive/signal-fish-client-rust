@@ -95,7 +95,7 @@ impl std::fmt::Debug for MeshWaker {
 }
 
 /// An output produced by a [`WebRtcDriver`], drained via [`WebRtcDriver::poll`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum DriverEvent {
     /// A locally-produced signal to relay to `peer` (offer, answer, or a
     /// trickled ICE candidate). The controller forwards it to the server.
@@ -132,8 +132,20 @@ pub enum DriverEvent {
     },
 }
 
+impl std::fmt::Debug for DriverEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Driver events can contain SDP/ICE credentials and application data.
+        f.write_str(match self {
+            Self::Signal { .. } => "Signal",
+            Self::Connected { .. } => "Connected",
+            Self::Disconnected { .. } => "Disconnected",
+            Self::Data { .. } => "Data",
+        })
+    }
+}
+
 /// A high-level event surfaced by the [`MeshController`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum MeshEvent {
     /// An underlying signaling event passed through verbatim (`RoomJoined`,
     /// `GameData`, `LobbyStateChanged`, etc.). Signaling events the controller
@@ -154,6 +166,17 @@ pub enum MeshEvent {
         /// The received bytes.
         data: Vec<u8>,
     },
+}
+
+impl std::fmt::Debug for MeshEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Signaling(_) => "Signaling",
+            Self::PeerConnected(_) => "PeerConnected",
+            Self::PeerDisconnected(_) => "PeerDisconnected",
+            Self::Data { .. } => "Data",
+        })
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]
@@ -789,6 +812,46 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<MeshController<SharedDriver>>();
     };
+
+    #[test]
+    fn driver_and_mesh_event_debug_redact_signaling_and_data() {
+        let secret = "webrtc-event-secret";
+        let peer = uuid::Uuid::from_u128(1);
+        let outputs = [
+            format!(
+                "{:?}",
+                DriverEvent::Signal {
+                    peer,
+                    generation: None,
+                    signal: PeerSignal::Offer(secret.into()),
+                }
+            ),
+            format!(
+                "{:?}",
+                DriverEvent::Data {
+                    peer,
+                    generation: None,
+                    data: secret.as_bytes().to_vec(),
+                }
+            ),
+            format!(
+                "{:?}",
+                MeshEvent::Data {
+                    from: peer,
+                    data: secret.as_bytes().to_vec(),
+                }
+            ),
+        ];
+        let binary_secret = format!("{:?}", secret.as_bytes());
+
+        for output in outputs {
+            assert!(!output.contains(secret), "debug output leaked: {output}");
+            assert!(
+                !output.contains(&binary_secret),
+                "debug output leaked binary bytes: {output}"
+            );
+        }
+    }
 
     // ── A recording mock driver ─────────────────────────────────────
 

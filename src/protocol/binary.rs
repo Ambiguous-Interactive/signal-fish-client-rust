@@ -7,7 +7,7 @@ use serde::Serialize;
 use super::{GameDataEncoding, PlayerId};
 
 /// The mandatory metadata carried by every protocol-v3 binary game-data frame.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Serialize, PartialEq, Eq)]
 pub struct V3BinaryGameDataFrame {
     pub from_player: PlayerId,
     pub encoding: GameDataEncoding,
@@ -17,13 +17,35 @@ pub struct V3BinaryGameDataFrame {
     pub epoch: u32,
 }
 
+impl std::fmt::Debug for V3BinaryGameDataFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("V3BinaryGameDataFrame")
+            .field("from_player", &self.from_player)
+            .field("encoding", &self.encoding)
+            .field("payload_bytes", &self.payload.len())
+            .field("seq", &self.seq)
+            .field("epoch", &self.epoch)
+            .finish()
+    }
+}
+
 /// The frozen protocol-v2 MessagePack game-data envelope.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Serialize, PartialEq, Eq)]
 pub struct V2BinaryGameDataFrame {
     pub from_player: PlayerId,
     pub encoding: GameDataEncoding,
     #[serde(with = "serde_bytes")]
     pub payload: Vec<u8>,
+}
+
+impl std::fmt::Debug for V2BinaryGameDataFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("V2BinaryGameDataFrame")
+            .field("from_player", &self.from_player)
+            .field("encoding", &self.encoding)
+            .field("payload_bytes", &self.payload.len())
+            .finish()
+    }
 }
 
 /// Strictly decode the frozen protocol-v2 MessagePack envelope.

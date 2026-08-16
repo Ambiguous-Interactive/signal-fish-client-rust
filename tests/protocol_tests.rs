@@ -18,9 +18,11 @@ use signal_fish_client::protocol::{
     PeerConnectionInfo, PlayerInfo, PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo,
     ReconnectedPayload, RelayTransport, RoomJoinedPayload, ServerMessage, SessionPeer,
     SessionPlanPayload, SpectatorInfo, SpectatorJoinedPayload, SpectatorStateChangeReason,
-    Topology, TransportKind,
+    Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::PeerSignal;
+use signal_fish_client::TransportCloseInfo;
+use signal_fish_client::TransportFrame;
 
 // ════════════════════════════════════════════════════════════════════
 // Helper
@@ -2548,4 +2550,188 @@ fn error_code_display_returns_description() {
     let code = ErrorCode::RoomNotFound;
     let display = format!("{code}");
     assert_eq!(display, code.description());
+}
+
+#[test]
+fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
+    const SECRETS: &[&str] = &[
+        "reconnect-secret",
+        "relay-secret",
+        "unity-key-secret",
+        "turn-secret",
+        "sdp-ice-secret",
+        "application-secret",
+    ];
+    let assert_redacted = |debug: String| {
+        for secret in SECRETS {
+            assert!(
+                !debug.contains(secret),
+                "Debug output exposed secret {secret:?}: {debug}"
+            );
+        }
+        assert!(
+            !debug.contains(&format!("{:?}", b"application-secret")),
+            "Debug output exposed binary application bytes: {debug}"
+        );
+    };
+
+    let relay = ConnectionInfo::Relay {
+        host: "relay.example".into(),
+        port: 7777,
+        transport: RelayTransport::Udp,
+        allocation_id: "allocation".into(),
+        token: "relay-secret".into(),
+        client_id: Some(7),
+    };
+    let unity = ConnectionInfo::UnityRelay {
+        allocation_id: "allocation".into(),
+        connection_data: "connection-data".into(),
+        key: "unity-key-secret".into(),
+    };
+    let ice = IceServer {
+        urls: vec!["turn:turn-secret@example.test".into()],
+        username: Some("turn-user".into()),
+        credential: Some("turn-secret".into()),
+    };
+    let player = PlayerInfo {
+        id: test_uuid(1),
+        name: "player".into(),
+        is_authority: false,
+        is_ready: true,
+        connected_at: "now".into(),
+        connection_info: Some(relay.clone()),
+        epoch: None,
+        seq: None,
+    };
+    let peer = PeerConnectionInfo {
+        player_id: test_uuid(2),
+        player_name: "peer".into(),
+        is_authority: false,
+        relay_type: "relay".into(),
+        connection_info: Some(unity.clone()),
+    };
+    let plan = SessionPlanPayload {
+        generation: Some(test_uuid(3)),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![],
+        ice_servers: vec![ice.clone()],
+        fallback: TransportKind::Relay,
+    };
+    let joined = RoomJoinedPayload {
+        room_id: test_uuid(4),
+        room_code: "ROOM".into(),
+        player_id: test_uuid(5),
+        game_name: "game".into(),
+        max_players: 2,
+        supports_authority: false,
+        current_players: vec![player.clone()],
+        is_authority: false,
+        lobby_state: LobbyState::Waiting,
+        ready_players: vec![],
+        relay_type: "relay".into(),
+        current_spectators: vec![],
+        ice_servers: vec![ice.clone()],
+        reconnection_token: Some("reconnect-secret".into()),
+    };
+    let reconnected = ReconnectedPayload {
+        room_id: test_uuid(4),
+        room_code: "ROOM".into(),
+        player_id: test_uuid(5),
+        game_name: "game".into(),
+        max_players: 2,
+        supports_authority: false,
+        current_players: vec![player.clone()],
+        is_authority: false,
+        lobby_state: LobbyState::Waiting,
+        ready_players: vec![],
+        relay_type: "relay".into(),
+        current_spectators: vec![],
+        ice_servers: vec![ice.clone()],
+        missed_events: vec![],
+        replay: None,
+        sender_watermarks: vec![],
+        reconnection_token: Some("reconnect-secret".into()),
+    };
+
+    let outputs = [
+        format!("{relay:?}"),
+        format!("{unity:?}"),
+        format!("{ice:?}"),
+        format!("{player:?}"),
+        format!("{peer:?}"),
+        format!("{plan:?}"),
+        format!("{joined:?}"),
+        format!("{reconnected:?}"),
+        format!(
+            "{:?}",
+            ClientMessage::Reconnect {
+                player_id: test_uuid(5),
+                room_id: test_uuid(4),
+                auth_token: "reconnect-secret".into(),
+            }
+        ),
+        format!(
+            "{:?}",
+            ClientMessage::Signal {
+                to: test_uuid(2),
+                generation: Some(test_uuid(3)),
+                signal: serde_json::json!({ "Offer": "sdp-ice-secret" }),
+            }
+        ),
+        format!("{:?}", ServerMessage::RoomJoined(Box::new(joined))),
+        format!(
+            "{:?}",
+            ServerMessage::GameStarting {
+                peer_connections: vec![peer],
+            }
+        ),
+        format!(
+            "{:?}",
+            ServerMessage::GameData {
+                from_player: test_uuid(2),
+                data: serde_json::json!({ "value": "application-secret" }),
+                seq: None,
+                epoch: None,
+                class: None,
+                key: None,
+            }
+        ),
+        format!("{:?}", PeerSignal::Offer("sdp-ice-secret".into())),
+        format!("{:?}", TransportFrame::Text("application-secret".into())),
+        format!(
+            "{:?}",
+            TransportFrame::Binary(b"application-secret".to_vec())
+        ),
+        format!(
+            "{:?}",
+            V2BinaryGameDataFrame {
+                from_player: test_uuid(2),
+                encoding: GameDataEncoding::MessagePack,
+                payload: b"application-secret".to_vec(),
+            }
+        ),
+        format!(
+            "{:?}",
+            V3BinaryGameDataFrame {
+                from_player: test_uuid(2),
+                encoding: GameDataEncoding::MessagePack,
+                payload: b"application-secret".to_vec(),
+                seq: 1,
+                epoch: 1,
+            }
+        ),
+        format!(
+            "{:?}",
+            TransportCloseInfo {
+                reason: Some("application-secret".into()),
+                ..TransportCloseInfo::default()
+            }
+        ),
+    ];
+    for output in outputs {
+        assert_redacted(output);
+    }
 }

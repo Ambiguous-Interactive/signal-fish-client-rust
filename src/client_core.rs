@@ -23,10 +23,18 @@ pub(crate) struct FrameOutcome {
     pub(crate) disconnect: bool,
 }
 
-#[derive(Debug)]
 pub(crate) enum CoreCommand {
     Message(ClientMessage),
     Binary(Vec<u8>),
+}
+
+impl std::fmt::Debug for CoreCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Message(_) => "Message",
+            Self::Binary(_) => "Binary",
+        })
+    }
 }
 
 pub(crate) enum ClientOperation {
@@ -51,6 +59,16 @@ pub(crate) enum ClientOperation {
 pub(crate) enum SignalGeneration {
     Current,
     Exact(Option<SessionGeneration>),
+    #[cfg(feature = "tokio-runtime")]
+    Bound {
+        generation: Option<SessionGeneration>,
+        plan_revision: u64,
+    },
+}
+
+#[cfg(feature = "tokio-runtime")]
+pub(crate) struct ReliableOperationBinding {
+    room_revision: Option<u64>,
 }
 
 impl FrameOutcome {
@@ -73,6 +91,10 @@ pub(crate) struct ClientCore {
     violation_policy: ProtocolViolationPolicy,
     accountability: DeliveryAccountability,
     session_plan_seen: bool,
+    #[cfg(feature = "tokio-runtime")]
+    session_plan_revision: u64,
+    #[cfg(feature = "tokio-runtime")]
+    room_revision: u64,
 }
 
 impl ClientCore {
@@ -106,6 +128,10 @@ impl ClientCore {
             violation_policy,
             accountability: DeliveryAccountability::new(false),
             session_plan_seen: false,
+            #[cfg(feature = "tokio-runtime")]
+            session_plan_revision: 0,
+            #[cfg(feature = "tokio-runtime")]
+            room_revision: 0,
         }
     }
 
@@ -151,11 +177,11 @@ impl ClientCore {
         self.snapshot.room_code.as_deref()
     }
 
-    pub(crate) fn prepare(&self, operation: ClientOperation) -> crate::error::Result<CoreCommand> {
+    pub(crate) fn validate(&self, operation: &ClientOperation) -> crate::error::Result<()> {
         if !self.is_connected() {
             return Err(crate::SignalFishError::NotConnected);
         }
-        match &operation {
+        match operation {
             ClientOperation::GameData(_, GameDataDelivery::Latest { .. })
             | ClientOperation::GameData(_, GameDataDelivery::Volatile)
             | ClientOperation::Binary(_)
@@ -169,6 +195,86 @@ impl ClientCore {
         {
             return Err(crate::SignalFishError::BinaryFormatNotNegotiated);
         }
+        match operation {
+            ClientOperation::Signal(_, requested_generation, _)
+            | ClientOperation::RawSignal(_, requested_generation, _) => {
+                if !self.session_plan_seen {
+                    return Err(crate::SignalFishError::SessionPlanUnavailable);
+                }
+                let (stale, attempted) = match requested_generation {
+                    SignalGeneration::Current => (false, None),
+                    SignalGeneration::Exact(generation) => {
+                        (*generation != self.snapshot.session_generation, *generation)
+                    }
+                    #[cfg(feature = "tokio-runtime")]
+                    SignalGeneration::Bound {
+                        generation,
+                        plan_revision,
+                    } => (
+                        *generation != self.snapshot.session_generation
+                            || (generation.is_none()
+                                && *plan_revision != self.session_plan_revision),
+                        *generation,
+                    ),
+                };
+                if stale {
+                    return Err(crate::SignalFishError::StaleSessionGeneration {
+                        attempted,
+                        current: self.snapshot.session_generation,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn bind_reliable_operation(
+        &self,
+        operation: &mut ClientOperation,
+    ) -> ReliableOperationBinding {
+        let room_scoped = matches!(
+            operation,
+            ClientOperation::GameData(..)
+                | ClientOperation::Binary(_)
+                | ClientOperation::Signal(..)
+                | ClientOperation::RawSignal(..)
+        );
+        match operation {
+            ClientOperation::Signal(_, generation, _)
+            | ClientOperation::RawSignal(_, generation, _) => {
+                if matches!(generation, SignalGeneration::Current) {
+                    *generation = SignalGeneration::Bound {
+                        generation: self.snapshot.session_generation,
+                        plan_revision: self.session_plan_revision,
+                    };
+                }
+            }
+            _ => {}
+        }
+        ReliableOperationBinding {
+            room_revision: room_scoped.then_some(self.room_revision),
+        }
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn prepare_reliable(
+        &self,
+        operation: ClientOperation,
+        binding: ReliableOperationBinding,
+    ) -> crate::error::Result<CoreCommand> {
+        if binding
+            .room_revision
+            .is_some_and(|revision| revision != self.room_revision)
+        {
+            return Err(crate::SignalFishError::NotInRoom);
+        }
+        self.prepare(operation)
+    }
+
+    pub(crate) fn prepare(&self, operation: ClientOperation) -> crate::error::Result<CoreCommand> {
+        self.validate(&operation)?;
         let message = match operation {
             ClientOperation::JoinRoom(params) => ClientMessage::JoinRoom {
                 game_name: params.game_name,
@@ -215,20 +321,11 @@ impl ClientCore {
             ClientOperation::LeaveSpectator => ClientMessage::LeaveSpectator,
             ClientOperation::Ping => ClientMessage::Ping,
             ClientOperation::Signal(to, requested_generation, signal) => {
-                if !self.session_plan_seen {
-                    return Err(crate::SignalFishError::SessionPlanUnavailable);
-                }
                 let generation = match requested_generation {
                     SignalGeneration::Current => self.snapshot.session_generation,
-                    SignalGeneration::Exact(generation) => {
-                        if generation != self.snapshot.session_generation {
-                            return Err(crate::SignalFishError::StaleSessionGeneration {
-                                attempted: generation,
-                                current: self.snapshot.session_generation,
-                            });
-                        }
-                        generation
-                    }
+                    SignalGeneration::Exact(generation) => generation,
+                    #[cfg(feature = "tokio-runtime")]
+                    SignalGeneration::Bound { generation, .. } => generation,
                 };
                 ClientMessage::Signal {
                     to,
@@ -237,20 +334,11 @@ impl ClientCore {
                 }
             }
             ClientOperation::RawSignal(to, requested_generation, signal) => {
-                if !self.session_plan_seen {
-                    return Err(crate::SignalFishError::SessionPlanUnavailable);
-                }
                 let generation = match requested_generation {
                     SignalGeneration::Current => self.snapshot.session_generation,
-                    SignalGeneration::Exact(generation) => {
-                        if generation != self.snapshot.session_generation {
-                            return Err(crate::SignalFishError::StaleSessionGeneration {
-                                attempted: generation,
-                                current: self.snapshot.session_generation,
-                            });
-                        }
-                        generation
-                    }
+                    SignalGeneration::Exact(generation) => generation,
+                    #[cfg(feature = "tokio-runtime")]
+                    SignalGeneration::Bound { generation, .. } => generation,
                 };
                 ClientMessage::Signal {
                     to,
@@ -568,8 +656,7 @@ impl ClientCore {
                         None
                     }
                 }) {
-                    self.snapshot.session_generation = generation;
-                    self.session_plan_seen = true;
+                    self.replace_session_plan(generation);
                 }
             }
             ServerMessage::SpectatorJoined(payload) => {
@@ -582,8 +669,7 @@ impl ClientCore {
             }
             ServerMessage::SpectatorLeft { .. } => self.clear_room(),
             ServerMessage::SessionPlan(payload) => {
-                self.snapshot.session_generation = payload.generation;
-                self.session_plan_seen = true;
+                self.replace_session_plan(payload.generation);
             }
             ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
                 self.stats.game_data_received = self.stats.game_data_received.saturating_add(1);
@@ -606,6 +692,8 @@ impl ClientCore {
         self.snapshot.session_generation = None;
         self.snapshot.quarantined = false;
         self.session_plan_seen = false;
+        #[cfg(feature = "tokio-runtime")]
+        self.advance_room_revision();
     }
 
     fn clear_room(&mut self) {
@@ -616,5 +704,25 @@ impl ClientCore {
         self.snapshot.session_generation = None;
         self.snapshot.quarantined = false;
         self.session_plan_seen = false;
+        #[cfg(feature = "tokio-runtime")]
+        self.advance_room_revision();
+    }
+
+    fn replace_session_plan(&mut self, generation: Option<SessionGeneration>) {
+        self.snapshot.session_generation = generation;
+        self.session_plan_seen = true;
+        #[cfg(feature = "tokio-runtime")]
+        self.advance_session_plan_revision();
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    fn advance_session_plan_revision(&mut self) {
+        self.session_plan_revision = self.session_plan_revision.wrapping_add(1);
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    fn advance_room_revision(&mut self) {
+        self.room_revision = self.room_revision.wrapping_add(1);
+        self.advance_session_plan_revision();
     }
 }

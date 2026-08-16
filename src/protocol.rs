@@ -215,7 +215,7 @@ pub enum MessageTransport {
 }
 
 /// Connection information for P2P establishment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ConnectionInfo {
     /// Direct IP:port connection (for Mirror, FishNet, Unity NetCode direct).
@@ -255,6 +255,21 @@ pub enum ConnectionInfo {
     /// Custom connection data (extensible for other types).
     #[serde(rename = "custom")]
     Custom { data: serde_json::Value },
+}
+
+impl std::fmt::Debug for ConnectionInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Relay credentials and WebRTC descriptions contain authentication
+        // material. Keep Debug useful for variant identification without
+        // exposing any variant payload.
+        f.write_str(match self {
+            Self::Direct { .. } => "ConnectionInfo::Direct",
+            Self::UnityRelay { .. } => "ConnectionInfo::UnityRelay",
+            Self::Relay { .. } => "ConnectionInfo::Relay",
+            Self::WebRTC { .. } => "ConnectionInfo::WebRTC",
+            Self::Custom { .. } => "ConnectionInfo::Custom",
+        })
+    }
 }
 
 /// Describes why a spectator state change occurred.
@@ -401,7 +416,7 @@ pub struct PlayerNameRulesPayload {
 ///
 /// `username`/`credential` are present only for TURN servers; bare STUN entries
 /// omit them, keeping the wire bytes minimal.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IceServer {
     /// STUN/TURN URLs (e.g. `stun:stun.l.google.com:19302`).
     pub urls: Vec<String>,
@@ -411,6 +426,14 @@ pub struct IceServer {
     /// TURN credential (omitted for credential-less STUN servers).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+}
+
+impl std::fmt::Debug for IceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TURN URLs can embed userinfo, and both explicit fields are
+        // credentials. Callers can inspect them deliberately after matching.
+        f.write_str("IceServer { <credentials redacted> }")
+    }
 }
 
 /// A peer the recipient should connect to within a [`SessionPlanPayload`] (protocol v3).
@@ -445,7 +468,7 @@ pub struct DirectEndpoint {
 
 /// Payload for the `RoomJoined` server message.
 /// Boxed in `ServerMessage` to reduce enum size.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RoomJoinedPayload {
     pub room_id: RoomId,
     pub room_code: String,
@@ -472,9 +495,15 @@ pub struct RoomJoinedPayload {
     pub reconnection_token: Option<String>,
 }
 
+impl std::fmt::Debug for RoomJoinedPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RoomJoinedPayload { <credentials redacted> }")
+    }
+}
+
 /// Payload for the `Reconnected` server message.
 /// Boxed in `ServerMessage` to reduce enum size.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ReconnectedPayload {
     pub room_id: RoomId,
     pub room_code: String,
@@ -505,6 +534,12 @@ pub struct ReconnectedPayload {
     /// Fresh token replacing the consumed reconnect token (v3 only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconnection_token: Option<String>,
+}
+
+impl std::fmt::Debug for ReconnectedPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReconnectedPayload { <credentials redacted> }")
+    }
 }
 
 /// Payload for the `SpectatorJoined` server message.
@@ -563,7 +598,7 @@ pub struct SessionPlanPayload {
 // ── Messages ────────────────────────────────────────────────────────
 
 /// Message types sent from client to server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientMessage {
     /// Authenticate with App ID (MUST be first message).
@@ -688,8 +723,32 @@ pub enum ClientMessage {
     },
 }
 
+impl std::fmt::Debug for ClientMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Commands can carry reconnect/relay credentials, WebRTC handshake
+        // secrets, and arbitrary application data. Debug exposes only the
+        // exhaustive wire variant.
+        f.write_str(match self {
+            Self::Authenticate { .. } => "Authenticate",
+            Self::JoinRoom { .. } => "JoinRoom",
+            Self::LeaveRoom => "LeaveRoom",
+            Self::GameData { .. } => "GameData",
+            Self::AuthorityRequest { .. } => "AuthorityRequest",
+            Self::PlayerReady => "PlayerReady",
+            Self::ProvideConnectionInfo { .. } => "ProvideConnectionInfo",
+            Self::Ping => "Ping",
+            Self::Reconnect { .. } => "Reconnect",
+            Self::JoinAsSpectator { .. } => "JoinAsSpectator",
+            Self::LeaveSpectator => "LeaveSpectator",
+            Self::StartGame => "StartGame",
+            Self::Signal { .. } => "Signal",
+            Self::TransportStatus { .. } => "TransportStatus",
+        })
+    }
+}
+
 /// Message types sent from server to client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerMessage {
     /// Authentication successful.
@@ -896,6 +955,46 @@ pub enum ServerMessage {
     },
     /// Exact delivery accountability (protocol v3 only).
     DeliveryReport(Box<DeliveryReportPayload>),
+}
+
+impl std::fmt::Debug for ServerMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Server frames can carry rotated reconnect tokens, TURN credentials,
+        // peer connection secrets, signaling values, and application data.
+        f.write_str(match self {
+            Self::Authenticated { .. } => "Authenticated",
+            Self::ProtocolInfo(_) => "ProtocolInfo",
+            Self::AuthenticationError { .. } => "AuthenticationError",
+            Self::RoomJoined(_) => "RoomJoined",
+            Self::RoomJoinFailed { .. } => "RoomJoinFailed",
+            Self::RoomLeft => "RoomLeft",
+            Self::PlayerJoined { .. } => "PlayerJoined",
+            Self::PlayerLeft { .. } => "PlayerLeft",
+            Self::GameData { .. } => "GameData",
+            Self::GameDataBinary { .. } => "GameDataBinary",
+            Self::AuthorityChanged { .. } => "AuthorityChanged",
+            Self::AuthorityResponse { .. } => "AuthorityResponse",
+            Self::LobbyStateChanged { .. } => "LobbyStateChanged",
+            Self::GameStarting { .. } => "GameStarting",
+            Self::Pong => "Pong",
+            Self::Reconnected(_) => "Reconnected",
+            Self::ReconnectionFailed { .. } => "ReconnectionFailed",
+            Self::PlayerReconnected { .. } => "PlayerReconnected",
+            Self::SpectatorJoined(_) => "SpectatorJoined",
+            Self::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
+            Self::SpectatorLeft { .. } => "SpectatorLeft",
+            Self::NewSpectatorJoined { .. } => "NewSpectatorJoined",
+            Self::SpectatorDisconnected { .. } => "SpectatorDisconnected",
+            Self::Error { .. } => "Error",
+            Self::Signal { .. } => "Signal",
+            Self::NewPeer { .. } => "NewPeer",
+            Self::SessionPlan(_) => "SessionPlan",
+            Self::PeerTransportStatus { .. } => "PeerTransportStatus",
+            Self::RelayStats { .. } => "RelayStats",
+            Self::GoingAway { .. } => "GoingAway",
+            Self::DeliveryReport(_) => "DeliveryReport",
+        })
+    }
 }
 
 /// Preserve omission as `None` while rejecting explicit `null`.

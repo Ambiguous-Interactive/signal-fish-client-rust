@@ -116,7 +116,9 @@ The minimum and latest Godot fixtures therefore remain deliberately standalone
 and are updated only with their locked compatibility/browser E2E evidence;
 putting them in the root workspace would unify incompatible Godot types and
 expand ordinary `--workspace --all-features` builds into engine-dependent
-fixtures. A fresh default-branch root updater run remains required hosted proof.
+fixtures. Default-branch updater run 31969079956 subsequently completed
+successfully on the root workspace, discovered the adapter dependencies,
+reported no resolution errors, and opened no Cargo PR.
 
 ## Architecture — Core Modules
 
@@ -137,7 +139,7 @@ fixtures. A fresh default-branch root updater run remains required hosted proof.
 | `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
-| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 34 fake-backend tests |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 35 fake-backend tests |
 
 ### Transport Trait
 
@@ -164,6 +166,21 @@ admission purposes; it is not peer delivery and never requires the socket-wide
 buffered byte count to reach zero. `Pending` before acceptance leaves the
 caller's `Option` intact. Close polling is idempotent. See
 `skills/transport-abstraction/SKILL.md`.
+
+The async driver retains an in-flight send in its main select loop and polls
+send and receive with the same runtime waker, so outbound backpressure cannot
+hide inbound frames, peer close, or shutdown. Once a transport takes ownership
+of a frame, graceful termination finishes that send before close under the
+configured deadline; expiry invokes `Transport::abort`. Terminal core
+state/event delivery and close progress are concurrent, so a full event channel
+cannot strand the backend.
+
+Public `Debug` and built-in transport tracing form an ambient-log boundary:
+reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data,
+buffered protocol frames, peer close reasons, and URL userinfo/query values
+must never be formatted. Safe diagnostics expose only variants, state flags,
+identifiers where appropriate, and byte lengths. Wire serialization and
+explicit public-field access remain unchanged.
 
 The Emscripten transport reports `Pending` while its browser WebSocket is still
 connecting and must not call `emscripten_websocket_send_*` or consume the

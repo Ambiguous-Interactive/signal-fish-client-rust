@@ -9,7 +9,7 @@ use std::task::{Context, Poll};
 use crate::error::SignalFishError;
 
 /// One complete signaling transport frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum TransportFrame {
     /// JSON protocol message.
     Text(String),
@@ -17,8 +17,22 @@ pub enum TransportFrame {
     Binary(Vec<u8>),
 }
 
+impl std::fmt::Debug for TransportFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Frames can contain every credential and application payload in the
+        // protocol. Length is safe and still useful for transport diagnostics.
+        match self {
+            Self::Text(text) => f.debug_struct("Text").field("bytes", &text.len()).finish(),
+            Self::Binary(bytes) => f
+                .debug_struct("Binary")
+                .field("bytes", &bytes.len())
+                .finish(),
+        }
+    }
+}
+
 /// Structured metadata for a terminal transport close.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct TransportCloseInfo {
     /// Protocol close code, when supplied by the peer.
     pub code: Option<u16>,
@@ -28,6 +42,18 @@ pub struct TransportCloseInfo {
     pub clean: Option<bool>,
     /// True when the peer initiated the close.
     pub initiated_by_peer: bool,
+}
+
+impl std::fmt::Debug for TransportCloseInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Close reasons are peer-controlled and can contain arbitrary text.
+        f.debug_struct("TransportCloseInfo")
+            .field("code", &self.code)
+            .field("has_reason", &self.reason.is_some())
+            .field("clean", &self.clean)
+            .field("initiated_by_peer", &self.initiated_by_peer)
+            .finish()
+    }
 }
 
 /// Scheduling and buffering diagnostics reported by a transport.
@@ -143,6 +169,7 @@ where
 
 /// Drive one transport send to completion from an async runtime.
 #[cfg(feature = "tokio-runtime")]
+#[cfg(test)]
 pub(crate) async fn send_frame<T: Transport + ?Sized>(
     transport: &mut T,
     frame: TransportFrame,
@@ -153,6 +180,7 @@ pub(crate) async fn send_frame<T: Transport + ?Sized>(
 
 /// Await one inbound transport frame.
 #[cfg(feature = "tokio-runtime")]
+#[cfg(test)]
 pub(crate) async fn recv_frame<T: Transport + ?Sized>(
     transport: &mut T,
 ) -> Option<Result<TransportFrame, SignalFishError>> {

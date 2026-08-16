@@ -69,7 +69,7 @@ were delivered by PR #91 and closed when it merged as `963a9fc`.
   Sync, but merged without the approval and quota-green state it explicitly
   required. That governance failure remains tracked in issue #90.
 
-## Current Correctness Follow-up — FFI and Dependency Automation
+## Completed Correctness Follow-up — FFI and Dependency Automation
 
 - Emscripten callback state is reclaimed only when its owner consumes a typed
   authorization produced after native close was attempted or observed and browser callback
@@ -86,22 +86,42 @@ were delivered by PR #91 and closed when it merged as `963a9fc`.
   file set. The corrective updater now starts only at `/`, where Cargo
   discovers the adapter workspace member. The exact minimum/latest Godot
   fixtures stay standalone and are maintained through their dedicated locked
-  E2E compatibility evidence. Issue #95 tracks fresh default-branch proof.
+  E2E compatibility evidence. Post-merge root-workspace updater run
+  [31969079956](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/runs/31969079956)
+  completed successfully on `main`, discovered both workspace crates, reported
+  no dependency-resolution errors, and opened no Cargo PR. This satisfies the
+  hosted proof tracked by issue #95.
 - The checked-in `GITHUB_TOKEN` Dependabot auto-merge path is removed. Until
   issue #90 is fixed, dependency PRs must not bypass review/check policy or
   suppress CI for their merge SHA.
 
-## Next Major Milestone — Correctness Code Study
+## Completed Correctness Study — First Hardening Slice
 
 Track [issue #97](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/97).
 
-- Audit the implementation, public API, distributed-state behavior, network
-  resilience, server/reference-client parity, and unexpected-input handling.
-- Decompose the broad study into bounded subsystem matrices with an explicit
-  invariant, authoritative reference, executable evidence, and follow-up issue
-  for every unresolved finding.
-- Fix correctness defects before usability, performance, or presentation work;
-  do not treat an absence of current test failures as proof of completeness.
+- Audited protocol/state, public API, transport/network behavior, the pinned
+  Server 0.7 contract, and native/browser reference-client assumptions through
+  three independent subsystem matrices and adversarial review loops.
+- Fixed stale reliable signaling and game data across queue waits, including
+  legacy generation-less plans and room changes; async send/receive/close
+  liveness; and the ambient `Debug`/tracing credential and payload leak class.
+- Decomposed every unresolved finding into issues #99–#107 with explicit
+  invariants and executable acceptance evidence. Session 026 records the
+  finding matrix and proof.
+
+## Next Correctness Milestone — Protocol State Validation
+
+Start with [issue #99](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/99),
+then #100 and #101.
+
+- Reject lifecycle-invalid v3/room messages before they mutate shared state.
+- Validate authoritative SessionPlan cross-field shapes and peer membership
+  against the pinned Server 0.7 contract.
+- Track negotiated effective game-data encoding separately from the requested
+  preference, then make reconnect restoration atomic across negotiation,
+  accountability, membership, and plan state.
+- Continue correctness work through #102–#107 before usability, performance,
+  token binding, or presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding
 

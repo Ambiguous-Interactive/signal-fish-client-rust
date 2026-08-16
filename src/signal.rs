@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(back, offer);
 /// # Ok::<(), serde_json::Error>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeerSignal {
     /// An SDP offer.
     Offer(String),
@@ -48,6 +48,18 @@ pub enum PeerSignal {
     Answer(String),
     /// A single ICE candidate (trickle ICE).
     IceCandidate(String),
+}
+
+impl std::fmt::Debug for PeerSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SDP and ICE candidates contain handshake credentials and network
+        // metadata. Expose only the signal kind through ambient Debug logs.
+        f.write_str(match self {
+            Self::Offer(_) => "Offer",
+            Self::Answer(_) => "Answer",
+            Self::IceCandidate(_) => "IceCandidate",
+        })
+    }
 }
 
 impl From<PeerSignal> for serde_json::Value {
