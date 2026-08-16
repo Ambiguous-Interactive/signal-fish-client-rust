@@ -55,9 +55,11 @@ update behind zero-file PR #96, and restore truthful roadmap evidence.
   Clippy with `-D warnings`, and workspace/all-feature tests.
 - `scripts/check-all.sh --quick` passed formatting, the FFI safety policy,
   three Clippy feature combinations, and three test feature combinations.
-- PR #98 is ready for review with all twelve workflows and all eleven required
-  aggregates green. Its 54-check inventory contains no failures, and it has no
-  comments, reviews, or unresolved threads.
+- PR #98 is ready for review with all twelve project workflows and all eleven
+  required aggregates green. The repository's non-required automated Copilot
+  review check failed twice because the configured account has exhausted its
+  quota; it produced no actionable feedback or unresolved threads and remains
+  an issue #90 maintainer-administration blocker.
 
 ## Hosted Follow-up
 
