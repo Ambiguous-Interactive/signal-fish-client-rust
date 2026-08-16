@@ -1177,6 +1177,24 @@ fn malformed_session_generation_is_rejected() {
 }
 
 #[test]
+fn explicit_null_session_generations_are_rejected() {
+    let session_plan = r#"{"type":"SessionPlan","data":{"generation":null,"topology":"mesh","transport":"webrtc","peers":[],"fallback":"relay"}}"#;
+    assert!(serde_json::from_str::<ServerMessage>(session_plan).is_err());
+
+    let client_signal = format!(
+        r#"{{"type":"Signal","data":{{"to":"{}","generation":null,"signal":{{"Offer":"legacy"}}}}}}"#,
+        test_uuid(2)
+    );
+    assert!(serde_json::from_str::<ClientMessage>(&client_signal).is_err());
+
+    let server_signal = format!(
+        r#"{{"type":"Signal","data":{{"from":"{}","generation":null,"signal":{{"Answer":"legacy"}}}}}}"#,
+        test_uuid(2)
+    );
+    assert!(serde_json::from_str::<ServerMessage>(&server_signal).is_err());
+}
+
+#[test]
 fn client_message_start_game_unit_variant_has_no_data() {
     let json = serde_json::to_string(&ClientMessage::StartGame).expect("ser");
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");

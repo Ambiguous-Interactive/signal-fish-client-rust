@@ -10,31 +10,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added Signal Fish Server 0.7.0 protocol conformance, including
-  `SessionGeneration`, `DirectEndpoint`, generation-bearing session/signal
-  events and snapshots, `MeshSession` accessors, typed
-  `UNSUPPORTED_PROTOCOL_VERSION`, and a pinned live server generation/replan
-  smoke. The six error codes no longer emitted by 0.7 remain available through
-  `ErrorCode::NON_EMITTED` for older-server compatibility.
-- Added generation-bound typed and raw signal sends so custom drivers can
+  `SessionGeneration`, `DirectEndpoint::{host, port}`,
+  `SessionPlanPayload::generation`, `SessionPlanPayload::direct_endpoint`,
+  `ClientMessage::Signal::generation`, `ServerMessage::Signal::generation`,
+  `SignalFishEvent::SessionPlan::{generation, direct_endpoint}`,
+  `SignalFishEvent::SignalReceived::generation`,
+  `ClientSnapshot::session_generation`,
+  `MeshSession::generation`, `MeshSession::direct_endpoint`,
+  generation fields on `DriverEvent::Signal`, `DriverEvent::Connected`,
+  `DriverEvent::Disconnected`, and `DriverEvent::Data`,
+  `ErrorCode::UnsupportedProtocolVersion`,
+  `SignalFishError::SessionPlanUnavailable`, and
+  `SignalFishError::StaleSessionGeneration::{attempted, current}`. Added
+  `ErrorCode::NON_EMITTED` to identify the six error variants retained for
+  older-server compatibility but no longer emitted by 0.7.
+- Added generation-bound `send_signal_for_generation` and
+  `send_raw_signal_for_generation` methods to `SignalFishClient`,
+  `SignalFishPollingClient`, and `SignalFishClientApi`, so custom drivers can
   atomically refuse stale output when a replacement session plan races their
   event loop.
 
 ### Changed
 
+- **Breaking:** the new fields and variants listed above change exhaustive
+  struct literals and matches. `SignalFishClientApi` implementors must add the
+  two generation-bound send methods. These APIs require the forthcoming 0.11
+  release; published 0.10 does not expose them.
 - **Breaking:** `WebRtcDriver::connect`/`on_signal` and every `DriverEvent`
   carry the authoritative session generation. `MeshController` now rebuilds
   every retained peer when a generation changes, discards stale inbound,
   buffered, and driver-produced signals, rejects senders outside the current
   plan, and never routes `Direct` or `Relay` plans through a WebRTC driver.
-  Protocol-v3 signal sends before the first `SessionPlan` now fail locally with
-  `SignalFishError::SessionPlanUnavailable`. Generation-less server 0.4 plans
-  and signals remain supported adaptively.
+  Protocol-v3 signal sends before the first `SessionPlan` now fail locally.
+  Generation-less server 0.4 plans and signals remain supported adaptively.
 
 ### Fixed
 
-- Fixed the required Godot browser matrix starting Signal Fish Server 0.7 with
-  its restrictive default origin allowlist, which rejected the harness's
-  ephemeral HTTP origin before the WebSocket protocol handshake.
+- Fixed explicit JSON `null` generations being interpreted as legacy omitted
+  generations. Omission remains accepted only for Server 0.4 compatibility;
+  present generations must decode as UUIDs.
 - Fixed protocol-v3 accountability rejecting coalesced or mixed-reason
   `unsupported_format` gap reports emitted by newer Signal Fish servers;
   optional rate-limited advisories now require a prior causal report without

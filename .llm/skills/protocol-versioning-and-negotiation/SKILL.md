@@ -67,7 +67,8 @@ universal v2 change.
 Signal sends additionally require a `SessionPlan`: before one arrives they
 return `SignalFishError::SessionPlanUnavailable`. Server 0.6+ plans/signals use
 a UUID generation. Keep it optional on the wire solely for 0.4 compatibility;
-stamp outgoing signals from the current plan and discard stale inbound ones.
+omission decodes as `None`, but a present `null` or malformed UUID must fail.
+Stamp outgoing signals from the current plan and discard stale inbound ones.
 
 The guard threshold is `>= 3` (the version that introduced mesh signaling), NOT
 `>= PROTOCOL_VERSION` — a future SDK version bump must not reject a v3-negotiated

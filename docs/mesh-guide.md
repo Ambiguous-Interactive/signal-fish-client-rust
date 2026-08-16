@@ -11,8 +11,11 @@ drive the whole handshake for you.
     `tokio-runtime` feature.
 
     ```toml
-    signal-fish-client = { version = "0.10.0", features = ["mesh"] }
+    signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", features = ["mesh"] }
     ```
+
+    The generation-bearing Server 0.7 APIs in this guide target the forthcoming
+    breaking 0.11 release. Published 0.10.0 does not contain them.
 
 ---
 

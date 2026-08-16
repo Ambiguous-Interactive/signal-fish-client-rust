@@ -128,8 +128,9 @@ one universal v2 change and is **not** guarded.
 
 ### Topology and transport
 
-When the server forms a non-relay session it sends a `SessionPlan` naming the
-chosen **topology** and data-path **transport**:
+When the server finalizes a v3 session it sends a `SessionPlan` naming the
+chosen **topology** and data-path **transport**. This includes an explicit
+relay/relay plan that resets any prior peer-to-peer state:
 
 | `Topology` | Meaning |
 |------------|---------|

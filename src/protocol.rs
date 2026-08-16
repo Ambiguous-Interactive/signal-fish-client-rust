@@ -535,7 +535,11 @@ pub struct SessionPlanPayload {
     ///
     /// Server 0.7 and newer always send this. `None` represents the legacy
     /// Server 0.4 protocol-v3 shape so those deployments remain decodable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
     pub generation: Option<SessionGeneration>,
     /// Chosen session topology (`relay`, `host`, or `mesh`).
     pub topology: Topology,
@@ -647,8 +651,9 @@ pub enum ClientMessage {
     ///
     /// Accepted only when every current player is ready. If the room has a
     /// designated authority, only that authority may start; otherwise any
-    /// member may. On success the server broadcasts `GameStarting` (and, for a
-    /// negotiated v3 non-relay room, a per-recipient `SessionPlan`).
+    /// member may. On success the server broadcasts `GameStarting` and, for a
+    /// negotiated v3 room, a per-recipient authoritative `SessionPlan`
+    /// (including an explicit relay plan when selected).
     StartGame,
     /// Relay an opaque WebRTC signal to a single peer.
     ///
@@ -662,7 +667,11 @@ pub enum ClientMessage {
         /// The recipient peer.
         to: PlayerId,
         /// Generation from the sender's latest authoritative session plan.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_present_optional"
+        )]
         generation: Option<SessionGeneration>,
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
@@ -836,7 +845,11 @@ pub enum ServerMessage {
         /// The peer the signal came from.
         from: PlayerId,
         /// Generation copied from the sender's authoritative session plan.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_present_optional"
+        )]
         generation: Option<SessionGeneration>,
         /// The opaque signal payload (offer/answer/ICE candidate).
         signal: serde_json::Value,
@@ -851,11 +864,11 @@ pub enum ServerMessage {
         /// Server-assigned; obey verbatim.
         you_initiate: bool,
     },
-    /// Per-recipient session plan for a finalized non-relay room.
+    /// Per-recipient authoritative session plan, including explicit relay resets.
     ///
     /// **Protocol v3 only.** Boxed to reduce enum size. May be received multiple
-    /// times (host re-election / late-join); each one fully replaces the
-    /// previous plan.
+    /// times (relay reset / host re-election / late join / reconnect replay);
+    /// each one fully replaces the previous plan.
     SessionPlan(Box<SessionPlanPayload>),
     /// A peer's data-path transport state changed. Informational.
     ///

@@ -459,10 +459,11 @@ pub struct SessionPeer {
 
 ### `SessionPlanPayload` (protocol v3)
 
-The per-recipient plan the server sends when a room finalizes to a non-relay
-session (delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3)
-event). Sent again on late-join or host re-election; each one **fully replaces**
-the previous plan.
+The per-recipient authoritative plan the server sends when a room finalizes
+(delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3) event).
+Relay plans can explicitly reset a prior peer-to-peer plan. A plan is also sent
+again on late join, host re-election, or reconnect replay; each one **fully
+replaces** the previous plan.
 
 ```rust,ignore
 pub struct SessionPlanPayload {
@@ -613,7 +614,7 @@ pub enum ServerMessage { /* ... */ }
 | `Error` | Generic server error. |
 | `Signal` | **(v3)** An opaque WebRTC signal relayed from a peer. |
 | `NewPeer` | **(v3)** A late-joining peer to connect to after the session was finalized. |
-| `SessionPlan` | **(v3)** The per-recipient session plan for a finalized non-relay room. |
+| `SessionPlan` | **(v3)** The per-recipient authoritative plan for a finalized room, including an explicit relay reset when selected. |
 | `PeerTransportStatus` | **(v3)** A peer's data-path transport state changed (informational). |
 | `DeliveryReport` | **(v3)** Cumulative per-class outcomes plus exact omitted sequence ranges. |
 | `RelayStats` | **(v3)** Optional cumulative connection-level relay diagnostics. |
