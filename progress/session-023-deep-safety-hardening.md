@@ -85,15 +85,23 @@ the now-merged Server 0.7 delivery.
    `cargo fmt`, workspace/all-target/all-feature Clippy with `-D warnings`, and
    workspace/all-feature tests (including 212 CI-policy and 125 protocol
    integration tests).
+7. PR #91 head `a61522c` passed all eleven required aggregate workflows. The
+   first Workflow Lint run exposed actionlint SC2317 on an indirectly invoked
+   trap handler; commit `85be886` replaced it with an equivalent inline EXIT
+   trap, and hosted Workflow Lint run 31954358998 passed.
+8. Change-scoped Protocol Sync run 31954359013 passed against the current
+   server samples and AsyncAPI spec. Deep Safety run 31954359008 passed all
+   three fail-closed jobs: Miri, mutation testing, and all-target fuzz smoke.
+9. Cursor Bugbot and the final independent adversarial review reported no
+   actionable findings or open threads. Copilot could not review because the
+   requesting account reached its quota; this is the external condition
+   already tracked in issue #90, not code feedback.
 
-## Hosted Work Remaining
+## Hosted Follow-up
 
-- Complete PR #91's required aggregates, change-scoped Deep Safety and Protocol
-  Sync runs, and resolve every actionable review finding.
+- Merge fully green PR #91; issues #78 and #84 close with it.
 - Confirm the combined Cargo updater succeeds after the configuration reaches
-  the default branch.
+  the default branch. Dependabot cannot execute PR-branch configuration.
 - Maintainer administration is still required for issue #90: restore the live
   ruleset, resolve the Copilot quota gate, and dispatch a green Repository
   Policy audit. The available connector can inspect but cannot mutate rulesets.
-- Close #78 only after hosted Deep Safety is green; close #84 as its duplicate
-  milestone at the same point.
