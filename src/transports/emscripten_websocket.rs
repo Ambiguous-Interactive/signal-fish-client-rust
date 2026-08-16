@@ -86,6 +86,7 @@ compile_error!(
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::mpsc as std_mpsc;
 
+use super::emscripten_cleanup::{CleanupState, DeleteAuthorization, ReclaimAuthorization};
 use crate::error::SignalFishError;
 use crate::transport::{poll_accept_frame, Transport, TransportCloseInfo, TransportFrame};
 
@@ -225,6 +226,37 @@ struct CallbackState {
     tx: std_mpsc::Sender<IncomingEvent>,
 }
 
+/// Owns callback state without freeing it in `Drop`. Reclamation requires the
+/// one-shot authorization produced by [`CleanupState`] after close was
+/// attempted and socket deletion succeeded. Without that proof, dropping this
+/// wrapper intentionally leaks the allocation so browser callbacks stay safe.
+struct RegisteredCallbackState(Option<std::ptr::NonNull<CallbackState>>);
+
+impl RegisteredCallbackState {
+    fn new(tx: std_mpsc::Sender<IncomingEvent>) -> Self {
+        let state = Box::new(CallbackState { tx });
+        Self(std::ptr::NonNull::new(Box::into_raw(state)))
+    }
+
+    fn as_ptr(&self) -> *mut CallbackState {
+        self.0
+            .map_or(std::ptr::null_mut(), std::ptr::NonNull::as_ptr)
+    }
+
+    const fn is_live(&self) -> bool {
+        self.0.is_some()
+    }
+
+    fn reclaim(&mut self, _authorization: ReclaimAuthorization) {
+        let Some(state_ptr) = self.0.take() else {
+            return;
+        };
+        // SAFETY: The non-forgeable authorization proves successful callback
+        // unregistration, and `take` makes this the allocation's sole reclaim.
+        unsafe { drop(Box::from_raw(state_ptr.as_ptr())) };
+    }
+}
+
 // ── Transport Struct ────────────────────────────────────────────────────────
 
 /// A [`Transport`] implementation backed by Emscripten's built-in WebSocket API.
@@ -255,14 +287,17 @@ struct CallbackState {
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,
-    /// Raw pointer to the `CallbackState`. Owned by this struct; reclaimed in `Drop`.
-    callback_state: *mut CallbackState,
+    /// Registered callback state while the browser may still dereference it.
+    /// Successful socket deletion yields the authorization that reclaims it;
+    /// a terminal deletion failure deliberately leaks it rather than exposing
+    /// callbacks to freed memory.
+    callback_state: RegisteredCallbackState,
     closed: bool,
     /// Whether the browser's `onopen` callback has fired.
     opened: bool,
-    /// Tracks whether `emscripten_websocket_delete` has been called, so `Drop`
-    /// does not double-delete the socket handle.
-    deleted: bool,
+    /// Target-independent close/delete ownership state. Logical receive errors
+    /// leave it unchanged so cleanup still attempts close before deletion.
+    cleanup: CleanupState,
     close_info: Option<TransportCloseInfo>,
     #[cfg(debug_assertions)]
     reported_non_noop_waker: bool,
@@ -292,8 +327,6 @@ impl EmscriptenWebSocketTransport {
         })?;
 
         let (tx, rx) = std_mpsc::channel();
-        let state = Box::new(CallbackState { tx });
-        let state_ptr = Box::into_raw(state);
 
         let attrs = EmscriptenWebSocketCreateAttributes {
             url: c_url.as_ptr(),
@@ -305,15 +338,15 @@ impl EmscriptenWebSocketTransport {
         // protocols pointer. The Emscripten runtime owns the returned socket handle.
         let socket = unsafe { emscripten_websocket_new(&attrs) };
         if socket <= 0 {
-            // Reclaim the leaked state before returning.
-            // SAFETY: `state_ptr` was created by `Box::into_raw` above and has not
-            // been aliased — the socket creation failed before any callbacks were registered.
-            unsafe { drop(Box::from_raw(state_ptr)) };
             return Err(SignalFishError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("emscripten_websocket_new failed with code {socket}"),
             )));
         }
+
+        let mut callback_state = RegisteredCallbackState::new(tx);
+        let state_ptr = callback_state.as_ptr();
+        let mut cleanup = CleanupState::new();
 
         // Register callbacks (all fire on the calling thread = main thread).
         //
@@ -328,12 +361,13 @@ impl EmscriptenWebSocketTransport {
         //    not yet freed it. The callback accesses `state_ptr` as a shared reference
         //    (`&*`) and returns before `close` returns.
         //
-        // 2. `emscripten_websocket_delete` unregisters ALL callbacks from the socket
-        //    handle. After this call returns, no further callback invocations can occur,
-        //    so no code path will dereference `state_ptr` again.
+        // 2. A successful `emscripten_websocket_delete` unregisters ALL callbacks
+        //    from the socket handle. Only that success proves no later callback
+        //    can dereference `state_ptr`.
         //
-        // 3. Only then do we reclaim `state_ptr` via `Box::from_raw`, which is now
-        //    the sole owner with no outstanding references.
+        // 3. Only after confirmed deletion do we reclaim the raw allocation.
+        //    A deletion failure intentionally leaks the state;
+        //    retaining memory is the only sound fallback while callbacks may live.
         //
         // This relies on the single-threaded execution model of wasm32-unknown-emscripten:
         // all callback invocations are synchronous on the main thread, so there is no
@@ -384,11 +418,24 @@ impl EmscriptenWebSocketTransport {
 
             for (name, result) in results {
                 if result != EMSCRIPTEN_RESULT_SUCCESS {
-                    emscripten_websocket_close(socket, 1000, std::ptr::null());
-                    emscripten_websocket_delete(socket);
-                    drop(Box::from_raw(state_ptr));
+                    let close_result = emscripten_websocket_close(socket, 1000, std::ptr::null());
+                    cleanup.record_close_result(close_result == EMSCRIPTEN_RESULT_SUCCESS);
+                    let Some(delete_authorization) = cleanup.delete_authorization() else {
+                        return Err(SignalFishError::Io(std::io::Error::other(format!(
+                            "emscripten_websocket_set_{name}_callback_on_thread failed: \
+                             {result}; cleanup close={close_result}, deletion not authorized"
+                        ))));
+                    };
+                    let delete_result = emscripten_websocket_delete(socket);
+                    if let Some(authorization) = cleanup.record_delete_result(
+                        delete_authorization,
+                        delete_result == EMSCRIPTEN_RESULT_SUCCESS,
+                    ) {
+                        callback_state.reclaim(authorization);
+                    }
                     return Err(SignalFishError::Io(std::io::Error::other(format!(
-                        "emscripten_websocket_set_{name}_callback_on_thread failed: {result}"
+                        "emscripten_websocket_set_{name}_callback_on_thread failed: {result}; \
+                         cleanup close={close_result}, delete={delete_result}"
                     ))));
                 }
             }
@@ -397,15 +444,81 @@ impl EmscriptenWebSocketTransport {
         Ok(Self {
             socket,
             incoming_rx: rx,
-            callback_state: state_ptr,
+            callback_state,
             closed: false,
             opened: false,
-            deleted: false,
+            cleanup,
             close_info: None,
             #[cfg(debug_assertions)]
             reported_non_noop_waker: false,
             _not_send: std::marker::PhantomData,
         })
+    }
+
+    /// Close the native socket once. A failed close remains retryable because
+    /// deletion has not yet proved that callbacks can no longer run.
+    fn close_native_socket(&mut self) -> Result<(), c_int> {
+        if !self.cleanup.needs_close() || !self.callback_state.is_live() {
+            return Ok(());
+        }
+        // SAFETY: `self.socket` remains live while `callback_state` is `Some`.
+        // A synchronous close callback can safely access that still-live state.
+        let result = unsafe { emscripten_websocket_close(self.socket, 1000, std::ptr::null()) };
+        self.cleanup
+            .record_close_result(result == EMSCRIPTEN_RESULT_SUCCESS);
+        if result == EMSCRIPTEN_RESULT_SUCCESS {
+            Ok(())
+        } else {
+            Err(result)
+        }
+    }
+
+    /// Obtain proof of the preceding close attempt/observation before calling
+    /// the native deletion helper.
+    fn delete_after_close_attempt(&mut self) -> Result<(), c_int> {
+        if !self.callback_state.is_live() {
+            return Ok(());
+        }
+        let Some(authorization) = self.cleanup.delete_authorization() else {
+            tracing::error!("callback deletion requested before native close");
+            return Err(-1);
+        };
+        self.delete_socket_and_reclaim_callbacks(authorization)
+    }
+
+    /// Unregister every callback and reclaim its state only after Emscripten
+    /// confirms deletion. On failure the pointer stays owned and live so a
+    /// later cleanup path can retry without risking use-after-free.
+    fn delete_socket_and_reclaim_callbacks(
+        &mut self,
+        delete_authorization: DeleteAuthorization,
+    ) -> Result<(), c_int> {
+        if !self.callback_state.is_live() {
+            return Ok(());
+        }
+        debug_assert!(self.cleanup.needs_delete());
+        // SAFETY: The registered callback allocation remains live in its
+        // owning wrapper while deletion runs.
+        let delete_result = unsafe { emscripten_websocket_delete(self.socket) };
+        if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+            let Some(authorization) = self
+                .cleanup
+                .record_delete_result(delete_authorization, true)
+            else {
+                tracing::error!(
+                    "successful socket deletion lacked close/reclamation authorization; callback state remains leaked"
+                );
+                return Err(-1);
+            };
+            self.callback_state.reclaim(authorization);
+            Ok(())
+        } else {
+            debug_assert!(self
+                .cleanup
+                .record_delete_result(delete_authorization, false)
+                .is_none());
+            Err(delete_result)
+        }
     }
 }
 
@@ -419,8 +532,9 @@ impl EmscriptenWebSocketTransport {
 // - `event` pointers are valid for the duration of the callback invocation.
 // - Callbacks are invoked synchronously on the main thread (single-threaded
 //   wasm32-unknown-emscripten execution model), so no data races are possible.
-// The `CallbackState` remains live until `emscripten_websocket_delete` unregisters
-// all callbacks, after which we reclaim it via `Box::from_raw` in `Drop`.
+// The `CallbackState` remains live until a successful
+// `emscripten_websocket_delete` unregisters all callbacks. Cleanup then reclaims
+// it exactly once; a terminal deletion failure intentionally leaks it.
 
 /// Copy callback-owned payload bytes without constructing a slice from a null
 /// pointer for an empty WebSocket frame.
@@ -622,6 +736,7 @@ impl Transport for EmscriptenWebSocketTransport {
                     reason,
                 }) => {
                     self.closed = true;
+                    self.cleanup.record_peer_close();
                     self.close_info = Some(TransportCloseInfo {
                         code: Some(code),
                         reason,
@@ -643,26 +758,19 @@ impl Transport for EmscriptenWebSocketTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
-        if self.closed {
-            return std::task::Poll::Ready(Ok(()));
-        }
         self.closed = true;
-        // SAFETY: `self.socket` is a live Emscripten WebSocket handle, and a null
-        // reason pointer is permitted when initiating a normal close.
-        let result = unsafe { emscripten_websocket_close(self.socket, 1000, std::ptr::null()) };
-        if result != EMSCRIPTEN_RESULT_SUCCESS {
-            tracing::warn!("emscripten_websocket_close returned {result}");
-        }
-        // SAFETY: This is the sole deletion path for the live handle; `closed`
-        // prevents subsequent transport operations and `deleted` is set below.
-        unsafe {
-            let delete_result = emscripten_websocket_delete(self.socket);
-            if delete_result != EMSCRIPTEN_RESULT_SUCCESS {
-                tracing::warn!("emscripten_websocket_delete returned {delete_result}");
-            }
-        }
-        self.deleted = true;
-        std::task::Poll::Ready(Ok(()))
+        let close_error = self.close_native_socket().err();
+        let delete_result = self.delete_after_close_attempt();
+        let result = match (close_error, delete_result) {
+            (_, Err(delete_result)) => Err(SignalFishError::TransportSend(format!(
+                "Emscripten WebSocket callback deletion failed: {delete_result}"
+            ))),
+            (Some(close_result), Ok(())) => Err(SignalFishError::TransportSend(format!(
+                "Emscripten WebSocket close failed: {close_result}"
+            ))),
+            (None, Ok(())) => Ok(()),
+        };
+        std::task::Poll::Ready(result)
     }
 
     fn is_ready(&self) -> bool {
@@ -674,26 +782,14 @@ impl Transport for EmscriptenWebSocketTransport {
     }
 
     fn abort(&mut self) {
-        let should_close = !self.closed;
         self.closed = true;
-        if should_close {
-            // SAFETY: `self.socket` is still a live Emscripten handle. The
-            // immediate delete below unregisters callbacks without waiting for
-            // the close handshake to finish.
-            unsafe {
-                emscripten_websocket_close(self.socket, 1000, std::ptr::null());
-            }
+        if let Err(result) = self.close_native_socket() {
+            tracing::warn!("emscripten_websocket_close returned {result}");
         }
-        if !self.deleted {
-            // SAFETY: deletion is guarded by `deleted` and unregisters every
-            // callback before `callback_state` is reclaimed by `Drop`.
-            unsafe {
-                let result = emscripten_websocket_delete(self.socket);
-                if result != EMSCRIPTEN_RESULT_SUCCESS {
-                    tracing::warn!("emscripten_websocket_delete returned {result}");
-                }
-            }
-            self.deleted = true;
+        if let Err(result) = self.delete_after_close_attempt() {
+            tracing::warn!(
+                "emscripten_websocket_delete returned {result}; callback state remains live for Drop retry"
+            );
         }
     }
 }
@@ -701,38 +797,13 @@ impl Transport for EmscriptenWebSocketTransport {
 
 impl Drop for EmscriptenWebSocketTransport {
     fn drop(&mut self) {
-        // Two code paths depending on whether `close()` was previously called:
-        //
-        // If `close()` was called, both `emscripten_websocket_close` and
-        // `emscripten_websocket_delete` have already run — all callbacks are
-        // unregistered. We skip straight to reclaiming `callback_state`.
-        //
-        // If `close()` was NOT called (e.g., the transport is dropped without
-        // explicit shutdown), we run the full close/delete/reclaim sequence.
-        if !self.closed {
-            // SAFETY: `self.socket` is a valid handle. `emscripten_websocket_close`
-            // initiates closure — if the onclose callback fires synchronously,
-            // `callback_state` is still valid since we have not freed it yet.
-            unsafe {
-                emscripten_websocket_close(self.socket, 1000, std::ptr::null());
-            }
+        if let Err(result) = self.close_native_socket() {
+            tracing::warn!("emscripten_websocket_close returned {result} during Drop");
         }
-        if !self.deleted {
-            // SAFETY: `emscripten_websocket_delete` unregisters all callbacks,
-            // preventing any further access to `callback_state` from the
-            // Emscripten event loop.
-            unsafe {
-                let result = emscripten_websocket_delete(self.socket);
-                if result != EMSCRIPTEN_RESULT_SUCCESS {
-                    tracing::warn!("emscripten_websocket_delete returned {result}");
-                }
-            }
-        }
-        // SAFETY: `callback_state` was created by `Box::into_raw` in `connect()`.
-        // All callbacks have been unregistered (either in `close()` or above),
-        // so no code path can dereference this pointer after this point.
-        unsafe {
-            drop(Box::from_raw(self.callback_state));
+        if let Err(result) = self.delete_after_close_attempt() {
+            tracing::error!(
+                "emscripten_websocket_delete returned {result} during Drop; intentionally leaking callback state to prevent use-after-free"
+            );
         }
     }
 }

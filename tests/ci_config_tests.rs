@@ -530,7 +530,6 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/publish.yml",
     ".github/workflows/prepare-release.yml",
     ".github/workflows/repository-policy.yml",
-    ".github/workflows/dependabot-auto-merge.yml",
     ".github/workflows/protocol-sync.yml",
 ];
 
@@ -2637,23 +2636,6 @@ mod workflow_security {
     }
 
     #[test]
-    fn dependabot_auto_merge_uses_squash_strategy() {
-        let contents = read_project_file(".github/workflows/dependabot-auto-merge.yml");
-
-        assert!(
-            contents.contains("gh pr merge --auto --squash \"$PR_URL\""),
-            "Dependabot auto-merge must use squash auto-merge because repository \
-             settings reject merge commits."
-        );
-
-        assert!(
-            !contents.contains(" --merge"),
-            "Dependabot auto-merge must not request merge commits; GitHub rejects \
-             `--merge` when merge commits are disabled for the repository."
-        );
-    }
-
-    #[test]
     fn check_workflows_script_enforces_msrv_toolchain_match() {
         let contents = read_project_file("scripts/check-workflows.sh");
 
@@ -3209,6 +3191,45 @@ mod safety_analysis_policy {
 mod dependency_policy {
     use super::*;
 
+    fn has_forbidden_dependabot_merge_workflow(contents: &str) -> bool {
+        let code = contents
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
+        let mentions_dependabot = code.contains("dependabot");
+        let targets_dependabot = code.contains("dependabot[bot]")
+            || ((code.contains("github.actor")
+                || code.contains("github.event.pull_request.user.login"))
+                && mentions_dependabot);
+        let enables_automated_merge = [
+            "--auto",
+            "auto-merge",
+            "automerge",
+            "enablepullrequestautomerge",
+            "mergepullrequest",
+            "pulls.merge",
+            "gh pr merge",
+            "/merge",
+        ]
+        .iter()
+        .any(|primitive| code.contains(primitive))
+            || code
+                .lines()
+                .any(|line| line.contains("uses:") && line.contains("merge"));
+        targets_dependabot || enables_automated_merge
+    }
+
+    fn workflow_requests_write(contents: &str) -> bool {
+        let code = contents.to_ascii_lowercase();
+        code.contains("permissions: write-all")
+            || code.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed.ends_with(": write") && !trimmed.starts_with('#')
+            })
+    }
+
     fn cargo_toml() -> toml::Value {
         let contents = read_project_file("Cargo.toml");
         toml::from_str(&contents).expect("Cargo.toml must be valid TOML")
@@ -3240,6 +3261,58 @@ mod dependency_policy {
     }
 
     #[test]
+    fn dependabot_github_token_auto_merge_is_disabled() {
+        let workflows = project_root().join(".github/workflows");
+        for entry in std::fs::read_dir(workflows).expect("workflow directory must be readable") {
+            let path = entry.expect("workflow entry must be readable").path();
+            if !matches!(
+                path.extension().and_then(std::ffi::OsStr::to_str),
+                Some("yml" | "yaml")
+            ) {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).expect("workflow must be readable");
+            assert!(
+                !has_forbidden_dependabot_merge_workflow(&contents),
+                "{} contains a forbidden Dependabot auto-merge mechanism; it can bypass \
+                 missing live rules and suppress push CI on the resulting main SHA",
+                path.display()
+            );
+            let write_allowed = matches!(
+                path.file_name().and_then(std::ffi::OsStr::to_str),
+                Some("docs-deploy.yml" | "prepare-release.yml" | "publish.yml")
+            );
+            assert!(
+                write_allowed || !workflow_requests_write(&contents),
+                "{} requests write permission outside the explicit release-workflow allowlist",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn dependabot_merge_policy_rejects_immediate_and_deferred_mechanisms() {
+        for forbidden in [
+            "if: github.actor == 'dependabot[bot]'\nrun: gh pr merge --squash \"$PR\"",
+            "if: github.event.pull_request.user.login == 'dependabot[bot]'\nrun: gh api graphql -f query='mutation { mergePullRequest(input: {}) }'",
+            "if: github.actor == 'dependabot[bot]'\nrun: gh api --method PUT repos/x/y/pulls/1/merge",
+            "if: github.actor == 'dependabot[bot]'\nuses: vendor/automerge-action@v1",
+            "permissions:\n  pull-requests: write\nif: github.actor == 'dependabot[bot]'",
+            "run: github.rest.pulls.merge({})",
+            "if: github.actor == 'dependabot[bot]'\nuses: ./.github/workflows/land.yml\nsecrets: inherit",
+        ] {
+            assert!(has_forbidden_dependabot_merge_workflow(forbidden));
+        }
+        assert!(workflow_requests_write("permissions: write-all"));
+        assert!(!has_forbidden_dependabot_merge_workflow(
+            "run: yamllint .github/dependabot.yml"
+        ));
+        assert!(!has_forbidden_dependabot_merge_workflow(
+            "uses: ./.github/workflows/read-only-validation.yml"
+        ));
+    }
+
+    #[test]
     fn dependabot_includes_standalone_fixture_with_the_root_workspace() {
         let contents = read_project_file(".github/dependabot.yml");
         let cargo_sections: Vec<_> = dependabot_ecosystem_sections(&contents)
@@ -3253,11 +3326,52 @@ mod dependency_policy {
             "Cargo manifests must share one Dependabot updater file set"
         );
         let section = &cargo_sections[0].1;
-        assert!(section.contains("directories:"));
-        assert!(section.lines().any(|line| line.trim() == "- /"));
-        assert!(section
-            .lines()
-            .any(|line| line.trim() == "- /tests/godot-web-smoke"));
+        let configured: std::collections::BTreeSet<_> =
+            dependabot_directory_values(section).into_iter().collect();
+        let expected = std::collections::BTreeSet::from([
+            "/".to_string(),
+            "/crates/signal-fish-client-godot".to_string(),
+            "/tests/godot-web-smoke".to_string(),
+        ]);
+        assert_eq!(configured, expected);
+
+        let fixture_dir = project_root().join("tests/godot-web-smoke");
+        let fixture: toml::Value =
+            toml::from_str(&read_project_file("tests/godot-web-smoke/Cargo.toml"))
+                .expect("standalone fixture manifest must parse");
+        let dependencies = fixture
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .expect("fixture dependencies must be a table");
+        for (name, dependency) in dependencies {
+            let Some(relative_path) = dependency.get("path").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let target = std::fs::canonicalize(fixture_dir.join(relative_path))
+                .expect("fixture path dependency target must exist");
+            let relative = target
+                .strip_prefix(project_root())
+                .expect("fixture path dependency must remain inside the repository");
+            let updater_directory = if relative.as_os_str().is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}", relative.to_string_lossy().replace('\\', "/"))
+            };
+            assert!(
+                configured.contains(&updater_directory),
+                "fixture dependency {name} resolves to {updater_directory}, which must be an \
+                 explicit Dependabot directory so its manifest enters the updater file set"
+            );
+        }
+
+        assert_eq!(
+            dependabot_group_by_values(section),
+            vec![(
+                "cargo-all-dependencies".to_string(),
+                "dependency-name".to_string()
+            )],
+            "the Cargo group must structurally group matching dependency names across directories"
+        );
     }
 
     #[test]
@@ -3298,6 +3412,67 @@ mod dependency_policy {
             sections.push((eco, current_body));
         }
         sections
+    }
+
+    /// Reads only list values structurally nested under the updater's
+    /// top-level `directories:` key (four-space key, six-space list items).
+    fn dependabot_directory_values(section: &str) -> Vec<String> {
+        let mut in_directories = false;
+        let mut directories = Vec::new();
+        for line in section.lines() {
+            let trimmed = line.trim();
+            let indent = line.len() - line.trim_start().len();
+            if indent == 4 && trimmed == "directories:" {
+                in_directories = true;
+                continue;
+            }
+            if !in_directories || trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if indent <= 4 {
+                break;
+            }
+            if indent == 6 {
+                if let Some(value) = trimmed.strip_prefix("- ") {
+                    directories.push(value.trim_matches(['\'', '"']).to_string());
+                }
+            }
+        }
+        directories
+    }
+
+    /// Reads `group-by` only when it is structurally nested beneath a named
+    /// entry of the updater's top-level `groups` mapping.
+    fn dependabot_group_by_values(section: &str) -> Vec<(String, String)> {
+        let mut in_groups = false;
+        let mut current_group: Option<String> = None;
+        let mut values = Vec::new();
+        for line in section.lines() {
+            let trimmed = line.trim();
+            let indent = line.len() - line.trim_start().len();
+            if indent == 4 && trimmed == "groups:" {
+                in_groups = true;
+                continue;
+            }
+            if !in_groups || trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if indent <= 4 {
+                break;
+            }
+            if indent == 6 && trimmed.ends_with(':') {
+                current_group = Some(trimmed.trim_end_matches(':').to_string());
+                continue;
+            }
+            if indent == 8 {
+                if let (Some(group), Some(value)) =
+                    (&current_group, trimmed.strip_prefix("group-by:"))
+                {
+                    values.push((group.clone(), value.trim().to_string()));
+                }
+            }
+        }
+        values
     }
 
     #[test]
@@ -6284,80 +6459,103 @@ mod ffi_safety_documentation {
         );
     }
 
-    /// The `connect()` error path and the `Drop` implementation must both
-    /// follow the same cleanup sequence: close → delete → drop. This test
-    /// verifies the ordering by checking that both code paths contain the
-    /// three operations in the correct order.
+    /// Registered callback state must remain live unless socket deletion
+    /// succeeds. Every normal cleanup path funnels through the guarded helper;
+    /// constructor rollback applies the same success guard directly.
     #[test]
-    fn error_path_cleanup_matches_drop_cleanup_order() {
+    fn callback_cleanup_reclaims_only_after_confirmed_delete() {
         let contents = read_project_file("src/transports/emscripten_websocket.rs");
 
-        // Find the connect() error path (inside the `for (name, result)` loop).
+        let owner_start = contents
+            .find("struct RegisteredCallbackState")
+            .expect("callback state must have a dedicated owner");
+        let owner_end = contents[owner_start..]
+            .find("// ── Transport Struct")
+            .map(|offset| owner_start + offset)
+            .expect("callback owner block must precede the transport");
+        let owner = &contents[owner_start..owner_end];
+        assert!(owner.contains("fn reclaim(&mut self, _authorization: ReclaimAuthorization)"));
+        let take = owner
+            .find("let Some(state_ptr) = self.0.take()")
+            .expect("reclaim must take ownership exactly once");
+        let free = owner
+            .find("unsafe { drop(Box::from_raw(state_ptr.as_ptr())) }")
+            .expect("the owner must contain the sole raw reclaim");
+        assert!(
+            take < free,
+            "ownership must be taken before raw reclamation"
+        );
+        assert_eq!(
+            contents.matches("Box::from_raw(").count(),
+            1,
+            "the callback owner must contain the sole owning raw reconstruction"
+        );
+
+        let socket_failure = contents
+            .find("if socket <= 0 {")
+            .expect("socket creation failure must be handled");
+        let owner_creation = contents
+            .find("RegisteredCallbackState::new(tx)")
+            .expect("callback allocation must use its owner");
+        assert!(
+            socket_failure < owner_creation,
+            "callback state must not be allocated until socket creation succeeds"
+        );
+
         let error_block = contents
             .find("if result != EMSCRIPTEN_RESULT_SUCCESS {")
             .and_then(|start| {
                 contents[start..]
-                    .find("return Err(")
-                    .map(|end| &contents[start..start + end + 30])
+                    .find("\n        Ok(Self")
+                    .map(|end| &contents[start..start + end])
             })
-            .expect("connect() must have an error path checking EMSCRIPTEN_RESULT_SUCCESS");
-
+            .expect("callback registration failure must clean up");
+        let close = error_block
+            .find("emscripten_websocket_close")
+            .expect("registration rollback must close");
+        let close_record = error_block
+            .find("cleanup.record_close_result")
+            .expect("registration rollback must record the close attempt");
+        let delete = error_block
+            .find("emscripten_websocket_delete")
+            .expect("registration rollback must delete");
+        let authorize = error_block
+            .find("record_delete_result")
+            .expect("registration rollback must request typed authorization");
+        let reclaim = error_block
+            .find("callback_state.reclaim(authorization)")
+            .expect("registration rollback must consume typed authorization");
         assert!(
-            error_block.contains("emscripten_websocket_close"),
-            "connect() error path must call emscripten_websocket_close"
-        );
-        assert!(
-            error_block.contains("emscripten_websocket_delete"),
-            "connect() error path must call emscripten_websocket_delete"
-        );
-        assert!(
-            error_block.contains("Box::from_raw"),
-            "connect() error path must reclaim state_ptr via Box::from_raw"
-        );
-
-        // Verify ordering: close before delete before from_raw.
-        let close_pos = error_block.find("emscripten_websocket_close").expect(
-            "emscripten_websocket_close must be in error block (verified by preceding assert)",
-        );
-        let delete_pos = error_block.find("emscripten_websocket_delete").expect(
-            "emscripten_websocket_delete must be in error block (verified by preceding assert)",
-        );
-        let from_raw_pos = error_block
-            .find("Box::from_raw")
-            .expect("Box::from_raw must be in error block (verified by preceding assert)");
-
-        assert!(
-            close_pos < delete_pos,
-            "connect() error path must call close BEFORE delete"
-        );
-        assert!(
-            delete_pos < from_raw_pos,
-            "connect() error path must call delete BEFORE Box::from_raw"
+            close < close_record
+                && close_record < delete
+                && delete < authorize
+                && authorize < reclaim
         );
 
-        // Verify Drop follows the same order.
+        let cleanup_model = read_project_file("src/transports/emscripten_cleanup.rs");
+        assert!(cleanup_model.contains("pub(super) struct ReclaimAuthorization(())"));
+        assert!(cleanup_model.contains("pub(super) struct DeleteAuthorization(())"));
+        assert!(cleanup_model.contains("_authorization: DeleteAuthorization"));
+        assert!(cleanup_model
+            .contains("succeeded && self.close_attempted && self.callbacks_registered"));
+
+        // Drop must close before the guarded deletion helper and explicitly
+        // retain the allocation if its final retry fails.
         let drop_block = contents
             .find("impl Drop for EmscriptenWebSocketTransport")
             .map(|start| &contents[start..])
             .expect("EmscriptenWebSocketTransport must implement Drop");
 
         let drop_close = drop_block
-            .find("emscripten_websocket_close")
-            .expect("Drop must call emscripten_websocket_close");
+            .find("close_native_socket")
+            .expect("Drop must close the native socket");
         let drop_delete = drop_block
-            .find("emscripten_websocket_delete")
-            .expect("Drop must call emscripten_websocket_delete");
-        let drop_from_raw = drop_block
-            .find("Box::from_raw")
-            .expect("Drop must reclaim state via Box::from_raw");
-
+            .find("delete_after_close_attempt")
+            .expect("Drop must use the guarded callback cleanup helper");
+        assert!(drop_close < drop_delete, "Drop must close BEFORE delete");
         assert!(
-            drop_close < drop_delete,
-            "Drop must call close BEFORE delete"
-        );
-        assert!(
-            drop_delete < drop_from_raw,
-            "Drop must call delete BEFORE Box::from_raw"
+            drop_block.contains("intentionally leaking callback state to prevent use-after-free"),
+            "Drop must preserve callback state when final deletion fails"
         );
     }
 }

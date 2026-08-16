@@ -27,6 +27,7 @@ TMP_STEP_NAME_VIOLATIONS="$(mktemp -t signal-fish-step-name-violations.XXXXXX)"
 TMP_ACTION_REF_VIOLATIONS="$(mktemp -t signal-fish-action-ref-violations.XXXXXX)"
 TMP_MAJOR_ONLY_VIOLATIONS="$(mktemp -t signal-fish-major-only-violations.XXXXXX)"
 TMP_CONCURRENCY_VIOLATIONS="$(mktemp -t signal-fish-concurrency-violations.XXXXXX)"
+TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS="$(mktemp -t signal-fish-dependabot-automerge-violations.XXXXXX)"
 
 # shellcheck disable=SC2317  # trap handler invoked indirectly
 cleanup() {
@@ -35,6 +36,7 @@ cleanup() {
     rm -f "$TMP_ACTION_REF_VIOLATIONS"
     rm -f "$TMP_MAJOR_ONLY_VIOLATIONS"
     rm -f "$TMP_CONCURRENCY_VIOLATIONS"
+    rm -f "$TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS"
 }
 
 trap cleanup EXIT
@@ -366,6 +368,46 @@ fi
 echo ""
 
 # ── Result ────────────────────────────────────────────────────────────
+# Phase 9: forbid checked-in Dependabot auto-merge.
+echo -e "${YELLOW}Phase 9: Checking for Dependabot auto-merge workflows...${NC}"
+
+while IFS= read -r workflow_path; do
+    workflow_path="${workflow_path//$'\r'/}"
+    # Remove YAML comments before matching so policy documentation cannot
+    # trigger the guard. Any workflow that mentions Dependabot and an
+    # auto-merge primitive is forbidden regardless of its filename.
+    workflow_code="$(sed 's/[[:space:]]*#.*$//' "$workflow_path" | tr '[:upper:]' '[:lower:]')"
+    targets_dependabot=false
+    if printf '%s\n' "$workflow_code" | grep -Eq 'dependabot\[bot\]|github\.(actor|event\.pull_request\.user\.login).*dependabot'; then
+        targets_dependabot=true
+    fi
+    forbidden_merge=false
+    if "$targets_dependabot" ||
+        printf '%s\n' "$workflow_code" | grep -Eq -- '--auto|auto-merge|automerge|enablepullrequestautomerge|mergepullrequest|pulls\.merge|gh[[:space:]]+pr[[:space:]]+merge|pulls/[^[:space:]]+/merge|uses:[[:space:]].*merge'; then
+        forbidden_merge=true
+    fi
+    write_allowed=false
+    case "$workflow_path" in
+        .github/workflows/docs-deploy.yml | .github/workflows/prepare-release.yml | .github/workflows/publish.yml) write_allowed=true ;;
+    esac
+    if ! "$write_allowed" && printf '%s\n' "$workflow_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
+        forbidden_merge=true
+    fi
+    if "$forbidden_merge"; then
+        printf '%s\n' "  $workflow_path: Dependabot auto-merge mechanism is forbidden" >>"$TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS"
+    fi
+done < <(find .github/workflows -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
+
+if [ -s "$TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS" ]; then
+    echo -e "${RED}Phase 9: FAIL${NC}"
+    cat "$TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS"
+    VIOLATIONS=$((VIOLATIONS + 1))
+else
+    echo -e "${GREEN}Phase 9: PASS${NC}"
+fi
+echo ""
+
+# Result.
 if [ "$VIOLATIONS" -gt 0 ]; then
     echo -e "${RED}FAILED: $VIOLATIONS violation(s) found.${NC}"
     echo "Fix all workflow and script issues before committing."
