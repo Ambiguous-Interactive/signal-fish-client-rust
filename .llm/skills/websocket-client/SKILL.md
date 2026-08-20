@@ -117,6 +117,11 @@ does not supply a separate clean-handshake boolean here, so `clean` remains
 marks the transport closed on either terminal success or error. Once closed,
 later calls return `Ready(Ok(()))` without another close frame.
 
+Required `Transport::abort` drops the stream and retained send/control state
+immediately and is idempotent. Async task cancellation is protected by an
+owner guard that invokes abort unless graceful close completed; client drivers
+perform no later transport polls.
+
 EOF and terminal receive/send failures drop the stream, clear retained send and
 control state, and fuse the transport. Report the first receive failure as
 `TransportReceive`; later receives return `None`, sends return

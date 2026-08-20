@@ -27,7 +27,7 @@ pub trait Transport {
     ) -> Poll<Result<(), SignalFishError>>;
 
     fn begin_poll_cycle(&mut self) {}
-    fn abort(&mut self) {}
+    fn abort(&mut self);
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
@@ -84,10 +84,48 @@ handshake without transferring them prematurely.
 
 `begin_poll_cycle` lets adaptive transports sample once per application tick.
 `diagnostics` distinguishes backend-owned buffering/admission from the client
-queue. `abort` is invoked when the polling close deadline expires; defaulted
-hooks preserve existing custom transport implementations. The built-in
-WebSocket transports override `abort` to release their socket immediately;
-custom transports with owned resources should do the same.
+queue. `abort` is required and is invoked when graceful close errors, either
+client's close deadline expires, or an owner is dropped before close completes.
+It must promptly release or safely detach backend-owned work, discard retained
+accepted sends, return without blocking or panicking, and be idempotent.
+Completed cleanup is not repeated, while failed cleanup may be retried safely.
+Afterwards, client drivers make no further polling calls: only repeated
+`abort`, `is_ready`, `close_info`, `diagnostics`, and drop are allowed. The
+built-in WebSocket transports and Godot adapter also fuse later polls to
+terminal results as a stronger convenience.
+
+### Migrating custom transports for 0.11
+
+`abort` no longer has a default implementation. Every custom transport must
+make an explicit resource-lifetime decision:
+
+```rust,ignore
+fn abort(&mut self) {
+    if self.aborted {
+        return;
+    }
+    self.aborted = true;
+    self.retained_send = None;
+    self.shared_backend.unregister(self.connection_id);
+    self.socket = None;
+    self.waker = None;
+}
+```
+
+The exact fields vary by backend. Clear retained frames and wakers, revoke this
+transport's participation in any shared backend, and release owned handles
+without blocking. If the implementation owns no live resource, retained work,
+callback, or shared registration, an explicit no-op is valid:
+
+```rust,ignore
+fn abort(&mut self) {}
+```
+
+Do not wait for a peer handshake in `abort`; that belongs to `poll_close`.
+Because `abort` can run from `Drop` during unwinding, it must never panic. If an
+external cleanup API fails, keep callback backing storage alive rather than
+risk use-after-free, and make later `abort` or `Drop` retries safe.
+`examples/custom_transport.rs` shows a complete channel-backed implementation.
 
 ## Receiving
 
@@ -109,7 +147,9 @@ and polls again on the next application tick.
 
 `poll_close` may need multiple calls. It is idempotent: it starts at most one
 close handshake, retains progress across `Pending`, and returns
-`Ready(Ok(()))` on every call after successful completion.
+`Ready(Ok(()))` on every call after successful completion. On error, logical
+I/O terminates and both clients immediately call `abort`; fallible backend
+cleanup may remain safely retryable.
 
 After a peer close, `close_info()` may return:
 
@@ -193,8 +233,9 @@ use signal_fish_client::transport::{Transport, TransportFrame};
 use tokio::sync::mpsc;
 
 pub struct LoopbackTransport {
-    tx: mpsc::UnboundedSender<TransportFrame>,
+    tx: Option<mpsc::UnboundedSender<TransportFrame>>,
     rx: mpsc::UnboundedReceiver<TransportFrame>,
+    closed: bool,
 }
 
 impl Transport for LoopbackTransport {
@@ -203,8 +244,11 @@ impl Transport for LoopbackTransport {
         _cx: &mut Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> Poll<Result<(), SignalFishError>> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         let result = match frame.take() {
-            Some(frame) => self.tx.send(frame).map_err(|error| {
+            Some(frame) => tx.send(frame).map_err(|error| {
                 SignalFishError::TransportSend(error.to_string())
             }),
             None => Ok(()),
@@ -216,6 +260,9 @@ impl Transport for LoopbackTransport {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return Poll::Ready(None);
+        }
         self.rx.poll_recv(cx).map(|frame| frame.map(Ok))
     }
 
@@ -223,7 +270,16 @@ impl Transport for LoopbackTransport {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), SignalFishError>> {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
         Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
     }
 }
 ```
@@ -266,7 +322,8 @@ backend-accepted, backend-buffered, and peer-delivered are distinct stages.
 `wasm32-unknown-emscripten`. Its browser callbacks buffer readiness, text,
 binary, error, and close events; `SignalFishPollingClient::poll` drains them on
 the main thread. It exposes structured close metadata and drives idempotent
-cleanup through `poll_close`.
+cleanup through `poll_close`; `abort` applies the same close-before-release
+ordering when close errors, times out, or the polling owner is dropped.
 
 It is intended for the polling client, not the Tokio-spawned async client. See
 the [WebAssembly guide](wasm.md) for target and linker requirements.
@@ -279,6 +336,8 @@ the [WebAssembly guide](wasm.md) for target and linker requirements.
   a socket-wide buffered byte count to reach zero as per-frame completion.
 - Register the supplied waker when async progress depends on readiness.
 - Make close multi-poll and idempotent.
+- Implement prompt, non-blocking, non-panicking, idempotent `abort` cleanup;
+  clear retained work and make failed backend cleanup safe to retry.
 - Record close code/reason/initiator before returning `None`.
 - Keep `is_ready` cheap and monotonic for one physical connection.
 - Put connection-specific construction outside the trait.

@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `Transport::abort` is now required. Custom transport
+  implementors must provide a prompt, nonblocking, non-panicking, idempotent
+  backend-abandonment path that releases or safely detaches resources and
+  discards retained sends; completed cleanup is one-shot and failed external
+  cleanup may be retried safely. Both clients
+  invoke it when the configured close deadline expires, after a graceful-close
+  error, and when their owner is dropped without completing graceful close;
+  drivers perform no later transport polling.
 - **Breaking:** the new fields and variants listed above change exhaustive
   struct literals and matches. `SignalFishClientApi` implementors must add the
   two generation-bound send methods. These APIs require the forthcoming 0.11

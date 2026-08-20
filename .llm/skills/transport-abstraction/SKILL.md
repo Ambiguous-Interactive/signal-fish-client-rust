@@ -35,7 +35,7 @@ pub trait Transport {
     ) -> Poll<Result<(), SignalFishError>>;
 
     fn begin_poll_cycle(&mut self) {}
-    fn abort(&mut self) {}
+    fn abort(&mut self);
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
@@ -110,7 +110,8 @@ idempotent:
 - Retain close progress across polls.
 - After `Ready(Ok(()))`, every later call returns `Ready(Ok(()))` without
   emitting another close.
-- Release local resources even when the handshake fails.
+- On handshake failure, terminate logical I/O and leave any fallible backend
+  cleanup safe for the required abort fallback.
 
 `close_info()` returns structured terminal metadata when available:
 
@@ -124,6 +125,31 @@ pub struct TransportCloseInfo {
 ```
 
 Capture peer close metadata before returning `Ready(None)` from `poll_recv`.
+
+### Required abort fallback
+
+`abort` is required because both clients use it to enforce their configured
+close deadline. It must return promptly without blocking or panicking. The
+call releases or safely detaches backend-owned work and discards any retained
+accepted send. It must be idempotent. After it returns:
+
+- the client driver makes no further `begin_poll_cycle`, `poll_send`,
+  `poll_recv`, or `poll_close` calls;
+- only repeated `abort`, `is_ready`, `close_info`, `diagnostics`, and drop are
+  allowed;
+- repeated `abort` must not repeat completed cleanup; failed cleanup may be
+  retried safely.
+
+An implementation may satisfy resource release by closing owned handles or by
+dropping/detaching them into a backend mechanism whose ownership and lifetime
+are explicit. A no-op is valid only for a transport that owns no live resource
+or retained operation. Implementations may fuse post-abort polling to terminal
+results as a stronger convenience, as the built-in transports do, but custom
+callers must not depend on polling after abort.
+
+If an external callback-unregistration API fails, retain the callback backing
+allocation rather than risk use-after-free. That safety leak counts as a
+logical detach; a later `abort` or `Drop` may retry the failed cleanup.
 
 ## Readiness
 
@@ -143,8 +169,9 @@ use signal_fish_client::transport::{Transport, TransportFrame};
 use tokio::sync::mpsc;
 
 struct LoopbackTransport {
-    tx: mpsc::UnboundedSender<TransportFrame>,
+    tx: Option<mpsc::UnboundedSender<TransportFrame>>,
     rx: mpsc::UnboundedReceiver<TransportFrame>,
+    closed: bool,
 }
 
 impl Transport for LoopbackTransport {
@@ -153,8 +180,11 @@ impl Transport for LoopbackTransport {
         _cx: &mut Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> Poll<Result<(), SignalFishError>> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         let result = match frame.take() {
-            Some(frame) => self.tx.send(frame).map_err(|error| {
+            Some(frame) => tx.send(frame).map_err(|error| {
                 SignalFishError::TransportSend(error.to_string())
             }),
             None => Ok(()),
@@ -166,6 +196,9 @@ impl Transport for LoopbackTransport {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return Poll::Ready(None);
+        }
         self.rx.poll_recv(cx).map(|frame| frame.map(Ok))
     }
 
@@ -173,7 +206,16 @@ impl Transport for LoopbackTransport {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), SignalFishError>> {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
         Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
     }
 }
 ```
@@ -245,6 +287,8 @@ in integration testing. The `websocket-client` skill has the concrete
 - [ ] `poll_recv` retains partial input across `Pending`.
 - [ ] Peer close returns `None` and preserves structured metadata.
 - [ ] `poll_close` is multi-poll and idempotent.
+- [ ] `abort` is required, immediate, idempotent, releases or safely detaches
+      backend resources, and discards accepted sends; drivers never poll afterward.
 - [ ] `is_ready` matches handshake state.
 - [ ] Non-`Send` transports compile with the polling client.
 - [ ] `Send + 'static` is imposed only by async-client construction.

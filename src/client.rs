@@ -235,15 +235,15 @@ pub struct SignalFishConfig {
     /// Deadline for graceful async shutdown and polling-client close.
     ///
     /// When [`SignalFishClient::shutdown`] is called, the background transport
-    /// loop is given this much time to close the transport and emit a final
-    /// `Disconnected` event. If the timeout expires the task is aborted and
-    /// the `Disconnected` event may not be delivered. The polling client uses
-    /// the same duration to bound queued-work flushing and its transport close
-    /// handshake; expiry invokes [`Transport::abort`].
+    /// loop is given this much time to finish a backend-owned send and drive
+    /// [`Transport::poll_close`]. Expiry invokes [`Transport::abort`], after
+    /// which the loop normally returns; a later watchdog cancels the task only
+    /// if it still does not stop. The polling client uses the same duration to
+    /// bound queued-work flushing and its transport close handshake.
     ///
-    /// Defaults to **1 second**. A zero timeout aborts the transport loop
-    /// immediately without waiting for graceful shutdown, meaning the
-    /// `Disconnected` event will likely not be emitted.
+    /// Defaults to **1 second**. A zero timeout invokes the transport abort
+    /// fallback without waiting for graceful close. Terminal `Disconnected`
+    /// delivery remains best-effort during shutdown.
     pub shutdown_timeout: Duration,
     /// Response to a protocol-v3 delivery-accountability violation.
     pub protocol_violation_policy: ProtocolViolationPolicy,
@@ -290,8 +290,8 @@ impl SignalFishConfig {
 
     /// Set the deadline for graceful async shutdown and polling-client close.
     ///
-    /// Defaults to **1 second**. A zero timeout aborts the transport loop
-    /// immediately without waiting for graceful shutdown.
+    /// Defaults to **1 second**. A zero timeout invokes `Transport::abort`
+    /// without waiting for graceful close; the loop then normally returns.
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
@@ -796,8 +796,11 @@ impl SignalFishClient {
         // capacity is clamped to at least 1.
         let _ = cmd_tx.try_send(auth_msg);
 
+        // Arm backend abandonment before constructing/spawning the future so
+        // cancellation before its first poll cannot bypass `Transport::abort`.
+        let guarded_transport = AbortOnDropTransport::new(transport);
         let task = tokio::spawn(transport_loop(
-            transport,
+            guarded_transport,
             cmd_rx,
             event_tx,
             loop_state,
@@ -824,8 +827,11 @@ impl SignalFishClient {
     /// gracefully, and delivers a terminal
     /// [`Disconnected`](SignalFishEvent::Disconnected) best-effort. The loop
     /// is given [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) to
-    /// finish; if the timeout expires (e.g. a transport whose `close()`
-    /// hangs), the task is aborted. After shutdown completes, the event
+    /// finish; if the timeout expires (e.g. a transport whose `poll_close`
+    /// remains pending), the transport is aborted and the loop normally
+    /// returns. A later watchdog cancels the task if it still does not stop.
+    /// Task cancellation and handle drop also invoke the transport's required
+    /// abort fallback. After shutdown completes, the event
     /// receiver yields the remaining buffered events and then `None` — treat
     /// the channel closing as the authoritative end-of-stream signal.
     pub async fn shutdown(&mut self) {
@@ -836,8 +842,9 @@ impl SignalFishClient {
             let _ = tx.send(());
         }
 
-        // Await the transport loop with a timeout. If it doesn't exit in time,
-        // abort it so the task cannot detach and run indefinitely.
+        // The loop owns the configured graceful-close deadline. This outer
+        // watchdog adds scheduling grace, then cancels only if the loop still
+        // does not exit after invoking the transport abort fallback.
         if let Some(mut task) = self.task.take() {
             let task_timeout = self.shutdown_timeout.saturating_add(SHUTDOWN_TASK_GRACE);
             match tokio::time::timeout(task_timeout, &mut task).await {
@@ -1634,8 +1641,10 @@ impl Drop for SignalFishClient {
         // The only safe action is to abort the spawned task, which causes
         // the transport loop future to be dropped immediately.  The
         // `shutdown_tx` oneshot is intentionally *not* sent here: sending
-        // it would trigger a graceful path that calls async `transport.close()`,
-        // but there is no executor context to drive it inside `Drop`.
+        // it would trigger a graceful path that awaits `poll_close`, but there
+        // is no executor context to drive it inside `Drop`. Aborting
+        // the task drops its transport guard, which synchronously invokes the
+        // required backend `Transport::abort` fallback.
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -1649,6 +1658,77 @@ fn lock_core(state: &Arc<Mutex<ClientCore>>) -> std::sync::MutexGuard<'_, Client
     match state.lock() {
         Ok(core) => core,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Owns the async task's transport and enforces backend abandonment whenever
+/// task cancellation skips the ordinary graceful-close path.
+#[cfg(feature = "tokio-runtime")]
+struct AbortOnDropTransport<T: Transport> {
+    inner: T,
+    armed: bool,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl<T: Transport> AbortOnDropTransport<T> {
+    const fn new(inner: T) -> Self {
+        Self { inner, armed: true }
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl<T: Transport> Transport for AbortOnDropTransport<T> {
+    fn begin_poll_cycle(&mut self) {
+        self.inner.begin_poll_cycle();
+    }
+
+    fn poll_send(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<()>> {
+        self.inner.poll_send(cx, frame)
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame>>> {
+        self.inner.poll_recv(cx)
+    }
+
+    fn poll_close(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<()>> {
+        let result = self.inner.poll_close(cx);
+        if matches!(result, std::task::Poll::Ready(Ok(()))) {
+            self.armed = false;
+        }
+        result
+    }
+
+    fn abort(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.inner.abort();
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+
+    fn close_info(&self) -> Option<crate::transport::TransportCloseInfo> {
+        self.inner.close_info()
+    }
+
+    fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
+        self.inner.diagnostics()
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl<T: Transport> Drop for AbortOnDropTransport<T> {
+    fn drop(&mut self) {
+        self.abort();
     }
 }
 
@@ -1718,7 +1798,10 @@ async fn finish_send_and_close_bounded(
             }
         }
         *pending_send = None;
-        let _ = close_transport(transport).await;
+        if let Err(error) = close_transport(transport).await {
+            warn!("transport close failed; aborting transport: {error}");
+            transport.abort();
+        }
     })
     .await;
 
@@ -2100,11 +2183,11 @@ mod tests {
 
     /// A mock transport that records sent messages and replays scripted responses.
     struct MockTransport {
-        /// Messages that `recv()` will yield in order.
+        /// Messages that `poll_recv` will yield in order.
         incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
         /// Recorded outgoing messages.
         sent: Arc<StdMutex<Vec<String>>>,
-        /// Whether `close()` was called.
+        /// Whether `poll_close` was called.
         closed: Arc<AtomicBool>,
     }
 
@@ -2124,6 +2207,8 @@ mod tests {
     }
 
     impl Transport for MockTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut Context<'_>,
@@ -2232,6 +2317,10 @@ mod tests {
     }
 
     impl Transport for DeferredReadyTransport {
+        fn abort(&mut self) {
+            let _ = self.controls.waker.lock().unwrap().take();
+        }
+
         fn poll_send(
             &mut self,
             cx: &mut Context<'_>,
@@ -2272,6 +2361,8 @@ mod tests {
     }
 
     impl Transport for GameDataErrorTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut Context<'_>,
@@ -2400,6 +2491,7 @@ mod tests {
 
         fn abort(&mut self) {
             self.retained = None;
+            let _ = self.controls.waker.lock().unwrap().take();
         }
     }
 
@@ -2408,6 +2500,10 @@ mod tests {
     }
 
     impl Transport for NeverReadyTerminalTransport {
+        fn abort(&mut self) {
+            self.frame = None;
+        }
+
         fn poll_send(
             &mut self,
             _cx: &mut Context<'_>,
@@ -3253,7 +3349,7 @@ mod tests {
 
     // ── Send-side backpressure (issue #47, item 2) ──────────────────
 
-    /// Transport whose `send()` requires a semaphore permit per message, so
+    /// Transport whose `poll_send` requires a semaphore permit per message, so
     /// tests can stall the outgoing path deterministically.
     type PermitWait = Pin<
         Box<
@@ -3303,6 +3399,11 @@ mod tests {
     }
 
     impl Transport for GatedSendTransport {
+        fn abort(&mut self) {
+            self.pending_frame = None;
+            self.permit_wait = None;
+        }
+
         fn poll_send(
             &mut self,
             cx: &mut Context<'_>,
@@ -3461,6 +3562,8 @@ mod tests {
 
         fn abort(&mut self) {
             self.retained_frame = None;
+            let _ = self.controls.send_waker.lock().unwrap().take();
+            let _ = self.controls.recv_waker.lock().unwrap().take();
             self.controls.abort_called.store(true, Ordering::Release);
         }
     }
@@ -3489,6 +3592,11 @@ mod tests {
     }
 
     impl Transport for PeerCloseDuringSendTransport {
+        fn abort(&mut self) {
+            self.send_accepted = false;
+            self.peer_close_observed = true;
+        }
+
         fn poll_send(
             &mut self,
             _cx: &mut Context<'_>,
@@ -4339,7 +4447,7 @@ mod tests {
         assert!(!client.is_connected());
     }
 
-    /// Transport that hangs forever in `close()` so shutdown timeout/abort can be tested.
+    /// Transport whose `poll_close` remains pending so deadline abort can be tested.
     struct HangingCloseTransport {
         incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
         close_called: Arc<AtomicBool>,
@@ -4396,7 +4504,7 @@ mod tests {
                 Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
             } else {
                 // No scripted messages and no registered waker: preserve the
-                // old never-completing recv until shutdown aborts the task.
+                // pending receive until shutdown preempts it and closes.
                 Poll::Pending
             }
         }
@@ -4416,8 +4524,94 @@ mod tests {
         }
     }
 
+    struct DirectDeadlineTransport {
+        hang_accepted_send: bool,
+        close_called: Arc<AtomicBool>,
+        abort_called: Arc<AtomicBool>,
+    }
+
+    impl Transport for DirectDeadlineTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            assert!(frame.is_none(), "the send must already be backend-owned");
+            if self.hang_accepted_send {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            self.close_called.store(true, Ordering::Release);
+            Poll::Pending
+        }
+
+        fn abort(&mut self) {
+            self.abort_called.store(true, Ordering::Release);
+        }
+    }
+
     #[tokio::test]
-    async fn shutdown_timeout_aborts_stuck_transport_task() {
+    async fn configured_deadline_aborts_before_transport_guard_drop() {
+        for hang_accepted_send in [true, false] {
+            let close_called = Arc::new(AtomicBool::new(false));
+            let abort_called = Arc::new(AtomicBool::new(false));
+            let mut transport = AbortOnDropTransport::new(DirectDeadlineTransport {
+                hang_accepted_send,
+                close_called: Arc::clone(&close_called),
+                abort_called: Arc::clone(&abort_called),
+            });
+            let mut pending_send = hang_accepted_send.then_some(PendingSend {
+                frame: None,
+                is_game_data: false,
+            });
+            let state = Arc::new(Mutex::new(ClientCore::new(
+                None,
+                ProtocolViolationPolicy::Quarantine,
+                false,
+            )));
+
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                finish_send_and_close_bounded(
+                    &mut transport,
+                    &mut pending_send,
+                    &state,
+                    Duration::from_millis(5),
+                ),
+            )
+            .await
+            .expect("the configured inner deadline must finish before the test watchdog");
+
+            assert!(
+                abort_called.load(Ordering::Acquire),
+                "the helper itself must abort before its owning guard is dropped"
+            );
+            assert_eq!(
+                close_called.load(Ordering::Acquire),
+                !hang_accepted_send,
+                "close starts only after a backend-owned send completes"
+            );
+            assert!(pending_send.is_none());
+            assert!(!transport.armed);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_stuck_transport() {
         let (transport, close_called, abort_called, dropped) = HangingCloseTransport::new();
         let config = SignalFishConfig::new("mb_test")
             .with_shutdown_timeout(std::time::Duration::from_millis(20));
@@ -4431,7 +4625,7 @@ mod tests {
 
         assert!(
             close_called.load(Ordering::Acquire),
-            "transport.close() should have been attempted during graceful shutdown"
+            "transport.poll_close should have been attempted during graceful shutdown"
         );
         assert!(
             abort_called.load(Ordering::Acquire),
@@ -4439,7 +4633,7 @@ mod tests {
         );
         assert!(
             dropped.load(Ordering::Acquire),
-            "timed-out shutdown should abort and drop the transport loop task"
+            "deadline-aborted shutdown must drop the transport when its loop returns"
         );
         assert!(!client.is_connected());
     }
@@ -4981,12 +5175,10 @@ mod tests {
         client.shutdown().await;
     }
 
-    /// Validates the documented best-effort delivery guarantee: when `shutdown()`
-    /// times out and aborts the transport task, the `Disconnected` event may NOT
-    /// be delivered because the transport loop is forcibly cancelled before it can
-    /// emit the event. Both outcomes (event received or not) are acceptable.
+    /// Validates the documented best-effort delivery guarantee: deadline
+    /// abandonment does not make the terminal `Disconnected` event mandatory.
     #[tokio::test]
-    async fn shutdown_abort_may_skip_disconnected_event() {
+    async fn shutdown_deadline_may_skip_disconnected_event() {
         let (transport, _close_called, _abort_called, _dropped) = HangingCloseTransport::new();
         let config = SignalFishConfig::new("mb_test")
             .with_shutdown_timeout(std::time::Duration::from_millis(1));
@@ -4996,17 +5188,16 @@ mod tests {
         let event = events.recv().await.unwrap();
         assert!(matches!(event, SignalFishEvent::Connected));
 
-        // Shutdown will timeout (close() hangs) and abort the transport task.
+        // The configured deadline expires because poll_close remains pending.
         client.shutdown().await;
 
-        // The transport loop was aborted, so `emit_disconnected` may never have
-        // executed. Try to receive with a short timeout — either outcome is valid.
+        // Terminal event delivery is best-effort on the deadline path.
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await;
 
         match result {
             Ok(Some(SignalFishEvent::Disconnected { .. })) => {
-                // Disconnected was delivered before the abort took effect — acceptable.
+                // Disconnected was delivered before deadline abandonment.
             }
             Ok(None) => {
                 // Channel closed without a Disconnected event — acceptable.
@@ -5015,7 +5206,7 @@ mod tests {
                 // Timed out waiting; no Disconnected event was delivered — acceptable.
             }
             Ok(Some(other)) => {
-                panic!("unexpected event after shutdown abort: {other:?}");
+                panic!("unexpected event after shutdown deadline: {other:?}");
             }
         }
 

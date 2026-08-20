@@ -91,12 +91,21 @@ impl Transport for MockTransport {
         self.closed.store(true, Ordering::Relaxed);
         Poll::Ready(Ok(()))
     }
+
+    fn abort(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.incoming.clear();
+    }
 }
 ```
 
 For binary-path tests, script and record `TransportFrame` values directly.
 A `poll_send` implementation may take the frame only after accepting it;
 if it returns `Pending`, retain that frame internally until a later `Ready`.
+Every mock must implement the required `abort` decision. Clear retained work
+and resource registrations; an explicit no-op is suitable only for a genuinely
+stateless/resource-free mock. Client drivers do not poll a transport after
+abort.
 
 ## Starting a Mock Client
 
@@ -175,9 +184,11 @@ let (transport, _, _) = MockTransport::new(vec![
 
 ## Shutdown Timeout State Invariants
 
-When testing shutdown timeout paths (e.g., `transport.close()` hangs and the
-task is aborted), always assert client state accessors are reset even if the
-`Disconnected` event is not observed:
+When testing shutdown deadline paths (e.g., `Transport::poll_close` remains
+pending and the loop invokes `Transport::abort`), always assert client state
+accessors are reset even if the `Disconnected` event is not observed. Task
+cancellation is a later watchdog/owner-drop fallback, not the configured
+deadline's primary mechanism:
 
 ```rust
 client.shutdown().await;

@@ -31,9 +31,11 @@ use tokio::sync::mpsc;
 ///   what the client sent — perfect for testing.
 pub struct LoopbackTransport {
     /// Messages the client sends go here (server reads from the other end).
-    tx: mpsc::UnboundedSender<String>,
+    tx: Option<mpsc::UnboundedSender<String>>,
     /// Messages the server sends arrive here (client reads them).
     rx: mpsc::UnboundedReceiver<String>,
+    /// Terminal flag established by graceful close or abort.
+    closed: bool,
 }
 
 /// The "server side" of the loopback — use this to drive the conversation.
@@ -52,8 +54,9 @@ fn loopback_pair() -> (LoopbackTransport, LoopbackServer) {
     let (server_tx, client_rx) = mpsc::unbounded_channel();
 
     let transport = LoopbackTransport {
-        tx: client_tx,
+        tx: Some(client_tx),
         rx: client_rx,
+        closed: false,
     };
     let server = LoopbackServer {
         rx: server_rx,
@@ -74,9 +77,11 @@ impl Transport for LoopbackTransport {
         _cx: &mut std::task::Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let Some(tx) = self.tx.as_ref() else {
+            return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         let result = match frame.take() {
-            Some(TransportFrame::Text(message)) => self
-                .tx
+            Some(TransportFrame::Text(message)) => tx
                 .send(message)
                 .map_err(|e| SignalFishError::TransportSend(e.to_string())),
             Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
@@ -96,6 +101,9 @@ impl Transport for LoopbackTransport {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return std::task::Poll::Ready(None);
+        }
         self.rx
             .poll_recv(cx)
             .map(|message| message.map(|message| Ok(TransportFrame::Text(message))))
@@ -106,7 +114,17 @@ impl Transport for LoopbackTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
         std::task::Poll::Ready(Ok(()))
+    }
+
+    /// Abandon both channel halves immediately and make later polls terminal.
+    fn abort(&mut self) {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
     }
 }
 

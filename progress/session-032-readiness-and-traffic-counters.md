@@ -73,5 +73,5 @@ Clippy completed with zero warnings; all 345 root library tests, 35 Godot
 adapter tests, 470 integration tests, and seven runnable rustdoc tests passed
 (six live-server tests and five example-only rustdoc blocks remained explicitly
 ignored). Repository LLM, workflow-policy, and documentation validators also
-passed. Hosted check and review evidence will be recorded on the PR before
-merge.
+passed. PR #115 passed all eleven required workflow suites with zero review
+threads and merged as `423d821`.

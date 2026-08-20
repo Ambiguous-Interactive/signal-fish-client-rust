@@ -1366,9 +1366,21 @@ mod tests {
         transport.begin_poll_cycle();
 
         transport.abort();
+        transport.abort();
 
         assert_eq!(abort_calls.get(), 1);
         assert_eq!(transport.diagnostics().current_buffered_bytes, 0);
+        let expected = TransportFrame::Text("caller still owns this".into());
+        let mut offered = Some(expected.clone());
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut offered),
+            Poll::Ready(Err(SignalFishError::TransportClosed))
+        ));
+        assert_eq!(offered, Some(expected));
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
         assert!(matches!(
             transport.poll_close(&mut context()),
             Poll::Ready(Ok(()))

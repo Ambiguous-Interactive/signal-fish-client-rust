@@ -661,18 +661,22 @@ client.shutdown().await;
 Shutdown proceeds in four stages:
 
 1. Sends a oneshot signal to the background transport loop.
-2. Awaits the loop task with a configurable timeout (default **1 second**,
-   set via [`SignalFishConfig::shutdown_timeout`](#signalfishconfig)).
-3. If the timeout expires, the task is logged as unresponsive and aborted.
-   The `Disconnected` event may not be delivered in this case.
+2. The loop finishes a backend-owned send and drives `Transport::poll_close`
+   within the configurable deadline (default **1 second**, set via
+   [`SignalFishConfig::shutdown_timeout`](#signalfishconfig)).
+3. If the deadline expires, the transport's required `abort` fallback releases
+   or safely detaches backend resources and the loop normally returns. A later
+   watchdog cancels the task only if it still does not stop. The `Disconnected`
+   event may not be delivered in this case.
 4. Regardless of whether `Disconnected` is delivered, connection/session state
    is cleared (`is_connected() == false`, `is_transport_ready() == false`,
    `is_authenticated() == false`, and room/player accessors return `None`).
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the
-    background task immediately. Always prefer an explicit `shutdown().await` for
-    a clean disconnect.
+    background task immediately; the task's ownership guard invokes
+    `Transport::abort` as it is cancelled. Always prefer an explicit
+    `shutdown().await` for a clean disconnect.
 
 ---
 
@@ -887,9 +891,8 @@ After calling `close()`, both `is_connected()` and `is_transport_ready()`
 return `false`, and all command methods return
 `Err(SignalFishError::NotConnected)`.
 
-!!! warning "No Drop fallback"
-    Unlike `SignalFishClient`, the polling client does **not** abort a
-    background task on drop (there is no background task). However, the
-    underlying transport's `Drop` implementation will still clean up
-    resources. Call `close()` and continue polling while `is_closing()` for a
-    graceful WebSocket close handshake.
+!!! warning "Drop fallback"
+    The polling client has no background task. If it is dropped before
+    graceful close completes, it synchronously calls the transport's required
+    `abort` method. Call `close()` and continue polling while `is_closing()` for
+    a graceful WebSocket close handshake.

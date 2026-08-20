@@ -25,11 +25,11 @@ descriptions and usage examples.
     consumer that falls behind pauses the transport loop until the channel
     has room — backpressure propagates to the server instead of losing
     events. Inbound frames that fail to decode surface as
-    [`DecodeFailed`](#decodefailed) events rather than being skipped. There
-    Delivery can still stop or be preempted: the event receiver can be dropped,
+    [`DecodeFailed`](#decodefailed) events rather than being skipped. Delivery
+    can still stop or be preempted: the event receiver can be dropped,
     the client handle can be dropped without calling
-    [`shutdown()`](client.md#shutdown) (which aborts the loop immediately),
-    or `shutdown()` can abandon the one delivery currently blocked on channel
+    [`shutdown()`](client.md#shutdown), which aborts the loop immediately, or
+    `shutdown()` can abandon the one delivery currently blocked on channel
     capacity. Shutdown attempts a graceful close and delivers the terminal
     `Disconnected` best-effort; its configured deadline may abort that work.
     The event channel closing is the authoritative end-of-stream signal.
@@ -64,7 +64,8 @@ Use these to track the raw connection lifecycle.
     loop lets shutdown preempt a delivery blocked on channel capacity, and the
     shutdown path attempts the terminal event with non-blocking admission. If
     the channel is full, the event **may be omitted**. The configured shutdown
-    deadline may also abort the task before it reaches that attempt. The event
+    deadline may invoke the transport's abort path and stop the task before it
+    reaches that attempt. The event
     channel closing (`recv()`
     returns `None`) is the guaranteed end-of-stream signal — rely on it, not
     on always observing a final `Disconnected`.

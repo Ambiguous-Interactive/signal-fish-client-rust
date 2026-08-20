@@ -152,20 +152,20 @@ pub trait Transport {
     fn poll_close(&mut self, cx: &mut Context<'_>)
         -> Poll<Result<(), SignalFishError>>;
     fn begin_poll_cycle(&mut self) {}
-    fn abort(&mut self) {}
+    fn abort(&mut self);
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
 }
 ```
 
-The trait has no `Send` bound; `SignalFishClient::start` separately requires
-`Transport + Send + 'static`. `poll_send` may take a frame only at backend
-ownership transfer; that increments `game_data_sent` even if completion later
-fails, but never proves peer delivery. `Pending` before acceptance leaves the
-frame intact. Async readiness changes wake registered I/O; both drivers map the
-first `is_ready()` observation to `transport_ready` and `Connected`. Close is
-idempotent. See `skills/transport-abstraction/SKILL.md`.
+The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`.
+`poll_send` may take a frame only at backend ownership transfer; that increments
+`game_data_sent` even if completion later fails, but never proves peer delivery.
+`Pending` before acceptance leaves the frame intact. Async readiness changes wake registered I/O; both drivers map the first `is_ready()` observation to `transport_ready` and `Connected`. Close is
+idempotent; on error, logical I/O terminates and fallible cleanup remains safe for the abort fallback. `abort` is a required,
+prompt, nonblocking, non-panicking, idempotent fallback that releases or safely detaches backend resources,
+discards retained sends, and ends driver polling; completed cleanup is not repeated, while failed cleanup may retry safely. See `skills/transport-abstraction/SKILL.md`.
 
 The async driver retains an in-flight send in its main select loop and polls
 send and receive with the same runtime waker, so outbound backpressure cannot

@@ -112,6 +112,7 @@ struct ScriptedServer {
     incoming: VecDeque<String>,
     peer: PlayerId,
     started: bool,
+    aborted: bool,
 }
 
 impl Transport for ScriptedServer {
@@ -120,6 +121,9 @@ impl Transport for ScriptedServer {
         _cx: &mut std::task::Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        if self.aborted {
+            return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
+        }
         let Some(frame) = frame.take() else {
             return std::task::Poll::Ready(Ok(()));
         };
@@ -143,6 +147,9 @@ impl Transport for ScriptedServer {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.aborted {
+            return std::task::Poll::Ready(None);
+        }
         if let Some(msg) = self.incoming.pop_front() {
             std::task::Poll::Ready(Some(Ok(TransportFrame::Text(msg))))
         } else {
@@ -154,7 +161,14 @@ impl Transport for ScriptedServer {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        self.aborted = true;
+        self.incoming.clear();
         std::task::Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {
+        self.aborted = true;
+        self.incoming.clear();
     }
 }
 
@@ -184,6 +198,7 @@ async fn main() -> Result<(), SignalFishError> {
         ]),
         peer,
         started: false,
+        aborted: false,
     };
 
     // `MeshController::start` preserves compatible explicit choices and adds

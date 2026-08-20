@@ -1509,9 +1509,21 @@ mod tests {
             .await
             .expect("WebSocket connect must succeed");
         transport.abort();
+        transport.abort();
 
         assert!(transport.state.closed);
         assert!(transport.state.stream.is_none());
+        let expected = TransportFrame::Text("caller still owns this".into());
+        let mut offered = Some(expected.clone());
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        assert!(matches!(
+            transport.poll_send(&mut cx, &mut offered),
+            Poll::Ready(Err(SignalFishError::TransportClosed))
+        ));
+        assert_eq!(offered, Some(expected));
+        assert!(matches!(transport.poll_recv(&mut cx), Poll::Ready(None)));
+        assert!(matches!(transport.poll_close(&mut cx), Poll::Ready(Ok(()))));
         assert!(
             disconnected_rx
                 .await

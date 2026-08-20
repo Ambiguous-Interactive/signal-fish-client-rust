@@ -79,6 +79,11 @@ impl MockTransport {
 }
 
 impl Transport for MockTransport {
+    fn abort(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.incoming.clear();
+    }
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,

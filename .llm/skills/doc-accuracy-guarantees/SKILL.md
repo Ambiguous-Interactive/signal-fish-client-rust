@@ -73,11 +73,12 @@ request preempt a blocked delivery, so the guarantee is scoped precisely:
 /// draining) lets shutdown win, abandoning that one in-flight event.
 ```
 
-### `shutdown_timeout` — Documenting abort consequences
+### `shutdown_timeout` — Documenting abandonment consequences
 
 ```rust
-/// If the timeout expires the task is aborted and the `Disconnected` event
-/// may not be delivered.
+/// If the close deadline expires, the transport's required `abort` fallback
+/// runs and the loop normally returns. A later watchdog cancels only a task
+/// that still does not stop. `Disconnected` delivery remains best-effort.
 ```
 
 ## When to Apply This Skill

@@ -221,6 +221,12 @@ impl Transport for MyTransport {
         // Drive one idempotent close handshake across as many polls as needed.
         todo!()
     }
+
+    fn abort(&mut self) {
+        // Promptly abandon retained work and release or safely detach resources.
+        // This method must be non-blocking, non-panicking, and idempotent.
+        todo!()
+    }
 }
 ```
 
@@ -230,6 +236,8 @@ Key requirements:
 - Retain accepted outbound frames and partial receives across `Poll::Pending`
 - Register the supplied waker when async progress becomes possible
 - Make `poll_close` idempotent and expose structured peer metadata via `close_info`
+- Make `abort` prompt, non-blocking, non-panicking, and idempotent; it must
+  release or safely detach owned resources and discard retained sends
 - A transport constructor may begin an asynchronous connection attempt; both clients defer `Connected` until `is_ready()`, and the transport retains sends and wakes blocked async I/O when the handshake completes
 - The trait has no `Send` bound; only `SignalFishClient::start` requires
   `Send + 'static`, while `SignalFishPollingClient` accepts non-`Send` transports

@@ -325,6 +325,8 @@ impl SendErrorTransport {
 }
 
 impl Transport for SendErrorTransport {
+    fn abort(&mut self) {}
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,
