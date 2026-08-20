@@ -302,6 +302,7 @@ Accepted plans are finalized-room, current-roster shapes limited to the four
 Server 0.7 topology/transport pairs and replace prior peer authority atomically.
 `MeshController` generation-binds driver work and rebuilds every retained pair
 when the generation changes. Optional generation fields exist only for 0.4.
+Retired peer identity fences late generation-less signals across 0.4 re-plans.
 
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
@@ -405,7 +406,8 @@ suppressed. The shared core also rejects messages outside authentication,
 negotiation, room, role, and version phases before state mutation. Those
 lifecycle/plan/signal offenders are always suppressed; delivery-accountability
 `Observe` retains diagnostic delivery. Policy defaults to quarantine until a
-new authoritative room/reconnect snapshot.
+new authoritative room/reconnect snapshot. `Pong` remains connection-scoped
+while authentication and protocol negotiation are still in flight.
 
 ### No Heavy Dependencies
 

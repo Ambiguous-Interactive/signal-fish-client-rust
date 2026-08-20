@@ -478,7 +478,7 @@ The server replies with a `Pong` event confirming receipt.
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
-| `Pong` | — | Pong response to a ping. |
+| `Pong` | — | Connection-scoped response to a ping; valid while authentication or protocol negotiation is still in flight. |
 
 ```rust,ignore
 match event {

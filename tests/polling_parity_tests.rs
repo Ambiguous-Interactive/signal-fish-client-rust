@@ -909,6 +909,25 @@ fn text_server_frame(message: ServerMessage) -> TransportFrame {
 async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
     use signal_fish_client::protocol::{DirectEndpoint, SessionPeer, SessionPlanPayload, Topology};
 
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let events = assert_frame_trace_parity(
+            vec![text_server_frame(ServerMessage::Pong)],
+            SignalFishConfig::new("app").with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(events.iter().any(|event| event.starts_with("Pong")));
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "pre-auth Pong under {policy:?}: {events:?}"
+        );
+    }
+
     let peer = uuid::Uuid::from_u128(350);
     let generation = uuid::Uuid::from_u128(351);
     let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
@@ -1166,6 +1185,60 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 "{name} delivered {suppressed_event} under {policy:?}: {events:?}"
             );
         }
+    }
+
+    let mut generationless_webrtc = match plan.clone() {
+        ServerMessage::SessionPlan(plan) => *plan,
+        _ => unreachable!("plan fixture is a SessionPlan"),
+    };
+    generationless_webrtc.generation = None;
+    let mut generationless_relay = generationless_webrtc.clone();
+    generationless_relay.topology = Topology::Relay;
+    generationless_relay.transport = TransportKind::Relay;
+    generationless_relay.peers.clear();
+    generationless_relay.ice_servers.clear();
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let events = assert_frame_trace_parity(
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(
+                        generationless_webrtc.clone(),
+                    ))),
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(
+                        generationless_relay.clone(),
+                    ))),
+                    text_server_frame(ServerMessage::Signal {
+                        from: peer,
+                        generation: None,
+                        signal: serde_json::json!({"Offer": "late"}),
+                    }),
+                ])
+                .collect(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SessionPlan"))
+                .count(),
+            2,
+            "generation-less replan under {policy:?}: {events:?}"
+        );
+        assert!(
+            events.iter().all(|event| {
+                !event.starts_with("SignalReceived") && !event.starts_with("ProtocolViolation")
+            }),
+            "generation-less late signal under {policy:?}: {events:?}"
+        );
     }
 
     let mut valid = room_prefix;

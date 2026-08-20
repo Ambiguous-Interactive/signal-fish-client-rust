@@ -98,6 +98,7 @@ pub(crate) struct ClientCore {
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
     session_transport: Option<TransportKind>,
+    retired_generationless_signal_peers: HashSet<PlayerId>,
     #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
     #[cfg(feature = "tokio-runtime")]
@@ -158,6 +159,7 @@ impl ClientCore {
             session_plan_seen: false,
             session_peers: HashSet::new(),
             session_transport: None,
+            retired_generationless_signal_peers: HashSet::new(),
             #[cfg(feature = "tokio-runtime")]
             session_plan_revision: 0,
             #[cfg(feature = "tokio-runtime")]
@@ -435,6 +437,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.session_transport = None;
+        self.retired_generationless_signal_peers.clear();
     }
 
     pub(crate) fn disconnect(&mut self, reason: Option<String>) -> SignalFishEvent {
@@ -535,12 +538,15 @@ impl ClientCore {
         if duplicate_protocol_info {
             return outcome;
         }
-        if let ServerMessage::Signal { generation, .. } = &server_msg {
-            if !self.session_plan_seen || *generation != self.snapshot.session_generation {
+        if let ServerMessage::Signal {
+            from, generation, ..
+        } = &server_msg
+        {
+            if !self.session_plan_seen || self.should_suppress_inbound_signal(*from, *generation) {
                 tracing::debug!(
                     ?generation,
                     current_generation = ?self.snapshot.session_generation,
-                    "discarding signal for a stale or unknown session generation"
+                    "discarding signal for a stale, unknown, or legacy-unfenceable session generation"
                 );
                 return outcome;
             }
@@ -684,6 +690,7 @@ impl ClientCore {
             ServerMessage::Authenticated { .. }
                 | ServerMessage::AuthenticationError { .. }
                 | ServerMessage::ProtocolInfo(_)
+                | ServerMessage::Pong
                 | ServerMessage::Error { .. }
         );
         if requires_negotiation && !self.protocol_info_seen {
@@ -727,10 +734,9 @@ impl ClientCore {
                 authenticated && membership == Membership::Player
             }
             ServerMessage::AuthorityResponse { .. }
-            | ServerMessage::Pong
             | ServerMessage::GoingAway { .. }
             | ServerMessage::RelayStats { .. } => authenticated,
-            ServerMessage::Error { .. } => true,
+            ServerMessage::Pong | ServerMessage::Error { .. } => true,
         };
 
         if !phase_valid {
@@ -781,7 +787,7 @@ impl ClientCore {
                             .into(),
                     );
                 }
-                if *generation != self.snapshot.session_generation {
+                if self.should_suppress_inbound_signal(*from, *generation) {
                     return Ok(());
                 }
                 if self.session_transport != Some(TransportKind::WebRtc) {
@@ -912,6 +918,21 @@ impl ClientCore {
         }
 
         Ok(())
+    }
+
+    fn should_suppress_inbound_signal(
+        &self,
+        from: PlayerId,
+        generation: Option<SessionGeneration>,
+    ) -> bool {
+        generation != self.snapshot.session_generation
+            // Server 0.4 omitted generations. Retained peer identity is the
+            // only fence for a signal racing a generation-less re-plan.
+            || (generation.is_none()
+                && self.snapshot.session_generation.is_none()
+                && self.retired_generationless_signal_peers.contains(&from)
+                && !(self.session_transport == Some(TransportKind::WebRtc)
+                    && self.session_peers.contains(&from)))
     }
 
     fn validate_reconnect_replay(
@@ -1061,8 +1082,19 @@ impl ClientCore {
             }
             ServerMessage::NewPeer { peer_id, .. } => {
                 self.session_peers.insert(*peer_id);
+                if self.snapshot.session_generation.is_none()
+                    && self.session_transport == Some(TransportKind::WebRtc)
+                {
+                    self.retired_generationless_signal_peers.remove(peer_id);
+                }
             }
             ServerMessage::PlayerLeft { player_id, .. } => {
+                if self.snapshot.session_generation.is_none()
+                    && self.session_transport == Some(TransportKind::WebRtc)
+                    && self.session_peers.contains(player_id)
+                {
+                    self.retired_generationless_signal_peers.insert(*player_id);
+                }
                 self.session_peers.remove(player_id);
                 self.room_players.remove(player_id);
             }
@@ -1095,6 +1127,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.session_transport = None;
+        self.retired_generationless_signal_peers.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -1112,6 +1145,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.session_transport = None;
+        self.retired_generationless_signal_peers.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -1122,9 +1156,21 @@ impl ClientCore {
         peers: impl IntoIterator<Item = PlayerId>,
         transport: TransportKind,
     ) {
+        if self.session_plan_seen
+            && self.snapshot.session_generation.is_none()
+            && self.session_transport == Some(TransportKind::WebRtc)
+        {
+            self.retired_generationless_signal_peers
+                .extend(self.session_peers.iter().copied());
+        }
+        let peers: HashSet<_> = peers.into_iter().collect();
+        if generation.is_none() && transport == TransportKind::WebRtc {
+            self.retired_generationless_signal_peers
+                .retain(|peer| !peers.contains(peer));
+        }
         self.snapshot.session_generation = generation;
         self.session_plan_seen = true;
-        self.session_peers = peers.into_iter().collect();
+        self.session_peers = peers;
         self.session_transport = Some(transport);
         #[cfg(feature = "tokio-runtime")]
         self.advance_session_plan_revision();
@@ -1825,6 +1871,226 @@ mod tests {
             assert!(outcome.events.is_empty(), "{policy:?}");
             assert!(!outcome.disconnect, "{policy:?}");
             assert!(!core.snapshot().quarantined, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn generationless_signal_after_relay_replan_is_silently_suppressed() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = v3_room(policy);
+            let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+            webrtc.generation = None;
+            let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+            let mut relay = plan(Topology::Relay, TransportKind::Relay);
+            relay.generation = None;
+            let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
+
+            let outcome = process(
+                &mut core,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(PEER),
+                    generation: None,
+                    signal: serde_json::json!({"Offer": "late"}),
+                },
+            );
+            assert!(outcome.events.is_empty(), "{policy:?}");
+            assert!(!outcome.disconnect, "{policy:?}");
+            assert!(!core.snapshot().quarantined, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn generationless_departure_order_preserves_the_stale_signal_fence() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            for player_left_before_relay in [true, false] {
+                let mut core = v3_room(policy);
+                let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+                webrtc.generation = None;
+                let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+                let player_left = ServerMessage::PlayerLeft {
+                    player_id: PlayerId::from_u128(PEER),
+                    epoch: Some(1),
+                    final_seq: Some(0),
+                };
+                if player_left_before_relay {
+                    let _ = process(&mut core, player_left.clone());
+                }
+                let mut relay = plan(Topology::Relay, TransportKind::Relay);
+                relay.generation = None;
+                let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
+                if !player_left_before_relay {
+                    let _ = process(&mut core, player_left);
+                }
+
+                let outcome = process(
+                    &mut core,
+                    ServerMessage::Signal {
+                        from: PlayerId::from_u128(PEER),
+                        generation: None,
+                        signal: serde_json::json!({"Offer": "queued-before-departure"}),
+                    },
+                );
+                assert!(outcome.events.is_empty(), "{policy:?}");
+                assert!(!outcome.disconnect, "{policy:?}");
+                assert!(!core.snapshot().quarantined, "{policy:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn generationless_relay_signal_without_retired_authority_is_a_violation() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut initial_relay = v3_room(policy);
+            let mut relay = plan(Topology::Relay, TransportKind::Relay);
+            relay.generation = None;
+            let _ = process(
+                &mut initial_relay,
+                ServerMessage::SessionPlan(Box::new(relay.clone())),
+            );
+            let outcome = process(
+                &mut initial_relay,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(PEER),
+                    generation: None,
+                    signal: serde_json::json!({"Offer": "never-authorized"}),
+                },
+            );
+            assert_lifecycle_violation(&outcome);
+
+            let mut retired_other_peer = v3_room(policy);
+            let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+            webrtc.generation = None;
+            let _ = process(
+                &mut retired_other_peer,
+                ServerMessage::SessionPlan(Box::new(webrtc)),
+            );
+            let _ = process(
+                &mut retired_other_peer,
+                ServerMessage::SessionPlan(Box::new(relay)),
+            );
+            let outcome = process(
+                &mut retired_other_peer,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(4),
+                    generation: None,
+                    signal: serde_json::json!({"Offer": "never-in-plan"}),
+                },
+            );
+            assert_lifecycle_violation(&outcome);
+        }
+    }
+
+    #[test]
+    fn generationless_webrtc_updates_reauthorize_a_retired_peer() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+        webrtc.generation = None;
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(webrtc.clone())),
+        );
+        let mut relay = plan(Topology::Relay, TransportKind::Relay);
+        relay.generation = None;
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(webrtc.clone())),
+        );
+        let outcome = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: None,
+                signal: serde_json::json!({"Offer": "replanned"}),
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SignalReceived { .. }]
+        ));
+
+        webrtc.peers.clear();
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+        assert!(core
+            .retired_generationless_signal_peers
+            .contains(&PlayerId::from_u128(PEER)));
+        let _ = process(
+            &mut core,
+            ServerMessage::NewPeer {
+                peer_id: PlayerId::from_u128(PEER),
+                you_initiate: true,
+            },
+        );
+        let outcome = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: None,
+                signal: serde_json::json!({"Offer": "new-peer"}),
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SignalReceived { .. }]
+        ));
+    }
+
+    #[test]
+    fn room_reset_clears_generationless_retired_signal_peers() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+        webrtc.generation = None;
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+        let mut relay = plan(Topology::Relay, TransportKind::Relay);
+        relay.generation = None;
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
+        assert!(!core.retired_generationless_signal_peers.is_empty());
+
+        let _ = process(&mut core, ServerMessage::RoomLeft);
+        assert!(core.retired_generationless_signal_peers.is_empty());
+    }
+
+    #[test]
+    fn pong_is_connection_scoped_before_authentication_and_negotiation() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            for prefix in [
+                vec![],
+                vec![authenticated()],
+                vec![authenticated(), protocol_info(Some(3))],
+                vec![authenticated(), protocol_info(Some(3)), room_joined()],
+                vec![
+                    authenticated(),
+                    protocol_info(Some(3)),
+                    room_joined(),
+                    ServerMessage::RoomLeft,
+                ],
+            ] {
+                let mut core = ClientCore::new(GameDataEncoding::Json, policy, true);
+                for message in prefix {
+                    let _ = process(&mut core, message);
+                }
+                let before = core.snapshot();
+                let outcome = process(&mut core, ServerMessage::Pong);
+                assert!(matches!(outcome.events.as_slice(), [SignalFishEvent::Pong]));
+                assert!(!outcome.disconnect, "{policy:?}");
+                assert_eq!(core.snapshot(), before, "{policy:?}");
+            }
         }
     }
 

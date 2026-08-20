@@ -610,7 +610,7 @@ pub enum ServerMessage { /* ... */ }
 | `AuthorityResponse` | Response to an authority request. |
 | `LobbyStateChanged` | Lobby state changed (player readiness, room full, etc.). |
 | `GameStarting` | Game is starting — includes peer connection info for all players. |
-| `Pong` | Response to a `Ping`. |
+| `Pong` | Connection-scoped response to a `Ping`, including before authentication/negotiation completes. |
 | `Reconnected` | Reconnection successful. Contains full room state and missed events. |
 | `ReconnectionFailed` | Reconnection failed. |
 | `PlayerReconnected` | Another player reconnected. |

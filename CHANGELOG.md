@@ -53,7 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signaling frames before state/accountability mutation under every policy,
   validate the Server 0.7 plan cross-field contract, and refuse off-plan
   outbound signaling before anything reaches the wire. Generation-less Server
-  0.4 plans remain supported when their shape is otherwise canonical.
+  0.4 plans remain supported when their shape is otherwise canonical, including
+  harmless suppression of unfenceable late signals after a relay re-plan or
+  peer departure.
+  Connection-scoped `Pong` responses also remain valid while authentication and
+  protocol negotiation are still in flight.
 
 - Fixed public `Debug` implementations and built-in transport tracing exposing
   reconnect and relay credentials, TURN userinfo, WebRTC signaling material,
