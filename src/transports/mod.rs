@@ -11,18 +11,18 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
-//! use signal_fish_client::{WebSocketTransport, Transport};
+//! use signal_fish_client::{SignalFishClient, SignalFishConfig, WebSocketTransport};
 //!
-//! let mut ws = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
-//! ws.send(r#"{"type":"ping"}"#.to_string()).await?;
+//! let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//! let config = SignalFishConfig::new("mb_app_example");
+//! let (mut client, mut events) = SignalFishClient::start(transport, config);
 //!
-//! if let Some(Ok(msg)) = ws.recv().await {
-//!     println!("server said: {msg}");
-//! }
-//!
-//! ws.close().await?;
+//! // Observe the initial readiness or terminal event, then choose when to stop.
+//! let _first_event = events.recv().await;
+//! client.shutdown().await;
+//! while events.recv().await.is_some() {}
 //! # Ok(())
 //! # }
 //! ```

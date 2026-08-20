@@ -29,6 +29,9 @@ abandons client-owned queued work; flush-on-close is an explicit option. Never
 wait indefinitely for polling close, and never interpret backend acceptance as
 peer delivery. Queue age belongs only to polling-driver client ownership and
 stops at backend acceptance; backend buffering remains transport diagnostics.
+Both drivers invoke required `Transport::abort` after a close deadline or
+error and when their owner is dropped before graceful close completes; no
+transport polling occurs afterward.
 
 Never add protocol interpretation or state mutation directly to a driver. Add
 it to `ClientCore`, then exercise it through both drivers in the parity matrix.

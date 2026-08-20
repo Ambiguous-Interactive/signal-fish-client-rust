@@ -44,6 +44,8 @@ pub trait Transport {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), SignalFishError>>;
+
+    fn abort(&mut self);
 }
 ```
 
@@ -180,7 +182,10 @@ if tokio::time::timeout(Duration::from_secs(1), &mut task)
 
 Graceful transport shutdown is itself multi-poll. Internal code adapts
 `poll_close` with `poll_fn` and awaits it until ready; the client timeout may
-still abort a transport whose close never makes progress.
+still abort a transport whose close never makes progress. The async task owns
+its transport through an abort-on-drop guard so task cancellation, panic, or
+client-handle drop also invokes the required synchronous `Transport::abort`
+fallback unless graceful close already completed.
 
 ## Synchronization
 

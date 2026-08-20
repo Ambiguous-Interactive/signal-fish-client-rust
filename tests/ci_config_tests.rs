@@ -6650,9 +6650,15 @@ mod ffi_safety_documentation {
 
         // Drop must close before the guarded deletion helper and explicitly
         // retain the allocation if its final retry fails.
-        let drop_block = contents
+        let mut in_block_comment = false;
+        let code_only = contents
+            .lines()
+            .map(|line| strip_non_code_stateful(line, &mut in_block_comment))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let drop_block = code_only
             .find("impl Drop for EmscriptenWebSocketTransport")
-            .map(|start| &contents[start..])
+            .map(|start| &code_only[start..])
             .expect("EmscriptenWebSocketTransport must implement Drop");
 
         let drop_close = drop_block
@@ -6663,8 +6669,37 @@ mod ffi_safety_documentation {
             .expect("Drop must use the guarded callback cleanup helper");
         assert!(drop_close < drop_delete, "Drop must close BEFORE delete");
         assert!(
-            drop_block.contains("intentionally leaking callback state to prevent use-after-free"),
-            "Drop must preserve callback state when final deletion fails"
+            !drop_block.contains("callback_state.reclaim"),
+            "Drop must not reclaim callback state without guarded deletion authorization"
+        );
+
+        // Abort follows the same close-before-delete ownership proof. Failed
+        // deletion remains retryable and keeps callback state live rather than
+        // freeing memory that Emscripten may still reference.
+        let abort_block = code_only
+            .find("    fn abort(&mut self) {")
+            .and_then(|start| {
+                code_only[start..]
+                    .find("\n    }\n}")
+                    .map(|end| &code_only[start..start + end])
+            })
+            .expect("EmscriptenWebSocketTransport must implement abort");
+        let abort_terminal = abort_block
+            .find("self.closed = true")
+            .expect("abort must make Emscripten polling terminal");
+        let abort_close = abort_block
+            .find("close_native_socket")
+            .expect("abort must close the native socket");
+        let abort_delete = abort_block
+            .find("delete_after_close_attempt")
+            .expect("abort must use the guarded callback cleanup helper");
+        assert!(
+            abort_terminal < abort_close && abort_close < abort_delete,
+            "abort must become terminal, then close, then use guarded deletion"
+        );
+        assert!(
+            !abort_block.contains("callback_state.reclaim"),
+            "abort must not reclaim callback state without guarded deletion authorization"
         );
     }
 }

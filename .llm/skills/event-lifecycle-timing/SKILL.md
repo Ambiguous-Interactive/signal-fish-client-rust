@@ -36,7 +36,7 @@ but observe it through different driver mechanics.
 - For `EmscriptenWebSocketTransport`, `Connected` is deferred until the
   browser's `onopen` callback fires, which sets `opened = true` and makes
   `is_ready()` return `true`.
-- `IncomingEvent::Open` from the Emscripten transport is consumed by `recv()`
+- `IncomingEvent::Open` from the Emscripten transport is consumed by `poll_recv`
   and sets the `opened` flag rather than being surfaced to the caller.
 
 ## Rules

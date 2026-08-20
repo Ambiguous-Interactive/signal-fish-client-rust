@@ -79,6 +79,10 @@ impl NeverSendMock {
 }
 
 impl Transport for NeverSendMock {
+    fn abort(&mut self) {
+        let _ = self.waker.lock().unwrap().take();
+    }
+
     fn poll_send(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -212,6 +216,8 @@ impl FrameMock {
 }
 
 impl Transport for FrameMock {
+    fn abort(&mut self) {}
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,
@@ -515,6 +521,8 @@ impl SharedMock {
 }
 
 impl Transport for SharedMock {
+    fn abort(&mut self) {}
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,
@@ -594,6 +602,11 @@ impl ReadinessMock {
 }
 
 impl Transport for ReadinessMock {
+    fn abort(&mut self) {
+        self.controls.terminal.store(true, Ordering::Release);
+        let _ = self.controls.waker.lock().unwrap().take();
+    }
+
     fn poll_send(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -738,6 +751,8 @@ impl TraceMock {
 }
 
 impl Transport for TraceMock {
+    fn abort(&mut self) {}
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,

@@ -1,35 +1,32 @@
 ## Summary
 
-Clarifies the connection phase and traffic-counter contracts shared by the
-async and polling clients. Applications can now distinguish client ownership
-from transport readiness, and `ClientStats` counts at stable transport/decode
-boundaries instead of backend completion or application delivery.
+Gives every custom transport an explicit close-deadline abandonment hook.
+`Transport::abort` is now required; both client drivers invoke it for deadline
+expiry, close errors, or owner drop before graceful close completes, while the
+async ownership guard also covers task cancellation and panic unwinding.
 
-Closes #104.
+Closes #106.
 
 ## Changes
 
-- Add `ClientSnapshot::transport_ready` and matching async, polling, and
-  `SignalFishClientApi` accessors; emit `Connected` exactly once on the first
-  driver observation of `Transport::is_ready()`.
-- Preserve FIFO command admission while connecting, require deferred async
-  readiness to wake registered I/O, and reset every connection phase on
-  terminal paths.
-- Count `game_data_sent` at exact frame ownership transfer, including
-  accepted-Pending and accepted-then-error sends without double-counting.
-- Count `game_data_received` immediately after successful text or binary
-  protocol decode, before message validation, sequence accountability, stale,
-  quarantine, or event suppression; preserve physical-binary admission checks
-  that reject a frame before logical decoding.
-- Document the valid phase tuples, counter conservation limits, excluded
-  traffic, and cross-peer diagnostic caveats across the public guides,
-  changelog, roadmap, canonical context, and focused agent skills.
+- Require every `Transport` implementation to provide a synchronous,
+  idempotent abort path that releases or safely detaches backend resources and
+  discards retained accepted sends.
+- Add an async transport ownership guard plus polling-client drop fallback so
+  cancellation and drop cannot bypass backend abandonment.
+- Preserve backend-owned send completion before graceful close under the one
+  configured deadline; abort on expiry or close failure and never poll the
+  transport afterward.
+- Prove accepted-send hangs, close hangs/errors, resource release, repeated
+  shutdown/drop, event termination, and zero post-abort transport activity in
+  both drivers; strengthen native WebSocket and Godot abort tests.
+- Add third-party migration guidance and update custom transport examples,
+  lifecycle docs, changelog, roadmap, canonical context, and focused skills.
 
 ## Validation
 
-- [x] Focused async and polling readiness tests
-- [x] Focused ownership-transfer and decoded-receipt tests
-- [x] Async/polling frame, snapshot, and statistics parity tests
-- [x] Repository documentation and workflow policy validators
+- [x] Focused async/polling deadline, close-error, and drop tests
+- [x] Built-in native WebSocket and Godot abort contract tests
+- [x] Repository documentation and policy validators
 - [x] `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
 - [ ] Hosted required checks and review feedback

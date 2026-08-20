@@ -77,7 +77,7 @@ were delivered by PR #91 and closed when it merged as `963a9fc`.
   deletion failures remain retryable, and terminal cleanup deliberately leaks
   the small allocation instead of risking a late-callback use-after-free. The
   host-tested state machine and required FFI checker enforce this condition
-  with 43 checker self-tests.
+  with 50 checker self-tests.
 - Dependabot's first default-branch Cargo run after PR #91 failed because its
   temporary file set omitted `crates/signal-fish-client-godot/Cargo.toml`, then
   opened zero-file PR #92. The three-directory attempt also failed in run
@@ -161,20 +161,31 @@ queue capacity. The code-bearing head passed all twelve hosted workflow suites;
 Session 031 records the operation/state matrix, pinned-server contract, review
 fixes, and exact verification evidence.
 
-## Current Correctness Milestone — Readiness and Traffic Counters
+## Completed Correctness Milestone — Readiness and Traffic Counters
 
 [Issue #104](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/104)
-defines connection state as nested client-owned, transport-ready,
+shipped in [PR #115](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/115). It defines connection state as nested client-owned, transport-ready,
 server-authenticated, and room-membership phases without preventing FIFO
 queueing during an asynchronous handshake. Traffic statistics count outbound
 transport ownership transfer and inbound decoded receipt, including
 accepted-then-error, stale, and quarantined cases. Session 032 records the
-contract and evidence.
+contract, review, and green hosted evidence.
 
-## Next Correctness Milestones — Transport Deadlines and Datagram Scope
+## Current Correctness Milestone — Enforceable Transport Abandonment
 
-Continue with #106 and #107 before usability, performance, token binding, or
-presentation milestones.
+[Issue #106](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/106)
+makes `Transport::abort` a required backend-lifetime decision and invokes it
+after close deadlines/errors and owner cancellation/drop. Async and polling
+drivers must preserve accepted-send-before-close ordering while proving
+deadline abandonment, resource release, and no later transport polling.
+Session 033 records the contract and evidence.
+
+## Next Correctness Milestone — Datagram Scope
+
+Resolve [issue #107](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/107)
+before usability, performance, token binding, or presentation milestones. Do
+not claim UDP resilience without an explicit framing, trust, ownership, and
+delivery decision.
 
 ## Following Milestone — Negotiated Token Binding
 
@@ -200,6 +211,16 @@ Track [issue #82](https://github.com/Ambiguous-Interactive/signal-fish-client-ru
   stable enough for CI.
 - Preserve frame ownership, backpressure, exact accountability, and event
   delivery invariants in every optimization.
+
+The stale `agent/fortress-rollback-throughput-e2e` branch is retained only as
+research input for #82. Its pre-session-018 standalone fixture was superseded
+by the merged two-browser Godot Fortress suite and is not an active PR.
+
+## Later Milestone — Simplified Documentation
+
+Track [issue #110](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/110)
+and its completed server-side prerequisite to define a smaller onboarding path
+without duplicating or weakening the strict reference documentation.
 
 ## Later Milestone — Documentation Design System
 

@@ -147,7 +147,8 @@ enum ClosePhase {
 /// Unlike [`SignalFishClient`](crate::SignalFishClient), this client does **not**
 /// spawn a background task or require a tokio runtime. Instead, the caller drives
 /// the client by calling [`poll()`](Self::poll) on each frame (e.g., from Godot's
-/// `_process(delta)` method).
+/// `_process(delta)` method). Dropping a client that has not completed graceful
+/// close invokes [`Transport::abort`] synchronously.
 ///
 /// # Example (Godot via gdext)
 ///
@@ -304,6 +305,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     fn poll_at(&mut self, now: Instant) -> Vec<SignalFishEvent> {
         let mut events = Vec::new();
+        if matches!(self.close_phase, ClosePhase::Closed) {
+            return events;
+        }
         self.refresh_queue_diagnostics_at(now);
 
         // Create a noop waker to poll transport futures synchronously.
@@ -1123,6 +1127,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 }
                 std::task::Poll::Ready(Err(error)) => {
                     error!(%error, "polling client transport close failed");
+                    self.transport.abort();
                     self.close_phase = ClosePhase::Closed;
                 }
                 std::task::Poll::Pending => {}
@@ -1274,6 +1279,15 @@ impl<T: Transport> std::fmt::Debug for SignalFishPollingClient<T> {
             .field("authenticated", &self.core.is_authenticated())
             .field("queued_commands", &self.cmd_queue.len())
             .finish()
+    }
+}
+
+impl<T: Transport> Drop for SignalFishPollingClient<T> {
+    fn drop(&mut self) {
+        if !matches!(self.close_phase, ClosePhase::Closed) {
+            self.transport.abort();
+            self.close_phase = ClosePhase::Closed;
+        }
     }
 }
 
@@ -1452,6 +1466,8 @@ mod tests {
     }
 
     impl Transport for MockTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -1514,7 +1530,7 @@ mod tests {
         incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
         sent: Vec<String>,
         _sent_binary: Vec<Vec<u8>>,
-        /// When true, `recv()` sets `ready = true` before returning,
+        /// When true, `poll_recv` sets `ready = true` before returning,
         /// simulating a transport that becomes ready during the recv drain.
         ready_after_recv: bool,
     }
@@ -1544,6 +1560,8 @@ mod tests {
     }
 
     impl Transport for NotReadyTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -3193,10 +3211,12 @@ mod tests {
 
     // ── Additional mock transports ─────────────────────────────────
 
-    /// A transport whose `send()` always returns an error.
+    /// A transport whose `poll_send` always returns an error.
     struct ErrorOnSendTransport;
 
     impl Transport for ErrorOnSendTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -3221,7 +3241,7 @@ mod tests {
         }
     }
 
-    /// A transport whose `send()` always returns `Pending`.
+    /// A transport whose `poll_send` always returns `Pending`.
     struct PendingOnSendTransport;
 
     impl PendingOnSendTransport {
@@ -3238,6 +3258,7 @@ mod tests {
         replacement_seen: bool,
         peer_closes_on_recv: bool,
         fail_game_data_completion: bool,
+        close_calls: usize,
     }
 
     struct GameDataErrorTransport {
@@ -3245,6 +3266,8 @@ mod tests {
     }
 
     impl Transport for GameDataErrorTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -3327,6 +3350,10 @@ mod tests {
     }
 
     impl Transport for AcceptedPendingSendTransport {
+        fn abort(&mut self) {
+            self.retained = None;
+        }
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -3370,11 +3397,18 @@ mod tests {
             &mut self,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            assert!(
+                self.retained.is_none(),
+                "backend-owned send must complete before close"
+            );
+            self.close_calls = self.close_calls.saturating_add(1);
             std::task::Poll::Ready(Ok(()))
         }
     }
 
     impl Transport for PendingOnSendTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -3398,11 +3432,13 @@ mod tests {
         }
     }
 
-    /// A transport whose `close()` always returns `Pending` (never completes).
-    /// `send()` and `recv()` behave normally (Ready).
+    /// A transport whose `poll_close` always returns `Pending`.
+    /// `poll_send` and `poll_recv` otherwise return `Ready`.
     struct PendingCloseTransport;
 
     impl Transport for PendingCloseTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -4353,7 +4389,7 @@ mod tests {
         assert!(!client.is_connected());
     }
 
-    /// Transport whose `send()` stays `Pending` until `allow` is set, so tests
+    /// Transport whose `poll_send` stays `Pending` until `allow` is set, so tests
     /// can saturate and then drain the bounded command queue deterministically.
     struct TogglePendingSendTransport {
         allow: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -4362,6 +4398,8 @@ mod tests {
     }
 
     impl Transport for TogglePendingSendTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -4619,6 +4657,7 @@ mod tests {
             replacement_seen: false,
             peer_closes_on_recv: false,
             fail_game_data_completion: false,
+            close_calls: 0,
         };
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let base = Instant::now();
@@ -4651,6 +4690,7 @@ mod tests {
             replacement_seen: false,
             peer_closes_on_recv: false,
             fail_game_data_completion: false,
+            close_calls: 0,
         };
         let mut client = SignalFishPollingClient::new(
             transport,
@@ -4718,6 +4758,7 @@ mod tests {
             replacement_seen: false,
             peer_closes_on_recv: false,
             fail_game_data_completion: true,
+            close_calls: 0,
         };
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
@@ -5123,6 +5164,7 @@ mod tests {
                 replacement_seen: false,
                 peer_closes_on_recv: false,
                 fail_game_data_completion: false,
+                close_calls: 0,
             };
             let options = PollingClientOptions {
                 close_policy,
@@ -5142,6 +5184,7 @@ mod tests {
                 client.transport.sent.first(),
                 Some(TransportFrame::Text(text)) if text.contains("Authenticate")
             ));
+            assert_eq!(client.transport.close_calls, 1, "policy {close_policy:?}");
         }
     }
 
@@ -5228,6 +5271,7 @@ mod tests {
             replacement_seen: false,
             peer_closes_on_recv: true,
             fail_game_data_completion: false,
+            close_calls: 0,
         };
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
@@ -5657,14 +5701,14 @@ mod tests {
         // Sanity: client starts connected.
         assert!(client.is_connected(), "client should start connected");
 
-        // Close the client. The transport's close() returns Pending,
+        // Close the client. The transport's poll_close returns Pending,
         // but the client should still mark itself as disconnected.
         client.close();
 
-        // 1. Client must be disconnected even though transport.close() was Pending.
+        // 1. Client must be disconnected even though poll_close was Pending.
         assert!(
             !client.is_connected(),
-            "client should be disconnected after close(), even when transport returns Pending"
+            "client should be disconnected after close(), even when poll_close returns Pending"
         );
 
         // 2. Command methods must return NotConnected.

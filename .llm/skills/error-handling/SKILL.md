@@ -116,12 +116,12 @@ Io(#[from] std::io::Error),
 ## The ? Operator
 
 ```rust
-async fn do_thing(&mut self) -> Result<(), SignalFishError> {
+fn do_thing(&mut self) -> Result<(), SignalFishError> {
     // serde_json::Error auto-converts via #[from] Serialization variant
     let json = serde_json::to_string(&msg)?;
 
-    // String errors need manual mapping
-    self.transport.send(json).await
+    // This example backend is not the SDK's poll-based Transport trait.
+    self.backend.try_send(json)
         .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
 
     Ok(())
@@ -205,13 +205,20 @@ stream.next().await
 ### Returning early on error
 
 ```rust
-async fn process(&mut self) -> Result<(), SignalFishError> {
-    match self.transport.recv().await {
-        Some(Ok(s)) => { /* use s */ }
-        Some(Err(e)) => return Err(e),
-        None => return Err(SignalFishError::TransportClosed),
+fn poll_process(
+    &mut self,
+    cx: &mut Context<'_>,
+) -> Poll<Result<(), SignalFishError>> {
+    match self.transport.poll_recv(cx) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Some(Ok(frame))) => {
+            // Process the complete text or binary frame.
+            let _ = frame;
+            Poll::Ready(Ok(()))
+        }
+        Poll::Ready(Some(Err(error))) => Poll::Ready(Err(error)),
+        Poll::Ready(None) => Poll::Ready(Err(SignalFishError::TransportClosed)),
     }
-    Ok(())
 }
 ```
 

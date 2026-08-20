@@ -1109,6 +1109,8 @@ mod tests {
     }
 
     impl Transport for MockTransport {
+        fn abort(&mut self) {}
+
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -1543,6 +1545,10 @@ mod tests {
     }
 
     impl Transport for GatedTransport {
+        fn abort(&mut self) {
+            self.pending_acquire = None;
+        }
+
         fn poll_send(
             &mut self,
             cx: &mut std::task::Context<'_>,

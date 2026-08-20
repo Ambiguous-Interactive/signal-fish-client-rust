@@ -194,8 +194,9 @@ client.shutdown().await;
 ```
 
 `shutdown()` asks the transport loop to close gracefully and waits up to
-`SignalFishConfig::shutdown_timeout`; if that deadline expires, it aborts the
-task and the terminal `Disconnected` event may be omitted.
+`SignalFishConfig::shutdown_timeout`; if that deadline expires, it invokes the
+transport's abort path, stops the task, and may omit the terminal
+`Disconnected` event.
 
 ### Running it
 
@@ -241,8 +242,9 @@ use signal_fish_client::{
 use tokio::sync::mpsc;
 
 pub struct LoopbackTransport {
-    tx: mpsc::UnboundedSender<String>,
+    tx: Option<mpsc::UnboundedSender<String>>,
     rx: mpsc::UnboundedReceiver<String>,
+    closed: bool,
 }
 
 pub struct LoopbackServer {
@@ -253,7 +255,11 @@ pub struct LoopbackServer {
 fn loopback_pair() -> (LoopbackTransport, LoopbackServer) {
     let (client_tx, server_rx) = mpsc::unbounded_channel();
     let (server_tx, client_rx) = mpsc::unbounded_channel();
-    let transport = LoopbackTransport { tx: client_tx, rx: client_rx };
+    let transport = LoopbackTransport {
+        tx: Some(client_tx),
+        rx: client_rx,
+        closed: false,
+    };
     let server = LoopbackServer { rx: server_rx, tx: server_tx };
     (transport, server)
 }
@@ -264,8 +270,11 @@ impl Transport for LoopbackTransport {
         _cx: &mut std::task::Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let Some(tx) = self.tx.as_ref() else {
+            return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         let result = match frame.take() {
-            Some(TransportFrame::Text(message)) => self.tx.send(message)
+            Some(TransportFrame::Text(message)) => tx.send(message)
                 .map_err(|e| SignalFishError::TransportSend(e.to_string())),
             Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
                 "text-only loopback does not accept binary frames".into(),
@@ -278,6 +287,9 @@ impl Transport for LoopbackTransport {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return std::task::Poll::Ready(None);
+        }
         self.rx.poll_recv(cx)
             .map(|message| message.map(|text| Ok(TransportFrame::Text(text))))
     }
@@ -285,7 +297,16 @@ impl Transport for LoopbackTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
         std::task::Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
     }
 }
 
@@ -337,8 +358,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust,ignore
 pub struct LoopbackTransport {
-    tx: mpsc::UnboundedSender<String>,
+    tx: Option<mpsc::UnboundedSender<String>>,
     rx: mpsc::UnboundedReceiver<String>,
+    closed: bool,
 }
 ```
 
@@ -357,8 +379,11 @@ impl Transport for LoopbackTransport {
         _cx: &mut std::task::Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let Some(tx) = self.tx.as_ref() else {
+            return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
+        };
         let result = match frame.take() {
-            Some(TransportFrame::Text(message)) => self.tx.send(message)
+            Some(TransportFrame::Text(message)) => tx.send(message)
                 .map_err(|e| SignalFishError::TransportSend(e.to_string())),
             Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
                 "text-only loopback does not accept binary frames".into(),
@@ -371,6 +396,9 @@ impl Transport for LoopbackTransport {
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.closed {
+            return std::task::Poll::Ready(None);
+        }
         self.rx.poll_recv(cx)
             .map(|message| message.map(|text| Ok(TransportFrame::Text(text))))
     }
@@ -378,18 +406,28 @@ impl Transport for LoopbackTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
         std::task::Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {
+        self.closed = true;
+        self.tx = None;
+        self.rx.close();
     }
 }
 ```
 
-Only three polling methods are required:
+Four lifecycle methods are required:
 
 | Method | Purpose |
 |---|---|
 | `poll_send` | Accept and progress a text or binary frame. |
 | `poll_recv` | Poll the next frame (returns `Ready(None)` on close). |
 | `poll_close` | Progress cleanup idempotently (immediately ready here). |
+| `abort` | Immediately abandon work and release owned resources. |
 
 #### 3. Create a fake server that injects responses
 

@@ -118,6 +118,11 @@ connection, then wrap the peer.
 | Godot-accepted packets | Call `WebSocketPeer::close` without waiting for zero; WebSocket ordering puts accepted messages before Close. |
 | Peer already closing/closed | Preserve peer attribution and drain available inbound packets. |
 | Client deadline expires | Count remaining work, invoke `Transport::abort`, and stop reporting closing. |
+| Polling client dropped before close completes | Invoke required `Transport::abort` synchronously; Godot force-close runs at most once. |
+
+Godot abort must be immediate and idempotent: call the backend force-close at
+most once, clear current buffering diagnostics, and let no later client poll
+re-enter the backend.
 
 For web pages served over HTTPS, use a `wss://` server URL to avoid browser
 mixed-content rejection.

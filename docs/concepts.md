@@ -30,7 +30,7 @@ pub trait Transport {
         -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
     fn poll_close(&mut self, cx: &mut Context<'_>)
         -> Poll<Result<(), SignalFishError>>;
-    fn abort(&mut self) {}
+    fn abort(&mut self);
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
@@ -42,9 +42,14 @@ pub trait Transport {
 | `poll_send` | Accept and progress one `TransportFrame`; preserve ownership correctly across `Pending`. |
 | `poll_recv` | Poll the next text/binary frame; `Ready(None)` is a clean close. |
 | `poll_close` | Progress idempotent graceful shutdown across calls. |
+| `abort` | Immediately abandon backend work and end driver polling after a deadline, close error, or owner drop. |
 
-The defaulted hooks mark a polling cycle, abort after a close deadline, report
-handshake readiness and close metadata, and expose backend-owned diagnostics.
+The required `abort` method enforces deadline abandonment. It releases or
+safely detaches backend resources, discards accepted sends, and makes later
+polling invalid; only repeated `abort`, `is_ready`, `close_info`, `diagnostics`,
+and drop remain allowed. The
+remaining defaulted hooks mark a polling cycle, report handshake readiness and
+close metadata, and expose backend-owned diagnostics.
 
 The trait has no `Send` bound, allowing engine-owned main-thread transports.
 The async client adds `Send + 'static` at `start`; the polling client does not.
@@ -419,11 +424,12 @@ client.shutdown().await;
 Under the hood this:
 
 1. Sends a signal to the background transport loop via a `oneshot` channel.
-2. The loop drives `transport.poll_close()` and attempts to emit
-   `SignalFishEvent::Disconnected`.
-3. `shutdown()` awaits the background task with a configurable timeout (default
-   **1 second**, set via `SignalFishConfig::shutdown_timeout`). If the task does
-   not finish in time, it is aborted to prevent detached background work.
+2. The loop attempts `SignalFishEvent::Disconnected`, finishes any
+   backend-owned send, and drives `Transport::poll_close` within the configured
+   close deadline (default **1 second**).
+3. Deadline expiry invokes `Transport::abort`, after which the loop normally
+   returns. `shutdown()` uses a later deadline-plus-grace watchdog to cancel
+   the task only if it still does not stop.
 4. On completion, client session state is reset even if the `Disconnected`
    event was not delivered due to timeout/abort.
 
@@ -437,8 +443,9 @@ capacity and the shutdown deadline permit.
 
 !!! warning
     `Drop` cannot run async code. It calls `task.abort()`, which cancels the
-    future without executing `transport.close()`. The server may see an
-    unclean disconnection.
+    future without driving `Transport::poll_close`; the task's ownership guard
+    then invokes the required `Transport::abort` fallback. The server may see
+    an unclean disconnection.
 
 ---
 

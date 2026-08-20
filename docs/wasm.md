@@ -71,9 +71,10 @@ cargo build --target wasm32-unknown-unknown --no-default-features
 ### Bring your own transport
 
 Implement the `Transport` trait using a browser-compatible WebSocket binding
-(e.g., `web-sys`, `gloo-net`, or `wasm-bindgen`). The trait requires three
-object-safe polling methods — `poll_send`, `poll_recv`, and `poll_close` — as documented on the
-[Transport](transport.md) page.
+(e.g., `web-sys`, `gloo-net`, or `wasm-bindgen`). The trait requires the three
+object-safe polling methods `poll_send`, `poll_recv`, and `poll_close`, plus a
+prompt, idempotent `abort` path, as documented on the [Transport](transport.md)
+page.
 
 ### Compatibility
 
@@ -367,6 +368,9 @@ The fixed defaults are 64 frames/64 KiB for sends and the same for receives.
 Zero limits clamp to one; an individually oversized frame can consume one poll
 by itself. `PollingClientOptions` also selects `Abandon` (default) or `Flush`
 close behavior. Both are bounded by `SignalFishConfig::shutdown_timeout`.
+Deadline expiry, a graceful-close error, or dropping the polling client before
+close completes invokes the transport's required synchronous `abort` fallback;
+the driver performs no later transport polling.
 Use `polling_stats()` for client-owned queue depth, budget exhaustion, and
 deadline counters; use `transport_diagnostics()` for backend buffering,
 watermark, acceptance, and capacity counters. Backend acceptance is not peer
@@ -831,10 +835,11 @@ channel:
    channel is empty, it returns `Poll::Pending`, which the polling client
    handles by breaking out of the receive loop.
 
-4. **Cleanup** — on `Drop`, the transport calls `emscripten_websocket_close()`
-   and `emscripten_websocket_delete()` (which unregisters all callbacks), then
-   reclaims the `CallbackState` via `Box::from_raw`. The ordering ensures no
-   callback can fire after the state is freed.
+4. **Cleanup** — `poll_close`, `abort`, and `Drop` all attempt native close
+   before socket deletion. A successful deletion unregisters every callback
+   and authorizes reclaiming `CallbackState` via `Box::from_raw`. If deletion
+   fails, the state intentionally remains live for a safe retry (or final
+   safety leak), so no callback can dereference freed memory.
 
 ```mermaid
 sequenceDiagram

@@ -81,25 +81,46 @@ corrupts the layout by widening a one-byte field to four bytes.
 C functions communicate failure through return values. Ignoring them leads to silent failures that manifest as crashes later.
 
 ```rust
-let result = emscripten_websocket_set_onopen_callback_on_thread(
-    socket, user_data, Some(on_open_callback), thread_id,
-);
+// SAFETY: `socket` is owned by this transport and `user_data` points to the
+// live callback state allocated for it.
+let result = unsafe {
+    emscripten_websocket_set_onopen_callback_on_thread(
+        socket, user_data, Some(on_open_callback), thread_id,
+    )
+};
 if result != EMSCRIPTEN_RESULT_SUCCESS {
-    emscripten_websocket_close(socket, 1000, ptr::null());
-    drop(Box::from_raw(user_data as *mut State));
-    return Err(format!("onopen registration failed: {result}"));
+    // SAFETY: the socket remains owned here; close is attempted before delete.
+    let close_result = unsafe { emscripten_websocket_close(socket, 1000, ptr::null()) };
+    // SAFETY: this is the sole cleanup path for the still-owned socket handle.
+    let delete_result = unsafe { emscripten_websocket_delete(socket) };
+    if delete_result == EMSCRIPTEN_RESULT_SUCCESS {
+        // SAFETY: successful deletion unregisters callbacks, so the foreign
+        // runtime can no longer access the uniquely owned callback state.
+        unsafe { drop(Box::from_raw(user_data as *mut State)) };
+    }
+    // If deletion failed, preserve (and ultimately leak) callback state: the
+    // foreign runtime may still invoke a callback with `user_data`.
+    return Err(format!(
+        "onopen registration failed: {result}; close: {close_result}; delete: {delete_result}"
+    ));
 }
 ```
 
 ### Pattern: Register-and-Rollback
 
-When registering multiple callbacks, iterate over results and roll back (close socket, free state via `Box::from_raw`) on first failure. See the codebase for concrete examples.
+When registering multiple callbacks, iterate over results and roll back on the
+first failure: attempt close, then delete/unregister, and reclaim state with
+`Box::from_raw` only after deletion succeeds. If deletion fails, preserve the
+callback state so a later foreign callback cannot access freed memory. See the
+codebase for the complete retry-and-safe-leak state machine.
 
 ## Raw Pointer Lifecycle
 
 ### `Box::into_raw` and `Box::from_raw`
 
-`Box::into_raw` leaks memory intentionally — ownership transfers to the raw pointer. You must reclaim it with `Box::from_raw` exactly once.
+`Box::into_raw` transfers ownership to a raw pointer. Reclaim it with
+`Box::from_raw` exactly once, but only after the foreign API proves that no
+callback can use it again.
 
 ```rust
 // Allocate and leak
@@ -109,19 +130,24 @@ let raw: *mut CallbackState = Box::into_raw(state);
 // Pass raw pointer as user_data to C callbacks
 register_callback(raw as *mut c_void);
 
-// Later, reclaim exactly once (usually in Drop or a close handler)
-unsafe {
-    let _state = Box::from_raw(raw);
-    // _state is dropped here, freeing the memory
+// Later, after callback deletion succeeds, reclaim exactly once.
+if callbacks_were_deleted {
+    unsafe {
+        let _state = Box::from_raw(raw);
+        // _state is dropped here, freeing the memory
+    }
 }
 ```
 
 ### Rules
 
-- Every `Box::into_raw` must have exactly one matching `Box::from_raw`
-- Zero calls: memory leak
+- Every successfully unregistered `Box::into_raw` allocation must have exactly
+  one matching `Box::from_raw`
+- Zero calls after confirmed unregistration: memory leak
 - Two calls: double-free (undefined behavior)
 - Reclaim AFTER all callbacks that reference the pointer have been unregistered
+- If unregistration fails, intentionally retain/leak the allocation rather
+  than risk use-after-free
 
 ### Cleanup Order
 
@@ -129,66 +155,63 @@ Clean up resources in an order that prevents use-after-free:
 
 1. **Close** the handle (may trigger synchronous callbacks — state pointer must still be valid)
 2. **Delete/unregister** callbacks (prevents any further callback access to state)
-3. **Reclaim** the state pointer via `Box::from_raw` (safe — no callbacks can fire)
+3. **Reclaim** the state pointer via `Box::from_raw` only after confirmed
+   deletion (safe — no callbacks can fire)
 
-### `close()` Must Also Unregister Callbacks
+### `poll_close`, `abort`, and `Drop` Must Attempt Callback Unregistration
 
-A `close()` method that only closes the handle but does **not** unregister callbacks creates a window where callbacks can still fire between `close()` returning and `Drop` running. On the single-threaded Emscripten model this only matters if a JavaScript event loop tick occurs in that window, but the safe pattern is to **always unregister callbacks in `close()`**.
+A `poll_close` method that only closes the handle but does **not** unregister
+callbacks creates a window where callbacks can still fire before `Drop`. The
+safe pattern is to attempt callback deletion during `poll_close`, `abort`, and
+`Drop`, using shared state that makes successful steps one-shot and failed
+steps retryable.
 
-Use a `deleted: bool` flag to prevent double-unregistration in `Drop`:
+Use an ownership state machine to authorize reclamation only after a close
+attempt and successful deletion:
 
 ```rust,ignore
-async fn close(&mut self) -> Result<(), Error> {
-    if self.closed { return Ok(()); }
-    self.closed = true;
-    emscripten_websocket_close(self.socket, 1000, ptr::null());
-    emscripten_websocket_delete(self.socket); // unregister callbacks NOW
-    self.deleted = true;
-    Ok(())
+fn cleanup(&mut self) -> Result<(), Error> {
+    self.try_close();
+    match self.try_delete_callbacks() {
+        Ok(reclaim_authorization) => {
+            self.callback_state.reclaim(reclaim_authorization);
+            Ok(())
+        }
+        Err(error) => Err(error), // state remains live and retryable
+    }
 }
 
 impl Drop for Transport {
     fn drop(&mut self) {
-        if !self.closed {
-            emscripten_websocket_close(self.socket, 1000, ptr::null());
+        if self.cleanup().is_err() {
+            // The foreign runtime may still invoke callbacks. Intentionally
+            // retain the backing allocation to prevent use-after-free.
         }
-        if !self.deleted {
-            emscripten_websocket_delete(self.socket);
-        }
-        drop(Box::from_raw(self.state_ptr)); // always reclaim
     }
 }
 ```
 
-### Error Path Cleanup Must Match `close()` + `Drop`
+### Error Path Cleanup Must Match `poll_close` + `abort` + `Drop`
 
-Every error path that cleans up FFI resources **must** follow the same sequence as `close()` + `Drop`. A common bug: `Drop` does close -> delete -> free correctly, but an error path or `close()` skips `delete`, leaving callbacks registered.
+Every error path that cleans up FFI resources **must** follow the same sequence
+as `poll_close` + `abort` + `Drop`. A common bug is reclaiming callback state
+after deletion failed, leaving the foreign runtime with a dangling pointer.
 
 **Checklist for FFI cleanup paths:**
 
-- [ ] Does `close()` both close the handle AND unregister callbacks?
-- [ ] Does `Drop` skip steps already performed by `close()` (using boolean flags)?
-- [ ] Does `Drop` always reclaim heap-allocated state (`Box::from_raw`) as the final step?
-- [ ] Does every constructor error path follow the same close -> delete -> free sequence?
+- [ ] Do `poll_close`, `abort`, and `Drop` attempt close before callback deletion?
+- [ ] Does cleanup skip successful steps and safely retry failed ones?
+- [ ] Is heap state reclaimed only after confirmed callback deletion?
+- [ ] Does terminal deletion failure intentionally preserve callback state?
+- [ ] Does every constructor error path follow close -> delete -> conditional reclaim?
 
 ## Single-Threaded Safety
 
-### `unsafe impl Send` on wasm32-unknown-emscripten
-
-The `wasm32-unknown-emscripten` target is single-threaded. Types that hold raw pointers or other `!Send` fields can safely implement `Send` on this target because no concurrent access is possible.
-
-```rust
-// SAFETY: wasm32-unknown-emscripten is single-threaded. The Send bound is
-// required by the Transport trait but is vacuously satisfied since there
-// are no other threads.
-unsafe impl Send for EmscriptenWebSocketTransport {}
-```
-
-### Rules
-
-- Always include a `// SAFETY:` comment explaining the single-threaded assumption
-- If the containing module is already feature-gated to emscripten-only, the module-level gate is sufficient. Otherwise, gate the impl directly with `#[cfg(target_os = "emscripten")]`
-- Never add `unsafe impl Sync` unless the type is genuinely safe for shared references (rare for FFI wrappers)
+The `Transport` trait has no `Send` bound. Keep an Emscripten transport
+explicitly `!Send` when it owns main-thread callback state, and use it with
+`SignalFishPollingClient`. Do not add `unsafe impl Send` merely because the
+current runtime configuration is single-threaded; the async client applies
+`Send + 'static` separately at its Tokio task-spawn boundary.
 
 ## Callback SAFETY Comment Convention
 
@@ -279,12 +302,13 @@ Use this checklist when adding or reviewing any FFI binding:
 - [ ] All `#[repr(C)]` struct fields match the C header exactly (WebSocket C `bool` fields use one-byte `C_BOOL`; callback returns use `EM_BOOL = c_int`)
 - [ ] Field order matches the C header exactly
 - [ ] All return values from FFI functions are checked
-- [ ] Error paths follow the **same cleanup sequence** as `close()` + `Drop`
+- [ ] Error paths follow the **same cleanup sequence** as `poll_close` + `abort` + `Drop`
 - [ ] Raw pointer lifetimes are documented with `// SAFETY:` comments
 - [ ] Callback `user_data` lifetime outlives all possible callback invocations
-- [ ] `close()` both closes the handle AND unregisters callbacks (no window for late callbacks)
-- [ ] `Drop` skips steps already done by `close()` using boolean flags (`closed`, `deleted`)
-- [ ] `Drop` always reclaims heap state (`Box::from_raw`) as the final step
+- [ ] `poll_close`, `abort`, and `Drop` attempt close before callback deletion
+- [ ] Successful cleanup is one-shot and failed cleanup remains retryable
+- [ ] Heap state is reclaimed only after confirmed callback deletion
+- [ ] Terminal deletion failure preserves callback backing state
 - [ ] Target-restricted FFI modules have a `compile_error!()` guard at the file top
 - [ ] Every `extern "C" fn` in files with a shared SAFETY block has a per-function `// SAFETY:` comment
 - [ ] All std library API calls in `#[cfg(...)]` blocks use correct argument types (especially reference vs. owned)
@@ -298,8 +322,8 @@ Use this checklist when adding or reviewing any FFI binding:
 | Missing return value check | Silent callback registration failure | Check every FFI return value |
 | Double `Box::from_raw` | Double-free crash or UB | Track ownership, reclaim exactly once |
 | Wrong cleanup order | Use-after-free in callbacks | Close socket before reclaiming state |
-| Error path skips cleanup step | Resource leak (e.g., missing `delete` between `close` and `free`) | Mirror `close()` + `Drop` sequence exactly |
-| `close()` skips callback unregistration | Late callbacks fire between `close()` and `Drop` | Call `delete`/unregister in `close()`, use `deleted` flag to prevent double-delete in `Drop` |
-| `unsafe impl Send` without safety justification | Unsound on multi-threaded targets | Document single-threaded assumption; gate at module or impl level |
+| Error path skips cleanup step | Resource leak (e.g., missing `delete` between close and free) | Mirror the shared close/delete state machine |
+| Deletion failure still frees callback state | Callback use-after-free | Preserve state and allow retry; safety-leak on final failure |
+| `unsafe impl Send` added for Emscripten | Main-thread callback state crosses the async spawn boundary | Keep the transport `!Send` and use the polling client |
 | Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |
 | `.will_wake(&waker)` with explicit `&` | Nightly clippy `needless_borrow` warning | Omit the `&` — write `.will_wake(waker)`; the compiler auto-refs. Caught by emscripten CI clippy job |

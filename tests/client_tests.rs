@@ -185,6 +185,8 @@ impl HangingCloseTransport {
 }
 
 impl Transport for HangingCloseTransport {
+    fn abort(&mut self) {}
+
     fn poll_send(
         &mut self,
         _cx: &mut std::task::Context<'_>,

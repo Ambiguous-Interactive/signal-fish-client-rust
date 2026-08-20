@@ -98,6 +98,17 @@ pub struct TransportDiagnostics {
 ///
 /// `poll_close` is idempotent and may require multiple polls. Once it returns
 /// `Ready(Ok(()))`, later calls must also succeed without sending another close.
+/// If it returns an error, logical I/O must terminate and the client immediately
+/// calls `abort`; fallible backend cleanup may remain safely retryable.
+///
+/// `abort` is the fallback when graceful close fails, its deadline expires, or
+/// the transport owner is cancelled or dropped. It is required so every
+/// backend has an explicit abandonment path: a call must promptly release or
+/// safely detach backend-owned work and discard any retained send. It must be
+/// idempotent: completed cleanup is not repeated, while failed cleanup may be
+/// retried safely. After it returns, drivers make no further polling calls;
+/// only repeated `abort`, `is_ready`, `close_info`, `diagnostics`, and drop are
+/// allowed.
 pub trait Transport {
     /// Mark the start of one caller-driven polling cycle.
     ///
@@ -120,10 +131,19 @@ pub trait Transport {
     /// Advance an idempotent graceful close.
     fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>>;
 
-    /// Immediately abandon transport work after a client-side close deadline.
+    /// Immediately abandon transport work after failed or preempted close.
     ///
-    /// The default preserves source compatibility for existing implementors.
-    fn abort(&mut self) {}
+    /// This operation must return promptly without blocking or panicking,
+    /// release or safely detach backend resources, discard any retained send,
+    /// and be idempotent. Completed cleanup must not be repeated, but a failed
+    /// cleanup attempt may be retried safely; when an external API cannot
+    /// unregister callbacks, preserving their backing allocation is required
+    /// to avoid use-after-free. After it returns, the client will not
+    /// call `begin_poll_cycle`, `poll_send`, `poll_recv`, or `poll_close` again.
+    /// Only repeated `abort`, `is_ready`, `close_info`, `diagnostics`, and drop
+    /// are allowed. This method can run from `Drop`, including during
+    /// unwinding, so it must never panic.
+    fn abort(&mut self);
 
     /// Whether the connection handshake has completed.
     ///

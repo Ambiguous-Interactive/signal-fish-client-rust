@@ -154,9 +154,10 @@ blocks delivering the next event, stops reading the socket, and the server
 eventually evicts you (`SLOW_CONSUMER`) — but the wedged client cannot
 observe the eviction (it is not reading), so from the inside the session
 just goes quiet. As of 0.7.0, [`shutdown()`](client.md#shutdown) preempts
-the wedge: it abandons at most the one in-flight event delivery, closes
-the transport cleanly, and completes without waiting for the timeout
-abort. If draining ever resumes instead, the buffered events (often
+the wedge: it abandons at most the one in-flight event delivery and progresses
+graceful transport close without waiting for event-channel capacity. A close
+error or the configured close deadline invokes `Transport::abort` before the
+driver stops. If draining ever resumes instead, the buffered events (often
 including the eviction farewell) arrive, followed by `Disconnected`.
 
 ## Sizing the channels
