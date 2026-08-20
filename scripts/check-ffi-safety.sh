@@ -413,8 +413,17 @@ while IFS=: read -r file lineno line; do
     case "$trimmed" in
         '//'*) continue ;;
     esac
-    # Borrowed slice construction is not ownership reclamation.
-    if printf '%s\n' "$line" | grep -q 'std::slice::from_raw_parts'; then
+    # Remove only known borrowed/framing constructors, then audit any other
+    # ownership-looking token that remains on the same line. The tungstenite
+    # exception is intentionally limited to its exact crate-qualified path at
+    # the start of the trimmed line, so namespace lookalikes remain audited.
+    audited_line=$(printf '%s\n' "$line" |
+        sed -E 's/std::slice::from_raw_parts[[:space:]]*\(//g')
+    if printf '%s\n' "$trimmed" | grep -qE '^(let[[:space:]]+[[:alnum:]_]+[[:space:]]*=[[:space:]]*)?tokio_tungstenite::WebSocketStream::from_raw_socket[[:space:]]*\('; then
+        audited_line=$(printf '%s\n' "$audited_line" |
+            sed -E 's/tokio_tungstenite::WebSocketStream::from_raw_socket[[:space:]]*\(//')
+    fi
+    if ! printf '%s\n' "$audited_line" | grep -qE 'from_raw(_parts)?|drop_in_place|std::alloc::dealloc|std::mem::transmute|(^|[^[:alnum:]_])(dealloc|free|transmute)[[:space:]]*\('; then
         continue
     fi
     RECLAIM_FOUND=1

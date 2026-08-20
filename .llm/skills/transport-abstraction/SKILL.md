@@ -215,6 +215,8 @@ dropping it each call.
 - records close code/reason in `TransportCloseInfo`;
 - drives `poll_close` idempotently;
 - flushes tungstenite's automatically queued Pong before reading again;
+- bounds skipped control frames per receive poll and self-wakes to resume;
+- fuses EOF and terminal socket errors while clearing retained poll state;
 - disables Nagle's algorithm (`TCP_NODELAY`) by default on the socket it owns.
 
 Do not treat Ping/Pong as application frames. Do not skip binary application

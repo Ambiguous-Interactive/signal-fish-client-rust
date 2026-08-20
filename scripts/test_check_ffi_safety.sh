@@ -548,6 +548,78 @@ assert_exit "block-comment cleanup lines must not satisfy poll_close" 1
 printf '\n'
 printf '%s\n' "=== callback-state reclamation tests ==="
 
+# -- Should PASS: tungstenite's exact framing constructor is not reclamation --
+setup_fake_repo
+cat > "$FAKE_REPO/src/from_raw_socket_constructor.rs" << 'RUST'
+async fn wrap_socket(socket: DuplexStream) {
+    let _stream =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(socket, Role::Client, None).await;
+}
+RUST
+run_check
+assert_exit "from_raw_socket constructor is not ownership reclamation" 0
+
+# -- Should FAIL: a lookalike type is not the exact tungstenite constructor --
+setup_fake_repo
+cat > "$FAKE_REPO/src/lookalike_from_raw_socket.rs" << 'RUST'
+unsafe fn reconstruct(socket: RawSocket) {
+    let _stream = other_crate::WebSocketStream::from_raw_socket(socket);
+}
+RUST
+run_check
+assert_exit "lookalike from_raw_socket APIs must still FAIL" 1
+
+# -- Should FAIL: a crate-name suffix cannot impersonate tokio-tungstenite --
+setup_fake_repo
+cat > "$FAKE_REPO/src/suffix_lookalike_from_raw_socket.rs" << 'RUST'
+unsafe fn reconstruct(socket: RawSocket) {
+    let _stream = evil_tokio_tungstenite::WebSocketStream::from_raw_socket(socket);
+}
+RUST
+run_check
+assert_exit "suffix lookalike from_raw_socket APIs must still FAIL" 1
+
+# -- Should FAIL: whitespace after :: cannot impersonate the exact call line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/whitespace_namespace_from_raw_socket.rs" << 'RUST'
+unsafe fn reconstruct(socket: RawSocket) {
+    let _stream = evil:: tokio_tungstenite::WebSocketStream::from_raw_socket(socket);
+}
+RUST
+run_check
+assert_exit "whitespace-qualified from_raw_socket APIs must still FAIL" 1
+
+# -- Should FAIL: longer from_raw ownership APIs remain audited --
+setup_fake_repo
+cat > "$FAKE_REPO/src/longer_from_raw_ownership_apis.rs" << 'RUST'
+unsafe fn reconstruct(fd: RawFd, socket: RawSocket, ptr: *mut u8) {
+    let _fd = OwnedFd::from_raw_fd(fd);
+    let _socket = OwnedSocket::from_raw_socket(socket);
+    let _boxed = Box::from_raw_in(ptr, Global);
+}
+RUST
+run_check
+assert_exit "longer from_raw ownership APIs must still FAIL" 1
+
+# -- Should FAIL: benign constructors cannot mask reclamation on one line --
+setup_fake_repo
+cat > "$FAKE_REPO/src/mixed_constructor_and_reclaim.rs" << 'RUST'
+unsafe fn mixed(socket: DuplexStream, ptr: *mut u8) {
+    let _ = (tokio_tungstenite::WebSocketStream::from_raw_socket(socket, Role::Client, None), Box::from_raw(ptr));
+}
+RUST
+run_check
+assert_exit "from_raw_socket cannot mask same-line ownership reclamation" 1
+
+setup_fake_repo
+cat > "$FAKE_REPO/src/mixed_slice_and_reclaim.rs" << 'RUST'
+unsafe fn mixed(ptr: *mut u8, len: usize) {
+    let _ = (std::slice::from_raw_parts(ptr, len), Box::from_raw(ptr));
+}
+RUST
+run_check
+assert_exit "from_raw_parts cannot mask same-line ownership reclamation" 1
+
 # -- Should FAIL: deletion failure can fall through to unconditional reclamation --
 setup_fake_repo
 cat > "$FAKE_REPO/src/unconditional_callback_reclaim.rs" << 'RUST'

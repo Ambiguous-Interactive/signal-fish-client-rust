@@ -62,15 +62,16 @@ Raw `Message::Frame` is not expected from the read half and is ignored.
 
 `poll_send` uses the `Sink` primitives directly:
 
-1. If no send is active, call `poll_ready`.
-2. On `Pending`, leave the caller's frame slot untouched.
+1. If no send is active and the caller slot is empty, return `Ready(Ok(()))`.
+2. Otherwise call `poll_ready`; on `Pending`, leave the caller slot untouched.
 3. On readiness, take exactly one `TransportFrame` and translate it to
    `Message::Text` or `Message::Binary`.
-4. Call `start_send` once and record that a send is active.
+4. Call `start_send` once and, on success, record that a send is active.
 5. Poll `poll_flush` until ready; do not take another frame while pending.
 
 This preserves an accepted frame across `Pending` and prevents duplicate
-`start_send` calls.
+`start_send` calls. If a custom stream rejects the message with
+`WriteBufferFull`, restore the exact Text/Binary frame to the caller slot.
 
 ```rust,ignore
 match frame {
@@ -90,8 +91,10 @@ output still needs a flush. After Ping, `WebSocketTransport` sets a
 application frame. If flushing is pending, it preserves the flag and returns
 `Pending` with the sink's waker registered.
 
-Do not manually enqueue a second Pong. Do not continue reading indefinitely
-without flushing the automatically queued reply.
+One receive call skips at most 64 Ping, Pong, or defensive raw Frame messages.
+After the boundary Ping's automatic Pong is flushed, budget exhaustion calls
+`cx.waker().wake_by_ref()` and returns `Pending`; already-buffered application
+traffic is resumed in a later poll. Do not manually enqueue a second Pong.
 
 ## Close Metadata and Idempotency
 
@@ -113,6 +116,11 @@ does not supply a separate clean-handshake boolean here, so `clean` remains
 `poll_close` calls the sink's `poll_close`, retains progress in the stream, and
 marks the transport closed on either terminal success or error. Once closed,
 later calls return `Ready(Ok(()))` without another close frame.
+
+EOF and terminal receive/send failures drop the stream, clear retained send and
+control state, and fuse the transport. Report the first receive failure as
+`TransportReceive`; later receives return `None`, sends return
+`TransportClosed` without taking their frame, and close remains idempotent.
 
 ## Wakers
 
@@ -148,7 +156,9 @@ closed WebSocket object.
 - Bare peer close is distinguishable from missing metadata where applicable.
 - Repeated `poll_close` after completion is harmless.
 - Ping causes the automatically queued Pong to be flushed.
+- Control-frame budget exhaustion self-wakes before buffered application data.
 - Transport send/receive errors map to the matching `SignalFishError` variant.
+- EOF and terminal socket errors produce exact fused follow-up behavior.
 - A real waker is notified when socket readiness changes.
 - The connected TCP socket has `TCP_NODELAY` set by default; `connect_with_options`
   can turn it off.

@@ -74,7 +74,7 @@ jobs:
       - name: Install release tools
         uses: taiki-e/install-action@v2.85.13
         with:
-          tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.46.0
+          tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.50.0
 
       - name: Derive and validate release metadata
         id: release-metadata

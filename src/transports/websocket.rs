@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_util::{Sink, Stream};
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::{protocol::Message, Error as WebSocketError};
 
 use crate::error::SignalFishError;
 use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
@@ -41,6 +41,8 @@ use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
 /// existing stream via [`WebSocketTransport::from_stream`].
 pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+const MAX_SKIPPED_CONTROL_FRAMES_PER_POLL: usize = 64;
 
 /// Options controlling how a [`WebSocketTransport`] connection is established.
 ///
@@ -124,9 +126,15 @@ impl WebSocketConnectOptions {
 /// # Polling Safety
 ///
 /// [`poll_recv`](Transport::poll_recv) preserves the WebSocket stream's partial
-/// receive state across `Poll::Pending` and registers the supplied waker.
+/// receive state across `Poll::Pending`, registers the supplied waker, and
+/// bounds skipped control-frame work. EOF and terminal socket errors fuse the
+/// transport so later receives, sends, and closes have deterministic outcomes.
 pub struct WebSocketTransport {
-    stream: Option<WsStream>,
+    state: WebSocketState<WsStream>,
+}
+
+struct WebSocketState<S> {
+    stream: Option<S>,
     closed: bool,
     close_info: Option<TransportCloseInfo>,
     send_started: bool,
@@ -139,13 +147,42 @@ impl std::fmt::Debug for WebSocketTransport {
         // The stream codec can retain raw inbound/outbound protocol frames,
         // and close reasons are peer-controlled. Expose state only.
         f.debug_struct("WebSocketTransport")
-            .field("has_stream", &self.stream.is_some())
-            .field("closed", &self.closed)
-            .field("has_close_info", &self.close_info.is_some())
-            .field("send_started", &self.send_started)
-            .field("control_flush_pending", &self.control_flush_pending)
-            .field("peer_close_pending", &self.peer_close_pending)
+            .field("has_stream", &self.state.stream.is_some())
+            .field("closed", &self.state.closed)
+            .field("has_close_info", &self.state.close_info.is_some())
+            .field("send_started", &self.state.send_started)
+            .field("control_flush_pending", &self.state.control_flush_pending)
+            .field("peer_close_pending", &self.state.peer_close_pending)
             .finish()
+    }
+}
+
+impl<S> WebSocketState<S> {
+    fn new(stream: S) -> Self {
+        Self {
+            stream: Some(stream),
+            closed: false,
+            close_info: None,
+            send_started: false,
+            control_flush_pending: false,
+            peer_close_pending: false,
+        }
+    }
+
+    fn mark_terminal(&mut self) {
+        self.stream = None;
+        self.closed = true;
+        self.send_started = false;
+        self.control_flush_pending = false;
+        self.peer_close_pending = false;
+    }
+
+    fn close_info(&self) -> Option<TransportCloseInfo> {
+        self.close_info.clone()
+    }
+
+    fn abort(&mut self) {
+        self.mark_terminal();
     }
 }
 
@@ -224,12 +261,7 @@ impl WebSocketTransport {
         );
 
         Ok(Self {
-            stream: Some(stream),
-            closed: false,
-            close_info: None,
-            send_started: false,
-            control_flush_pending: false,
-            peer_close_pending: false,
+            state: WebSocketState::new(stream),
         })
     }
 
@@ -243,12 +275,7 @@ impl WebSocketTransport {
     /// any other tuning on the underlying socket before wrapping it here.
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
-            stream: Some(stream),
-            closed: false,
-            close_info: None,
-            send_started: false,
-            control_flush_pending: false,
-            peer_close_pending: false,
+            state: WebSocketState::new(stream),
         }
     }
 
@@ -276,7 +303,12 @@ impl WebSocketTransport {
     }
 }
 
-impl Transport for WebSocketTransport {
+impl<S> WebSocketState<S>
+where
+    S: Sink<Message, Error = WebSocketError>
+        + Stream<Item = Result<Message, WebSocketError>>
+        + Unpin,
+{
     fn poll_send(
         &mut self,
         cx: &mut Context<'_>,
@@ -285,37 +317,103 @@ impl Transport for WebSocketTransport {
         if self.closed || self.peer_close_pending {
             return Poll::Ready(Err(SignalFishError::TransportClosed));
         }
-        let Some(stream) = self.stream.as_mut() else {
-            self.closed = true;
+        if self.stream.is_none() {
+            self.mark_terminal();
             return Poll::Ready(Err(SignalFishError::TransportClosed));
-        };
+        }
+        if !self.send_started && frame.is_none() {
+            return Poll::Ready(Ok(()));
+        }
         if !self.send_started {
-            match Pin::new(&mut *stream).poll_ready(cx) {
+            let ready = {
+                let Some(stream) = self.stream.as_mut() else {
+                    self.mark_terminal();
+                    return Poll::Ready(Err(SignalFishError::TransportClosed));
+                };
+                Pin::new(stream).poll_ready(cx)
+            };
+            match ready {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => {
-                    return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                    self.mark_terminal();
+                    return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
                 }
                 Poll::Ready(Ok(())) => {}
             }
-            let Some(frame) = frame.take() else {
+            let Some(accepted_frame) = frame.take() else {
                 return Poll::Ready(Ok(()));
             };
-            let message = match frame {
+            let message = match accepted_frame {
                 TransportFrame::Text(text) => Message::Text(text.into()),
                 TransportFrame::Binary(bytes) => Message::Binary(bytes.into()),
             };
-            if let Err(error) = Pin::new(&mut *stream).start_send(message) {
-                return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
+            let send_result = {
+                let Some(stream) = self.stream.as_mut() else {
+                    self.mark_terminal();
+                    return Poll::Ready(Err(SignalFishError::TransportClosed));
+                };
+                Pin::new(stream).start_send(message)
+            };
+            if let Err(error) = send_result {
+                let detail = error.to_string();
+                if let WebSocketError::WriteBufferFull(message) = error {
+                    let restored = match *message {
+                        Message::Text(text) => {
+                            *frame = Some(TransportFrame::Text(text.to_string()));
+                            true
+                        }
+                        Message::Binary(bytes) => {
+                            *frame = Some(TransportFrame::Binary(bytes.to_vec()));
+                            true
+                        }
+                        Message::Frame(frame_data) => {
+                            use tokio_tungstenite::tungstenite::protocol::frame::coding::{
+                                Data, OpCode,
+                            };
+
+                            match frame_data.header().opcode {
+                                OpCode::Data(Data::Text) => match frame_data.into_text() {
+                                    Ok(text) => {
+                                        *frame = Some(TransportFrame::Text(text.to_string()));
+                                        true
+                                    }
+                                    Err(_) => false,
+                                },
+                                OpCode::Data(Data::Binary) => {
+                                    *frame = Some(TransportFrame::Binary(
+                                        frame_data.into_payload().to_vec(),
+                                    ));
+                                    true
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !restored {
+                        self.mark_terminal();
+                    }
+                } else {
+                    self.mark_terminal();
+                }
+                return Poll::Ready(Err(SignalFishError::TransportSend(detail)));
             }
             self.send_started = true;
         }
-        match Pin::new(&mut *stream).poll_flush(cx) {
+        let flush = {
+            let Some(stream) = self.stream.as_mut() else {
+                self.mark_terminal();
+                return Poll::Ready(Err(SignalFishError::TransportClosed));
+            };
+            Pin::new(stream).poll_flush(cx)
+        };
+        match flush {
             Poll::Ready(Ok(())) => {
                 self.send_started = false;
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => {
-                self.send_started = false;
+                self.mark_terminal();
                 Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
             }
             Poll::Pending => Poll::Pending,
@@ -329,18 +427,25 @@ impl Transport for WebSocketTransport {
         if self.closed {
             return Poll::Ready(None);
         }
-        let Some(stream) = self.stream.as_mut() else {
-            self.closed = true;
+        if self.stream.is_none() {
+            self.mark_terminal();
             return Poll::Ready(None);
-        };
+        }
+
+        let mut skipped_control_frames = 0;
         loop {
             if self.control_flush_pending {
-                match Pin::new(&mut *stream).poll_flush(cx) {
+                let flush = {
+                    let Some(stream) = self.stream.as_mut() else {
+                        self.mark_terminal();
+                        return Poll::Ready(None);
+                    };
+                    Pin::new(stream).poll_flush(cx)
+                };
+                match flush {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Err(error)) => {
-                        self.control_flush_pending = false;
-                        self.peer_close_pending = false;
-                        self.closed = true;
+                        self.mark_terminal();
                         return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
                             error.to_string(),
                         ))));
@@ -348,23 +453,39 @@ impl Transport for WebSocketTransport {
                     Poll::Ready(Ok(())) => {
                         self.control_flush_pending = false;
                         if self.peer_close_pending {
-                            self.peer_close_pending = false;
-                            self.closed = true;
+                            self.mark_terminal();
                             return Poll::Ready(None);
                         }
                     }
                 }
             }
-            let msg = match Pin::new(&mut *stream).poll_next(cx) {
+
+            if skipped_control_frames == MAX_SKIPPED_CONTROL_FRAMES_PER_POLL {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+
+            let next = {
+                let Some(stream) = self.stream.as_mut() else {
+                    self.mark_terminal();
+                    return Poll::Ready(None);
+                };
+                Pin::new(stream).poll_next(cx)
+            };
+            let msg = match next {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(value) => match value {
                     Some(Ok(msg)) => msg,
                     Some(Err(e)) => {
+                        self.mark_terminal();
                         return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
                             e.to_string(),
                         ))));
                     }
-                    None => return Poll::Ready(None),
+                    None => {
+                        self.mark_terminal();
+                        return Poll::Ready(None);
+                    }
                 },
             };
 
@@ -406,19 +527,20 @@ impl Transport for WebSocketTransport {
                     self.control_flush_pending = true;
                 }
                 Message::Ping(_) => {
-                    tracing::debug!("received WebSocket ping (auto-pong handled by tungstenite)");
+                    tracing::trace!("received WebSocket ping (auto-pong handled by tungstenite)");
                     self.control_flush_pending = true;
+                    skipped_control_frames += 1;
                 }
                 Message::Pong(_) => {
-                    tracing::debug!("received WebSocket pong (ignored)");
-                    // Continue the loop.
+                    tracing::trace!("received WebSocket pong (ignored)");
+                    skipped_control_frames += 1;
                 }
                 Message::Frame(_) => {
                     // This variant is never produced by the read half of the stream;
                     // it exists only for exhaustiveness against future `Message`
                     // variants. We keep the arm to satisfy exhaustiveness checks.
-                    tracing::debug!("received raw WebSocket frame, skipping");
-                    // Continue the loop.
+                    tracing::trace!("received raw WebSocket frame, skipping");
+                    skipped_control_frames += 1;
                 }
             }
         }
@@ -428,50 +550,77 @@ impl Transport for WebSocketTransport {
         if self.closed {
             return Poll::Ready(Ok(()));
         }
-        let Some(stream) = self.stream.as_mut() else {
-            self.closed = true;
+        if self.stream.is_none() {
+            self.mark_terminal();
             return Poll::Ready(Ok(()));
-        };
+        }
         if self.peer_close_pending {
-            return match Pin::new(&mut *stream).poll_flush(cx) {
+            let flush = {
+                let Some(stream) = self.stream.as_mut() else {
+                    self.mark_terminal();
+                    return Poll::Ready(Ok(()));
+                };
+                Pin::new(stream).poll_flush(cx)
+            };
+            return match flush {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(Ok(())) => {
-                    self.control_flush_pending = false;
-                    self.peer_close_pending = false;
-                    self.closed = true;
+                    self.mark_terminal();
                     Poll::Ready(Ok(()))
                 }
                 Poll::Ready(Err(error)) => {
-                    self.control_flush_pending = false;
-                    self.peer_close_pending = false;
-                    self.closed = true;
+                    self.mark_terminal();
                     Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
                 }
             };
         }
-        match Pin::new(&mut *stream).poll_close(cx) {
+        let close = {
+            let Some(stream) = self.stream.as_mut() else {
+                self.mark_terminal();
+                return Poll::Ready(Ok(()));
+            };
+            Pin::new(stream).poll_close(cx)
+        };
+        match close {
             Poll::Ready(Ok(())) => {
-                self.closed = true;
+                self.mark_terminal();
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => {
-                self.closed = true;
+                self.mark_terminal();
                 Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
             }
             Poll::Pending => Poll::Pending,
         }
     }
+}
+
+impl Transport for WebSocketTransport {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        self.state.poll_send(cx, frame)
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        self.state.poll_recv(cx)
+    }
+
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
+        self.state.poll_close(cx)
+    }
 
     fn close_info(&self) -> Option<TransportCloseInfo> {
-        self.close_info.clone()
+        self.state.close_info()
     }
 
     fn abort(&mut self) {
-        self.stream = None;
-        self.closed = true;
-        self.send_started = false;
-        self.control_flush_pending = false;
-        self.peer_close_pending = false;
+        self.state.abort();
     }
 }
 
@@ -488,6 +637,10 @@ impl Transport for WebSocketTransport {
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::task::{Wake, Waker};
+    use tokio::io::AsyncWriteExt;
 
     #[test]
     fn websocket_transport_is_send() {
@@ -520,8 +673,8 @@ mod tests {
     use tokio::net::TcpListener;
 
     /// Start a local WebSocket server that runs `handler` on the accepted
-    /// connection and returns the address to connect to.
-    async fn start_mock_server<F, Fut>(handler: F) -> String
+    /// connection. Tests retain the task so handler panics cannot be hidden.
+    async fn start_mock_server<F, Fut>(handler: F) -> (String, tokio::task::JoinHandle<()>)
     where
         F: FnOnce(tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Fut
             + Send
@@ -535,7 +688,7 @@ mod tests {
             .local_addr()
             .expect("TcpListener must have a local address");
 
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             let (tcp, _) = listener
                 .accept()
                 .await
@@ -546,39 +699,183 @@ mod tests {
             handler(ws).await;
         });
 
-        format!("ws://{addr}")
+        (format!("ws://{addr}"), server_task)
     }
 
-    /// Read `TCP_NODELAY` from the underlying socket of a `ws://` (non-TLS)
-    /// transport. The inline test module can reach the private `stream` field,
-    /// and a `ws://` client always resolves to the plain (non-TLS) variant.
-    fn plain_tcp_nodelay(transport: &WebSocketTransport) -> bool {
+    async fn finish_mock_server(server_task: tokio::task::JoinHandle<()>) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), server_task)
+            .await
+            .expect("mock WebSocket server must finish promptly")
+            .expect("mock WebSocket server must not panic");
+    }
+
+    type MemoryWebSocket = tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>;
+
+    struct SyntheticWebSocket {
+        ended: bool,
+    }
+
+    impl Stream for SyntheticWebSocket {
+        type Item = Result<Message, WebSocketError>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if self.ended {
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl Sink<Message> for SyntheticWebSocket {
+        type Error = WebSocketError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    async fn memory_websocket_pair(
+        capacity: usize,
+    ) -> (WebSocketState<MemoryWebSocket>, MemoryWebSocket) {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let (client_io, server_io) = tokio::io::duplex(capacity);
+        let (client, server) = tokio::join!(
+            tokio_tungstenite::WebSocketStream::from_raw_socket(client_io, Role::Client, None),
+            tokio_tungstenite::WebSocketStream::from_raw_socket(server_io, Role::Server, None),
+        );
+        (WebSocketState::new(client), server)
+    }
+
+    #[derive(Default)]
+    struct CountingWake {
+        count: AtomicUsize,
+    }
+
+    impl Wake for CountingWake {
+        fn wake(self: Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn counting_waker() -> (Arc<CountingWake>, Waker) {
+        let counter = Arc::new(CountingWake::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        (counter, waker)
+    }
+
+    fn expect_received_frame(
+        result: Option<Result<TransportFrame, SignalFishError>>,
+    ) -> TransportFrame {
+        result
+            .expect("receive must produce a frame")
+            .expect("received frame must be valid")
+    }
+
+    async fn connect_to_reset_peer() -> WebSocketTransport {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reset listener must bind to localhost");
+        let addr = listener
+            .local_addr()
+            .expect("reset listener must have a local address");
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (reset_tx, reset_rx) = tokio::sync::oneshot::channel();
+
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener
+                .accept()
+                .await
+                .expect("reset listener must accept a connection");
+            let ws = tokio_tungstenite::accept_async(tcp)
+                .await
+                .expect("reset peer WebSocket handshake must succeed");
+            release_rx
+                .await
+                .expect("client must release the reset peer after connecting");
+            ws.get_ref()
+                .set_zero_linger()
+                .expect("reset peer must enable zero linger");
+            drop(ws);
+            let _ = reset_tx.send(());
+        });
+
+        let transport = WebSocketTransport::connect(&format!("ws://{addr}"))
+            .await
+            .expect("client must connect before the peer resets");
+        release_tx
+            .send(())
+            .expect("reset peer must still be waiting for the client");
+        reset_rx
+            .await
+            .expect("reset peer must report dropping the socket");
+        finish_mock_server(server_task).await;
+        transport
+    }
+
+    fn plain_tcp_stream(transport: &WebSocketTransport) -> &tokio::net::TcpStream {
         match transport
+            .state
             .stream
             .as_ref()
             .expect("transport must hold a live stream after connect")
             .get_ref()
         {
-            tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp
-                .nodelay()
-                .expect("querying TCP_NODELAY on the loopback socket must succeed"),
+            tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp,
             _ => panic!("a ws:// connection must use the plain (non-TLS) stream variant"),
         }
+    }
+
+    /// Read `TCP_NODELAY` from the underlying socket of a `ws://` (non-TLS)
+    /// transport. The inline test module can reach the private stream, and a
+    /// `ws://` client always resolves to the plain variant.
+    fn plain_tcp_nodelay(transport: &WebSocketTransport) -> bool {
+        plain_tcp_stream(transport)
+            .nodelay()
+            .expect("querying TCP_NODELAY on the loopback socket must succeed")
     }
 
     #[test]
     fn debug_omits_stream_contents_and_peer_close_reason() {
         let secret = "websocket-debug-secret";
         let transport = WebSocketTransport {
-            stream: None,
-            closed: true,
-            close_info: Some(TransportCloseInfo {
-                reason: Some(secret.into()),
-                ..TransportCloseInfo::default()
-            }),
-            send_started: false,
-            control_flush_pending: false,
-            peer_close_pending: false,
+            state: WebSocketState {
+                stream: None,
+                closed: true,
+                close_info: Some(TransportCloseInfo {
+                    reason: Some(secret.into()),
+                    ..TransportCloseInfo::default()
+                }),
+                send_started: false,
+                control_flush_pending: false,
+                peer_close_pending: false,
+            },
         };
 
         let output = format!("{transport:?}");
@@ -594,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_disables_nagle_by_default() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             // Hold the connection open until the client disconnects.
             while let Some(Ok(_)) = ws.next().await {}
         })
@@ -608,13 +905,15 @@ mod tests {
             plain_tcp_nodelay(&transport),
             "connect() must disable Nagle (TCP_NODELAY) by default for low-latency game traffic"
         );
+        drop(transport);
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn connect_with_options_controls_nagle() {
         // (disable_nagle requested, expected TCP_NODELAY on the socket)
         for (disable_nagle, expected_nodelay) in [(true, true), (false, false)] {
-            let url =
+            let (url, server_task) =
                 start_mock_server(
                     |mut ws| async move { while let Some(Ok(_)) = ws.next().await {} },
                 )
@@ -630,6 +929,8 @@ mod tests {
                 expected_nodelay,
                 "disable_nagle={disable_nagle} must produce TCP_NODELAY={expected_nodelay}"
             );
+            drop(transport);
+            finish_mock_server(server_task).await;
         }
     }
 
@@ -646,7 +947,7 @@ mod tests {
         let addr = listener
             .local_addr()
             .expect("listener must have an address");
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             // Accept one connection and drop it so the client's TLS handshake
             // fails cleanly instead of hanging.
             let _ = listener.accept().await;
@@ -658,11 +959,261 @@ mod tests {
             "wss:// to a non-TLS peer must fail via a TLS/IO error (proving the provider is wired), \
              not succeed"
         );
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn control_frame_budget_self_wakes_before_buffered_application_data() {
+        let (mut state, mut server) = memory_websocket_pair(16 * 1024).await;
+        for _ in 0..MAX_SKIPPED_CONTROL_FRAMES_PER_POLL - 1 {
+            server
+                .send(Message::Pong(Vec::new().into()))
+                .await
+                .expect("server must buffer the control-frame flood");
+        }
+        server
+            .send(Message::Ping(b"boundary".to_vec().into()))
+            .await
+            .expect("server must buffer the boundary Ping");
+        server
+            .send(Message::Text("after-control-flood".into()))
+            .await
+            .expect("server must buffer application data after the control flood");
+
+        let (wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(state.poll_recv(&mut cx).is_pending());
+        assert!(
+            wake_counter.count.load(Ordering::SeqCst) > 0,
+            "exhausting the control budget must self-wake for buffered work"
+        );
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), server.next())
+            .await
+            .expect("the boundary Ping response must be flushed before the bounded yield")
+            .expect("the server stream must remain open")
+            .expect("the boundary Ping response must be valid");
+        assert_eq!(response, Message::Pong(b"boundary".to_vec().into()));
+
+        let Poll::Ready(received) = state.poll_recv(&mut cx) else {
+            panic!("buffered application data must be ready after the bounded yield");
+        };
+        assert_eq!(
+            expect_received_frame(received),
+            TransportFrame::Text("after-control-flood".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn ping_auto_pong_is_flushed_before_later_application_reads() {
+        let (mut state, mut server) = memory_websocket_pair(1024).await;
+        let server_task = tokio::spawn(async move {
+            server
+                .send(Message::Ping(b"heartbeat".to_vec().into()))
+                .await
+                .expect("server must send Ping");
+            let response = tokio::time::timeout(std::time::Duration::from_secs(1), server.next())
+                .await
+                .expect("client must flush the automatic Pong promptly")
+                .expect("client stream must remain open")
+                .expect("automatic Pong must be a valid WebSocket message");
+            assert_eq!(response, Message::Pong(b"heartbeat".to_vec().into()));
+            server
+                .send(Message::Text("after-pong".into()))
+                .await
+                .expect("server must send application data after observing Pong");
+        });
+
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            std::future::poll_fn(|cx| state.poll_recv(cx)),
+        )
+        .await
+        .expect("client receive must make progress after Ping");
+        assert_eq!(
+            expect_received_frame(received),
+            TransportFrame::Text("after-pong".into())
+        );
+        server_task
+            .await
+            .expect("Ping/Pong server task must finish without panicking");
+    }
+
+    #[tokio::test]
+    async fn partial_frame_registers_and_notifies_the_real_waker() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let (client_io, mut server_io) = tokio::io::duplex(64);
+        let client =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(client_io, Role::Client, None)
+                .await;
+        let mut state = WebSocketState::new(client);
+        let (wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(state.poll_recv(&mut cx).is_pending());
+        server_io
+            .write_all(&[0x81, 0x05, b'l'])
+            .await
+            .expect("server must write a partial unmasked text frame");
+        assert!(state.poll_recv(&mut cx).is_pending());
+
+        wake_counter.count.store(0, Ordering::SeqCst);
+        server_io
+            .write_all(&[0x61, 0x74, 0x65, 0x72])
+            .await
+            .expect("server must finish the partial text frame");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while wake_counter.count.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("finishing a partial frame must notify the registered waker");
+
+        let Poll::Ready(received) = state.poll_recv(&mut cx) else {
+            panic!("completed partial frame must be ready after its waker fires");
+        };
+        assert_eq!(
+            expect_received_frame(received),
+            TransportFrame::Text("later".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_flush_retains_the_second_frame_and_preserves_fifo() {
+        let (mut state, mut server) = memory_websocket_pair(64).await;
+        let first_payload = vec![0xA5; 1024];
+        let mut first = Some(TransportFrame::Binary(first_payload.clone()));
+        let (_wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(state.poll_send(&mut cx, &mut first).is_pending());
+        assert!(
+            first.is_none(),
+            "the first frame must be accepted exactly once"
+        );
+        assert!(state.send_started);
+
+        let mut second = Some(TransportFrame::Text("second".into()));
+        assert!(state.poll_send(&mut cx, &mut second).is_pending());
+        assert_eq!(
+            second,
+            Some(TransportFrame::Text("second".into())),
+            "a pending first flush must not consume the second caller frame"
+        );
+
+        let server_task = tokio::spawn(async move {
+            let first = server
+                .next()
+                .await
+                .expect("server must receive the first frame")
+                .expect("first frame must be valid");
+            let second = server
+                .next()
+                .await
+                .expect("server must receive the second frame")
+                .expect("second frame must be valid");
+            (first, second)
+        });
+
+        std::future::poll_fn(|cx| state.poll_send(cx, &mut second))
+            .await
+            .expect("the accepted first frame must finish flushing");
+        assert!(
+            second.is_some(),
+            "first completion must leave the second frame owned by its caller"
+        );
+        std::future::poll_fn(|cx| state.poll_send(cx, &mut second))
+            .await
+            .expect("the second frame must send after the first completes");
+        assert!(second.is_none());
+
+        let (first, second) = server_task
+            .await
+            .expect("FIFO server task must finish without panicking");
+        assert_eq!(first, Message::Binary(first_payload.into()));
+        assert_eq!(second, Message::Text("second".into()));
+    }
+
+    #[test]
+    fn empty_send_slot_completes_without_polling_backend_readiness() {
+        let mut state = WebSocketState::new(SyntheticWebSocket { ended: false });
+        let mut frame = None;
+        let (_wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            state.poll_send(&mut cx, &mut frame),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn raw_eof_fuses_receive_send_and_close_operations() {
+        let mut state = WebSocketState::new(SyntheticWebSocket { ended: true });
+        state.send_started = true;
+        let (_wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(state.poll_recv(&mut cx), Poll::Ready(None)));
+        assert!(state.closed);
+        assert!(state.stream.is_none());
+        assert!(!state.send_started);
+        assert!(!state.control_flush_pending);
+        assert!(!state.peer_close_pending);
+        assert!(matches!(state.poll_recv(&mut cx), Poll::Ready(None)));
+
+        let expected = TransportFrame::Text("caller-owned-after-eof".into());
+        let mut offered = Some(expected.clone());
+        assert!(matches!(
+            state.poll_send(&mut cx, &mut offered),
+            Poll::Ready(Err(SignalFishError::TransportClosed))
+        ));
+        assert_eq!(offered, Some(expected));
+        assert!(matches!(state.poll_close(&mut cx), Poll::Ready(Ok(()))));
+        assert!(matches!(state.poll_close(&mut cx), Poll::Ready(Ok(()))));
+    }
+
+    #[tokio::test]
+    async fn rejected_write_buffer_full_restores_the_exact_caller_frame() {
+        use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
+
+        for expected in [
+            TransportFrame::Text("x".repeat(64)),
+            TransportFrame::Binary(vec![0x5A; 64]),
+        ] {
+            let (client_io, _server_io) = tokio::io::duplex(64);
+            let config = WebSocketConfig::default()
+                .write_buffer_size(0)
+                .max_write_buffer_size(16);
+            let client = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                client_io,
+                Role::Client,
+                Some(config),
+            )
+            .await;
+            let mut state = WebSocketState::new(client);
+            let mut frame = Some(expected.clone());
+            let (_wake_counter, waker) = counting_waker();
+            let mut cx = Context::from_waker(&waker);
+
+            let result = state.poll_send(&mut cx, &mut frame);
+            assert!(matches!(
+                result,
+                Poll::Ready(Err(SignalFishError::TransportSend(_)))
+            ));
+            assert_eq!(frame, Some(expected));
+            assert!(
+                !state.closed,
+                "a per-message buffer refusal is not terminal"
+            );
+            assert!(!state.send_started);
+        }
     }
 
     #[tokio::test]
     async fn recv_receives_text_messages() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             ws.send(Message::Text("hello".into()))
                 .await
                 .expect("server must send 'hello'");
@@ -688,11 +1239,13 @@ mod tests {
             .expect("recv must return Some")
             .expect("recv must return Ok");
         assert_eq!(msg2, TransportFrame::Text("world".into()));
+        drop(transport);
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn recv_returns_none_on_close_frame() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             ws.close(None).await.expect("server must close cleanly");
         })
         .await;
@@ -702,8 +1255,26 @@ mod tests {
             .expect("WebSocket connect must succeed");
         let result = crate::transport::recv_frame(&mut transport).await;
         assert!(result.is_none());
-        // A bare close (today's server behavior) carries no explanation.
-        assert_eq!(transport.close_info().and_then(|info| info.reason), None);
+        assert_eq!(
+            transport.close_info(),
+            Some(TransportCloseInfo {
+                code: None,
+                reason: None,
+                clean: None,
+                initiated_by_peer: true,
+            })
+        );
+
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        let expected = TransportFrame::Text("after-peer-close".into());
+        let mut offered = Some(expected.clone());
+        let send_result = std::future::poll_fn(|cx| transport.poll_send(cx, &mut offered)).await;
+        assert!(matches!(send_result, Err(SignalFishError::TransportClosed)));
+        assert_eq!(offered, Some(expected));
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close after peer close must remain idempotent");
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
@@ -711,7 +1282,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
         use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             ws.close(Some(CloseFrame {
                 code: CloseCode::Policy,
                 reason: "slow consumer".into(),
@@ -727,14 +1298,14 @@ mod tests {
         let result = crate::transport::recv_frame(&mut transport).await;
         assert!(result.is_none());
 
-        let reason = transport
+        let info = transport
             .close_info()
-            .and_then(|info| info.reason)
             .expect("close frame explanation must be captured");
-        assert!(
-            reason.contains("slow consumer"),
-            "captured reason should include the frame text: {reason}"
-        );
+        assert_eq!(info.code, Some(u16::from(CloseCode::Policy)));
+        assert_eq!(info.reason.as_deref(), Some("slow consumer"));
+        assert_eq!(info.clean, None);
+        assert!(info.initiated_by_peer);
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
@@ -743,7 +1314,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        let url = start_mock_server(move |mut ws| async move {
+        let (url, server_task) = start_mock_server(move |mut ws| async move {
             ws.send(Message::Close(Some(CloseFrame {
                 code: CloseCode::Away,
                 reason: "server draining".into(),
@@ -780,13 +1351,14 @@ mod tests {
                 .expect("server task must report whether it received the response"),
             "client must flush a matching close response before recv returns None"
         );
-        assert!(transport.closed);
-        assert!(!transport.peer_close_pending);
+        assert!(transport.state.closed);
+        assert!(!transport.state.peer_close_pending);
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn recv_passes_binary_frames_through() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             ws.send(Message::Binary(vec![0xDE, 0xAD].into()))
                 .await
                 .expect("server must send binary frame");
@@ -811,11 +1383,78 @@ mod tests {
             .expect("recv must return Some")
             .expect("recv must return Ok");
         assert_eq!(next, TransportFrame::Text("after_binary".into()));
+        drop(transport);
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn socket_receive_error_is_reported_once_then_transport_is_terminal() {
+        let mut transport = connect_to_reset_peer().await;
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            crate::transport::recv_frame(&mut transport),
+        )
+        .await
+        .expect("reset socket must wake the receive poll");
+        assert!(matches!(
+            first,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
+        assert!(transport.state.closed);
+        assert!(transport.state.stream.is_none());
+        assert!(!transport.state.send_started);
+        assert!(!transport.state.control_flush_pending);
+        assert!(!transport.state.peer_close_pending);
+
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        let expected = TransportFrame::Text("must-remain-caller-owned".into());
+        let mut offered = Some(expected.clone());
+        let send_result = std::future::poll_fn(|cx| transport.poll_send(cx, &mut offered)).await;
+        assert!(matches!(send_result, Err(SignalFishError::TransportClosed)));
+        assert_eq!(offered, Some(expected));
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close after receive failure must be idempotent");
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("repeated close after receive failure must remain idempotent");
+    }
+
+    #[tokio::test]
+    async fn socket_send_error_maps_to_transport_send_and_becomes_terminal() {
+        let mut transport = connect_to_reset_peer().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            plain_tcp_stream(&transport).readable(),
+        )
+        .await
+        .expect("reset socket must become readable")
+        .expect("querying reset socket readiness must succeed");
+
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            crate::transport::send_frame(&mut transport, TransportFrame::Binary(vec![0xC3; 1024])),
+        )
+        .await
+        .expect("reset socket must wake the send poll");
+        assert!(matches!(first, Err(SignalFishError::TransportSend(_))));
+        assert!(transport.state.closed);
+        assert!(transport.state.stream.is_none());
+
+        let expected = TransportFrame::Text("second".into());
+        let mut offered = Some(expected.clone());
+        let second = std::future::poll_fn(|cx| transport.poll_send(cx, &mut offered)).await;
+        assert!(matches!(second, Err(SignalFishError::TransportClosed)));
+        assert_eq!(offered, Some(expected));
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close after send failure must be idempotent");
     }
 
     #[tokio::test]
     async fn send_after_close_returns_transport_closed() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             // Read until the client closes.
             while let Some(Ok(_)) = ws.next().await {}
         })
@@ -832,11 +1471,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, SignalFishError::TransportClosed));
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn double_close_is_idempotent() {
-        let url =
+        let (url, server_task) =
             start_mock_server(|mut ws| async move { while let Some(Ok(_)) = ws.next().await {} })
                 .await;
 
@@ -850,12 +1490,13 @@ mod tests {
         crate::transport::close_transport(&mut transport)
             .await
             .expect("second close must succeed (idempotent)");
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn abort_drops_the_socket_without_waiting_for_a_close_handshake() {
         let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
-        let url = start_mock_server(move |mut ws| async move {
+        let (url, server_task) = start_mock_server(move |mut ws| async move {
             let disconnected = matches!(
                 tokio::time::timeout(std::time::Duration::from_secs(1), ws.next()).await,
                 Ok(None | Some(Err(_)))
@@ -869,32 +1510,57 @@ mod tests {
             .expect("WebSocket connect must succeed");
         transport.abort();
 
-        assert!(transport.closed);
-        assert!(transport.stream.is_none());
+        assert!(transport.state.closed);
+        assert!(transport.state.stream.is_none());
         assert!(
             disconnected_rx
                 .await
                 .expect("server task must report the disconnect"),
             "dropping the client stream must release the server connection"
         );
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
     async fn connect_with_timeout_times_out() {
-        // Use a non-routable address to guarantee a timeout.
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("TcpListener must bind to localhost");
+        let addr = listener
+            .local_addr()
+            .expect("TcpListener must have a local address");
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let (_tcp, _) = listener
+                .accept()
+                .await
+                .expect("timeout server must accept the TCP connection");
+            let _ = accepted_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
         let result = WebSocketTransport::connect_with_timeout(
-            "ws://192.0.2.1:1",
+            &format!("ws://{addr}"),
             std::time::Duration::from_millis(50),
         )
         .await;
 
         let err = result.unwrap_err();
         assert!(matches!(err, SignalFishError::Timeout));
+        tokio::time::timeout(std::time::Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("timeout server must accept promptly")
+            .expect("timeout server must report acceptance");
+        server_task.abort();
+        assert!(matches!(
+            server_task.await,
+            Err(error) if error.is_cancelled()
+        ));
     }
 
     #[tokio::test]
     async fn from_stream_constructor_works() {
-        let url = start_mock_server(|mut ws| async move {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
             ws.send(Message::Text("from_stream_msg".into()))
                 .await
                 .expect("server must send 'from_stream_msg'");
@@ -913,38 +1579,49 @@ mod tests {
             .expect("recv must return Some")
             .expect("recv must return Ok");
         assert_eq!(msg, TransportFrame::Text("from_stream_msg".into()));
+        drop(transport);
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
-    async fn send_round_trip() {
-        let url = start_mock_server(|mut ws| async move {
-            // Read one message and echo it back.
-            if let Some(Ok(Message::Text(text))) = ws.next().await {
-                ws.send(Message::Text(text))
+    async fn text_and_binary_send_round_trip_in_fifo_order() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            for _ in 0..2 {
+                let message = ws
+                    .next()
                     .await
-                    .expect("server must echo message back");
+                    .expect("server must receive each application message")
+                    .expect("application message must be valid");
+                ws.send(message)
+                    .await
+                    .expect("server must echo each application message");
             }
-            ws.close(None).await.expect("server must close cleanly");
         })
         .await;
 
-        let mut transport = WebSocketTransport::connect(&url)
-            .await
-            .expect("WebSocket connect must succeed");
-        crate::transport::send_frame(&mut transport, TransportFrame::Text("ping_echo".into()))
-            .await
-            .expect("send must succeed");
-
-        let msg = crate::transport::recv_frame(&mut transport)
-            .await
-            .expect("recv must return Some")
-            .expect("recv must return Ok");
-        assert_eq!(msg, TransportFrame::Text("ping_echo".into()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut transport = WebSocketTransport::connect(&url)
+                .await
+                .expect("WebSocket connect must succeed");
+            for expected in [
+                TransportFrame::Text("ping_echo".into()),
+                TransportFrame::Binary(vec![0x00, 0x7F, 0xFF]),
+            ] {
+                crate::transport::send_frame(&mut transport, expected.clone())
+                    .await
+                    .expect("send must succeed");
+                let received = crate::transport::recv_frame(&mut transport).await;
+                assert_eq!(expect_received_frame(received), expected);
+            }
+        })
+        .await
+        .expect("text/binary round trip must complete promptly");
+        finish_mock_server(server_task).await;
     }
 
     #[tokio::test]
-    async fn recv_after_close_returns_none_or_error() {
-        let url =
+    async fn recv_after_local_close_returns_exact_terminal_none() {
+        let (url, server_task) =
             start_mock_server(|mut ws| async move { while let Some(Ok(_)) = ws.next().await {} })
                 .await;
 
@@ -955,12 +1632,7 @@ mod tests {
             .await
             .expect("close must succeed");
 
-        // After closing, recv must not hang — it should return None or an error.
-        let result = crate::transport::recv_frame(&mut transport).await;
-        match result {
-            None => {}         // stream ended — expected
-            Some(Err(_)) => {} // transport error — also acceptable
-            Some(Ok(msg)) => panic!("expected None or error after close, got Ok({msg:?})"),
-        }
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        finish_mock_server(server_task).await;
     }
 }

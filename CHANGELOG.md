@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the built-in `WebSocketTransport` allowing buffered Ping/Pong floods to
+  monopolize one receive poll and leaving EOF or socket errors logically open.
+  Control-frame work is now bounded with wake-driven continuation, automatic
+  Pong and Close responses still flush before further reads, and terminal
+  socket outcomes fuse subsequent receive/send/close operations.
+
 - Fixed `MeshController::start` leaving an `enable_v3()` configuration
   relay-only despite owning a WebRTC driver. Controller startup now preserves
   compatible explicit and future-version choices while adding any missing
