@@ -159,13 +159,19 @@ both fields. Routing code should read those fields from one `snapshot()` (or use
 
 ## The fail-fast guard
 
-The v3-only send methods — classified non-reliable JSON sends, binary sends,
+After connection and room-role validation, the v3-only send methods —
+classified non-reliable JSON sends, binary sends,
 `send_signal`, `send_offer`, `send_answer`,
 `send_ice_candidate`, `send_raw_signal`, and `report_transport_status` — check
 the negotiated version **before** sending. If v3 has not been negotiated, they
 return [`SignalFishError::ProtocolUnsupported`](errors.md) immediately rather
 than letting the server reject the message asynchronously (an unattributed
 `Error` event would be much harder to debug).
+
+This ordering is intentional: a player-only command attempted outside a room
+returns `NotInRoom` (or `WrongRoomRole` for a spectator) even if negotiation is
+still in flight. Once player membership is valid, `ProtocolUnsupported`
+describes the remaining version failure precisely.
 
 Signaling has a second guard: every send requires an authoritative WebRTC
 `SessionPlan` that authorizes its target. Otherwise it returns

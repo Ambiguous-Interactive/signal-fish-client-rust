@@ -290,7 +290,7 @@ client.ping() -> Result<()>
 client.send_signal_reliable(to, signal).await // v3 only; waiting send_signal
 client.send_capacity() / client.max_send_capacity() -> usize // queue diagnostics
 client.stats() -> ClientStats  // cumulative game_data_sent/received counters
-client.snapshot() -> ClientSnapshot // coherent state/token/quarantine view
+client.snapshot() -> ClientSnapshot // coherent role/state/token/quarantine view
 client.shutdown().await      // async, graceful
 ```
 
@@ -304,12 +304,12 @@ Server 0.7 topology/transport pairs and replace prior peer authority atomically.
 selected plan. `MeshController` rebuilds retained pairs across generations or
 offerer-role changes. `MeshSession` accepts liveness only for the selected transport.
 
-Sync sends return `SignalFishError::NotConnected` when the transport is closed
-and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
-full (message refused, never silently dropped). Events are never dropped either:
-a full event channel pauses the transport loop (backpressure); undecodable
-frames surface as `DecodeFailed` events; events are missed only on receiver
-drop, handle drop without `shutdown()`, or shutdown (abandons ≤1 in-flight).
+Membership pairs `room_role` with room/participant IDs. Commands validate
+connection, transition, role, authority, protocol/session, then queue capacity.
+Admitted joins/leaves/reconnects fence later work until a matching typed terminal
+response; generic errors/absence stay fenced until teardown. Events are never dropped: a full event
+channel backpressures; undecodable frames surface as `DecodeFailed`; events are
+missed only on receiver/handle drop or shutdown (abandons ≤1 in-flight).
 `SignalFishPollingClient` shares the classified/binary sends, queue bound,
 capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
 work budget is 64 frames/64 KiB in each direction, and its default close policy

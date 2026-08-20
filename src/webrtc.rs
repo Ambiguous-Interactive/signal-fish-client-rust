@@ -496,16 +496,15 @@ mod controller {
                     self.disconnect_peer(*player_id);
                     self.known_peers.retain(|k| k.id != *player_id);
                 }
-                // The session ended: tear down every peer connection. Route each
-                // through `mark_disconnected` so the 1->0 transport-status edge
-                // still fires a single `TransportStatus(WebRtc, false)` — matching
-                // the per-peer `PlayerLeft` path. On `Disconnected` the underlying
-                // send simply returns `NotConnected` and is harmlessly swallowed;
-                // `mark_disconnected` empties `connected_peers` as it goes.
+                // The session ended: tear down every peer connection. The
+                // authoritative role is already gone when these events surface,
+                // so suppress the obsolete room-scoped TransportStatus(false)
+                // edge while retaining all driver cleanup.
                 SignalFishEvent::RoomLeft
                 | SignalFishEvent::SpectatorJoined { .. }
                 | SignalFishEvent::SpectatorLeft { .. }
                 | SignalFishEvent::Disconnected { .. } => {
+                    self.connected_peers.clear();
                     for peer in std::mem::take(&mut self.known_peers) {
                         self.disconnect_peer(peer.id);
                     }
@@ -2144,12 +2143,10 @@ mod tests {
     // ── Adversarial choreography tests (B1) ─────────────────────────
 
     #[tokio::test]
-    async fn room_left_reports_transport_status_false_when_channel_open() {
-        // Regression for the teardown asymmetry: once a peer's channel is open
-        // (TransportStatus(true) was reported), leaving the room must route the
-        // teardown through `mark_disconnected` so the 1->0 edge still reports
-        // TransportStatus(false). Previously RoomLeft cleared `connected_peers`
-        // directly and the server was never told WebRTC went down.
+    async fn room_left_tears_down_open_channel_without_post_exit_status() {
+        // RoomLeft clears authoritative membership before the controller sees
+        // the event. Driver teardown must still happen, but no now-invalid
+        // room-scoped TransportStatus(false) may be queued afterward.
         let peer = uuid(31);
         let driver = SharedDriver::default();
         let (transport, sent) = MockTransport::new_in_room(vec![
@@ -2179,12 +2176,12 @@ mod tests {
         // Fold RoomLeft only after the channel-open precondition; this test
         // isolates teardown choreography from transport-loop scheduling.
         mesh.handle_event(&SignalFishEvent::RoomLeft);
-        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
-            1,
-            "RoomLeft with a live channel must report exactly one TransportStatus(false)"
+            0,
+            "RoomLeft must not emit a room-scoped status after membership ends"
         );
+        assert!(driver.calls().contains(&DriverCall::Disconnect(peer)));
         mesh.shutdown().await;
     }
 

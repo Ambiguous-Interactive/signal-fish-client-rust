@@ -1,6 +1,6 @@
 //! Common synchronous API implemented by both Signal Fish client drivers.
 
-use crate::client::{ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams};
+use crate::client::{ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, RoomRole};
 use crate::error::Result;
 use crate::protocol::{
     ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration, Topology, TransportKind,
@@ -79,6 +79,11 @@ pub trait SignalFishClientApi {
     fn stats(&self) -> ClientStats;
     /// Coherent connection and room snapshot.
     fn snapshot(&self) -> ClientSnapshot;
+
+    /// Server-confirmed local role in the current room.
+    fn room_role(&self) -> Option<RoomRole> {
+        self.snapshot().room_role
+    }
 
     /// Whether the physical connection is active.
     fn is_connected(&self) -> bool {

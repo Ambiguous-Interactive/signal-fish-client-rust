@@ -389,7 +389,9 @@ Command methods queue protocol work for a later `poll()` cycle. They return
 `SignalFishError::SendBufferFull` without queuing when the bounded command queue
 is full, or `SignalFishError::NotConnected` if the transport has closed.
 Protocol-v3-only methods also return `SignalFishError::ProtocolUnsupported`
-until v3 is negotiated.
+until v3 is negotiated. Room commands additionally fail fast with
+`NotInRoom`, `AlreadyInRoom`, `WrongRoomRole`, `RoomOperationPending`, or
+`AuthorityRequired` as appropriate; these checks happen before queue capacity.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -427,7 +429,8 @@ environment).
 | `is_connected()` | `fn is_connected(&self) -> bool` | Whether the transport is still alive. |
 | `is_closing()` | `fn is_closing(&self) -> bool` | Whether the bounded close lifecycle still needs polling. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Whether the server confirmed authentication. |
-| `current_player_id()` | `fn current_player_id(&self) -> Option<PlayerId>` | The local player's ID, if assigned. |
+| `room_role()` | `fn room_role(&self) -> Option<RoomRole>` | Server-confirmed player/spectator role, or `None` outside a room. |
+| `current_player_id()` | `fn current_player_id(&self) -> Option<PlayerId>` | Legacy name for the local player-or-spectator participant ID; use one `snapshot()` to interpret it atomically with `room_role`. |
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
 | `negotiated_protocol_version()` | `fn negotiated_protocol_version(&self) -> Option<u16>` | Negotiated protocol version; `None` before negotiation or for the v2 relay floor. |

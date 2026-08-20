@@ -30,7 +30,7 @@ use signal_fish_client::protocol::{
     Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
-use signal_fish_client::{ErrorCode, ProtocolViolationPolicy};
+use signal_fish_client::{ErrorCode, ProtocolViolationPolicy, RoomRole};
 use signal_fish_client::{
     GameDataDelivery, JoinRoomParams, PeerSignal, SignalFishClientApi, SignalFishEvent, Transport,
 };
@@ -56,12 +56,23 @@ struct FrameMock {
 #[derive(Clone)]
 struct NeverSendMock {
     attempted: Arc<std::sync::atomic::AtomicBool>,
+    allow: Arc<std::sync::atomic::AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
 }
 
 impl NeverSendMock {
     fn new() -> Self {
         Self {
             attempted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            allow: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            waker: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn release(&self) {
+        self.allow.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
         }
     }
 }
@@ -69,11 +80,16 @@ impl NeverSendMock {
 impl Transport for NeverSendMock {
     fn poll_send(
         &mut self,
-        _cx: &mut std::task::Context<'_>,
-        _frame: &mut Option<TransportFrame>,
+        cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
         self.attempted
             .store(true, std::sync::atomic::Ordering::Release);
+        if self.allow.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = frame.take();
+            return std::task::Poll::Ready(Ok(()));
+        }
+        *self.waker.lock().unwrap() = Some(cx.waker().clone());
         std::task::Poll::Pending
     }
 
@@ -93,6 +109,16 @@ impl Transport for NeverSendMock {
 }
 
 impl FrameMock {
+    fn outside() -> Self {
+        Self {
+            incoming: Arc::new(Mutex::new(VecDeque::from([
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+            ]))),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     fn v3() -> Self {
         Self {
             incoming: Arc::new(Mutex::new(VecDeque::from([
@@ -105,6 +131,80 @@ impl FrameMock {
                     r#"{"type":"SessionPlan","data":{"generation":"00000000-0000-0000-0000-00000000000c","topology":"mesh","transport":"webrtc","peers":[{"player_id":"00000000-0000-0000-0000-000000000007","player_name":"peer","is_authority":false,"initiate":true}],"fallback":"relay"}}"#.into(),
                 ),
             ]))),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn spectator() -> Self {
+        Self {
+            incoming: Arc::new(Mutex::new(VecDeque::from([
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                TransportFrame::Text(
+                    r#"{"type":"SpectatorJoined","data":{"room_id":"00000000-0000-0000-0000-000000000008","room_code":"ROOM","spectator_id":"00000000-0000-0000-0000-000000000005","game_name":"game","current_players":[{"id":"00000000-0000-0000-0000-000000000009","name":"local","is_authority":true,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000007","name":"peer","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0}],"current_spectators":[],"lobby_state":"lobby"}}"#.into(),
+                ),
+            ]))),
+            sent: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn membership_trace(phase: MembershipPhase) -> Self {
+        let base = match phase {
+            MembershipPhase::Outside => Self::outside(),
+            MembershipPhase::Player
+            | MembershipPhase::PlayerLeft
+            | MembershipPhase::PlayerRejoined => Self::v3(),
+            MembershipPhase::Spectator
+            | MembershipPhase::SpectatorLeft
+            | MembershipPhase::SpectatorRejoined => Self::spectator(),
+        };
+        let mut frames = base.incoming.lock().unwrap().clone();
+        match phase {
+            MembershipPhase::PlayerLeft => {
+                frames.push_back(text_server_frame(ServerMessage::RoomLeft));
+            }
+            MembershipPhase::PlayerRejoined => {
+                let rejoined = match &frames[2] {
+                    TransportFrame::Text(frame) => TransportFrame::Text(frame.replace(
+                        "00000000-0000-0000-0000-000000000009",
+                        "00000000-0000-0000-0000-00000000000f",
+                    )),
+                    TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+                };
+                let plan = frames[3].clone();
+                frames.push_back(text_server_frame(ServerMessage::RoomLeft));
+                frames.push_back(rejoined);
+                frames.push_back(plan);
+            }
+            MembershipPhase::SpectatorLeft => {
+                frames.push_back(text_server_frame(ServerMessage::SpectatorLeft {
+                    room_id: Some(uuid::Uuid::from_u128(8)),
+                    room_code: Some("ROOM".into()),
+                    reason: None,
+                    current_spectators: vec![],
+                }));
+            }
+            MembershipPhase::SpectatorRejoined => {
+                let rejoined = match &frames[2] {
+                    TransportFrame::Text(frame) => TransportFrame::Text(frame.replace(
+                        "00000000-0000-0000-0000-000000000005",
+                        "00000000-0000-0000-0000-00000000000f",
+                    )),
+                    TransportFrame::Binary(_) => unreachable!("spectator baseline must be text"),
+                };
+                frames.push_back(text_server_frame(ServerMessage::SpectatorLeft {
+                    room_id: Some(uuid::Uuid::from_u128(8)),
+                    room_code: Some("ROOM".into()),
+                    reason: None,
+                    current_spectators: vec![],
+                }));
+                frames.push_back(rejoined);
+            }
+            MembershipPhase::Outside | MembershipPhase::Player | MembershipPhase::Spectator => {}
+        }
+        frames.push_back(text_server_frame(ServerMessage::Pong));
+        Self {
+            incoming: Arc::new(Mutex::new(frames)),
             sent: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -220,6 +320,167 @@ impl CommonCommandCase {
     }
 }
 
+const ALL_COMMON_COMMANDS: [CommonCommandCase; 22] = [
+    CommonCommandCase::JoinRoom,
+    CommonCommandCase::LeaveRoom,
+    CommonCommandCase::ReliableData,
+    CommonCommandCase::LatestData,
+    CommonCommandCase::VolatileData,
+    CommonCommandCase::BinaryData,
+    CommonCommandCase::SetReady,
+    CommonCommandCase::StartGame,
+    CommonCommandCase::RequestAuthority,
+    CommonCommandCase::ProvideConnectionInfo,
+    CommonCommandCase::Reconnect,
+    CommonCommandCase::JoinSpectator,
+    CommonCommandCase::LeaveSpectator,
+    CommonCommandCase::Ping,
+    CommonCommandCase::Signal,
+    CommonCommandCase::SignalForGeneration,
+    CommonCommandCase::Offer,
+    CommonCommandCase::Answer,
+    CommonCommandCase::IceCandidate,
+    CommonCommandCase::RawSignal,
+    CommonCommandCase::RawSignalForGeneration,
+    CommonCommandCase::TransportStatus,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MembershipResult {
+    AdmittedOrLaterGuard,
+    NotInRoom,
+    AlreadyInRoom,
+    NeedsPlayer,
+    NeedsSpectator,
+}
+
+fn membership_result(result: Result<(), SignalFishError>) -> MembershipResult {
+    match result {
+        Err(SignalFishError::NotInRoom) => MembershipResult::NotInRoom,
+        Err(SignalFishError::AlreadyInRoom) => MembershipResult::AlreadyInRoom,
+        Err(SignalFishError::WrongRoomRole {
+            required: RoomRole::Player,
+            actual: RoomRole::Spectator,
+        }) => MembershipResult::NeedsPlayer,
+        Err(SignalFishError::WrongRoomRole {
+            required: RoomRole::Spectator,
+            actual: RoomRole::Player,
+        }) => MembershipResult::NeedsSpectator,
+        _ => MembershipResult::AdmittedOrLaterGuard,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MembershipPhase {
+    Outside,
+    Player,
+    PlayerLeft,
+    PlayerRejoined,
+    Spectator,
+    SpectatorLeft,
+    SpectatorRejoined,
+}
+
+fn expected_membership_result(phase: MembershipPhase, case: CommonCommandCase) -> MembershipResult {
+    let no_membership_only = matches!(
+        case,
+        CommonCommandCase::JoinRoom
+            | CommonCommandCase::Reconnect
+            | CommonCommandCase::JoinSpectator
+    );
+    let spectator_only = matches!(case, CommonCommandCase::LeaveSpectator);
+    let any_role = matches!(case, CommonCommandCase::Ping);
+    match phase {
+        MembershipPhase::Outside | MembershipPhase::PlayerLeft | MembershipPhase::SpectatorLeft
+            if no_membership_only || any_role =>
+        {
+            MembershipResult::AdmittedOrLaterGuard
+        }
+        MembershipPhase::Outside | MembershipPhase::PlayerLeft | MembershipPhase::SpectatorLeft => {
+            MembershipResult::NotInRoom
+        }
+        MembershipPhase::Player | MembershipPhase::PlayerRejoined if no_membership_only => {
+            MembershipResult::AlreadyInRoom
+        }
+        MembershipPhase::Player | MembershipPhase::PlayerRejoined if spectator_only => {
+            MembershipResult::NeedsSpectator
+        }
+        MembershipPhase::Player | MembershipPhase::PlayerRejoined => {
+            MembershipResult::AdmittedOrLaterGuard
+        }
+        MembershipPhase::Spectator | MembershipPhase::SpectatorRejoined if no_membership_only => {
+            MembershipResult::AlreadyInRoom
+        }
+        MembershipPhase::Spectator | MembershipPhase::SpectatorRejoined
+            if spectator_only || any_role =>
+        {
+            MembershipResult::AdmittedOrLaterGuard
+        }
+        MembershipPhase::Spectator | MembershipPhase::SpectatorRejoined => {
+            MembershipResult::NeedsPlayer
+        }
+    }
+}
+
+fn frame_mock_for_phase(phase: MembershipPhase) -> FrameMock {
+    FrameMock::membership_trace(phase)
+}
+
+fn expected_membership_state(phase: MembershipPhase) -> (Option<RoomRole>, Option<PlayerId>) {
+    match phase {
+        MembershipPhase::Outside | MembershipPhase::PlayerLeft | MembershipPhase::SpectatorLeft => {
+            (None, None)
+        }
+        MembershipPhase::Player => (Some(RoomRole::Player), Some(uuid::Uuid::from_u128(9))),
+        MembershipPhase::PlayerRejoined => {
+            (Some(RoomRole::Player), Some(uuid::Uuid::from_u128(15)))
+        }
+        MembershipPhase::Spectator => (Some(RoomRole::Spectator), Some(uuid::Uuid::from_u128(5))),
+        MembershipPhase::SpectatorRejoined => {
+            (Some(RoomRole::Spectator), Some(uuid::Uuid::from_u128(15)))
+        }
+    }
+}
+
+async fn async_membership_result(
+    phase: MembershipPhase,
+    case: CommonCommandCase,
+) -> MembershipResult {
+    let (mut client, mut events) = SignalFishClient::start(
+        frame_mock_for_phase(phase),
+        SignalFishConfig::new("app").enable_v3(),
+    );
+    while !matches!(events.recv().await, Some(SignalFishEvent::Pong)) {}
+    let (expected_role, expected_participant) = expected_membership_state(phase);
+    assert_eq!(client.room_role(), expected_role, "async {phase:?}");
+    assert_eq!(
+        client.snapshot().player_id,
+        expected_participant,
+        "async {phase:?}"
+    );
+    let result = membership_result(case.invoke(&mut client));
+    client.shutdown().await;
+    result
+}
+
+fn polling_membership_result(phase: MembershipPhase, case: CommonCommandCase) -> MembershipResult {
+    let mut client = SignalFishPollingClient::new(
+        frame_mock_for_phase(phase),
+        SignalFishConfig::new("app").enable_v3(),
+    );
+    let _ = client.poll();
+    let (expected_role, expected_participant) = expected_membership_state(phase);
+    assert_eq!(client.room_role(), expected_role, "polling {phase:?}");
+    assert_eq!(
+        client.snapshot().player_id,
+        expected_participant,
+        "polling {phase:?}"
+    );
+    let result = membership_result(case.invoke(&mut client));
+    client.close();
+    result
+}
+
 const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 const AUTH: &str = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
 const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
@@ -332,7 +593,7 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
             epoch: Some(1),
             seq: Some(0),
         }],
-        is_authority: false,
+        is_authority: true,
         lobby_state: LobbyState::Waiting,
         ready_players: vec![],
         relay_type: "tcp".into(),
@@ -1038,7 +1299,11 @@ async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_d
     .expect("fallback Error fixture should serialize");
     let protocol_info =
         protocol_info_with_formats(vec![GameDataEncoding::Json, GameDataEncoding::MessagePack]);
-    let messages = vec![fallback_error, AUTH.into(), protocol_info];
+    let room = match binary_accountability_prefix(uuid::Uuid::from_u128(365)).remove(2) {
+        TransportFrame::Text(room) => room,
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let messages = vec![fallback_error, AUTH.into(), protocol_info, room];
     let mut config = SignalFishConfig::new("app").enable_v3();
     config.game_data_format = Some(GameDataEncoding::Rkyv);
 
@@ -1263,7 +1528,7 @@ fn binary_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
                 seq: Some(0),
             },
         ],
-        is_authority: false,
+        is_authority: true,
         lobby_state: LobbyState::Lobby,
         ready_players: vec![],
         relay_type: "websocket".into(),
@@ -1928,7 +2193,6 @@ async fn room_exit_clears_unsupported_advisory_authorization_in_both_drivers() {
 #[tokio::test]
 async fn every_common_command_produces_identical_physical_frames() {
     let cases = [
-        CommonCommandCase::JoinRoom,
         CommonCommandCase::LeaveRoom,
         CommonCommandCase::ReliableData,
         CommonCommandCase::LatestData,
@@ -1938,9 +2202,6 @@ async fn every_common_command_produces_identical_physical_frames() {
         CommonCommandCase::StartGame,
         CommonCommandCase::RequestAuthority,
         CommonCommandCase::ProvideConnectionInfo,
-        CommonCommandCase::Reconnect,
-        CommonCommandCase::JoinSpectator,
-        CommonCommandCase::LeaveSpectator,
         CommonCommandCase::Ping,
         CommonCommandCase::Signal,
         CommonCommandCase::SignalForGeneration,
@@ -2093,6 +2354,7 @@ async fn pending_transport_queue_capacity_and_errors_match() {
     let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
 
     let async_mock = NeverSendMock::new();
+    let async_gate = async_mock.clone();
     let attempted = Arc::clone(&async_mock.attempted);
     let (mut async_client, _events) = SignalFishClient::start(async_mock, config.clone());
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -2104,6 +2366,7 @@ async fn pending_transport_queue_capacity_and_errors_match() {
     .expect("async Authenticate should reach the stalled transport");
 
     let polling_mock = NeverSendMock::new();
+    let polling_gate = polling_mock.clone();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
     let _ = polling_client.poll();
 
@@ -2123,6 +2386,133 @@ async fn pending_transport_queue_capacity_and_errors_match() {
         .ping()
         .expect_err("polling queue must be full");
     assert_eq!(format!("{async_error:?}"), format!("{polling_error:?}"));
+
+    for case in [
+        CommonCommandCase::JoinRoom,
+        CommonCommandCase::Reconnect,
+        CommonCommandCase::JoinSpectator,
+    ] {
+        assert!(matches!(
+            case.invoke(&mut async_client),
+            Err(SignalFishError::SendBufferFull { capacity: 1 })
+        ));
+        assert!(matches!(
+            case.invoke(&mut polling_client),
+            Err(SignalFishError::SendBufferFull { capacity: 1 })
+        ));
+    }
+
+    // A locally invalid room operation wins over queue congestion and cannot
+    // consume additional capacity in either driver.
+    assert!(matches!(
+        async_client.send_game_data(serde_json::json!({"invalid": true})),
+        Err(SignalFishError::NotInRoom)
+    ));
+    assert!(matches!(
+        polling_client.send_game_data(serde_json::json!({"invalid": true})),
+        Err(SignalFishError::NotInRoom)
+    ));
+    assert_eq!(async_client.send_capacity(), 0);
+    assert_eq!(polling_client.send_capacity(), 0);
+
+    async_gate.release();
+    polling_gate.release();
+    let _ = polling_client.poll();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while async_client.send_capacity() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("async queue should recover after transport release");
+    assert_eq!(polling_client.send_capacity(), 1);
+    async_client
+        .join_room(JoinRoomParams::new("game", "async"))
+        .expect("full-queue refusal must not create an async pending fence");
+    polling_client
+        .join_room(JoinRoomParams::new("game", "polling"))
+        .expect("full-queue refusal must not create a polling pending fence");
+    assert!(matches!(
+        async_client.send_game_data(serde_json::json!({"after": "join"})),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    assert!(matches!(
+        polling_client.send_game_data(serde_json::json!({"after": "join"})),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    async_client.shutdown().await;
+}
+
+#[tokio::test]
+async fn every_common_command_has_membership_guard_parity_across_drivers() {
+    for phase in [
+        MembershipPhase::Outside,
+        MembershipPhase::Player,
+        MembershipPhase::PlayerLeft,
+        MembershipPhase::PlayerRejoined,
+        MembershipPhase::Spectator,
+        MembershipPhase::SpectatorLeft,
+        MembershipPhase::SpectatorRejoined,
+    ] {
+        for case in ALL_COMMON_COMMANDS {
+            let expected = expected_membership_result(phase, case);
+            let async_result = async_membership_result(phase, case).await;
+            let polling_result = polling_membership_result(phase, case);
+            assert_eq!(async_result, expected, "async {phase:?} {case:?}");
+            assert_eq!(polling_result, expected, "polling {phase:?} {case:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
+    let config = SignalFishConfig::new("app").enable_v3();
+
+    let async_mock = FrameMock::v3();
+    let async_sent = Arc::clone(&async_mock.sent);
+    let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    while !matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::SessionPlan { .. })
+    ) {}
+    async_sent.lock().unwrap().clear();
+    async_client.leave_room().expect("async leave is admitted");
+    assert!(matches!(
+        async_client.send_game_data(serde_json::json!({"after": "leave"})),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+
+    let polling_mock = FrameMock::v3();
+    let polling_sent = Arc::clone(&polling_mock.sent);
+    let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    let _ = polling_client.poll();
+    polling_sent.lock().unwrap().clear();
+    polling_client
+        .leave_room()
+        .expect("polling leave is admitted");
+    assert!(matches!(
+        polling_client.send_game_data(serde_json::json!({"after": "leave"})),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+
+    let _ = polling_client.poll();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while async_sent.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("async LeaveRoom frame");
+    assert_eq!(async_sent.lock().unwrap().len(), 1);
+    assert_eq!(polling_sent.lock().unwrap().len(), 1);
+    assert!(matches!(
+        &async_sent.lock().unwrap()[0],
+        TransportFrame::Text(frame) if frame.contains("LeaveRoom")
+    ));
+    assert!(matches!(
+        &polling_sent.lock().unwrap()[0],
+        TransportFrame::Text(frame) if frame.contains("LeaveRoom")
+    ));
     async_client.shutdown().await;
 }
 
@@ -2176,7 +2566,7 @@ async fn disconnected_common_commands_consistently_return_not_connected() {
 // ── PARITY 2: ensure_v3 guard modes ──────────────────────────────────
 
 #[tokio::test]
-async fn parity_ensure_v3_pre_negotiation_mode() {
+async fn parity_membership_precedes_v3_pre_negotiation_mode() {
     let peer: PlayerId = PEER_UUID.parse().unwrap();
 
     let async_mock = SharedMock::new(vec![]);
@@ -2188,18 +2578,8 @@ async fn parity_ensure_v3_pre_negotiation_mode() {
         SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app").enable_mesh());
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();
 
-    assert!(matches!(
-        async_err,
-        SignalFishError::ProtocolUnsupported {
-            mode: "pre-negotiation"
-        }
-    ));
-    assert!(matches!(
-        poll_err,
-        SignalFishError::ProtocolUnsupported {
-            mode: "pre-negotiation"
-        }
-    ));
+    assert!(matches!(async_err, SignalFishError::NotInRoom));
+    assert!(matches!(poll_err, SignalFishError::NotInRoom));
 }
 
 #[tokio::test]
@@ -2209,19 +2589,35 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
     // state before any `ProtocolInfo` arrives (see the parity test above).
     let peer: PlayerId = PEER_UUID.parse().unwrap();
 
-    let async_mock = SharedMock::new(vec![AUTH, PI_V2]);
+    let room = match finalized_v2_room_frame() {
+        TransportFrame::Text(room) => room,
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let messages = [AUTH.to_string(), PI_V2.to_string(), room];
+    let async_mock = SharedMock::from_msgs(
+        messages
+            .iter()
+            .cloned()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+    );
     let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
-    // Drain until the v2 ProtocolInfo has been processed into client state.
+    // Drain until the v2 room baseline has been processed into client state.
     loop {
         match events.recv().await {
-            Some(SignalFishEvent::ProtocolInfo(_)) | None => break,
+            Some(SignalFishEvent::RoomJoined { .. }) | None => break,
             _ => {}
         }
     }
     let async_err = client.send_offer(peer, "sdp").unwrap_err();
 
-    let poll_mock = SharedMock::new(vec![AUTH, PI_V2]);
+    let poll_mock = SharedMock::from_msgs(
+        messages
+            .into_iter()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+    );
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
     poll_client.poll();
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();

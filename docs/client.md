@@ -557,7 +557,7 @@ Useful for keeping the connection alive through proxies or load balancers.
 ### State Accessors
 
 `snapshot()` synchronously returns one coherent `ClientSnapshot`, including
-connection/authentication state, room/player IDs, room code, the latest
+connection/authentication state, room role/participant ID, room code, the latest
 reconnection token, requested and effective game-data formats, negotiated
 protocol version, current session generation, and whether delivery is
 quarantined. It also carries the latest selected `session_topology` and
@@ -572,6 +572,7 @@ the async room-ID accessors acquire the same internal mutex.
 | `is_connected()` | `fn is_connected(&self) -> bool` | Returns `true` if the transport is believed to be connected. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Returns `true` if the server has confirmed authentication. |
 | `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Returns coherent session, reconnect-token, negotiation, and quarantine state. |
+| `room_role()` | `fn room_role(&self) -> Option<RoomRole>` | Server-confirmed `Player` or `Spectator` role; `None` outside a room. |
 | `requested_game_data_format()` | `fn requested_game_data_format(&self) -> Option<GameDataEncoding>` | Exact preference supplied in `SignalFishConfig`, preserving omission. |
 | `effective_game_data_format()` | `fn effective_game_data_format(&self) -> Option<GameDataEncoding>` | Server-selected format; `None` before valid `ProtocolInfo` or after disconnect. |
 | `supports_mesh()` | `fn supports_mesh(&self) -> bool` | Negotiated local capability: v3 plus advertised WebRTC and a Host or Mesh topology. This does not describe the active plan. |
@@ -579,16 +580,46 @@ the async room-ID accessors acquire the same internal mutex.
 | `session_transport()` | `fn session_transport(&self) -> Option<TransportKind>` | Transport selected by the latest authoritative plan. |
 | `is_p2p_active()` | `fn is_p2p_active(&self) -> bool` | Whether the selected plan uses a Host or Mesh topology. |
 | `current_room_id()` | `async fn current_room_id(&self) -> Option<RoomId>` | Returns the current room ID, if in a room. |
-| `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
+| `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Legacy name for the local room participant ID (player or spectator). Interpret it with `room_role()`. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
 
 ```rust,ignore
-if client.is_connected() && client.is_authenticated() {
-    if let Some(room_id) = client.current_room_id().await {
-        println!("In room: {room_id}");
+let state = client.snapshot();
+match (state.room_role, state.player_id, state.room_id.as_ref()) {
+    (Some(RoomRole::Player), Some(player_id), Some(room_id)) => {
+        println!("Player {player_id} is in room {room_id}");
     }
+    (Some(RoomRole::Spectator), Some(spectator_id), Some(room_id)) => {
+        println!("Spectator {spectator_id} is watching room {room_id}");
+    }
+    (None, None, None) => println!("Outside a room"),
+    _ => unreachable!("ClientSnapshot preserves the membership invariant"),
 }
 ```
+
+Read these fields from one `snapshot()` as above; separate accessor calls can
+observe different instants while the background task applies a transition.
+`room_role`, `player_id`, `room_id`, and `room_code` form one invariant: all
+four are absent outside a room, and a confirmed player or spectator membership
+sets all four. A confirmed exit clears all four. Admission of a join, leave, or
+reconnect fences later room commands until a matching typed success or failure
+response, preventing FIFO commands from running against obsolete membership.
+An uncorrelated generic server error or an absent response cannot safely release
+that fence; the client stays fail-closed until transport teardown, after which
+a new connection may retry.
+
+Room command admission is role-specific:
+
+| Local state | Allowed room operations |
+|---|---|
+| Outside a room | `join_room`, `join_as_spectator`, or `reconnect` |
+| `RoomRole::Player` | leave, game-data, readiness/game-start, authority, connection-info, signaling, and transport-status operations |
+| `RoomRole::Spectator` | `leave_spectator` |
+| Any nonterminal connection | `ping` |
+
+Wrong-state errors are deterministic: `NotConnected` wins first, then
+`RoomOperationPending`, membership/role and authority errors, protocol/format
+or session-plan errors, and finally `SendBufferFull` at queue admission.
 
 ---
 
@@ -776,6 +807,7 @@ All accessors are **synchronous** (no async, no mutex):
 |---|---|---|
 | `is_connected()` | `bool` | Whether the transport is believed connected. |
 | `is_authenticated()` | `bool` | Whether the server confirmed authentication. |
+| `room_role()` | `Option<RoomRole>` | Server-confirmed player/spectator role. |
 | `is_closing()` | `bool` | Whether `poll()` must continue driving a close lifecycle. |
 | `negotiated_protocol_version()` | `Option<u16>` | Negotiated v3-or-newer version; `None` before `ProtocolInfo` or on the v2 floor. |
 | `requested_game_data_format()` | `Option<GameDataEncoding>` | Exact configured preference, preserving omission. |
@@ -784,7 +816,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `session_topology()` | `Option<Topology>` | Topology selected by the latest authoritative plan. |
 | `session_transport()` | `Option<TransportKind>` | Transport selected by the latest authoritative plan. |
 | `is_p2p_active()` | `bool` | Whether the selected plan uses a Host or Mesh topology. |
-| `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
+| `current_player_id()` | `Option<PlayerId>` | Legacy name for the local player-or-spectator participant ID. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
