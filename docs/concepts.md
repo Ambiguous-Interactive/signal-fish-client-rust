@@ -118,8 +118,9 @@ that a v2 connection never sees.
    (`protocol_version`, `supported_transports`, `supported_topologies`).
 2. The server clamps to its own range and echoes the negotiated
    `protocol_version` (plus min/max) back in `ProtocolInfo`.
-3. The client records it; read it via `negotiated_protocol_version()` and
-   `supports_mesh()` (true after `enable_mesh()` and v3 negotiation).
+3. The client records it; `supports_mesh()` reports negotiated local capability
+   only when WebRTC and a Host or Mesh topology were advertised. It does not say
+   which plan the server selected.
 
 v3-only sends (`send_signal`, `report_transport_status`, …) **fail fast** with
 [`SignalFishError::ProtocolUnsupported`](errors.md) until v3 is negotiated —
@@ -315,12 +316,16 @@ simultaneous send + receive pressure.
 | `is_authenticated()` | No | `bool` |
 | `snapshot()` | No | `ClientSnapshot` |
 | `negotiated_protocol_version()` | No | `Option<u16>` |
-| `supports_mesh()` | No | `bool` |
+| `supports_mesh()` | No | `bool` (negotiated WebRTC + Host/Mesh capability) |
+| `session_topology()` | No | `Option<Topology>` |
+| `session_transport()` | No | `Option<TransportKind>` |
+| `is_p2p_active()` | No | `bool` (selected plan is Host or Mesh) |
 | `current_player_id()` | Yes (`async`) | `Option<PlayerId>` |
 | `current_room_id()` | Yes (`async`) | `Option<RoomId>` |
 | `current_room_code()` | Yes (`async`) | `Option<String>` |
 
-Use `snapshot()` when multiple values must describe one instant. The individual
+Use `snapshot()` when multiple values must describe one instant, especially the
+selected `session_topology`/`session_transport` pair. The individual
 async room/player accessors are convenient for one-off reads but are not one
 coherent multi-field observation.
 

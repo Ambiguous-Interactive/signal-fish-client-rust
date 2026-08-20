@@ -168,7 +168,7 @@ generation.
 use signal_fish_client::webrtc::{MeshController, MeshEvent};
 use signal_fish_client::{JoinRoomParams, SignalFishConfig, SignalFishEvent};
 
-// `start` auto-enables mesh if the config didn't.
+// `start` ensures v3 + WebRTC + a P2P topology while preserving compatible choices.
 let mut mesh = MeshController::start(transport, SignalFishConfig::new("app"), my_driver);
 
 while let Some(event) = mesh.recv().await {
@@ -196,7 +196,7 @@ mesh.shutdown().await;
 
 | API | Purpose |
 |-----|---------|
-| `MeshController::start(transport, config, driver)` | Build the controller; auto-enables mesh if the config didn't. |
+| `MeshController::start(transport, config, driver)` | Build the controller; ensure v3, WebRTC, and a P2P topology while preserving compatible custom choices. |
 | `recv().await -> Option<MeshEvent>` | Drive the handshake and yield the next high-level event. `None` once the transport closes. |
 | `send_to(peer, &[u8])` | Send application bytes to a peer over its data channel. |
 | `with_pump_interval(Duration)` | Tune the periodic driver pump (default 20 ms). |
@@ -292,7 +292,8 @@ If you don't want the full `MeshController`, `MeshSession` is a zero-dependency,
 no-I/O state tracker. Fold every event into it with `apply(&event) -> bool` (which
 returns whether the view changed) and read the accessors (`topology`,
 `generation`, `transport`, `host`, `direct_endpoint`, `peers`, `ice_servers`,
-`is_p2p`). It handles late joins,
+`is_p2p`). Peer `connected` state describes only the transport selected by the
+current plan; status reports for other transports are ignored. It handles late joins,
 host re-election, `PlayerLeft` removal, and reconnect replay idempotently — but it
 contains no WebRTC and does no signaling. You still "obey the server": every
 `initiate` flag is copied verbatim.

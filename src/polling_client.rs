@@ -231,10 +231,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         mut options: PollingClientOptions,
     ) -> Self {
         options.work_budget = options.work_budget.clamped();
-        let mesh_enabled = config
-            .supported_transports
-            .as_ref()
-            .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
+        let mesh_capable = config.advertises_mesh_capability();
         let auth_msg = ClientCore::authenticate(&config);
 
         let now = Instant::now();
@@ -252,7 +249,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             core: ClientCore::new(
                 config.game_data_format,
                 config.protocol_violation_policy,
-                mesh_enabled,
+                mesh_capable,
             ),
             options,
             polling_stats: PollingStats {
@@ -716,11 +713,29 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.core.effective_game_data_format()
     }
 
-    /// Returns `true` once the connection has negotiated protocol v3 and this
-    /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
-    /// This is the "am I in mesh mode?" check.
+    /// Whether protocol v3 was negotiated after this client advertised both
+    /// WebRTC and at least one P2P topology (`host` or `mesh`).
+    ///
+    /// This is a capability query; use [`session_topology`](Self::session_topology),
+    /// [`session_transport`](Self::session_transport), or
+    /// [`is_p2p_active`](Self::is_p2p_active) for selected plan state.
     pub fn supports_mesh(&self) -> bool {
         self.core.supports_mesh()
+    }
+
+    /// Topology selected by the latest authoritative session plan.
+    pub fn session_topology(&self) -> Option<crate::protocol::Topology> {
+        self.core.session_topology()
+    }
+
+    /// Data-path transport selected by the latest authoritative session plan.
+    pub fn session_transport(&self) -> Option<TransportKind> {
+        self.core.session_transport()
+    }
+
+    /// Whether the latest authoritative plan selects a peer-to-peer topology.
+    pub fn is_p2p_active(&self) -> bool {
+        self.core.is_p2p_active()
     }
 
     /// Whether the transport connection is still alive.

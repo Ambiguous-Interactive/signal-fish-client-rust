@@ -36,9 +36,11 @@ MUST be `Option` + `skip_serializing_if` (or `Vec` + `default` + `skip_if-empty`
 3. If the negotiation is < v3, or transports/topologies were omitted, the server
    keeps the room on the relay floor and emits no v3 messages.
 
-The client tracks the negotiated version from `ProtocolInfo`:
-`SignalFishClient::negotiated_protocol_version()` and `supports_mesh()` (true
-when WebRTC mesh was advertised and the negotiated version is ≥ 3).
+The client tracks the negotiated version from `ProtocolInfo`.
+`supports_mesh()` reports negotiated local capability and requires WebRTC plus
+at least one advertised P2P topology (`Host` or `Mesh`) and version ≥ 3. It does
+not report the server-selected plan. Read `ClientSnapshot::session_topology` and
+`session_transport` together for that, or use `is_p2p_active()`.
 
 ## Never Advertise What You Cannot Fulfill
 
@@ -50,6 +52,9 @@ can't honor. So:
 - `SignalFishConfig::enable_mesh()` is the opt-in for consumers who HAVE a WebRTC
   stack (or use `MeshController`). It advertises v3 + `[webrtc, relay]` +
   `[mesh, host, relay]`.
+- `MeshController::start` ensures those minimum classes even when v3 was already
+  selected, while preserving compatible explicit transports, topologies, and
+  future protocol versions.
 
 ## The Fail-Fast Guard
 

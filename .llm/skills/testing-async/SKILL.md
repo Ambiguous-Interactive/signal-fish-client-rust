@@ -298,8 +298,8 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
   server samples — see [protocol-wire-conformance](../protocol-wire-conformance/SKILL.md).
 - **Negotiation**: script `protocol_info_json(Some(3))` after `authenticated_json()`
   through `MockTransport`; assert the negotiated version, v3 sends, and the
-  pre-negotiation error. Assert `supports_mesh()` only with `enable_mesh()`;
-  relay-only `enable_v3()` must remain false.
+  pre-negotiation error. Assert `supports_mesh()` requires advertised WebRTC,
+  a Host/Mesh topology, and v3; distinguish it from selected plan state.
 - **Frames/accountability**: keep text and binary frames in one scripted order;
   assert malformed binary becomes `DecodeFailed`, while valid accountability
   failures become `ProtocolViolation` and follow the configured policy.
@@ -307,4 +307,5 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
   (see `src/webrtc.rs` tests) — drive the handshake, assert
   `connect(peer, generation, initiate)`
   obeys the server, signals are relayed, and `PeerConnected`/`PeerDisconnected`
-  surface with correct transport-status reports.
+  surface with correct transport-status reports. Cross-test controller config
+  augmentation and selected topology/transport against both client drivers.

@@ -186,7 +186,8 @@ async fn main() -> Result<(), SignalFishError> {
         started: false,
     };
 
-    // `MeshController::start` enables the mesh automatically.
+    // `MeshController::start` preserves compatible explicit choices and adds
+    // the minimum WebRTC/P2P advertisement needed by the controller.
     let mut mesh = MeshController::start(
         transport,
         SignalFishConfig::new("demo-app"),

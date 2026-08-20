@@ -362,8 +362,8 @@ shows that complete pattern.
 
 !!! warning "v3-negotiated connections only"
     These four events arrive **only** when the connection has negotiated
-    protocol v3 — i.e. you opted in with `SignalFishConfig::enable_mesh()` and the
-    server agreed. A v2 relay-floor connection never emits them. See the
+    protocol v3 and the server emits the corresponding plan/signaling state.
+    A v2 relay-floor connection never emits them. See the
     [Mesh Guide](mesh-guide.md) for the full peer-to-peer flow and
     [Protocol Versioning](protocol-versioning.md) for how negotiation works.
 

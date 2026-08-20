@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effective_game_data_format}` and matching async, polling, and
   `SignalFishClientApi` accessors. Configuration omission now remains visible
   separately from the format selected by the server.
+- Added `ClientSnapshot::{session_topology, session_transport}` plus
+  `session_topology()`, `session_transport()`, and `is_p2p_active()` to the
+  async client, polling client, and `SignalFishClientApi`. Applications can now
+  distinguish negotiated local capability from the server-selected active path.
 
 ### Changed
 
@@ -50,12 +54,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the exhaustive `ClientSnapshot` struct has two new game-data
   negotiation fields. `SignalFishClientApi` provides corresponding default
   requested/effective format accessors through `snapshot()`.
+- **Breaking:** the exhaustive `ClientSnapshot` gains selected topology and
+  transport fields. `supports_mesh()` now precisely means negotiated v3 plus
+  advertised WebRTC and at least one `Host` or `Mesh` topology; custom
+  WebRTC + relay-only configurations now return `false`. Use the selected-plan
+  snapshot fields or `is_p2p_active()` for routing decisions.
 - Reconnect is now a hard WebRTC plan boundary: `MeshSession` and
   `MeshController` clear the previous plan and driver peers at `Reconnected`,
   then wait for Server 0.7's fresh live `SessionPlan` before authorizing new
   signaling.
 
 ### Fixed
+
+- Fixed `MeshController::start` leaving an `enable_v3()` configuration
+  relay-only despite owning a WebRTC driver. Controller startup now preserves
+  compatible explicit and future-version choices while adding any missing
+  WebRTC/P2P capability. `MeshSession` also ignores peer status for transports
+  other than the selected path and clears stale liveness when that path or the
+  server-assigned offerer role changes.
 
 - Fixed game-data encoding being treated as one mutable requested/effective
   value. The shared core now resolves the first canonical Server 0.7

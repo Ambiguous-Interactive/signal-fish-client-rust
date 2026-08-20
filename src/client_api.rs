@@ -3,7 +3,7 @@
 use crate::client::{ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams};
 use crate::error::Result;
 use crate::protocol::{
-    ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration, TransportKind,
+    ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration, Topology, TransportKind,
 };
 use crate::signal::PeerSignal;
 
@@ -106,8 +106,27 @@ pub trait SignalFishClientApi {
         self.snapshot().effective_game_data_format
     }
 
-    /// Whether WebRTC mesh was advertised and protocol v3 was negotiated.
+    /// Whether WebRTC plus a P2P topology were advertised and v3 was negotiated.
+    /// This reports capability, not the selected session plan.
     fn supports_mesh(&self) -> bool;
+
+    /// Topology selected by the latest authoritative session plan.
+    fn session_topology(&self) -> Option<Topology> {
+        self.snapshot().session_topology
+    }
+
+    /// Data-path transport selected by the latest authoritative session plan.
+    fn session_transport(&self) -> Option<TransportKind> {
+        self.snapshot().session_transport
+    }
+
+    /// Whether the latest authoritative plan selects a peer-to-peer topology.
+    fn is_p2p_active(&self) -> bool {
+        matches!(
+            self.session_topology(),
+            Some(Topology::Host | Topology::Mesh)
+        )
+    }
 
     /// Send an SDP offer.
     fn send_offer(&mut self, to: PlayerId, sdp: String) -> Result<()> {

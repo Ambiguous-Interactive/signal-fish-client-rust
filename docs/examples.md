@@ -502,9 +502,10 @@ A **real** driver wraps str0m, webrtc-rs, or the browser's `RtcPeerConnection`
 
 #### 2. Start the `MeshController`
 
-`MeshController::start` enables mesh automatically if the config didn't, then
-drives the handshake. Note the config is the plain relay-floor
-`SignalFishConfig::new("demo-app")` — `start` upgrades it to mesh for you.
+`MeshController::start` ensures the config advertises v3, WebRTC, and at least
+one P2P topology, then drives the handshake. Compatible explicit transport,
+topology, and future-version choices are preserved. The plain relay-floor
+`SignalFishConfig::new("demo-app")` therefore works directly.
 
 ```rust,ignore
 let mut mesh = MeshController::start(
