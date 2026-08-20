@@ -83,11 +83,11 @@ pub enum SignalFishError {
         mode: &'static str,
     },
 
-    /// WebRTC signaling was attempted before the server supplied an
-    /// authoritative session plan for the current room.
-    #[error(
-        "WebRTC signaling requires an authoritative SessionPlan; wait for SignalFishEvent::SessionPlan before sending"
-    )]
+    /// No authoritative WebRTC session plan currently authorizes this signal.
+    ///
+    /// This covers signaling before a plan and targeting self, an unknown or
+    /// departed player, or a peer removed by a replacement plan.
+    #[error("no authoritative SessionPlan authorizes this WebRTC signal")]
     SessionPlanUnavailable,
 
     /// A generation-bound WebRTC signal was produced for a session plan that

@@ -1018,6 +1018,67 @@ mod tests {
         fn new(
             incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
         ) -> (Self, Arc<Mutex<Vec<String>>>) {
+            Self::finish(incoming)
+        }
+
+        fn new_in_room(
+            mut incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+        ) -> (Self, Arc<Mutex<Vec<String>>>) {
+            let decoded = incoming
+                .iter()
+                .filter_map(|item| item.as_ref()?.as_ref().ok())
+                .filter_map(|json| serde_json::from_str::<ServerMessage>(json).ok())
+                .collect::<Vec<_>>();
+            let has_room = decoded.iter().any(|message| {
+                matches!(
+                    message,
+                    ServerMessage::RoomJoined(_) | ServerMessage::Reconnected(_)
+                )
+            });
+            let has_plan = decoded
+                .iter()
+                .any(|message| matches!(message, ServerMessage::SessionPlan(_)));
+            if has_plan && !has_room {
+                let mut peers = Vec::new();
+                for message in &decoded {
+                    match message {
+                        ServerMessage::SessionPlan(plan) => {
+                            for peer in &plan.peers {
+                                if !peers.contains(&peer.player_id) {
+                                    peers.push(peer.player_id);
+                                }
+                            }
+                            if let Some(host) = plan.host {
+                                if !peers.contains(&host) {
+                                    peers.push(host);
+                                }
+                            }
+                        }
+                        ServerMessage::NewPeer { peer_id, .. } if !peers.contains(peer_id) => {
+                            peers.push(*peer_id);
+                        }
+                        _ => {}
+                    }
+                }
+                let insert_at = incoming
+                    .iter()
+                    .position(|item| {
+                        item.as_ref()
+                            .and_then(|result| result.as_ref().ok())
+                            .and_then(|json| serde_json::from_str::<ServerMessage>(json).ok())
+                            .is_some_and(|message| {
+                                matches!(message, ServerMessage::ProtocolInfo(_))
+                            })
+                    })
+                    .map_or(0, |index| index + 1);
+                incoming.insert(insert_at, Some(Ok(room_baseline_for(&peers))));
+            }
+            Self::finish(incoming)
+        }
+
+        fn finish(
+            incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+        ) -> (Self, Arc<Mutex<Vec<String>>>) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let closed = Arc::new(AtomicBool::new(false));
             (
@@ -1144,12 +1205,16 @@ mod tests {
                 host: "203.0.113.9".into(),
                 port: 7000,
             }),
-            peers: vec![SessionPeer {
-                player_id: peer,
-                player_name: "P".into(),
-                is_authority: false,
-                initiate: false,
-            }],
+            peers: if transport == TransportKind::Relay {
+                vec![]
+            } else {
+                vec![SessionPeer {
+                    player_id: peer,
+                    player_name: "P".into(),
+                    is_authority: false,
+                    initiate: false,
+                }]
+            },
             ice_servers: vec![],
             fallback: TransportKind::Relay,
         };
@@ -1157,25 +1222,40 @@ mod tests {
     }
 
     fn room_baseline(peer: PlayerId) -> String {
+        room_baseline_for(&[peer])
+    }
+
+    fn room_baseline_for(peers: &[PlayerId]) -> String {
+        let mut current_players = vec![crate::protocol::PlayerInfo {
+            id: uuid(10_000),
+            name: "local".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        }];
+        current_players.extend(peers.iter().map(|peer| crate::protocol::PlayerInfo {
+            id: *peer,
+            name: "P".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        }));
         let payload = crate::protocol::RoomJoinedPayload {
             room_id: uuid(100),
             room_code: "ROOM".into(),
-            player_id: uuid(1),
+            player_id: uuid(10_000),
             game_name: "test".into(),
             max_players: 4,
             supports_authority: false,
-            current_players: vec![crate::protocol::PlayerInfo {
-                id: peer,
-                name: "P".into(),
-                is_authority: false,
-                is_ready: false,
-                connected_at: "2026-01-01T00:00:00Z".into(),
-                connection_info: None,
-                epoch: Some(1),
-                seq: Some(0),
-            }],
+            current_players,
             is_authority: false,
-            lobby_state: crate::protocol::LobbyState::Lobby,
+            lobby_state: crate::protocol::LobbyState::Finalized,
             ready_players: vec![],
             relay_type: "websocket".into(),
             current_spectators: vec![],
@@ -1234,9 +1314,7 @@ mod tests {
         )
     }
 
-    /// A `Reconnected` message carrying `missed_events` (the nested events a
-    /// server may batch in lieu of re-sending a live plan).
-    fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
+    fn reconnected_with_players(players: &[PlayerId]) -> String {
         use crate::protocol::ReconnectedPayload;
         let payload = ReconnectedPayload {
             room_id: uuid(0),
@@ -1245,16 +1323,35 @@ mod tests {
             game_name: "g".into(),
             max_players: 4,
             supports_authority: false,
-            current_players: vec![],
+            current_players: players
+                .iter()
+                .map(|id| crate::protocol::PlayerInfo {
+                    id: *id,
+                    name: "peer".into(),
+                    is_authority: false,
+                    is_ready: true,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                })
+                .collect(),
             is_authority: false,
-            lobby_state: crate::protocol::LobbyState::Waiting,
+            lobby_state: crate::protocol::LobbyState::Finalized,
             ready_players: vec![],
             relay_type: "auto".into(),
             current_spectators: vec![],
             ice_servers: vec![],
-            missed_events: missed,
+            missed_events: vec![],
             replay: None,
-            sender_watermarks: vec![],
+            sender_watermarks: players
+                .iter()
+                .map(|id| crate::protocol::SenderWatermark {
+                    player_id: *id,
+                    epoch: 1,
+                    seq: 0,
+                })
+                .collect(),
             reconnection_token: None,
         };
         serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
@@ -1422,6 +1519,7 @@ mod tests {
             incoming: VecDeque::from(vec![
                 Some(Ok(authed())),
                 Some(Ok(protocol_info_v3())),
+                Some(Ok(room_baseline(peer))),
                 Some(Ok(session_plan(peer, true))),
             ]),
             sent: Arc::clone(&sent),
@@ -1610,9 +1708,10 @@ mod tests {
         // reports transport status and surfaces PeerConnected.
         let peer = uuid(2);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
+            Some(Ok(room_baseline(peer))),
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(
                 peer,
@@ -1668,7 +1767,7 @@ mod tests {
         // relays the answer and surfaces PeerConnected.
         let peer = uuid(3);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, false))), // we are NOT the initiator
@@ -1716,7 +1815,7 @@ mod tests {
             final_seq: Some(0),
         })
         .unwrap();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(room_baseline(peer))),
@@ -1740,7 +1839,7 @@ mod tests {
     async fn data_from_driver_is_surfaced() {
         let peer = uuid(5);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, false))),
@@ -1775,7 +1874,7 @@ mod tests {
     async fn send_to_forwards_to_driver() {
         let peer = uuid(6);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(uuid(1), false))),
@@ -1808,7 +1907,7 @@ mod tests {
     async fn peer_disconnect_reports_status_false_and_surfaces_event() {
         let peer = uuid(11);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, true))),
@@ -1858,7 +1957,7 @@ mod tests {
         let driver = SharedDriver::default();
         let new_peer =
             format!(r#"{{"type":"NewPeer","data":{{"peer_id":"{peer}","you_initiate":true}}}}"#);
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[], &[]))),
@@ -1881,7 +1980,7 @@ mod tests {
         let peer = uuid(13);
         let driver = SharedDriver::default();
         let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, false))),
@@ -1905,8 +2004,8 @@ mod tests {
     #[tokio::test]
     async fn ice_pregather_applies_servers_before_any_plan() {
         let driver = SharedDriver::default();
-        let room_joined = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000000","room_code":"R","player_id":"00000000-0000-0000-0000-000000000000","game_name":"g","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"auto","ice_servers":[{"urls":["stun:pre"]}]}}"#;
-        let (transport, _sent) = MockTransport::new(vec![
+        let room_joined = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000000","room_code":"R","player_id":"00000000-0000-0000-0000-000000000000","game_name":"g","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000000","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"auto","ice_servers":[{"urls":["stun:pre"]}]}}"#;
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(room_joined.to_string())),
@@ -1942,7 +2041,7 @@ mod tests {
         let peer = uuid(31);
         let driver = SharedDriver::default();
         let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, true))),
@@ -1990,7 +2089,7 @@ mod tests {
         let a = uuid(41);
         let b = uuid(42);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[(a, false), (b, false)], &[]))),
@@ -2053,7 +2152,7 @@ mod tests {
         let b = uuid(2);
         let c = uuid(3);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(
@@ -2114,7 +2213,7 @@ mod tests {
         let first = uuid(12);
         let second = uuid(13);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_with_generation(peer, false, first))),
@@ -2146,7 +2245,7 @@ mod tests {
         let first = uuid(12);
         let second = uuid(13);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_with_generation(peer, false, first))),
@@ -2192,7 +2291,7 @@ mod tests {
         let first = uuid(12);
         let second = uuid(13);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_with_generation(peer, true, first))),
@@ -2245,7 +2344,7 @@ mod tests {
         let planned = uuid(72);
         let outsider = uuid(73);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(planned, false))),
@@ -2271,7 +2370,7 @@ mod tests {
             let planned_peer = uuid(75);
             let late_peer = uuid(76);
             let driver = SharedDriver::default();
-            let (transport, _sent) = MockTransport::new(vec![
+            let (transport, _sent) = MockTransport::new_in_room(vec![
                 Some(Ok(authed())),
                 Some(Ok(protocol_info_v3())),
                 Some(Ok(session_plan_with_generation(old_peer, false, uuid(12)))),
@@ -2313,7 +2412,7 @@ mod tests {
         // it must not be connected twice (idempotent on known peers).
         let p = uuid(10);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[(p, true)], &["stun:a"]))),
@@ -2341,7 +2440,7 @@ mod tests {
         // `new_peer_role_change_restarts_handshake`.)
         let p = uuid(4);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[], &[]))),
@@ -2382,7 +2481,7 @@ mod tests {
         // the SAME peer.
         let p = uuid(60);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(p, false))),
@@ -2430,7 +2529,7 @@ mod tests {
         // the controller must drive the driver to match.)
         let p = uuid(61);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[], &[]))),
@@ -2468,7 +2567,7 @@ mod tests {
         // exactly one TransportStatus(true) followed by exactly one (false).
         let p = uuid(62);
         let driver = SharedDriver::default();
-        let (transport, sent) = MockTransport::new(vec![
+        let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(p, true))),
@@ -2527,7 +2626,7 @@ mod tests {
         let b = uuid(71);
         let c = uuid(72);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(
@@ -2598,7 +2697,7 @@ mod tests {
         // never reach the driver or panic; a subsequent valid signal still does.
         let p = uuid(5);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(p, false))),
@@ -2628,7 +2727,7 @@ mod tests {
         let p = uuid(9);
         let q = uuid(99);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[(p, false)], &["stun:real"]))),
@@ -2661,7 +2760,7 @@ mod tests {
         let p = uuid(15);
         let q = uuid(16);
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(new_peer_msg(p, true))),
@@ -2688,10 +2787,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnect_replays_missed_events_and_drives_driver() {
-        // A reconnect whose `missed_events` batch a SessionPlan + NewPeer (instead
-        // of the server re-sending a live plan) must still drive the driver to
-        // connect those peers — keeping the client correct across server impls.
+    async fn reconnect_followed_by_authoritative_plan_drives_driver() {
         use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
         let a = uuid(51);
         let b = uuid(52);
@@ -2715,10 +2811,12 @@ mod tests {
             peer_id: b,
             you_initiate: false,
         };
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
-            Some(Ok(reconnected_with_missed(vec![plan, new_peer]))),
+            Some(Ok(reconnected_with_players(&[uuid(0), a, b]))),
+            Some(Ok(serde_json::to_string(&plan).unwrap())),
+            Some(Ok(serde_json::to_string(&new_peer).unwrap())),
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
@@ -2728,7 +2826,8 @@ mod tests {
         .await;
         assert!(
             ok,
-            "missed SessionPlan/NewPeer must drive connect with verbatim initiate flags"
+            "the post-reconnect SessionPlan/NewPeer must drive verbatim initiate flags: {:?}",
+            driver.calls()
         );
         // The replayed plan is also reflected in the session view.
         assert_eq!(mesh.session().topology(), Some(Topology::Mesh));
@@ -2741,7 +2840,7 @@ mod tests {
         // recv() is parked must still surface promptly because the driver wakes
         // the controller via its MeshWaker (no up-to-one-pump-interval latency).
         let driver = SharedDriver::default();
-        let (transport, _sent) = MockTransport::new(vec![
+        let (transport, _sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(uuid(1), false))),

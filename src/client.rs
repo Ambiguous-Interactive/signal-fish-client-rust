@@ -390,7 +390,8 @@ pub enum GameDataDelivery {
     Volatile,
 }
 
-/// Runtime response to a validated protocol-accountability violation.
+/// Runtime response to a decoded server message that violates negotiated
+/// lifecycle, session-plan, signaling, or delivery-accountability rules.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProtocolViolationPolicy {
     /// Emit a violation and suppress subsequent room game data until a fresh snapshot.
@@ -398,7 +399,9 @@ pub enum ProtocolViolationPolicy {
     Quarantine,
     /// Emit a violation and close the signaling connection.
     Disconnect,
-    /// Emit a violation but continue delivering validated application data.
+    /// Emit a violation and continue. Lifecycle, plan, and signaling offenders
+    /// remain suppressed; delivery-accountability violations retain the
+    /// diagnostic delivery behavior documented by the delivery contract.
     Observe,
 }
 
@@ -949,8 +952,9 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
     /// negotiated protocol v3 (fail-fast — the server would otherwise reject it),
-    /// [`SignalFishError::SessionPlanUnavailable`] before the current room's
-    /// first authoritative plan,
+    /// [`SignalFishError::SessionPlanUnavailable`] when no authoritative WebRTC
+    /// plan authorizes `to` (including no plan, a non-WebRTC plan, self, or a
+    /// target absent from the latest plan/current room roster),
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is
     /// full (see [`send_signal_reliable`](Self::send_signal_reliable) for a
@@ -1004,7 +1008,7 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has
     /// not negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
-    /// before the current room's first authoritative plan, or
+    /// when no authoritative WebRTC plan authorizes `to`, or
     /// [`SignalFishError::NotConnected`] if the transport has closed.
     pub async fn send_signal_reliable(
         &self,
@@ -1652,7 +1656,7 @@ async fn transport_loop(
                                 &event_tx,
                                 &mut shutdown_rx,
                                 &state,
-                                Some("protocol accountability violation".into()),
+                        Some("protocol violation".into()),
                                 shutdown_timeout,
                             ).await;
                             break;
@@ -1867,7 +1871,37 @@ mod tests {
         .unwrap()
     }
 
+    fn protocol_info_v2_json() -> String {
+        serde_json::to_string(&ServerMessage::ProtocolInfo(
+            crate::protocol::ProtocolInfoPayload {
+                platform: None,
+                sdk_version: None,
+                minimum_version: None,
+                recommended_version: None,
+                capabilities: vec![],
+                notes: None,
+                game_data_formats: vec![],
+                player_name_rules: None,
+                protocol_version: None,
+                min_protocol_version: None,
+                max_protocol_version: None,
+                transports: None,
+            },
+        ))
+        .unwrap()
+    }
+
     fn room_joined_json() -> String {
+        let player = |id, name: &str| crate::protocol::PlayerInfo {
+            id,
+            name: name.into(),
+            is_authority: id == uuid::Uuid::from_u128(42),
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        };
         let payload = RoomJoinedPayload {
             room_id: uuid::Uuid::nil(),
             room_code: "ABC123".into(),
@@ -1875,7 +1909,11 @@ mod tests {
             game_name: "test-game".into(),
             max_players: 4,
             supports_authority: true,
-            current_players: vec![],
+            current_players: vec![
+                player(uuid::Uuid::from_u128(42), "local"),
+                player(uuid::Uuid::from_u128(7), "peer-7"),
+                player(uuid::Uuid::from_u128(9), "peer-9"),
+            ],
             is_authority: false,
             lobby_state: LobbyState::Waiting,
             ready_players: vec![],
@@ -1973,6 +2011,7 @@ mod tests {
     async fn state_updates_on_room_joined() {
         let (transport, _sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
             Some(Ok(room_joined_json())),
         ]);
 
@@ -1981,6 +2020,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let _ = events.recv().await; // RoomJoined
 
         assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
@@ -2184,6 +2224,8 @@ mod tests {
         // for the consumer on every event instead of dropping any.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
+        incoming.push(Some(Ok(protocol_info_v2_json())));
+        incoming.push(Some(Ok(room_joined_json())));
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
         for _ in 0..20 {
             incoming.push(Some(Ok(pong_json.clone())));
@@ -2202,10 +2244,10 @@ mod tests {
         while let Some(event) = events.recv().await {
             received.push(event);
         }
-        // Connected + Authenticated + 20 Pongs + Disconnected — nothing dropped.
+        // Connection/room baseline + 20 Pongs + Disconnected — nothing dropped.
         assert_eq!(
             received.len(),
-            23,
+            25,
             "every event must be delivered, got {}",
             received.len()
         );
@@ -2226,6 +2268,8 @@ mod tests {
         const MESSAGES: u64 = 500;
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
+        incoming.push(Some(Ok(protocol_info_v2_json())));
+        incoming.push(Some(Ok(room_joined_json())));
         for seq in 0..MESSAGES {
             let msg = ServerMessage::GameData {
                 from_player: uuid::Uuid::from_u128(7),
@@ -2278,6 +2322,8 @@ mod tests {
         .unwrap();
         let (transport, sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
+            Some(Ok(room_joined_json())),
             Some(Ok(game_data_json)),
         ]);
 
@@ -2288,6 +2334,10 @@ mod tests {
         assert!(matches!(event, SignalFishEvent::Connected));
         let event = events.recv().await.unwrap();
         assert!(matches!(event, SignalFishEvent::Authenticated { .. }));
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::ProtocolInfo(_)));
+        let event = events.recv().await.unwrap();
+        assert!(matches!(event, SignalFishEvent::RoomJoined { .. }));
 
         for seq in 0..3 {
             client
@@ -2321,6 +2371,8 @@ mod tests {
         };
         let (transport, sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
+            Some(Ok(room_joined_json())),
             Some(Ok(game_data_json(0))),
             Some(Ok(game_data_json(1))),
         ]);
@@ -2332,6 +2384,8 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
+        let _ = events.recv().await; // RoomJoined
         let _ = events.recv().await; // GameData 0
         let _ = events.recv().await; // GameData 1
 
@@ -2865,7 +2919,16 @@ mod tests {
                 game_name: "game".into(),
                 max_players: 2,
                 supports_authority: false,
-                current_players: vec![],
+                current_players: vec![crate::protocol::PlayerInfo {
+                    id: player_id,
+                    name: "local".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                }],
                 is_authority: false,
                 lobby_state: LobbyState::Waiting,
                 ready_players: vec![],
@@ -2877,6 +2940,7 @@ mod tests {
         };
         {
             let mut core = lock_core(&client.state);
+            let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
             let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
             if initially_in_room {
                 let room_a = serde_json::to_string(&joined(
@@ -2989,13 +3053,47 @@ mod tests {
         .unwrap()
     }
 
+    fn finalized_room_v3_json(peer: PlayerId) -> String {
+        let local = uuid::Uuid::from_u128(42);
+        let player = |id, name: &str| crate::protocol::PlayerInfo {
+            id,
+            name: name.into(),
+            is_authority: id == local,
+            is_ready: true,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        };
+        serde_json::to_string(&ServerMessage::RoomJoined(Box::new(RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(41),
+            room_code: "V3ROOM".into(),
+            player_id: local,
+            game_name: "test-game".into(),
+            max_players: 4,
+            supports_authority: true,
+            current_players: vec![player(local, "local"), player(peer, "peer")],
+            is_authority: true,
+            lobby_state: LobbyState::Finalized,
+            ready_players: vec![local, peer],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        })))
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn async_binary_send_requires_a_negotiated_binary_format() {
-        let (transport, _sent, _closed) =
-            MockTransport::new(vec![Some(Ok(protocol_info_v3_json()))]);
+        let (transport, _sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
         let (mut client, mut events) =
             SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
         let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
         let _ = events.recv().await; // ProtocolInfo
 
         assert!(matches!(
@@ -3015,16 +3113,28 @@ mod tests {
             game_name: "test".into(),
             max_players: 2,
             supports_authority: false,
-            current_players: vec![crate::protocol::PlayerInfo {
-                id: peer,
-                name: "peer".into(),
-                is_authority: false,
-                is_ready: false,
-                connected_at: "2026-01-01T00:00:00Z".into(),
-                connection_info: None,
-                epoch: Some(1),
-                seq: Some(0),
-            }],
+            current_players: vec![
+                crate::protocol::PlayerInfo {
+                    id: peer,
+                    name: "peer".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+                crate::protocol::PlayerInfo {
+                    id: uuid::Uuid::from_u128(402),
+                    name: "local".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            ],
             is_authority: false,
             lobby_state: LobbyState::Lobby,
             ready_players: vec![],
@@ -3039,6 +3149,7 @@ mod tests {
             final_seq: None,
         };
         let (transport, _sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
             Some(Ok(serde_json::to_string(&room).unwrap())),
             Some(Ok(serde_json::to_string(&invalid).unwrap())),
@@ -3048,6 +3159,10 @@ mod tests {
         assert!(matches!(
             events.recv().await,
             Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
         ));
         assert!(matches!(
             events.recv().await,
@@ -3113,25 +3228,33 @@ mod tests {
             Some(uuid::Uuid::from_u128(12)),
             Some(uuid::Uuid::from_u128(13)),
             true,
+            false,
         )
         .await;
     }
 
     #[tokio::test]
     async fn reliable_signal_revalidates_generationless_plan_revision() {
-        assert_waiting_signal_rejected_after_replan(None, None, true).await;
+        assert_waiting_signal_rejected_after_replan(None, None, true, false).await;
     }
 
     #[tokio::test]
     async fn reliable_signal_accepts_reasserted_generation() {
         let generation = Some(uuid::Uuid::from_u128(12));
-        assert_waiting_signal_rejected_after_replan(generation, generation, false).await;
+        assert_waiting_signal_rejected_after_replan(generation, generation, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn reliable_signal_revalidates_peer_departure_while_waiting_for_capacity() {
+        let generation = Some(uuid::Uuid::from_u128(12));
+        assert_waiting_signal_rejected_after_replan(generation, generation, true, true).await;
     }
 
     async fn assert_waiting_signal_rejected_after_replan(
         original_generation: Option<SessionGeneration>,
         replacement_generation: Option<SessionGeneration>,
         should_reject: bool,
+        remove_peer: bool,
     ) {
         use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
 
@@ -3167,7 +3290,9 @@ mod tests {
         };
         {
             let mut core = lock_core(&client.state);
+            let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
             let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
+            let _ = core.process_frame(TransportFrame::Text(finalized_room_v3_json(peer)));
             let original = serde_json::to_string(&plan(original_generation))
                 .expect("original SessionPlan should serialize");
             let _ = core.process_frame(TransportFrame::Text(original));
@@ -3192,16 +3317,31 @@ mod tests {
 
         {
             let mut core = lock_core(&client.state);
-            let replacement = serde_json::to_string(&plan(replacement_generation))
-                .expect("replacement SessionPlan should serialize");
-            let _ = core.process_frame(TransportFrame::Text(replacement));
+            if remove_peer {
+                let left = serde_json::to_string(&ServerMessage::PlayerLeft {
+                    player_id: peer,
+                    epoch: Some(1),
+                    final_seq: Some(0),
+                })
+                .expect("PlayerLeft should serialize");
+                let _ = core.process_frame(TransportFrame::Text(left));
+            } else {
+                let replacement = serde_json::to_string(&plan(replacement_generation))
+                    .expect("replacement SessionPlan should serialize");
+                let _ = core.process_frame(TransportFrame::Text(replacement));
+            }
         }
         permits.add_permits(16);
         let result = tokio::time::timeout(Duration::from_secs(1), reliable)
             .await
             .expect("reliable signal should finish after capacity is available")
             .expect("reliable signal task should not panic");
-        if should_reject {
+        if remove_peer {
+            assert!(
+                matches!(result, Err(SignalFishError::SessionPlanUnavailable)),
+                "revalidation should reject a departed peer: {result:?}"
+            );
+        } else if should_reject {
             assert!(
                 matches!(
                     result,
@@ -3248,6 +3388,7 @@ mod tests {
         let (transport, sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
+            Some(Ok(finalized_room_v3_json(uuid::Uuid::from_u128(5)))),
             Some(Ok(session_plan_v3_json(uuid::Uuid::from_u128(5)))),
         ]);
 
@@ -3257,6 +3398,7 @@ mod tests {
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
         let _ = events.recv().await; // ProtocolInfo (negotiates v3)
+        let _ = events.recv().await; // RoomJoined (finalized roster)
         let _ = events.recv().await; // SessionPlan (establishes generation)
 
         client
@@ -3460,6 +3602,7 @@ mod tests {
 
         let (transport, _sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
             Some(Ok(room_joined_json())),
             Some(Ok(room_left_json)),
         ]);
@@ -3469,6 +3612,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let _ = events.recv().await; // RoomJoined
         let _ = events.recv().await; // RoomLeft
 
@@ -3598,6 +3742,7 @@ mod tests {
         // Create a transport with more messages than the event channel capacity.
         let mut incoming: Vec<Option<std::result::Result<String, SignalFishError>>> = Vec::new();
         incoming.push(Some(Ok(authenticated_json())));
+        incoming.push(Some(Ok(protocol_info_v2_json())));
         // Fill more than DEFAULT_EVENT_CHANNEL_CAPACITY pong messages.
         let pongs = DEFAULT_EVENT_CHANNEL_CAPACITY + 50;
         let pong_json = serde_json::to_string(&ServerMessage::Pong).unwrap();
@@ -3621,10 +3766,10 @@ mod tests {
         while let Some(_event) = events.recv().await {
             count += 1;
         }
-        // Connected + Authenticated + pongs + Disconnected.
+        // Connected + Authenticated + ProtocolInfo + pongs + Disconnected.
         assert_eq!(
             count,
-            pongs + 3,
+            pongs + 4,
             "backpressure must preserve every event, got {count}"
         );
 
@@ -3773,7 +3918,16 @@ mod tests {
             game_name: "recon-game".into(),
             max_players: 6,
             supports_authority: false,
-            current_players: vec![],
+            current_players: vec![crate::protocol::PlayerInfo {
+                id: uuid::Uuid::from_u128(200),
+                name: "local".into(),
+                is_authority: true,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: None,
+                seq: None,
+            }],
             is_authority: true,
             lobby_state: LobbyState::Waiting,
             ready_players: vec![],
@@ -3817,6 +3971,7 @@ mod tests {
     async fn state_updates_on_reconnected() {
         let (transport, _sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
             Some(Ok(reconnected_json())),
         ]);
 
@@ -3825,6 +3980,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let ev = events.recv().await.unwrap(); // Reconnected
         assert!(matches!(ev, SignalFishEvent::Reconnected { .. }));
 
@@ -3845,6 +4001,7 @@ mod tests {
     async fn state_updates_on_spectator_joined() {
         let (transport, _sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
             Some(Ok(spectator_joined_json())),
         ]);
 
@@ -3853,6 +4010,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let ev = events.recv().await.unwrap(); // SpectatorJoined
         assert!(matches!(ev, SignalFishEvent::SpectatorJoined { .. }));
 
@@ -3873,6 +4031,7 @@ mod tests {
     async fn state_updates_on_spectator_left() {
         let (transport, _sent, _closed) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
             Some(Ok(spectator_joined_json())),
             Some(Ok(spectator_left_json())),
         ]);
@@ -3882,6 +4041,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let _ = events.recv().await; // SpectatorJoined
         let ev = events.recv().await.unwrap(); // SpectatorLeft
         assert!(matches!(ev, SignalFishEvent::SpectatorLeft { .. }));
@@ -3938,6 +4098,7 @@ mod tests {
         let (transport, _close_called, _abort_called, _dropped) =
             HangingCloseTransport::with_incoming(vec![
                 Some(Ok(authenticated_json())),
+                Some(Ok(protocol_info_v2_json())),
                 Some(Ok(room_joined_json())),
             ]);
         let config = SignalFishConfig::new("mb_test")
@@ -3946,6 +4107,7 @@ mod tests {
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
+        let _ = events.recv().await; // ProtocolInfo
         let _ = events.recv().await; // RoomJoined
 
         assert!(client.is_authenticated());

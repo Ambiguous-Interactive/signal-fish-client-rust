@@ -149,9 +149,12 @@ return [`SignalFishError::ProtocolUnsupported`](errors.md) immediately rather
 than letting the server reject the message asynchronously (an unattributed
 `Error` event would be much harder to debug).
 
-Signaling has a second guard: after v3 negotiation but before an authoritative
-`SessionPlan`, signal sends return `SignalFishError::SessionPlanUnavailable`.
-Once a plan exists, every outgoing signal uses its generation.
+Signaling has a second guard: every send requires an authoritative WebRTC
+`SessionPlan` that authorizes its target. Otherwise it returns
+`SignalFishError::SessionPlanUnavailable` without queuing a frame. This covers
+no plan, a non-WebRTC plan, self, and peers absent from either the authoritative
+session peer set (the replacement plan plus valid compatibility `NewPeer`
+updates) or current room roster. Accepted signals use the plan's generation.
 
 The `mode` field tells you why:
 

@@ -46,7 +46,7 @@ Use these to track the raw connection lifecycle.
 | `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>`, `last_server_error: Option<ServerErrorInfo>` | The transport connection was closed or errored. |
 | `DecodeFailed` | `message_type: Option<String>`, `error: String`, `raw_prefix: String` | An inbound frame could not be decoded into a `ServerMessage`; the connection stays open. |
-| `ProtocolViolation` | `kind: ProtocolViolationKind`, `diagnostic: String` | A decoded v3 message violated delivery-accountability invariants; configured policy decides quarantine, disconnect, or observation. |
+| `ProtocolViolation` | `kind: ProtocolViolationKind`, `diagnostic: String` | A decoded message violated lifecycle, version, session-plan, signaling, or delivery-accountability invariants; configured policy decides quarantine, disconnect, or continued observation. Lifecycle/plan/signaling offenders are suppressed. |
 
 ### `Disconnected`
 
@@ -88,8 +88,11 @@ SDK) or a corrupting middlebox — log `DecodeFailed` in production builds.
 
 `ProtocolViolation` is distinct from `DecodeFailed`: its frame decoded, but
 its sequence, epoch, lifecycle, gap, counter, or causal state contradicted the
-negotiated protocol. The default quarantine policy suppresses subsequent room
-game data until an authoritative snapshot resets the baseline. See the
+negotiated protocol. Lifecycle-, plan-, and signaling-invalid messages never
+mutate client state or reach the application, including under `Observe`.
+Delivery-accountability violations retain `Observe`'s diagnostic delivery
+semantics. The default quarantine policy suppresses subsequent room game data
+until an authoritative snapshot resets the baseline. See the
 [Delivery Contract](delivery.md#protocol-v3-delivery-classes-and-accountability).
 
 ```rust,ignore
@@ -475,7 +478,7 @@ The server replies with a `Pong` event confirming receipt.
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
-| `Pong` | — | Pong response to a ping. |
+| `Pong` | — | Connection-scoped response to a ping; valid while authentication or protocol negotiation is still in flight. |
 
 ```rust,ignore
 match event {

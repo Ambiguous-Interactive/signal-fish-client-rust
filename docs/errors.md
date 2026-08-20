@@ -33,7 +33,7 @@ variants**:
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
-| `SessionPlanUnavailable` | — | WebRTC signaling was attempted before the server supplied a session plan for the current room. |
+| `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, or the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster. The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
 | `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
 | `Timeout` | — | An operation timed out. |

@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use signal_fish_client::protocol::SpectatorJoinedPayload;
 use signal_fish_client::protocol::{
     LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
-    RoomJoinedPayload, ServerMessage, SessionPeer, SessionPlanPayload, Topology, TransportKind,
+    ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage, SessionPeer,
+    SessionPlanPayload, Topology, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{SignalFishError, Transport};
@@ -142,7 +143,16 @@ pub fn room_joined_json_with(room_code: &str, game_name: &str, player_id: uuid::
         game_name: game_name.into(),
         max_players: 4,
         supports_authority: true,
-        current_players: vec![],
+        current_players: vec![PlayerInfo {
+            id: player_id,
+            name: "Alice".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        }],
         is_authority: false,
         lobby_state: LobbyState::Waiting,
         ready_players: vec![],
@@ -162,14 +172,24 @@ pub fn room_left_json() -> String {
 
 /// Returns the JSON string for a `Reconnected` server message.
 pub fn reconnected_json() -> String {
+    let player_id = uuid::Uuid::from_u128(200);
     let payload = ReconnectedPayload {
         room_id: uuid::Uuid::from_u128(100),
         room_code: "RECON1".into(),
-        player_id: uuid::Uuid::from_u128(200),
+        player_id,
         game_name: "recon-game".into(),
         max_players: 6,
         supports_authority: false,
-        current_players: vec![],
+        current_players: vec![PlayerInfo {
+            id: player_id,
+            name: "Alice".into(),
+            is_authority: true,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        }],
         is_authority: true,
         lobby_state: LobbyState::Waiting,
         ready_players: vec![],
@@ -307,38 +327,65 @@ pub fn protocol_info_json(protocol_version: Option<u16>) -> String {
     .expect("protocol_info_json serialization")
 }
 
-/// Returns a `Reconnected` whose `missed_events` replays a `ProtocolInfo` with
-/// the given negotiated version — exercises the reconnect guard-restore path.
-pub fn reconnected_with_protocol_info_json(protocol_version: Option<u16>) -> String {
+/// Returns a finalized `Reconnected` baseline with the local player and its
+/// future plan peer in the roster. The authoritative `SessionPlan` is sent as
+/// a separate room-ordered frame after this baseline.
+pub fn finalized_reconnected_json() -> String {
+    let player_id = uuid::Uuid::from_u128(200);
+    let peer_id = uuid::Uuid::from_u128(2);
     let payload = ReconnectedPayload {
         room_id: uuid::Uuid::from_u128(100),
         room_code: "RECON1".into(),
-        player_id: uuid::Uuid::from_u128(200),
+        player_id,
         game_name: "recon-game".into(),
         max_players: 6,
         supports_authority: false,
-        current_players: vec![],
+        current_players: vec![
+            PlayerInfo {
+                id: player_id,
+                name: "Alice".into(),
+                is_authority: true,
+                is_ready: true,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            },
+            PlayerInfo {
+                id: peer_id,
+                name: "Peer".into(),
+                is_authority: false,
+                is_ready: true,
+                connected_at: "2026-01-01T00:00:01Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            },
+        ],
         is_authority: true,
-        lobby_state: LobbyState::Waiting,
+        lobby_state: LobbyState::Finalized,
         ready_players: vec![],
         relay_type: "tcp".into(),
         current_spectators: vec![],
         ice_servers: vec![],
-        missed_events: {
-            let mut events = vec![ServerMessage::ProtocolInfo(protocol_info_payload(
-                protocol_version,
-            ))];
-            if protocol_version.is_some_and(|version| version >= 3) {
-                events.push(session_plan_message(uuid::Uuid::from_u128(2), true));
-            }
-            events
-        },
-        replay: None,
-        sender_watermarks: vec![],
+        missed_events: vec![],
+        replay: Some(ReplayStatus::Complete),
+        sender_watermarks: vec![
+            SenderWatermark {
+                player_id,
+                epoch: 1,
+                seq: 0,
+            },
+            SenderWatermark {
+                player_id: peer_id,
+                epoch: 1,
+                seq: 0,
+            },
+        ],
         reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
-        .expect("reconnected_with_protocol_info_json serialization")
+        .expect("finalized_reconnected_json serialization")
 }
 
 /// Wait until the mock transport records at least `expected_len` outgoing

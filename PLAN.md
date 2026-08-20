@@ -109,17 +109,23 @@ Track [issue #97](https://github.com/Ambiguous-Interactive/signal-fish-client-ru
   invariants and executable acceptance evidence. Session 026 records the
   finding matrix and proof.
 
-## Next Correctness Milestone — Protocol State Validation
+## Completed Correctness Milestone — Protocol State Validation
 
-Start with [issue #99](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/99),
-then #100 and #101.
+[Issue #99](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/99)
+adds shared-core lifecycle/version gates, canonical Server 0.7 SessionPlan
+shape and roster validation, and bidirectional signal-peer authorization.
+Lifecycle/plan/signaling-invalid frames are observable but transactional under
+every policy; async and polling drivers retain identical behavior. Session 027
+records the rule-to-test/source matrix and verification evidence.
 
-- Reject lifecycle-invalid v3/room messages before they mutate shared state.
-- Validate authoritative SessionPlan cross-field shapes and peer membership
-  against the pinned Server 0.7 contract.
+## Next Correctness Milestone — Negotiation and Reconnect State
+
+Continue with #100 and #101.
+
 - Track negotiated effective game-data encoding separately from the requested
-  preference, then make reconnect restoration atomic across negotiation,
-  accountability, membership, and plan state.
+  preference.
+- Make reconnect restoration atomic across negotiation, accountability,
+  membership, and plan state.
 - Continue correctness work through #102–#107 before usability, performance,
   token binding, or presentation milestones.
 

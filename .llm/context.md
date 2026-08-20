@@ -296,10 +296,13 @@ client.shutdown().await      // async, graceful
 
 WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.7
 plans/signals carry a UUID generation; the shared core stamps outgoing signals,
-suppresses stale/unknown inbound generations, and exposes the current value in
-the snapshot. `MeshController` generation-binds driver work and rebuilds every
-retained physical pair when the generation changes. Optional generation fields
-exist only to keep server 0.4 traffic wire-compatible.
+suppresses stale/unknown inbound generations, rejects self/off-plan/departed
+peers in both directions, and exposes the current value in the snapshot.
+Accepted plans are finalized-room, current-roster shapes limited to the four
+Server 0.7 topology/transport pairs and replace prior peer authority atomically.
+`MeshController` generation-binds driver work and rebuilds every retained pair
+when the generation changes. Optional generation fields exist only for 0.4.
+Retired peer identity fences late generation-less signals across 0.4 re-plans.
 
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is
@@ -399,8 +402,12 @@ Negotiated v3 delivery carries per-sender epoch/sequence stamps. The SDK ports
 the server 0.4.0 native reference state machine and validates snapshots,
 lifecycle transitions, prior exact gap coverage, cumulative counters, terminal
 and reconnect watermarks, and unsupported-format causality. Stale payloads are
-suppressed. Violations emit `ProtocolViolation`; policy defaults to quarantine
-until a new authoritative room/reconnect snapshot.
+suppressed. The shared core also rejects messages outside authentication,
+negotiation, room, role, and version phases before state mutation. Those
+lifecycle/plan/signal offenders are always suppressed; delivery-accountability
+`Observe` retains diagnostic delivery. Policy defaults to quarantine until a
+new authoritative room/reconnect snapshot. `Pong` remains connection-scoped
+while authentication and protocol negotiation are still in flight.
 
 ### No Heavy Dependencies
 

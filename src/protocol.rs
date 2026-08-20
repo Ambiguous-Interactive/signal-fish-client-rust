@@ -1005,23 +1005,3 @@ where
 {
     T::deserialize(deserializer).map(Some)
 }
-
-/// The negotiated protocol version to restore from a reconnect's `missed_events`,
-/// if any — the last versioned (v3+) [`ProtocolInfo`](ServerMessage::ProtocolInfo)
-/// replayed in the batch.
-///
-/// A replayed v2 `ProtocolInfo` (version `None`) is ignored so it can never
-/// silently downgrade an already-negotiated v3 session; later versioned entries
-/// win over earlier ones. Shared by the async and polling clients so the two
-/// reconnect paths cannot drift apart.
-///
-/// Gated to its consumers (the async client needs `tokio-runtime`; the polling
-/// client needs `polling-client`) so it is not dead code in a build with neither.
-#[must_use]
-#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
-pub(crate) fn replayed_negotiated_version(missed_events: &[ServerMessage]) -> Option<u16> {
-    missed_events.iter().rev().find_map(|msg| match msg {
-        ServerMessage::ProtocolInfo(info) => info.protocol_version,
-        _ => None,
-    })
-}
