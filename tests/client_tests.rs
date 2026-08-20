@@ -75,6 +75,27 @@ async fn drain_until_authenticated(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
     );
 }
 
+async fn drain_player_room(rx: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>) {
+    drain_until_authenticated(rx).await;
+    drain_until_protocol_info(rx).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
+}
+
+fn player_room_script(
+    tail: impl IntoIterator<Item = Option<Result<String, SignalFishError>>>,
+) -> Vec<Option<Result<String, SignalFishError>>> {
+    let mut incoming = vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(room_joined_json())),
+    ];
+    incoming.extend(tail);
+    incoming
+}
+
 fn v3_room_baseline_json(peer: uuid::Uuid) -> String {
     let local_player = uuid::Uuid::from_u128(1);
     let message =
@@ -107,7 +128,7 @@ fn v3_room_baseline_json(peer: uuid::Uuid) -> String {
                     seq: Some(0),
                 },
             ],
-            is_authority: false,
+            is_authority: true,
             lobby_state: signal_fish_client::protocol::LobbyState::Finalized,
             ready_players: vec![local_player, peer],
             relay_type: "websocket".into(),
@@ -257,10 +278,7 @@ async fn room_join_leave_rejoin_flow() {
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
 
-    // Join room.
-    client
-        .join_room(JoinRoomParams::new("test-game", "Alice"))
-        .expect("join_room");
+    // Observe the server-confirmed transitions in order.
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::RoomJoined {
         room_code,
@@ -274,15 +292,11 @@ async fn room_join_leave_rejoin_flow() {
         panic!("expected RoomJoined, got {ev:?}");
     }
 
-    // Leave room (the RoomLeft event is received).
-    client.leave_room().expect("leave_room");
+    // Leave room.
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::RoomLeft));
 
-    // Rejoin (the second RoomJoined event arrives immediately).
-    client
-        .join_room(JoinRoomParams::new("test-game", "Alice"))
-        .expect("rejoin");
+    // Rejoin.
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::RoomJoined { .. }));
 
@@ -371,11 +385,7 @@ async fn spectator_join_and_leave_flow() {
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
 
-    // Join as spectator.
-    client
-        .join_as_spectator("spec-game".into(), "SPEC1".into(), "Watcher".into())
-        .expect("join_as_spectator");
-
+    // Observe the server-confirmed spectator transitions.
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::SpectatorJoined {
         room_code,
@@ -392,7 +402,6 @@ async fn spectator_join_and_leave_flow() {
     }
 
     // Leave spectator.
-    client.leave_spectator().expect("leave_spectator");
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::SpectatorLeft { .. }));
 
@@ -409,14 +418,11 @@ async fn spectator_join_and_leave_flow() {
 
 #[tokio::test]
 async fn authority_request_granted() {
-    let (mut client, mut events, sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(protocol_info_json(None))),
-        Some(Ok(authority_response_json(true, None))),
-    ]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([Some(Ok(
+        authority_response_json(true, None),
+    ))]));
 
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+    drain_player_room(&mut events).await;
 
     client.request_authority(true).expect("request_authority");
 
@@ -458,14 +464,11 @@ async fn authority_request_granted() {
 
 #[tokio::test]
 async fn authority_request_denied() {
-    let (mut client, mut events, _sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(protocol_info_json(None))),
-        Some(Ok(authority_response_json(false, Some("not allowed")))),
-    ]);
+    let (mut client, mut events, _sent, _closed) = start_client(player_room_script([Some(Ok(
+        authority_response_json(false, Some("not allowed")),
+    ))]));
 
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+    drain_player_room(&mut events).await;
 
     client.request_authority(true).expect("request_authority");
 
@@ -489,10 +492,9 @@ async fn authority_request_denied() {
 
 #[tokio::test]
 async fn provide_connection_info_sends_correct_message() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
 
-    drain_until_authenticated(&mut events).await;
+    drain_player_room(&mut events).await;
 
     let conn_info = ConnectionInfo::Direct {
         host: "192.168.0.1".into(),
@@ -536,10 +538,9 @@ async fn provide_connection_info_sends_correct_message() {
 
 #[tokio::test]
 async fn provide_relay_connection_info() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
 
-    drain_until_authenticated(&mut events).await;
+    drain_player_room(&mut events).await;
 
     let conn_info = ConnectionInfo::Relay {
         host: "relay.example.com".into(),
@@ -631,10 +632,18 @@ async fn join_as_spectator_sends_correct_message() {
 
 #[tokio::test]
 async fn leave_spectator_sends_correct_message() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(spectator_joined_json())),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::SpectatorJoined { .. })
+    ));
 
     client.leave_spectator().expect("leave_spectator");
 
@@ -1014,10 +1023,9 @@ async fn async_observe_advances_valid_wrong_representation_sequence() {
 
 #[tokio::test]
 async fn send_game_data_produces_correct_json() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
 
-    drain_until_authenticated(&mut events).await;
+    drain_player_room(&mut events).await;
 
     let data = serde_json::json!({"type": "chat", "msg": "hello"});
     client.send_game_data(data.clone()).expect("send_game_data");
@@ -1055,10 +1063,9 @@ async fn send_game_data_produces_correct_json() {
 
 #[tokio::test]
 async fn set_ready_sends_player_ready_message() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
 
-    drain_until_authenticated(&mut events).await;
+    drain_player_room(&mut events).await;
 
     client.set_ready().expect("set_ready");
 
@@ -1171,54 +1178,28 @@ async fn join_room_with_all_options_sends_correct_message() {
 
 #[tokio::test]
 async fn multiple_sequential_operations() {
-    let player = uuid::Uuid::from_u128(42);
-    let data_msg = game_data_json(player, serde_json::json!({"tick": 1}));
-    let (mut client, mut events, sent, _closed) = start_client(vec![
-        Some(Ok(authenticated_json())),
-        Some(Ok(protocol_info_json(None))),
-        Some(Ok(room_joined_json())),
-        Some(Ok(data_msg)),
-        Some(Ok(pong_json())),
-        Some(Ok(room_left_json())),
-    ]);
-
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
-
-    // Join room.
-    client
-        .join_room(JoinRoomParams::new("game", "Player1"))
-        .expect("join");
-    let ev = events.recv().await.expect("event");
-    assert!(matches!(ev, SignalFishEvent::RoomJoined { .. }));
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
+    drain_player_room(&mut events).await;
 
     // Send game data.
     client
         .send_game_data(serde_json::json!({"action": "jump"}))
         .expect("send_game_data");
 
-    // Receive server game data.
-    let ev = events.recv().await.expect("event");
-    assert!(matches!(ev, SignalFishEvent::GameData { .. }));
-
     // Ping.
     client.ping().expect("ping");
-    let ev = events.recv().await.expect("event");
-    assert!(matches!(ev, SignalFishEvent::Pong));
 
     // Leave room.
     client.leave_room().expect("leave");
-    let ev = events.recv().await.expect("event");
-    assert!(matches!(ev, SignalFishEvent::RoomLeft));
 
     // Verify all expected messages were sent.
-    wait_for_sent_len(&sent, 5).await;
+    wait_for_sent_len(&sent, 4).await;
     {
         let messages = sent.lock().unwrap();
-        // Should have: Authenticate, JoinRoom, GameData, Ping, LeaveRoom
+        // Should have: Authenticate, GameData, Ping, LeaveRoom.
         assert!(
-            messages.len() >= 5,
-            "expected at least 5 messages, got {}",
+            messages.len() >= 4,
+            "expected at least 4 messages, got {}",
             messages.len()
         );
     }
@@ -1384,7 +1365,7 @@ async fn authority_changed_event() {
     let auth_player = uuid::Uuid::from_u128(77);
     let ac_json = serde_json::to_string(&ServerMessage::AuthorityChanged {
         authority_player: Some(auth_player),
-        you_are_authority: true,
+        you_are_authority: false,
     })
     .expect("serialize");
 
@@ -1409,7 +1390,7 @@ async fn authority_changed_event() {
     } = ev
     {
         assert_eq!(authority_player, Some(auth_player));
-        assert!(you_are_authority);
+        assert!(!you_are_authority);
     } else {
         panic!("expected AuthorityChanged event, got {ev:?}");
     }
@@ -1760,10 +1741,9 @@ async fn shutdown_timeout_clears_state_even_when_disconnected_event_is_skipped()
 
 #[tokio::test]
 async fn leave_room_sends_leave_room_message() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
 
-    drain_until_authenticated(&mut events).await;
+    drain_player_room(&mut events).await;
 
     client.leave_room().expect("leave_room");
 
@@ -2173,9 +2153,8 @@ fn sent_messages(sent: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Vec<Cl
 
 #[tokio::test]
 async fn start_game_sends_start_game_message() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
-    drain_until_authenticated(&mut events).await;
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
+    drain_player_room(&mut events).await;
 
     client.start_game().expect("start_game");
     wait_for_sent_len(&sent, 2).await;
@@ -2189,9 +2168,8 @@ async fn start_game_sends_start_game_message() {
 #[tokio::test]
 async fn start_game_available_on_relay_floor() {
     // start_game is the universal v2 change — NOT gated behind v3 negotiation.
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json()))]);
-    drain_until_authenticated(&mut events).await;
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([]));
+    drain_player_room(&mut events).await;
     assert!(client.negotiated_protocol_version().is_none());
 
     client
@@ -2205,28 +2183,20 @@ async fn start_game_available_on_relay_floor() {
 }
 
 #[tokio::test]
-async fn send_signal_before_v3_returns_protocol_unsupported() {
+async fn send_signal_outside_room_returns_not_in_room_before_protocol_guard() {
     let (mut client, mut events, sent, _closed) =
         start_client(vec![Some(Ok(authenticated_json()))]);
     drain_until_authenticated(&mut events).await;
 
-    // Authenticated but no `ProtocolInfo` yet → negotiation is still in flight,
-    // so the guard reports "pre-negotiation" (NOT "relay-only", which is
-    // reserved for a `ProtocolInfo` that resolved at the v2 floor — see
-    // `v2_protocol_info_keeps_relay_floor_guard`).
+    // Player membership is checked before protocol negotiation.
     let err = client
         .send_signal(uuid::Uuid::from_u128(2), PeerSignal::Offer("sdp".into()))
         .expect_err("send_signal must fail before negotiation completes");
-    assert!(matches!(
-        err,
-        SignalFishError::ProtocolUnsupported {
-            mode: "pre-negotiation"
-        }
-    ));
+    assert!(matches!(err, SignalFishError::NotInRoom));
     // report_transport_status fails fast too.
     assert!(matches!(
         client.report_transport_status(TransportKind::WebRtc, true),
-        Err(SignalFishError::ProtocolUnsupported { .. })
+        Err(SignalFishError::NotInRoom)
     ));
 
     // No v3 message ever reached the wire.
@@ -2280,9 +2250,14 @@ async fn send_signal_after_v3_but_before_plan_fails_locally() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(uuid::Uuid::from_u128(2)))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     assert!(matches!(
         client.send_offer(uuid::Uuid::from_u128(2), "too-early"),
@@ -2417,9 +2392,14 @@ async fn report_transport_status_after_v3_is_sent() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(uuid::Uuid::from_u128(2)))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     client
         .report_transport_status(TransportKind::WebRtc, true)
@@ -2445,9 +2425,14 @@ async fn v2_protocol_info_keeps_relay_floor_guard() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(uuid::Uuid::from_u128(2)))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
     assert!(client.negotiated_protocol_version().is_none());
     assert!(matches!(
         client.send_offer(uuid::Uuid::from_u128(2), "x"),
@@ -2572,20 +2557,15 @@ async fn unknown_server_message_type_surfaces_decode_failed_then_next_arrives() 
 }
 
 #[tokio::test]
-async fn send_signal_before_authentication_is_pre_negotiation() {
-    // The `mode: "pre-negotiation"` branch of the guard: no auth scripted, so the
-    // client is connected but has not authenticated/negotiated.
+async fn send_signal_before_authentication_is_not_in_room() {
+    // Command queuing remains available before authentication, but a
+    // player-only operation still requires confirmed membership.
     let (mut client, _events, sent, _closed) = start_client(vec![]);
 
     let err = client
         .send_offer(uuid::Uuid::from_u128(2), "sdp")
         .expect_err("send before negotiation must fail");
-    assert!(matches!(
-        err,
-        SignalFishError::ProtocolUnsupported {
-            mode: "pre-negotiation"
-        }
-    ));
+    assert!(matches!(err, SignalFishError::NotInRoom));
     assert!(!client.supports_mesh());
     assert!(sent_messages(&sent)
         .iter()

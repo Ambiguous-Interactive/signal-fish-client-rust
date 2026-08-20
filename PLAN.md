@@ -142,16 +142,28 @@ normalizes controller-owned WebRTC configuration, and makes peer liveness
 transport-specific. Session 029 records the configuration, state, transition,
 and async/polling/controller parity evidence.
 
-## Current Correctness Milestone — WebSocket Liveness
+## Completed Correctness Milestone — WebSocket Liveness
 
 [Issue #105](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/105)
 bounds native WebSocket control-frame work, preserves automatic Pong/Close
 flush ordering, and makes EOF and socket errors terminal for direct Transport
 callers. Session 030 records socket, ownership, wake, and terminal-state evidence.
 
-## Next Correctness Milestones — Client State and Transport Deadlines
+## Active PR — Client Membership and Operation State
 
-Continue with #103, #104, #106, and #107 before usability, performance, token
+[Issue #103](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/103)
+is implemented in [PR #114](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/114). It
+exposes authoritative player/spectator role state, clears room-scoped identity
+on exit, and enforces one shared operation matrix across async and polling
+drivers. Admission-time room transitions fence later FIFO commands, authority
+state is validated and tracked, and invalid calls fail before consuming bounded
+queue capacity. The code-bearing head passed all twelve hosted workflow suites;
+Session 031 records the operation/state matrix, pinned-server contract, review
+fixes, and exact verification evidence.
+
+## Next Correctness Milestones — Readiness, Counters, and Transport Deadlines
+
+Continue with #104, #106, and #107 before usability, performance, token
 binding, or presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding

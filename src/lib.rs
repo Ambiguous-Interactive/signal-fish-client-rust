@@ -134,7 +134,7 @@ pub const PROTOCOL_VERSION: u16 = 3;
 // Re-export primary types for ergonomic imports.
 pub use client::{
     ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
-    SignalFishClient, SignalFishConfig,
+    RoomRole, SignalFishClient, SignalFishConfig,
 };
 pub use client_api::SignalFishClientApi;
 pub use error::SignalFishError;

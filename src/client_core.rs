@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::accountability::{self, DeliveryAccountability, GameDataDisposition};
 use crate::client::{
     bounded_binary_preview, decode_binary_server_message, ClientSnapshot, ClientStats,
-    GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy, SignalFishConfig,
+    GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy, RoomRole, SignalFishConfig,
 };
 use crate::event::{ProtocolViolationKind, ServerErrorInfo, SignalFishEvent};
 use crate::protocol::{
@@ -91,12 +91,13 @@ pub(crate) struct ClientCore {
     last_server_error: Option<ServerErrorInfo>,
     violation_policy: ProtocolViolationPolicy,
     accountability: DeliveryAccountability,
-    membership: Membership,
+    authority_player: Option<PlayerId>,
     room_finalized: bool,
     room_players: HashSet<PlayerId>,
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
     retired_generationless_signal_peers: HashSet<PlayerId>,
+    pending_room_operation: Option<PendingRoomOperation>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
@@ -104,28 +105,35 @@ pub(crate) struct ClientCore {
     room_revision: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Membership {
-    #[default]
-    None,
-    Player,
-    Spectator,
-}
-
 struct RoomBaseline {
     player_id: PlayerId,
     room_id: RoomId,
     room_code: String,
     reconnection_token: Option<String>,
-    membership: Membership,
+    room_role: RoomRole,
+    authority_player: Option<PlayerId>,
     finalized: bool,
     players: HashSet<PlayerId>,
 }
 
-struct PendingReconnect {
+pub(crate) struct PendingReconnect {
     player_id: PlayerId,
     room_id: RoomId,
     token: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingRoomOperation {
+    JoinPlayer,
+    LeavePlayer,
+    ReconnectPlayer,
+    JoinSpectator,
+    LeaveSpectator,
+}
+
+pub(crate) enum ClientOperationAdmission {
+    Room(PendingRoomOperation),
+    Reconnect(PendingReconnect),
 }
 
 impl ClientCore {
@@ -158,12 +166,13 @@ impl ClientCore {
             last_server_error: None,
             violation_policy,
             accountability: DeliveryAccountability::new(false),
-            membership: Membership::None,
+            authority_player: None,
             room_finalized: false,
             room_players: HashSet::new(),
             session_plan_seen: false,
             session_peers: HashSet::new(),
             retired_generationless_signal_peers: HashSet::new(),
+            pending_room_operation: None,
             pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
             session_plan_revision: 0,
@@ -227,6 +236,10 @@ impl ClientCore {
         )
     }
 
+    pub(crate) fn room_role(&self) -> Option<RoomRole> {
+        self.snapshot.room_role
+    }
+
     #[cfg(feature = "polling-client")]
     pub(crate) fn current_player_id(&self) -> Option<PlayerId> {
         self.snapshot.player_id
@@ -245,6 +258,50 @@ impl ClientCore {
     pub(crate) fn validate(&self, operation: &ClientOperation) -> crate::error::Result<()> {
         if !self.is_connected() {
             return Err(crate::SignalFishError::NotConnected);
+        }
+        if self.pending_room_operation.is_some() && !matches!(operation, ClientOperation::Ping) {
+            return Err(crate::SignalFishError::RoomOperationPending);
+        }
+        if matches!(
+            operation,
+            ClientOperation::JoinRoom(_)
+                | ClientOperation::Reconnect(..)
+                | ClientOperation::JoinAsSpectator(..)
+        ) && self.room_role().is_some()
+        {
+            return Err(crate::SignalFishError::AlreadyInRoom);
+        }
+        let required_role = match operation {
+            ClientOperation::LeaveRoom
+            | ClientOperation::GameData(..)
+            | ClientOperation::Binary(_)
+            | ClientOperation::SetReady
+            | ClientOperation::StartGame
+            | ClientOperation::RequestAuthority(_)
+            | ClientOperation::ProvideConnectionInfo(_)
+            | ClientOperation::Signal(..)
+            | ClientOperation::RawSignal(..)
+            | ClientOperation::TransportStatus(..) => Some(RoomRole::Player),
+            ClientOperation::LeaveSpectator => Some(RoomRole::Spectator),
+            ClientOperation::JoinRoom(_)
+            | ClientOperation::Reconnect(..)
+            | ClientOperation::JoinAsSpectator(..)
+            | ClientOperation::Ping => None,
+        };
+        if let Some(required) = required_role {
+            match self.room_role() {
+                None => return Err(crate::SignalFishError::NotInRoom),
+                Some(actual) if actual != required => {
+                    return Err(crate::SignalFishError::WrongRoomRole { required, actual });
+                }
+                Some(_) => {}
+            }
+        }
+        let local_player = self.snapshot.player_id;
+        let authority_required = matches!(operation, ClientOperation::RequestAuthority(false))
+            || (matches!(operation, ClientOperation::StartGame) && self.authority_player.is_some());
+        if authority_required && self.authority_player != local_player {
+            return Err(crate::SignalFishError::AuthorityRequired);
         }
         match operation {
             ClientOperation::GameData(_, GameDataDelivery::Latest { .. })
@@ -460,11 +517,55 @@ impl ClientCore {
         room_id: RoomId,
         token: String,
     ) {
+        self.pending_room_operation = Some(PendingRoomOperation::ReconnectPlayer);
         self.pending_reconnects.push_back(PendingReconnect {
             player_id,
             room_id,
             token,
         });
+    }
+
+    pub(crate) fn admission_for(operation: &ClientOperation) -> Option<ClientOperationAdmission> {
+        match operation {
+            ClientOperation::JoinRoom(_) => Some(ClientOperationAdmission::Room(
+                PendingRoomOperation::JoinPlayer,
+            )),
+            ClientOperation::LeaveRoom => Some(ClientOperationAdmission::Room(
+                PendingRoomOperation::LeavePlayer,
+            )),
+            ClientOperation::Reconnect(player_id, room_id, token) => {
+                Some(ClientOperationAdmission::Reconnect(PendingReconnect {
+                    player_id: *player_id,
+                    room_id: *room_id,
+                    token: token.clone(),
+                }))
+            }
+            ClientOperation::JoinAsSpectator(..) => Some(ClientOperationAdmission::Room(
+                PendingRoomOperation::JoinSpectator,
+            )),
+            ClientOperation::LeaveSpectator => Some(ClientOperationAdmission::Room(
+                PendingRoomOperation::LeaveSpectator,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn record_admission(&mut self, admission: Option<ClientOperationAdmission>) {
+        let Some(admission) = admission else {
+            return;
+        };
+        match admission {
+            ClientOperationAdmission::Room(operation) => {
+                self.pending_room_operation = Some(operation);
+            }
+            ClientOperationAdmission::Reconnect(reconnect) => {
+                self.record_reconnect_admitted(
+                    reconnect.player_id,
+                    reconnect.room_id,
+                    reconnect.token,
+                );
+            }
+        }
     }
 
     pub(crate) fn clear_session(&mut self) {
@@ -480,12 +581,14 @@ impl ClientCore {
         self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
         self.protocol_info_seen = false;
-        self.membership = Membership::None;
+        self.snapshot.room_role = None;
+        self.authority_player = None;
         self.room_finalized = false;
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_generationless_signal_peers.clear();
+        self.pending_room_operation = None;
         self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_session_plan_revision();
@@ -638,12 +741,13 @@ impl ClientCore {
 
     fn process_binary(&mut self, bytes: Vec<u8>) -> FrameOutcome {
         let mut outcome = FrameOutcome::new();
-        if !self.snapshot.authenticated || self.membership == Membership::None {
+        if !self.snapshot.authenticated || self.room_role().is_none() {
             self.reject_inbound(
                 &mut outcome,
                 format!(
                     "lifecycle violation: binary game data is invalid while authenticated={} and membership={:?}",
-                    self.snapshot.authenticated, self.membership
+                    self.snapshot.authenticated,
+                    self.room_role()
                 ),
             );
             return outcome;
@@ -758,7 +862,7 @@ impl ClientCore {
 
     fn validate_inbound_message(&self, message: &ServerMessage) -> Result<(), String> {
         let authenticated = self.snapshot.authenticated;
-        let membership = self.membership;
+        let membership = self.room_role();
         let message_name = server_message_name(message);
 
         let requires_negotiation = !matches!(
@@ -777,20 +881,20 @@ impl ClientCore {
 
         let phase_valid = match message {
             ServerMessage::Authenticated { .. } | ServerMessage::AuthenticationError { .. } => {
-                !authenticated && membership == Membership::None
+                !authenticated && membership.is_none()
             }
             ServerMessage::ProtocolInfo(_) => {
-                authenticated && membership == Membership::None && !self.protocol_info_seen
+                authenticated && membership.is_none() && !self.protocol_info_seen
             }
             ServerMessage::RoomJoined(_)
             | ServerMessage::Reconnected(_)
-            | ServerMessage::SpectatorJoined(_) => authenticated && membership == Membership::None,
+            | ServerMessage::SpectatorJoined(_) => authenticated && membership.is_none(),
             ServerMessage::RoomJoinFailed { .. }
             | ServerMessage::ReconnectionFailed { .. }
             | ServerMessage::SpectatorJoinFailed { .. } => authenticated,
-            ServerMessage::RoomLeft => authenticated && membership == Membership::Player,
+            ServerMessage::RoomLeft => authenticated && membership == Some(RoomRole::Player),
             ServerMessage::SpectatorLeft { .. } => {
-                authenticated && membership == Membership::Spectator
+                authenticated && membership == Some(RoomRole::Spectator)
             }
             ServerMessage::PlayerJoined { .. }
             | ServerMessage::PlayerLeft { .. }
@@ -802,12 +906,12 @@ impl ClientCore {
             | ServerMessage::PlayerReconnected { .. }
             | ServerMessage::NewSpectatorJoined { .. }
             | ServerMessage::SpectatorDisconnected { .. }
-            | ServerMessage::DeliveryReport(_) => authenticated && membership != Membership::None,
+            | ServerMessage::DeliveryReport(_) => authenticated && membership.is_some(),
             ServerMessage::Signal { .. }
             | ServerMessage::NewPeer { .. }
             | ServerMessage::SessionPlan(_)
             | ServerMessage::PeerTransportStatus { .. } => {
-                authenticated && membership == Membership::Player
+                authenticated && membership == Some(RoomRole::Player)
             }
             ServerMessage::AuthorityResponse { .. }
             | ServerMessage::GoingAway { .. }
@@ -845,7 +949,51 @@ impl ClientCore {
         match message {
             ServerMessage::ProtocolInfo(payload) => validate_protocol_info_formats(payload),
             ServerMessage::RoomJoined(payload) => {
-                validate_local_player_snapshot(payload.player_id, &payload.current_players)
+                self.validate_pending_room_response(
+                    PendingRoomOperation::JoinPlayer,
+                    "RoomJoined",
+                )?;
+                validate_local_player_snapshot(
+                    payload.player_id,
+                    payload.is_authority,
+                    &payload.current_players,
+                )
+            }
+            ServerMessage::RoomJoinFailed { .. } => self.validate_pending_room_response(
+                PendingRoomOperation::JoinPlayer,
+                "RoomJoinFailed",
+            ),
+            ServerMessage::RoomLeft => self
+                .validate_pending_room_response(PendingRoomOperation::LeavePlayer, "RoomLeft"),
+            ServerMessage::SpectatorJoined(payload) => {
+                self.validate_pending_room_response(
+                    PendingRoomOperation::JoinSpectator,
+                    "SpectatorJoined",
+                )?;
+                validate_authority_snapshot(&payload.current_players)
+            }
+            ServerMessage::SpectatorJoinFailed { .. } => self.validate_pending_room_response(
+                PendingRoomOperation::JoinSpectator,
+                "SpectatorJoinFailed",
+            ),
+            ServerMessage::SpectatorLeft {
+                room_id, room_code, ..
+            } => {
+                self.validate_pending_room_response(
+                    PendingRoomOperation::LeaveSpectator,
+                    "SpectatorLeft",
+                )?;
+                if room_id.is_some_and(|room_id| Some(room_id) != self.snapshot.room_id)
+                    || room_code
+                        .as_ref()
+                        .is_some_and(|room_code| Some(room_code) != self.snapshot.room_code.as_ref())
+                {
+                    return Err(
+                        "lifecycle violation: SpectatorLeft identifies a different room"
+                            .into(),
+                    );
+                }
+                Ok(())
             }
             ServerMessage::SessionPlan(plan) => {
                 if !self.room_finalized {
@@ -908,8 +1056,47 @@ impl ClientCore {
                     "lifecycle violation: PeerTransportStatus {peer_id} is not another current room player"
                 ))
             }
+            ServerMessage::PlayerJoined { player }
+                if player.is_authority
+                    && self
+                        .authority_player
+                        .is_some_and(|authority| authority != player.id) =>
+            {
+                Err(
+                    "lifecycle violation: PlayerJoined introduces a second authority player"
+                        .into(),
+                )
+            }
+            ServerMessage::AuthorityChanged {
+                authority_player,
+                you_are_authority,
+            } => {
+                if authority_player
+                    .is_some_and(|player_id| !self.room_players.contains(&player_id))
+                {
+                    return Err(format!(
+                        "lifecycle violation: AuthorityChanged names a player outside the current room roster: {authority_player:?}"
+                    ));
+                }
+                let local_is_authority = *authority_player == self.snapshot.player_id;
+                if *you_are_authority != local_is_authority {
+                    return Err(
+                        "lifecycle violation: AuthorityChanged local authority flag disagrees with the authority player"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
             ServerMessage::Reconnected(payload) => {
-                validate_local_player_snapshot(payload.player_id, &payload.current_players)?;
+                self.validate_pending_room_response(
+                    PendingRoomOperation::ReconnectPlayer,
+                    "Reconnected",
+                )?;
+                validate_local_player_snapshot(
+                    payload.player_id,
+                    payload.is_authority,
+                    &payload.current_players,
+                )?;
                 self.validate_reconnected_payload(payload)
             }
             ServerMessage::ReconnectionFailed { .. } if self.pending_reconnects.is_empty() => Err(
@@ -918,6 +1105,23 @@ impl ClientCore {
             ),
             _ => Ok(()),
         }
+    }
+
+    fn validate_pending_room_response(
+        &self,
+        expected: PendingRoomOperation,
+        response: &str,
+    ) -> Result<(), String> {
+        if self
+            .pending_room_operation
+            .is_some_and(|pending| pending != expected)
+        {
+            return Err(format!(
+                "lifecycle violation: {response} conflicts with pending room operation {:?}",
+                self.pending_room_operation
+            ));
+        }
+        Ok(())
     }
 
     fn validate_session_plan(
@@ -1168,7 +1372,12 @@ impl ClientCore {
                     room_id: payload.room_id,
                     room_code: payload.room_code.clone(),
                     reconnection_token: payload.reconnection_token.clone(),
-                    membership: Membership::Player,
+                    room_role: RoomRole::Player,
+                    authority_player: payload
+                        .current_players
+                        .iter()
+                        .find(|player| player.is_authority)
+                        .map(|player| player.id),
                     finalized: payload.lobby_state == crate::protocol::LobbyState::Finalized,
                     players: payload
                         .current_players
@@ -1176,6 +1385,11 @@ impl ClientCore {
                         .map(|player| player.id)
                         .collect(),
                 });
+            }
+            ServerMessage::RoomJoinFailed { .. } => {
+                if self.pending_room_operation == Some(PendingRoomOperation::JoinPlayer) {
+                    self.pending_room_operation = None;
+                }
             }
             ServerMessage::RoomLeft => self.clear_room(),
             ServerMessage::Reconnected(payload) => {
@@ -1185,7 +1399,12 @@ impl ClientCore {
                     room_id: payload.room_id,
                     room_code: payload.room_code.clone(),
                     reconnection_token: payload.reconnection_token.clone(),
-                    membership: Membership::Player,
+                    room_role: RoomRole::Player,
+                    authority_player: payload
+                        .current_players
+                        .iter()
+                        .find(|player| player.is_authority)
+                        .map(|player| player.id),
                     finalized: payload.lobby_state == crate::protocol::LobbyState::Finalized,
                     players: payload
                         .current_players
@@ -1200,7 +1419,12 @@ impl ClientCore {
                     room_id: payload.room_id,
                     room_code: payload.room_code.clone(),
                     reconnection_token: None,
-                    membership: Membership::Spectator,
+                    room_role: RoomRole::Spectator,
+                    authority_player: payload
+                        .current_players
+                        .iter()
+                        .find(|player| player.is_authority)
+                        .map(|player| player.id),
                     finalized: payload.lobby_state == crate::protocol::LobbyState::Finalized,
                     players: payload
                         .current_players
@@ -1209,9 +1433,17 @@ impl ClientCore {
                         .collect(),
                 });
             }
+            ServerMessage::SpectatorJoinFailed { .. } => {
+                if self.pending_room_operation == Some(PendingRoomOperation::JoinSpectator) {
+                    self.pending_room_operation = None;
+                }
+            }
             ServerMessage::SpectatorLeft { .. } => self.clear_room(),
             ServerMessage::ReconnectionFailed { .. } => {
                 self.pending_reconnects.pop_front();
+                if self.pending_room_operation == Some(PendingRoomOperation::ReconnectPlayer) {
+                    self.pending_room_operation = None;
+                }
             }
             ServerMessage::SessionPlan(payload) => {
                 self.replace_session_plan(
@@ -1230,6 +1462,9 @@ impl ClientCore {
                 }
             }
             ServerMessage::PlayerLeft { player_id, .. } => {
+                if self.authority_player == Some(*player_id) {
+                    self.authority_player = None;
+                }
                 if self.snapshot.session_generation.is_none()
                     && self.snapshot.session_transport == Some(TransportKind::WebRtc)
                     && self.session_peers.contains(player_id)
@@ -1241,6 +1476,14 @@ impl ClientCore {
             }
             ServerMessage::PlayerJoined { player } => {
                 self.room_players.insert(player.id);
+                if player.is_authority {
+                    self.authority_player = Some(player.id);
+                }
+            }
+            ServerMessage::AuthorityChanged {
+                authority_player, ..
+            } => {
+                self.authority_player = *authority_player;
             }
             ServerMessage::LobbyStateChanged { lobby_state, .. } => {
                 self.room_finalized = *lobby_state == crate::protocol::LobbyState::Finalized;
@@ -1259,36 +1502,41 @@ impl ClientCore {
         self.snapshot.player_id = Some(baseline.player_id);
         self.snapshot.room_id = Some(baseline.room_id);
         self.snapshot.room_code = Some(baseline.room_code);
+        self.snapshot.room_role = Some(baseline.room_role);
         self.snapshot.reconnection_token = baseline.reconnection_token;
         self.snapshot.session_generation = None;
         self.snapshot.session_topology = None;
         self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
-        self.membership = baseline.membership;
+        self.authority_player = baseline.authority_player;
         self.room_finalized = baseline.finalized;
         self.room_players = baseline.players;
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_generationless_signal_peers.clear();
+        self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
 
     fn clear_room(&mut self) {
         self.accountability.reset_room();
+        self.snapshot.player_id = None;
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
+        self.snapshot.room_role = None;
         self.snapshot.reconnection_token = None;
         self.snapshot.session_generation = None;
         self.snapshot.session_topology = None;
         self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
-        self.membership = Membership::None;
+        self.authority_player = None;
         self.room_finalized = false;
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_generationless_signal_peers.clear();
+        self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -1375,17 +1623,35 @@ fn resolve_effective_game_data_format(
 
 fn validate_local_player_snapshot(
     local_player_id: PlayerId,
+    local_is_authority: bool,
     players: &[crate::protocol::PlayerInfo],
 ) -> Result<(), String> {
-    if players
-        .iter()
-        .filter(|player| player.id == local_player_id)
-        .count()
-        != 1
-    {
+    let mut local_players = players.iter().filter(|player| player.id == local_player_id);
+    let Some(local_player) = local_players.next() else {
         return Err(format!(
             "lifecycle violation: authoritative player snapshot must contain local player {local_player_id} exactly once"
         ));
+    };
+    if local_players.next().is_some() {
+        return Err(format!(
+            "lifecycle violation: authoritative player snapshot must contain local player {local_player_id} exactly once"
+        ));
+    }
+    if local_player.is_authority != local_is_authority {
+        return Err(format!(
+            "lifecycle violation: local authority flag for {local_player_id} disagrees with the authoritative player roster"
+        ));
+    }
+    validate_authority_snapshot(players)
+}
+
+fn validate_authority_snapshot(players: &[crate::protocol::PlayerInfo]) -> Result<(), String> {
+    let authority_count = players.iter().filter(|player| player.is_authority).count();
+    if authority_count > 1 {
+        return Err(
+            "lifecycle violation: authoritative player snapshot contains multiple authority players"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -1468,7 +1734,7 @@ mod tests {
     use crate::protocol::{
         DirectEndpoint, IceServer, LobbyState, MessageTransport, PlayerInfo, ProtocolInfoPayload,
         RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
-        SessionPeer,
+        SessionPeer, SpectatorJoinedPayload,
     };
 
     const LOCAL: u128 = 1;
@@ -1602,6 +1868,322 @@ mod tests {
         assert_eq!(process(&mut core, protocol_info(Some(3))).events.len(), 1);
         assert_eq!(process(&mut core, room_joined()).events.len(), 1);
         core
+    }
+
+    fn v3_spectator(policy: ProtocolViolationPolicy) -> ClientCore {
+        let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
+        let _ = process(&mut core, authenticated());
+        let _ = process(&mut core, protocol_info(Some(3)));
+        let _ = process(&mut core, spectator_joined());
+        core
+    }
+
+    fn spectator_joined() -> ServerMessage {
+        ServerMessage::SpectatorJoined(Box::new(SpectatorJoinedPayload {
+            room_id: RoomId::from_u128(10),
+            room_code: "ROOM".into(),
+            spectator_id: PlayerId::from_u128(99),
+            game_name: "game".into(),
+            current_players: vec![player(LOCAL), player(PEER)],
+            current_spectators: vec![],
+            lobby_state: LobbyState::Lobby,
+            reason: None,
+        }))
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum MembershipError {
+        None,
+        NotInRoom,
+        AlreadyInRoom,
+        NeedsPlayer,
+        NeedsSpectator,
+    }
+
+    fn membership_error(result: crate::error::Result<()>) -> MembershipError {
+        match result {
+            Err(crate::SignalFishError::NotInRoom) => MembershipError::NotInRoom,
+            Err(crate::SignalFishError::AlreadyInRoom) => MembershipError::AlreadyInRoom,
+            Err(crate::SignalFishError::WrongRoomRole {
+                required: RoomRole::Player,
+                actual: RoomRole::Spectator,
+            }) => MembershipError::NeedsPlayer,
+            Err(crate::SignalFishError::WrongRoomRole {
+                required: RoomRole::Spectator,
+                actual: RoomRole::Player,
+            }) => MembershipError::NeedsSpectator,
+            _ => MembershipError::None,
+        }
+    }
+
+    fn operation_matrix() -> Vec<(
+        &'static str,
+        ClientOperation,
+        MembershipError,
+        MembershipError,
+        MembershipError,
+    )> {
+        let player_only = |name, operation| {
+            (
+                name,
+                operation,
+                MembershipError::NotInRoom,
+                MembershipError::None,
+                MembershipError::NeedsPlayer,
+            )
+        };
+        vec![
+            (
+                "join room",
+                ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+                MembershipError::None,
+                MembershipError::AlreadyInRoom,
+                MembershipError::AlreadyInRoom,
+            ),
+            player_only("leave room", ClientOperation::LeaveRoom),
+            player_only(
+                "reliable data",
+                ClientOperation::GameData(
+                    serde_json::json!({"value": 1}),
+                    GameDataDelivery::Reliable,
+                ),
+            ),
+            player_only(
+                "latest data",
+                ClientOperation::GameData(
+                    serde_json::json!({"value": 1}),
+                    GameDataDelivery::Latest { key: 7 },
+                ),
+            ),
+            player_only("binary data", ClientOperation::Binary(vec![1])),
+            player_only("ready", ClientOperation::SetReady),
+            player_only("start", ClientOperation::StartGame),
+            player_only("request authority", ClientOperation::RequestAuthority(true)),
+            player_only(
+                "connection info",
+                ClientOperation::ProvideConnectionInfo(ConnectionInfo::Direct {
+                    host: "127.0.0.1".into(),
+                    port: 7_777,
+                }),
+            ),
+            (
+                "reconnect",
+                ClientOperation::Reconnect(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "token".into(),
+                ),
+                MembershipError::None,
+                MembershipError::AlreadyInRoom,
+                MembershipError::AlreadyInRoom,
+            ),
+            (
+                "join spectator",
+                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                MembershipError::None,
+                MembershipError::AlreadyInRoom,
+                MembershipError::AlreadyInRoom,
+            ),
+            (
+                "leave spectator",
+                ClientOperation::LeaveSpectator,
+                MembershipError::NotInRoom,
+                MembershipError::NeedsSpectator,
+                MembershipError::None,
+            ),
+            (
+                "ping",
+                ClientOperation::Ping,
+                MembershipError::None,
+                MembershipError::None,
+                MembershipError::None,
+            ),
+            player_only(
+                "signal",
+                ClientOperation::Signal(
+                    PlayerId::from_u128(PEER),
+                    SignalGeneration::Current,
+                    PeerSignal::Offer("sdp".into()),
+                ),
+            ),
+            player_only(
+                "raw signal",
+                ClientOperation::RawSignal(
+                    PlayerId::from_u128(PEER),
+                    SignalGeneration::Current,
+                    serde_json::json!({"Custom": true}),
+                ),
+            ),
+            player_only(
+                "transport status",
+                ClientOperation::TransportStatus(TransportKind::WebRtc, true),
+            ),
+        ]
+    }
+
+    #[test]
+    fn operation_membership_matrix_is_exhaustive_and_role_specific() {
+        for (name, operation, outside, player, spectator) in operation_matrix() {
+            let outside_core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            assert_eq!(
+                membership_error(outside_core.validate(&operation)),
+                outside,
+                "{name}"
+            );
+
+            let player_core = v3_room(ProtocolViolationPolicy::Observe);
+            assert_eq!(
+                membership_error(player_core.validate(&operation)),
+                player,
+                "{name}"
+            );
+
+            let spectator_core = v3_spectator(ProtocolViolationPolicy::Observe);
+            assert_eq!(
+                membership_error(spectator_core.validate(&operation)),
+                spectator,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_room_transitions_fence_fifo_commands_and_failures_roll_back() {
+        let mut joining = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut joining, authenticated());
+        let _ = process(&mut joining, protocol_info(Some(3)));
+        let join = ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
+        joining.validate(&join).expect("first join is valid");
+        joining.record_admission(ClientCore::admission_for(&join));
+        assert!(matches!(
+            joining.validate(&ClientOperation::JoinRoom(JoinRoomParams::new(
+                "game", "local"
+            ))),
+            Err(crate::SignalFishError::RoomOperationPending)
+        ));
+        let _ = process(
+            &mut joining,
+            ServerMessage::RoomJoinFailed {
+                reason: "full".into(),
+                error_code: None,
+            },
+        );
+        joining
+            .validate(&ClientOperation::JoinRoom(JoinRoomParams::new(
+                "game", "local",
+            )))
+            .expect("failed join clears the admission fence");
+
+        let mut leaving = v3_room(ProtocolViolationPolicy::Observe);
+        let leave = ClientOperation::LeaveRoom;
+        leaving.validate(&leave).expect("player may leave");
+        leaving.record_admission(ClientCore::admission_for(&leave));
+        assert!(matches!(
+            leaving.validate(&ClientOperation::GameData(
+                serde_json::json!({"after": "leave"}),
+                GameDataDelivery::Reliable,
+            )),
+            Err(crate::SignalFishError::RoomOperationPending)
+        ));
+        let _ = process(&mut leaving, ServerMessage::RoomLeft);
+        assert_eq!(leaving.room_role(), None);
+        assert!(leaving.snapshot().player_id.is_none());
+        assert!(matches!(
+            leaving.validate(&ClientOperation::GameData(
+                serde_json::json!({"after": "left"}),
+                GameDataDelivery::Reliable,
+            )),
+            Err(crate::SignalFishError::NotInRoom)
+        ));
+    }
+
+    #[test]
+    fn pending_room_responses_are_correlated_and_unattributed_errors_stay_fenced() {
+        let mut player_join = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut player_join, authenticated());
+        let _ = process(&mut player_join, protocol_info(Some(3)));
+        let join = ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
+        player_join.record_admission(ClientCore::admission_for(&join));
+        let before = player_join.snapshot();
+        let outcome = process(&mut player_join, spectator_joined());
+        assert_lifecycle_violation(&outcome);
+        assert_eq!(player_join.snapshot(), before);
+        assert_eq!(
+            player_join.pending_room_operation,
+            Some(PendingRoomOperation::JoinPlayer)
+        );
+
+        let mut spectator_join = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut spectator_join, authenticated());
+        let _ = process(&mut spectator_join, protocol_info(Some(3)));
+        let join = ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into());
+        spectator_join.record_admission(ClientCore::admission_for(&join));
+        let before = spectator_join.snapshot();
+        let outcome = process(&mut spectator_join, room_joined());
+        assert_lifecycle_violation(&outcome);
+        assert_eq!(spectator_join.snapshot(), before);
+        assert_eq!(
+            spectator_join.pending_room_operation,
+            Some(PendingRoomOperation::JoinSpectator)
+        );
+
+        let mut player_leave = v3_room(ProtocolViolationPolicy::Observe);
+        player_leave.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+        let outcome = process(
+            &mut player_leave,
+            ServerMessage::Error {
+                message: "leave failed; retry".into(),
+                error_code: Some(crate::ErrorCode::NotInRoom),
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::Error { .. }]
+        ));
+        assert_eq!(player_leave.room_role(), Some(RoomRole::Player));
+        assert!(matches!(
+            player_leave.validate(&ClientOperation::GameData(
+                serde_json::json!({"after": "unattributed-error"}),
+                GameDataDelivery::Reliable,
+            )),
+            Err(crate::SignalFishError::RoomOperationPending)
+        ));
+
+        let mut spectator_leave = v3_spectator(ProtocolViolationPolicy::Observe);
+        spectator_leave
+            .record_admission(ClientCore::admission_for(&ClientOperation::LeaveSpectator));
+        let before = spectator_leave.snapshot();
+        let outcome = process(
+            &mut spectator_leave,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(999)),
+                room_code: Some("OTHER".into()),
+                reason: None,
+                current_spectators: vec![],
+            },
+        );
+        assert_lifecycle_violation(&outcome);
+        assert_eq!(spectator_leave.snapshot(), before);
+        assert_eq!(
+            spectator_leave.pending_room_operation,
+            Some(PendingRoomOperation::LeaveSpectator)
+        );
     }
 
     fn peer(id: u128) -> SessionPeer {
@@ -1899,6 +2481,101 @@ mod tests {
     }
 
     #[test]
+    fn authority_baselines_and_changes_are_cross_field_validated_transactionally() {
+        let invalid_baselines = [
+            {
+                let ServerMessage::RoomJoined(mut payload) = room_joined() else {
+                    unreachable!("room_joined helper always returns RoomJoined")
+                };
+                payload.is_authority = false;
+                ServerMessage::RoomJoined(payload)
+            },
+            {
+                let ServerMessage::RoomJoined(mut payload) = room_joined() else {
+                    unreachable!("room_joined helper always returns RoomJoined")
+                };
+                payload.current_players[1].is_authority = true;
+                ServerMessage::RoomJoined(payload)
+            },
+        ];
+        for message in invalid_baselines {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            let before = core.snapshot();
+            let outcome = process(&mut core, message);
+            assert_lifecycle_violation(&outcome);
+            assert_eq!(core.snapshot(), before);
+            assert_eq!(core.authority_player, None);
+        }
+
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let invalid_changes = [
+            ServerMessage::AuthorityChanged {
+                authority_player: Some(PlayerId::from_u128(PEER)),
+                you_are_authority: true,
+            },
+            ServerMessage::AuthorityChanged {
+                authority_player: Some(PlayerId::from_u128(999)),
+                you_are_authority: false,
+            },
+        ];
+        for message in invalid_changes {
+            let outcome = process(&mut core, message);
+            assert_lifecycle_violation(&outcome);
+            assert_eq!(core.authority_player, Some(PlayerId::from_u128(LOCAL)));
+            core.validate(&ClientOperation::RequestAuthority(false))
+                .expect("invalid change must not revoke local authority");
+        }
+
+        let mut second_authority = player(99);
+        second_authority.is_authority = true;
+        let outcome = process(
+            &mut core,
+            ServerMessage::PlayerJoined {
+                player: second_authority,
+            },
+        );
+        assert_lifecycle_violation(&outcome);
+        assert_eq!(core.authority_player, Some(PlayerId::from_u128(LOCAL)));
+
+        let outcome = process(
+            &mut core,
+            ServerMessage::AuthorityChanged {
+                authority_player: Some(PlayerId::from_u128(PEER)),
+                you_are_authority: false,
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::AuthorityChanged { .. }]
+        ));
+        assert!(matches!(
+            core.validate(&ClientOperation::RequestAuthority(false)),
+            Err(crate::SignalFishError::AuthorityRequired)
+        ));
+        assert!(matches!(
+            core.validate(&ClientOperation::StartGame),
+            Err(crate::SignalFishError::AuthorityRequired)
+        ));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: PlayerId::from_u128(PEER),
+                epoch: Some(1),
+                final_seq: Some(0),
+            },
+        );
+        core.validate(&ClientOperation::StartGame)
+            .expect("any player may start when the room has no authority");
+    }
+
+    #[test]
     fn generationless_server_04_plan_remains_valid_when_its_shape_is_canonical() {
         let mut core = v3_room(ProtocolViolationPolicy::Observe);
         let mut legacy = plan(Topology::Mesh, TransportKind::WebRtc);
@@ -2160,7 +2837,7 @@ mod tests {
                 let mut expected = before;
                 expected.quarantined = policy == ProtocolViolationPolicy::Quarantine;
                 assert_eq!(core.snapshot(), expected, "{name}");
-                assert_eq!(core.membership, Membership::None, "{name}");
+                assert_eq!(core.room_role(), None, "{name}");
                 assert!(!core.session_plan_seen, "{name}");
                 assert!(core.session_peers.is_empty(), "{name}");
             }
@@ -2227,7 +2904,7 @@ mod tests {
                 outcome.events.as_slice(),
                 [SignalFishEvent::Reconnected { .. }]
             ));
-            assert_eq!(core.membership, Membership::Player);
+            assert_eq!(core.room_role(), Some(RoomRole::Player));
         }
     }
 
@@ -2377,7 +3054,6 @@ mod tests {
             ));
             let before = core.snapshot();
             let peers_before = core.session_peers.clone();
-            core.membership = Membership::None;
             core.record_reconnect_admitted(
                 PlayerId::from_u128(LOCAL),
                 RoomId::from_u128(10),
@@ -2398,7 +3074,6 @@ mod tests {
             assert_eq!(core.snapshot(), expected);
             assert_eq!(core.session_peers, peers_before);
 
-            core.membership = Membership::Player;
             core.snapshot.quarantined = false;
             let next = process(
                 &mut core,

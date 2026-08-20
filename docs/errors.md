@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **14
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **18
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -31,6 +31,10 @@ variants**:
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
+| `AlreadyInRoom` | — | Attempted to join as a player/spectator or reconnect while already in a room. |
+| `RoomOperationPending` | — | A previously admitted join, leave, or reconnect still awaits a matching typed terminal response. `ping` remains available; generic errors and absent responses stay fenced until transport teardown, after which a new connection may retry. |
+| `WrongRoomRole` | `required: RoomRole`, `actual: RoomRole` | Attempted a player-only command as a spectator, or `leave_spectator` as a player. |
+| `AuthorityRequired` | — | Attempted `start_game` while another player is authority, or attempted to relinquish authority without currently holding it. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
 | `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, or the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster. The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
@@ -38,6 +42,11 @@ variants**:
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted after negotiation resolved to JSON. Request `MessagePack` and confirm `effective_game_data_format() == Some(MessagePack)`; unsupported requests resolve to JSON and are refused before transport admission. Before `ProtocolInfo`, v3-only sends return `ProtocolUnsupported` instead. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
+
+Local validation has stable precedence: connection state, an admitted pending
+room transition, membership/role, authority, protocol version, format/session
+plan, and then bounded-queue capacity. Invalid state therefore does not consume
+queue capacity and is not hidden by `SendBufferFull`.
 
 ### Handling errors from client methods
 

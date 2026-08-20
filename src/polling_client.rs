@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, error};
 
-use crate::client::{ClientSnapshot, GameDataDelivery, JoinRoomParams, SignalFishConfig};
+use crate::client::{ClientSnapshot, GameDataDelivery, JoinRoomParams, RoomRole, SignalFishConfig};
 use crate::client_core::{
     ClientCore, ClientOperation, CoreCommand as PollingCommand, SignalGeneration,
 };
@@ -420,7 +420,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
+    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_room(&mut self, params: JoinRoomParams) -> Result<()> {
@@ -431,7 +433,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// [`SignalFishError::WrongRoomRole`] as a spectator,
+    /// [`SignalFishError::RoomOperationPending`] during another room transition,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_room(&mut self) -> Result<()> {
@@ -442,7 +447,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// [`SignalFishError::WrongRoomRole`] as a spectator,
+    /// [`SignalFishError::RoomOperationPending`] during a room transition,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
@@ -450,6 +458,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     /// Send JSON game data with an explicit protocol-v3 delivery policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the membership/queue errors documented by
+    /// [`send_game_data`](Self::send_game_data), or
+    /// [`SignalFishError::ProtocolUnsupported`] for a non-reliable delivery
+    /// class before protocol v3 is negotiated.
     pub fn send_game_data_with_delivery(
         &mut self,
         data: serde_json::Value,
@@ -459,6 +474,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     /// Queue opaque binary game data for the negotiated protocol-v3 relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns the membership errors documented by
+    /// [`send_game_data`](Self::send_game_data),
+    /// [`SignalFishError::ProtocolUnsupported`] before v3 negotiation, or
+    /// [`SignalFishError::BinaryFormatNotNegotiated`] in JSON mode.
     pub fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()> {
         self.queue_operation(ClientOperation::Binary(payload))
     }
@@ -467,7 +489,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`],
+    /// [`SignalFishError::WrongRoomRole`], or
+    /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn set_ready(&mut self) -> Result<()> {
@@ -478,7 +503,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`],
+    /// [`SignalFishError::WrongRoomRole`], or
+    /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
+    /// [`SignalFishError::AuthorityRequired`]
+    /// when relinquishing authority without holding it,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn request_authority(&mut self, become_authority: bool) -> Result<()> {
@@ -489,7 +519,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`],
+    /// [`SignalFishError::WrongRoomRole`], or
+    /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
@@ -500,7 +533,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
+    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn reconnect(
@@ -516,7 +551,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
+    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn join_as_spectator(
@@ -536,7 +573,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// [`SignalFishError::WrongRoomRole`] as a player,
+    /// [`SignalFishError::RoomOperationPending`] during another room transition,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn leave_spectator(&mut self) -> Result<()> {
@@ -564,7 +604,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotConnected`] if the transport has closed,
+    /// Returns [`SignalFishError::NotInRoom`],
+    /// [`SignalFishError::WrongRoomRole`], or
+    /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
+    /// [`SignalFishError::AuthorityRequired`] when another authority is assigned,
+    /// [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
     pub fn start_game(&mut self) -> Result<()> {
@@ -586,6 +630,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// no authoritative WebRTC plan authorizes `to` (including no plan, a
     /// non-WebRTC plan, self, or a target absent from the latest plan/current
     /// room roster),
+    /// [`SignalFishError::NotInRoom`] outside a room,
+    /// [`SignalFishError::WrongRoomRole`] as a spectator,
+    /// [`SignalFishError::RoomOperationPending`] during a room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
@@ -683,7 +730,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, [`SignalFishError::NotConnected`] if the
+    /// negotiated protocol v3, the membership errors documented by
+    /// [`send_signal`](Self::send_signal), [`SignalFishError::NotConnected`] if the
     /// transport has closed, or [`SignalFishError::SendBufferFull`] if the
     /// outgoing command queue is full.
     pub fn report_transport_status(
@@ -757,9 +805,18 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.core.is_authenticated()
     }
 
-    /// The local player's ID, set after joining a room.
+    /// The local room participant ID, for either a player or spectator.
+    ///
+    /// This legacy accessor name is retained for compatibility. Use one
+    /// [`snapshot`](Self::snapshot) and match its `room_role` with `player_id`
+    /// when the interpretation must be atomic. Both values clear on exit.
     pub fn current_player_id(&self) -> Option<PlayerId> {
         self.core.current_player_id()
+    }
+
+    /// The server-confirmed local role in the current room.
+    pub fn room_role(&self) -> Option<RoomRole> {
+        self.core.room_role()
     }
 
     /// The current room ID, set after joining a room.
@@ -874,18 +931,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     // ── Private helpers ─────────────────────────────────────────────
 
     fn queue_operation(&mut self, operation: ClientOperation) -> Result<()> {
-        let reconnect_request = match &operation {
-            ClientOperation::Reconnect(player_id, room_id, token) => {
-                Some((*player_id, *room_id, token.clone()))
-            }
-            _ => None,
-        };
+        let admission = ClientCore::admission_for(&operation);
         let command = self.core.prepare(operation)?;
         self.queue_command_at(command, Instant::now())?;
-        if let Some((player_id, room_id, token)) = reconnect_request {
-            self.core
-                .record_reconnect_admitted(player_id, room_id, token);
-        }
+        self.core.record_admission(admission);
         Ok(())
     }
 
@@ -1572,7 +1621,7 @@ mod tests {
                     seq: Some(0),
                 },
             ],
-            is_authority: false,
+            is_authority: true,
             lobby_state: crate::protocol::LobbyState::Lobby,
             ready_players: vec![],
             relay_type: "matchbox".into(),
@@ -1695,6 +1744,23 @@ mod tests {
             .expect("room fixture")
             .expect("valid room fixture");
         let _ = client.core.process_frame(TransportFrame::Text(room));
+    }
+
+    fn prime_v3_room<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        for item in finalized_v3_room_incoming(uuid::Uuid::from_u128(7), []) {
+            let frame = item
+                .expect("v3 room fixture item")
+                .expect("valid v3 room fixture");
+            let _ = client.core.process_frame(TransportFrame::Text(frame));
+        }
+    }
+
+    fn prime_spectator<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        prime_connection(client);
+        let joined = r#"{"type":"SpectatorJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"SPEC1","spectator_id":"00000000-0000-0000-0000-000000000004","game_name":"test-game","current_players":[],"current_spectators":[],"lobby_state":"waiting"}}"#;
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(joined.to_string()));
     }
 
     fn v2_player(id: PlayerId) -> crate::protocol::PlayerInfo {
@@ -1822,14 +1888,7 @@ mod tests {
     fn binary_send_requires_a_negotiated_binary_format() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_v3());
-        let protocol_info = serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_v3()))
-            .expect("serialize protocol negotiation fixture");
-        let _ = client
-            .core
-            .process_frame(TransportFrame::Text(authenticated_json_str().to_string()));
-        let _ = client
-            .core
-            .process_frame(TransportFrame::Text(protocol_info));
+        prime_v3_room(&mut client);
         assert!(matches!(
             client.send_binary_game_data(vec![1, 2, 3]),
             Err(SignalFishError::BinaryFormatNotNegotiated)
@@ -1839,14 +1898,7 @@ mod tests {
         let mut config = default_config().enable_v3();
         config.game_data_format = Some(GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
-        let protocol_info = serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_v3()))
-            .expect("serialize protocol negotiation fixture");
-        let _ = client
-            .core
-            .process_frame(TransportFrame::Text(authenticated_json_str().to_string()));
-        let _ = client
-            .core
-            .process_frame(TransportFrame::Text(protocol_info));
+        prime_v3_room(&mut client);
         client
             .send_binary_game_data(vec![1, 2, 3])
             .expect("MessagePack negotiation permits binary sends");
@@ -2156,9 +2208,9 @@ mod tests {
 
     #[test]
     fn start_game_queues_start_game_message() {
-        let transport = MockTransport::new()
-            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
+        let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll();
         client.start_game().expect("start_game");
         client.poll();
@@ -2168,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn send_signal_before_v3_returns_protocol_unsupported() {
+    fn send_signal_outside_room_returns_not_in_room_before_negotiation() {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
@@ -2176,14 +2228,10 @@ mod tests {
         assert!(client.negotiated_protocol_version().is_none());
         assert!(!client.supports_mesh());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
-        // Authenticated but no `ProtocolInfo` yet → negotiation in flight, so
-        // the guard reports "pre-negotiation" (NOT "relay-only", which requires
-        // an observed v2 `ProtocolInfo` — see `v2_protocol_info_is_relay_only`).
+        // Membership validity takes precedence over protocol negotiation.
         assert!(matches!(
             client.send_offer(peer, "sdp"),
-            Err(SignalFishError::ProtocolUnsupported {
-                mode: "pre-negotiation"
-            })
+            Err(SignalFishError::NotInRoom)
         ));
         // Nothing v3 reached the wire (the guard runs before enqueue).
         client.poll();
@@ -2193,7 +2241,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_protocol_info_is_relay_only() {
+    fn v2_protocol_guard_runs_after_player_membership_guard() {
         // A v2 `ProtocolInfo` (no version field) is a terminal relay floor: the
         // guard reports "relay-only", distinct from the "pre-negotiation" state
         // before any `ProtocolInfo` arrives.
@@ -2203,6 +2251,7 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll();
+        prime_room(&mut client);
         assert!(client.negotiated_protocol_version().is_none());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
         assert!(matches!(
@@ -2232,16 +2281,15 @@ mod tests {
     }
 
     #[test]
-    fn send_signal_before_authentication_is_pre_negotiation() {
-        // The `mode: "pre-negotiation"` branch: no poll/auth before the send.
+    fn send_signal_before_authentication_is_not_in_room() {
+        // The handle accepts queued commands before authentication, but
+        // player-only operations still require confirmed membership.
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
         assert!(matches!(
             client.send_offer(peer, "sdp"),
-            Err(SignalFishError::ProtocolUnsupported {
-                mode: "pre-negotiation"
-            })
+            Err(SignalFishError::NotInRoom)
         ));
     }
 
@@ -2294,11 +2342,9 @@ mod tests {
 
     #[test]
     fn report_transport_status_after_v3_is_queued() {
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(PROTOCOL_INFO_V3.to_string())),
-        ]);
+        let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_v3_room(&mut client);
         client.poll();
         client
             .report_transport_status(TransportKind::WebRtc, true)
@@ -2361,7 +2407,7 @@ mod tests {
                     seq: Some(0),
                 },
             ],
-            is_authority: false,
+            is_authority: true,
             lobby_state: LobbyState::Finalized,
             ready_players: vec![],
             relay_type: "tcp".into(),
@@ -2616,6 +2662,7 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         assert_eq!(client.stats(), crate::client::ClientStats::default());
+        let _ = client.poll();
 
         for seq in 0..3 {
             client
@@ -2905,7 +2952,8 @@ mod tests {
 
         assert!(client.current_room_id().is_none());
         assert!(client.current_room_code().is_none());
-        assert!(client.current_player_id().is_some());
+        assert!(client.current_player_id().is_none());
+        assert_eq!(client.room_role(), None);
     }
 
     #[test]
@@ -3001,7 +3049,8 @@ mod tests {
 
         assert!(client.current_room_id().is_none());
         assert!(client.current_room_code().is_none());
-        assert!(client.current_player_id().is_some());
+        assert!(client.current_player_id().is_none());
+        assert_eq!(client.room_role(), None);
     }
 
     #[test]
@@ -3290,6 +3339,7 @@ mod tests {
     fn leave_room_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3311,6 +3361,7 @@ mod tests {
     fn send_game_data_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3333,6 +3384,7 @@ mod tests {
     fn set_ready_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3354,6 +3406,7 @@ mod tests {
     fn request_authority_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3376,6 +3429,7 @@ mod tests {
     fn provide_connection_info_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3402,6 +3456,7 @@ mod tests {
     fn provide_relay_connection_info_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3487,6 +3542,7 @@ mod tests {
     fn leave_spectator_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_spectator(&mut client);
         client.poll(); // flush auth
 
         client
@@ -3747,7 +3803,7 @@ mod tests {
 
     #[test]
     fn poll_receives_authority_changed_event() {
-        let auth_player = uuid::Uuid::from_u128(14);
+        let auth_player = uuid::Uuid::from_u128(9_001);
         let json = serde_json::to_string(&ServerMessage::AuthorityChanged {
             authority_player: Some(auth_player),
             you_are_authority: true,
@@ -4201,6 +4257,7 @@ mod tests {
         };
         let config = default_config().with_command_channel_capacity(3);
         let mut client = SignalFishPollingClient::new(transport, config);
+        prime_room(&mut client);
 
         // Authenticate occupies one of the three slots.
         assert_eq!(client.max_send_capacity(), 3);
@@ -4450,6 +4507,7 @@ mod tests {
             transport,
             default_config().with_command_channel_capacity(2),
         );
+        prime_room(&mut client);
 
         let _ = client.poll();
         assert!(client.send_in_flight, "Authenticate should be in flight");
@@ -5212,7 +5270,7 @@ mod tests {
                 max_players: 6,
                 supports_authority: true,
                 current_players: vec![v2_player(player_id2)],
-                is_authority: true,
+                is_authority: false,
                 lobby_state: crate::protocol::LobbyState::Lobby,
                 ready_players: vec![],
                 relay_type: "tcp".into(),
@@ -5253,35 +5311,35 @@ mod tests {
     fn multiple_commands_in_one_poll() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
         client.poll(); // flush auth
 
         client
             .leave_room()
             .expect("leave_room must succeed on connected client");
-        client
-            .join_room(JoinRoomParams::new("game", "Player"))
-            .expect("join_room must succeed on connected client");
+        assert!(matches!(
+            client.join_room(JoinRoomParams::new("game", "Player")),
+            Err(SignalFishError::RoomOperationPending)
+        ));
         client
             .ping()
             .expect("ping must succeed on connected client");
 
         client.poll();
 
-        // After the initial auth message (index 0), we should have 3 more.
+        // Ping remains connection-scoped while the admitted leave fences all
+        // further room operations until the server confirms the transition.
         assert_eq!(
             client.transport.sent.len(),
-            4,
-            "expected 4 total sent messages (auth + 3 commands), got: {:?}",
+            3,
+            "expected auth, leave, and ping frames, got: {:?}",
             client.transport.sent
         );
         let leave: serde_json::Value = serde_json::from_str(&client.transport.sent[1])
             .expect("leave_room sent message must be valid JSON");
-        let join: serde_json::Value = serde_json::from_str(&client.transport.sent[2])
-            .expect("join_room sent message must be valid JSON");
-        let ping: serde_json::Value = serde_json::from_str(&client.transport.sent[3])
+        let ping: serde_json::Value = serde_json::from_str(&client.transport.sent[2])
             .expect("ping sent message must be valid JSON");
         assert_eq!(leave["type"], "LeaveRoom");
-        assert_eq!(join["type"], "JoinRoom");
         assert_eq!(ping["type"], "Ping");
     }
 

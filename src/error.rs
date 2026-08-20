@@ -2,6 +2,7 @@
 
 use crate::error_codes::ErrorCode;
 use crate::protocol::SessionGeneration;
+use crate::RoomRole;
 use thiserror::Error;
 
 /// Errors that can occur when using the Signal Fish client.
@@ -50,6 +51,29 @@ pub enum SignalFishError {
     /// Attempted a room operation but the client is not in a room.
     #[error("not in a room")]
     NotInRoom,
+
+    /// Attempted to join or reconnect while already in a room.
+    #[error("already in a room")]
+    AlreadyInRoom,
+
+    /// Attempted a room operation while a prior room transition awaits a
+    /// matching typed terminal response. Generic errors stay fenced until
+    /// connection teardown.
+    #[error("a room join, leave, or reconnect operation is already pending")]
+    RoomOperationPending,
+
+    /// Attempted an operation that is not valid for the current room role.
+    #[error("operation requires the {required} room role, but the current role is {actual}")]
+    WrongRoomRole {
+        /// Role required by the attempted operation.
+        required: RoomRole,
+        /// Current server-confirmed role.
+        actual: RoomRole,
+    },
+
+    /// Attempted an operation reserved for the room's current authority.
+    #[error("operation requires the room's current authority role")]
+    AuthorityRequired,
 
     /// The server returned an error message.
     #[error("server error: {message}")]

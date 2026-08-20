@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `session_topology()`, `session_transport()`, and `is_p2p_active()` to the
   async client, polling client, and `SignalFishClientApi`. Applications can now
   distinguish negotiated local capability from the server-selected active path.
+- Added the public `RoomRole::{Player, Spectator}` state,
+  `ClientSnapshot::room_role`, matching async/polling/trait accessors, and
+  `SignalFishError::{AlreadyInRoom, RoomOperationPending, WrongRoomRole,
+  AuthorityRequired}` for synchronous membership-safe command admission.
 
 ### Changed
 
@@ -63,8 +67,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MeshController` clear the previous plan and driver peers at `Reconnected`,
   then wait for Server 0.7's fresh live `SessionPlan` before authorizing new
   signaling.
+- **Breaking:** room commands now enforce the Server 0.7 player, spectator,
+  no-membership, and authority matrix before protocol and bounded-queue checks.
+  An admitted join, leave, or reconnect fences subsequent room work until a
+  matching typed terminal response, while `ping` remains available. Generic
+  errors and absent responses stay fail-closed until connection teardown. The
+  exhaustive `ClientSnapshot`
+  and `SignalFishError` types gain the membership fields and variants above.
+  `ClientSnapshot::player_id` and `current_player_id()` now consistently mean
+  the local player-or-spectator participant ID and clear on confirmed exit.
 
 ### Fixed
+
+- Fixed player-only commands being queued before join, after leave, or by a
+  spectator, where Server 0.7 could silently discard gameplay data. Authority
+  baselines and changes are validated before they affect local guards,
+  attributable typed room-transition failures roll back their admission fence,
+  and both drivers preserve identical error precedence without consuming queue
+  capacity.
+- Fixed `MeshController` attempting a room-scoped transport-status update after
+  a confirmed room/spectator exit; peer drivers still tear down immediately.
 
 - Fixed the built-in `WebSocketTransport` allowing buffered Ping/Pong floods to
   monopolize one receive poll and leaving EOF or socket errors logically open.

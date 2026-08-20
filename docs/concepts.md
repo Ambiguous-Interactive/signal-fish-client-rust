@@ -315,6 +315,7 @@ simultaneous send + receive pressure.
 | `is_connected()` | No | `bool` |
 | `is_authenticated()` | No | `bool` |
 | `snapshot()` | No | `ClientSnapshot` |
+| `room_role()` | No | `Option<RoomRole>` |
 | `negotiated_protocol_version()` | No | `Option<u16>` |
 | `supports_mesh()` | No | `bool` (negotiated WebRTC + Host/Mesh capability) |
 | `session_topology()` | No | `Option<Topology>` |
@@ -356,7 +357,8 @@ loop as server messages arrive:
 |-------|------|-------------|
 | `connected` | `bool` | Transport opens / closes |
 | `authenticated` | `bool` | `Authenticated` event received |
-| `player_id` | `Option<PlayerId>` | `RoomJoined` / `Reconnected` / `SpectatorJoined` |
+| `room_role` | `Option<RoomRole>` | Confirmed player/spectator join, reconnect, or exit |
+| `player_id` | `Option<PlayerId>` | Confirmed player/spectator join or reconnect; cleared on every exit |
 | `room_id` | `Option<RoomId>` | `RoomJoined` / `RoomLeft` / `Reconnected` / spectator lifecycle |
 | `room_code` | `Option<String>` | `RoomJoined` / `RoomLeft` / `Reconnected` / spectator lifecycle |
 | `reconnection_token` | `Option<String>` | `RoomJoined` / `Reconnected` / room exit |
@@ -365,6 +367,22 @@ loop as server messages arrive:
 
 State flows **one direction**: the background task writes, your code reads
 through the accessors. You never set state directly.
+
+`room_role`, `player_id`, `room_id`, and `room_code` are one coherent
+membership invariant. They are all absent outside a room and all present for a
+confirmed player or spectator. `current_player_id()` is a legacy name for the
+participant ID. When interpreting the role and ID together, match both from one
+`snapshot()`; separate accessor calls can straddle a background transition.
+
+Client commands are checked against this state before queue capacity: join and
+reconnect commands require no membership; gameplay, player-leave, readiness,
+authority, connection-info, signaling, and transport-status commands require
+`RoomRole::Player`; `leave_spectator` requires `RoomRole::Spectator`; and
+`ping` is role-independent. Once a room transition is admitted, later room
+commands return `RoomOperationPending` until a matching typed terminal
+response, so FIFO work cannot silently cross a pending leave or join. Generic
+server errors and absent responses remain fail-closed until transport teardown;
+start a new connection to retry after teardown.
 
 ```mermaid
 graph LR
@@ -434,6 +452,10 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `NotConnected` | Attempted an operation without an active connection. |
 | `SendBufferFull { capacity }` | The bounded outgoing command queue is full; the message was refused, not queued. See [Non-Blocking Command Sending](#non-blocking-command-sending). |
 | `NotInRoom` | Attempted a room operation without being in a room. |
+| `AlreadyInRoom` | Attempted to join or reconnect while already a player or spectator. |
+| `RoomOperationPending` | A prior admitted join, leave, or reconnect still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. |
+| `WrongRoomRole { required, actual }` | The operation requires player or spectator membership of a different kind. |
+| `AuthorityRequired` | The current player is not authorized for an authority-only command. |
 | `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
 | `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning and topology](#protocol-versioning-and-topology). |
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
