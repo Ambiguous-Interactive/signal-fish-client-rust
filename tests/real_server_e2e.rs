@@ -223,7 +223,7 @@ async fn e2e_server_070_rkyv_request_resolves_to_json() {
     );
     assert!(matches!(
         client.send_binary_game_data(vec![1, 2, 3]),
-        Err(SignalFishError::BinaryFormatNotNegotiated)
+        Err(SignalFishError::NotInRoom)
     ));
 
     client
@@ -233,6 +233,10 @@ async fn e2e_server_070_rkyv_request_resolves_to_json() {
         matches!(event, SignalFishEvent::RoomJoined { .. })
     })
     .await;
+    assert!(matches!(
+        client.send_binary_game_data(vec![1, 2, 3]),
+        Err(SignalFishError::BinaryFormatNotNegotiated)
+    ));
     client
         .send_game_data(serde_json::json!({"fallback": "json"}))
         .expect("fallback client should send JSON game data");
