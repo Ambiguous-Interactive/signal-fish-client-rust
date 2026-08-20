@@ -2942,6 +2942,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reliable_game_data_reports_disconnect_after_waiting_for_capacity() {
+        let (transport, entered_send, permits, _) = GatedSendTransport::new(0);
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+
+        client
+            .send_game_data(serde_json::json!({ "fills": "queue" }))
+            .expect("capacity-1 queue should accept one filler command");
+        let client = Arc::new(client);
+        let sender = Arc::clone(&client);
+        let mut reliable = tokio::spawn(async move {
+            sender
+                .send_game_data_reliable(serde_json::json!({ "waited": true }))
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut reliable)
+                .await
+                .is_err(),
+            "reliable game data should wait for queue capacity"
+        );
+
+        lock_core(&client.state).disconnect(None);
+        permits.add_permits(16);
+        let result = tokio::time::timeout(Duration::from_secs(1), reliable)
+            .await
+            .expect("reliable game data should finish after capacity opens")
+            .expect("reliable game data task should not panic");
+        assert!(
+            matches!(result, Err(SignalFishError::NotConnected)),
+            "disconnect should remain authoritative over room binding: {result:?}"
+        );
+
+        let mut client = Arc::into_inner(client).expect("all client clones should be dropped");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn reliable_json_game_data_does_not_cross_room_membership() {
         assert_reliable_game_data_rejected_after_room_change(false, true).await;
     }
