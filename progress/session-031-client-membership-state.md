@@ -81,4 +81,16 @@ while v3-only protocol checks still occur after valid player membership.
   `mkdocs` is not installed in the local image and Python lacks `pip`/`venv`,
   so strict rendered-doc validation remains delegated to the blocking hosted
   Docs Validation workflow.
-- Hosted PR evidence is recorded here after completion.
+- [PR #114](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/114)
+  is open and non-draft. Its code-bearing head `bd272d9` completed all twelve
+  workflow suites successfully: CI 32411518446, Coverage 32411518471, Deep
+  Safety 32411518476, Docs Validation 32411518382, Examples Validation
+  32411518478, Godot Web 32411518415, No Panics 32411518376, Security
+  32411518466, Semver Checks 32411518414, Unused Deps 32411518506, WASM
+  32411518567, and Workflow Lint 32411518495.
+- The first hosted pass found a spelling violation, the intended breaking API
+  classification, and a pre-join live-server expectation that predated the new
+  error precedence. Commits `349d85a` and `bd272d9` fixed the tests, and the PR
+  title now carries the required `fix!:` marker. The final review surface had no
+  actionable conversation comments or inline threads; Copilot posted only its
+  quota-limit notice.
