@@ -38,5 +38,10 @@ socket terminal outcome leave one coherent, fused transport state.
 - The 29-test focused WebSocket suite, no-default and isolated WebSocket builds,
   stable all-feature rustdoc, nightly docs.rs simulation, workflow policy, FFI
   policy plus its 50-case self-test, LLM validation, and `git diff --check` pass.
+- The first hosted Semver run exposed `cargo-semver-checks` 0.46's rustdoc-v57
+  ceiling against stable's v60 output. Semver and publish workflows now share
+  the upstream 0.50 pin (v60/v61 support), guarded by a repository policy test.
+- Hosted spelling validation also caught a partial-frame byte-string fragment;
+  the fixture now expresses those remaining bytes individually.
 - Hosted PR aggregates and reviewer feedback remain to be recorded before
   completion.

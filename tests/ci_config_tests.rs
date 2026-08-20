@@ -1696,6 +1696,24 @@ mod ci_workflow_policy {
         );
     }
 
+    #[test]
+    fn semver_tool_supports_the_stable_rustdoc_format() {
+        for path in [
+            ".github/workflows/semver-checks.yml",
+            ".github/workflows/publish.yml",
+        ] {
+            let workflow = read_project_file(path);
+            assert!(
+                workflow.contains("cargo-semver-checks@0.50.0"),
+                "{path} must pin cargo-semver-checks 0.50.0, which supports rustdoc JSON v60/v61"
+            );
+            assert!(
+                !workflow.contains("cargo-semver-checks@0.46.0"),
+                "{path} must not use the rustdoc-v57-limited cargo-semver-checks 0.46.0"
+            );
+        }
+    }
+
     /// Verify that key documentation and config files reference the same MSRV
     /// as Cargo.toml. Prevents drift where Cargo.toml is bumped but docs or
     /// scripts are left with the old version.

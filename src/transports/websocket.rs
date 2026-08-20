@@ -1059,7 +1059,7 @@ mod tests {
 
         wake_counter.count.store(0, Ordering::SeqCst);
         server_io
-            .write_all(b"ater")
+            .write_all(&[0x61, 0x74, 0x65, 0x72])
             .await
             .expect("server must finish the partial text frame");
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
