@@ -20,8 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation fields on `DriverEvent::Signal`, `DriverEvent::Connected`,
   `DriverEvent::Disconnected`, and `DriverEvent::Data`,
   `ErrorCode::UnsupportedProtocolVersion`,
-  `SignalFishError::SessionPlanUnavailable`,
-  `SignalFishError::SignalPeerNotInSession`, and
+  `SignalFishError::SessionPlanUnavailable`, and
   `SignalFishError::StaleSessionGeneration::{attempted, current}`. Added
   `ErrorCode::NON_EMITTED` to identify the six error variants retained for
   older-server compatibility but no longer emitted by 0.7.

@@ -19,7 +19,7 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **15
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **14
 variants**:
 
 | Variant | Fields | When it occurs |
@@ -33,8 +33,7 @@ variants**:
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
-| `SessionPlanUnavailable` | — | WebRTC signaling was attempted before the server supplied a session plan for the current room. |
-| `SignalPeerNotInSession` | `peer_id: PlayerId` | WebRTC signaling targeted the local player or a player outside the authoritative session peer set/current room roster. The set is replaced by each plan and may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
+| `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, or the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster. The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
 | `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
 | `Timeout` | — | An operation timed out. |

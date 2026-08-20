@@ -32,9 +32,9 @@ signal-generation compatibility.
 - Validation is read-only and precedes accountability/state mutation for text
   and decoded binary frames. Lifecycle-invalid input is never delivered under
   `Observe`; that policy continues with later valid frames.
-- `SignalFishError::SignalPeerNotInSession` makes local outbound refusal precise
-  and guarantees no wire frame is queued for self, unknown, departed, or
-  re-planned targets.
+- `SignalFishError::SessionPlanUnavailable` rejects outbound signaling when no
+  authoritative WebRTC plan authorizes the target and guarantees no wire frame
+  is queued for self, unknown, departed, or re-planned targets.
 - Server-assigned `SessionPeer::initiate` is never recomputed.
 - Reconnect replay restoration remains tracked by issue #101; Server 0.7 sends
   a fresh full plan instead of placing `ProtocolInfo`/`SessionPlan` in

@@ -952,10 +952,9 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
     /// negotiated protocol v3 (fail-fast — the server would otherwise reject it),
-    /// [`SignalFishError::SessionPlanUnavailable`] before the current room's
-    /// first authoritative plan,
-    /// [`SignalFishError::SignalPeerNotInSession`] when `to` is the local
-    /// player or is absent from the latest plan/current room roster,
+    /// [`SignalFishError::SessionPlanUnavailable`] when no authoritative WebRTC
+    /// plan authorizes `to` (including no plan, a non-WebRTC plan, self, or a
+    /// target absent from the latest plan/current room roster),
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is
     /// full (see [`send_signal_reliable`](Self::send_signal_reliable) for a
@@ -1009,9 +1008,7 @@ impl SignalFishClient {
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has
     /// not negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
-    /// before the current room's first authoritative plan,
-    /// [`SignalFishError::SignalPeerNotInSession`] when `to` is not an eligible
-    /// peer in that plan, or
+    /// when no authoritative WebRTC plan authorizes `to`, or
     /// [`SignalFishError::NotConnected`] if the transport has closed.
     pub async fn send_signal_reliable(
         &self,
@@ -3341,10 +3338,7 @@ mod tests {
             .expect("reliable signal task should not panic");
         if remove_peer {
             assert!(
-                matches!(
-                    result,
-                    Err(SignalFishError::SignalPeerNotInSession { peer_id }) if peer_id == peer
-                ),
+                matches!(result, Err(SignalFishError::SessionPlanUnavailable)),
                 "revalidation should reject a departed peer: {result:?}"
             );
         } else if should_reject {

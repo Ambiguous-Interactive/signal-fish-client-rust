@@ -259,17 +259,13 @@ impl ClientCore {
                     _ => return Ok(()),
                 };
                 if !self.session_peers.contains(peer_id) {
-                    return Err(crate::SignalFishError::SignalPeerNotInSession {
-                        peer_id: *peer_id,
-                    });
+                    return Err(crate::SignalFishError::SessionPlanUnavailable);
                 }
                 if self.session_transport != Some(TransportKind::WebRtc)
                     || !self.room_players.contains(peer_id)
                     || Some(*peer_id) == self.snapshot.player_id
                 {
-                    return Err(crate::SignalFishError::SignalPeerNotInSession {
-                        peer_id: *peer_id,
-                    });
+                    return Err(crate::SignalFishError::SessionPlanUnavailable);
                 }
             }
             _ => {}
@@ -1705,7 +1701,7 @@ mod tests {
             .expect_err("off-plan outbound signal must fail locally");
         assert!(matches!(
             error,
-            crate::SignalFishError::SignalPeerNotInSession { peer_id } if peer_id == unknown
+            crate::SignalFishError::SessionPlanUnavailable
         ));
     }
 
@@ -1730,7 +1726,7 @@ mod tests {
                 SignalGeneration::Current,
                 PeerSignal::Offer("sdp".into()),
             )),
-            Err(crate::SignalFishError::SignalPeerNotInSession { .. })
+            Err(crate::SignalFishError::SessionPlanUnavailable)
         ));
 
         let new_peer = process(

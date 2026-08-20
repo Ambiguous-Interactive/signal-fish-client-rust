@@ -1541,7 +1541,7 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
         ] {
             assert!(matches!(
                 result,
-                Err(SignalFishError::SignalPeerNotInSession { peer_id }) if peer_id == target
+                Err(SignalFishError::SessionPlanUnavailable)
             ));
         }
     }
@@ -1569,7 +1569,7 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
         ] {
             assert!(matches!(
                 result,
-                Err(SignalFishError::SignalPeerNotInSession { peer_id }) if peer_id == target
+                Err(SignalFishError::SessionPlanUnavailable)
             ));
         }
     }

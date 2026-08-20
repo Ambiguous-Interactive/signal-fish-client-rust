@@ -587,10 +587,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
-    /// negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
-    /// before the current room's first authoritative plan,
-    /// [`SignalFishError::SignalPeerNotInSession`] when `to` is the local
-    /// player or is absent from the latest plan/current room roster,
+    /// negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`] when
+    /// no authoritative WebRTC plan authorizes `to` (including no plan, a
+    /// non-WebRTC plan, self, or a target absent from the latest plan/current
+    /// room roster),
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
