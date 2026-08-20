@@ -343,7 +343,7 @@ mod controller {
                 if self.observed_session_plan_revision != self.client.session_plan_revision() {
                     match self.events.recv().await {
                         Some(event) => {
-                            self.handle_event(&event);
+                            self.handle_received_event(&event);
                             return Some(MeshEvent::Signaling(Box::new(event)));
                         }
                         None => return None,
@@ -365,7 +365,7 @@ mod controller {
                     incoming = self.events.recv() => {
                         match incoming {
                             Some(event) => {
-                                self.handle_event(&event);
+                                self.handle_received_event(&event);
                                 return Some(MeshEvent::Signaling(Box::new(event)));
                             }
                             None => return None,
@@ -388,15 +388,26 @@ mod controller {
         pub(super) fn handle_event(&mut self, event: &SignalFishEvent) {
             self.session.apply(event);
             self.choreograph(event);
+        }
+
+        fn handle_received_event(&mut self, event: &SignalFishEvent) {
+            self.handle_event(event);
             if matches!(
                 event,
                 SignalFishEvent::RoomJoined { .. }
                     | SignalFishEvent::Reconnected { .. }
+                    | SignalFishEvent::SpectatorJoined { .. }
                     | SignalFishEvent::SessionPlan { .. }
                     | SignalFishEvent::RoomLeft
+                    | SignalFishEvent::SpectatorLeft { .. }
                     | SignalFishEvent::Disconnected { .. }
             ) {
-                self.observed_session_plan_revision = self.client.session_plan_revision();
+                // The core can be several events ahead of this controller. Count
+                // the barrier represented by the event just consumed instead of
+                // copying the core's latest value and accidentally skipping
+                // later barriers that are still queued.
+                self.observed_session_plan_revision =
+                    self.observed_session_plan_revision.wrapping_add(1);
             }
         }
 
@@ -494,7 +505,10 @@ mod controller {
                 // the per-peer `PlayerLeft` path. On `Disconnected` the underlying
                 // send simply returns `NotConnected` and is harmlessly swallowed;
                 // `mark_disconnected` empties `connected_peers` as it goes.
-                SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
+                SignalFishEvent::RoomLeft
+                | SignalFishEvent::SpectatorJoined { .. }
+                | SignalFishEvent::SpectatorLeft { .. }
+                | SignalFishEvent::Disconnected { .. } => {
                     for peer in std::mem::take(&mut self.known_peers) {
                         self.disconnect_peer(peer.id);
                     }
@@ -2064,13 +2078,11 @@ mod tests {
         // directly and the server was never told WebRTC went down.
         let peer = uuid(31);
         let driver = SharedDriver::default();
-        let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
         let (transport, sent) = MockTransport::new_in_room(vec![
             Some(Ok(authed())),
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
-            Some(Ok(room_left)),
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
@@ -2090,11 +2102,9 @@ mod tests {
             "precondition: channel-up reports status true once"
         );
 
-        // Now reach the queued RoomLeft.
-        pump_until(&mut mesh, &driver, |c| {
-            c.contains(&DriverCall::Disconnect(peer))
-        })
-        .await;
+        // Fold RoomLeft only after the channel-open precondition; this test
+        // isolates teardown choreography from transport-loop scheduling.
+        mesh.handle_event(&SignalFishEvent::RoomLeft);
         wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         assert_eq!(
             sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
@@ -2344,9 +2354,15 @@ mod tests {
         .await
         .expect("core never observed replacement generation");
 
-        // recv() drains the driver's generation-12 offer before consuming the
-        // replacement event. The generation-bound send must refuse it rather
-        // than stamping generation 13.
+        driver.emit(DriverEvent::Data {
+            peer,
+            generation: Some(first),
+            data: vec![1, 2, 3],
+        });
+
+        // The core is already at generation 13, but its SessionPlan event is
+        // still queued behind the generation-12 session view. recv() must fold
+        // that barrier before draining either the old offer or application data.
         let event = mesh.recv().await;
         assert!(matches!(
             event,
@@ -2596,7 +2612,6 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(p, true))),
             Some(Ok(signal_from(p, serde_json::json!({ "Answer": "r" })))),
-            Some(Ok(session_plan(p, false))),
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
@@ -2616,12 +2631,13 @@ mod tests {
             "precondition: the open channel reports status true once"
         );
 
-        // Reach the queued role-flip plan; the restart tears the open channel
-        // down (1->0) and reconnects P as the answerer.
-        pump_until(&mut mesh, &driver, |c| {
-            c.contains(&DriverCall::Connect(p, false))
-        })
-        .await;
+        // Fold the role-flip plan only after the channel-open precondition. The
+        // separate coalesced-event regression covers a core that is already
+        // ahead; this test isolates the restart's transport-status choreography.
+        let flip = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&session_plan(p, false)).unwrap(),
+        );
+        mesh.handle_event(&flip);
         wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "false"], 1).await;
         let calls = driver.calls();
         assert!(

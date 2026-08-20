@@ -167,7 +167,10 @@ impl MeshSession {
                 had_authoritative_state || ice_changed
             }
             // The session is over.
-            SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
+            SignalFishEvent::RoomLeft
+            | SignalFishEvent::SpectatorJoined { .. }
+            | SignalFishEvent::SpectatorLeft { .. }
+            | SignalFishEvent::Disconnected { .. } => {
                 let had_state = self.topology.is_some()
                     || !self.peers.is_empty()
                     || !self.ice_servers.is_empty();
@@ -535,13 +538,29 @@ mod tests {
     }
 
     #[test]
-    fn reset_on_disconnect_and_room_left() {
+    fn room_and_spectator_transitions_reset_authoritative_mesh_state() {
         for terminal in [
             SignalFishEvent::Disconnected {
                 reason: None,
                 last_server_error: None,
             },
             SignalFishEvent::RoomLeft,
+            SignalFishEvent::SpectatorJoined {
+                room_id: uuid(10),
+                room_code: "WATCH".into(),
+                spectator_id: uuid(11),
+                game_name: "g".into(),
+                current_players: vec![],
+                current_spectators: vec![],
+                lobby_state: crate::protocol::LobbyState::Waiting,
+                reason: None,
+            },
+            SignalFishEvent::SpectatorLeft {
+                room_id: Some(uuid(10)),
+                room_code: Some("WATCH".into()),
+                reason: None,
+                current_spectators: vec![],
+            },
         ] {
             let mut s = MeshSession::new();
             s.apply(&plan(

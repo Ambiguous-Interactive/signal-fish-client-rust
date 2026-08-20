@@ -473,6 +473,8 @@ impl ClientCore {
         self.session_transport = None;
         self.retired_generationless_signal_peers.clear();
         self.pending_reconnects.clear();
+        #[cfg(feature = "tokio-runtime")]
+        self.advance_room_revision();
     }
 
     pub(crate) fn disconnect(&mut self, reason: Option<String>) -> SignalFishEvent {

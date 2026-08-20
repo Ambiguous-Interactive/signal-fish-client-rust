@@ -39,7 +39,10 @@ bound to Signal Fish Server 0.7.0 commit
 - Three adversarial reviews found and drove fixes for JSON-origin relay
   representation, reconnect-response causality, stale WebRTC output, malformed
   negotiation tuples, fixture validity, and secret-safe assertions; the final
-  review reported no remaining findings.
+  local review reported no remaining findings. Hosted review then identified a
+  coalesced plan-barrier race; the controller now advances one revision per
+  consumed room/plan/spectator barrier instead of copying the core's latest
+  revision, with an exact queued-replan regression.
 - `cargo fmt`, all-target/all-feature clippy with warnings denied, the complete
   all-feature workspace suite, feature-isolation checks, rustdoc, and local docs
   validation pass. Hosted CI evidence is recorded on the pull request.
