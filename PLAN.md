@@ -118,16 +118,26 @@ Lifecycle/plan/signaling-invalid frames are observable but transactional under
 every policy; async and polling drivers retain identical behavior. Session 027
 records the rule-to-test/source matrix and verification evidence.
 
-## Next Correctness Milestone — Negotiation and Reconnect State
+## Current Correctness Milestone — Negotiation and Reconnect State
 
-Continue with #100 and #101.
+Issues #100 and #101 are implemented together for review because both depend on
+the first authoritative `ProtocolInfo` and reconnect state transaction.
 
-- Track negotiated effective game-data encoding separately from the requested
-  preference.
-- Make reconnect restoration atomic across negotiation, accountability,
-  membership, and plan state.
-- Continue correctness work through #102–#107 before usability, performance,
-  token binding, or presentation milestones.
+- Requested and effective game-data formats are distinct public state. The
+  shared core resolves Server 0.7's canonical format advertisement atomically,
+  and async/polling plus pinned-server evidence covers supported and fallback
+  paths before transport admission.
+- Reconnect restoration is version-strict and transactional across replay,
+  token rotation, accountability, membership, and plan state under every
+  violation policy. The old WebRTC plan is fenced until Server 0.7's fresh live
+  post-reconnect plan arrives.
+- Session 028 records the rule-to-source-to-test matrix and local pinned-server
+  evidence. Hosted review and aggregate checks remain the completion gate.
+
+## Next Correctness Milestone — Delivery Semantics and Liveness
+
+Continue with #102, then #105, #103, #104, #106, and #107 before usability,
+performance, token binding, or presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding
 

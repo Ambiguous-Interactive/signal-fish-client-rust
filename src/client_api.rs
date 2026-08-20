@@ -2,7 +2,9 @@
 
 use crate::client::{ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams};
 use crate::error::Result;
-use crate::protocol::{ConnectionInfo, PlayerId, RoomId, SessionGeneration, TransportKind};
+use crate::protocol::{
+    ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration, TransportKind,
+};
 use crate::signal::PeerSignal;
 
 /// Object-safe synchronous command and state surface shared by both clients.
@@ -91,6 +93,17 @@ pub trait SignalFishClientApi {
     /// Negotiated v3-or-newer protocol version.
     fn negotiated_protocol_version(&self) -> Option<u16> {
         self.snapshot().negotiated_protocol_version
+    }
+
+    /// Exact game-data preference supplied in [`SignalFishConfig`](crate::SignalFishConfig).
+    fn requested_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.snapshot().requested_game_data_format
+    }
+
+    /// Server-selected game-data format, or `None` outside a negotiated
+    /// connection.
+    fn effective_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.snapshot().effective_game_data_format
     }
 
     /// Whether WebRTC mesh was advertised and protocol v3 was negotiated.

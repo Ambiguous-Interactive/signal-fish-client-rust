@@ -1054,7 +1054,10 @@ pub(crate) fn validate_server_frame(
     physical_binary_frame: bool,
 ) -> Result<GameDataDisposition, String> {
     let mismatch = match message {
-        ServerMessage::GameData { .. } => negotiated_encoding != GameDataEncoding::Json,
+        // JSON-origin relays remain text GameData for every recipient format.
+        // The negotiated encoding controls physical binary acceptance and the
+        // binary envelope's embedded encoding, not ordinary JSON sends.
+        ServerMessage::GameData { .. } => physical_binary_frame,
         ServerMessage::GameDataBinary { encoding, .. } => {
             !physical_binary_frame
                 || negotiated_encoding == GameDataEncoding::Json

@@ -1527,6 +1527,13 @@ async fn reconnection_failed_event() {
 
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::ReconnectionFailed { reason, error_code } = ev {
@@ -2624,6 +2631,13 @@ async fn reconnect_receives_fresh_authoritative_session_plan() {
         ],
         SignalFishConfig::new("mb_test_integration").enable_mesh(),
     );
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
     drain_until_authenticated(&mut events).await;
     // Reconnection establishes the finalized room baseline; the server then
     // publishes a fresh authoritative plan as a separate room-ordered frame.
@@ -2654,7 +2668,7 @@ async fn reconnect_receives_fresh_authoritative_session_plan() {
     client
         .send_offer(peer, "sdp")
         .expect("send_offer after reconnect");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     assert!(sent_messages(&sent)
         .iter()
         .any(|m| matches!(m, ClientMessage::Signal { .. })));

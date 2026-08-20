@@ -4,7 +4,7 @@
 //! separate. Everything that interprets protocol frames or mutates observable
 //! client state lives here so both drivers cannot drift semantically.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use crate::accountability::{self, DeliveryAccountability, GameDataDisposition};
 use crate::client::{
@@ -87,7 +87,6 @@ pub(crate) struct ClientCore {
     snapshot: ClientSnapshot,
     protocol_info_seen: bool,
     mesh_enabled: bool,
-    game_data_encoding: GameDataEncoding,
     stats: ClientStats,
     last_server_error: Option<ServerErrorInfo>,
     violation_policy: ProtocolViolationPolicy,
@@ -99,6 +98,7 @@ pub(crate) struct ClientCore {
     session_peers: HashSet<PlayerId>,
     session_transport: Option<TransportKind>,
     retired_generationless_signal_peers: HashSet<PlayerId>,
+    pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
     #[cfg(feature = "tokio-runtime")]
@@ -123,6 +123,12 @@ struct RoomBaseline {
     players: HashSet<PlayerId>,
 }
 
+struct PendingReconnect {
+    player_id: PlayerId,
+    room_id: RoomId,
+    token: String,
+}
+
 impl ClientCore {
     pub(crate) fn authenticate(config: &SignalFishConfig) -> CoreCommand {
         CoreCommand::Message(ClientMessage::Authenticate {
@@ -137,18 +143,18 @@ impl ClientCore {
     }
 
     pub(crate) fn new(
-        game_data_encoding: GameDataEncoding,
+        requested_game_data_format: Option<GameDataEncoding>,
         violation_policy: ProtocolViolationPolicy,
         mesh_enabled: bool,
     ) -> Self {
         Self {
             snapshot: ClientSnapshot {
                 connected: true,
+                requested_game_data_format,
                 ..ClientSnapshot::default()
             },
             protocol_info_seen: false,
             mesh_enabled,
-            game_data_encoding,
             stats: ClientStats::default(),
             last_server_error: None,
             violation_policy,
@@ -160,6 +166,7 @@ impl ClientCore {
             session_peers: HashSet::new(),
             session_transport: None,
             retired_generationless_signal_peers: HashSet::new(),
+            pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
             session_plan_revision: 0,
             #[cfg(feature = "tokio-runtime")]
@@ -185,6 +192,19 @@ impl ClientCore {
 
     pub(crate) fn negotiated_protocol_version(&self) -> Option<u16> {
         self.snapshot.negotiated_protocol_version
+    }
+
+    pub(crate) fn requested_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.snapshot.requested_game_data_format
+    }
+
+    pub(crate) fn effective_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.snapshot.effective_game_data_format
+    }
+
+    #[cfg(all(feature = "mesh", feature = "tokio-runtime"))]
+    pub(crate) fn session_plan_revision(&self) -> u64 {
+        self.session_plan_revision
     }
 
     pub(crate) fn supports_mesh(&self) -> bool {
@@ -223,7 +243,7 @@ impl ClientCore {
             _ => {}
         }
         if matches!(&operation, ClientOperation::Binary(_))
-            && self.game_data_encoding == GameDataEncoding::Json
+            && self.effective_game_data_format() == Some(GameDataEncoding::Json)
         {
             return Err(crate::SignalFishError::BinaryFormatNotNegotiated);
         }
@@ -421,9 +441,23 @@ impl ClientCore {
         self.stats.game_data_sent = self.stats.game_data_sent.saturating_add(1);
     }
 
+    pub(crate) fn record_reconnect_admitted(
+        &mut self,
+        player_id: PlayerId,
+        room_id: RoomId,
+        token: String,
+    ) {
+        self.pending_reconnects.push_back(PendingReconnect {
+            player_id,
+            room_id,
+            token,
+        });
+    }
+
     pub(crate) fn clear_session(&mut self) {
         self.snapshot.authenticated = false;
         self.snapshot.negotiated_protocol_version = None;
+        self.snapshot.effective_game_data_format = None;
         self.snapshot.player_id = None;
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
@@ -438,6 +472,9 @@ impl ClientCore {
         self.session_peers.clear();
         self.session_transport = None;
         self.retired_generationless_signal_peers.clear();
+        self.pending_reconnects.clear();
+        #[cfg(feature = "tokio-runtime")]
+        self.advance_session_plan_revision();
     }
 
     pub(crate) fn disconnect(&mut self, reason: Option<String>) -> SignalFishEvent {
@@ -497,6 +534,7 @@ impl ClientCore {
                 | ServerMessage::SpectatorJoined(_)
                 | ServerMessage::Reconnected(_)
         );
+        let effective_game_data_format = self.effective_game_data_format().unwrap_or_default();
         let validation = if duplicate_protocol_info {
             self.accountability
                 .observe_server_message(false)
@@ -505,7 +543,7 @@ impl ClientCore {
             accountability::validate_server_frame(
                 &mut self.accountability,
                 &server_msg,
-                self.game_data_encoding,
+                effective_game_data_format,
                 false,
             )
         };
@@ -523,7 +561,20 @@ impl ClientCore {
                     outcome.disconnect = true;
                     return outcome;
                 }
-                let disposition = if self.violation_policy == ProtocolViolationPolicy::Observe {
+                let disposition = if self.violation_policy == ProtocolViolationPolicy::Observe
+                    && matches!(server_msg, ServerMessage::GameDataBinary { .. })
+                {
+                    match accountability::validate_server_message(
+                        &mut self.accountability,
+                        &server_msg,
+                    ) {
+                        Ok(disposition) => disposition,
+                        Err(diagnostic) => {
+                            self.push_violation(&mut outcome.events, diagnostic);
+                            GameDataDisposition::Apply
+                        }
+                    }
+                } else if self.violation_policy == ProtocolViolationPolicy::Observe {
                     GameDataDisposition::Apply
                 } else {
                     GameDataDisposition::Stale
@@ -532,7 +583,10 @@ impl ClientCore {
             }
         };
 
-        if validation_failed && self.violation_policy == ProtocolViolationPolicy::Quarantine {
+        if validation_failed
+            && (authoritative_baseline
+                || self.violation_policy == ProtocolViolationPolicy::Quarantine)
+        {
             return outcome;
         }
         if duplicate_protocol_info {
@@ -580,10 +634,18 @@ impl ClientCore {
             );
             return outcome;
         }
+        let Some(effective_game_data_format) = self.effective_game_data_format() else {
+            self.reject_inbound(
+                &mut outcome,
+                "lifecycle violation: binary game data arrived before game-data format negotiation completed"
+                    .into(),
+            );
+            return outcome;
+        };
         let mut observe_representation_violation = false;
         if let Err(diagnostic) = accountability::validate_physical_binary_allowed(
             &mut self.accountability,
-            self.game_data_encoding,
+            effective_game_data_format,
         ) {
             self.push_violation(&mut outcome.events, diagnostic);
             match self.violation_policy {
@@ -625,7 +687,7 @@ impl ClientCore {
             accountability::validate_server_frame(
                 &mut self.accountability,
                 &server_msg,
-                self.game_data_encoding,
+                effective_game_data_format,
                 true,
             )
         };
@@ -767,6 +829,7 @@ impl ClientCore {
         }
 
         match message {
+            ServerMessage::ProtocolInfo(payload) => validate_protocol_info_formats(payload),
             ServerMessage::RoomJoined(payload) => {
                 validate_local_player_snapshot(payload.player_id, &payload.current_players)
             }
@@ -833,8 +896,12 @@ impl ClientCore {
             }
             ServerMessage::Reconnected(payload) => {
                 validate_local_player_snapshot(payload.player_id, &payload.current_players)?;
-                self.validate_reconnect_replay(payload)
+                self.validate_reconnected_payload(payload)
             }
+            ServerMessage::ReconnectionFailed { .. } if self.pending_reconnects.is_empty() => Err(
+                "lifecycle violation: ReconnectionFailed arrived without an admitted Reconnect"
+                    .into(),
+            ),
             _ => Ok(()),
         }
     }
@@ -1000,6 +1067,59 @@ impl ClientCore {
         Ok(())
     }
 
+    fn validate_reconnected_payload(
+        &self,
+        payload: &crate::protocol::ReconnectedPayload,
+    ) -> Result<(), String> {
+        let Some(pending) = self.pending_reconnects.front() else {
+            return Err(
+                "lifecycle violation: Reconnected arrived without an admitted Reconnect".into(),
+            );
+        };
+        if payload.player_id != pending.player_id || payload.room_id != pending.room_id {
+            return Err(
+                "lifecycle violation: Reconnected identity did not match the admitted Reconnect"
+                    .into(),
+            );
+        }
+        let protocol_v3 = self
+            .snapshot
+            .negotiated_protocol_version
+            .is_some_and(|version| version >= 3);
+        if protocol_v3 {
+            if payload.replay.is_none() {
+                return Err(
+                    "lifecycle violation: v3 Reconnected omitted replay completeness".into(),
+                );
+            }
+            let Some(token) = payload
+                .reconnection_token
+                .as_deref()
+                .filter(|token| !token.is_empty())
+            else {
+                return Err(
+                    "lifecycle violation: v3 Reconnected omitted a nonempty rotated reconnection token"
+                        .into(),
+                );
+            };
+            if pending.token == token {
+                return Err(
+                    "lifecycle violation: v3 Reconnected did not rotate the submitted reconnection token"
+                        .into(),
+                );
+            }
+        } else if payload.replay.is_some()
+            || !payload.sender_watermarks.is_empty()
+            || payload.reconnection_token.is_some()
+        {
+            return Err(
+                "lifecycle violation: v2 Reconnected exposed v3 replay, watermark, or token metadata"
+                    .into(),
+            );
+        }
+        self.validate_reconnect_replay(payload)
+    }
+
     fn update_state(&mut self, message: &ServerMessage) {
         match message {
             ServerMessage::Authenticated { .. } => self.snapshot.authenticated = true,
@@ -1007,9 +1127,6 @@ impl ClientCore {
                 message,
                 error_code,
             } => {
-                if error_code.as_ref() == Some(&crate::ErrorCode::UnsupportedGameDataFormat) {
-                    self.game_data_encoding = GameDataEncoding::Json;
-                }
                 self.last_server_error = Some(ServerErrorInfo {
                     message: message.clone(),
                     error_code: error_code.clone(),
@@ -1024,6 +1141,11 @@ impl ClientCore {
             ServerMessage::ProtocolInfo(payload) => {
                 self.snapshot.negotiated_protocol_version =
                     payload.protocol_version.filter(|version| *version >= 3);
+                self.snapshot.effective_game_data_format =
+                    Some(resolve_effective_game_data_format(
+                        self.requested_game_data_format(),
+                        &payload.game_data_formats,
+                    ));
                 self.protocol_info_seen = true;
             }
             ServerMessage::RoomJoined(payload) => {
@@ -1043,6 +1165,7 @@ impl ClientCore {
             }
             ServerMessage::RoomLeft => self.clear_room(),
             ServerMessage::Reconnected(payload) => {
+                self.pending_reconnects.pop_front();
                 self.set_room(RoomBaseline {
                     player_id: payload.player_id,
                     room_id: payload.room_id,
@@ -1073,6 +1196,9 @@ impl ClientCore {
                 });
             }
             ServerMessage::SpectatorLeft { .. } => self.clear_room(),
+            ServerMessage::ReconnectionFailed { .. } => {
+                self.pending_reconnects.pop_front();
+            }
             ServerMessage::SessionPlan(payload) => {
                 self.replace_session_plan(
                     payload.generation,
@@ -1188,6 +1314,46 @@ impl ClientCore {
     }
 }
 
+fn validate_protocol_info_formats(
+    payload: &crate::protocol::ProtocolInfoPayload,
+) -> Result<(), String> {
+    match payload.game_data_formats.as_slice() {
+        [GameDataEncoding::Json]
+        | [GameDataEncoding::Json, GameDataEncoding::MessagePack] => Ok(()),
+        formats => Err(format!(
+            "lifecycle violation: ProtocolInfo game_data_formats {formats:?} does not match the canonical Server 0.7 negotiation order [Json, MessagePack?]"
+        )),
+    }?;
+    match (
+        payload.protocol_version,
+        payload.min_protocol_version,
+        payload.max_protocol_version,
+    ) {
+        (None, None, None) if payload.transports.is_none() => Ok(()),
+        (Some(version), Some(min), Some(max))
+            if version >= 3
+                && min >= 2
+                && min <= version
+                && version <= max
+                && payload.transports.as_deref() == Some(&[crate::protocol::MessageTransport::Websocket]) =>
+        {
+            Ok(())
+        }
+        version_tuple => Err(format!(
+            "lifecycle violation: ProtocolInfo version range {version_tuple:?} and transports presence do not form a coherent v2/v3 negotiation"
+        )),
+    }
+}
+
+fn resolve_effective_game_data_format(
+    requested: Option<GameDataEncoding>,
+    advertised: &[GameDataEncoding],
+) -> GameDataEncoding {
+    requested
+        .filter(|format| advertised.contains(format))
+        .unwrap_or(GameDataEncoding::Json)
+}
+
 fn validate_local_player_snapshot(
     local_player_id: PlayerId,
     players: &[crate::protocol::PlayerInfo],
@@ -1281,8 +1447,9 @@ fn direct_host_is_usable(host: &str) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        DirectEndpoint, IceServer, LobbyState, PlayerInfo, ProtocolInfoPayload, RateLimitInfo,
-        ReconnectedPayload, RoomJoinedPayload, SenderWatermark, SessionPeer,
+        DirectEndpoint, IceServer, LobbyState, MessageTransport, PlayerInfo, ProtocolInfoPayload,
+        RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
+        SessionPeer,
     };
 
     const LOCAL: u128 = 1;
@@ -1320,7 +1487,7 @@ mod tests {
             protocol_version: version,
             min_protocol_version: version.map(|_| 2),
             max_protocol_version: version,
-            transports: None,
+            transports: version.map(|_| vec![MessageTransport::Websocket]),
         })
     }
 
@@ -1383,7 +1550,7 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events,
-            replay: None,
+            replay: Some(ReplayStatus::Complete),
             sender_watermarks: [LOCAL, PEER, 4]
                 .into_iter()
                 .map(|id| SenderWatermark {
@@ -1392,12 +1559,26 @@ mod tests {
                     seq: 0,
                 })
                 .collect(),
-            reconnection_token: Some("token".into()),
+            reconnection_token: Some("rotated-token".into()),
         }))
     }
 
+    fn reconnected_v2() -> ServerMessage {
+        let ServerMessage::Reconnected(mut payload) = reconnected(vec![]) else {
+            unreachable!("reconnected helper always returns Reconnected")
+        };
+        for player in &mut payload.current_players {
+            player.epoch = None;
+            player.seq = None;
+        }
+        payload.replay = None;
+        payload.sender_watermarks.clear();
+        payload.reconnection_token = None;
+        ServerMessage::Reconnected(payload)
+    }
+
     fn v3_room(policy: ProtocolViolationPolicy) -> ClientCore {
-        let mut core = ClientCore::new(GameDataEncoding::Json, policy, true);
+        let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
         assert_eq!(process(&mut core, authenticated()).events.len(), 1);
         assert_eq!(process(&mut core, protocol_info(Some(3))).events.len(), 1);
         assert_eq!(process(&mut core, room_joined()).events.len(), 1);
@@ -1487,7 +1668,7 @@ mod tests {
 
         for (name, prefix, invalid) in cases {
             let mut core = ClientCore::new(
-                GameDataEncoding::Json,
+                Some(GameDataEncoding::Json),
                 ProtocolViolationPolicy::Observe,
                 true,
             );
@@ -1660,9 +1841,14 @@ mod tests {
             ProtocolViolationPolicy::Observe,
         ] {
             for local_count in [0, 2] {
-                let mut core = ClientCore::new(GameDataEncoding::Json, policy, true);
+                let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 let _ = process(&mut core, authenticated());
                 let _ = process(&mut core, protocol_info(Some(3)));
+                core.record_reconnect_admitted(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "submitted-token".into(),
+                );
                 let before = core.snapshot();
                 let stats_before = core.stats();
                 let ServerMessage::RoomJoined(mut payload) = room_joined() else {
@@ -1828,7 +2014,7 @@ mod tests {
             ProtocolViolationPolicy::Observe,
         ] {
             for nested in &invalid {
-                let mut core = ClientCore::new(GameDataEncoding::Json, policy, true);
+                let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 let _ = process(&mut core, authenticated());
                 let _ = process(&mut core, protocol_info(Some(3)));
                 let before = core.snapshot();
@@ -1841,6 +2027,376 @@ mod tests {
                 );
                 assert_eq!(core.stats(), ClientStats::default());
             }
+        }
+    }
+
+    #[test]
+    fn reconnected_payload_version_matrix_is_transactional() {
+        let mut v3_invalid = Vec::new();
+
+        let ServerMessage::Reconnected(mut missing_replay) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        missing_replay.replay = None;
+        v3_invalid.push(("missing replay", ServerMessage::Reconnected(missing_replay)));
+
+        let ServerMessage::Reconnected(mut missing_token) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        missing_token.reconnection_token = None;
+        v3_invalid.push(("missing token", ServerMessage::Reconnected(missing_token)));
+
+        let ServerMessage::Reconnected(mut empty_token) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        empty_token.reconnection_token = Some(String::new());
+        v3_invalid.push(("empty token", ServerMessage::Reconnected(empty_token)));
+
+        let ServerMessage::Reconnected(mut missing_watermark) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        missing_watermark.sender_watermarks.pop();
+        v3_invalid.push((
+            "missing watermark",
+            ServerMessage::Reconnected(missing_watermark),
+        ));
+
+        let ServerMessage::Reconnected(mut duplicate_watermark) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        duplicate_watermark
+            .sender_watermarks
+            .push(duplicate_watermark.sender_watermarks[0]);
+        v3_invalid.push((
+            "duplicate watermark",
+            ServerMessage::Reconnected(duplicate_watermark),
+        ));
+
+        let ServerMessage::Reconnected(mut mismatched_watermark) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        mismatched_watermark.sender_watermarks[0].seq = 1;
+        v3_invalid.push((
+            "mismatched watermark",
+            ServerMessage::Reconnected(mismatched_watermark),
+        ));
+
+        let ServerMessage::Reconnected(mut missing_self) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        missing_self
+            .current_players
+            .retain(|player| player.id != missing_self.player_id);
+        missing_self
+            .sender_watermarks
+            .retain(|watermark| watermark.player_id != missing_self.player_id);
+        v3_invalid.push(("missing self", ServerMessage::Reconnected(missing_self)));
+
+        let ServerMessage::Reconnected(mut duplicate_self) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        duplicate_self
+            .current_players
+            .push(duplicate_self.current_players[0].clone());
+        v3_invalid.push(("duplicate self", ServerMessage::Reconnected(duplicate_self)));
+
+        let ServerMessage::Reconnected(mut unrotated_token) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        unrotated_token.reconnection_token = Some("submitted-token".into());
+        v3_invalid.push((
+            "unrotated token",
+            ServerMessage::Reconnected(unrotated_token),
+        ));
+
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            for (name, invalid) in &v3_invalid {
+                let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
+                let _ = process(&mut core, authenticated());
+                let _ = process(&mut core, protocol_info(Some(3)));
+                core.record_reconnect_admitted(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "submitted-token".into(),
+                );
+                let before = core.snapshot();
+                let outcome = process(&mut core, invalid.clone());
+                assert!(
+                    matches!(
+                        outcome.events.as_slice(),
+                        [SignalFishEvent::ProtocolViolation { .. }]
+                    ),
+                    "{name}: {:#?}",
+                    outcome.events
+                );
+                assert_eq!(
+                    outcome.disconnect,
+                    policy == ProtocolViolationPolicy::Disconnect,
+                    "{name}"
+                );
+                let mut expected = before;
+                expected.quarantined = policy == ProtocolViolationPolicy::Quarantine;
+                assert_eq!(core.snapshot(), expected, "{name}");
+                assert_eq!(core.membership, Membership::None, "{name}");
+                assert!(!core.session_plan_seen, "{name}");
+                assert!(core.session_peers.is_empty(), "{name}");
+            }
+        }
+
+        let mut v2_invalid = Vec::new();
+        let ServerMessage::Reconnected(mut replay) = reconnected_v2() else {
+            unreachable!()
+        };
+        replay.replay = Some(ReplayStatus::Complete);
+        v2_invalid.push(ServerMessage::Reconnected(replay));
+        let ServerMessage::Reconnected(mut token) = reconnected_v2() else {
+            unreachable!()
+        };
+        token.reconnection_token = Some("v3-only".into());
+        v2_invalid.push(ServerMessage::Reconnected(token));
+        let ServerMessage::Reconnected(mut watermark) = reconnected_v2() else {
+            unreachable!()
+        };
+        watermark.sender_watermarks.push(SenderWatermark {
+            player_id: PlayerId::from_u128(LOCAL),
+            epoch: 1,
+            seq: 0,
+        });
+        v2_invalid.push(ServerMessage::Reconnected(watermark));
+
+        for invalid in v2_invalid {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(None));
+            core.record_reconnect_admitted(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            );
+            let before = core.snapshot();
+            let outcome = process(&mut core, invalid);
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::ProtocolViolation { .. }]
+            ));
+            assert_eq!(core.snapshot(), before);
+        }
+
+        for (version, valid) in [(None, reconnected_v2()), (Some(3), reconnected(vec![]))] {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(version));
+            core.record_reconnect_admitted(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            );
+            let outcome = process(&mut core, valid);
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::Reconnected { .. }]
+            ));
+            assert_eq!(core.membership, Membership::Player);
+        }
+    }
+
+    #[test]
+    fn reconnect_responses_require_the_matching_admitted_request() {
+        let new_core = || {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            core
+        };
+
+        let mut unsolicited = new_core();
+        let before = unsolicited.snapshot();
+        assert_lifecycle_violation(&process(&mut unsolicited, reconnected(vec![])));
+        assert_eq!(unsolicited.snapshot(), before);
+
+        let mut wrong_identity = new_core();
+        wrong_identity.record_reconnect_admitted(
+            PlayerId::from_u128(99),
+            RoomId::from_u128(10),
+            "submitted-token".into(),
+        );
+        let before = wrong_identity.snapshot();
+        assert_lifecycle_violation(&process(&mut wrong_identity, reconnected(vec![])));
+        assert_eq!(wrong_identity.snapshot(), before);
+
+        let mut failed = new_core();
+        failed.record_reconnect_admitted(
+            PlayerId::from_u128(LOCAL),
+            RoomId::from_u128(10),
+            "submitted-token".into(),
+        );
+        let failure = process(
+            &mut failed,
+            ServerMessage::ReconnectionFailed {
+                reason: "expired".into(),
+                error_code: crate::ErrorCode::ReconnectionExpired,
+            },
+        );
+        assert!(matches!(
+            failure.events.as_slice(),
+            [SignalFishEvent::ReconnectionFailed { .. }]
+        ));
+        let ServerMessage::Reconnected(mut unrotated) = reconnected(vec![]) else {
+            unreachable!()
+        };
+        unrotated.reconnection_token = Some("submitted-token".into());
+        assert_lifecycle_violation(&process(&mut failed, ServerMessage::Reconnected(unrotated)));
+    }
+
+    #[test]
+    fn protocol_info_version_tuple_is_coherent_and_transactional() {
+        let mut invalid = Vec::new();
+
+        let ServerMessage::ProtocolInfo(mut missing_min) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        missing_min.min_protocol_version = None;
+        invalid.push(missing_min);
+
+        let ServerMessage::ProtocolInfo(mut missing_transports) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        missing_transports.transports = None;
+        invalid.push(missing_transports);
+
+        let ServerMessage::ProtocolInfo(mut empty_transports) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        empty_transports.transports = Some(vec![]);
+        invalid.push(empty_transports);
+
+        let ServerMessage::ProtocolInfo(mut duplicate_transports) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        duplicate_transports.transports = Some(vec![
+            MessageTransport::Websocket,
+            MessageTransport::Websocket,
+        ]);
+        invalid.push(duplicate_transports);
+
+        let ServerMessage::ProtocolInfo(mut inverted) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        inverted.min_protocol_version = Some(4);
+        invalid.push(inverted);
+
+        let ServerMessage::ProtocolInfo(mut outside) = protocol_info(Some(3)) else {
+            unreachable!()
+        };
+        outside.max_protocol_version = Some(2);
+        invalid.push(outside);
+
+        let ServerMessage::ProtocolInfo(mut v2_with_range) = protocol_info(None) else {
+            unreachable!()
+        };
+        v2_with_range.min_protocol_version = Some(2);
+        invalid.push(v2_with_range);
+
+        let ServerMessage::ProtocolInfo(mut v2_with_transports) = protocol_info(None) else {
+            unreachable!()
+        };
+        v2_with_transports.transports = Some(vec![MessageTransport::Websocket]);
+        invalid.push(v2_with_transports);
+
+        for payload in invalid {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::MessagePack),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let before = core.snapshot();
+            assert_lifecycle_violation(&process(&mut core, ServerMessage::ProtocolInfo(payload)));
+            assert_eq!(core.snapshot(), before);
+            assert!(!core.protocol_info_seen);
+        }
+    }
+
+    #[test]
+    fn invalid_reconnect_accountability_never_resets_the_existing_frontier() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = v3_room(policy);
+            let first = process(
+                &mut core,
+                ServerMessage::GameData {
+                    from_player: PlayerId::from_u128(PEER),
+                    data: serde_json::json!({"seq": 1}),
+                    seq: Some(1),
+                    epoch: Some(1),
+                    class: Some(DeliveryClass::Reliable),
+                    key: None,
+                },
+            );
+            assert!(matches!(
+                first.events.as_slice(),
+                [SignalFishEvent::GameData { .. }]
+            ));
+            let before = core.snapshot();
+            let peers_before = core.session_peers.clone();
+            core.membership = Membership::None;
+            core.record_reconnect_admitted(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            );
+
+            let ServerMessage::Reconnected(mut invalid) = reconnected(vec![]) else {
+                unreachable!()
+            };
+            invalid.sender_watermarks.pop();
+            let outcome = process(&mut core, ServerMessage::Reconnected(invalid));
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::ProtocolViolation { .. }]
+            ));
+            let mut expected = before;
+            expected.quarantined = policy == ProtocolViolationPolicy::Quarantine;
+            assert_eq!(core.snapshot(), expected);
+            assert_eq!(core.session_peers, peers_before);
+
+            core.membership = Membership::Player;
+            core.snapshot.quarantined = false;
+            let next = process(
+                &mut core,
+                ServerMessage::GameData {
+                    from_player: PlayerId::from_u128(PEER),
+                    data: serde_json::json!({"seq": 2}),
+                    seq: Some(2),
+                    epoch: Some(1),
+                    class: Some(DeliveryClass::Reliable),
+                    key: None,
+                },
+            );
+            assert!(
+                matches!(next.events.as_slice(), [SignalFishEvent::GameData { .. }]),
+                "{policy:?}: {:#?}",
+                next.events
+            );
         }
     }
 
@@ -2081,7 +2637,7 @@ mod tests {
                     ServerMessage::RoomLeft,
                 ],
             ] {
-                let mut core = ClientCore::new(GameDataEncoding::Json, policy, true);
+                let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 for message in prefix {
                     let _ = process(&mut core, message);
                 }
@@ -2131,7 +2687,7 @@ mod tests {
     #[test]
     fn authority_denial_is_connection_scoped_after_negotiation() {
         let mut core = ClientCore::new(
-            GameDataEncoding::Json,
+            Some(GameDataEncoding::Json),
             ProtocolViolationPolicy::Observe,
             true,
         );

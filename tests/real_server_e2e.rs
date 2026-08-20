@@ -27,9 +27,10 @@
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
-    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishEvent,
-    WebSocketTransport,
+    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
+    SignalFishEvent, WebSocketTransport,
 };
 
 // ── Harness ─────────────────────────────────────────────────────────
@@ -153,7 +154,103 @@ async fn wait_for_event(
     }
 }
 
+async fn recv_next_event(
+    events: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>,
+    what: &str,
+) -> SignalFishEvent {
+    match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+        Ok(Some(event)) => event,
+        Ok(None) => panic!("event stream ended while waiting for {what}"),
+        Err(_) => panic!("timed out waiting for {what}"),
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
+
+/// Server 0.7 fallback smoke: an unsupported Rkyv preference produces the
+/// warning-before-authentication sequence, then resolves coherently to JSON.
+#[tokio::test]
+#[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
+async fn e2e_server_070_rkyv_request_resolves_to_json() {
+    let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
+        Some(url) => (None, url),
+        None => match spawn_server(&[]).await {
+            Some((guard, url)) => (Some(guard), url),
+            None => {
+                eprintln!("skipping: neither SIGNAL_FISH_E2E_URL nor SIGNAL_FISH_SERVER_BIN set");
+                return;
+            }
+        },
+    };
+
+    let transport = WebSocketTransport::connect(&url)
+        .await
+        .expect("connect to real Server 0.7");
+    let mut config = SignalFishConfig::new(app_id()).enable_v3();
+    config.game_data_format = Some(GameDataEncoding::Rkyv);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+    assert!(matches!(
+        recv_next_event(&mut events, "Connected").await,
+        SignalFishEvent::Connected
+    ));
+    assert!(matches!(
+        recv_next_event(&mut events, "unsupported-format Error").await,
+        SignalFishEvent::Error {
+            error_code: Some(ErrorCode::UnsupportedGameDataFormat),
+            ..
+        }
+    ));
+    assert!(matches!(
+        recv_next_event(&mut events, "Authenticated").await,
+        SignalFishEvent::Authenticated { .. }
+    ));
+    let protocol_info = recv_next_event(&mut events, "ProtocolInfo").await;
+    let SignalFishEvent::ProtocolInfo(protocol_info) = protocol_info else {
+        panic!("expected ProtocolInfo after authentication, got {protocol_info:?}")
+    };
+    assert_eq!(
+        protocol_info.game_data_formats,
+        vec![GameDataEncoding::Json, GameDataEncoding::MessagePack]
+    );
+    assert_eq!(
+        client.requested_game_data_format(),
+        Some(GameDataEncoding::Rkyv)
+    );
+    assert_eq!(
+        client.effective_game_data_format(),
+        Some(GameDataEncoding::Json)
+    );
+    assert!(matches!(
+        client.send_binary_game_data(vec![1, 2, 3]),
+        Err(SignalFishError::BinaryFormatNotNegotiated)
+    ));
+
+    client
+        .join_room(JoinRoomParams::new("e2e-format-fallback", "json-client"))
+        .expect("fallback client should queue JoinRoom");
+    wait_for_event(&mut events, "RoomJoined", Duration::from_secs(5), |event| {
+        matches!(event, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    client
+        .send_game_data(serde_json::json!({"fallback": "json"}))
+        .expect("fallback client should send JSON game data");
+    client.ping().expect("queue fallback send fence");
+    let fence = wait_for_event(
+        &mut events,
+        "fallback send fence",
+        Duration::from_secs(5),
+        |event| matches!(event, SignalFishEvent::Pong | SignalFishEvent::Error { .. }),
+    )
+    .await;
+    assert!(
+        matches!(fence, SignalFishEvent::Pong),
+        "Server 0.7 must accept JSON after Rkyv fallback, got {fence:?}"
+    );
+    assert_eq!(client.stats().game_data_sent, 1);
+    client.shutdown().await;
+}
 
 /// A fully stalled consumer is evicted loudly: the room observes
 /// `PlayerLeft`, and the victim — once it resumes draining — observes what
@@ -297,7 +394,7 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
     // Join a v3 room, retain the server-issued token, then drop the connection
     // abruptly (no LeaveRoom and no graceful shutdown).
     let (mut a, mut a_events) =
-        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_mesh()).await;
     a.join_room(JoinRoomParams::new("e2e-reconnect", "alpha"))
         .expect("join_room");
     let joined = wait_for_event(&mut a_events, "RoomJoined", Duration::from_secs(5), |e| {
@@ -314,12 +411,37 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
         .snapshot()
         .reconnection_token
         .expect("v3 RoomJoined must issue a reconnection token");
+
+    a.set_ready().expect("set ready before finalizing room");
+    a.ping().expect("queue readiness fence ping");
+    wait_for_event(
+        &mut a_events,
+        "readiness fence Pong",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::Pong),
+    )
+    .await;
+    a.start_game().expect("finalize room before reconnect");
+    let first_plan = wait_for_event(
+        &mut a_events,
+        "initial SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    let SignalFishEvent::SessionPlan {
+        generation: Some(first_generation),
+        ..
+    } = first_plan
+    else {
+        panic!("server 0.7 initial SessionPlan must carry a generation")
+    };
     drop(a);
     drop(a_events);
 
     // Fresh v3 connection consumes the token.
     let (mut b, mut b_events) =
-        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_mesh()).await;
     b.reconnect(player_id, room_id, first_token.clone())
         .expect("queue Reconnect");
 
@@ -339,6 +461,8 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
     .await;
 
     let SignalFishEvent::Reconnected {
+        current_players,
+        replay,
         reconnection_token,
         sender_watermarks,
         ..
@@ -347,17 +471,41 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
         panic!("a compatible server must accept its issued reconnect token")
     };
     let rotated_token = reconnection_token.expect("Reconnected must rotate the token");
-    assert_ne!(rotated_token, first_token, "reconnect token must rotate");
-    assert!(
-        sender_watermarks
-            .iter()
-            .any(|watermark| watermark.player_id == player_id),
-        "Reconnected must carry the reconnecting player's watermark"
-    );
+    assert!(rotated_token != first_token, "reconnect token must rotate");
+    assert!(replay.is_some(), "v3 Reconnected must report replay status");
+    let player_ids = current_players
+        .iter()
+        .map(|player| player.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let watermark_ids = sender_watermarks
+        .iter()
+        .map(|watermark| watermark.player_id)
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        b.snapshot().reconnection_token.as_deref(),
-        Some(rotated_token.as_str()),
+        watermark_ids, player_ids,
+        "Reconnected watermarks must exactly cover the current-player snapshot"
+    );
+    assert!(
+        b.snapshot().reconnection_token.as_deref() == Some(rotated_token.as_str()),
         "snapshot must expose the replacement token"
+    );
+
+    let replacement_plan = wait_for_event(
+        &mut b_events,
+        "replacement SessionPlan",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SessionPlan { .. }),
+    )
+    .await;
+    assert!(
+        matches!(
+            replacement_plan,
+            SignalFishEvent::SessionPlan {
+                generation: Some(generation),
+                ..
+            } if generation != first_generation
+        ),
+        "a finalized reconnect must receive a fresh plan generation"
     );
     b.shutdown().await;
 }

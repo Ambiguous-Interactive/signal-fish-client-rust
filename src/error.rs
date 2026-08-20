@@ -104,7 +104,7 @@ pub enum SignalFishError {
 
     /// Binary game data was requested without negotiating a binary encoding.
     #[error(
-        "binary game data requires game_data_format=message_pack or rkyv; this connection uses JSON"
+        "binary game data requires an effectively negotiated MessagePack format; this connection uses JSON"
     )]
     BinaryFormatNotNegotiated,
 

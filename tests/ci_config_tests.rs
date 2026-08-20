@@ -1464,6 +1464,16 @@ mod ci_workflow_policy {
                 "e2e_server_070_generation_signal_and_host_replan",
             ),
             (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_rkyv_request_resolves_to_json",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_reconnect_after_disconnect_uses_server_token",
+            ),
+            (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.4.0",
                 "e2e_server_040_generationless_mesh_signal",
