@@ -72,4 +72,10 @@ configuration-specific documentation defect: the new WebSocket example was
 compiled without its feature in the no-default-feature doctest lane. The
 example now has an item-level `transport-websocket` gate, and both exact
 no-default workspace tests and all-feature doctests pass locally. Final hosted
-checks and review feedback are recorded after the corrected head completes.
+checks on corrected head `4559905` are all green: CI `32426236185`, Coverage
+`32426236161`, Docs Validation `32426236202`, Examples Validation
+`32426236163`, Godot Web `32426236239`, No Panics `32426236208`, Security
+`32426236191`, Semver Checks `32426236192`, Unused Deps `32426236171`, WASM
+`32426236198`, and Workflow Lint `32426236233`. PR #116 has zero inline review
+threads or actionable reviewer findings. Copilot's quota-exhausted comment is
+the known repository-administration blocker tracked in issue #90.

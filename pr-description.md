@@ -29,4 +29,4 @@ Closes #106.
 - [x] Built-in native WebSocket and Godot abort contract tests
 - [x] Repository documentation and policy validators
 - [x] `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
-- [ ] Hosted required checks and review feedback
+- [x] Hosted required checks and review feedback
