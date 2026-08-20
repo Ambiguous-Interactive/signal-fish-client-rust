@@ -652,7 +652,7 @@ safely ignores any of these it doesn't recognize.
 
 | Message | New field(s) | Purpose |
 |---------|--------------|---------|
-| `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies` | Advertise the highest version, data-path transports, and topologies the client can fulfill. Set by `SignalFishConfig::enable_mesh()`. |
+| `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies` | Advertise the highest version, data-path transports, and topologies the client can fulfill. `enable_v3()` sets the version; `enable_mesh()` additionally supplies WebRTC/P2P defaults; power-user builders and `MeshController` can preserve or augment explicit choices. |
 | `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version` | The negotiated version (plus the deployment's accepted range). |
 | `RoomJoinedPayload` / `ReconnectedPayload` | `ice_servers: Vec<IceServer>` | ICE pre-gather: STUN/TURN servers delivered during the lobby wait so WebRTC candidate gathering can start early. Empty (and absent from the wire) for v2. |
 | `ReconnectedPayload` | `replay`, `sender_watermarks`, `reconnection_token` | Required v3 authoritative replay/accountability baseline and rotated reconnect credential. All are absent/empty under v2. |

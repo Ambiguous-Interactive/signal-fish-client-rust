@@ -231,8 +231,8 @@ complete compiling example is `examples/basic_lobby.rs`.
 
 Required second argument to `SignalFishClient::start`. Only `app_id` is required.
 Opt into protocol v3 relay/accountability with `.enable_v3()`. Use
-`.enable_mesh()` only when a WebRTC driver is present; it calls `enable_v3()`
-and additionally advertises WebRTC mesh/host support.
+`.enable_mesh()` only with a WebRTC driver. `MeshController::start` preserves
+compatible choices while ensuring v3, WebRTC, and a Host or Mesh topology.
 
 ```rust,ignore
 pub struct SignalFishConfig {
@@ -297,12 +297,12 @@ client.shutdown().await      // async, graceful
 WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.7
 plans/signals carry a UUID generation; the shared core stamps outgoing signals,
 suppresses stale/unknown inbound generations, rejects self/off-plan/departed
-peers in both directions, and exposes the current value in the snapshot.
+peers, and snapshots the generation plus selected topology/transport atomically.
 Accepted plans are finalized-room, current-roster shapes limited to the four
 Server 0.7 topology/transport pairs and replace prior peer authority atomically.
-`MeshController` generation-binds driver work and rebuilds every retained pair
-when the generation changes. Optional generation fields exist only for 0.4.
-Retired peer identity fences late generation-less signals across 0.4 re-plans.
+`supports_mesh()` reports negotiated WebRTC + Host/Mesh capability, not the
+selected plan. `MeshController` rebuilds retained pairs across generations or
+offerer-role changes. `MeshSession` accepts liveness only for the selected transport.
 
 Sync sends return `SignalFishError::NotConnected` when the transport is closed
 and `SignalFishError::SendBufferFull { capacity }` when the bounded queue is

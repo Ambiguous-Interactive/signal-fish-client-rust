@@ -86,7 +86,7 @@ impl FrameOutcome {
 pub(crate) struct ClientCore {
     snapshot: ClientSnapshot,
     protocol_info_seen: bool,
-    mesh_enabled: bool,
+    mesh_capable: bool,
     stats: ClientStats,
     last_server_error: Option<ServerErrorInfo>,
     violation_policy: ProtocolViolationPolicy,
@@ -96,7 +96,6 @@ pub(crate) struct ClientCore {
     room_players: HashSet<PlayerId>,
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
-    session_transport: Option<TransportKind>,
     retired_generationless_signal_peers: HashSet<PlayerId>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
@@ -145,7 +144,7 @@ impl ClientCore {
     pub(crate) fn new(
         requested_game_data_format: Option<GameDataEncoding>,
         violation_policy: ProtocolViolationPolicy,
-        mesh_enabled: bool,
+        mesh_capable: bool,
     ) -> Self {
         Self {
             snapshot: ClientSnapshot {
@@ -154,7 +153,7 @@ impl ClientCore {
                 ..ClientSnapshot::default()
             },
             protocol_info_seen: false,
-            mesh_enabled,
+            mesh_capable,
             stats: ClientStats::default(),
             last_server_error: None,
             violation_policy,
@@ -164,7 +163,6 @@ impl ClientCore {
             room_players: HashSet::new(),
             session_plan_seen: false,
             session_peers: HashSet::new(),
-            session_transport: None,
             retired_generationless_signal_peers: HashSet::new(),
             pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
@@ -208,10 +206,25 @@ impl ClientCore {
     }
 
     pub(crate) fn supports_mesh(&self) -> bool {
-        self.mesh_enabled
+        self.mesh_capable
             && self
                 .negotiated_protocol_version()
                 .is_some_and(|version| version >= 3)
+    }
+
+    pub(crate) fn session_topology(&self) -> Option<Topology> {
+        self.snapshot.session_topology
+    }
+
+    pub(crate) fn session_transport(&self) -> Option<TransportKind> {
+        self.snapshot.session_transport
+    }
+
+    pub(crate) fn is_p2p_active(&self) -> bool {
+        matches!(
+            self.session_topology(),
+            Some(Topology::Host | Topology::Mesh)
+        )
     }
 
     #[cfg(feature = "polling-client")]
@@ -283,7 +296,7 @@ impl ClientCore {
                 if !self.session_peers.contains(peer_id) {
                     return Err(crate::SignalFishError::SessionPlanUnavailable);
                 }
-                if self.session_transport != Some(TransportKind::WebRtc)
+                if self.snapshot.session_transport != Some(TransportKind::WebRtc)
                     || !self.room_players.contains(peer_id)
                     || Some(*peer_id) == self.snapshot.player_id
                 {
@@ -463,6 +476,8 @@ impl ClientCore {
         self.snapshot.room_code = None;
         self.snapshot.reconnection_token = None;
         self.snapshot.session_generation = None;
+        self.snapshot.session_topology = None;
+        self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
         self.protocol_info_seen = false;
         self.membership = Membership::None;
@@ -470,7 +485,6 @@ impl ClientCore {
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
-        self.session_transport = None;
         self.retired_generationless_signal_peers.clear();
         self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
@@ -853,7 +867,7 @@ impl ClientCore {
                 if self.should_suppress_inbound_signal(*from, *generation) {
                     return Ok(());
                 }
-                if self.session_transport != Some(TransportKind::WebRtc) {
+                if self.snapshot.session_transport != Some(TransportKind::WebRtc) {
                     return Err(
                         "lifecycle violation: Signal requires an authoritative WebRTC SessionPlan"
                             .into(),
@@ -871,7 +885,7 @@ impl ClientCore {
             }
             ServerMessage::NewPeer { .. }
                 if !(self.session_plan_seen
-                    && self.session_transport == Some(TransportKind::WebRtc)) =>
+                    && self.snapshot.session_transport == Some(TransportKind::WebRtc)) =>
             {
                 Err(
                     "lifecycle violation: NewPeer requires an authoritative WebRTC SessionPlan"
@@ -998,7 +1012,7 @@ impl ClientCore {
             || (generation.is_none()
                 && self.snapshot.session_generation.is_none()
                 && self.retired_generationless_signal_peers.contains(&from)
-                && !(self.session_transport == Some(TransportKind::WebRtc)
+                && !(self.snapshot.session_transport == Some(TransportKind::WebRtc)
                     && self.session_peers.contains(&from)))
     }
 
@@ -1203,20 +1217,21 @@ impl ClientCore {
                 self.replace_session_plan(
                     payload.generation,
                     payload.peers.iter().map(|peer| peer.player_id),
+                    payload.topology,
                     payload.transport,
                 );
             }
             ServerMessage::NewPeer { peer_id, .. } => {
                 self.session_peers.insert(*peer_id);
                 if self.snapshot.session_generation.is_none()
-                    && self.session_transport == Some(TransportKind::WebRtc)
+                    && self.snapshot.session_transport == Some(TransportKind::WebRtc)
                 {
                     self.retired_generationless_signal_peers.remove(peer_id);
                 }
             }
             ServerMessage::PlayerLeft { player_id, .. } => {
                 if self.snapshot.session_generation.is_none()
-                    && self.session_transport == Some(TransportKind::WebRtc)
+                    && self.snapshot.session_transport == Some(TransportKind::WebRtc)
                     && self.session_peers.contains(player_id)
                 {
                     self.retired_generationless_signal_peers.insert(*player_id);
@@ -1246,13 +1261,14 @@ impl ClientCore {
         self.snapshot.room_code = Some(baseline.room_code);
         self.snapshot.reconnection_token = baseline.reconnection_token;
         self.snapshot.session_generation = None;
+        self.snapshot.session_topology = None;
+        self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
         self.membership = baseline.membership;
         self.room_finalized = baseline.finalized;
         self.room_players = baseline.players;
         self.session_plan_seen = false;
         self.session_peers.clear();
-        self.session_transport = None;
         self.retired_generationless_signal_peers.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
@@ -1264,13 +1280,14 @@ impl ClientCore {
         self.snapshot.room_code = None;
         self.snapshot.reconnection_token = None;
         self.snapshot.session_generation = None;
+        self.snapshot.session_topology = None;
+        self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
         self.membership = Membership::None;
         self.room_finalized = false;
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
-        self.session_transport = None;
         self.retired_generationless_signal_peers.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
@@ -1280,11 +1297,12 @@ impl ClientCore {
         &mut self,
         generation: Option<SessionGeneration>,
         peers: impl IntoIterator<Item = PlayerId>,
+        topology: Topology,
         transport: TransportKind,
     ) {
         if self.session_plan_seen
             && self.snapshot.session_generation.is_none()
-            && self.session_transport == Some(TransportKind::WebRtc)
+            && self.snapshot.session_transport == Some(TransportKind::WebRtc)
         {
             self.retired_generationless_signal_peers
                 .extend(self.session_peers.iter().copied());
@@ -1295,9 +1313,10 @@ impl ClientCore {
                 .retain(|peer| !peers.contains(peer));
         }
         self.snapshot.session_generation = generation;
+        self.snapshot.session_topology = Some(topology);
+        self.snapshot.session_transport = Some(transport);
         self.session_plan_seen = true;
         self.session_peers = peers;
-        self.session_transport = Some(transport);
         #[cfg(feature = "tokio-runtime")]
         self.advance_session_plan_revision();
     }
@@ -1824,12 +1843,12 @@ mod tests {
             );
             let before = core.snapshot();
             let peers_before = core.session_peers.clone();
-            let transport_before = core.session_transport;
+            let transport_before = core.snapshot().session_transport;
             let outcome = process(&mut core, ServerMessage::SessionPlan(Box::new(invalid)));
             assert_lifecycle_violation(&outcome);
             assert_eq!(core.snapshot(), before);
             assert_eq!(core.session_peers, peers_before);
-            assert_eq!(core.session_transport, transport_before);
+            assert_eq!(core.snapshot().session_transport, transport_before);
         }
     }
 
@@ -2613,9 +2632,33 @@ mod tests {
         relay.generation = None;
         let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
         assert!(!core.retired_generationless_signal_peers.is_empty());
+        assert_eq!(core.snapshot().session_topology, Some(Topology::Relay));
+        assert_eq!(
+            core.snapshot().session_transport,
+            Some(TransportKind::Relay)
+        );
 
         let _ = process(&mut core, ServerMessage::RoomLeft);
         assert!(core.retired_generationless_signal_peers.is_empty());
+        assert!(core.snapshot().session_topology.is_none());
+        assert!(core.snapshot().session_transport.is_none());
+
+        let mut disconnecting = v3_room(ProtocolViolationPolicy::Observe);
+        let _ = process(
+            &mut disconnecting,
+            ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+        );
+        assert_eq!(
+            disconnecting.snapshot().session_topology,
+            Some(Topology::Mesh)
+        );
+        assert_eq!(
+            disconnecting.snapshot().session_transport,
+            Some(TransportKind::WebRtc)
+        );
+        let _ = disconnecting.disconnect(None);
+        assert!(disconnecting.snapshot().session_topology.is_none());
+        assert!(disconnecting.snapshot().session_transport.is_none());
     }
 
     #[test]

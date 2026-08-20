@@ -560,7 +560,9 @@ Useful for keeping the connection alive through proxies or load balancers.
 connection/authentication state, room/player IDs, room code, the latest
 reconnection token, requested and effective game-data formats, negotiated
 protocol version, current session generation, and whether delivery is
-quarantined. Prefer it whenever multiple fields must describe the same instant.
+quarantined. It also carries the latest selected `session_topology` and
+`session_transport`. Prefer it whenever multiple fields must describe the same
+instant.
 
 Synchronous snapshot and negotiation accessors briefly lock the shared core;
 the async room-ID accessors acquire the same internal mutex.
@@ -572,6 +574,10 @@ the async room-ID accessors acquire the same internal mutex.
 | `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Returns coherent session, reconnect-token, negotiation, and quarantine state. |
 | `requested_game_data_format()` | `fn requested_game_data_format(&self) -> Option<GameDataEncoding>` | Exact preference supplied in `SignalFishConfig`, preserving omission. |
 | `effective_game_data_format()` | `fn effective_game_data_format(&self) -> Option<GameDataEncoding>` | Server-selected format; `None` before valid `ProtocolInfo` or after disconnect. |
+| `supports_mesh()` | `fn supports_mesh(&self) -> bool` | Negotiated local capability: v3 plus advertised WebRTC and a Host or Mesh topology. This does not describe the active plan. |
+| `session_topology()` | `fn session_topology(&self) -> Option<Topology>` | Topology selected by the latest authoritative plan. |
+| `session_transport()` | `fn session_transport(&self) -> Option<TransportKind>` | Transport selected by the latest authoritative plan. |
+| `is_p2p_active()` | `fn is_p2p_active(&self) -> bool` | Whether the selected plan uses a Host or Mesh topology. |
 | `current_room_id()` | `async fn current_room_id(&self) -> Option<RoomId>` | Returns the current room ID, if in a room. |
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
@@ -774,14 +780,17 @@ All accessors are **synchronous** (no async, no mutex):
 | `negotiated_protocol_version()` | `Option<u16>` | Negotiated v3-or-newer version; `None` before `ProtocolInfo` or on the v2 floor. |
 | `requested_game_data_format()` | `Option<GameDataEncoding>` | Exact configured preference, preserving omission. |
 | `effective_game_data_format()` | `Option<GameDataEncoding>` | Server-selected format; `None` before valid `ProtocolInfo` or after disconnect. |
-| `supports_mesh()` | `bool` | Whether WebRTC was advertised and protocol v3 was negotiated. |
+| `supports_mesh()` | `bool` | Negotiated v3 + WebRTC + Host/Mesh capability; not active-plan state. |
+| `session_topology()` | `Option<Topology>` | Topology selected by the latest authoritative plan. |
+| `session_transport()` | `Option<TransportKind>` | Transport selected by the latest authoritative plan. |
+| `is_p2p_active()` | `bool` | Whether the selected plan uses a Host or Mesh topology. |
 | `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
-| `snapshot()` | `ClientSnapshot` | Coherent connection, room, reconnect-token, negotiation, and quarantine state. |
+| `snapshot()` | `ClientSnapshot` | Coherent connection, room, reconnect-token, negotiation, selected-plan, and quarantine state. |
 | `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
 | `queue_age_stats()` | `PollingQueueAgeStats` | Sampled current/peak age of the oldest client-owned outbound item. |
 | `reset_queue_age_peak()` | `()` | Refresh current age and reset its sampled peak; useful after setup. |

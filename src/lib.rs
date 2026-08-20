@@ -43,21 +43,22 @@
 //!   v3 capabilities, the server relays all traffic through itself, and the
 //!   `Authenticate` bytes are byte-identical to the old v2 client. This is the
 //!   *relay-floor guarantee*: opt into nothing and nothing changes.
-//! - **v3 — additive mesh (opt-in).** [`SignalFishConfig::enable_mesh`] advertises
-//!   the WebRTC/relay transports and mesh/host/relay topologies, letting the
-//!   server form a peer-to-peer session. v3 capabilities are additive to the
-//!   v2 relay floor, and the server falls back to relay whenever it cannot form
-//!   a session. On current servers, an eligible client explicitly calls
+//! - **v3 — additive negotiation (opt-in).** [`SignalFishConfig::enable_v3`]
+//!   enables v3 relay/accountability semantics. [`SignalFishConfig::enable_mesh`]
+//!   additionally advertises WebRTC plus mesh/host topologies, letting the server
+//!   form a peer-to-peer session when appropriate. v3 capabilities are additive
+//!   to the v2 relay floor, and the server falls back to relay whenever it cannot
+//!   form a session. On current servers, an eligible client explicitly calls
 //!   [`SignalFishClient::start_game`] after readiness instead of relying on
 //!   automatic start.
 //!
-//! The negotiated version comes back in the server's `ProtocolInfo`; check it via
-//! [`SignalFishClient::negotiated_protocol_version`] /
-//! [`SignalFishClient::supports_mesh`]. v3-only sends fail fast with
+//! The negotiated version comes back in the server's `ProtocolInfo`;
+//! [`SignalFishClient::supports_mesh`] reports negotiated WebRTC plus Host/Mesh
+//! capability, while `snapshot()` exposes the server-selected plan. v3-only sends fail fast with
 //! [`SignalFishError::ProtocolUnsupported`] until v3 is negotiated. The SDK is
 //! *signaling-only* — it bundles no WebRTC stack; with the `mesh` feature you
-//! implement the [`webrtc::WebRtcDriver`] seam (or use
-//! [`webrtc::MeshController`]) against str0m / webrtc-rs / web-sys. The highest
+//! implement the `webrtc::WebRtcDriver` seam (or use
+//! `webrtc::MeshController`) against str0m / webrtc-rs / web-sys. The highest
 //! version this SDK speaks is [`PROTOCOL_VERSION`].
 //!
 //! ## Quick Start
@@ -123,8 +124,11 @@ pub mod transports;
 
 /// Highest signaling protocol version this SDK speaks.
 ///
-/// Advertised in `Authenticate` when a consumer opts into the mesh via
-/// [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh).
+/// Advertised in `Authenticate` when a consumer opts into v3 via
+/// [`SignalFishConfig::enable_v3`](crate::SignalFishConfig::enable_v3),
+/// [`SignalFishConfig::enable_mesh`](crate::SignalFishConfig::enable_mesh), or
+/// the lower-level configuration builders. A `webrtc::MeshController` also
+/// ensures its owned client advertises the capabilities its driver fulfills.
 pub const PROTOCOL_VERSION: u16 = 3;
 
 // Re-export primary types for ergonomic imports.

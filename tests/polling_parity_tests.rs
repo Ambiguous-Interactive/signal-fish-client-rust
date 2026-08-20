@@ -27,7 +27,7 @@ use signal_fish_client::protocol::{
     DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState,
     PlayerId, PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
     ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage, SpectatorJoinedPayload,
-    TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
+    Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ErrorCode, ProtocolViolationPolicy};
@@ -36,6 +36,16 @@ use signal_fish_client::{
 };
 
 fn assert_common_api_is_object_safe(_client: &mut dyn signal_fish_client::SignalFishClientApi) {}
+
+fn selected_plan_through_common_api(
+    client: &dyn SignalFishClientApi,
+) -> (Option<Topology>, Option<TransportKind>, bool) {
+    (
+        client.session_topology(),
+        client.session_transport(),
+        client.is_p2p_active(),
+    )
+}
 
 #[derive(Clone)]
 struct FrameMock {
@@ -833,6 +843,35 @@ async fn assert_open_text_trace_parity_with_reconnect(
     assert_eq!(async_events, polling_events);
     assert_eq!(async_snapshot, polling_snapshot);
     assert_eq!(async_client.stats(), polling_client.stats());
+    assert_eq!(
+        async_client.session_topology(),
+        polling_client.session_topology()
+    );
+    assert_eq!(
+        async_client.session_transport(),
+        polling_client.session_transport()
+    );
+    assert_eq!(async_client.is_p2p_active(), polling_client.is_p2p_active());
+    assert_eq!(
+        async_client.session_topology(),
+        async_snapshot.session_topology
+    );
+    assert_eq!(
+        async_client.session_transport(),
+        async_snapshot.session_transport
+    );
+    assert_eq!(
+        selected_plan_through_common_api(&async_client),
+        selected_plan_through_common_api(&polling_client)
+    );
+    assert_eq!(
+        selected_plan_through_common_api(&async_client),
+        (
+            async_snapshot.session_topology,
+            async_snapshot.session_transport,
+            async_client.is_p2p_active(),
+        )
+    );
     async_client.shutdown().await;
     (async_events, async_snapshot)
 }
@@ -2352,6 +2391,307 @@ async fn parity_enable_mesh_authenticate_is_byte_identical() {
     assert_eq!(
         async_sent[0], poll_sent[0],
         "enable_mesh Authenticate must be byte-identical between clients"
+    );
+}
+
+#[tokio::test]
+async fn parity_mesh_capability_requires_webrtc_and_p2p_topology() {
+    let cases = [
+        (vec![TransportKind::WebRtc], vec![Topology::Mesh], true),
+        (vec![TransportKind::WebRtc], vec![Topology::Host], true),
+        (vec![TransportKind::WebRtc], vec![Topology::Relay], false),
+        (vec![TransportKind::Relay], vec![Topology::Mesh], false),
+    ];
+
+    for (transports, topologies, expected) in cases {
+        let config = SignalFishConfig::new("app")
+            .with_protocol_version(3)
+            .with_transports(transports)
+            .with_topologies(topologies);
+
+        let async_mock = SharedMock::new(vec![AUTH, PI_V3]);
+        let (mut async_client, mut events) = SignalFishClient::start(async_mock, config.clone());
+        for _ in 0..3 {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+                .await
+                .expect("async capability trace should make progress");
+        }
+
+        let poll_mock = SharedMock::new(vec![AUTH, PI_V3]);
+        let mut polling_client = SignalFishPollingClient::new(poll_mock, config);
+        let _ = polling_client.poll();
+
+        assert_eq!(async_client.supports_mesh(), expected);
+        assert_eq!(polling_client.supports_mesh(), expected);
+        async_client.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn parity_selected_plan_accessors_follow_ordered_canonical_transitions() {
+    use signal_fish_client::protocol::{DirectEndpoint, SessionPeer, SessionPlanPayload};
+
+    fn plan(
+        topology: Topology,
+        transport: TransportKind,
+        generation: u128,
+        peer: PlayerId,
+    ) -> ServerMessage {
+        ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+            generation: Some(uuid::Uuid::from_u128(generation)),
+            topology,
+            transport,
+            host: (topology == Topology::Host).then_some(peer),
+            direct_endpoint: (transport == TransportKind::Direct).then_some(DirectEndpoint {
+                host: "192.0.2.10".into(),
+                port: 7_777,
+            }),
+            peers: if topology == Topology::Relay {
+                vec![]
+            } else {
+                vec![SessionPeer {
+                    player_id: peer,
+                    player_name: "peer".into(),
+                    is_authority: false,
+                    initiate: false,
+                }]
+            },
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        }))
+    }
+
+    let peer = uuid::Uuid::from_u128(350);
+    let transitions = [
+        (Topology::Relay, TransportKind::Relay, false, 351),
+        (Topology::Mesh, TransportKind::WebRtc, true, 352),
+        (Topology::Host, TransportKind::Direct, true, 353),
+        (Topology::Host, TransportKind::WebRtc, true, 354),
+    ];
+
+    let mut messages = binary_accountability_prefix(peer)
+        .into_iter()
+        .map(|frame| match frame {
+            TransportFrame::Text(text) => text,
+            TransportFrame::Binary(_) => unreachable!("prefix is text-only"),
+        })
+        .collect::<Vec<_>>();
+    messages.push(
+        serde_json::to_string(&ServerMessage::LobbyStateChanged {
+            lobby_state: LobbyState::Finalized,
+            ready_players: vec![],
+            all_ready: true,
+        })
+        .expect("finalized lobby event should serialize"),
+    );
+
+    for (index, (topology, transport, p2p_active, generation)) in
+        transitions.into_iter().enumerate()
+    {
+        messages.push(
+            serde_json::to_string(&plan(topology, transport, generation, peer))
+                .expect("session plan should serialize"),
+        );
+
+        let (events, snapshot) = assert_open_text_trace_parity(
+            messages.clone(),
+            SignalFishConfig::new("app").enable_mesh(),
+        )
+        .await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SessionPlan|"))
+                .count(),
+            index + 1,
+            "every ordered plan transition must surface exactly once"
+        );
+        assert_eq!(snapshot.session_topology, Some(topology));
+        assert_eq!(snapshot.session_transport, Some(transport));
+        assert_eq!(
+            matches!(
+                snapshot.session_topology,
+                Some(Topology::Host | Topology::Mesh)
+            ),
+            p2p_active
+        );
+    }
+}
+
+#[tokio::test]
+async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
+    use signal_fish_client::protocol::{SessionPeer, SessionPlanPayload};
+
+    let peer = uuid::Uuid::from_u128(350);
+    let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(uuid::Uuid::from_u128(351)),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer,
+            player_name: "peer".into(),
+            is_authority: false,
+            initiate: false,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }));
+    let mut populated = binary_accountability_prefix(peer)
+        .into_iter()
+        .map(|frame| match frame {
+            TransportFrame::Text(text) => text,
+            TransportFrame::Binary(_) => unreachable!("prefix is text-only"),
+        })
+        .collect::<Vec<_>>();
+    populated.extend([
+        serde_json::to_string(&ServerMessage::LobbyStateChanged {
+            lobby_state: LobbyState::Finalized,
+            ready_players: vec![],
+            all_ready: true,
+        })
+        .expect("finalized lobby event should serialize"),
+        serde_json::to_string(&plan).expect("session plan should serialize"),
+    ]);
+
+    let (events, snapshot) = assert_open_text_trace_parity(
+        populated.clone(),
+        SignalFishConfig::new("app").enable_mesh(),
+    )
+    .await;
+    assert!(events.iter().any(|event| event.starts_with("SessionPlan|")));
+    assert_eq!(snapshot.session_topology, Some(Topology::Mesh));
+    assert_eq!(snapshot.session_transport, Some(TransportKind::WebRtc));
+
+    let mut room_exit = populated.clone();
+    room_exit
+        .push(serde_json::to_string(&ServerMessage::RoomLeft).expect("RoomLeft should serialize"));
+    let (events, snapshot) =
+        assert_open_text_trace_parity(room_exit, SignalFishConfig::new("app").enable_mesh()).await;
+    let lifecycle = events
+        .iter()
+        .filter_map(|event| {
+            if event.starts_with("SessionPlan|") {
+                Some("SessionPlan")
+            } else if event == "RoomLeft" {
+                Some("RoomLeft")
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lifecycle, ["SessionPlan", "RoomLeft"]);
+    assert!(snapshot.session_topology.is_none());
+    assert!(snapshot.session_transport.is_none());
+
+    let polling_mock = SharedMock::from_msgs(
+        populated
+            .iter()
+            .cloned()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+    );
+    let mut polling_client =
+        SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app").enable_mesh());
+    let _ = polling_client.poll();
+    assert_eq!(polling_client.session_topology(), Some(Topology::Mesh));
+    assert_eq!(
+        polling_client.session_transport(),
+        Some(TransportKind::WebRtc)
+    );
+    polling_client.close();
+    assert!(polling_client.session_topology().is_none());
+    assert!(polling_client.session_transport().is_none());
+
+    let async_mock = SharedMock::from_msgs(
+        populated
+            .into_iter()
+            .map(|message| Some(Ok(message)))
+            .chain(std::iter::once(Some(Err(
+                SignalFishError::TransportReceive("reset".into()),
+            ))))
+            .collect(),
+    );
+    let (async_client, mut events) =
+        SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
+    let mut saw_plan = false;
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("async disconnect trace should make progress")
+        {
+            Some(SignalFishEvent::SessionPlan { .. }) => saw_plan = true,
+            Some(SignalFishEvent::Disconnected { .. }) => break,
+            Some(_) => {}
+            None => panic!("async event stream ended before Disconnected"),
+        }
+    }
+    assert!(saw_plan, "the disconnect must follow a populated plan");
+    assert!(async_client.session_topology().is_none());
+    assert!(async_client.session_transport().is_none());
+}
+
+#[tokio::test]
+async fn parity_reconnected_baseline_is_planless_until_fresh_session_plan() {
+    use signal_fish_client::protocol::SessionPlanPayload;
+
+    let (events, snapshot) = assert_open_reconnect_trace_parity(
+        vec![AUTH.into(), PI_V3.into(), reconnected_with_missed(vec![])],
+        SignalFishConfig::new("app").enable_mesh(),
+    )
+    .await;
+    assert!(events.iter().any(|event| event.starts_with("Reconnected|")));
+    assert!(snapshot.session_topology.is_none());
+    assert!(snapshot.session_transport.is_none());
+    assert!(snapshot.session_generation.is_none());
+
+    let ServerMessage::Reconnected(mut finalized) =
+        serde_json::from_str::<ServerMessage>(&reconnected_with_missed(vec![]))
+            .expect("Reconnected fixture should decode")
+    else {
+        unreachable!("reconnect fixture is Reconnected")
+    };
+    finalized.lobby_state = LobbyState::Finalized;
+    let fresh_plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(uuid::Uuid::from_u128(355)),
+        topology: Topology::Relay,
+        transport: TransportKind::Relay,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }));
+    let (events, snapshot) = assert_open_reconnect_trace_parity(
+        vec![
+            AUTH.into(),
+            PI_V3.into(),
+            serde_json::to_string(&ServerMessage::Reconnected(finalized))
+                .expect("finalized Reconnected fixture should serialize"),
+            serde_json::to_string(&fresh_plan).expect("fresh SessionPlan should serialize"),
+        ],
+        SignalFishConfig::new("app").enable_mesh(),
+    )
+    .await;
+    let lifecycle = events
+        .iter()
+        .filter_map(|event| {
+            if event.starts_with("Reconnected|") {
+                Some("Reconnected")
+            } else if event.starts_with("SessionPlan|") {
+                Some("SessionPlan")
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(lifecycle, ["Reconnected", "SessionPlan"]);
+    assert_eq!(snapshot.session_topology, Some(Topology::Relay));
+    assert_eq!(snapshot.session_transport, Some(TransportKind::Relay));
+    assert_eq!(
+        snapshot.session_generation,
+        Some(uuid::Uuid::from_u128(355))
     );
 }
 

@@ -216,8 +216,9 @@ mod controller {
     /// Drives a [`WebRtcDriver`] through the full v3 mesh signaling handshake on
     /// top of a [`SignalFishClient`], surfacing a [`MeshEvent`] stream.
     ///
-    /// `MeshController::start` enables the mesh automatically (if the config did
-    /// not already opt in), so the canonical usage is a few lines:
+    /// `MeshController::start` ensures the config advertises v3, WebRTC, and at
+    /// least one P2P topology while preserving compatible explicit choices, so
+    /// the canonical usage is a few lines:
     ///
     /// ```rust,ignore
     /// let (mut mesh) = MeshController::start(transport, SignalFishConfig::new("app"), my_driver);
@@ -273,19 +274,15 @@ mod controller {
     impl<D: WebRtcDriver> MeshController<D> {
         /// Start a mesh-driving client over `transport` using `driver`.
         ///
-        /// If `config` has not opted into the mesh, this enables it (so the
-        /// server can form a P2P session). The driver is engaged automatically as
-        /// the server's `SessionPlan`/`NewPeer` directives arrive.
+        /// Ensures `config` advertises v3, WebRTC, and at least one P2P topology
+        /// while preserving compatible explicit choices. The driver is engaged
+        /// automatically as the server's `SessionPlan`/`NewPeer` directives arrive.
         pub fn start(
             transport: impl Transport + Send + 'static,
             config: SignalFishConfig,
             driver: D,
         ) -> Self {
-            let config = if config.protocol_version.is_none() {
-                config.enable_mesh()
-            } else {
-                config
-            };
+            let config = config.enable_controller_mesh();
             let (client, events) = SignalFishClient::start(transport, config);
             // Hand the driver a waker so it can pump on demand (eliminating up to
             // one pump-interval of trickle-ICE / data latency). Drivers that do not
@@ -821,7 +818,7 @@ mod controller {
 mod tests {
     use super::*;
     use crate::client::SignalFishConfig;
-    use crate::protocol::TransportKind;
+    use crate::protocol::{ClientMessage, Topology, TransportKind};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1451,6 +1448,70 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn controller_authentication_adds_missing_mesh_capability_without_overwrite() {
+        let cases = [
+            (
+                "relay-v3",
+                SignalFishConfig::new("app").enable_v3(),
+                crate::PROTOCOL_VERSION,
+                vec![TransportKind::Relay, TransportKind::WebRtc],
+                vec![Topology::Relay, Topology::Mesh],
+            ),
+            (
+                "future-direct-host",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(4)
+                    .with_transports([TransportKind::Direct])
+                    .with_topologies([Topology::Host]),
+                4,
+                vec![TransportKind::Direct, TransportKind::WebRtc],
+                vec![Topology::Host],
+            ),
+            (
+                "existing-webrtc-missing-p2p-topology",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(3)
+                    .with_transports([TransportKind::WebRtc, TransportKind::Relay])
+                    .with_topologies([Topology::Relay]),
+                3,
+                vec![TransportKind::WebRtc, TransportKind::Relay],
+                vec![Topology::Relay, Topology::Mesh],
+            ),
+            (
+                "compatible-existing-webrtc-host",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(3)
+                    .with_transports([TransportKind::Direct, TransportKind::WebRtc])
+                    .with_topologies([Topology::Host, Topology::Relay]),
+                3,
+                vec![TransportKind::Direct, TransportKind::WebRtc],
+                vec![Topology::Host, Topology::Relay],
+            ),
+        ];
+
+        for (name, config, protocol, transports, topologies) in cases {
+            let (transport, sent) = MockTransport::new(vec![]);
+            let controller = MeshController::start(transport, config, SharedDriver::default());
+            wait_for_sent_count(&sent, &["Authenticate"], 1).await;
+            let authenticate = serde_json::from_str::<ClientMessage>(&sent.lock().unwrap()[0])
+                .expect("controller Authenticate frame should decode");
+            let ClientMessage::Authenticate {
+                protocol_version,
+                supported_transports,
+                supported_topologies,
+                ..
+            } = authenticate
+            else {
+                panic!("{name}: first frame should be Authenticate");
+            };
+            assert_eq!(protocol_version, Some(protocol), "{name}");
+            assert_eq!(supported_transports, Some(transports), "{name}");
+            assert_eq!(supported_topologies, Some(topologies), "{name}");
+            controller.shutdown().await;
+        }
+    }
+
     async fn recv_until_peer_connected(
         mesh: &mut MeshController<SharedDriver>,
     ) -> Option<PlayerId> {
@@ -1796,6 +1857,19 @@ mod tests {
             });
         assert!(relayed_offer, "the local offer should be relayed");
         assert!(reported_status, "transport status should be reported up");
+        assert_eq!(mesh.session().topology(), Some(Topology::Mesh));
+        assert_eq!(mesh.session().transport(), Some(TransportKind::WebRtc));
+        assert_eq!(
+            mesh.session().topology(),
+            mesh.client().session_topology(),
+            "the controller and core must expose the same active WebRTC topology"
+        );
+        assert_eq!(
+            mesh.session().transport(),
+            mesh.client().session_transport(),
+            "the controller and core must expose the same active WebRTC transport"
+        );
+        assert_eq!(mesh.session().is_p2p(), mesh.client().is_p2p_active());
         mesh.shutdown().await;
     }
 
@@ -2442,6 +2516,17 @@ mod tests {
             assert!(!calls
                 .iter()
                 .any(|call| matches!(call, DriverCall::OnSignal(id, _) if *id == late_peer)));
+            assert_eq!(
+                mesh.session().topology(),
+                mesh.client().session_topology(),
+                "controller and shared core must expose one selected topology"
+            );
+            assert_eq!(
+                mesh.session().transport(),
+                mesh.client().session_transport(),
+                "controller and shared core must expose one selected transport"
+            );
+            assert_eq!(mesh.session().is_p2p(), mesh.client().is_p2p_active());
             mesh.shutdown().await;
         }
     }

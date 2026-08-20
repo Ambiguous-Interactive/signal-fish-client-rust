@@ -118,10 +118,10 @@ Lifecycle/plan/signaling-invalid frames are observable but transactional under
 every policy; async and polling drivers retain identical behavior. Session 027
 records the rule-to-test/source matrix and verification evidence.
 
-## Current Correctness Milestone — Negotiation and Reconnect State
+## Completed Correctness Milestone — Negotiation and Reconnect State
 
-Issues #100 and #101 are implemented together for review because both depend on
-the first authoritative `ProtocolInfo` and reconnect state transaction.
+Issues #100 and #101 shipped together in PR #111 because both depend on the
+first authoritative `ProtocolInfo` and reconnect state transaction.
 
 - Requested and effective game-data formats are distinct public state. The
   shared core resolves Server 0.7's canonical format advertisement atomically,
@@ -131,12 +131,20 @@ the first authoritative `ProtocolInfo` and reconnect state transaction.
   token rotation, accountability, membership, and plan state under every
   violation policy. The old WebRTC plan is fenced until Server 0.7's fresh live
   post-reconnect plan arrives.
-- Session 028 records the rule-to-source-to-test matrix and local pinned-server
-  evidence. Hosted review and aggregate checks remain the completion gate.
+- Session 028 records the rule-to-source-to-test matrix, pinned-server evidence,
+  hosted review fixes, and green aggregate checks.
 
-## Next Correctness Milestone — Delivery Semantics and Liveness
+## Current Correctness Milestone — Mesh Capability and Liveness
 
-Continue with #102, then #105, #103, #104, #106, and #107 before usability,
+[Issue #102](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/102)
+separates negotiated local capability from the authoritative selected plan,
+normalizes controller-owned WebRTC configuration, and makes peer liveness
+transport-specific. Session 029 records the configuration, state, transition,
+and async/polling/controller parity evidence.
+
+## Next Correctness Milestone — WebSocket Liveness
+
+Continue with #105, then #103, #104, #106, and #107 before usability,
 performance, token binding, or presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding

@@ -3,7 +3,7 @@
 //! [`MeshSession`] folds the v3 [`SignalFishEvent`]s into an always-consistent
 //! view of the current peer-to-peer session: the chosen topology/transport, the
 //! peers this client should connect to (each with its server-assigned `initiate`
-//! flag and last-known liveness), the elected host, and the ICE servers. It does
+//! flag and selected-path liveness), the elected host, and the ICE servers. It does
 //! the fiddly bookkeeping — late joins, host re-election, and reconnect replay —
 //! correctly and idempotently, so consumers don't each re-implement it.
 //!
@@ -19,7 +19,7 @@ use crate::protocol::{
     DirectEndpoint, IceServer, PlayerId, SessionGeneration, Topology, TransportKind,
 };
 
-/// A peer within a [`MeshSession`], enriched with last-known data-path liveness.
+/// A peer within a [`MeshSession`], enriched with selected-path liveness.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshPeer {
     /// The peer's identifier.
@@ -31,7 +31,8 @@ pub struct MeshPeer {
     /// Whether **this client** sends the WebRTC offer to this peer
     /// (server-assigned; obey verbatim).
     pub initiate: bool,
-    /// Last-known data-path liveness for this peer (from `PeerTransportStatus`).
+    /// Last-known liveness reported for the session's selected transport.
+    /// Status for any other transport is ignored.
     pub connected: bool,
 }
 
@@ -77,7 +78,8 @@ impl MeshSession {
                 ice_servers,
                 fallback,
             } => {
-                let generation_changed = self.generation != *generation;
+                let selected_path_changed =
+                    self.generation != *generation || self.transport != Some(*transport);
                 self.generation = *generation;
                 self.topology = Some(*topology);
                 self.transport = Some(*transport);
@@ -85,8 +87,9 @@ impl MeshSession {
                 self.host = *host;
                 self.direct_endpoint = direct_endpoint.clone();
                 // A plan fully REPLACES the peer set (handles host re-election
-                // and topology change), preserving each surviving peer's
-                // liveness; peers absent from the new plan are dropped.
+                // and topology change). Surviving liveness is preserved only
+                // when generation, selected transport, and offerer role are
+                // unchanged; peers absent from the new plan are dropped.
                 self.peers = peers
                     .iter()
                     .map(|p| MeshPeer {
@@ -94,8 +97,10 @@ impl MeshSession {
                         player_name: p.player_name.clone(),
                         is_authority: p.is_authority,
                         initiate: p.initiate,
-                        connected: !generation_changed
-                            && self.peer(p.player_id).is_some_and(|e| e.connected),
+                        connected: !selected_path_changed
+                            && self.peer(p.player_id).is_some_and(|existing| {
+                                existing.connected && existing.initiate == p.initiate
+                            }),
                     })
                     .collect();
                 // Every SessionPlan is authoritative. In particular, an
@@ -111,6 +116,11 @@ impl MeshSession {
                 if let Some(existing) = self.peers.iter_mut().find(|p| p.player_id == *peer_id) {
                     let changed = existing.initiate != *you_initiate;
                     existing.initiate = *you_initiate;
+                    if changed {
+                        // The controller restarts the handshake when the server
+                        // changes the offerer role, so prior liveness is stale.
+                        existing.connected = false;
+                    }
                     changed
                 } else {
                     self.peers.push(MeshPeer {
@@ -124,8 +134,13 @@ impl MeshSession {
                 }
             }
             SignalFishEvent::PeerTransportStatus {
-                peer_id, connected, ..
+                peer_id,
+                transport,
+                connected,
             } => {
+                if self.transport != Some(*transport) {
+                    return false;
+                }
                 // Only mutate liveness; never invent a peer the server's plan
                 // didn't include.
                 if let Some(p) = self.peers.iter_mut().find(|p| p.player_id == *peer_id) {
@@ -436,9 +451,10 @@ mod tests {
         assert_eq!(s.host(), Some(uuid(3)));
         assert!(s.peer(uuid(1)).is_none(), "peer 1 dropped on re-plan");
         assert!(s.peer(uuid(3)).is_some());
-        // Surviving peer 2 keeps its liveness across the re-plan...
-        assert!(s.peer(uuid(2)).unwrap().connected);
-        // ...but its `initiate` is taken from the NEW plan.
+        // The controller restarts peer 2 because its offerer role changed, so
+        // selected-path liveness must reset until that new handshake connects.
+        assert!(!s.peer(uuid(2)).unwrap().connected);
+        // Its `initiate` is taken from the NEW plan.
         assert!(!s.peer(uuid(2)).unwrap().initiate);
         // ICE replaced, not merged.
         assert_eq!(s.ice_servers(), &[ice("stun:b")]);
@@ -463,6 +479,12 @@ mod tests {
     fn new_peer_for_known_peer_updates_latest_wins() {
         let mut s = MeshSession::new();
         s.apply(&plan(Topology::Mesh, None, vec![peer(2, true)], vec![]));
+        s.apply(&SignalFishEvent::PeerTransportStatus {
+            peer_id: uuid(2),
+            transport: TransportKind::WebRtc,
+            connected: true,
+        });
+        assert!(s.peer(uuid(2)).unwrap().connected);
         // A later NewPeer for the same id overrides the initiate flag.
         s.apply(&SignalFishEvent::NewPeer {
             peer_id: uuid(2),
@@ -470,6 +492,10 @@ mod tests {
         });
         assert_eq!(s.peers().len(), 1);
         assert!(!s.peer(uuid(2)).unwrap().initiate);
+        assert!(
+            !s.peer(uuid(2)).unwrap().connected,
+            "offerer-role changes restart the selected-path handshake"
+        );
     }
 
     #[test]
@@ -498,6 +524,70 @@ mod tests {
         let p = s.peer(uuid(1)).unwrap();
         assert!(p.connected);
         assert!(p.initiate, "initiate is server-authoritative, untouched");
+    }
+
+    #[test]
+    fn liveness_tracks_only_the_selected_transport_across_plan_transitions() {
+        let mut session = MeshSession::new();
+        let peer_id = uuid(1);
+
+        session.apply(&plan(
+            Topology::Host,
+            Some(peer_id),
+            vec![peer(1, false)],
+            vec![],
+        ));
+        assert!(!session.apply(&SignalFishEvent::PeerTransportStatus {
+            peer_id,
+            transport: TransportKind::Direct,
+            connected: true,
+        }));
+        assert!(!session.peer(peer_id).unwrap().connected);
+        assert!(session.apply(&SignalFishEvent::PeerTransportStatus {
+            peer_id,
+            transport: TransportKind::WebRtc,
+            connected: true,
+        }));
+        assert!(session.peer(peer_id).unwrap().connected);
+
+        session.apply(&SignalFishEvent::SessionPlan {
+            generation: None,
+            topology: Topology::Host,
+            transport: TransportKind::Direct,
+            host: Some(peer_id),
+            direct_endpoint: Some(DirectEndpoint {
+                host: "192.0.2.1".into(),
+                port: 7_777,
+            }),
+            peers: vec![peer(1, false)],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        });
+        assert!(!session.peer(peer_id).unwrap().connected);
+        assert!(!session.apply(&SignalFishEvent::PeerTransportStatus {
+            peer_id,
+            transport: TransportKind::WebRtc,
+            connected: true,
+        }));
+        assert!(session.apply(&SignalFishEvent::PeerTransportStatus {
+            peer_id,
+            transport: TransportKind::Direct,
+            connected: true,
+        }));
+        assert!(session.peer(peer_id).unwrap().connected);
+
+        session.apply(&SignalFishEvent::SessionPlan {
+            generation: None,
+            topology: Topology::Relay,
+            transport: TransportKind::Relay,
+            host: None,
+            direct_endpoint: None,
+            peers: vec![],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        });
+        assert!(session.peers().is_empty());
+        assert!(!session.is_p2p());
     }
 
     #[test]

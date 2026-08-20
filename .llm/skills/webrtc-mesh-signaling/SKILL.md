@@ -52,10 +52,10 @@ signals, and rejects late driver output from the prior generation.
 ## MeshSession Tracker (no WebRTC)
 
 `MeshSession` folds the v3 events into a consistent view (`topology`/`transport`/
-`generation`/`host`/`direct_endpoint`/`peers`/`ice_servers`, each peer with `initiate` + `connected`). It handles
-late joins (`NewPeer`), host re-election (a new `SessionPlan` **replaces** peers and
-ICE wholesale, never merges), `PlayerLeft` removal, and reconnect replay
-idempotently. `apply(&event) -> bool` returns whether the view changed.
+`generation`/`host`/`direct_endpoint`/`peers`/`ice_servers`, each peer with
+`initiate` + selected-path `connected`). A peer status mutates liveness only
+when its transport matches the plan; generation, transport, or offerer-role
+changes clear stale liveness. Plans replace peers and ICE wholesale.
 
 ## WebRtcDriver Seam
 
@@ -86,9 +86,9 @@ on `SignalReceived` it feeds `on_signal`; it relays the driver's outbound `Signa
 via the client, reports `TransportStatus` on the 0↔1 connected boundary, tears down
 peers on re-election/`PlayerLeft`/`RoomLeft`/`Disconnected`, and surfaces a
 `MeshEvent` stream (`Signaling`, `PeerConnected`, `PeerDisconnected`, `Data`).
-`start` auto-enables mesh if the config didn't. `MeshController<D>` is `Send` when
-`D` is (spawnable); a `!Send` driver must be driven on the current task. See
-`examples/mesh_session.rs` for the full runnable flow.
+`start` ensures v3, WebRTC, and a P2P topology even for a preselected v3 config;
+compatible explicit lists and future versions remain intact. `MeshController<D>`
+is `Send` when `D` is; drive a `!Send` driver on the current task.
 
 Direct and Relay plans never drive `WebRtcDriver`; they clear controller WebRTC
 state. Applications may implement Direct separately from the validated

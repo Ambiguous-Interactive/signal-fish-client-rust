@@ -431,7 +431,10 @@ environment).
 | `current_room_id()` | `fn current_room_id(&self) -> Option<RoomId>` | The current room ID, if in a room. |
 | `current_room_code()` | `fn current_room_code(&self) -> Option<&str>` | The current room code, if in a room. |
 | `negotiated_protocol_version()` | `fn negotiated_protocol_version(&self) -> Option<u16>` | Negotiated protocol version; `None` before negotiation or for the v2 relay floor. |
-| `supports_mesh()` | `fn supports_mesh(&self) -> bool` | Whether protocol v3 and advertised WebRTC mesh support are both active. |
+| `supports_mesh()` | `fn supports_mesh(&self) -> bool` | Negotiated v3 + WebRTC + Host/Mesh capability; not active-plan state. |
+| `session_topology()` | `fn session_topology(&self) -> Option<Topology>` | Topology selected by the latest authoritative plan. |
+| `session_transport()` | `fn session_transport(&self) -> Option<TransportKind>` | Transport selected by the latest authoritative plan. |
+| `is_p2p_active()` | `fn is_p2p_active(&self) -> bool` | Whether the selected plan uses a Host or Mesh topology. |
 | `send_capacity()` | `fn send_capacity(&self) -> usize` | Remaining slots in the bounded command queue. |
 | `max_send_capacity()` | `fn max_send_capacity(&self) -> usize` | Configured command-queue capacity. |
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data and undecodable-message counters. |
@@ -440,7 +443,7 @@ environment).
 | `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Refresh current age and reset the sampled peak to it. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 | `transport()` | `fn transport(&self) -> &T` | Borrow transport-specific read-only diagnostics; I/O still advances only through `poll()`. |
-| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, current session generation, and quarantine state. |
+| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, selected plan, generation, and quarantine state. |
 
 !!! tip "Comparison with `SignalFishClient`"
     `SignalFishPollingClient` mirrors `SignalFishClient`'s common synchronous

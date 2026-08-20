@@ -128,14 +128,32 @@ match client.negotiated_protocol_version() {
 }
 
 if client.supports_mesh() {
-    // enable_mesh() advertised WebRTC and protocol v3 was negotiated.
+    // This client negotiated v3 after advertising WebRTC plus Host or Mesh.
+    // The server may still select an explicit Relay plan.
 }
+
+let snapshot = client.snapshot();
+println!("selected path: {:?} / {:?}", snapshot.session_topology, snapshot.session_transport);
 ```
 
 | Accessor | Returns |
 |----------|---------|
 | `negotiated_protocol_version()` | `Option<u16>` — `None` before `ProtocolInfo`, or for a v2 negotiation. |
-| `supports_mesh()` | `bool` — `true` when WebRTC mesh was advertised and the negotiated version is ≥ 3. |
+| `supports_mesh()` | `bool` — negotiated local capability: v3 plus advertised WebRTC and at least one P2P topology (`Host` or `Mesh`). It does not mean the active plan is P2P. |
+| `session_topology()` / `session_transport()` | The topology and transport selected by the latest authoritative plan, or `None` outside a plan. Read both from `snapshot()` when they must describe one instant. |
+| `is_p2p_active()` | `bool` — whether the selected topology is currently `Host` or `Mesh`, independent of local capability. |
+
+### 0.11 migration: capability versus active plan
+
+`supports_mesh()` is retained for source compatibility, but its meaning is now
+precise: it requires advertised WebRTC, an advertised `Host` or `Mesh` topology,
+and negotiated v3. A custom WebRTC + relay-only configuration therefore changes
+from `true` to `false`. It never guarantees that the server selected P2P.
+
+`ClientSnapshot` is exhaustive and gains `session_topology` and
+`session_transport`, so 0.11 consumers constructing snapshots must initialize
+both fields. Routing code should read those fields from one `snapshot()` (or use
+`is_p2p_active()` for a one-value query); do not substitute `supports_mesh()`.
 
 ---
 
@@ -167,7 +185,7 @@ The `mode` field tells you why:
 match client.send_offer(peer, sdp) {
     Ok(()) => {}
     Err(SignalFishError::ProtocolUnsupported { mode }) => {
-        eprintln!("not in mesh mode ({mode}) — did you enable_mesh()?");
+        eprintln!("protocol v3 was not negotiated ({mode})");
     }
     Err(e) => eprintln!("send failed: {e}"),
 }

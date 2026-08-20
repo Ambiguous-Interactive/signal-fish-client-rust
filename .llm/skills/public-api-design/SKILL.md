@@ -268,11 +268,11 @@ close details come from `Transport::close_info()`.
   from relabeling stale output; `SignalFishError::SessionPlanUnavailable`,
   `SignalFishError::StaleSessionGeneration`, and
   `ErrorCode::UnsupportedProtocolVersion` are new exhaustive variants.
-- **Client policy/state API.** `GameDataDelivery` makes class/key combinations
-  valid by construction; `ProtocolViolationPolicy` defaults to `Quarantine`;
-  `ProtocolViolationKind` categorizes the emitted event; `ClientSnapshot`
-  synchronously exposes negotiated/session/token/quarantine state on both
-  drivers. New exhaustive variants/fields require a MINOR bump for this 0.x crate.
+- **Client policy/state API.** `ClientSnapshot` synchronously exposes negotiated,
+  selected topology/transport, session, token, and quarantine state on both
+  drivers. `supports_mesh()` is capability-only; `is_p2p_active()` and the
+  selected-plan fields describe current routing. New exhaustive variants/fields
+  require a MINOR bump for this 0.x crate.
 - **The mesh surface is feature-gated** behind `mesh` (and the async controller
   additionally behind `tokio-runtime`), keeping the default build minimal. See
   [webrtc-mesh-signaling](../webrtc-mesh-signaling/SKILL.md).

@@ -193,8 +193,10 @@ pub struct SignalFishConfig {
     ///
     /// `None` (the default) keeps the client on the v2 **relay floor**: the
     /// `Authenticate` message omits all negotiation fields and is byte-identical
-    /// to v2. Opt into the mesh with
-    /// [`enable_mesh`](Self::enable_mesh) or [`with_protocol_version`](Self::with_protocol_version).
+    /// to v2. Opt into v3 with [`enable_v3`](Self::enable_v3), or advertise
+    /// WebRTC/P2P capability with [`enable_mesh`](Self::enable_mesh). The
+    /// [`with_protocol_version`](Self::with_protocol_version) builder is the
+    /// power-user form and does not add transport or topology capabilities.
     pub protocol_version: Option<u16>,
     /// Data-path transports the client can actually fulfill (protocol v3+).
     ///
@@ -327,6 +329,61 @@ impl SignalFishConfig {
         self.supported_transports = Some(vec![TransportKind::WebRtc, TransportKind::Relay]);
         self.supported_topologies = Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]);
         self
+    }
+
+    /// Ensure a controller-owned WebRTC driver is represented in negotiation.
+    ///
+    /// Unlike [`enable_mesh`](Self::enable_mesh), this preserves compatible
+    /// power-user transport and topology choices. Missing lists receive the
+    /// normal mesh-with-relay defaults; explicit lists gain only a missing
+    /// WebRTC transport or P2P topology.
+    #[cfg(all(feature = "mesh", feature = "tokio-runtime"))]
+    pub(crate) fn enable_controller_mesh(mut self) -> Self {
+        if self.protocol_version.is_none_or(|version| version < 3) {
+            self.protocol_version = Some(crate::PROTOCOL_VERSION.max(3));
+        }
+
+        match &mut self.supported_transports {
+            Some(transports) if !transports.contains(&TransportKind::WebRtc) => {
+                transports.push(TransportKind::WebRtc);
+            }
+            None => {
+                self.supported_transports = Some(vec![TransportKind::WebRtc, TransportKind::Relay]);
+            }
+            Some(_) => {}
+        }
+
+        match &mut self.supported_topologies {
+            Some(topologies)
+                if !topologies
+                    .iter()
+                    .any(|topology| matches!(topology, Topology::Host | Topology::Mesh)) =>
+            {
+                topologies.push(Topology::Mesh);
+            }
+            None => {
+                self.supported_topologies =
+                    Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]);
+            }
+            Some(_) => {}
+        }
+
+        self
+    }
+
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    pub(crate) fn advertises_mesh_capability(&self) -> bool {
+        self.supported_transports
+            .as_ref()
+            .is_some_and(|transports| transports.contains(&TransportKind::WebRtc))
+            && self
+                .supported_topologies
+                .as_ref()
+                .is_some_and(|topologies| {
+                    topologies
+                        .iter()
+                        .any(|topology| matches!(topology, Topology::Host | Topology::Mesh))
+                })
     }
 
     /// Opt into protocol-v3 relay features without advertising WebRTC.
@@ -548,6 +605,16 @@ pub struct ClientSnapshot {
     ///
     /// `None` before a plan and for legacy Server 0.4 protocol-v3 plans.
     pub session_generation: Option<crate::protocol::SessionGeneration>,
+    /// Topology selected by the latest authoritative session plan.
+    ///
+    /// This is distinct from locally advertised capability. It is `None`
+    /// before the first plan and after leaving the room or disconnecting.
+    pub session_topology: Option<Topology>,
+    /// Data-path transport selected by the latest authoritative session plan.
+    ///
+    /// Read this together with [`session_topology`](Self::session_topology) from
+    /// the same snapshot when making routing decisions.
+    pub session_transport: Option<TransportKind>,
     /// Latest server-issued room reconnection token.
     pub reconnection_token: Option<String>,
     /// Whether accountability policy currently suppresses room game data.
@@ -575,6 +642,8 @@ impl std::fmt::Debug for ClientSnapshot {
             .field("room_id", &self.room_id)
             .field("room_code", &self.room_code)
             .field("session_generation", &self.session_generation)
+            .field("session_topology", &self.session_topology)
+            .field("session_transport", &self.session_transport)
             .field(
                 "reconnection_token",
                 &self.reconnection_token.as_ref().map(|_| "<redacted>"),
@@ -656,14 +725,11 @@ impl SignalFishClient {
         let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let mesh_enabled = config
-            .supported_transports
-            .as_ref()
-            .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
+        let mesh_capable = config.advertises_mesh_capability();
         let state = Arc::new(Mutex::new(ClientCore::new(
             config.game_data_format,
             config.protocol_violation_policy,
-            mesh_enabled,
+            mesh_capable,
         )));
         let loop_state = Arc::clone(&state);
 
@@ -993,7 +1059,7 @@ impl SignalFishClient {
     ///
     /// Driver integrations should use this generation-bound form so an offer
     /// or ICE candidate produced just before a re-plan can never be relabeled
-    /// with the new generation. [`MeshController`](crate::MeshController) uses
+    /// with the new generation. `MeshController` uses
     /// this automatically.
     ///
     /// # Errors
@@ -1137,9 +1203,9 @@ impl SignalFishClient {
     /// negotiated or negotiated as v2 (the relay floor).
     ///
     /// Set from the server's [`ProtocolInfo`](SignalFishEvent::ProtocolInfo)
-    /// message. A value of `Some(3)` or higher means v3 was negotiated; mesh
-    /// availability additionally requires local [`SignalFishConfig::enable_mesh`]
-    /// advertisement and can be queried with [`Self::supports_mesh`].
+    /// message. A value of `Some(3)` or higher means v3 was negotiated; local
+    /// WebRTC/P2P capability additionally requires the corresponding transport
+    /// and topology advertisement and can be queried with [`Self::supports_mesh`].
     pub fn negotiated_protocol_version(&self) -> Option<u16> {
         lock_core(&self.state).negotiated_protocol_version()
     }
@@ -1160,13 +1226,37 @@ impl SignalFishClient {
         lock_core(&self.state).session_plan_revision()
     }
 
-    /// Returns `true` once the connection has negotiated protocol v3 and this
-    /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
+    /// Whether protocol v3 was negotiated after this client advertised both
+    /// WebRTC and at least one P2P topology (`host` or `mesh`).
     ///
-    /// This is the "am I in mesh mode?" check; it returns `false` both before
-    /// negotiation completes and on a v2 relay-floor connection.
+    /// This reports local negotiated capability, not the server-selected active
+    /// plan. Use [`session_topology`](Self::session_topology),
+    /// [`session_transport`](Self::session_transport), or
+    /// [`is_p2p_active`](Self::is_p2p_active) for current plan state.
     pub fn supports_mesh(&self) -> bool {
         lock_core(&self.state).supports_mesh()
+    }
+
+    /// Topology selected by the latest authoritative session plan.
+    ///
+    /// This reports active plan state, not local capability. Read it together
+    /// with [`session_transport`](Self::session_transport) from one
+    /// [`snapshot`](Self::snapshot) when an atomic pair is required.
+    pub fn session_topology(&self) -> Option<Topology> {
+        lock_core(&self.state).session_topology()
+    }
+
+    /// Data-path transport selected by the latest authoritative session plan.
+    pub fn session_transport(&self) -> Option<TransportKind> {
+        lock_core(&self.state).session_transport()
+    }
+
+    /// Whether the latest authoritative plan selects a peer-to-peer topology.
+    ///
+    /// This active-plan query is independent of [`supports_mesh`](Self::supports_mesh),
+    /// which reports negotiated local capability.
+    pub fn is_p2p_active(&self) -> bool {
+        lock_core(&self.state).is_p2p_active()
     }
 
     /// Returns `true` if the transport is believed to be connected.
@@ -2257,6 +2347,94 @@ mod tests {
             config.supported_topologies,
             Some(vec![Topology::Mesh, Topology::Relay])
         );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "mesh")]
+    async fn controller_mesh_configuration_preserves_compatible_choices() {
+        let cases = [
+            (
+                "default",
+                SignalFishConfig::new("app"),
+                crate::PROTOCOL_VERSION.max(3),
+                vec![TransportKind::WebRtc, TransportKind::Relay],
+                vec![Topology::Mesh, Topology::Host, Topology::Relay],
+            ),
+            (
+                "relay-v3",
+                SignalFishConfig::new("app").enable_v3(),
+                crate::PROTOCOL_VERSION,
+                vec![TransportKind::Relay, TransportKind::WebRtc],
+                vec![Topology::Relay, Topology::Mesh],
+            ),
+            (
+                "future-direct-host",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(4)
+                    .with_transports([TransportKind::Direct])
+                    .with_topologies([Topology::Host]),
+                4,
+                vec![TransportKind::Direct, TransportKind::WebRtc],
+                vec![Topology::Host],
+            ),
+            (
+                "existing-webrtc-missing-p2p-topology",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(3)
+                    .with_transports([TransportKind::WebRtc, TransportKind::Relay])
+                    .with_topologies([Topology::Relay]),
+                3,
+                vec![TransportKind::WebRtc, TransportKind::Relay],
+                vec![Topology::Relay, Topology::Mesh],
+            ),
+            (
+                "compatible-existing-webrtc-host",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(3)
+                    .with_transports([TransportKind::Direct, TransportKind::WebRtc])
+                    .with_topologies([Topology::Host, Topology::Relay]),
+                3,
+                vec![TransportKind::Direct, TransportKind::WebRtc],
+                vec![Topology::Host, Topology::Relay],
+            ),
+            (
+                "pre-v3-custom",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(2)
+                    .with_transports([TransportKind::Relay])
+                    .with_topologies([Topology::Mesh, Topology::Relay]),
+                crate::PROTOCOL_VERSION.max(3),
+                vec![TransportKind::Relay, TransportKind::WebRtc],
+                vec![Topology::Mesh, Topology::Relay],
+            ),
+        ];
+
+        for (name, config, protocol, transports, topologies) in cases {
+            let config = config.enable_controller_mesh();
+            assert_eq!(config.protocol_version, Some(protocol), "{name}");
+            assert_eq!(config.supported_transports, Some(transports), "{name}");
+            assert_eq!(config.supported_topologies, Some(topologies), "{name}");
+            assert!(config.advertises_mesh_capability(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mesh_capability_requires_webrtc_and_a_p2p_topology() {
+        let cases = [
+            (vec![TransportKind::WebRtc], vec![Topology::Mesh], true),
+            (vec![TransportKind::WebRtc], vec![Topology::Host], true),
+            (vec![TransportKind::WebRtc], vec![Topology::Relay], false),
+            (vec![TransportKind::Relay], vec![Topology::Mesh], false),
+            (vec![], vec![Topology::Mesh], false),
+            (vec![TransportKind::WebRtc], vec![], false),
+        ];
+
+        for (transports, topologies, expected) in cases {
+            let config = SignalFishConfig::new("app")
+                .with_transports(transports)
+                .with_topologies(topologies);
+            assert_eq!(config.advertises_mesh_capability(), expected);
+        }
     }
 
     #[tokio::test]
