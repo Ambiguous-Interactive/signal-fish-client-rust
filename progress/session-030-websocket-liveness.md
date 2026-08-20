@@ -45,5 +45,9 @@ socket terminal outcome leave one coherent, fused transport state.
   the fixture now expresses those remaining bytes individually.
 - PR #113's code head `f05cf14` passed all 11 blocking aggregates: CI,
   Coverage, Docs Validation, Examples Validation, Godot Web, No Panics,
-  Security, Semver Checks, Unused Deps, WASM, and Workflow Lint. GitHub
-  reported no review submissions, comments, or unresolved inline threads.
+  Security, Semver Checks, Unused Deps, WASM, and Workflow Lint. An
+  evidence-only follow-up repeated all 11 successfully.
+- Cursor Bugbot classified the change as medium risk without a finding.
+  Copilot could not review because its requester quota is exhausted (the known
+  governance limitation tracked by #90); no actionable comment or unresolved
+  inline thread remains.
