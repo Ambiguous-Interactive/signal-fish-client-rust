@@ -43,5 +43,7 @@ socket terminal outcome leave one coherent, fused transport state.
   the upstream 0.50 pin (v60/v61 support), guarded by a repository policy test.
 - Hosted spelling validation also caught a partial-frame byte-string fragment;
   the fixture now expresses those remaining bytes individually.
-- Hosted PR aggregates and reviewer feedback remain to be recorded before
-  completion.
+- PR #113's code head `f05cf14` passed all 11 blocking aggregates: CI,
+  Coverage, Docs Validation, Examples Validation, Godot Web, No Panics,
+  Security, Semver Checks, Unused Deps, WASM, and Workflow Lint. GitHub
+  reported no review submissions, comments, or unresolved inline threads.
