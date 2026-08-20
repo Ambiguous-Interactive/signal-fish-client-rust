@@ -34,9 +34,9 @@ type StartedClient = (
 );
 
 use common::{
-    authenticated_json, authority_response_json, error_json, game_data_json, new_peer_json,
-    peer_transport_status_json, player_left_json, pong_json, protocol_info_json, reconnected_json,
-    reconnected_with_protocol_info_json, room_joined_json, room_left_json, session_plan_json,
+    authenticated_json, authority_response_json, error_json, finalized_reconnected_json,
+    game_data_json, new_peer_json, peer_transport_status_json, player_left_json, pong_json,
+    protocol_info_json, reconnected_json, room_joined_json, room_left_json, session_plan_json,
     signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len, MockTransport,
 };
 
@@ -76,25 +76,70 @@ async fn drain_until_authenticated(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
 }
 
 fn v3_room_baseline_json(peer: uuid::Uuid) -> String {
+    let local_player = uuid::Uuid::from_u128(1);
     let message =
         ServerMessage::RoomJoined(Box::new(signal_fish_client::protocol::RoomJoinedPayload {
             room_id: uuid::Uuid::from_u128(100),
             room_code: "BINARY".into(),
-            player_id: uuid::Uuid::from_u128(1),
+            player_id: local_player,
             game_name: "test".into(),
             max_players: 2,
             supports_authority: false,
-            current_players: vec![signal_fish_client::protocol::PlayerInfo {
-                id: peer,
-                name: "peer".into(),
-                is_authority: false,
-                is_ready: false,
-                connection_info: None,
-                connected_at: "2026-01-01T00:00:00Z".into(),
-                epoch: Some(1),
-                seq: Some(0),
-            }],
+            current_players: vec![
+                signal_fish_client::protocol::PlayerInfo {
+                    id: local_player,
+                    name: "Local".into(),
+                    is_authority: true,
+                    is_ready: true,
+                    connection_info: None,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+                signal_fish_client::protocol::PlayerInfo {
+                    id: peer,
+                    name: "Peer".into(),
+                    is_authority: false,
+                    is_ready: true,
+                    connection_info: None,
+                    connected_at: "2026-01-01T00:00:01Z".into(),
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            ],
             is_authority: false,
+            lobby_state: signal_fish_client::protocol::LobbyState::Finalized,
+            ready_players: vec![local_player, peer],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        }));
+    serde_json::to_string(&message).expect("serialize room baseline")
+}
+
+fn v2_room_baseline_json(peer: uuid::Uuid) -> String {
+    let local_player = uuid::Uuid::from_u128(1);
+    let player = |id: uuid::Uuid, name: &str| signal_fish_client::protocol::PlayerInfo {
+        id,
+        name: name.into(),
+        is_authority: id == local_player,
+        is_ready: false,
+        connection_info: None,
+        connected_at: "2026-01-01T00:00:00Z".into(),
+        epoch: None,
+        seq: None,
+    };
+    let message =
+        ServerMessage::RoomJoined(Box::new(signal_fish_client::protocol::RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(100),
+            room_code: "ROOMV2".into(),
+            player_id: local_player,
+            game_name: "test".into(),
+            max_players: 2,
+            supports_authority: true,
+            current_players: vec![player(local_player, "Local"), player(peer, "Peer")],
+            is_authority: true,
             lobby_state: signal_fish_client::protocol::LobbyState::Lobby,
             ready_players: vec![],
             relay_type: "websocket".into(),
@@ -102,7 +147,7 @@ fn v3_room_baseline_json(peer: uuid::Uuid) -> String {
             ice_servers: vec![],
             reconnection_token: None,
         }));
-    serde_json::to_string(&message).expect("serialize room baseline")
+    serde_json::to_string(&message).expect("serialize v2 room baseline")
 }
 
 /// Transport that can script incoming messages but hangs forever in `close()`.
@@ -203,12 +248,14 @@ async fn room_join_leave_rejoin_flow() {
     // Instead we test each transition in sequence.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(room_joined_json())),
         Some(Ok(room_left_json())),
         Some(Ok(room_joined_json())),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     // Join room.
     client
@@ -253,10 +300,12 @@ async fn room_join_leave_rejoin_flow() {
 async fn reconnection_flow_updates_state() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(reconnected_json())),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     // Issue a reconnect.
     let pid = uuid::Uuid::from_u128(200);
@@ -314,11 +363,13 @@ async fn spectator_join_and_leave_flow() {
     // asserting intermediate state between SpectatorJoined and SpectatorLeft.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(spectator_joined_json())),
         Some(Ok(spectator_left_json())),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     // Join as spectator.
     client
@@ -360,10 +411,12 @@ async fn spectator_join_and_leave_flow() {
 async fn authority_request_granted() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(authority_response_json(true, None))),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     client.request_authority(true).expect("request_authority");
 
@@ -407,10 +460,12 @@ async fn authority_request_granted() {
 async fn authority_request_denied() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(authority_response_json(false, Some("not allowed")))),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     client.request_authority(true).expect("request_authority");
 
@@ -722,10 +777,17 @@ async fn game_data_event_received() {
     let data = serde_json::json!({"score": 100, "level": 5});
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(player))),
         Some(Ok(game_data_json(player, data.clone()))),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::GameData {
@@ -816,6 +878,7 @@ async fn v2_message_pack_binary_event_received() {
     let (transport, _sent, _closed) = MockTransport::new_frames(vec![
         Some(Ok(TransportFrame::Text(authenticated_json()))),
         Some(Ok(TransportFrame::Text(protocol_info_json(None)))),
+        Some(Ok(TransportFrame::Text(v2_room_baseline_json(player)))),
         Some(Ok(TransportFrame::Binary(
             rmp_serde::to_vec_named(&frame).expect("serialize v2 binary frame"),
         ))),
@@ -827,6 +890,10 @@ async fn v2_message_pack_binary_event_received() {
     assert!(matches!(
         events.recv().await,
         Some(SignalFishEvent::ProtocolInfo(_))
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
     ));
     assert!(matches!(
         events.recv().await,
@@ -1012,10 +1079,14 @@ async fn set_ready_sends_player_ready_message() {
 
 #[tokio::test]
 async fn ping_and_pong_flow() {
-    let (mut client, mut events, sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(pong_json()))]);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(pong_json())),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     client.ping().expect("ping");
 
@@ -1104,6 +1175,7 @@ async fn multiple_sequential_operations() {
     let data_msg = game_data_json(player, serde_json::json!({"tick": 1}));
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(room_joined_json())),
         Some(Ok(data_msg)),
         Some(Ok(pong_json())),
@@ -1111,6 +1183,7 @@ async fn multiple_sequential_operations() {
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     // Join room.
     client
@@ -1162,11 +1235,13 @@ async fn player_joined_event_received() {
     let new_player = uuid::Uuid::from_u128(555);
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(room_joined_json())),
         Some(Ok(common::player_joined_json("Bob", new_player))),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     let _rj = events.recv().await; // RoomJoined
 
     let ev = events.recv().await.expect("event");
@@ -1186,11 +1261,13 @@ async fn player_left_event_received() {
 
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
-        Some(Ok(room_joined_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(left_player))),
         Some(Ok(player_left_json(left_player))),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     let _rj = events.recv().await; // RoomJoined
 
     let ev = events.recv().await.expect("event");
@@ -1216,7 +1293,7 @@ async fn player_left_event_received() {
 
 #[tokio::test]
 async fn lobby_state_changed_event() {
-    let p1 = uuid::Uuid::from_u128(1);
+    let p1 = uuid::Uuid::from_u128(42);
     let lobby_json = serde_json::to_string(&ServerMessage::LobbyStateChanged {
         lobby_state: signal_fish_client::protocol::LobbyState::Finalized,
         ready_players: vec![p1],
@@ -1224,10 +1301,19 @@ async fn lobby_state_changed_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(lobby_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(room_joined_json())),
+        Some(Ok(lobby_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::LobbyStateChanged {
@@ -1264,10 +1350,19 @@ async fn game_starting_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(gs_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(uuid::Uuid::from_u128(10)))),
+        Some(Ok(gs_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::GameStarting { peer_connections } = ev {
@@ -1293,10 +1388,19 @@ async fn authority_changed_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(ac_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(auth_player))),
+        Some(Ok(ac_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::AuthorityChanged {
@@ -1330,10 +1434,19 @@ async fn new_spectator_joined_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(nsj_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(room_joined_json())),
+        Some(Ok(nsj_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::NewSpectatorJoined {
@@ -1361,10 +1474,19 @@ async fn spectator_disconnected_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(sd_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(room_joined_json())),
+        Some(Ok(sd_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::SpectatorDisconnected {
@@ -1397,10 +1519,14 @@ async fn reconnection_failed_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(rf_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(rf_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::ReconnectionFailed { reason, error_code } = ev {
@@ -1421,10 +1547,19 @@ async fn player_reconnected_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(pr_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(uuid::Uuid::from_u128(700)))),
+        Some(Ok(pr_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::PlayerReconnected { player_id, epoch } = ev {
@@ -1478,10 +1613,14 @@ async fn room_join_failed_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(rjf_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(rjf_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::RoomJoinFailed { reason, error_code } = ev {
@@ -1502,10 +1641,14 @@ async fn spectator_join_failed_event() {
     })
     .expect("serialize");
 
-    let (mut client, mut events, _sent, _closed) =
-        start_client(vec![Some(Ok(authenticated_json())), Some(Ok(sjf_json))]);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(sjf_json)),
+    ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::SpectatorJoinFailed { reason, error_code } = ev {
@@ -1582,6 +1725,7 @@ async fn shutdown_closes_transport() {
 async fn shutdown_timeout_clears_state_even_when_disconnected_event_is_skipped() {
     let transport = HangingCloseTransport::new(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(room_joined_json())),
     ]);
     let config = SignalFishConfig::new("mb_test_integration")
@@ -1589,6 +1733,7 @@ async fn shutdown_timeout_clears_state_even_when_disconnected_event_is_skipped()
     let (mut client, mut events) = SignalFishClient::start(transport, config);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     let ev = events.recv().await.expect("expected RoomJoined event");
     assert!(matches!(ev, SignalFishEvent::RoomJoined { .. }));
 
@@ -1641,11 +1786,13 @@ async fn malformed_json_emits_decode_failed_then_next_message_arrives() {
     // drop) and continues.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok("{{not valid json at all!!!".into())),
         Some(Ok(pong_json())),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     let ev = events
         .recv()
@@ -1688,11 +1835,13 @@ async fn unknown_error_code_string_surfaces_decode_failed_not_silent_drop() {
         r#"{"type":"Error","data":{"message":"evicted","error_code":"FUTURE_CODE_XYZ"}}"#;
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(unknown_code_frame.to_string())),
         Some(Ok(pong_json())),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
 
     let ev = events.recv().await.expect("event after unknown error code");
     match ev {
@@ -1825,6 +1974,7 @@ async fn shutdown_completes_gracefully_with_wedged_consumer() {
     // transport, and shutdown() completes without reaching the abort.
     let (transport, _sent, closed) = MockTransport::new(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(pong_json())),
         Some(Ok(pong_json())),
     ]);
@@ -1856,8 +2006,11 @@ async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     // Guards against over-eager abandonment: a consumer that resumes draining
     // BEFORE shutdown still receives every event, and shutdown then delivers
     // the terminal Disconnected.
-    let (transport, _sent, closed) =
-        MockTransport::new(vec![Some(Ok(authenticated_json())), Some(Ok(pong_json()))]);
+    let (transport, _sent, closed) = MockTransport::new(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(pong_json())),
+    ]);
     let config = SignalFishConfig::new("mb_test_integration").with_event_channel_capacity(1);
     let (mut client, mut events) = SignalFishClient::start(transport, config);
 
@@ -1869,6 +2022,8 @@ async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     assert!(matches!(ev, SignalFishEvent::Connected));
     let ev = events.recv().await.expect("Authenticated");
     assert!(matches!(ev, SignalFishEvent::Authenticated { .. }));
+    let ev = events.recv().await.expect("ProtocolInfo");
+    assert!(matches!(ev, SignalFishEvent::ProtocolInfo(_)));
     let ev = events.recv().await.expect("Pong");
     assert!(matches!(ev, SignalFishEvent::Pong));
 
@@ -1945,11 +2100,13 @@ async fn player_joined_with_connection_info_direct() {
 
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(room_joined_json())),
         Some(Ok(pj_json)),
     ]);
 
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     let _rj = events.recv().await; // RoomJoined
 
     let ev = events.recv().await.expect("event");
@@ -2079,6 +2236,7 @@ async fn send_signal_after_v3_negotiation_is_sent() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(session_plan_json(peer, true))),
     ]);
     drain_until_authenticated(&mut events).await;
@@ -2139,6 +2297,7 @@ async fn generation_bound_typed_and_raw_signals_refuse_stale_plan() {
     let (mut client, _events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(session_plan_json(peer, true))),
         Some(Ok(replacement)),
     ]);
@@ -2190,6 +2349,7 @@ async fn stale_and_preplan_signals_are_suppressed() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(preplan)),
         Some(Ok(session_plan_json(peer, false))),
         Some(Ok(stale)),
@@ -2218,6 +2378,7 @@ async fn legacy_generationless_plan_keeps_generationless_signal_wire() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(legacy_plan.into())),
     ]);
     while !matches!(
@@ -2294,6 +2455,7 @@ async fn v3_session_plan_and_signal_events_are_emitted() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(session_plan_json(peer, true))),
         Some(Ok(signal_json(
             peer,
@@ -2340,6 +2502,9 @@ async fn new_peer_and_peer_transport_status_events_are_emitted() {
     let peer = uuid::Uuid::from_u128(8);
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
+        Some(Ok(session_plan_json(peer, true))),
         Some(Ok(new_peer_json(peer, true))),
         Some(Ok(peer_transport_status_json(peer, true))),
     ]);
@@ -2380,10 +2545,12 @@ async fn unknown_server_message_type_surfaces_decode_failed_then_next_arrives() 
     // message still arrives.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
         Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
         Some(Ok(pong_json())),
     ]);
     drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     let ev = events.recv().await.expect("event after unknown type");
     match ev {
         SignalFishEvent::DecodeFailed { message_type, .. } => {
@@ -2446,26 +2613,42 @@ async fn negotiated_version_resets_on_disconnect() {
 }
 
 #[tokio::test]
-async fn reconnect_restores_negotiated_version_from_missed_events() {
+async fn reconnect_receives_fresh_authoritative_session_plan() {
     let peer = uuid::Uuid::from_u128(2);
     let (mut client, mut events, sent, _closed) = start_client_with_config(
         vec![
             Some(Ok(authenticated_json())),
-            Some(Ok(reconnected_with_protocol_info_json(Some(3)))),
+            Some(Ok(protocol_info_json(Some(3)))),
+            Some(Ok(finalized_reconnected_json())),
+            Some(Ok(session_plan_json(peer, true))),
         ],
         SignalFishConfig::new("mb_test_integration").enable_mesh(),
     );
     drain_until_authenticated(&mut events).await;
-    // Drain until the Reconnected event (state updated by then).
+    // Reconnection establishes the finalized room baseline; the server then
+    // publishes a fresh authoritative plan as a separate room-ordered frame.
     loop {
-        if matches!(
-            events.recv().await.expect("event"),
-            SignalFishEvent::Reconnected { .. }
-        ) {
-            break;
+        match events.recv().await.expect("event before Reconnected") {
+            SignalFishEvent::Reconnected { .. } => break,
+            SignalFishEvent::ProtocolInfo(_) => {}
+            SignalFishEvent::ProtocolViolation { diagnostic, .. } => {
+                panic!("Reconnected fixture violated lifecycle: {diagnostic}")
+            }
+            other => panic!("expected Reconnected after ProtocolInfo, got {other:?}"),
         }
     }
+    match events.recv().await.expect("event before SessionPlan") {
+        SignalFishEvent::SessionPlan { .. } => {}
+        SignalFishEvent::ProtocolViolation { diagnostic, .. } => {
+            panic!("SessionPlan fixture violated lifecycle: {diagnostic}")
+        }
+        other => panic!("expected SessionPlan after Reconnected, got {other:?}"),
+    }
     assert_eq!(client.negotiated_protocol_version(), Some(3));
+    assert_eq!(
+        client.snapshot().session_generation,
+        Some(uuid::Uuid::from_u128(12))
+    );
     assert!(client.supports_mesh());
 
     client
@@ -2485,6 +2668,7 @@ async fn v4_negotiation_still_enables_mesh() {
         vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_json(Some(4)))),
+            Some(Ok(v3_room_baseline_json(uuid::Uuid::from_u128(2)))),
             Some(Ok(session_plan_json(uuid::Uuid::from_u128(2), true))),
         ],
         SignalFishConfig::new("mb_test_integration").enable_mesh(),
@@ -2509,6 +2693,7 @@ async fn send_answer_ice_and_raw_signal_wire_shapes() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
         Some(Ok(session_plan_json(peer, true))),
     ]);
     drain_until_authenticated(&mut events).await;

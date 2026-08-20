@@ -267,9 +267,9 @@ status (above) is what lets the server make these fallback decisions.
 ## Reconnect behavior
 
 After a reconnect, the server rebuilds the mesh session by re-sending a fresh,
-**live** `SessionPlan` (so `missed_events` is empty in practice). The client also
-defensively folds any mesh events it finds in `Reconnected.missed_events`, so it
-stays correct against servers that batch mesh state there instead.
+**live** `SessionPlan`. Server 0.7 does not place `ProtocolInfo`, `SessionPlan`,
+`Signal`, or `NewPeer` in `Reconnected.missed_events`; the client rejects those
+non-replayable nested variants and waits for the fresh top-level plan.
 
 !!! important "Treat each `SessionPlan` as a full replacement"
     A `SessionPlan` **fully replaces** the peer set — replace, never merge. This

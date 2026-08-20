@@ -151,7 +151,11 @@ than letting the server reject the message asynchronously (an unattributed
 
 Signaling has a second guard: after v3 negotiation but before an authoritative
 `SessionPlan`, signal sends return `SignalFishError::SessionPlanUnavailable`.
-Once a plan exists, every outgoing signal uses its generation.
+Once a plan exists, every outgoing signal uses its generation and may target
+only a non-self peer still present in both the authoritative session peer set
+(the replacement plan plus valid compatibility `NewPeer` updates) and current
+room roster; otherwise it returns `SignalFishError::SignalPeerNotInSession`
+without queuing a frame.
 
 The `mode` field tells you why:
 

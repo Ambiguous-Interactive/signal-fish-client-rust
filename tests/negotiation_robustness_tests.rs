@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use signal_fish_client::protocol::{
-    LobbyState, ReconnectedPayload, ServerMessage, SessionPeer, SessionPlanPayload, Topology,
-    TransportKind,
+    LobbyState, PlayerInfo, ReconnectedPayload, ReplayStatus, SenderWatermark, ServerMessage,
+    SessionPeer, SessionPlanPayload, Topology, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
@@ -81,6 +81,17 @@ async fn drain_until_protocol_info(rx: &mut tokio::sync::mpsc::Receiver<SignalFi
     }
 }
 
+async fn drain_until_violation(rx: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>) {
+    loop {
+        if matches!(
+            rx.recv().await.expect("event"),
+            SignalFishEvent::ProtocolViolation { .. }
+        ) {
+            break;
+        }
+    }
+}
+
 /// Build a `Reconnected` JSON whose `missed_events` is an arbitrary list.
 fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
     let payload = ReconnectedPayload {
@@ -90,17 +101,36 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         game_name: "recon-game".into(),
         max_players: 6,
         supports_authority: false,
-        current_players: vec![],
+        current_players: [200, 9]
+            .into_iter()
+            .map(|id| PlayerInfo {
+                id: uuid::Uuid::from_u128(id),
+                name: format!("player-{id}"),
+                is_authority: id == 200,
+                is_ready: true,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            })
+            .collect(),
         is_authority: true,
-        lobby_state: LobbyState::Waiting,
+        lobby_state: LobbyState::Finalized,
         ready_players: vec![],
         relay_type: "tcp".into(),
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: missed,
-        replay: None,
-        sender_watermarks: vec![],
-        reconnection_token: None,
+        replay: Some(ReplayStatus::Complete),
+        sender_watermarks: [200, 9]
+            .into_iter()
+            .map(|id| SenderWatermark {
+                player_id: uuid::Uuid::from_u128(id),
+                epoch: 1,
+                seq: 0,
+            })
+            .collect(),
+        reconnection_token: Some("rotated".into()),
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }
@@ -131,23 +161,20 @@ fn session_plan_msg() -> ServerMessage {
 // Reconnect must never silently downgrade an active v3 negotiation
 // ════════════════════════════════════════════════════════════════════
 
-/// A reconnect whose `missed_events` contain a v2 `ProtocolInfo` (no version)
-/// must NOT downgrade an already-negotiated v3 session.
+/// A reconnect cannot carry `ProtocolInfo`; rejecting it must not downgrade
+/// the already-negotiated connection.
 #[tokio::test]
-async fn reconnect_v2_protocol_info_does_not_downgrade_active_v3() {
+async fn reconnect_rejects_protocol_info_without_downgrading_active_v3() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3
-        Some(Ok(reconnected_with_missed(vec![
-            protocol_info_msg(None),
-            session_plan_msg(),
-        ]))),
+        Some(Ok(reconnected_with_missed(vec![protocol_info_msg(None)]))),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
-    drain_until_reconnected(&mut events).await;
+    drain_until_violation(&mut events).await;
 
     assert_eq!(
         client.negotiated_protocol_version(),
@@ -155,29 +182,28 @@ async fn reconnect_v2_protocol_info_does_not_downgrade_active_v3() {
         "v2 ProtocolInfo in missed_events silently downgraded an active v3 session"
     );
     assert!(client.supports_mesh());
-    client
-        .send_offer(uuid::Uuid::from_u128(9), "sdp")
-        .expect("send_offer must still work after reconnect blip");
     client.shutdown().await;
 }
 
-/// Multiple `ProtocolInfo` in `missed_events` — the last versioned one wins.
+/// Multiple replayed negotiation messages are rejected as one invalid reconnect.
 #[tokio::test]
-async fn reconnect_multiple_protocol_info_last_wins() {
+async fn reconnect_multiple_protocol_info_is_rejected() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
         Some(Ok(reconnected_with_missed(vec![
             protocol_info_msg(Some(3)),
             protocol_info_msg(Some(4)),
         ]))),
     ]);
     drain_until_authenticated(&mut events).await;
-    drain_until_reconnected(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    drain_until_violation(&mut events).await;
 
     assert_eq!(
         client.negotiated_protocol_version(),
-        Some(4),
-        "expected last ProtocolInfo (v4) to win"
+        Some(3),
+        "invalid replayed ProtocolInfo must not replace outer negotiation"
     );
     client.shutdown().await;
 }
@@ -188,13 +214,15 @@ async fn reconnect_multiple_protocol_info_last_wins() {
 async fn reconnect_versioned_then_v2_keeps_version() {
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
         Some(Ok(reconnected_with_missed(vec![
             protocol_info_msg(Some(3)),
             protocol_info_msg(None),
         ]))),
     ]);
     drain_until_authenticated(&mut events).await;
-    drain_until_reconnected(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    drain_until_violation(&mut events).await;
 
     assert_eq!(
         client.negotiated_protocol_version(),
@@ -212,7 +240,8 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
     let (mut client, mut events, sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3 first
-        Some(Ok(reconnected_with_missed(vec![session_plan_msg()]))), // reconnect, NO ProtocolInfo
+        Some(Ok(reconnected_with_missed(vec![]))),
+        Some(Ok(serde_json::to_string(&session_plan_msg()).unwrap())),
     ]);
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
@@ -311,7 +340,11 @@ impl Transport for SendErrorTransport {
 async fn send_error_midflight_disconnects_and_clears_state() {
     // send #1 = Authenticate (ok), send #2 = our ping (errors).
     let (transport, _sent, _closed) = SendErrorTransport::new(
-        vec![Some(Ok(authenticated_json())), Some(Ok(room_joined_json()))],
+        vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_json(None))),
+            Some(Ok(room_joined_json())),
+        ],
         2,
     );
     let config = SignalFishConfig::new("mb_audit").enable_mesh();

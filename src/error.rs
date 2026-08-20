@@ -1,7 +1,7 @@
 //! Error types for the Signal Fish client.
 
 use crate::error_codes::ErrorCode;
-use crate::protocol::SessionGeneration;
+use crate::protocol::{PlayerId, SessionGeneration};
 use thiserror::Error;
 
 /// Errors that can occur when using the Signal Fish client.
@@ -89,6 +89,14 @@ pub enum SignalFishError {
         "WebRTC signaling requires an authoritative SessionPlan; wait for SignalFishEvent::SessionPlan before sending"
     )]
     SessionPlanUnavailable,
+
+    /// WebRTC signaling targeted a player outside the authoritative session
+    /// peer set (latest plan plus accepted compatibility `NewPeer` updates).
+    #[error("WebRTC signaling target {peer_id} is not in the authoritative session peer set")]
+    SignalPeerNotInSession {
+        /// The refused signaling target.
+        peer_id: PlayerId,
+    },
 
     /// A generation-bound WebRTC signal was produced for a session plan that
     /// has already been replaced.

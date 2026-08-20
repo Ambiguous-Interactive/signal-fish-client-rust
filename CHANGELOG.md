@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation fields on `DriverEvent::Signal`, `DriverEvent::Connected`,
   `DriverEvent::Disconnected`, and `DriverEvent::Data`,
   `ErrorCode::UnsupportedProtocolVersion`,
-  `SignalFishError::SessionPlanUnavailable`, and
+  `SignalFishError::SessionPlanUnavailable`,
+  `SignalFishError::SignalPeerNotInSession`, and
   `SignalFishError::StaleSessionGeneration::{attempted, current}`. Added
   `ErrorCode::NON_EMITTED` to identify the six error variants retained for
   older-server compatibility but no longer emitted by 0.7.
@@ -45,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Generation-less server 0.4 plans and signals remain supported adaptively.
 
 ### Fixed
+
+- Fixed decoded server messages being accepted outside their negotiated
+  lifecycle/version phase, malformed authoritative session plans replacing
+  valid state, and signals addressing self, unknown, departed, or re-planned
+  peers. Both async and polling clients now suppress these lifecycle, plan, and
+  signaling frames before state/accountability mutation under every policy,
+  validate the Server 0.7 plan cross-field contract, and refuse off-plan
+  outbound signaling before anything reaches the wire. Generation-less Server
+  0.4 plans remain supported when their shape is otherwise canonical.
 
 - Fixed public `Debug` implementations and built-in transport tracing exposing
   reconnect and relay credentials, TURN userinfo, WebRTC signaling material,

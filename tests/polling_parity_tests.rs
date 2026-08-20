@@ -26,8 +26,8 @@ use signal_fish_client::protocol::{
     ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap, DeliveryGapReason,
     DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState, PlayerId,
     PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
-    RoomJoinedPayload, ServerMessage, SpectatorJoinedPayload, TransportKind, V2BinaryGameDataFrame,
-    V3BinaryGameDataFrame,
+    RoomJoinedPayload, SenderWatermark, ServerMessage, SpectatorJoinedPayload, TransportKind,
+    V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ErrorCode, ProtocolViolationPolicy};
@@ -86,7 +86,11 @@ impl FrameMock {
     fn v3() -> Self {
         Self {
             incoming: Arc::new(Mutex::new(VecDeque::from([
+                TransportFrame::Text(AUTH.into()),
                 TransportFrame::Text(PI_V3.into()),
+                TransportFrame::Text(
+                    r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000008","room_code":"ROOM","player_id":"00000000-0000-0000-0000-000000000009","game_name":"game","max_players":4,"supports_authority":true,"current_players":[{"id":"00000000-0000-0000-0000-000000000009","name":"local","is_authority":true,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000007","name":"peer","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000006","name":"off-plan","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0}],"is_authority":true,"lobby_state":"finalized","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#.into(),
+                ),
                 TransportFrame::Text(
                     r#"{"type":"SessionPlan","data":{"generation":"00000000-0000-0000-0000-00000000000c","topology":"mesh","transport":"webrtc","peers":[{"player_id":"00000000-0000-0000-0000-000000000007","player_name":"peer","is_authority":false,"initiate":true}],"fallback":"relay"}}"#.into(),
                 ),
@@ -298,14 +302,24 @@ fn pi_v2_payload() -> ProtocolInfoPayload {
 }
 
 fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
+    let local = uuid::Uuid::from_u128(200);
     let payload = ReconnectedPayload {
         room_id: uuid::Uuid::from_u128(100),
         room_code: "R".into(),
-        player_id: uuid::Uuid::from_u128(200),
+        player_id: local,
         game_name: "g".into(),
         max_players: 4,
         supports_authority: false,
-        current_players: vec![],
+        current_players: vec![PlayerInfo {
+            id: local,
+            name: "local".into(),
+            is_authority: true,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        }],
         is_authority: false,
         lobby_state: LobbyState::Waiting,
         ready_players: vec![],
@@ -314,7 +328,11 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         ice_servers: vec![],
         missed_events: missed,
         replay: None,
-        sender_watermarks: vec![],
+        sender_watermarks: vec![SenderWatermark {
+            player_id: local,
+            epoch: 1,
+            seq: 0,
+        }],
         reconnection_token: None,
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
@@ -776,16 +794,38 @@ fn binary_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
         game_name: "binary-parity".into(),
         max_players: 4,
         supports_authority: false,
-        current_players: vec![PlayerInfo {
-            id: player_id,
-            name: "sender".into(),
-            is_authority: false,
-            is_ready: false,
-            connected_at: "2026-01-01T00:00:00Z".into(),
-            connection_info: None,
-            epoch: Some(1),
-            seq: Some(0),
-        }],
+        current_players: vec![
+            PlayerInfo {
+                id: uuid::Uuid::from_u128(100),
+                name: "local".into(),
+                is_authority: true,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            },
+            PlayerInfo {
+                id: player_id,
+                name: "sender".into(),
+                is_authority: false,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            },
+            PlayerInfo {
+                id: uuid::Uuid::from_u128(352),
+                name: "off-plan".into(),
+                is_authority: false,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            },
+        ],
         is_authority: false,
         lobby_state: LobbyState::Lobby,
         ready_players: vec![],
@@ -795,9 +835,38 @@ fn binary_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
         reconnection_token: Some("binary-parity-token".into()),
     }));
     vec![
+        TransportFrame::Text(AUTH.into()),
         TransportFrame::Text(PI_V3.into()),
         TransportFrame::Text(serde_json::to_string(&room_joined).unwrap()),
     ]
+}
+
+fn finalized_v2_room_frame() -> TransportFrame {
+    text_server_frame(ServerMessage::RoomJoined(Box::new(RoomJoinedPayload {
+        room_id: uuid::Uuid::from_u128(210),
+        room_code: "V2ROOM".into(),
+        player_id: uuid::Uuid::from_u128(211),
+        game_name: "v2-parity".into(),
+        max_players: 4,
+        supports_authority: false,
+        current_players: vec![PlayerInfo {
+            id: uuid::Uuid::from_u128(211),
+            name: "local".into(),
+            is_authority: false,
+            is_ready: true,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        }],
+        is_authority: false,
+        lobby_state: LobbyState::Finalized,
+        ready_players: vec![],
+        relay_type: "websocket".into(),
+        current_spectators: vec![],
+        ice_servers: vec![],
+        reconnection_token: None,
+    })))
 }
 
 fn spectator_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
@@ -821,6 +890,7 @@ fn spectator_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
         reason: None,
     }));
     vec![
+        TransportFrame::Text(AUTH.into()),
         TransportFrame::Text(PI_V3.into()),
         TransportFrame::Text(
             serde_json::to_string(&spectator_joined)
@@ -833,6 +903,298 @@ fn text_server_frame(message: ServerMessage) -> TransportFrame {
     TransportFrame::Text(
         serde_json::to_string(&message).expect("serialize accountability parity fixture"),
     )
+}
+
+#[tokio::test]
+async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
+    use signal_fish_client::protocol::{DirectEndpoint, SessionPeer, SessionPlanPayload, Topology};
+
+    let peer = uuid::Uuid::from_u128(350);
+    let generation = uuid::Uuid::from_u128(351);
+    let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(generation),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer,
+            player_name: "peer".into(),
+            is_authority: false,
+            initiate: false,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }));
+
+    let mut room_prefix = binary_accountability_prefix(peer);
+    room_prefix.push(text_server_frame(ServerMessage::LobbyStateChanged {
+        lobby_state: LobbyState::Finalized,
+        ready_players: vec![],
+        all_ready: true,
+    }));
+
+    let valid_pairs = [
+        (Topology::Relay, TransportKind::Relay),
+        (Topology::Host, TransportKind::Direct),
+        (Topology::Host, TransportKind::WebRtc),
+        (Topology::Mesh, TransportKind::WebRtc),
+    ];
+    for topology in [Topology::Relay, Topology::Host, Topology::Mesh] {
+        for transport in [
+            TransportKind::Relay,
+            TransportKind::Direct,
+            TransportKind::WebRtc,
+        ] {
+            let pair_plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+                generation: Some(generation),
+                topology,
+                transport,
+                host: (topology == Topology::Host).then_some(peer),
+                direct_endpoint: (transport == TransportKind::Direct).then_some(DirectEndpoint {
+                    host: "192.0.2.10".into(),
+                    port: 7_777,
+                }),
+                peers: if topology == Topology::Relay {
+                    vec![]
+                } else {
+                    vec![SessionPeer {
+                        player_id: peer,
+                        player_name: "peer".into(),
+                        is_authority: false,
+                        initiate: false,
+                    }]
+                },
+                ice_servers: vec![],
+                fallback: TransportKind::Relay,
+            }));
+            let events = assert_frame_trace_parity(
+                room_prefix
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(text_server_frame(pair_plan)))
+                    .collect(),
+                SignalFishConfig::new("app")
+                    .enable_v3()
+                    .with_protocol_violation_policy(ProtocolViolationPolicy::Observe),
+            )
+            .await;
+            let accepted = valid_pairs.contains(&(topology, transport));
+            assert_eq!(
+                events.iter().any(|event| event.starts_with("SessionPlan")),
+                accepted,
+                "{topology:?}+{transport:?}: {events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .any(|event| event.starts_with("ProtocolViolation|Lifecycle|")),
+                !accepted,
+                "{topology:?}+{transport:?}: {events:?}"
+            );
+        }
+    }
+
+    let mut noncanonical_plan = match plan.clone() {
+        ServerMessage::SessionPlan(plan) => *plan,
+        _ => unreachable!("plan fixture is a SessionPlan"),
+    };
+    noncanonical_plan.topology = Topology::Relay;
+    noncanonical_plan.transport = TransportKind::Relay;
+
+    let mut replacement_plan = match plan.clone() {
+        ServerMessage::SessionPlan(plan) => *plan,
+        _ => unreachable!("plan fixture is a SessionPlan"),
+    };
+    replacement_plan.generation = Some(uuid::Uuid::from_u128(353));
+    replacement_plan.peers.clear();
+
+    let invalid_cases = [
+        (
+            "pre-auth",
+            vec![text_server_frame(ServerMessage::PlayerJoined {
+                player: PlayerInfo {
+                    id: peer,
+                    name: "peer".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            })],
+            "PlayerJoined",
+        ),
+        (
+            "authenticated-pre-room",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                text_server_frame(ServerMessage::PlayerLeft {
+                    player_id: peer,
+                    epoch: Some(1),
+                    final_seq: Some(0),
+                }),
+            ],
+            "PlayerLeft",
+        ),
+        (
+            "delivery-report-pre-room",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                mixed_coalesced_unsupported_report(peer),
+            ],
+            "DeliveryReport",
+        ),
+        (
+            "post-room",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain(std::iter::once(text_server_frame(ServerMessage::RoomLeft)))
+                .chain(std::iter::once(text_server_frame(plan.clone())))
+                .collect(),
+            "SessionPlan",
+        ),
+        (
+            "v3-message-under-v2",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V2.into()),
+                finalized_v2_room_frame(),
+                text_server_frame(plan.clone()),
+            ],
+            "SessionPlan",
+        ),
+        (
+            "delivery-report-post-room",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain(std::iter::once(text_server_frame(ServerMessage::RoomLeft)))
+                .chain(std::iter::once(mixed_coalesced_unsupported_report(peer)))
+                .collect(),
+            "DeliveryReport",
+        ),
+        (
+            "noncanonical-plan",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain(std::iter::once(text_server_frame(
+                    ServerMessage::SessionPlan(Box::new(noncanonical_plan)),
+                )))
+                .collect(),
+            "SessionPlan",
+        ),
+        (
+            "self-signal",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::Signal {
+                        from: uuid::Uuid::from_u128(100),
+                        generation: Some(generation),
+                        signal: serde_json::json!({"Offer": "self"}),
+                    }),
+                ])
+                .collect(),
+            "SignalReceived",
+        ),
+        (
+            "same-room-off-plan-signal",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::Signal {
+                        from: uuid::Uuid::from_u128(352),
+                        generation: Some(generation),
+                        signal: serde_json::json!({"Offer": "off-plan"}),
+                    }),
+                ])
+                .collect(),
+            "SignalReceived",
+        ),
+        (
+            "removed-by-replan-signal",
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(replacement_plan))),
+                    text_server_frame(ServerMessage::Signal {
+                        from: peer,
+                        generation: Some(uuid::Uuid::from_u128(353)),
+                        signal: serde_json::json!({"Offer": "removed"}),
+                    }),
+                ])
+                .collect(),
+            "SignalReceived",
+        ),
+    ];
+
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        for (name, frames, suppressed_event) in &invalid_cases {
+            let events = assert_frame_trace_parity(
+                frames.clone(),
+                SignalFishConfig::new("app")
+                    .enable_v3()
+                    .with_protocol_violation_policy(policy),
+            )
+            .await;
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event.starts_with("ProtocolViolation|Lifecycle|")),
+                "{name} under {policy:?}: {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !event.starts_with(suppressed_event)),
+                "{name} delivered {suppressed_event} under {policy:?}: {events:?}"
+            );
+        }
+    }
+
+    let mut valid = room_prefix;
+    valid.extend([
+        text_server_frame(plan),
+        text_server_frame(ServerMessage::Signal {
+            from: peer,
+            generation: Some(generation),
+            signal: serde_json::json!({"Offer": "sdp"}),
+        }),
+        text_server_frame(ServerMessage::RoomLeft),
+        text_server_frame(ServerMessage::RelayStats {
+            interval_ms: 1_000,
+            sent_to_you: 0,
+            dropped_for_you: 0,
+            backpressure_events: 0,
+        }),
+        text_server_frame(ServerMessage::GoingAway {
+            deadline_ms: 5_000,
+            retry_after_secs: Some(1),
+        }),
+    ]);
+    let events = assert_frame_trace_parity(valid, SignalFishConfig::new("app").enable_v3()).await;
+    for expected in ["SessionPlan", "SignalReceived", "RelayStats", "GoingAway"] {
+        assert!(
+            events.iter().any(|event| event.starts_with(expected)),
+            "missing {expected}: {events:?}"
+        );
+    }
 }
 
 fn mixed_coalesced_unsupported_report(sender: PlayerId) -> TransportFrame {
@@ -964,6 +1326,7 @@ async fn mixed_coalesced_unsupported_advisory_trace_has_complete_policy_parity()
         assert_eq!(
             event_kinds,
             [
+                "Authenticated",
                 "ProtocolInfo",
                 "RoomJoined",
                 "DeliveryReport",
@@ -1027,6 +1390,7 @@ async fn room_exit_clears_unsupported_advisory_authorization_in_both_drivers() {
             );
 
             let mut expected_kinds = vec![
+                "Authenticated",
                 "ProtocolInfo",
                 joined_kind,
                 "DeliveryReport",
@@ -1086,11 +1450,14 @@ async fn every_common_command_produces_identical_physical_frames() {
         let async_sent = Arc::clone(&async_mock.sent);
         let (mut async_client, mut async_events) =
             SignalFishClient::start(async_mock, config.clone());
-        for _ in 0..3 {
-            tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
-                .await
-                .unwrap_or_else(|_| panic!("{case:?}: async negotiation event timed out"));
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !matches!(
+                async_events.recv().await,
+                Some(SignalFishEvent::SessionPlan { .. })
+            ) {}
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{case:?}: async SessionPlan timed out"));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while async_sent.lock().unwrap().is_empty() {
                 tokio::task::yield_now().await;
@@ -1133,6 +1500,82 @@ async fn every_common_command_produces_identical_physical_frames() {
         );
         async_client.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers() {
+    let unauthorized = [
+        uuid::Uuid::from_u128(9),
+        uuid::Uuid::from_u128(6),
+        uuid::Uuid::from_u128(99),
+    ];
+    let generation = Some(uuid::Uuid::from_u128(12));
+    let config = SignalFishConfig::new("app").enable_mesh();
+
+    let async_mock = FrameMock::v3();
+    let async_sent = Arc::clone(&async_mock.sent);
+    let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !matches!(
+            async_events.recv().await,
+            Some(SignalFishEvent::SessionPlan { .. })
+        ) {}
+    })
+    .await
+    .expect("async SessionPlan");
+    async_sent.lock().unwrap().clear();
+    for target in unauthorized {
+        for result in [
+            async_client.send_signal(target, PeerSignal::Offer("sdp".into())),
+            async_client.send_signal_for_generation(
+                target,
+                generation,
+                PeerSignal::Answer("sdp".into()),
+            ),
+            async_client.send_raw_signal(target, serde_json::json!({"Custom": true})),
+            async_client.send_raw_signal_for_generation(
+                target,
+                generation,
+                serde_json::json!({"Bound": true}),
+            ),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SignalFishError::SignalPeerNotInSession { peer_id }) if peer_id == target
+            ));
+        }
+    }
+    assert!(async_sent.lock().unwrap().is_empty());
+
+    let polling_mock = FrameMock::v3();
+    let polling_sent = Arc::clone(&polling_mock.sent);
+    let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    let _ = polling_client.poll();
+    polling_sent.lock().unwrap().clear();
+    for target in unauthorized {
+        for result in [
+            polling_client.send_signal(target, PeerSignal::Offer("sdp".into())),
+            polling_client.send_signal_for_generation(
+                target,
+                generation,
+                PeerSignal::Answer("sdp".into()),
+            ),
+            polling_client.send_raw_signal(target, serde_json::json!({"Custom": true})),
+            polling_client.send_raw_signal_for_generation(
+                target,
+                generation,
+                serde_json::json!({"Bound": true}),
+            ),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SignalFishError::SignalPeerNotInSession { peer_id }) if peer_id == target
+            ));
+        }
+    }
+    let _ = polling_client.poll();
+    assert!(polling_sent.lock().unwrap().is_empty());
+    async_client.shutdown().await;
 }
 
 #[tokio::test]
@@ -1305,10 +1748,10 @@ async fn parity_negotiated_version_after_v3() {
 // ── PARITY 4: reconnect replay restores v3 (downgrade-risk hunt) ──────
 
 #[tokio::test]
-async fn parity_reconnect_replay_restores_v3_from_missed_events() {
-    let recon = reconnected_with_missed(vec![ServerMessage::ProtocolInfo(pi_v3_payload())]);
+async fn parity_reconnect_preserves_outer_v3_negotiation() {
+    let recon = reconnected_with_missed(vec![]);
 
-    let async_mock = SharedMock::new(vec![AUTH, &recon]);
+    let async_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
     let (client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
     for _ in 0..4 {
@@ -1317,44 +1760,40 @@ async fn parity_reconnect_replay_restores_v3_from_missed_events() {
     assert_eq!(
         client.negotiated_protocol_version(),
         Some(3),
-        "async: reconnect must restore v3 from missed_events"
+        "async: reconnect must preserve the connection negotiation"
     );
 
-    let poll_mock = SharedMock::new(vec![AUTH, &recon]);
+    let poll_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
     poll_client.poll();
     assert_eq!(
         poll_client.negotiated_protocol_version(),
         Some(3),
-        "polling: reconnect must restore v3 from missed_events"
+        "polling: reconnect must preserve the connection negotiation"
     );
 }
 
 // ── PARITY 5: reconnect with v2 missed_events must NOT downgrade ──────
 
 #[tokio::test]
-async fn parity_reconnect_v2_missed_events_does_not_downgrade_active_v3() {
+async fn parity_reconnect_rejects_nested_protocol_info_without_downgrade() {
     let recon_v2 = reconnected_with_missed(vec![ServerMessage::ProtocolInfo(pi_v2_payload())]);
-
-    let async_mock = SharedMock::new(vec![AUTH, PI_V3, &recon_v2]);
-    let (client, mut events) = SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
-    for _ in 0..5 {
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await;
-    }
-    assert_eq!(
-        client.negotiated_protocol_version(),
-        Some(3),
-        "async: a replayed v2 ProtocolInfo must not downgrade active v3"
-    );
-
-    let poll_mock = SharedMock::new(vec![AUTH, PI_V3, &recon_v2]);
-    let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
-    poll_client.poll();
-    assert_eq!(
-        poll_client.negotiated_protocol_version(),
-        Some(3),
-        "polling: a replayed v2 ProtocolInfo must not downgrade active v3"
-    );
+    let events = assert_frame_trace_parity(
+        vec![
+            TransportFrame::Text(AUTH.into()),
+            TransportFrame::Text(PI_V3.into()),
+            TransportFrame::Text(recon_v2),
+        ],
+        SignalFishConfig::new("app")
+            .enable_v3()
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Observe),
+    )
+    .await;
+    assert!(events.iter().any(|event| {
+        event.starts_with("ProtocolViolation|Lifecycle|")
+            && event.contains("non-replayable ProtocolInfo")
+    }));
+    assert!(!events.iter().any(|event| event.starts_with("Reconnected")));
 }
 
 // ── PARITY 6: enable_mesh advertises v3 identically ──────────────────

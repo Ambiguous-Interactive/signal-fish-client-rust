@@ -397,7 +397,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             if outcome.disconnect {
                 self.handle_disconnect_at(
                     &mut events,
-                    Some("protocol accountability violation".into()),
+                    Some("protocol violation".into()),
                     &mut cx,
                     now,
                 );
@@ -589,6 +589,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// Returns [`SignalFishError::ProtocolUnsupported`] if the connection has not
     /// negotiated protocol v3, [`SignalFishError::SessionPlanUnavailable`]
     /// before the current room's first authoritative plan,
+    /// [`SignalFishError::SignalPeerNotInSession`] when `to` is the local
+    /// player or is absent from the latest plan/current room roster,
     /// [`SignalFishError::NotConnected`] if the transport has closed, or
     /// [`SignalFishError::SendBufferFull`] if the outgoing command queue is full.
     pub fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()> {
@@ -1482,6 +1484,8 @@ mod tests {
     }
 
     fn accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
+        let authenticated: ServerMessage =
+            serde_json::from_str(authenticated_json_str()).expect("parse authenticated fixture");
         let protocol_info = ServerMessage::ProtocolInfo(protocol_info_v3());
         let room_joined = ServerMessage::RoomJoined(Box::new(crate::protocol::RoomJoinedPayload {
             room_id: uuid::Uuid::from_u128(200),
@@ -1490,16 +1494,28 @@ mod tests {
             game_name: "accountability-test".into(),
             max_players: 4,
             supports_authority: false,
-            current_players: vec![crate::protocol::PlayerInfo {
-                id: player_id,
-                name: "sender".into(),
-                is_authority: false,
-                is_ready: false,
-                connected_at: "2026-01-01T00:00:00Z".into(),
-                connection_info: None,
-                epoch: Some(1),
-                seq: Some(0),
-            }],
+            current_players: vec![
+                crate::protocol::PlayerInfo {
+                    id: uuid::Uuid::from_u128(100),
+                    name: "local".into(),
+                    is_authority: true,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+                crate::protocol::PlayerInfo {
+                    id: player_id,
+                    name: "sender".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            ],
             is_authority: false,
             lobby_state: crate::protocol::LobbyState::Lobby,
             ready_players: vec![],
@@ -1508,7 +1524,7 @@ mod tests {
             ice_servers: vec![],
             reconnection_token: Some("rotating-token".into()),
         }));
-        [protocol_info, room_joined]
+        [authenticated, protocol_info, room_joined]
             .into_iter()
             .map(|message| {
                 TransportFrame::Text(
@@ -1516,6 +1532,126 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn authenticated_incoming(
+        json: String,
+    ) -> Vec<Option<std::result::Result<String, SignalFishError>>> {
+        vec![
+            Some(Ok(authenticated_json_str().into())),
+            Some(Ok(PROTOCOL_INFO_V2.into())),
+            Some(Ok(json)),
+        ]
+    }
+
+    fn room_incoming(json: String) -> Vec<Option<std::result::Result<String, SignalFishError>>> {
+        let room = ServerMessage::RoomJoined(Box::new(crate::protocol::RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(9_000),
+            room_code: "ROOM".into(),
+            player_id: uuid::Uuid::from_u128(9_001),
+            game_name: "event-test".into(),
+            max_players: 4,
+            supports_authority: true,
+            current_players: vec![crate::protocol::PlayerInfo {
+                id: uuid::Uuid::from_u128(9_001),
+                name: "local".into(),
+                is_authority: true,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: None,
+                seq: None,
+            }],
+            is_authority: true,
+            lobby_state: crate::protocol::LobbyState::Lobby,
+            ready_players: vec![],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        }));
+        let room = serde_json::to_string(&room).expect("serialize event-test room baseline");
+        vec![
+            Some(Ok(authenticated_json_str().into())),
+            Some(Ok(PROTOCOL_INFO_V2.into())),
+            Some(Ok(room)),
+            Some(Ok(json)),
+        ]
+    }
+
+    fn finalized_v3_room_incoming(
+        peer: PlayerId,
+        messages: impl IntoIterator<Item = String>,
+    ) -> Vec<Option<std::result::Result<String, SignalFishError>>> {
+        let local = uuid::Uuid::from_u128(100);
+        let player = |id, name: &str| crate::protocol::PlayerInfo {
+            id,
+            name: name.into(),
+            is_authority: id == local,
+            is_ready: true,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        };
+        let room = ServerMessage::RoomJoined(Box::new(crate::protocol::RoomJoinedPayload {
+            room_id: uuid::Uuid::from_u128(200),
+            room_code: "V3ROOM".into(),
+            player_id: local,
+            game_name: "mesh-test".into(),
+            max_players: 4,
+            supports_authority: true,
+            current_players: vec![player(local, "local"), player(peer, "peer")],
+            is_authority: true,
+            lobby_state: crate::protocol::LobbyState::Finalized,
+            ready_players: vec![local, peer],
+            relay_type: "websocket".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: None,
+        }));
+        let mut incoming = vec![
+            Some(Ok(authenticated_json_str().into())),
+            Some(Ok(PROTOCOL_INFO_V3.into())),
+            Some(Ok(
+                serde_json::to_string(&room).expect("serialize v3 room baseline")
+            )),
+        ];
+        incoming.extend(messages.into_iter().map(|message| Some(Ok(message))));
+        incoming
+    }
+
+    fn prime_connection<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(authenticated_json_str().to_string()));
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(PROTOCOL_INFO_V2.to_string()));
+    }
+
+    fn prime_room<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        prime_connection(client);
+        let room = room_incoming(String::new())
+            .into_iter()
+            .nth(2)
+            .and_then(|item| item)
+            .expect("room fixture")
+            .expect("valid room fixture");
+        let _ = client.core.process_frame(TransportFrame::Text(room));
+    }
+
+    fn v2_player(id: PlayerId) -> crate::protocol::PlayerInfo {
+        crate::protocol::PlayerInfo {
+            id,
+            name: "local".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        }
     }
 
     #[test]
@@ -1634,6 +1770,9 @@ mod tests {
             .expect("serialize protocol negotiation fixture");
         let _ = client
             .core
+            .process_frame(TransportFrame::Text(authenticated_json_str().to_string()));
+        let _ = client
+            .core
             .process_frame(TransportFrame::Text(protocol_info));
         assert!(matches!(
             client.send_binary_game_data(vec![1, 2, 3]),
@@ -1646,6 +1785,9 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, config);
         let protocol_info = serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_v3()))
             .expect("serialize protocol negotiation fixture");
+        let _ = client
+            .core
+            .process_frame(TransportFrame::Text(authenticated_json_str().to_string()));
         let _ = client
             .core
             .process_frame(TransportFrame::Text(protocol_info));
@@ -1685,12 +1827,21 @@ mod tests {
             encoding: GameDataEncoding::MessagePack,
             payload: vec![1, 2, 3],
         };
-        let transport = MockTransport::new().with_frames(vec![
+        let mut frames = vec![
+            TransportFrame::Text(authenticated_json_str().into()),
             TransportFrame::Text(PROTOCOL_INFO_V2.into()),
-            TransportFrame::Binary(
-                rmp_serde::to_vec_named(&frame).expect("serialize v2 binary fixture"),
-            ),
-        ]);
+        ];
+        let room = room_incoming(String::new())
+            .into_iter()
+            .nth(2)
+            .and_then(|item| item)
+            .expect("room fixture")
+            .expect("valid room fixture");
+        frames.push(TransportFrame::Text(room));
+        frames.push(TransportFrame::Binary(
+            rmp_serde::to_vec_named(&frame).expect("serialize v2 binary fixture"),
+        ));
+        let transport = MockTransport::new().with_frames(frames);
         let mut config = default_config();
         config.game_data_format = Some(GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
@@ -1728,8 +1879,18 @@ mod tests {
                 false,
             ),
         ] {
-            let transport =
-                MockTransport::new().with_frames(vec![TransportFrame::Binary(vec![0xff, 0x00])]);
+            let room = room_incoming(String::new())
+                .into_iter()
+                .nth(2)
+                .and_then(|item| item)
+                .expect("room fixture")
+                .expect("valid room fixture");
+            let transport = MockTransport::new().with_frames(vec![
+                TransportFrame::Text(authenticated_json_str().into()),
+                TransportFrame::Text(PROTOCOL_INFO_V2.into()),
+                TransportFrame::Text(room),
+                TransportFrame::Binary(vec![0xff, 0x00]),
+            ]);
             let config = default_config().with_protocol_violation_policy(policy);
             let mut client = SignalFishPollingClient::new(transport, config);
             let events = client.poll();
@@ -1740,8 +1901,7 @@ mod tests {
                 events
                     .iter()
                     .any(|event| matches!(event, SignalFishEvent::DecodeFailed { .. })),
-                policy == crate::client::ProtocolViolationPolicy::Observe,
-                "Observe continues decoding for diagnostics; enforcing policies stop first"
+                policy == crate::client::ProtocolViolationPolicy::Observe
             );
             assert_eq!(client.is_connected(), connected);
             assert_eq!(client.snapshot().quarantined, quarantined);
@@ -1797,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn quarantine_suppresses_invalid_lifecycle_and_duplicate_protocol_info_is_ignored() {
+    fn quarantine_suppresses_invalid_lifecycle_and_duplicate_protocol_info() {
         let player_id = uuid::Uuid::from_u128(304);
         let mut invalid_frames = accountability_prefix(player_id);
         invalid_frames.push(TransportFrame::Text(
@@ -1834,10 +1994,10 @@ mod tests {
         let transport = MockTransport::new().with_frames(duplicate_frames);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_v3());
         let events = client.poll();
-        assert!(!events
+        assert!(events
             .iter()
             .any(|event| matches!(event, SignalFishEvent::ProtocolViolation { .. })));
-        assert!(events
+        assert!(!events
             .iter()
             .any(|event| matches!(event, SignalFishEvent::GameData { .. })));
     }
@@ -2033,11 +2193,10 @@ mod tests {
     #[test]
     fn send_signal_after_v3_is_queued() {
         let peer: PlayerId = PEER_UUID.parse().unwrap();
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(PROTOCOL_INFO_V3.to_string())),
-            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
-        ]);
+        let transport = MockTransport::new().with_incoming(finalized_v3_room_incoming(
+            peer,
+            [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
+        ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
@@ -2054,11 +2213,10 @@ mod tests {
     #[test]
     fn send_answer_ice_and_raw_signal_wire_shapes() {
         let peer: PlayerId = PEER_UUID.parse().unwrap();
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(PROTOCOL_INFO_V3.to_string())),
-            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
-        ]);
+        let transport = MockTransport::new().with_incoming(finalized_v3_room_incoming(
+            peer,
+            [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
+        ));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll();
         client.send_answer(peer, "ans").expect("send_answer");
@@ -2115,8 +2273,10 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_restores_negotiated_version_from_missed_events() {
+    fn reconnect_preserves_negotiated_version() {
         use crate::protocol::{LobbyState, ReconnectedPayload};
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        let local = uuid::Uuid::from_u128(200);
         let payload = ReconnectedPayload {
             room_id: uuid::Uuid::from_u128(100),
             room_code: "R".into(),
@@ -2124,17 +2284,35 @@ mod tests {
             game_name: "g".into(),
             max_players: 4,
             supports_authority: false,
-            current_players: vec![],
+            current_players: vec![
+                crate::protocol::PlayerInfo {
+                    id: local,
+                    name: "local".into(),
+                    is_authority: true,
+                    is_ready: true,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+                crate::protocol::PlayerInfo {
+                    id: peer,
+                    name: "peer".into(),
+                    is_authority: false,
+                    is_ready: true,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            ],
             is_authority: false,
-            lobby_state: LobbyState::Waiting,
+            lobby_state: LobbyState::Finalized,
             ready_players: vec![],
             relay_type: "tcp".into(),
             current_spectators: vec![],
             ice_servers: vec![],
-            missed_events: vec![
-                ServerMessage::ProtocolInfo(protocol_info_v3()),
-                session_plan_message(PEER_UUID.parse().unwrap(), Some(uuid::Uuid::from_u128(12))),
-            ],
+            missed_events: vec![],
             replay: None,
             sender_watermarks: vec![],
             reconnection_token: None,
@@ -2143,21 +2321,17 @@ mod tests {
             serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap();
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V3.to_string())),
             Some(Ok(reconnected)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
-        // A v3 send now succeeds after the reconnect.
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
-        client
-            .send_offer(peer, "sdp")
-            .expect("send after reconnect");
-        client.poll();
-        assert!(last_sent(&client)
-            .iter()
-            .any(|m| matches!(m, ClientMessage::Signal { .. })));
+        assert!(matches!(
+            client.send_offer(peer, "sdp"),
+            Err(SignalFishError::SessionPlanUnavailable)
+        ));
     }
 
     #[test]
@@ -2165,11 +2339,12 @@ mod tests {
         // `>= 3` (not `== 3`): a future v4 negotiation must still enable mesh.
         let pi_v4 = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":4,"min_protocol_version":2,"max_protocol_version":4}}"#;
         let peer: PlayerId = PEER_UUID.parse().unwrap();
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(pi_v4.to_string())),
-            Some(Ok(session_plan_json(peer, Some(uuid::Uuid::from_u128(12))))),
-        ]);
+        let mut incoming = finalized_v3_room_incoming(
+            peer,
+            [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
+        );
+        incoming[1] = Some(Ok(pi_v4.to_string()));
+        let transport = MockTransport::new().with_incoming(incoming);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(4));
@@ -2226,16 +2401,12 @@ mod tests {
         let signal = format!(
             r#"{{"type":"Signal","data":{{"from":"{PEER_UUID}","signal":{{"Offer":"remote-sdp"}}}}}}"#
         );
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(PROTOCOL_INFO_V3.to_string())),
-            Some(Ok(session_plan)),
-            Some(Ok(signal)),
-        ]);
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        let transport = MockTransport::new()
+            .with_incoming(finalized_v3_room_incoming(peer, [session_plan, signal]));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
         assert!(events.iter().any(|e| matches!(
             e,
             SignalFishEvent::SessionPlan { peers, .. }
@@ -2256,12 +2427,13 @@ mod tests {
         let peer: PlayerId = PEER_UUID.parse().unwrap();
         let first = uuid::Uuid::from_u128(12);
         let second = uuid::Uuid::from_u128(13);
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(PROTOCOL_INFO_V3.to_string())),
-            Some(Ok(session_plan_json(peer, Some(first)))),
-            Some(Ok(session_plan_json(peer, Some(second)))),
-        ]);
+        let transport = MockTransport::new().with_incoming(finalized_v3_room_incoming(
+            peer,
+            [
+                session_plan_json(peer, Some(first)),
+                session_plan_json(peer, Some(second)),
+            ],
+        ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         client.poll();
         assert_eq!(client.snapshot().session_generation, Some(second));
@@ -2290,21 +2462,24 @@ mod tests {
 
     #[test]
     fn poll_emits_new_peer_and_peer_transport_status_events() {
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
         let new_peer = format!(
             r#"{{"type":"NewPeer","data":{{"peer_id":"{PEER_UUID}","you_initiate":true}}}}"#
         );
         let status = format!(
             r#"{{"type":"PeerTransportStatus","data":{{"peer_id":"{PEER_UUID}","transport":"webrtc","connected":true}}}}"#
         );
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(new_peer)),
-            Some(Ok(status)),
-        ]);
+        let transport = MockTransport::new().with_incoming(finalized_v3_room_incoming(
+            peer,
+            [
+                session_plan_json(peer, Some(uuid::Uuid::from_u128(12))),
+                new_peer,
+                status,
+            ],
+        ));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
-        let peer: PlayerId = PEER_UUID.parse().unwrap();
         assert!(events.iter().any(|e| matches!(
             e,
             SignalFishEvent::NewPeer { peer_id, you_initiate: true } if *peer_id == peer
@@ -2323,6 +2498,7 @@ mod tests {
         // the following valid message still arrives.
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(r#"{"type":"SomeFutureV4Message","data":{}}"#.to_string())),
             Some(Ok(r#"{"type":"Pong"}"#.to_string())),
         ]);
@@ -2368,11 +2544,9 @@ mod tests {
             })
             .expect("GameData serializes")
         };
-        let transport = MockTransport::new().with_incoming(vec![
-            Some(Ok(authenticated_json_str().to_string())),
-            Some(Ok(game_data_json(0))),
-            Some(Ok(game_data_json(1))),
-        ]);
+        let mut incoming = room_incoming(game_data_json(0));
+        incoming.push(Some(Ok(game_data_json(1))));
+        let transport = MockTransport::new().with_incoming(incoming);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         assert_eq!(client.stats(), crate::client::ClientStats::default());
@@ -2398,21 +2572,23 @@ mod tests {
     #[test]
     fn poll_receives_and_deserializes_messages() {
         let authenticated_json = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
-        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
+        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000002","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z"}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
 
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json.to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         let events = client.poll();
 
-        // Should contain: Connected, Authenticated, RoomJoined
-        assert_eq!(events.len(), 3, "expected 3 events, got: {events:?}");
+        // Should contain: Connected, Authenticated, ProtocolInfo, RoomJoined
+        assert_eq!(events.len(), 4, "expected 4 events, got: {events:?}");
         assert!(matches!(events[0], SignalFishEvent::Connected));
         assert!(matches!(events[1], SignalFishEvent::Authenticated { .. }));
-        assert!(matches!(events[2], SignalFishEvent::RoomJoined { .. }));
+        assert!(matches!(events[2], SignalFishEvent::ProtocolInfo(_)));
+        assert!(matches!(events[3], SignalFishEvent::RoomJoined { .. }));
     }
 
     #[test]
@@ -2430,10 +2606,13 @@ mod tests {
 
     #[test]
     fn state_updates_on_room_joined() {
-        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
+        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000002","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z"}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
 
-        let transport =
-            MockTransport::new().with_incoming(vec![Some(Ok(room_joined_json.to_string()))]);
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
+            Some(Ok(room_joined_json.to_string())),
+        ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         assert!(client.current_room_id().is_none());
@@ -2645,10 +2824,12 @@ mod tests {
 
     #[test]
     fn state_updates_on_room_left() {
-        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
+        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000002","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z"}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
         let room_left_json = r#"{"type":"RoomLeft"}"#;
 
         let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined_json.to_string())),
             Some(Ok(room_left_json.to_string())),
         ]);
@@ -2663,10 +2844,13 @@ mod tests {
 
     #[test]
     fn state_updates_on_reconnected() {
-        let reconnected_json = r#"{"type":"Reconnected","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"RECON1","player_id":"00000000-0000-0000-0000-000000000003","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[],"missed_events":[]}}"#;
+        let reconnected_json = r#"{"type":"Reconnected","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"RECON1","player_id":"00000000-0000-0000-0000-000000000003","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000003","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z"}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[],"missed_events":[]}}"#;
 
-        let transport =
-            MockTransport::new().with_incoming(vec![Some(Ok(reconnected_json.to_string()))]);
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
+            Some(Ok(reconnected_json.to_string())),
+        ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         let events = client.poll();
@@ -2694,8 +2878,11 @@ mod tests {
     fn state_updates_on_spectator_joined() {
         let spectator_joined_json = r#"{"type":"SpectatorJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"SPEC1","spectator_id":"00000000-0000-0000-0000-000000000004","game_name":"test-game","current_players":[],"current_spectators":[],"lobby_state":"waiting"}}"#;
 
-        let transport =
-            MockTransport::new().with_incoming(vec![Some(Ok(spectator_joined_json.to_string()))]);
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
+            Some(Ok(spectator_joined_json.to_string())),
+        ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         client.poll();
@@ -2717,6 +2904,8 @@ mod tests {
         let spectator_left_json = r#"{"type":"SpectatorLeft","data":{"current_spectators":[]}}"#;
 
         let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(spectator_joined_json.to_string())),
             Some(Ok(spectator_left_json.to_string())),
         ]);
@@ -3368,7 +3557,7 @@ mod tests {
         })
         .expect("PlayerJoined ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3388,7 +3577,7 @@ mod tests {
         })
         .expect("PlayerLeft ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3414,7 +3603,7 @@ mod tests {
         })
         .expect("GameData ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3487,7 +3676,7 @@ mod tests {
         })
         .expect("AuthorityChanged ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3509,7 +3698,7 @@ mod tests {
         })
         .expect("AuthorityResponse ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3532,7 +3721,7 @@ mod tests {
         })
         .expect("AuthorityResponse (denied) ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3565,7 +3754,7 @@ mod tests {
         })
         .expect("LobbyStateChanged ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3585,7 +3774,7 @@ mod tests {
         })
         .expect("GameStarting ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3599,7 +3788,7 @@ mod tests {
         let json = serde_json::to_string(&ServerMessage::Pong)
             .expect("Pong ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3686,7 +3875,7 @@ mod tests {
         })
         .expect("RoomJoinFailed ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3713,7 +3902,7 @@ mod tests {
         })
         .expect("SpectatorJoinFailed ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3730,7 +3919,7 @@ mod tests {
         })
         .expect("ReconnectionFailed ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3748,7 +3937,7 @@ mod tests {
         })
         .expect("PlayerReconnected ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3775,7 +3964,7 @@ mod tests {
         })
         .expect("NewSpectatorJoined ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3794,7 +3983,7 @@ mod tests {
         })
         .expect("SpectatorDisconnected ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -3827,7 +4016,10 @@ mod tests {
         ))
         .expect("ProtocolInfo ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(json))]);
+        let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().into())),
+            Some(Ok(json)),
+        ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let events = client.poll();
 
@@ -4335,6 +4527,7 @@ mod tests {
         };
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        prime_connection(&mut client);
 
         let first = client.poll();
         assert_eq!(
@@ -4374,6 +4567,7 @@ mod tests {
         };
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        prime_connection(&mut client);
 
         let events = client.poll();
 
@@ -4417,6 +4611,7 @@ mod tests {
         };
         let mut client =
             SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        prime_room(&mut client);
 
         let first_events = client.poll();
         let second_events = client.poll();
@@ -4860,7 +5055,7 @@ mod tests {
                 game_name: "test-game".into(),
                 max_players: 4,
                 supports_authority: false,
-                current_players: vec![],
+                current_players: vec![v2_player(player_id)],
                 is_authority: false,
                 lobby_state: crate::protocol::LobbyState::Waiting,
                 ready_players: vec![],
@@ -4874,17 +5069,19 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json)),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined_json)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         let events = client.poll();
 
-        // Should contain: Connected, Authenticated, RoomJoined
-        assert_eq!(events.len(), 3, "expected 3 events, got: {events:?}");
+        // Should contain: Connected, Authenticated, ProtocolInfo, RoomJoined
+        assert_eq!(events.len(), 4, "expected 4 events, got: {events:?}");
         assert!(matches!(events[0], SignalFishEvent::Connected));
         assert!(matches!(events[1], SignalFishEvent::Authenticated { .. }));
-        assert!(matches!(events[2], SignalFishEvent::RoomJoined { .. }));
+        assert!(matches!(events[2], SignalFishEvent::ProtocolInfo(_)));
+        assert!(matches!(events[3], SignalFishEvent::RoomJoined { .. }));
 
         // State should be updated.
         assert!(client.is_authenticated());
@@ -4907,7 +5104,7 @@ mod tests {
                 game_name: "test-game".into(),
                 max_players: 4,
                 supports_authority: false,
-                current_players: vec![],
+                current_players: vec![v2_player(player_id1)],
                 is_authority: false,
                 lobby_state: crate::protocol::LobbyState::Waiting,
                 ready_players: vec![],
@@ -4928,7 +5125,7 @@ mod tests {
                 game_name: "test-game-2".into(),
                 max_players: 6,
                 supports_authority: true,
-                current_players: vec![],
+                current_players: vec![v2_player(player_id2)],
                 is_authority: true,
                 lobby_state: crate::protocol::LobbyState::Lobby,
                 ready_players: vec![],
@@ -4941,6 +5138,8 @@ mod tests {
         .expect("RoomJoined (second) ServerMessage must serialize to JSON");
 
         let transport = MockTransport::new().with_incoming(vec![
+            Some(Ok(authenticated_json_str().to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined1)),
             Some(Ok(room_left)),
             Some(Ok(room_joined2)),
@@ -4949,12 +5148,14 @@ mod tests {
 
         let events = client.poll();
 
-        // After all messages: Connected, RoomJoined, RoomLeft, RoomJoined
-        assert_eq!(events.len(), 4, "expected 4 events, got: {events:?}");
+        // After all messages: connection baseline, RoomJoined, RoomLeft, RoomJoined
+        assert_eq!(events.len(), 6, "expected 6 events, got: {events:?}");
         assert!(matches!(events[0], SignalFishEvent::Connected));
-        assert!(matches!(events[1], SignalFishEvent::RoomJoined { .. }));
-        assert!(matches!(events[2], SignalFishEvent::RoomLeft));
+        assert!(matches!(events[1], SignalFishEvent::Authenticated { .. }));
+        assert!(matches!(events[2], SignalFishEvent::ProtocolInfo(_)));
         assert!(matches!(events[3], SignalFishEvent::RoomJoined { .. }));
+        assert!(matches!(events[4], SignalFishEvent::RoomLeft));
+        assert!(matches!(events[5], SignalFishEvent::RoomJoined { .. }));
 
         // Final state should reflect the second room.
         assert_eq!(client.current_room_id(), Some(room_id2));
@@ -5013,11 +5214,12 @@ mod tests {
 
     #[test]
     fn disconnect_clears_all_state() {
-        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
+        let room_joined_json = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"ABC123","player_id":"00000000-0000-0000-0000-000000000002","game_name":"test-game","max_players":4,"supports_authority":false,"current_players":[{"id":"00000000-0000-0000-0000-000000000002","name":"local","is_authority":false,"is_ready":false,"connected_at":"2026-01-01T00:00:00Z"}],"is_authority":false,"lobby_state":"waiting","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
         let authenticated_json = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
 
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json.to_string())),
+            Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
@@ -5067,7 +5269,7 @@ mod tests {
     fn ping_and_pong_flow() {
         let pong_json = serde_json::to_string(&ServerMessage::Pong)
             .expect("Pong ServerMessage must serialize to JSON");
-        let transport = MockTransport::new().with_incoming(vec![Some(Ok(pong_json))]);
+        let transport = MockTransport::new().with_incoming(authenticated_incoming(pong_json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         // First poll: sends auth, receives Connected + Pong.
@@ -5695,6 +5897,7 @@ mod tests {
                 ..SchedulerTransport::default()
             };
             let mut client = SignalFishPollingClient::new_with_options(transport, config, options);
+            prime_room(&mut client);
             let mut now = Instant::now();
             let startup_events = client.poll_at(now);
             prop_assert!(!startup_events

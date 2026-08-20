@@ -1,8 +1,8 @@
 //! High-level events emitted by the Signal Fish client.
 //!
 //! [`SignalFishEvent`] provides a 1:1 mapping from every [`ServerMessage`] variant
-//! plus three synthetic events (`Connected`, `Disconnected`, and `DecodeFailed`)
-//! that originate from the transport layer rather than the server.
+//! plus synthetic connection, decoding, and validation events that originate
+//! in the client rather than mapping directly from the server.
 //!
 //! Boxed payload types ([`RoomJoinedPayload`], [`ReconnectedPayload`],
 //! [`SpectatorJoinedPayload`]) are flattened into inline fields so callers can
@@ -33,6 +33,7 @@ use crate::protocol::{
 /// | [`Connected`](Self::Connected) | Transport layer opened successfully |
 /// | [`Disconnected`](Self::Disconnected) | Transport layer closed or errored |
 /// | [`DecodeFailed`](Self::DecodeFailed) | An inbound frame could not be decoded |
+/// | [`ProtocolViolation`](Self::ProtocolViolation) | A decoded frame contradicted negotiated protocol state |
 ///
 /// # Example
 ///
@@ -116,7 +117,7 @@ pub enum SignalFishEvent {
         raw_prefix: String,
     },
 
-    /// The server violated protocol-v3 delivery-accountability invariants.
+    /// The server violated lifecycle, plan, signaling, or delivery invariants.
     ProtocolViolation {
         /// Stable category suitable for metrics and policy handling.
         kind: ProtocolViolationKind,
@@ -548,7 +549,7 @@ impl std::fmt::Debug for SignalFishEvent {
     }
 }
 
-/// Category of a delivery-accountability protocol violation.
+/// Category of a decoded protocol-state violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolViolationKind {
     Snapshot,
@@ -567,7 +568,8 @@ impl ProtocolViolationKind {
             || diagnostic.contains("causal DeliveryReport")
         {
             Self::Causality
-        } else if diagnostic.contains("PlayerLeft")
+        } else if diagnostic.contains("lifecycle violation")
+            || diagnostic.contains("PlayerLeft")
             || diagnostic.contains("PlayerReconnected")
             || diagnostic.contains("announced epoch")
         {

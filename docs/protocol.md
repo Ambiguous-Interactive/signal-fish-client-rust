@@ -489,6 +489,14 @@ pub struct SessionPlanPayload {
 | `ice_servers` | `Vec<IceServer>` | ICE (STUN/TURN) servers for WebRTC; omitted for non-WebRTC plans. |
 | `fallback` | `TransportKind` | The universal fallback transport — always `Relay`, the floor. |
 
+The client accepts only the server's four canonical combinations:
+`relay + relay`, `host + direct`, `host + webrtc`, and `mesh + webrtc`.
+It also checks the required/forbidden host, direct-endpoint, peer, and ICE
+fields, rejects self/duplicate/non-room peers, and validates direct host/port
+syntax before replacing the prior plan. A rejected plan emits
+`ProtocolViolation` and leaves the previous plan intact. The client always
+obeys each accepted peer's server-assigned `initiate` value verbatim.
+
 ---
 
 ### `PeerSignal` (protocol v3)
