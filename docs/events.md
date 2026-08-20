@@ -43,7 +43,7 @@ Use these to track the raw connection lifecycle.
 
 | Variant | Fields | Description |
 |---------|--------|-------------|
-| `Connected` | — | The transport handshake is complete and the client is ready to communicate. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
+| `Connected` | — | The driver first observed `Transport::is_ready() == true` and marked `ClientSnapshot::transport_ready` true; a later terminal transition resets it. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>`, `last_server_error: Option<ServerErrorInfo>` | The transport connection was closed or errored. |
 | `DecodeFailed` | `message_type: Option<String>`, `error: String`, `raw_prefix: String` | An inbound frame could not be decoded into a `ServerMessage`; the connection stays open. |
 | `ProtocolViolation` | `kind: ProtocolViolationKind`, `diagnostic: String` | A decoded message violated lifecycle, version, session-plan, signaling, or delivery-accountability invariants; configured policy decides quarantine, disconnect, or continued observation. Lifecycle/plan/signaling offenders are suppressed. |

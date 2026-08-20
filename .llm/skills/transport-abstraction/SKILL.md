@@ -129,8 +129,10 @@ Capture peer close metadata before returning `Ready(None)` from `poll_recv`.
 
 `is_ready()` is cheap and non-blocking. The default `true` fits transports
 whose constructor completes the handshake. Async-handshake transports return
-`false` until ready; the polling client defers its synthetic `Connected` event.
-Once true, readiness should remain true for that physical connection.
+`false` until ready; both clients defer their synthetic `Connected` event.
+Once true, readiness remains true for that physical connection. If readiness
+changes while the async driver is blocked, wake a waker registered by
+`poll_send` or `poll_recv`, because `is_ready()` cannot register one itself.
 
 ## Minimal Channel Transport
 

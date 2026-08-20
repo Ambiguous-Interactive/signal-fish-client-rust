@@ -291,6 +291,9 @@ close details come from `Transport::close_info()`.
   clients; keep the common APIs mirrored. Polling-only scheduling telemetry
   such as `PollingQueueAgeStats` stays on the concrete polling client and is
   exported from the crate root.
+- `ClientSnapshot::connected` means nonterminal client ownership;
+  `transport_ready` means the driver observed handshake completion. Preserve
+  pre-ready queueing and keep readiness accessors mirrored across both clients.
 - `GameDataDelivery::Reliable` preserves the v2 wire by omitting class/key;
   `Latest { key }` and `Volatile` require negotiated v3.
 - Adding `SendBufferFull` to the exhaustive `SignalFishError` is breaking

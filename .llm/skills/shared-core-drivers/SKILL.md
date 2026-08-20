@@ -79,7 +79,8 @@ frames and events rather than selected fields. Cover:
 - JSON and binary representations;
 - full queues, pending sends, disconnects, and close metadata;
 - all violation policies and authoritative quarantine rebaselines;
-- coherent snapshots and cumulative statistics.
+- coherent snapshots, connecting/readiness phases, and cumulative statistics
+  counted at outbound ownership transfer and inbound logical decode.
 - authoritative session generations, pre-plan send refusal, and stale-signal
   suppression across both drivers.
 

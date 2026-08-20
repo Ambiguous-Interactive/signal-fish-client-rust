@@ -52,8 +52,9 @@ The async client adds `Send + 'static` at `start`; the polling client does not.
 !!! tip "Bring your own transport"
     Connection setup is intentionally **not** part of the trait. Different
     transports have different connection parameters (URLs, host:port, QUIC
-    endpoints, etc.). Construct a connected transport externally, then hand it
-    to `SignalFishClient::start`.
+    endpoints, etc.). Construct a transport externally, then hand it to
+    `SignalFishClient::start`; an asynchronous handshake may still be in
+    progress if its `is_ready()` returns `false`.
 
 The crate ships with a ready-made `WebSocketTransport` (behind the `transport-websocket`
 feature flag), but you can implement the trait for any medium.
@@ -68,18 +69,21 @@ through the same states:
 ```mermaid
 stateDiagram-v2
     [*] --> Disconnected
-    Disconnected --> Connected : Transport opens
+    Disconnected --> Connecting : Client takes transport ownership
+    Connecting --> Connected : Driver observes transport readiness
     Connected --> Authenticated : Server confirms auth
     Authenticated --> InRoom : join_room / join_as_spectator
     InRoom --> Authenticated : leave_room / leave_spectator
     Authenticated --> Disconnected : shutdown / error
     InRoom --> Disconnected : shutdown / error
     Connected --> Disconnected : auth failure / error
+    Connecting --> Disconnected : shutdown / transport terminal
 ```
 
 | Transition | Trigger |
 |------------|---------|
-| **Disconnected → Connected** | The async client emits `Connected` when its loop starts with the already-connected transport. The polling client emits it on the first `poll()` cycle where `Transport::is_ready()` is true. |
+| **Disconnected → Connecting** | Constructing either client transfers ownership of a nonterminal transport attempt; `is_connected()` is true while `is_transport_ready()` remains false. |
+| **Connecting → Connected** | Both drivers emit `Connected` on their first observation that `Transport::is_ready()` is true. For the polling client, observation occurs only while the application calls `poll()`. |
 | **Connected → Authenticated** | The SDK auto-sends an `Authenticate` message. On success the server replies and `SignalFishEvent::Authenticated` is emitted. |
 | **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)`. The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
 | **InRoom → Authenticated** | Call `client.leave_room()` or `client.leave_spectator()`. The server confirms with `SignalFishEvent::RoomLeft`. |
@@ -87,8 +91,8 @@ stateDiagram-v2
 
 !!! warning "Authentication is automatic"
     You do **not** need to call an authenticate method. `SignalFishClient::start`
-    sends the authentication message immediately using the `SignalFishConfig`
-    you provide.
+    queues the authentication message immediately using the `SignalFishConfig`
+    you provide. The driver transfers it once the transport is ready.
 
 ---
 
@@ -293,12 +297,15 @@ measured capacity envelope — is documented in
 [Delivery Contract & Backpressure](delivery.md).
 
 Because the client applies backpressure instead of dropping events on
-overflow, loss elsewhere becomes observable. `stats()`
-returns [`ClientStats`](client.md) with cumulative `game_data_sent` /
+overflow, boundary-specific loss becomes diagnosable. `stats()` returns
+[`ClientStats`](client.md) with cumulative `game_data_sent` /
 `game_data_received` / `messages_undecodable` counters (they survive
-disconnects): exchange or log them across peers, account for the explicit
-terminal and quarantine boundaries above, and use any remaining persistent
-sent-vs-received deficit to investigate the relay path or a peer. Pace
+disconnects). Sent counts transport ownership transfers, including an accepted
+send that later fails; received counts successfully decoded relay game data,
+including stale or quarantined messages suppressed before application. Fanout,
+delivery-class policy, server rejection, terminal unread work, and WebRTC
+data-channel traffic mean peer counters are diagnostic rather than an equality.
+Pace
 high-rate streams with
 `send_game_data_reliable` instead of guessing at sleep durations — but drain
 events from a separate task while awaiting it: the queue only drains while
@@ -313,6 +320,7 @@ simultaneous send + receive pressure.
 | Accessor | Async? | Returns |
 |----------|--------|---------|
 | `is_connected()` | No | `bool` |
+| `is_transport_ready()` | No | `bool` |
 | `is_authenticated()` | No | `bool` |
 | `snapshot()` | No | `ClientSnapshot` |
 | `room_role()` | No | `Option<RoomRole>` |

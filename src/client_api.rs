@@ -85,9 +85,14 @@ pub trait SignalFishClientApi {
         self.snapshot().room_role
     }
 
-    /// Whether the physical connection is active.
+    /// Whether the client owns a nonterminal transport connection.
     fn is_connected(&self) -> bool {
         self.snapshot().connected
+    }
+
+    /// Whether the transport handshake has completed.
+    fn is_transport_ready(&self) -> bool {
+        self.snapshot().transport_ready
     }
 
     /// Whether authentication has completed.

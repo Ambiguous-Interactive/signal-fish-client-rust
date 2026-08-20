@@ -571,24 +571,31 @@ impl JoinRoomParams {
 /// polling work remains queued across bounded cycles, and refused sends return
 /// [`SendBufferFull`](crate::SignalFishError::SendBufferFull). Exchange or log
 /// these counters across peers to locate a persistent deficit after accounting
-/// for explicit terminal boundaries (shutdown, handle/receiver drop, or
-/// disconnect) and protocol quarantine.
+/// for explicit terminal boundaries, server delivery policy, and fanout.
 ///
 /// Counters are cumulative for the lifetime of the client (they survive
 /// room changes and disconnection).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ClientStats {
     /// `GameData` messages whose frames the transport accepted from the client.
+    ///
+    /// Counted at the ownership-transfer boundary: the first
+    /// [`Transport::poll_send`] call that takes the frame from the client. A
+    /// later backend completion error does not undo that transfer, and this
+    /// counter does not imply peer or server delivery.
     pub game_data_sent: u64,
     /// `GameData`/`GameDataBinary` messages received from the server.
     ///
-    /// Counted at **receipt** (when the message is read off the transport
-    /// and parsed), not at delivery to your event loop. That is the number
-    /// the relay-path deficit diagnostic needs — it measures the wire, so a
-    /// consumer that stops draining events (or a terminal abort racing the
-    /// last deliveries) cannot masquerade as relay loss. In steady state
-    /// normal-operation receipt and delivery remain aligned across async
-    /// backpressure or bounded polling cycles.
+    /// Counted at **receipt** (when the message is read off the transport and
+    /// parsed), before delivery of that message to your event loop. Async
+    /// event-channel backpressure can still stop later transport reads, and a
+    /// terminal boundary can leave buffered frames unread; account for both
+    /// when diagnosing a cross-peer deficit.
+    /// Successfully decoded stale, accountability-invalid, and
+    /// quarantine-suppressed messages are included. Malformed frames are
+    /// excluded and counted by [`messages_undecodable`](Self::messages_undecodable).
+    /// Physical binary frames rejected by lifecycle or representation policy
+    /// before logical decoding are also excluded.
     pub game_data_received: u64,
     /// Inbound frames that failed to decode into a `ServerMessage`.
     ///
@@ -603,7 +610,21 @@ pub struct ClientStats {
 /// Coherent synchronous view of client/session state.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ClientSnapshot {
+    /// Whether the client still owns a nonterminal transport connection.
+    ///
+    /// This becomes `true` when the client is constructed, before a transport
+    /// with an asynchronous handshake is necessarily ready. Read
+    /// [`transport_ready`](Self::transport_ready) to distinguish that
+    /// connecting phase.
     pub connected: bool,
+    /// Whether the transport handshake has completed for this connection.
+    ///
+    /// This becomes `true` immediately before the synthetic
+    /// [`Connected`](SignalFishEvent::Connected) event and returns to `false`
+    /// on terminal disconnect or close. Commands may still be queued while
+    /// this is `false`; transport ownership rules keep their frames pending.
+    pub transport_ready: bool,
+    /// Whether the server has confirmed authentication for this connection.
     pub authenticated: bool,
     pub negotiated_protocol_version: Option<u16>,
     /// Exact game-data preference supplied in [`SignalFishConfig`].
@@ -657,6 +678,7 @@ impl std::fmt::Debug for ClientSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientSnapshot")
             .field("connected", &self.connected)
+            .field("transport_ready", &self.transport_ready)
             .field("authenticated", &self.authenticated)
             .field(
                 "negotiated_protocol_version",
@@ -739,7 +761,8 @@ impl SignalFishClient {
     ///
     /// # Arguments
     ///
-    /// * `transport` — A connected [`Transport`] implementation.
+    /// * `transport` — A [`Transport`] implementation. Its handshake may still
+    ///   be in progress if [`Transport::is_ready`] returns `false`.
     /// * `config` — Client configuration including the App ID.
     ///
     /// # Returns
@@ -1355,9 +1378,18 @@ impl SignalFishClient {
         lock_core(&self.state).is_p2p_active()
     }
 
-    /// Returns `true` if the transport is believed to be connected.
+    /// Whether the client owns a nonterminal transport attempt.
+    ///
+    /// This is already `true` while the transport handshake is in progress.
+    /// Use [`is_transport_ready`](Self::is_transport_ready) when readiness is
+    /// required.
     pub fn is_connected(&self) -> bool {
         lock_core(&self.state).is_connected()
+    }
+
+    /// Returns `true` once the transport handshake has completed.
+    pub fn is_transport_ready(&self) -> bool {
+        lock_core(&self.state).is_transport_ready()
     }
 
     /// Returns `true` if the server has confirmed authentication.
@@ -1468,6 +1500,7 @@ impl std::fmt::Debug for SignalFishClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("SignalFishClient");
         dbg.field("connected", &self.is_connected())
+            .field("transport_ready", &self.is_transport_ready())
             .field("authenticated", &self.is_authenticated());
         #[cfg(feature = "tokio-runtime")]
         dbg.field("has_task", &self.task.is_some());
@@ -1676,20 +1709,12 @@ async fn finish_send_and_close_bounded(
                 pending_send
                     .as_mut()
                     .map_or(std::task::Poll::Ready(Ok(())), |pending| {
-                        transport.poll_send(cx, &mut pending.frame)
+                        poll_pending_send(transport, pending, state, cx)
                     })
             })
             .await;
-            match send_result {
-                Ok(()) => {
-                    if pending_send
-                        .as_ref()
-                        .is_some_and(|pending| pending.is_game_data)
-                    {
-                        lock_core(state).record_game_data_sent();
-                    }
-                }
-                Err(error) => warn!("accepted send failed while closing transport: {error}"),
+            if let Err(error) = send_result {
+                warn!("accepted send failed while closing transport: {error}");
             }
         }
         *pending_send = None;
@@ -1707,12 +1732,30 @@ async fn finish_send_and_close_bounded(
 #[cfg(feature = "tokio-runtime")]
 struct PendingSend {
     frame: Option<TransportFrame>,
+    /// `true` only until the transport first takes ownership of this game-data frame.
     is_game_data: bool,
 }
 
 #[cfg(feature = "tokio-runtime")]
+fn poll_pending_send(
+    transport: &mut impl Transport,
+    pending: &mut PendingSend,
+    state: &Arc<Mutex<ClientCore>>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+    let was_client_owned = pending.frame.is_some();
+    let result = transport.poll_send(cx, &mut pending.frame);
+    if was_client_owned && pending.frame.is_none() && pending.is_game_data {
+        lock_core(state).record_game_data_sent();
+        pending.is_game_data = false;
+    }
+    result
+}
+
+#[cfg(feature = "tokio-runtime")]
 enum TransportIo {
-    Sent { is_game_data: bool },
+    Ready,
+    Sent,
     SendFailed(SignalFishError),
     Received(Option<std::result::Result<TransportFrame, SignalFishError>>),
 }
@@ -1723,14 +1766,18 @@ enum TransportIo {
 async fn poll_transport_io(
     transport: &mut impl Transport,
     pending_send: &mut Option<PendingSend>,
+    state: &Arc<Mutex<ClientCore>>,
+    waiting_for_ready: bool,
 ) -> TransportIo {
     std::future::poll_fn(|cx| {
+        if waiting_for_ready && transport.is_ready() {
+            return std::task::Poll::Ready(TransportIo::Ready);
+        }
         if let Some(pending) = pending_send.as_mut() {
-            match transport.poll_send(cx, &mut pending.frame) {
+            match poll_pending_send(transport, pending, state, cx) {
                 std::task::Poll::Ready(Ok(())) => {
-                    let is_game_data = pending.is_game_data;
                     *pending_send = None;
-                    return std::task::Poll::Ready(TransportIo::Sent { is_game_data });
+                    return std::task::Poll::Ready(TransportIo::Sent);
                 }
                 std::task::Poll::Ready(Err(error)) => {
                     let peer_closed = transport
@@ -1751,9 +1798,13 @@ async fn poll_transport_io(
             }
         }
 
-        match transport.poll_recv(cx) {
+        let receive = transport.poll_recv(cx);
+        match receive {
             std::task::Poll::Ready(incoming) => {
                 std::task::Poll::Ready(TransportIo::Received(incoming))
+            }
+            std::task::Poll::Pending if waiting_for_ready && transport.is_ready() => {
+                std::task::Poll::Ready(TransportIo::Ready)
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
@@ -1779,24 +1830,27 @@ async fn transport_loop(
     debug!("transport loop started");
 
     let mut pending_send = None;
-
-    if matches!(
-        emit_event_or_shutdown(&event_tx, &mut shutdown_rx, SignalFishEvent::Connected).await,
-        EmitOutcome::ShutdownRequested
-    ) {
-        finish_core_shutdown(
-            &mut transport,
-            &mut pending_send,
-            &event_tx,
-            &state,
-            shutdown_timeout,
-        )
-        .await;
-        debug!("transport loop exited");
-        return;
-    }
+    let mut connected_emitted = false;
 
     loop {
+        if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
+            connected_emitted = true;
+            if matches!(
+                emit_event_or_shutdown(&event_tx, &mut shutdown_rx, SignalFishEvent::Connected)
+                    .await,
+                EmitOutcome::ShutdownRequested
+            ) {
+                finish_core_shutdown(
+                    &mut transport,
+                    &mut pending_send,
+                    &event_tx,
+                    &state,
+                    shutdown_timeout,
+                )
+                .await;
+                break;
+            }
+        }
         tokio::select! {
             command = cmd_rx.recv(), if pending_send.is_none() => {
                 let Some(command) = command else {
@@ -1843,13 +1897,51 @@ async fn transport_loop(
                 ).await;
                 break;
             }
-            io = poll_transport_io(&mut transport, &mut pending_send) => {
-                match io {
-                    TransportIo::Sent { is_game_data } => {
-                        if is_game_data {
-                            lock_core(&state).record_game_data_sent();
-                        }
+            io = poll_transport_io(
+                &mut transport,
+                &mut pending_send,
+                &state,
+                !connected_emitted,
+            ) => {
+                if !connected_emitted
+                    && transport.is_ready()
+                    && lock_core(&state).mark_transport_ready()
+                {
+                    connected_emitted = true;
+                    if matches!(
+                        emit_event_or_shutdown(
+                            &event_tx,
+                            &mut shutdown_rx,
+                            SignalFishEvent::Connected,
+                        ).await,
+                        EmitOutcome::ShutdownRequested
+                    ) {
+                        finish_core_shutdown(
+                            &mut transport,
+                            &mut pending_send,
+                            &event_tx,
+                            &state,
+                            shutdown_timeout,
+                        ).await;
+                        break;
                     }
+                }
+                if !connected_emitted
+                    && matches!(&io, TransportIo::Received(Some(Ok(_))))
+                {
+                    emit_core_disconnected_or_shutdown(
+                        &mut transport,
+                        &mut pending_send,
+                        &event_tx,
+                        &mut shutdown_rx,
+                        &state,
+                        Some("transport received a protocol frame before readiness".into()),
+                        shutdown_timeout,
+                    ).await;
+                    break;
+                }
+                match io {
+                    TransportIo::Ready | TransportIo::Sent => {}
                     TransportIo::SendFailed(error) => {
                         emit_core_disconnected_or_shutdown(
                             &mut transport,
@@ -2095,6 +2187,254 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct DeferredReadyControls {
+        ready: Arc<AtomicBool>,
+        waker: Arc<StdMutex<Option<Waker>>>,
+    }
+
+    impl DeferredReadyControls {
+        fn set_ready(&self, ready: bool) {
+            self.ready.store(ready, Ordering::Release);
+            if ready {
+                if let Some(waker) = self.waker.lock().unwrap().take() {
+                    waker.wake();
+                }
+            }
+        }
+    }
+
+    struct DeferredReadyTransport {
+        controls: DeferredReadyControls,
+        sent: Arc<StdMutex<Vec<TransportFrame>>>,
+    }
+
+    impl DeferredReadyTransport {
+        fn new() -> (
+            Self,
+            DeferredReadyControls,
+            Arc<StdMutex<Vec<TransportFrame>>>,
+        ) {
+            let controls = DeferredReadyControls {
+                ready: Arc::new(AtomicBool::new(false)),
+                waker: Arc::new(StdMutex::new(None)),
+            };
+            let sent = Arc::new(StdMutex::new(Vec::new()));
+            (
+                Self {
+                    controls: controls.clone(),
+                    sent: Arc::clone(&sent),
+                },
+                controls,
+                sent,
+            )
+        }
+    }
+
+    impl Transport for DeferredReadyTransport {
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            if !self.is_ready() {
+                *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            if let Some(frame) = frame.take() {
+                self.sent.lock().unwrap().push(frame);
+            }
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn is_ready(&self) -> bool {
+            self.controls.ready.load(Ordering::Acquire)
+        }
+    }
+
+    struct GameDataErrorTransport {
+        take_before_error: bool,
+    }
+
+    impl Transport for GameDataErrorTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            let game_data = matches!(
+                frame.as_ref(),
+                Some(TransportFrame::Text(text)) if text.contains("\"type\":\"GameData\"")
+            );
+            if game_data {
+                if self.take_before_error {
+                    let _ = frame.take();
+                }
+                return Poll::Ready(Err(SignalFishError::TransportSend(
+                    "scripted game-data failure".into(),
+                )));
+            }
+            let _ = frame.take();
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PendingGameDataControls {
+        accepted: Arc<AtomicBool>,
+        outcome: Arc<std::sync::atomic::AtomicU8>,
+        waker: Arc<StdMutex<Option<Waker>>>,
+    }
+
+    impl PendingGameDataControls {
+        fn finish(&self, fail: bool) {
+            self.outcome
+                .store(if fail { 2 } else { 1 }, Ordering::Release);
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    struct PendingGameDataTransport {
+        retained: Option<TransportFrame>,
+        controls: PendingGameDataControls,
+    }
+
+    impl PendingGameDataTransport {
+        fn new() -> (Self, PendingGameDataControls) {
+            let controls = PendingGameDataControls {
+                accepted: Arc::new(AtomicBool::new(false)),
+                outcome: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                waker: Arc::new(StdMutex::new(None)),
+            };
+            (
+                Self {
+                    retained: None,
+                    controls: controls.clone(),
+                },
+                controls,
+            )
+        }
+    }
+
+    impl Transport for PendingGameDataTransport {
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            if self.retained.is_none() {
+                let game_data = matches!(
+                    frame.as_ref(),
+                    Some(TransportFrame::Text(text)) if text.contains("\"type\":\"GameData\"")
+                );
+                if !game_data {
+                    let _ = frame.take();
+                    return Poll::Ready(Ok(()));
+                }
+                self.retained = frame.take();
+                self.controls.accepted.store(true, Ordering::Release);
+            }
+            match self.controls.outcome.load(Ordering::Acquire) {
+                1 => {
+                    self.retained = None;
+                    Poll::Ready(Ok(()))
+                }
+                2 => {
+                    self.retained = None;
+                    Poll::Ready(Err(SignalFishError::TransportSend(
+                        "scripted completion failure".into(),
+                    )))
+                }
+                _ => {
+                    *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn abort(&mut self) {
+            self.retained = None;
+        }
+    }
+
+    struct NeverReadyTerminalTransport {
+        frame: Option<TransportFrame>,
+    }
+
+    impl Transport for NeverReadyTerminalTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            _frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Pending
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            Poll::Ready(self.frame.take().map(Ok))
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn is_ready(&self) -> bool {
+            false
+        }
+    }
+
     // ── Helper ──────────────────────────────────────────────────────
 
     async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
@@ -2225,6 +2565,155 @@ mod tests {
         }
 
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn connected_and_snapshot_wait_for_async_transport_readiness() {
+        let (transport, controls, sent) = DeferredReadyTransport::new();
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("app"));
+
+        assert_eq!(
+            (
+                client.is_connected(),
+                client.is_transport_ready(),
+                client.is_authenticated(),
+                client.room_role(),
+            ),
+            (true, false, false, None)
+        );
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(sent.lock().unwrap().is_empty());
+
+        controls.set_ready(true);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), events.recv()).await,
+            Ok(Some(SignalFishEvent::Connected))
+        ));
+        wait_until(|| !sent.lock().unwrap().is_empty()).await;
+        assert!(client.is_transport_ready());
+
+        controls.set_ready(false);
+        tokio::task::yield_now().await;
+        assert!(client.is_transport_ready(), "observed readiness is sticky");
+
+        client.shutdown().await;
+        assert_eq!(
+            (
+                client.is_connected(),
+                client.is_transport_ready(),
+                client.is_authenticated(),
+                client.room_role(),
+            ),
+            (false, false, false, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn send_error_counts_only_frames_the_transport_took() {
+        for (take_before_error, expected_sent) in [(false, 0), (true, 1)] {
+            let transport = GameDataErrorTransport { take_before_error };
+            let (mut client, mut events) =
+                SignalFishClient::start(transport, SignalFishConfig::new("app"));
+            assert!(matches!(
+                events.recv().await,
+                Some(SignalFishEvent::Connected)
+            ));
+            prime_player_room(&client);
+            client
+                .send_game_data(serde_json::json!({"frame": 1}))
+                .expect("primed player may queue game data");
+
+            let terminal = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .expect("send failure should become terminal")
+                .expect("Disconnected event should be delivered");
+
+            assert!(matches!(terminal, SignalFishEvent::Disconnected { .. }));
+            assert_eq!(
+                client.stats().game_data_sent,
+                expected_sent,
+                "take_before_error={take_before_error}"
+            );
+            client.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_pending_game_data_counts_before_completion_without_double_counting() {
+        for fail_completion in [false, true] {
+            let (transport, controls) = PendingGameDataTransport::new();
+            let (mut client, mut events) =
+                SignalFishClient::start(transport, SignalFishConfig::new("app"));
+            assert!(matches!(
+                events.recv().await,
+                Some(SignalFishEvent::Connected)
+            ));
+            prime_player_room(&client);
+            client
+                .send_game_data(serde_json::json!({"frame": 1}))
+                .expect("primed player may queue game data");
+            wait_until(|| controls.accepted.load(Ordering::Acquire)).await;
+            assert_eq!(
+                client.stats().game_data_sent,
+                1,
+                "ownership transfer counts while completion is pending"
+            );
+
+            controls.finish(fail_completion);
+            if fail_completion {
+                let terminal = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                    .await
+                    .expect("failed accepted send should become terminal")
+                    .expect("Disconnected event should be delivered");
+                assert!(matches!(terminal, SignalFishEvent::Disconnected { .. }));
+            } else {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(client.stats().game_data_sent, 1);
+            client.shutdown().await;
+            assert_eq!(
+                client.stats().game_data_sent,
+                1,
+                "completion and shutdown must not double-count acceptance"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_before_readiness_never_emits_connected() {
+        for frame in [None, Some(TransportFrame::Text("{}".into()))] {
+            let transport = NeverReadyTerminalTransport { frame };
+            let (mut client, mut events) =
+                SignalFishClient::start(transport, SignalFishConfig::new("app"));
+
+            let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .expect("terminal transport should wake the driver")
+                .expect("Disconnected should be delivered");
+
+            assert!(matches!(event, SignalFishEvent::Disconnected { .. }));
+            assert!(matches!(
+                events.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                    | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+            let snapshot = client.snapshot();
+            assert_eq!(
+                (
+                    snapshot.connected,
+                    snapshot.transport_ready,
+                    snapshot.authenticated,
+                    snapshot.room_role,
+                ),
+                (false, false, false, None)
+            );
+            client.shutdown().await;
+        }
     }
 
     #[tokio::test]

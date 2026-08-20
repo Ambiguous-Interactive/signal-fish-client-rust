@@ -126,6 +126,15 @@ pub trait Transport {
     fn abort(&mut self) {}
 
     /// Whether the connection handshake has completed.
+    ///
+    /// This must be cheap and monotonic for one physical connection. A
+    /// transport that changes from `false` to `true` while the async client is
+    /// blocked must wake a waker previously registered by `poll_send` or
+    /// `poll_recv`, because this accessor does not receive a waker itself.
+    /// While this returns `false`, `poll_send` must return `Pending` without
+    /// taking a caller-owned frame.
+    /// Complete protocol frames must not be returned by `poll_recv` before
+    /// readiness.
     fn is_ready(&self) -> bool {
         true
     }

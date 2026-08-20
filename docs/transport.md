@@ -78,6 +78,10 @@ Never take a frame, forget it on `Pending`, and ask the caller to retry. Never
 repeat a partially completed write: either mistake can lose or duplicate an
 application message.
 
+While `is_ready()` is false, `poll_send` must return `Pending` without taking
+the frame. This lets both clients admit FIFO commands during an asynchronous
+handshake without transferring them prematurely.
+
 `begin_poll_cycle` lets adaptive transports sample once per application tick.
 `diagnostics` distinguishes backend-owned buffering/admission from the client
 queue. `abort` is invoked when the polling close deadline expires; defaulted
@@ -123,7 +127,12 @@ it to attribute `SignalFishEvent::Disconnected`.
 
 `is_ready()` defaults to `true`, which is correct for transports connected by
 their constructor. An asynchronous-handshake transport returns `false` until
-ready; the polling client defers its synthetic `Connected` event accordingly.
+ready; both clients defer their synthetic `Connected` event accordingly. The
+value must be cheap and monotonic for one physical connection. When readiness
+changes while the async client is blocked, the transport must wake a waker
+registered by `poll_send` or `poll_recv`; `is_ready()` itself cannot register
+one. Before readiness, `poll_send` retains caller ownership and `poll_recv`
+must not return a complete protocol frame.
 
 ## Built-in `WebSocketTransport`
 

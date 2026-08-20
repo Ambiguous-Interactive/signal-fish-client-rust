@@ -199,14 +199,12 @@ pub struct SignalFishPollingClient<T: Transport> {
     polling_stats: PollingStats,
     queue_age_stats: PollingQueueAgeStats,
     shutdown_timeout: Duration,
-    started: bool,
     pending_frame: Option<TransportFrame>,
     pending_frame_enqueued_at: Option<Instant>,
     /// The transport accepted the current frame and is still completing it.
     /// While true, poll with `None` and do not dequeue a replacement frame.
     send_in_flight: bool,
     pending_frame_is_game_data: bool,
-    in_flight_is_game_data: bool,
     pending_inbound: Option<TransportFrame>,
     close_phase: ClosePhase,
 }
@@ -259,12 +257,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
             },
             queue_age_stats: PollingQueueAgeStats::default(),
             shutdown_timeout,
-            started: false,
             pending_frame: None,
             pending_frame_enqueued_at: None,
             send_in_flight: false,
             pending_frame_is_game_data: false,
-            in_flight_is_game_data: false,
             pending_inbound: None,
             close_phase: ClosePhase::Open,
         };
@@ -324,6 +320,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return events;
         }
 
+        // Observe transports that completed their handshake before this poll
+        // before driving any terminal or inbound I/O. This preserves
+        // Connected -> Disconnected ordering for an already-ready transport
+        // that closes immediately.
+        if self.transport.is_ready() && self.core.mark_transport_ready() {
+            events.push(SignalFishEvent::Connected);
+        }
+
         if let Err(error) = self.drive_outbound(&mut cx, now) {
             error!(%error, "transport send failed");
             self.handle_disconnect_at(
@@ -342,7 +346,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
             let frame = if let Some(frame) = self.pending_inbound.take() {
                 frame
             } else {
-                match self.transport.poll_recv(&mut cx) {
+                let incoming = self.transport.poll_recv(&mut cx);
+                if self.transport.is_ready() && self.core.mark_transport_ready() {
+                    events.insert(0, SignalFishEvent::Connected);
+                }
+                match incoming {
                     std::task::Poll::Ready(Some(Ok(frame))) => frame,
                     std::task::Poll::Ready(Some(Err(e))) => {
                         error!("transport receive error: {e}");
@@ -387,6 +395,19 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
             received_frames = received_frames.saturating_add(1);
             received_bytes = next_bytes.unwrap_or(usize::MAX);
+            if !self.core.is_transport_ready() {
+                if self.transport.is_ready() && self.core.mark_transport_ready() {
+                    events.insert(0, SignalFishEvent::Connected);
+                } else {
+                    self.handle_disconnect_at(
+                        &mut events,
+                        Some("transport received a protocol frame before readiness".into()),
+                        &mut cx,
+                        now,
+                    );
+                    return events;
+                }
+            }
             let outcome = self.core.process_frame(frame);
             events.extend(outcome.events);
             if outcome.disconnect {
@@ -406,8 +427,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         // have a chance to process their connection-open event before
         // we check is_ready(). Connected is inserted at position 0 to
         // guarantee it is always the first event in the batch.
-        if !self.started && self.transport.is_ready() {
-            self.started = true;
+        if self.transport.is_ready() && self.core.mark_transport_ready() {
             events.insert(0, SignalFishEvent::Connected);
         }
 
@@ -786,9 +806,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.core.is_p2p_active()
     }
 
-    /// Whether the transport connection is still alive.
+    /// Whether the client owns a nonterminal transport connection.
     pub fn is_connected(&self) -> bool {
         self.core.is_connected()
+    }
+
+    /// Whether the transport handshake has completed.
+    pub fn is_transport_ready(&self) -> bool {
+        self.core.is_transport_ready()
     }
 
     /// Whether a transport close handshake still needs to be driven by
@@ -968,15 +993,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
             let mut no_frame = None;
             match self.transport.poll_send(cx, &mut no_frame) {
                 std::task::Poll::Ready(Ok(())) => {
-                    if self.in_flight_is_game_data {
-                        self.core.record_game_data_sent();
-                    }
                     self.send_in_flight = false;
-                    self.in_flight_is_game_data = false;
                 }
                 std::task::Poll::Ready(Err(error)) => {
                     self.send_in_flight = false;
-                    self.in_flight_is_game_data = false;
                     return Err(error);
                 }
                 std::task::Poll::Pending => return Ok(()),
@@ -1028,6 +1048,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
             let result = self.transport.poll_send(cx, &mut self.pending_frame);
             let transferred = self.pending_frame.is_none();
             if transferred {
+                if self.pending_frame_is_game_data {
+                    self.core.record_game_data_sent();
+                }
+                self.pending_frame_is_game_data = false;
                 self.pending_frame_enqueued_at = None;
                 sent_frames = sent_frames.saturating_add(1);
                 sent_bytes = next_bytes.unwrap_or(usize::MAX);
@@ -1038,22 +1062,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     if !transferred {
                         break;
                     }
-                    if self.pending_frame_is_game_data {
-                        self.core.record_game_data_sent();
-                    }
-                    self.pending_frame_is_game_data = false;
                 }
-                std::task::Poll::Ready(Err(error)) => {
-                    if transferred {
-                        self.pending_frame_is_game_data = false;
-                    }
-                    return Err(error);
-                }
+                std::task::Poll::Ready(Err(error)) => return Err(error),
                 std::task::Poll::Pending => {
                     if transferred {
                         self.send_in_flight = true;
-                        self.in_flight_is_game_data = self.pending_frame_is_game_data;
-                        self.pending_frame_is_game_data = false;
                     }
                     break;
                 }
@@ -1182,7 +1195,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
         if include_in_flight {
             abandoned = abandoned.saturating_add(usize::from(self.send_in_flight));
             self.send_in_flight = false;
-            self.in_flight_is_game_data = false;
         }
         self.cmd_queue.clear();
         self.pending_frame = None;
@@ -1258,8 +1270,8 @@ impl<T: Transport> std::fmt::Debug for SignalFishPollingClient<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalFishPollingClient")
             .field("connected", &self.core.is_connected())
+            .field("transport_ready", &self.core.is_transport_ready())
             .field("authenticated", &self.core.is_authenticated())
-            .field("started", &self.started)
             .field("queued_commands", &self.cmd_queue.len())
             .finish()
     }
@@ -1537,6 +1549,9 @@ mod tests {
             _cx: &mut std::task::Context<'_>,
             frame: &mut Option<TransportFrame>,
         ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            if !self.ready {
+                return std::task::Poll::Pending;
+            }
             if let Some(frame) = frame.take() {
                 match frame {
                     TransportFrame::Text(text) => self.sent.push(text),
@@ -1963,6 +1978,7 @@ mod tests {
                 ..
             } if *from_player == from
         )));
+        assert_eq!(client.stats().game_data_received, 1);
     }
 
     #[test]
@@ -2861,6 +2877,15 @@ mod tests {
         // defer the Connected event until is_ready() returns true.
         let transport = NotReadyTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        assert_eq!(
+            (
+                client.is_connected(),
+                client.is_transport_ready(),
+                client.is_authenticated(),
+                client.room_role(),
+            ),
+            (true, false, false, None)
+        );
 
         // First poll: transport is not ready, so no Connected.
         let events = client.poll();
@@ -2870,6 +2895,8 @@ mod tests {
                 .any(|e| matches!(e, SignalFishEvent::Connected)),
             "Connected should not be emitted when transport is not ready, got: {events:?}"
         );
+        assert!(!client.is_transport_ready());
+        assert!(client.transport.sent.is_empty());
 
         // Mark transport as ready.
         client.transport.ready = true;
@@ -2880,8 +2907,16 @@ mod tests {
             matches!(events.first(), Some(SignalFishEvent::Connected)),
             "Connected should be emitted once transport becomes ready, got: {events:?}"
         );
+        assert!(client.is_transport_ready());
+        assert_eq!(
+            client.transport.sent.len(),
+            1,
+            "Authenticate should transfer"
+        );
 
-        // Subsequent poll: no duplicate Connected.
+        // A buggy readiness regression cannot roll the observed phase back or
+        // produce another Connected event.
+        client.transport.ready = false;
         let events = client.poll();
         assert!(
             !events
@@ -2889,6 +2924,33 @@ mod tests {
                 .any(|e| matches!(e, SignalFishEvent::Connected)),
             "Connected should not be re-emitted, got: {events:?}"
         );
+        assert!(client.is_transport_ready());
+    }
+
+    #[test]
+    fn terminal_before_readiness_never_emits_connected() {
+        for incoming in [None, Some(Ok("{}".into()))] {
+            let mut transport = NotReadyTransport::new();
+            transport.incoming.push_back(incoming);
+            let mut client = SignalFishPollingClient::new(transport, default_config());
+
+            let events = client.poll();
+
+            assert!(matches!(
+                events.as_slice(),
+                [SignalFishEvent::Disconnected { .. }]
+            ));
+            let snapshot = client.snapshot();
+            assert_eq!(
+                (
+                    snapshot.connected,
+                    snapshot.transport_ready,
+                    snapshot.authenticated,
+                    snapshot.room_role,
+                ),
+                (false, false, false, None)
+            );
+        }
     }
 
     #[test]
@@ -2919,6 +2981,38 @@ mod tests {
             "Authenticated should follow Connected, got: {:?}",
             events[1]
         );
+    }
+
+    #[test]
+    fn readiness_observed_during_terminal_recv_precedes_disconnected() {
+        for incoming in [
+            None,
+            Some(Err(SignalFishError::TransportReceive(
+                "scripted terminal error".into(),
+            ))),
+        ] {
+            let transport = NotReadyTransport::with_incoming_and_ready_after_recv(vec![incoming]);
+            let mut client = SignalFishPollingClient::new(transport, default_config());
+
+            let events = client.poll();
+
+            assert!(matches!(
+                events.as_slice(),
+                [
+                    SignalFishEvent::Connected,
+                    SignalFishEvent::Disconnected { .. }
+                ]
+            ));
+            assert_eq!(
+                (
+                    client.is_connected(),
+                    client.is_transport_ready(),
+                    client.is_authenticated(),
+                    client.room_role(),
+                ),
+                (false, false, false, None)
+            );
+        }
     }
 
     #[test]
@@ -3143,6 +3237,48 @@ mod tests {
         sent: Vec<TransportFrame>,
         replacement_seen: bool,
         peer_closes_on_recv: bool,
+        fail_game_data_completion: bool,
+    }
+
+    struct GameDataErrorTransport {
+        take_before_error: bool,
+    }
+
+    impl Transport for GameDataErrorTransport {
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            let game_data = matches!(
+                frame.as_ref(),
+                Some(TransportFrame::Text(text)) if text.contains("\"type\":\"GameData\"")
+            );
+            if game_data {
+                if self.take_before_error {
+                    let _ = frame.take();
+                }
+                return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                    "scripted game-data failure".into(),
+                )));
+            }
+            let _ = frame.take();
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            std::task::Poll::Pending
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            std::task::Poll::Ready(Ok(()))
+        }
     }
 
     /// Accepts an initial FIFO burst, then permanently refuses caller-owned
@@ -3198,6 +3334,16 @@ mod tests {
         ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
             if let Some(retained) = self.retained.take() {
                 self.replacement_seen |= frame.is_some();
+                if self.fail_game_data_completion
+                    && matches!(
+                        &retained,
+                        TransportFrame::Text(text) if text.contains("\"type\":\"GameData\"")
+                    )
+                {
+                    return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                        "scripted accepted game-data failure".into(),
+                    )));
+                }
                 self.sent.push(retained);
                 return std::task::Poll::Ready(Ok(()));
             }
@@ -3799,6 +3945,7 @@ mod tests {
             assert_eq!(*seq, Some(1));
             assert_eq!(*epoch, Some(1));
         }
+        assert_eq!(client.stats().game_data_received, 1);
     }
 
     #[test]
@@ -4471,6 +4618,7 @@ mod tests {
             sent: Vec::new(),
             replacement_seen: false,
             peer_closes_on_recv: false,
+            fail_game_data_completion: false,
         };
         let mut client = SignalFishPollingClient::new(transport, default_config());
         let base = Instant::now();
@@ -4502,6 +4650,7 @@ mod tests {
             sent: Vec::new(),
             replacement_seen: false,
             peer_closes_on_recv: false,
+            fail_game_data_completion: false,
         };
         let mut client = SignalFishPollingClient::new(
             transport,
@@ -4517,6 +4666,11 @@ mod tests {
 
         let _ = client.poll();
         assert!(client.send_in_flight, "game data should now be in flight");
+        assert_eq!(
+            client.stats().game_data_sent,
+            1,
+            "ownership transfer counts before backend completion"
+        );
         let _ = client.poll();
 
         assert!(!client.transport.replacement_seen);
@@ -4529,6 +4683,57 @@ mod tests {
             client.transport.sent.get(1),
             Some(TransportFrame::Text(text)) if text.contains("GameData")
         ));
+        assert_eq!(client.stats().game_data_sent, 1);
+    }
+
+    #[test]
+    fn send_error_counts_only_frames_the_transport_took() {
+        for (take_before_error, expected_sent) in [(false, 0), (true, 1)] {
+            let transport = GameDataErrorTransport { take_before_error };
+            let mut client = SignalFishPollingClient::new(transport, default_config());
+            prime_room(&mut client);
+            let _ = client.poll();
+            client
+                .send_game_data(serde_json::json!({"frame": 1}))
+                .expect("primed player may queue game data");
+
+            let events = client.poll();
+
+            assert!(events
+                .iter()
+                .any(|event| matches!(event, SignalFishEvent::Disconnected { .. })));
+            assert_eq!(
+                client.stats().game_data_sent,
+                expected_sent,
+                "take_before_error={take_before_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_pending_game_data_error_counts_once_at_transfer() {
+        let transport = AcceptedPendingSendTransport {
+            retained: None,
+            sent: Vec::new(),
+            replacement_seen: false,
+            peer_closes_on_recv: false,
+            fail_game_data_completion: true,
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
+        let _ = client.poll();
+        client
+            .send_game_data(serde_json::json!({"frame": 1}))
+            .expect("primed player may queue game data");
+
+        let accepted = client.poll();
+        assert!(accepted.is_empty());
+        assert_eq!(client.stats().game_data_sent, 1);
+
+        let terminal = client.poll();
+        assert!(terminal
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Disconnected { .. })));
         assert_eq!(client.stats().game_data_sent, 1);
     }
 
@@ -4917,6 +5122,7 @@ mod tests {
                 sent: Vec::new(),
                 replacement_seen: false,
                 peer_closes_on_recv: false,
+                fail_game_data_completion: false,
             };
             let options = PollingClientOptions {
                 close_policy,
@@ -5021,6 +5227,7 @@ mod tests {
             sent: Vec::new(),
             replacement_seen: false,
             peer_closes_on_recv: true,
+            fail_game_data_completion: false,
         };
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
@@ -6156,7 +6363,11 @@ mod tests {
                             budget.receive_bytes,
                         ));
                     }
-                    SchedulerOperation::SetReady(ready) => client.transport.ready = ready,
+                    SchedulerOperation::SetReady(ready) => {
+                        // This reference model exercises conforming transports,
+                        // whose readiness is monotonic for one connection.
+                        client.transport.ready |= ready;
+                    }
                     SchedulerOperation::RefuseBeforeAcceptance => client.transport.accept = false,
                     SchedulerOperation::PendingAfterAcceptance(pending) => {
                         client.transport.pending_after_acceptance = pending;
@@ -6173,13 +6384,18 @@ mod tests {
                     }
                     operation @ (SchedulerOperation::ReceiveText
                     | SchedulerOperation::ReceiveBinary) => {
-                        let inbound = scheduler_inbound(
-                            next_receive_id,
-                            matches!(operation, SchedulerOperation::ReceiveBinary),
-                        );
-                        next_receive_id = next_receive_id.saturating_add(1);
-                        client.transport.incoming.push_back(inbound.frame.clone());
-                        model.incoming.push_back(inbound);
+                        // The scheduler property models conforming transports.
+                        // Pre-ready protocol frames are covered separately as
+                        // a terminal transport-contract violation.
+                        if client.transport.ready || model.connected_emitted {
+                            let inbound = scheduler_inbound(
+                                next_receive_id,
+                                matches!(operation, SchedulerOperation::ReceiveBinary),
+                            );
+                            next_receive_id = next_receive_id.saturating_add(1);
+                            client.transport.incoming.push_back(inbound.frame.clone());
+                            model.incoming.push_back(inbound);
+                        }
                     }
                     SchedulerOperation::AdvanceClock(milliseconds) => {
                         now += Duration::from_millis(u64::from(milliseconds));

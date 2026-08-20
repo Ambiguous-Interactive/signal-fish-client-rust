@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ClientSnapshot::room_role`, matching async/polling/trait accessors, and
   `SignalFishError::{AlreadyInRoom, RoomOperationPending, WrongRoomRole,
   AuthorityRequired}` for synchronous membership-safe command admission.
+- Added `ClientSnapshot::transport_ready` and matching async, polling, and
+  `SignalFishClientApi` accessors so applications can distinguish a client-owned
+  connecting transport from a completed handshake.
 
 ### Changed
 
@@ -76,6 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `SignalFishError` types gain the membership fields and variants above.
   `ClientSnapshot::player_id` and `current_player_id()` now consistently mean
   the local player-or-spectator participant ID and clear on confirmed exit.
+- **Breaking:** the exhaustive `ClientSnapshot` adds `transport_ready`.
+  `connected` now explicitly means a nonterminal client-owned transport attempt;
+  `Connected` and `transport_ready` identify handshake completion. Commands
+  remain queueable while connecting.
+- Changed `ClientStats` counting boundaries: `game_data_sent` increments when
+  the transport takes frame ownership, including accepted sends that later
+  fail, while `game_data_received` increments after successful protocol decode,
+  including stale or quarantined data suppressed before application delivery.
 
 ### Fixed
 

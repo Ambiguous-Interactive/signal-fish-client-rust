@@ -159,13 +159,13 @@ pub trait Transport {
 }
 ```
 
-The trait itself has no `Send` bound, so main-thread transports work with the polling client. `SignalFishClient::start` separately requires
-`Transport + Send + 'static`. A `poll_send` implementation may take the frame
-only when the backend accepts ownership. That transfer is send completion for
-admission purposes; it is not peer delivery and never requires the socket-wide
-buffered byte count to reach zero. `Pending` before acceptance leaves the
-caller's `Option` intact. Close polling is idempotent. See
-`skills/transport-abstraction/SKILL.md`.
+The trait has no `Send` bound; `SignalFishClient::start` separately requires
+`Transport + Send + 'static`. `poll_send` may take a frame only at backend
+ownership transfer; that increments `game_data_sent` even if completion later
+fails, but never proves peer delivery. `Pending` before acceptance leaves the
+frame intact. Async readiness changes wake registered I/O; both drivers map the
+first `is_ready()` observation to `transport_ready` and `Connected`. Close is
+idempotent. See `skills/transport-abstraction/SKILL.md`.
 
 The async driver retains an in-flight send in its main select loop and polls
 send and receive with the same runtime waker, so outbound backpressure cannot
@@ -289,8 +289,8 @@ client.leave_spectator() -> Result<()>
 client.ping() -> Result<()>
 client.send_signal_reliable(to, signal).await // v3 only; waiting send_signal
 client.send_capacity() / client.max_send_capacity() -> usize // queue diagnostics
-client.stats() -> ClientStats  // cumulative game_data_sent/received counters
-client.snapshot() -> ClientSnapshot // coherent role/state/token/quarantine view
+client.stats() -> ClientStats  // accepted-send / decoded-receipt counters
+client.snapshot() -> ClientSnapshot // coherent readiness/role/session view
 client.shutdown().await      // async, graceful
 ```
 
@@ -310,6 +310,8 @@ Admitted joins/leaves/reconnects fence later work until a matching typed termina
 response; generic errors/absence stay fenced until teardown. Events are never dropped: a full event
 channel backpressures; undecodable frames surface as `DecodeFailed`; events are
 missed only on receiver/handle drop or shutdown (abandons ≤1 in-flight).
+Snapshots distinguish nonterminal `connected`, observed `transport_ready`, server-confirmed `authenticated`, and authoritative room membership.
+Decoded game-data receipt counts before suppression; counters are diagnostic boundaries, not cross-peer delivery equality.
 `SignalFishPollingClient` shares the classified/binary sends, queue bound,
 capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
 work budget is 64 frames/64 KiB in each direction, and its default close policy
@@ -432,9 +434,7 @@ strings to match server expectations.
    immediately before spawning the transport loop.
 2. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
 3. Client may then call `join_room`, etc.
-4. Both clients emit a synthetic `SignalFishEvent::Connected` once the transport
-   is ready (`SignalFishClient`: at the start of the transport loop;
-   `SignalFishPollingClient`: once `Transport::is_ready()` returns `true`).
+4. Both clients emit synthetic `SignalFishEvent::Connected` when their driver first observes `Transport::is_ready() == true`.
    `SignalFishEvent::Disconnected` is emitted when the transport closes
    (best-effort; missed only if the receiver is dropped, shutdown times out,
    or the handle is dropped without `shutdown()`).

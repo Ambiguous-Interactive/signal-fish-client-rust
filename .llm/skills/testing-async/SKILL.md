@@ -100,8 +100,9 @@ if it returns `Pending`, retain that frame internally until a later `Ready`.
 
 ## Starting a Mock Client
 
-`SignalFishClient::start` always sends `Authenticate` first and emits a
-synthetic `Connected` event before processing server responses:
+`SignalFishClient::start` always queues `Authenticate` first and emits a
+synthetic `Connected` event after `Transport::is_ready()` becomes true, before
+processing server responses. The common mock is ready by default:
 
 ```rust
 #[tokio::test]
@@ -182,6 +183,7 @@ task is aborted), always assert client state accessors are reset even if the
 client.shutdown().await;
 let snapshot = client.snapshot();
 assert!(!snapshot.connected);
+assert!(!snapshot.transport_ready);
 assert!(!snapshot.authenticated);
 assert!(snapshot.player_id.is_none());
 assert!(snapshot.room_id.is_none());

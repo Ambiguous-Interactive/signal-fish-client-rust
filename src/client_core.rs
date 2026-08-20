@@ -193,6 +193,18 @@ impl ClientCore {
         self.snapshot.connected
     }
 
+    pub(crate) fn is_transport_ready(&self) -> bool {
+        self.snapshot.transport_ready
+    }
+
+    pub(crate) fn mark_transport_ready(&mut self) -> bool {
+        if !self.snapshot.connected || self.snapshot.transport_ready {
+            return false;
+        }
+        self.snapshot.transport_ready = true;
+        true
+    }
+
     pub(crate) fn is_authenticated(&self) -> bool {
         self.snapshot.authenticated
     }
@@ -597,6 +609,7 @@ impl ClientCore {
     pub(crate) fn disconnect(&mut self, reason: Option<String>) -> SignalFishEvent {
         self.accountability.observe_terminal();
         self.snapshot.connected = false;
+        self.snapshot.transport_ready = false;
         self.clear_session();
         SignalFishEvent::Disconnected {
             reason,
@@ -629,6 +642,13 @@ impl ClientCore {
                 return outcome;
             }
         };
+
+        if matches!(
+            &server_msg,
+            ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. }
+        ) {
+            self.stats.game_data_received = self.stats.game_data_received.saturating_add(1);
+        }
 
         if let Err(diagnostic) = self.validate_inbound_message(&server_msg) {
             self.reject_inbound(&mut outcome, diagnostic);
@@ -793,6 +813,8 @@ impl ClientCore {
                 return outcome;
             }
         };
+
+        self.stats.game_data_received = self.stats.game_data_received.saturating_add(1);
 
         if let Err(diagnostic) = self.validate_inbound_message(&server_msg) {
             self.reject_inbound(&mut outcome, diagnostic);
@@ -1491,9 +1513,6 @@ impl ClientCore {
             ServerMessage::GameStarting { .. } => {
                 self.room_finalized = true;
             }
-            ServerMessage::GameData { .. } | ServerMessage::GameDataBinary { .. } => {
-                self.stats.game_data_received = self.stats.game_data_received.saturating_add(1);
-            }
             _ => {}
         }
     }
@@ -1734,7 +1753,7 @@ mod tests {
     use crate::protocol::{
         DirectEndpoint, IceServer, LobbyState, MessageTransport, PlayerInfo, ProtocolInfoPayload,
         RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
-        SessionPeer, SpectatorJoinedPayload,
+        SessionPeer, SpectatorJoinedPayload, V2BinaryGameDataFrame,
     };
 
     const LOCAL: u128 = 1;
@@ -1876,6 +1895,109 @@ mod tests {
         let _ = process(&mut core, protocol_info(Some(3)));
         let _ = process(&mut core, spectator_joined());
         core
+    }
+
+    #[test]
+    fn decoded_game_data_count_includes_stale_and_quarantined_receipts() {
+        let game_data = |seq| ServerMessage::GameData {
+            from_player: PlayerId::from_u128(PEER),
+            data: serde_json::json!({"seq": seq}),
+            seq: Some(seq),
+            epoch: Some(1),
+            class: Some(DeliveryClass::Reliable),
+            key: None,
+        };
+        let mut core = v3_room(ProtocolViolationPolicy::Quarantine);
+
+        let applied = process(&mut core, game_data(1));
+        assert!(matches!(
+            applied.events.as_slice(),
+            [SignalFishEvent::GameData { .. }]
+        ));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: PlayerId::from_u128(PEER),
+                epoch: Some(1),
+                final_seq: Some(2),
+            },
+        );
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerReconnected {
+                player_id: PlayerId::from_u128(PEER),
+                epoch: Some(2),
+            },
+        );
+        let stale = process(&mut core, game_data(2));
+        assert!(stale.events.is_empty());
+
+        core.snapshot.quarantined = true;
+        let quarantined = process(
+            &mut core,
+            ServerMessage::GameData {
+                from_player: PlayerId::from_u128(PEER),
+                data: serde_json::json!({"seq": 1}),
+                seq: Some(1),
+                epoch: Some(2),
+                class: Some(DeliveryClass::Reliable),
+                key: None,
+            },
+        );
+        assert!(quarantined.events.is_empty());
+        assert_eq!(core.stats().game_data_received, 3);
+
+        let _ = process(&mut core, ServerMessage::RoomLeft);
+        let _ = core.disconnect(None);
+        assert_eq!(
+            core.stats().game_data_received,
+            3,
+            "lifetime counters survive room and connection teardown"
+        );
+        assert_eq!(
+            ClientCore::new(None, ProtocolViolationPolicy::Quarantine, false).stats(),
+            ClientStats::default(),
+            "a new client starts with fresh counters"
+        );
+
+        let binary = V2BinaryGameDataFrame {
+            from_player: PlayerId::from_u128(PEER),
+            encoding: GameDataEncoding::MessagePack,
+            payload: vec![1, 2, 3],
+        };
+        let mut binary_core = ClientCore::new(
+            Some(GameDataEncoding::MessagePack),
+            ProtocolViolationPolicy::Quarantine,
+            false,
+        );
+        let _ = process(&mut binary_core, authenticated());
+        let ServerMessage::ProtocolInfo(mut binary_protocol) = protocol_info(None) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        binary_protocol.game_data_formats =
+            vec![GameDataEncoding::Json, GameDataEncoding::MessagePack];
+        let _ = process(
+            &mut binary_core,
+            ServerMessage::ProtocolInfo(binary_protocol),
+        );
+        let _ = process(&mut binary_core, room_joined_v2());
+        binary_core.snapshot.quarantined = true;
+        let rejected = binary_core.process_frame(TransportFrame::Binary(
+            rmp_serde::to_vec_named(&binary).expect("binary receipt should serialize"),
+        ));
+        assert!(rejected
+            .events
+            .iter()
+            .all(|event| !matches!(event, SignalFishEvent::GameDataBinary { .. })));
+        assert_eq!(
+            binary_core.stats(),
+            ClientStats {
+                game_data_received: 1,
+                ..ClientStats::default()
+            },
+            "successful binary decode counts before quarantine suppression"
+        );
     }
 
     fn spectator_joined() -> ServerMessage {

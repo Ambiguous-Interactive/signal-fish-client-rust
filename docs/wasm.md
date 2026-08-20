@@ -258,10 +258,10 @@ bound and does not accept this main-thread transport.
     `poll()` retries the exact same frame, in order. The browser only receives
     the command after its synchronous send API accepts it.
 
-    This aligns with the async `SignalFishClient`, where the transport is
-    passed to `start()` already connected (e.g., via
-    `WebSocketTransport::connect(url).await`), so `Connected` also
-    reflects a completed handshake.
+    The async `SignalFishClient` uses the same readiness boundary. Built-in
+    `WebSocketTransport::connect(url).await` is already ready, while a custom
+    asynchronous-handshake transport defers `Connected` and must wake its
+    registered I/O waker when readiness changes.
 
 ---
 
@@ -426,7 +426,8 @@ environment).
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `is_connected()` | `fn is_connected(&self) -> bool` | Whether the transport is still alive. |
+| `is_connected()` | `fn is_connected(&self) -> bool` | Whether the client owns a nonterminal transport attempt, including connecting. |
+| `is_transport_ready()` | `fn is_transport_ready(&self) -> bool` | Whether the driver observed the transport handshake complete. |
 | `is_closing()` | `fn is_closing(&self) -> bool` | Whether the bounded close lifecycle still needs polling. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Whether the server confirmed authentication. |
 | `room_role()` | `fn room_role(&self) -> Option<RoomRole>` | Server-confirmed player/spectator role, or `None` outside a room. |
@@ -446,7 +447,7 @@ environment).
 | `reset_queue_age_peak()` | `fn reset_queue_age_peak(&mut self)` | Refresh current age and reset the sampled peak to it. |
 | `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity diagnostics. |
 | `transport()` | `fn transport(&self) -> &T` | Borrow transport-specific read-only diagnostics; I/O still advances only through `poll()`. |
-| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection, room, token, negotiation, selected plan, generation, and quarantine state. |
+| `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Return coherent connection readiness, room, token, negotiation, selected plan, generation, and quarantine state. |
 
 !!! tip "Comparison with `SignalFishClient`"
     `SignalFishPollingClient` mirrors `SignalFishClient`'s common synchronous

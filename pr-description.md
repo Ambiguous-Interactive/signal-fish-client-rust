@@ -1,31 +1,35 @@
 ## Summary
 
-Completes the remaining issue #61 reliability work by hardening browser
-transport ownership, replacing a startup-sensitive soak assertion with a
-phase-aware rollback oracle, strengthening independent CI validation, and
-synchronizing the public documentation with the actual released/unreleased API.
+Clarifies the connection phase and traffic-counter contracts shared by the
+async and polling clients. Applications can now distinguish client ownership
+from transport readiness, and `ClientStats` counts at stable transport/decode
+boundaries instead of backend completion or application delivery.
+
+Closes #104.
 
 ## Changes
 
-- Retain Emscripten outbound frames while the browser socket is connecting and
-  after preparation/FFI send failures.
-- Track early warm-up and steady-state Fortress confirmation lag separately:
-  the first 60 frames remain bounded by the 20-frame prediction window, while
-  steady/final lag remains capped at 8 clean or 13 impaired/soak frames.
-- Independently validate exact load conservation, multi-frame polling, queue
-  ceilings, adaptive buffering, and required schema with negative controls.
-- Compile complete Rust documentation examples containing Unicode ellipses and
-  make broken MkDocs links blocking.
-- Correct stale client, event, protocol, transport, WebAssembly, migration, and
-  installation documentation, including explicit `0.8.0` versus `main` usage.
+- Add `ClientSnapshot::transport_ready` and matching async, polling, and
+  `SignalFishClientApi` accessors; emit `Connected` exactly once on the first
+  driver observation of `Transport::is_ready()`.
+- Preserve FIFO command admission while connecting, require deferred async
+  readiness to wake registered I/O, and reset every connection phase on
+  terminal paths.
+- Count `game_data_sent` at exact frame ownership transfer, including
+  accepted-Pending and accepted-then-error sends without double-counting.
+- Count `game_data_received` immediately after successful text or binary
+  protocol decode, before message validation, sequence accountability, stale,
+  quarantine, or event suppression; preserve physical-binary admission checks
+  that reject a frame before logical decoding.
+- Document the valid phase tuples, counter conservation limits, excluded
+  traffic, and cross-peer diagnostic caveats across the public guides,
+  changelog, roadmap, canonical context, and focused agent skills.
 
 ## Validation
 
-- [x] `cargo fmt`
-- [x] `cargo clippy --all-targets --all-features -- -D warnings`
-- [x] `cargo test --all-features`
-- [x] Nested Godot fixture format, Clippy, and eight unit tests with Godot 4.5
-- [x] Emscripten-target Clippy with warnings denied
-- [x] Documentation snippet extraction, strict MkDocs rendering, Markdown lint,
-  and typos
-- [x] Godot E2E validator negative controls and CI policy tests
+- [x] Focused async and polling readiness tests
+- [x] Focused ownership-transfer and decoded-receipt tests
+- [x] Async/polling frame, snapshot, and statistics parity tests
+- [x] Repository documentation and workflow policy validators
+- [x] `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`
+- [ ] Hosted required checks and review feedback

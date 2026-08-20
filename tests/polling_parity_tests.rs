@@ -17,6 +17,7 @@
 )]
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
@@ -30,7 +31,7 @@ use signal_fish_client::protocol::{
     Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
-use signal_fish_client::{ErrorCode, ProtocolViolationPolicy, RoomRole};
+use signal_fish_client::{ClientStats, ErrorCode, ProtocolViolationPolicy, RoomRole};
 use signal_fish_client::{
     GameDataDelivery, JoinRoomParams, PeerSignal, SignalFishClientApi, SignalFishEvent, Transport,
 };
@@ -547,6 +548,94 @@ impl Transport for SharedMock {
     }
 }
 
+#[derive(Clone)]
+struct ReadinessControls {
+    ready: Arc<AtomicBool>,
+    terminal: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+impl ReadinessControls {
+    fn set_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+        self.wake();
+    }
+
+    fn terminate(&self) {
+        self.terminal.store(true, Ordering::Release);
+        self.wake();
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+}
+
+struct ReadinessMock {
+    controls: ReadinessControls,
+}
+
+impl ReadinessMock {
+    fn new() -> (Self, ReadinessControls) {
+        let controls = ReadinessControls {
+            ready: Arc::new(AtomicBool::new(false)),
+            terminal: Arc::new(AtomicBool::new(false)),
+            waker: Arc::new(Mutex::new(None)),
+        };
+        (
+            Self {
+                controls: controls.clone(),
+            },
+            controls,
+        )
+    }
+}
+
+impl Transport for ReadinessMock {
+    fn poll_send(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        if !self.is_ready() {
+            *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+            if !self.is_ready() {
+                return std::task::Poll::Pending;
+            }
+        }
+        let _ = frame.take();
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if self.controls.terminal.swap(false, Ordering::AcqRel) {
+            return std::task::Poll::Ready(None);
+        }
+        *self.controls.waker.lock().unwrap() = Some(cx.waker().clone());
+        if self.controls.terminal.swap(false, Ordering::AcqRel) {
+            std::task::Poll::Ready(None)
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn is_ready(&self) -> bool {
+        self.controls.ready.load(Ordering::Acquire)
+    }
+}
+
 fn pi_v3_payload() -> ProtocolInfoPayload {
     ProtocolInfoPayload {
         platform: None,
@@ -953,13 +1042,22 @@ async fn assert_frame_trace_parity(
     frames: Vec<TransportFrame>,
     config: SignalFishConfig,
 ) -> Vec<String> {
-    assert_frame_trace_parity_with_reconnect(frames, config, false).await
+    assert_frame_trace_parity_with_stats(frames, config, false, None).await
 }
 
 async fn assert_frame_trace_parity_with_reconnect(
     frames: Vec<TransportFrame>,
     config: SignalFishConfig,
     admit_reconnect: bool,
+) -> Vec<String> {
+    assert_frame_trace_parity_with_stats(frames, config, admit_reconnect, None).await
+}
+
+async fn assert_frame_trace_parity_with_stats(
+    frames: Vec<TransportFrame>,
+    config: SignalFishConfig,
+    admit_reconnect: bool,
+    expected_stats: Option<ClientStats>,
 ) -> Vec<String> {
     let make_mock = || TraceMock::new(frames.clone());
 
@@ -1008,7 +1106,11 @@ async fn assert_frame_trace_parity_with_reconnect(
         .collect::<Vec<_>>();
     assert_eq!(async_events, polling_events);
     assert_eq!(async_client.snapshot(), polling_client.snapshot());
-    assert_eq!(async_client.stats(), polling_client.stats());
+    let async_stats = async_client.stats();
+    assert_eq!(async_stats, polling_client.stats());
+    if let Some(expected) = expected_stats {
+        assert_eq!(async_stats, expected);
+    }
     async_events
 }
 
@@ -1019,6 +1121,77 @@ async fn assert_server_trace_parity(lines: &str, config: SignalFishConfig) {
         .map(|line| TransportFrame::Text(line.to_owned()))
         .collect();
     let _ = assert_frame_trace_parity(frames, config).await;
+}
+
+#[tokio::test]
+async fn readiness_phase_and_terminal_order_have_complete_driver_parity() {
+    let (async_transport, async_controls) = ReadinessMock::new();
+    let (mut async_client, mut async_events) =
+        SignalFishClient::start(async_transport, SignalFishConfig::new("app"));
+    let (polling_transport, polling_controls) = ReadinessMock::new();
+    let mut polling_client =
+        SignalFishPollingClient::new(polling_transport, SignalFishConfig::new("app"));
+
+    assert_eq!(async_client.snapshot(), polling_client.snapshot());
+    assert_eq!(
+        (
+            async_client.is_connected(),
+            async_client.is_transport_ready(),
+            async_client.is_authenticated(),
+            async_client.room_role(),
+        ),
+        (true, false, false, None)
+    );
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        async_events.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    assert!(polling_client.poll().is_empty());
+
+    async_controls.set_ready();
+    polling_controls.set_ready();
+    let async_connected =
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async readiness transition should wake")
+            .expect("Connected should be delivered");
+    let polling_connected = polling_client.poll();
+    assert!(matches!(async_connected, SignalFishEvent::Connected));
+    assert!(matches!(
+        polling_connected.as_slice(),
+        [SignalFishEvent::Connected]
+    ));
+    assert_eq!(async_client.snapshot(), polling_client.snapshot());
+
+    async_controls.terminate();
+    polling_controls.terminate();
+    let async_terminal =
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async terminal transition should wake")
+            .expect("Disconnected should be delivered");
+    let polling_terminal = polling_client.poll();
+    assert!(matches!(
+        async_terminal,
+        SignalFishEvent::Disconnected { .. }
+    ));
+    assert!(matches!(
+        polling_terminal.as_slice(),
+        [SignalFishEvent::Disconnected { .. }]
+    ));
+    assert_eq!(async_client.snapshot(), polling_client.snapshot());
+    assert_eq!(
+        (
+            async_client.is_connected(),
+            async_client.is_transport_ready(),
+            async_client.is_authenticated(),
+            async_client.room_role(),
+        ),
+        (false, false, false, None)
+    );
+
+    async_client.shutdown().await;
 }
 
 async fn assert_open_text_trace_parity(
@@ -2057,6 +2230,59 @@ async fn inbound_binary_events_decode_failures_and_accountability_have_complete_
         config.game_data_format = Some(GameDataEncoding::MessagePack);
         let _ = assert_frame_trace_parity(frames, config).await;
     }
+}
+
+#[tokio::test]
+async fn suppressed_receipts_and_lifetime_stats_have_exact_driver_parity() {
+    let sender = uuid::Uuid::from_u128(98);
+    let game_data = |seq, epoch| {
+        text_server_frame(ServerMessage::GameData {
+            from_player: sender,
+            data: serde_json::json!({"seq": seq, "epoch": epoch}),
+            seq: Some(seq),
+            epoch: Some(epoch),
+            class: Some(DeliveryClass::Reliable),
+            key: None,
+        })
+    };
+    let mut frames = binary_accountability_prefix(sender);
+    frames.extend([
+        game_data(1, 1),
+        text_server_frame(ServerMessage::PlayerLeft {
+            player_id: sender,
+            epoch: Some(1),
+            final_seq: Some(2),
+        }),
+        text_server_frame(ServerMessage::PlayerReconnected {
+            player_id: sender,
+            epoch: Some(2),
+        }),
+        game_data(2, 1),
+        game_data(3, 2),
+        game_data(1, 2),
+    ]);
+
+    let events = assert_frame_trace_parity_with_stats(
+        frames,
+        SignalFishConfig::new("app")
+            .enable_v3()
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Quarantine),
+        false,
+        Some(ClientStats {
+            game_data_received: 4,
+            ..ClientStats::default()
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("GameData|"))
+            .count(),
+        1,
+        "one applied receipt plus three stale/quarantined receipts"
+    );
 }
 
 #[tokio::test]
