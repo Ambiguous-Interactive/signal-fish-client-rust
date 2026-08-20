@@ -149,10 +149,10 @@ bounds native WebSocket control-frame work, preserves automatic Pong/Close
 flush ordering, and makes EOF and socket errors terminal for direct Transport
 callers. Session 030 records socket, ownership, wake, and terminal-state evidence.
 
-## Active PR — Client Membership and Operation State
+## Completed Correctness Milestone — Client Membership and Operation State
 
 [Issue #103](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/103)
-is implemented in [PR #114](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/114). It
+shipped in [PR #114](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/114). It
 exposes authoritative player/spectator role state, clears room-scoped identity
 on exit, and enforces one shared operation matrix across async and polling
 drivers. Admission-time room transitions fence later FIFO commands, authority
@@ -161,10 +161,20 @@ queue capacity. The code-bearing head passed all twelve hosted workflow suites;
 Session 031 records the operation/state matrix, pinned-server contract, review
 fixes, and exact verification evidence.
 
-## Next Correctness Milestones — Readiness, Counters, and Transport Deadlines
+## Current Correctness Milestone — Readiness and Traffic Counters
 
-Continue with #104, #106, and #107 before usability, performance, token
-binding, or presentation milestones.
+[Issue #104](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/104)
+defines connection state as nested client-owned, transport-ready,
+server-authenticated, and room-membership phases without preventing FIFO
+queueing during an asynchronous handshake. Traffic statistics count outbound
+transport ownership transfer and inbound decoded receipt, including
+accepted-then-error, stale, and quarantined cases. Session 032 records the
+contract and evidence.
+
+## Next Correctness Milestones — Transport Deadlines and Datagram Scope
+
+Continue with #106 and #107 before usability, performance, token binding, or
+presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding
 

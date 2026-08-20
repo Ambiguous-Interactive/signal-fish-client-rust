@@ -49,20 +49,16 @@ use crate::protocol::{
 #[derive(Clone)]
 pub enum SignalFishEvent {
     // ── Synthetic events ────────────────────────────────────────────
-    /// The client has started and will begin communicating with the server.
+    /// The transport handshake has completed.
     ///
     /// This is a **synthetic event** — it is not triggered by a server message.
     ///
-    /// - **`SignalFishClient`** (async): emitted at the start of the transport
-    ///   loop, after the transport has already been connected via
-    ///   `.connect().await`.
-    /// - **`SignalFishPollingClient`**: emitted once
-    ///   [`Transport::is_ready()`](crate::Transport::is_ready) returns `true`
-    ///   during a [`poll()`](crate::SignalFishPollingClient::poll) cycle. For
-    ///   transports that are already connected at construction time, this is
-    ///   the first `poll()` call. For transports with asynchronous handshakes
-    ///   (e.g., `EmscriptenWebSocketTransport`), `Connected` is deferred
-    ///   until the handshake completes.
+    /// Both clients emit this once they first observe
+    /// [`Transport::is_ready()`](crate::Transport::is_ready) returning `true`.
+    /// For the polling client that observation happens during
+    /// [`poll()`](crate::SignalFishPollingClient::poll); for the async client it
+    /// happens in the transport loop. Transports ready at construction emit it
+    /// on the first driven cycle, while asynchronous handshakes defer it.
     Connected,
 
     /// The transport connection was closed.

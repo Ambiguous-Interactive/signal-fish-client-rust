@@ -52,7 +52,7 @@ rooms, and receive strongly typed events.
   async driver's bounded Tokio MPSC channel or directly from each polling call
 - **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
 - **Typed negotiated-protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
-- **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` counters make relay-path loss observable
+- **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` exposes transport-acceptance and decoded-receipt diagnostics
 - **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
 - **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
 - **Godot 4.5 native + web adapter** — the lockstep `signal-fish-client-godot` crate wraps Godot's own `WebSocketPeer`, including official no-thread web exports
@@ -230,7 +230,7 @@ Key requirements:
 - Retain accepted outbound frames and partial receives across `Poll::Pending`
 - Register the supplied waker when async progress becomes possible
 - Make `poll_close` idempotent and expose structured peer metadata via `close_info`
-- A transport constructor may begin an asynchronous connection attempt; report readiness through `is_ready()` and retain sends while the handshake is pending
+- A transport constructor may begin an asynchronous connection attempt; both clients defer `Connected` until `is_ready()`, and the transport retains sends and wakes blocked async I/O when the handshake completes
 - The trait has no `Send` bound; only `SignalFishClient::start` requires
   `Send + 'static`, while `SignalFishPollingClient` accepts non-`Send` transports
 

@@ -422,23 +422,27 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
-(`GameData` messages whose frames the transport accepted), `game_data_received`
-(`GameData`/`GameDataBinary` messages read off the transport and accepted by
-the protocol-accountability layer —
-counted at **receipt**, not at delivery to your event loop, so a consumer
-that stops draining events cannot masquerade as relay loss; in steady state
-the two are identical because events are not dropped on overflow), and
+(`GameData` messages counted when the transport takes frame ownership, even if
+backend completion later fails), `game_data_received`
+(`GameData`/`GameDataBinary` messages counted immediately after successful
+protocol decode, before message validation, sequence accountability,
+quarantine, or event suppression), and
 `messages_undecodable` (inbound frames that failed to decode — each also
 surfaces as a [`DecodeFailed`](events.md#decodefailed) event; steady growth
 means protocol drift or a corrupting middlebox). The counters are
 cumulative for the lifetime of the client — they survive room changes and
 disconnects.
 
-During normal operation, event-channel overflow does not drop game data and
-refused sends return `SendBufferFull`. Exchange or log the counters across
-peers to locate a persistent deficit. Also account for receiver drop, handle
-drop without `shutdown()`, shutdown abandoning one blocked event, disconnects,
-and protocol quarantine before attributing a deficit solely to the relay.
+Physical binary frames rejected by lifecycle or negotiated-representation
+policy before logical decoding are outside the counter. Once decoded,
+`game_data_received` includes stale and quarantined messages;
+those explain differences between receipt and application events rather than a
+sent-versus-received deficit. Malformed frames are excluded from it. Cross-peer
+counter equality is not guaranteed: transport acceptance is not server receipt,
+broadcast fanout can increase aggregate receives, and server delivery classes,
+rejection, terminal unread work, or an accepted-then-failed send can reduce it.
+WebRTC data-channel traffic and non-game protocol messages are outside these
+counters. Use them as boundary-specific diagnostics, not delivery receipts.
 
 ```rust,ignore
 let stats = client.stats();
@@ -557,7 +561,8 @@ Useful for keeping the connection alive through proxies or load balancers.
 ### State Accessors
 
 `snapshot()` synchronously returns one coherent `ClientSnapshot`, including
-connection/authentication state, room role/participant ID, room code, the latest
+connection ownership/readiness/authentication state, room role/participant ID,
+room code, the latest
 reconnection token, requested and effective game-data formats, negotiated
 protocol version, current session generation, and whether delivery is
 quarantined. It also carries the latest selected `session_topology` and
@@ -569,7 +574,8 @@ the async room-ID accessors acquire the same internal mutex.
 
 | Method | Signature | Description |
 |---|---|---|
-| `is_connected()` | `fn is_connected(&self) -> bool` | Returns `true` if the transport is believed to be connected. |
+| `is_connected()` | `fn is_connected(&self) -> bool` | Returns `true` while the client owns a nonterminal transport attempt, including its connecting phase. |
+| `is_transport_ready()` | `fn is_transport_ready(&self) -> bool` | Returns `true` after the driver observes a completed transport handshake and before terminal teardown. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Returns `true` if the server has confirmed authentication. |
 | `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Returns coherent session, reconnect-token, negotiation, and quarantine state. |
 | `room_role()` | `fn room_role(&self) -> Option<RoomRole>` | Server-confirmed `Player` or `Spectator` role; `None` outside a room. |
@@ -582,6 +588,21 @@ the async room-ID accessors acquire the same internal mutex.
 | `current_room_id()` | `async fn current_room_id(&self) -> Option<RoomId>` | Returns the current room ID, if in a room. |
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Legacy name for the local room participant ID (player or spectator). Interpret it with `room_role()`. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
+
+The snapshot fields form these nested connection phases:
+
+| Phase | `connected` | `transport_ready` | `authenticated` | `room_role` |
+|---|---:|---:|---:|---|
+| Connecting / client-owned | `true` | `false` | `false` | `None` |
+| Transport ready | `true` | `true` | `false` | `None` |
+| Authenticated, outside a room | `true` | `true` | `true` | `None` |
+| In a room | `true` | `true` | `true` | player or spectator |
+| Terminal | `false` | `false` | `false` | `None` |
+
+`transport_ready` is the driver's sticky observation for the current physical
+connection, not a fresh call to the backend. `SignalFishEvent::Connected`
+corresponds to that transition. Commands may be queued during the connecting
+phase; a conforming transport leaves their frames caller-owned until ready.
 
 ```rust,ignore
 let state = client.snapshot();
@@ -645,8 +666,8 @@ Shutdown proceeds in four stages:
 3. If the timeout expires, the task is logged as unresponsive and aborted.
    The `Disconnected` event may not be delivered in this case.
 4. Regardless of whether `Disconnected` is delivered, connection/session state
-   is cleared (`is_connected() == false`, `is_authenticated() == false`, and
-   room/player accessors return `None`).
+   is cleared (`is_connected() == false`, `is_transport_ready() == false`,
+   `is_authenticated() == false`, and room/player accessors return `None`).
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the
@@ -805,7 +826,8 @@ All accessors are **synchronous** (no async, no mutex):
 
 | Method | Returns | Description |
 |---|---|---|
-| `is_connected()` | `bool` | Whether the transport is believed connected. |
+| `is_connected()` | `bool` | Whether the client owns a nonterminal transport attempt, including connecting. |
+| `is_transport_ready()` | `bool` | Whether the driver has observed the transport handshake complete. |
 | `is_authenticated()` | `bool` | Whether the server confirmed authentication. |
 | `room_role()` | `Option<RoomRole>` | Server-confirmed player/spectator role. |
 | `is_closing()` | `bool` | Whether `poll()` must continue driving a close lifecycle. |
@@ -822,7 +844,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
-| `snapshot()` | `ClientSnapshot` | Coherent connection, room, reconnect-token, negotiation, selected-plan, and quarantine state. |
+| `snapshot()` | `ClientSnapshot` | Coherent connection readiness, room, reconnect-token, negotiation, selected-plan, and quarantine state. |
 | `polling_stats()` | `PollingStats` | Client-owned queue depth, budget exhaustion, abandoned-command, and deadline counters. |
 | `queue_age_stats()` | `PollingQueueAgeStats` | Sampled current/peak age of the oldest client-owned outbound item. |
 | `reset_queue_age_peak()` | `()` | Refresh current age and reset its sampled peak; useful after setup. |
@@ -861,8 +883,9 @@ can complete; because session state is already cleared, these late frames are
 not emitted as application events. If
 `SignalFishConfig::shutdown_timeout` expires, remaining work is counted as
 abandoned, the transport is aborted, and `is_closing()` becomes false.
-After calling `close()`, `is_connected()` returns `false` and all command
-methods return `Err(SignalFishError::NotConnected)`.
+After calling `close()`, both `is_connected()` and `is_transport_ready()`
+return `false`, and all command methods return
+`Err(SignalFishError::NotConnected)`.
 
 !!! warning "No Drop fallback"
     Unlike `SignalFishClient`, the polling client does **not** abort a
