@@ -1,7 +1,7 @@
 # Signal Fish Client for Godot
 
 `signal-fish-client-godot` provides the main-thread Godot 4.5
-`WebSocketPeer` transport adapter for the transport-agnostic
+`WebSocketPeer` transport adapter for the framed-transport-agnostic
 [`signal-fish-client`](https://crates.io/crates/signal-fish-client) SDK.
 
 The adapter is versioned in lockstep with the core crate. See the

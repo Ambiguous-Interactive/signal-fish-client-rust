@@ -146,6 +146,10 @@ Practical guidance:
   plane and universal fallback. Note that `send_game_data` **always** uses
   the relay, even when a mesh session is established; mesh traffic goes
   through your `WebRtcDriver`'s data channels (`MeshController::send_to`).
+  The driver authenticates/reassembles any underlying UDP traffic through its
+  WebRTC stack before yielding assembled messages; this SDK does not expose raw
+  datagrams. The `JoinRoom` use of `RelayTransport::Udp` is ignored legacy
+  metadata on Server 0.7, not an alternate path for `send_game_data`.
 
 ## The wedged-consumer hazard
 

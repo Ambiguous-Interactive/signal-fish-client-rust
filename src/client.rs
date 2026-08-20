@@ -517,7 +517,11 @@ pub struct JoinRoomParams {
     pub max_players: Option<u8>,
     /// Whether the room should support authority delegation.
     pub supports_authority: Option<bool>,
-    /// Preferred relay transport protocol.
+    /// Optional legacy relay data-path descriptor.
+    ///
+    /// This does not reconfigure the client's signaling
+    /// [`crate::Transport`] or add raw datagram support. Signal Fish
+    /// Server 0.7 accepts but ignores it.
     pub relay_transport: Option<RelayTransport>,
 }
 
@@ -552,7 +556,11 @@ impl JoinRoomParams {
         self
     }
 
-    /// Set the preferred relay transport protocol.
+    /// Set the legacy relay data-path descriptor serialized into `JoinRoom`.
+    ///
+    /// It does not reconfigure the client's signaling
+    /// [`crate::Transport`] or open a socket. Signal Fish Server 0.7
+    /// accepts but ignores this field.
     #[must_use]
     pub fn with_relay_transport(mut self, relay_transport: RelayTransport) -> Self {
         self.relay_transport = Some(relay_transport);

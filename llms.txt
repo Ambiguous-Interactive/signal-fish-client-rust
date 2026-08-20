@@ -1,6 +1,6 @@
 # Signal Fish Client SDK
 
-> Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol, including async, polling, Godot 4.5, WebAssembly, relay accountability, and mesh integrations.
+> Framed-transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol, including async, polling, Godot 4.5, WebAssembly, relay accountability, and mesh integrations.
 
 Use `SignalFishClient` with a continuously driven Tokio runtime. Use
 `SignalFishPollingClient` for every WebAssembly target and for frame-driven

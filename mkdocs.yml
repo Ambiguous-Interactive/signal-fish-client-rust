@@ -1,5 +1,5 @@
 site_name: Signal Fish Client SDK
-site_description: "Transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
+site_description: "Framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
 site_url: https://Ambiguous-Interactive.github.io/signal-fish-client-rust/
 repo_url: https://github.com/Ambiguous-Interactive/signal-fish-client-rust
 repo_name: signal-fish-client-rust

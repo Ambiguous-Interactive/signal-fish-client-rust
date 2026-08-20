@@ -171,23 +171,40 @@ transport ownership transfer and inbound decoded receipt, including
 accepted-then-error, stale, and quarantined cases. Session 032 records the
 contract, review, and green hosted evidence.
 
-## Current Correctness Milestone — Enforceable Transport Abandonment
+## Completed Correctness Milestone — Enforceable Transport Abandonment
 
 [Issue #106](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/106)
-makes `Transport::abort` a required backend-lifetime decision and invokes it
+shipped in [PR #116](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/116).
+It makes `Transport::abort` a required backend-lifetime decision and invokes it
 after close deadlines/errors and owner cancellation/drop. Async and polling
 drivers must preserve accepted-send-before-close ordering while proving
 deadline abandonment, resource release, and no later transport polling.
 Session 033 records the contract and evidence.
 
-## Next Correctness Milestone — Datagram Scope
+## Current Correctness Decision — Datagram Scope
 
-Resolve [issue #107](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/107)
-before usability, performance, token binding, or presentation milestones. Do
-not claim UDP resilience without an explicit framing, trust, ownership, and
-delivery decision.
+[Issue #107](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/107)
+is being resolved as out of scope for this SDK's current transport abstraction.
 
-## Following Milestone — Negotiated Token Binding
+- `Transport` begins at one complete, ordered text/binary frame stream bound to
+  the intended server. A raw stream/datagram backend owns framing,
+  trust/source binding, fragmentation, loss/duplicate/reorder policy, and must
+  surface unrecoverable violations instead of silently skipping frames.
+- Pinned Signal Fish Server 0.7 exposes one WebSocket signaling/relay lane,
+  ignores legacy `JoinRoom.relay_transport`, and contains no separate relay
+  server. `ConnectionInfo::Relay` remains self-declared peer metadata.
+- WebRTC implementations own ICE/DTLS/SCTP and underlying UDP behavior and
+  yield only assembled data-channel messages to `MeshController`.
+- No UDP parser, fuzz corpus, or loopback test is added for a nonexistent
+  envelope. A future datagram protocol belongs first in its owning server/data
+  component and needs a separate abstraction unless it reconstructs the full
+  ordered framed contract.
+- Server [issue #393](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/393)
+  tracks clarification or retirement of the ignored legacy relay fields.
+
+Session 034 records the source-to-decision matrix and verification evidence.
+
+## Next Correctness Milestone — Negotiated Token Binding
 
 Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
 

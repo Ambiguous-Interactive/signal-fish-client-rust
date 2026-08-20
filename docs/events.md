@@ -192,7 +192,7 @@ Events related to joining, failing to join, or leaving a room.
 | `is_authority` | `bool` | Whether the local player is the authority. |
 | `lobby_state` | `LobbyState` | Current lobby readiness state (`Waiting`, `Lobby`, or `Finalized`). |
 | `ready_players` | `Vec<PlayerId>` | Players that have signaled readiness. |
-| `relay_type` | `String` | Relay transport type label (e.g., `"auto"`, `"tcp"`). |
+| `relay_type` | `String` | Legacy deployment relay label; Server 0.7 uses it as protocol metadata, not proof of a physical path. |
 | `current_spectators` | `Vec<SpectatorInfo>` | Spectators currently watching. |
 | `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering; empty on the v2 floor. |
 | `reconnection_token` | `Option<String>` | Server-issued v3 secret retained by `ClientSnapshot` for unexpected-disconnect recovery. |

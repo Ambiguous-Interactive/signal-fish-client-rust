@@ -3,6 +3,13 @@
 //! A transport owns any frame it accepts from `poll_send`. Polling makes the
 //! same implementation usable by an async runtime driver and by a main-thread
 //! game-loop driver without requiring `Send`.
+//!
+//! The contract begins after a backend has produced one complete, ordered
+//! text/binary frame stream for one intended server. It does not define server
+//! authentication, raw-stream framing, or a datagram envelope. Backends over
+//! streams or datagrams own message sizing, delimiting, server trust/source
+//! binding, fragmentation, loss/duplicate/reorder handling, and terminal/error
+//! policy before yielding a [`TransportFrame`].
 
 use std::task::{Context, Poll};
 
@@ -79,6 +86,19 @@ pub struct TransportDiagnostics {
 }
 
 /// Bidirectional framed transport for the Signal Fish signaling protocol.
+///
+/// Each successful receive yields exactly one complete text or binary frame in
+/// protocol order from the one intended server connection. `TransportFrame`
+/// carries no source address or peer identity, so the client attributes every
+/// yielded frame to that server. This trait does not authenticate the server or
+/// turn arbitrary stream/datagram bytes into frames; the backend must apply an
+/// appropriate trust/source-binding policy and report unrecoverable framing,
+/// corruption, or loss as a transport error instead of silently omitting or
+/// fabricating frames. That policy need not provide cryptographic identity,
+/// but the SDK then provides no spoof protection. The crate includes no raw
+/// UDP backend, and
+/// [`RelayTransport::Udp`](crate::protocol::RelayTransport::Udp) is legacy wire
+/// metadata rather than a switch for this transport.
 ///
 /// The trait itself deliberately has no `Send` bound. The async client applies
 /// `Send + 'static` at its task-spawning boundary; the polling client can own a

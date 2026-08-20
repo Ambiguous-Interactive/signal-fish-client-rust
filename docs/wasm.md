@@ -778,7 +778,7 @@ crate directly in your own code, add the `"js"` feature for WASM targets.
 
 ### MSRV vs. nightly requirement
 
-The transport-agnostic core's MSRV is **1.87.0** for native targets, while the
+The framed-transport-agnostic core's MSRV is **1.87.0** for native targets, while the
 `signal-fish-client-godot` adapter requires **Rust 1.94.0**. Regardless of
 those stable native floors, the `wasm32-unknown-emscripten` target requires
 **Rust nightly** because:

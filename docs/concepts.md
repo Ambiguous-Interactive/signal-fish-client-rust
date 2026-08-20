@@ -6,11 +6,13 @@ issues when they arise.
 
 ---
 
-## Transport-Agnostic Design
+## Framed-Transport-Agnostic Design
 
-The SDK separates **networking** from **client logic** through the `Transport`
-trait. `SignalFishClient` never knows (or cares) whether it is talking over a
-WebSocket, a raw TCP socket, a QUIC stream, or even an in-memory test loopback.
+The SDK separates **framed networking** from **client logic** through the
+`Transport` trait. `SignalFishClient` can use a WebSocket, a framed TCP/QUIC
+adapter, or an in-memory test loopback without knowing the backend. The adapter
+must present complete text/binary protocol frames; raw stream or datagram bytes
+are not the boundary.
 
 ```mermaid
 graph LR
@@ -56,13 +58,14 @@ The async client adds `Send + 'static` at `start`; the polling client does not.
 
 !!! tip "Bring your own transport"
     Connection setup is intentionally **not** part of the trait. Different
-    transports have different connection parameters (URLs, host:port, QUIC
-    endpoints, etc.). Construct a transport externally, then hand it to
+    framed transports have different connection parameters (URLs, host:port,
+    QUIC endpoints, etc.). Construct a transport externally, then hand it to
     `SignalFishClient::start`; an asynchronous handshake may still be in
     progress if its `is_ready()` returns `false`.
 
-The crate ships with a ready-made `WebSocketTransport` (behind the `transport-websocket`
-feature flag), but you can implement the trait for any medium.
+The crate ships with a ready-made `WebSocketTransport` (behind the
+`transport-websocket` feature flag), but you can implement the trait for any
+medium that fulfills the [complete-frame contract](transport.md#datagram-and-raw-stream-scope).
 
 ---
 

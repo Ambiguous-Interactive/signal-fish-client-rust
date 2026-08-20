@@ -23,10 +23,11 @@
   </a>
 </p>
 
-Transport-agnostic Rust client SDK for the **Signal Fish** multiplayer
+Framed-transport-agnostic Rust client SDK for the **Signal Fish** multiplayer
 signaling protocol. Choose the Tokio background driver or the caller-driven
-polling client to connect over any bidirectional transport, authenticate, join
-rooms, and receive strongly typed events.
+polling client to connect through a backend that provides one ordered
+text/binary frame stream for the intended server, authenticate, join rooms,
+and receive strongly typed events.
 
 ---
 
@@ -44,7 +45,10 @@ rooms, and receive strongly typed events.
 
 ## Features
 
-- **Transport-agnostic** — implement the `Transport` trait for any backend (WebSocket, TCP, QUIC, WebRTC data channels, etc.)
+- **Framed-transport-agnostic** — implement `Transport` for a backend that
+  supplies complete text/binary frames; stream or datagram framing,
+  signaling-server trust/source binding, and packet recovery remain backend
+  responsibilities
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
 - **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver. Server 0.7 compatibility currently targets the default token-binding-disabled deployment profile.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
@@ -187,7 +191,8 @@ The SDK compiles to WebAssembly. See the [WebAssembly Guide](docs/wasm.md) for G
 
 ## Custom Transport
 
-Implement the `Transport` trait to plug in any I/O backend:
+Implement the `Transport` trait for any framed I/O backend that fulfills the
+complete-frame contract:
 
 ```rust,ignore
 use std::task::{Context, Poll};
@@ -233,6 +238,9 @@ impl Transport for MyTransport {
 Key requirements:
 
 - Preserve both `TransportFrame::Text` and `TransportFrame::Binary` boundaries
+- Supply exactly one complete protocol frame per successful receive; raw byte
+  streams and UDP sockets need an external framing and signaling-server
+  trust/source-binding policy before they satisfy `Transport`
 - Retain accepted outbound frames and partial receives across `Poll::Pending`
 - Register the supplied waker when async progress becomes possible
 - Make `poll_close` idempotent and expose structured peer metadata via `close_info`
@@ -311,7 +319,7 @@ signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/sig
 ```
 
 The adapter supports godot-rust `0.4.5` through `0.5.x` and requires Rust
-1.94 or newer. The transport-agnostic core remains at Rust 1.87. If Cargo
+1.94 or newer. The framed-transport-agnostic core remains at Rust 1.87. If Cargo
 selects two binding families, inspect `cargo tree -d` and align the direct
 `godot` version with the adapter before compiling; Godot binding types from
 different versions are not interchangeable.

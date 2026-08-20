@@ -32,7 +32,13 @@ pub type RoomId = uuid::Uuid;
 
 ### `RelayTransport`
 
-Selects the transport protocol for relay connections.
+Legacy relay labels retained for wire compatibility. The value appears in the
+ignored `JoinRoom.relay_transport` preference and in self-declared
+`ConnectionInfo::Relay` metadata; it does not select this crate's signaling
+[`Transport`](transport.md), open a socket, or define a datagram envelope.
+Signal Fish Server 0.7 continues to use its WebSocket connection for relayed
+`GameData`. See
+[Datagram and raw-stream scope](transport.md#datagram-and-raw-stream-scope).
 
 - **Default:** `Auto`
 - **Serde:** `rename_all = "lowercase"`
@@ -51,10 +57,10 @@ pub enum RelayTransport {
 
 | Variant | JSON value | Description |
 |---------|-----------|-------------|
-| `Tcp` | `"tcp"` | TCP transport — reliable, ordered delivery. Recommended for turn-based games, lobby systems, RPGs. |
-| `Udp` | `"udp"` | UDP transport — low-latency, unreliable. Recommended for FPS, racing, real-time action. |
-| `Websocket` | `"websocket"` | WebSocket transport — reliable, browser-compatible. Recommended for WebGL and cross-platform builds. |
-| `Auto` | `"auto"` | Automatic selection based on room size and game type (default). |
+| `Tcp` | `"tcp"` | Label an external relay path as TCP. |
+| `Udp` | `"udp"` | Label an external relay path as UDP; this SDK does not open or parse its datagrams. |
+| `Websocket` | `"websocket"` | Label a relay path as WebSocket. |
+| `Auto` | `"auto"` | Legacy automatic-selection label; no selection occurs in this SDK (the enum default). |
 
 ---
 
@@ -177,7 +183,7 @@ pub enum ConnectionInfo {
 |---------|--------|-------------|
 | `Direct` | `host: String`, `port: u16` | Direct IP:port connection (Mirror, FishNet, Unity NetCode direct). |
 | `UnityRelay` | `allocation_id: String`, `connection_data: String`, `key: String` | Unity Relay allocation (Unity NetCode via Unity Relay). |
-| `Relay` | `host: String`, `port: u16`, `transport: RelayTransport`, `allocation_id: String`, `token: String`, `client_id: Option<u16>` | Built-in relay server (Unity NetCode, FishNet, Mirror). |
+| `Relay` | `host: String`, `port: u16`, `transport: RelayTransport`, `allocation_id: String`, `token: String`, `client_id: Option<u16>` | Legacy self-declared relay metadata forwarded to peers; neither the SDK nor Server 0.7 opens or authenticates the endpoint. |
 | `WebRTC` | `sdp: Option<String>`, `ice_candidates: Vec<String>` | WebRTC connection info (Matchbox). |
 | `Custom` | `data: serde_json::Value` | Arbitrary JSON blob for custom networking solutions. |
 
@@ -328,7 +334,7 @@ pub struct PeerConnectionInfo {
 | `player_id` | `PlayerId` | The peer's unique identifier. |
 | `player_name` | `String` | The peer's display name. |
 | `is_authority` | `bool` | Whether this peer is the room authority. |
-| `relay_type` | `String` | Relay type label (e.g. `"direct"`, `"relay"`). |
+| `relay_type` | `String` | Legacy deployment relay label; Server 0.7 uses it as protocol metadata, not proof of a physical path. |
 | `connection_info` | `Option<ConnectionInfo>` | Connection info provided by the peer for P2P establishment. |
 
 ---
