@@ -23,11 +23,11 @@ use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
 use signal_fish_client::error::SignalFishError;
 use signal_fish_client::polling_client::SignalFishPollingClient;
 use signal_fish_client::protocol::{
-    ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap, DeliveryGapReason,
-    DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState, PlayerId,
-    PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
-    RoomJoinedPayload, SenderWatermark, ServerMessage, SpectatorJoinedPayload, TransportKind,
-    V2BinaryGameDataFrame, V3BinaryGameDataFrame,
+    ClientMessage, ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
+    DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState,
+    PlayerId, PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
+    ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage, SpectatorJoinedPayload,
+    TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ErrorCode, ProtocolViolationPolicy};
@@ -212,10 +212,10 @@ impl CommonCommandCase {
 
 const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 const AUTH: &str = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
-const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#;
+const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
 // A v2 negotiation omits the version fields, so it deserializes to
 // `protocol_version: None` — a terminal relay floor.
-const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[]}}"#;
+const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"]}}"#;
 
 // ── Shared mock transport (works for both async + polling drivers) ────
 
@@ -284,12 +284,14 @@ fn pi_v3_payload() -> ProtocolInfoPayload {
         recommended_version: None,
         capabilities: vec![],
         notes: None,
-        game_data_formats: vec![],
+        game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
         player_name_rules: None,
         protocol_version: Some(3),
         min_protocol_version: Some(2),
         max_protocol_version: Some(3),
-        transports: None,
+        transports: Some(vec![
+            signal_fish_client::protocol::MessageTransport::Websocket,
+        ]),
     }
 }
 
@@ -327,13 +329,13 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: missed,
-        replay: None,
+        replay: Some(ReplayStatus::Complete),
         sender_watermarks: vec![SenderWatermark {
             player_id: local,
             epoch: 1,
             seq: 0,
         }],
-        reconnection_token: None,
+        reconnection_token: Some("rotated-token".into()),
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }
@@ -680,10 +682,27 @@ async fn assert_frame_trace_parity(
     frames: Vec<TransportFrame>,
     config: SignalFishConfig,
 ) -> Vec<String> {
+    assert_frame_trace_parity_with_reconnect(frames, config, false).await
+}
+
+async fn assert_frame_trace_parity_with_reconnect(
+    frames: Vec<TransportFrame>,
+    config: SignalFishConfig,
+    admit_reconnect: bool,
+) -> Vec<String> {
     let make_mock = || TraceMock::new(frames.clone());
 
     let async_mock = make_mock();
-    let (async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    if admit_reconnect {
+        async_client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .expect("async reconnect must queue");
+    }
     let mut async_events = Vec::new();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while let Some(event) = async_rx.recv().await {
@@ -695,6 +714,15 @@ async fn assert_frame_trace_parity(
 
     let polling_mock = make_mock();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    if admit_reconnect {
+        polling_client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .expect("polling reconnect must queue");
+    }
     let polling_events = polling_client.poll();
 
     let async_events = async_events
@@ -720,6 +748,100 @@ async fn assert_server_trace_parity(lines: &str, config: SignalFishConfig) {
         .map(|line| TransportFrame::Text(line.to_owned()))
         .collect();
     let _ = assert_frame_trace_parity(frames, config).await;
+}
+
+async fn assert_open_text_trace_parity(
+    messages: Vec<String>,
+    config: SignalFishConfig,
+) -> (Vec<String>, signal_fish_client::ClientSnapshot) {
+    assert_open_text_trace_parity_with_reconnect(messages, config, false).await
+}
+
+async fn assert_open_reconnect_trace_parity(
+    messages: Vec<String>,
+    config: SignalFishConfig,
+) -> (Vec<String>, signal_fish_client::ClientSnapshot) {
+    assert_open_text_trace_parity_with_reconnect(messages, config, true).await
+}
+
+async fn assert_open_text_trace_parity_with_reconnect(
+    messages: Vec<String>,
+    config: SignalFishConfig,
+    admit_reconnect: bool,
+) -> (Vec<String>, signal_fish_client::ClientSnapshot) {
+    let expected_events = messages.len() + 1;
+    let make_mock = || {
+        SharedMock::from_msgs(
+            messages
+                .iter()
+                .cloned()
+                .map(|message| Some(Ok(message)))
+                .collect(),
+        )
+    };
+
+    let async_mock = make_mock();
+    let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    if admit_reconnect {
+        async_client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .expect("async reconnect must queue");
+    }
+    let mut async_events = Vec::with_capacity(expected_events);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while async_events.len() < expected_events {
+            async_events.push(
+                async_rx
+                    .recv()
+                    .await
+                    .expect("open async trace should emit every scripted outcome"),
+            );
+        }
+    })
+    .await
+    .expect("open async trace should process every scripted frame");
+    let async_snapshot = async_client.snapshot();
+
+    let polling_mock = make_mock();
+    let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    if admit_reconnect {
+        polling_client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .expect("polling reconnect must queue");
+    }
+    let polling_events = polling_client.poll();
+    let polling_snapshot = polling_client.snapshot();
+
+    let async_events = async_events
+        .iter()
+        .filter(|event| !matches!(event, SignalFishEvent::Connected))
+        .map(canonical_event)
+        .collect::<Vec<_>>();
+    let polling_events = polling_events
+        .iter()
+        .filter(|event| !matches!(event, SignalFishEvent::Connected))
+        .map(canonical_event)
+        .collect::<Vec<_>>();
+    assert_eq!(async_events, polling_events);
+    assert_eq!(async_snapshot, polling_snapshot);
+    assert_eq!(async_client.stats(), polling_client.stats());
+    async_client.shutdown().await;
+    (async_events, async_snapshot)
+}
+
+fn protocol_info_with_formats(formats: Vec<GameDataEncoding>) -> String {
+    let mut payload = pi_v3_payload();
+    payload.game_data_formats = formats;
+    serde_json::to_string(&ServerMessage::ProtocolInfo(payload))
+        .expect("ProtocolInfo fixture should serialize")
 }
 
 // ── PARITY 1: relay-floor Authenticate byte-identity ─────────────────
@@ -784,6 +906,282 @@ async fn vendored_v2_and_v3_server_message_traces_have_complete_parity() {
         )
         .await;
     }
+}
+
+#[tokio::test]
+async fn requested_and_effective_game_data_formats_have_complete_parity() {
+    let cases = [
+        (
+            None,
+            vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
+            GameDataEncoding::Json,
+        ),
+        (
+            Some(GameDataEncoding::MessagePack),
+            vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
+            GameDataEncoding::MessagePack,
+        ),
+        (
+            Some(GameDataEncoding::MessagePack),
+            vec![GameDataEncoding::Json],
+            GameDataEncoding::Json,
+        ),
+        (
+            Some(GameDataEncoding::Rkyv),
+            vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
+            GameDataEncoding::Json,
+        ),
+    ];
+
+    for (requested, advertised, effective) in cases {
+        let mut config = SignalFishConfig::new("app").enable_v3();
+        config.game_data_format = requested;
+        let (_events, snapshot) = assert_open_text_trace_parity(
+            vec![AUTH.into(), protocol_info_with_formats(advertised)],
+            config,
+        )
+        .await;
+        assert_eq!(snapshot.requested_game_data_format, requested);
+        assert_eq!(snapshot.effective_game_data_format, Some(effective));
+    }
+}
+
+#[tokio::test]
+async fn malformed_duplicate_and_around_negotiation_frames_have_complete_parity() {
+    let mut config = SignalFishConfig::new("app").enable_v3();
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+    let reconnect = reconnected_with_missed(vec![]);
+    let (events, snapshot) = assert_open_reconnect_trace_parity(
+        vec![
+            AUTH.into(),
+            reconnect.clone(),
+            protocol_info_with_formats(vec![]),
+            protocol_info_with_formats(vec![GameDataEncoding::Json, GameDataEncoding::MessagePack]),
+            protocol_info_with_formats(vec![GameDataEncoding::Json]),
+            reconnect,
+        ],
+        config,
+    )
+    .await;
+
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.split('|').next().expect("event kind"))
+            .collect::<Vec<_>>(),
+        [
+            "Authenticated",
+            "ProtocolViolation",
+            "ProtocolViolation",
+            "ProtocolInfo",
+            "ProtocolViolation",
+            "Reconnected",
+        ]
+    );
+    assert_eq!(
+        snapshot.requested_game_data_format,
+        Some(GameDataEncoding::MessagePack)
+    );
+    assert_eq!(
+        snapshot.effective_game_data_format,
+        Some(GameDataEncoding::MessagePack),
+        "invalid or duplicate negotiation must not partially replace effective state"
+    );
+    assert!(snapshot.room_id.is_some());
+}
+
+#[tokio::test]
+async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_drivers() {
+    let fallback_error = serde_json::to_string(&ServerMessage::Error {
+        message: "rkyv is unsupported; falling back to JSON".into(),
+        error_code: Some(ErrorCode::UnsupportedGameDataFormat),
+    })
+    .expect("fallback Error fixture should serialize");
+    let protocol_info =
+        protocol_info_with_formats(vec![GameDataEncoding::Json, GameDataEncoding::MessagePack]);
+    let messages = vec![fallback_error, AUTH.into(), protocol_info];
+    let mut config = SignalFishConfig::new("app").enable_v3();
+    config.game_data_format = Some(GameDataEncoding::Rkyv);
+
+    let async_mock = SharedMock::from_msgs(
+        messages
+            .iter()
+            .cloned()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+    );
+    let (mut async_client, mut async_events) =
+        SignalFishClient::start(async_mock.clone(), config.clone());
+    for _ in 0..=messages.len() {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async fallback handshake event should arrive")
+            .expect("async fallback event stream should remain open");
+    }
+    async_mock.sent.lock().unwrap().clear();
+    assert!(matches!(
+        async_client.send_binary_game_data(vec![1, 2, 3]),
+        Err(SignalFishError::BinaryFormatNotNegotiated)
+    ));
+    assert!(async_mock.sent.lock().unwrap().is_empty());
+    async_client
+        .send_game_data(serde_json::json!({"fallback": true}))
+        .expect("JSON send should remain valid after fallback");
+    wait_for_sent_len(&async_mock, 1).await;
+    assert!(matches!(
+        serde_json::from_str::<ClientMessage>(&async_mock.sent.lock().unwrap()[0])
+            .expect("async fallback send should be a ClientMessage"),
+        ClientMessage::GameData { .. }
+    ));
+
+    let polling_mock = SharedMock::from_msgs(
+        messages
+            .into_iter()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+    );
+    let mut polling_client = SignalFishPollingClient::new(polling_mock.clone(), config);
+    let _ = polling_client.poll();
+    polling_mock.sent.lock().unwrap().clear();
+    assert!(matches!(
+        polling_client.send_binary_game_data(vec![1, 2, 3]),
+        Err(SignalFishError::BinaryFormatNotNegotiated)
+    ));
+    let _ = polling_client.poll();
+    assert!(polling_mock.sent.lock().unwrap().is_empty());
+    polling_client
+        .send_game_data(serde_json::json!({"fallback": true}))
+        .expect("polling JSON send should remain valid after fallback");
+    let _ = polling_client.poll();
+    assert_eq!(polling_mock.sent.lock().unwrap().len(), 1);
+
+    assert_eq!(async_client.snapshot(), polling_client.snapshot());
+    assert_eq!(
+        async_client.effective_game_data_format(),
+        Some(GameDataEncoding::Json)
+    );
+    async_client.shutdown().await;
+}
+
+#[tokio::test]
+async fn fallback_json_is_delivered_and_binary_is_rejected_with_driver_parity() {
+    let sender = uuid::Uuid::from_u128(365);
+    let mut frames = binary_accountability_prefix(sender);
+    frames[1] = TransportFrame::Text(protocol_info_with_formats(vec![
+        GameDataEncoding::Json,
+        GameDataEncoding::MessagePack,
+    ]));
+    frames.push(text_server_frame(ServerMessage::GameData {
+        from_player: sender,
+        data: serde_json::json!({"fallback": true}),
+        seq: Some(1),
+        epoch: Some(1),
+        class: Some(DeliveryClass::Reliable),
+        key: None,
+    }));
+    frames.push(TransportFrame::Binary(
+        rmp_serde::to_vec_named(&V3BinaryGameDataFrame {
+            from_player: sender,
+            encoding: GameDataEncoding::MessagePack,
+            payload: vec![1, 2, 3],
+            seq: 2,
+            epoch: 1,
+        })
+        .expect("binary fallback fixture should serialize"),
+    ));
+    let mut config = SignalFishConfig::new("app").enable_v3();
+    config.game_data_format = Some(GameDataEncoding::Rkyv);
+
+    let events = assert_frame_trace_parity(frames, config).await;
+    let kinds = events
+        .iter()
+        .map(|event| event.split('|').next().expect("event kind"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            "Authenticated",
+            "ProtocolInfo",
+            "RoomJoined",
+            "GameData",
+            "ProtocolViolation",
+            "Disconnected",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn message_pack_receiver_accepts_json_origin_text_relay_with_driver_parity() {
+    let sender = uuid::Uuid::from_u128(366);
+    let mut frames = binary_accountability_prefix(sender);
+    frames[1] = TransportFrame::Text(protocol_info_with_formats(vec![
+        GameDataEncoding::Json,
+        GameDataEncoding::MessagePack,
+    ]));
+    frames.push(text_server_frame(ServerMessage::GameData {
+        from_player: sender,
+        data: serde_json::json!({"json_origin": true}),
+        seq: Some(1),
+        epoch: Some(1),
+        class: Some(DeliveryClass::Reliable),
+        key: None,
+    }));
+    let mut config = SignalFishConfig::new("app").enable_v3();
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+
+    let events = assert_frame_trace_parity(frames, config).await;
+    assert!(events.iter().any(|event| event.starts_with("GameData|")));
+    assert!(!events
+        .iter()
+        .any(|event| event.starts_with("ProtocolViolation|")));
+}
+
+#[tokio::test]
+async fn observe_advances_text_binary_representation_violation_with_driver_parity() {
+    let sender = uuid::Uuid::from_u128(367);
+    let mut frames = binary_accountability_prefix(sender);
+    frames[1] = TransportFrame::Text(protocol_info_with_formats(vec![
+        GameDataEncoding::Json,
+        GameDataEncoding::MessagePack,
+    ]));
+    frames.push(text_server_frame(ServerMessage::GameDataBinary {
+        from_player: sender,
+        encoding: GameDataEncoding::MessagePack,
+        payload: vec![1],
+        seq: Some(1),
+        epoch: Some(1),
+    }));
+    frames.push(TransportFrame::Binary(
+        rmp_serde::to_vec_named(&V3BinaryGameDataFrame {
+            from_player: sender,
+            encoding: GameDataEncoding::MessagePack,
+            payload: vec![2],
+            seq: 2,
+            epoch: 1,
+        })
+        .expect("binary fixture should serialize"),
+    ));
+    let mut config = SignalFishConfig::new("app")
+        .enable_v3()
+        .with_protocol_violation_policy(ProtocolViolationPolicy::Observe);
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+
+    let events = assert_frame_trace_parity(frames, config).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("ProtocolViolation|"))
+            .count(),
+        1,
+        "the following seq=2 frame must not see a synthetic gap"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("GameDataBinary|"))
+            .count(),
+        2
+    );
 }
 
 fn binary_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
@@ -1825,8 +2223,15 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
     let recon = reconnected_with_missed(vec![]);
 
     let async_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
-    let (client, mut events) =
+    let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("async reconnect must queue");
     for _ in 0..4 {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await;
     }
@@ -1838,6 +2243,13 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
 
     let poll_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    poll_client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("polling reconnect must queue");
     poll_client.poll();
     assert_eq!(
         poll_client.negotiated_protocol_version(),
@@ -1851,7 +2263,7 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
 #[tokio::test]
 async fn parity_reconnect_rejects_nested_protocol_info_without_downgrade() {
     let recon_v2 = reconnected_with_missed(vec![ServerMessage::ProtocolInfo(pi_v2_payload())]);
-    let events = assert_frame_trace_parity(
+    let events = assert_frame_trace_parity_with_reconnect(
         vec![
             TransportFrame::Text(AUTH.into()),
             TransportFrame::Text(PI_V3.into()),
@@ -1860,6 +2272,7 @@ async fn parity_reconnect_rejects_nested_protocol_info_without_downgrade() {
         SignalFishConfig::new("app")
             .enable_v3()
             .with_protocol_violation_policy(ProtocolViolationPolicy::Observe),
+        true,
     )
     .await;
     assert!(events.iter().any(|event| {
@@ -1867,6 +2280,53 @@ async fn parity_reconnect_rejects_nested_protocol_info_without_downgrade() {
             && event.contains("non-replayable ProtocolInfo")
     }));
     assert!(!events.iter().any(|event| event.starts_with("Reconnected")));
+}
+
+#[tokio::test]
+async fn malformed_reconnect_baselines_have_complete_driver_parity() {
+    let valid = reconnected_with_missed(vec![]);
+    let ServerMessage::Reconnected(mut invalid_payload) =
+        serde_json::from_str::<ServerMessage>(&valid).unwrap()
+    else {
+        unreachable!("reconnect fixture must decode as Reconnected")
+    };
+    invalid_payload.reconnection_token = None;
+    let invalid = serde_json::to_string(&ServerMessage::Reconnected(invalid_payload)).unwrap();
+
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+    ] {
+        let (events, snapshot) = assert_open_reconnect_trace_parity(
+            vec![AUTH.into(), PI_V3.into(), invalid.clone(), valid.clone()],
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(events[2].starts_with("ProtocolViolation|Lifecycle|"));
+        assert!(events[3].starts_with("Reconnected|"));
+        assert_eq!(snapshot.room_id, Some(uuid::Uuid::from_u128(100)));
+        assert_eq!(
+            snapshot.reconnection_token.as_deref(),
+            Some("rotated-token")
+        );
+        assert!(!snapshot.quarantined);
+    }
+
+    let events = assert_frame_trace_parity_with_reconnect(
+        vec![
+            TransportFrame::Text(AUTH.into()),
+            TransportFrame::Text(PI_V3.into()),
+            TransportFrame::Text(invalid),
+        ],
+        SignalFishConfig::new("app")
+            .enable_v3()
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect),
+        true,
+    )
+    .await;
+    assert!(events[2].starts_with("ProtocolViolation|Lifecycle|"));
 }
 
 // ── PARITY 6: enable_mesh advertises v3 identically ──────────────────

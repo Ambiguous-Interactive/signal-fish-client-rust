@@ -17,12 +17,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use signal_fish_client::protocol::SpectatorJoinedPayload;
 use signal_fish_client::protocol::{
-    LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo, ReconnectedPayload,
-    ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage, SessionPeer,
-    SessionPlanPayload, Topology, TransportKind,
+    GameDataEncoding, LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo,
+    ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage,
+    SessionPeer, SessionPlanPayload, Topology, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
-use signal_fish_client::{SignalFishError, Transport};
+use signal_fish_client::{ClientMessage, SignalFishError, Transport};
 
 // ── MockTransport ───────────────────────────────────────────────────
 
@@ -97,6 +97,24 @@ impl Transport for MockTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+            let Some(Ok(TransportFrame::Text(json))) = item else {
+                return false;
+            };
+            matches!(
+                serde_json::from_str::<ServerMessage>(json),
+                Ok(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. })
+            )
+        });
+        let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
+            matches!(
+                serde_json::from_str::<ClientMessage>(json),
+                Ok(ClientMessage::Reconnect { .. })
+            )
+        });
+        if reconnect_response_is_gated && !reconnect_was_sent {
+            return std::task::Poll::Pending;
+        }
         if let Some(item) = self.incoming.pop_front() {
             std::task::Poll::Ready(item)
         } else {
@@ -308,18 +326,19 @@ pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPaylo
         recommended_version: None,
         capabilities: vec![],
         notes: None,
-        game_data_formats: vec![],
+        game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
         player_name_rules: None,
         protocol_version,
         min_protocol_version: protocol_version.map(|_| 2),
-        max_protocol_version: protocol_version.map(|_| 3),
-        transports: None,
+        max_protocol_version: protocol_version.map(|version| version.max(3)),
+        transports: protocol_version
+            .map(|_| vec![signal_fish_client::protocol::MessageTransport::Websocket]),
     }
 }
 
 /// Returns the JSON for a `ProtocolInfo` message with the given negotiated
-/// protocol version. `Some(3)` advertises v3 (min 2, max 3); `None` is a v2
-/// negotiation (version fields omitted).
+/// protocol version. Versioned fixtures advertise a coherent `2..=version`
+/// range (with v3 as the minimum maximum); `None` is a v2 negotiation.
 pub fn protocol_info_json(protocol_version: Option<u16>) -> String {
     serde_json::to_string(&ServerMessage::ProtocolInfo(protocol_info_payload(
         protocol_version,
@@ -382,7 +401,7 @@ pub fn finalized_reconnected_json() -> String {
                 seq: 0,
             },
         ],
-        reconnection_token: None,
+        reconnection_token: Some("rotated-token".into()),
     };
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload)))
         .expect("finalized_reconnected_json serialization")

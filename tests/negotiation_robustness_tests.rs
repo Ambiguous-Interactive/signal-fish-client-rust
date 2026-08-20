@@ -170,6 +170,13 @@ async fn reconnect_rejects_protocol_info_without_downgrading_active_v3() {
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3
         Some(Ok(reconnected_with_missed(vec![protocol_info_msg(None)]))),
     ]);
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     assert_eq!(client.negotiated_protocol_version(), Some(3));
@@ -196,6 +203,13 @@ async fn reconnect_multiple_protocol_info_is_rejected() {
             protocol_info_msg(Some(4)),
         ]))),
     ]);
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     drain_until_violation(&mut events).await;
@@ -220,6 +234,13 @@ async fn reconnect_versioned_then_v2_keeps_version() {
             protocol_info_msg(None),
         ]))),
     ]);
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     drain_until_violation(&mut events).await;
@@ -243,6 +264,13 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
         Some(Ok(reconnected_with_missed(vec![]))),
         Some(Ok(serde_json::to_string(&session_plan_msg()).unwrap())),
     ]);
+    client
+        .reconnect(
+            uuid::Uuid::from_u128(200),
+            uuid::Uuid::from_u128(100),
+            "submitted-token".into(),
+        )
+        .expect("reconnect must queue");
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
     assert_eq!(client.negotiated_protocol_version(), Some(3));
@@ -259,7 +287,7 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
         .send_offer(uuid::Uuid::from_u128(9), "sdp")
         .expect("mesh must survive a reconnect that omits ProtocolInfo");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     let signal_sent = sent.lock().unwrap().iter().any(|m| m.contains("Signal"));
     assert!(signal_sent, "Signal should have reached the wire");
     client.shutdown().await;

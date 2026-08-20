@@ -36,7 +36,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `app_id` | `String` | *(required)* | Public App ID that identifies the game application. |
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
-| `game_data_format` | `Option<GameDataEncoding>` | `None` | Preferred game data encoding format (`Json`, `MessagePack`, or `Rkyv`). |
+| `game_data_format` | `Option<GameDataEncoding>` | `None` | Requested game-data encoding (`Json`, `MessagePack`, or reserved `Rkyv`). The effective wire format is resolved from the first authoritative `ProtocolInfo`; omission and unsupported requests resolve to JSON on Server 0.7. |
 | `protocol_version` | `Option<u16>` | `None` | Highest signaling protocol version advertised. `None` preserves the v2 relay floor. Prefer `enable_v3()` or `enable_mesh()` over setting this alone. |
 | `supported_transports` | `Option<Vec<TransportKind>>` | `None` | Protocol-v3 data-path transports the application can actually fulfill. |
 | `supported_topologies` | `Option<Vec<Topology>>` | `None` | Protocol-v3 session topologies the application can participate in. |
@@ -398,10 +398,13 @@ the selected server delivery class.
 `send_binary_game_data(payload)` queues a physical WebSocket binary
 frame; `send_binary_game_data_reliable` waits for local queue capacity. Binary
 frames use the protocol-reliable delivery path and require v3 negotiation.
-They also require a binary `game_data_format`; the default/JSON format returns
-`BinaryFormatNotNegotiated` before anything is queued. If the server reports an
-unsupported requested format and falls back to JSON, subsequent binary sends
-fail the same way.
+They also require an effectively negotiated binary format; the default/JSON
+format returns `BinaryFormatNotNegotiated` before anything is queued. The
+client resolves this from `ProtocolInfo.game_data_formats`, not from the
+earlier advisory `UnsupportedGameDataFormat` error. An unsupported request
+(including Server 0.7's reserved `Rkyv`) resolves to JSON, so binary sends fail
+locally even when that advisory arrives before `Authenticated` and
+`ProtocolInfo`.
 Inbound envelopes are decoded strictly; malformed maps, duplicate or missing
 fields, invalid UUID representation, zero stamps, and trailing bytes surface as
 bounded `DecodeFailed` events.
@@ -521,7 +524,17 @@ Use the `player_id` and `room_id` from the original `RoomJoined` event and the
 server-issued token from `client.snapshot().reconnection_token`. A successful
 `Reconnected` response rotates the token; read and persist the replacement
 snapshot before another unexpected disconnect. Tokens are connection secrets:
-do not log them.
+do not log them. Terminal reconnect responses must match the player, room, and
+credential of an admitted `Reconnect` command. Under v3, the client accepts a
+reconnect baseline only when it contains replay status, a nonempty rotated
+token, exact player stamps, and sender watermarks covering the complete
+current-player snapshot. Malformed
+baselines are never applied, including under `ProtocolViolationPolicy::Observe`.
+
+Reconnect is also a hard session-plan boundary. The old generation and peer
+set are fenced immediately, and Server 0.7 follows `Reconnected` with a fresh
+live `SessionPlan` for a finalized room. `ProtocolInfo`, `SessionPlan`, signals,
+and game data are not legal `missed_events` replay entries.
 
 ---
 
@@ -545,17 +558,20 @@ Useful for keeping the connection alive through proxies or load balancers.
 
 `snapshot()` synchronously returns one coherent `ClientSnapshot`, including
 connection/authentication state, room/player IDs, room code, the latest
-reconnection token, negotiated protocol version, current session generation,
-and whether delivery is quarantined. Prefer it whenever multiple fields must
-describe the same instant.
+reconnection token, requested and effective game-data formats, negotiated
+protocol version, current session generation, and whether delivery is
+quarantined. Prefer it whenever multiple fields must describe the same instant.
 
-Synchronous accessors use atomics; async accessors acquire an internal mutex.
+Synchronous snapshot and negotiation accessors briefly lock the shared core;
+the async room-ID accessors acquire the same internal mutex.
 
 | Method | Signature | Description |
 |---|---|---|
 | `is_connected()` | `fn is_connected(&self) -> bool` | Returns `true` if the transport is believed to be connected. |
 | `is_authenticated()` | `fn is_authenticated(&self) -> bool` | Returns `true` if the server has confirmed authentication. |
 | `snapshot()` | `fn snapshot(&self) -> ClientSnapshot` | Returns coherent session, reconnect-token, negotiation, and quarantine state. |
+| `requested_game_data_format()` | `fn requested_game_data_format(&self) -> Option<GameDataEncoding>` | Exact preference supplied in `SignalFishConfig`, preserving omission. |
+| `effective_game_data_format()` | `fn effective_game_data_format(&self) -> Option<GameDataEncoding>` | Server-selected format; `None` before valid `ProtocolInfo` or after disconnect. |
 | `current_room_id()` | `async fn current_room_id(&self) -> Option<RoomId>` | Returns the current room ID, if in a room. |
 | `current_player_id()` | `async fn current_player_id(&self) -> Option<PlayerId>` | Returns the current player ID, if assigned by the server. |
 | `current_room_code()` | `async fn current_room_code(&self) -> Option<String>` | Returns the current room code, if in a room. |
@@ -756,6 +772,8 @@ All accessors are **synchronous** (no async, no mutex):
 | `is_authenticated()` | `bool` | Whether the server confirmed authentication. |
 | `is_closing()` | `bool` | Whether `poll()` must continue driving a close lifecycle. |
 | `negotiated_protocol_version()` | `Option<u16>` | Negotiated v3-or-newer version; `None` before `ProtocolInfo` or on the v2 floor. |
+| `requested_game_data_format()` | `Option<GameDataEncoding>` | Exact configured preference, preserving omission. |
+| `effective_game_data_format()` | `Option<GameDataEncoding>` | Server-selected format; `None` before valid `ProtocolInfo` or after disconnect. |
 | `supports_mesh()` | `bool` | Whether WebRTC was advertised and protocol v3 was negotiated. |
 | `current_player_id()` | `Option<PlayerId>` | Current player ID, if assigned. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |

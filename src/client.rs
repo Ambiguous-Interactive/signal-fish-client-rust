@@ -527,6 +527,20 @@ pub struct ClientSnapshot {
     pub connected: bool,
     pub authenticated: bool,
     pub negotiated_protocol_version: Option<u16>,
+    /// Exact game-data preference supplied in [`SignalFishConfig`].
+    ///
+    /// `None` means the caller accepted the default JSON format. This value is
+    /// retained for the lifetime of the client, including reconnects and after
+    /// disconnect, so diagnostics never confuse the request with the format
+    /// selected by the server.
+    pub requested_game_data_format: Option<GameDataEncoding>,
+    /// Game-data format selected for this connection from the first valid
+    /// [`ProtocolInfo`](SignalFishEvent::ProtocolInfo).
+    ///
+    /// `None` until negotiation completes and after the connection ends. An
+    /// unsupported preference resolves to `Some(GameDataEncoding::Json)` in
+    /// accordance with the Signal Fish Server 0.7 fallback contract.
+    pub effective_game_data_format: Option<GameDataEncoding>,
     pub player_id: Option<PlayerId>,
     pub room_id: Option<RoomId>,
     pub room_code: Option<String>,
@@ -548,6 +562,14 @@ impl std::fmt::Debug for ClientSnapshot {
             .field(
                 "negotiated_protocol_version",
                 &self.negotiated_protocol_version,
+            )
+            .field(
+                "requested_game_data_format",
+                &self.requested_game_data_format,
+            )
+            .field(
+                "effective_game_data_format",
+                &self.effective_game_data_format,
             )
             .field("player_id", &self.player_id)
             .field("room_id", &self.room_id)
@@ -634,13 +656,12 @@ impl SignalFishClient {
         let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let requested_game_data_encoding = config.game_data_format.unwrap_or_default();
         let mesh_enabled = config
             .supported_transports
             .as_ref()
             .is_some_and(|transports| transports.contains(&TransportKind::WebRtc));
         let state = Arc::new(Mutex::new(ClientCore::new(
-            requested_game_data_encoding,
+            config.game_data_format,
             config.protocol_violation_policy,
             mesh_enabled,
         )));
@@ -1123,6 +1144,22 @@ impl SignalFishClient {
         lock_core(&self.state).negotiated_protocol_version()
     }
 
+    /// Exact game-data preference supplied in [`SignalFishConfig`].
+    pub fn requested_game_data_format(&self) -> Option<GameDataEncoding> {
+        lock_core(&self.state).requested_game_data_format()
+    }
+
+    /// Server-selected game-data format, or `None` while negotiation is
+    /// incomplete or after disconnect.
+    pub fn effective_game_data_format(&self) -> Option<GameDataEncoding> {
+        lock_core(&self.state).effective_game_data_format()
+    }
+
+    #[cfg(feature = "mesh")]
+    pub(crate) fn session_plan_revision(&self) -> u64 {
+        lock_core(&self.state).session_plan_revision()
+    }
+
     /// Returns `true` once the connection has negotiated protocol v3 and this
     /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
     ///
@@ -1189,10 +1226,21 @@ impl SignalFishClient {
         // Keep the state lock through nonblocking queue admission. In
         // particular, an exact-generation signal must not pass validation and
         // then race with a replacement SessionPlan before it is queued.
-        let core = lock_core(&self.state);
+        let reconnect_request = match &operation {
+            ClientOperation::Reconnect(player_id, room_id, token) => {
+                Some((*player_id, *room_id, token.clone()))
+            }
+            _ => None,
+        };
+        let mut core = lock_core(&self.state);
         let command = core.prepare(operation)?;
         let result = match self.cmd_tx.try_send(command) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some((player_id, room_id, token)) = reconnect_request {
+                    core.record_reconnect_admitted(player_id, room_id, token);
+                }
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Full(_)) => Err(SignalFishError::SendBufferFull {
                 capacity: self.cmd_tx.max_capacity(),
             }),
@@ -1817,6 +1865,27 @@ mod tests {
             &mut self,
             _cx: &mut Context<'_>,
         ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+                let Some(Ok(json)) = item else {
+                    return false;
+                };
+                matches!(
+                    serde_json::from_str::<serde_json::Value>(json)
+                        .ok()
+                        .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+                        .as_deref(),
+                    Some("Reconnected" | "ReconnectionFailed")
+                )
+            });
+            let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
+                matches!(
+                    serde_json::from_str::<ClientMessage>(json),
+                    Ok(ClientMessage::Reconnect { .. })
+                )
+            });
+            if reconnect_response_is_gated && !reconnect_was_sent {
+                return Poll::Pending;
+            }
             if let Some(item) = self.incoming.pop_front() {
                 // An explicit `None` entry signals a clean transport close;
                 // `Some(result)` delivers the scripted message or error.
@@ -1880,7 +1949,7 @@ mod tests {
                 recommended_version: None,
                 capabilities: vec![],
                 notes: None,
-                game_data_formats: vec![],
+                game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
                 player_name_rules: None,
                 protocol_version: None,
                 min_protocol_version: None,
@@ -3023,12 +3092,12 @@ mod tests {
             recommended_version: None,
             capabilities: vec![],
             notes: None,
-            game_data_formats: vec![],
+            game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
             player_name_rules: None,
             protocol_version: Some(3),
             min_protocol_version: Some(2),
             max_protocol_version: Some(3),
-            transports: None,
+            transports: Some(vec![crate::protocol::MessageTransport::Websocket]),
         }))
         .unwrap()
     }
@@ -3981,6 +4050,13 @@ mod tests {
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated
         let _ = events.recv().await; // ProtocolInfo
+        client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .unwrap();
         let ev = events.recv().await.unwrap(); // Reconnected
         assert!(matches!(ev, SignalFishEvent::Reconnected { .. }));
 

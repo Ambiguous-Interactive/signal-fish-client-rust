@@ -264,6 +264,10 @@ mod controller {
         /// target peer (see `disconnect_peer`) — an abandoned handshake's
         /// signal must not be relayed stale.
         pending_signal: Option<(PlayerId, Option<SessionGeneration>, PeerSignal)>,
+        /// Last core plan barrier folded into `session`. The core can process a
+        /// reconnect/replan before this controller consumes its queued event;
+        /// a revision mismatch therefore fences driver output first.
+        observed_session_plan_revision: u64,
     }
 
     impl<D: WebRtcDriver> MeshController<D> {
@@ -300,6 +304,7 @@ mod controller {
                 pump_interval: DEFAULT_PUMP_INTERVAL,
                 ready,
                 pending_signal: None,
+                observed_session_plan_revision: 0,
             }
         }
 
@@ -335,6 +340,15 @@ mod controller {
         /// loses a signal.
         pub async fn recv(&mut self) -> Option<MeshEvent> {
             loop {
+                if self.observed_session_plan_revision != self.client.session_plan_revision() {
+                    match self.events.recv().await {
+                        Some(event) => {
+                            self.handle_event(&event);
+                            return Some(MeshEvent::Signaling(Box::new(event)));
+                        }
+                        None => return None,
+                    }
+                }
                 // Surface any pending driver output first (relaying signals /
                 // reporting status as side effects). This is deliberately
                 // synchronous: it must not await while the controller — the
@@ -371,9 +385,19 @@ mod controller {
 
         /// Fold the mesh session view, then perform the driver choreography for
         /// `event`.
-        fn handle_event(&mut self, event: &SignalFishEvent) {
+        pub(super) fn handle_event(&mut self, event: &SignalFishEvent) {
             self.session.apply(event);
             self.choreograph(event);
+            if matches!(
+                event,
+                SignalFishEvent::RoomJoined { .. }
+                    | SignalFishEvent::Reconnected { .. }
+                    | SignalFishEvent::SessionPlan { .. }
+                    | SignalFishEvent::RoomLeft
+                    | SignalFishEvent::Disconnected { .. }
+            ) {
+                self.observed_session_plan_revision = self.client.session_plan_revision();
+            }
         }
 
         /// Drive the driver in response to a single signaling event. The mesh
@@ -478,32 +502,14 @@ mod controller {
                 SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
                     self.driver.set_ice_servers(ice_servers);
                 }
-                // Reconnect: apply ICE pre-gather, then defensively replay any
-                // mesh events the server batched into `missed_events`. Today's
-                // server rebuilds the session by re-sending a *live* `SessionPlan`
-                // after `Reconnected` (so `missed_events` is empty), but replaying
-                // here keeps the client correct against servers that instead carry
-                // mesh state in `missed_events`. The fold is idempotent and a later
-                // live plan replaces the peer set wholesale.
-                SignalFishEvent::Reconnected {
-                    ice_servers,
-                    missed_events,
-                    ..
-                } => {
-                    if !ice_servers.is_empty() {
-                        self.driver.set_ice_servers(ice_servers);
+                // Reconnect fences the old WebRTC plan immediately. The server
+                // follows with a fresh live SessionPlan and a new generation;
+                // until then no peer or buffered signal remains authoritative.
+                SignalFishEvent::Reconnected { ice_servers, .. } => {
+                    for peer in std::mem::take(&mut self.known_peers) {
+                        self.disconnect_peer(peer.id);
                     }
-                    for missed in missed_events {
-                        match missed {
-                            // Terminal / meta events never belong in a reconnect
-                            // replay — by definition we are back in the room.
-                            SignalFishEvent::RoomLeft
-                            | SignalFishEvent::Disconnected { .. }
-                            | SignalFishEvent::Reconnected { .. }
-                            | SignalFishEvent::RoomJoined { .. } => {}
-                            other => self.choreograph(other),
-                        }
-                    }
+                    self.driver.set_ice_servers(ice_servers);
                 }
                 _ => {}
             }
@@ -1112,6 +1118,24 @@ mod tests {
         ) -> std::task::Poll<
             Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
         > {
+            let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+                let Some(Ok(json)) = item else {
+                    return false;
+                };
+                matches!(
+                    serde_json::from_str::<ServerMessage>(json),
+                    Ok(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. })
+                )
+            });
+            let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
+                matches!(
+                    serde_json::from_str::<crate::protocol::ClientMessage>(json),
+                    Ok(crate::protocol::ClientMessage::Reconnect { .. })
+                )
+            });
+            if reconnect_response_is_gated && !reconnect_was_sent {
+                return std::task::Poll::Pending;
+            }
             if let Some(item) = self.incoming.pop_front() {
                 std::task::Poll::Ready(
                     item.map(|result| result.map(crate::transport::TransportFrame::Text)),
@@ -1151,7 +1175,7 @@ mod tests {
     }
 
     fn protocol_info_v3() -> String {
-        r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#.to_string()
+        r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#.to_string()
     }
 
     fn session_plan(peer: PlayerId, initiate: bool) -> String {
@@ -1315,7 +1339,7 @@ mod tests {
     }
 
     fn reconnected_with_players(players: &[PlayerId]) -> String {
-        use crate::protocol::ReconnectedPayload;
+        use crate::protocol::{ReconnectedPayload, ReplayStatus};
         let payload = ReconnectedPayload {
             room_id: uuid(0),
             room_code: "R".into(),
@@ -1343,7 +1367,7 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events: vec![],
-            replay: None,
+            replay: Some(ReplayStatus::Complete),
             sender_watermarks: players
                 .iter()
                 .map(|id| crate::protocol::SenderWatermark {
@@ -1352,7 +1376,7 @@ mod tests {
                     seq: 0,
                 })
                 .collect(),
-            reconnection_token: None,
+            reconnection_token: Some("rotated-token".into()),
         };
         serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
     }
@@ -2820,6 +2844,9 @@ mod tests {
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        mesh.client_mut()
+            .reconnect(uuid(0), uuid(0), "submitted-token".into())
+            .unwrap();
         let ok = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(a, true)) && c.contains(&DriverCall::Connect(b, false))
         })
@@ -2829,8 +2856,75 @@ mod tests {
             "the post-reconnect SessionPlan/NewPeer must drive verbatim initiate flags: {:?}",
             driver.calls()
         );
-        // The replayed plan is also reflected in the session view.
+        // The fresh live plan is also reflected in the session view.
         assert_eq!(mesh.session().topology(), Some(Topology::Mesh));
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reconnect_fences_stale_driver_output_until_the_replacement_plan() {
+        let peer = uuid(53);
+        let old_generation = uuid(12);
+        let new_generation = uuid(13);
+        let driver = SharedDriver::default();
+        let (transport, sent) = MockTransport::new(vec![]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        assert!(matches!(
+            mesh.recv().await,
+            Some(MeshEvent::Signaling(event))
+                if matches!(*event, SignalFishEvent::Connected)
+        ));
+
+        let old_plan = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&session_plan_with_generation(
+                peer,
+                false,
+                old_generation,
+            ))
+            .unwrap(),
+        );
+        mesh.handle_event(&old_plan);
+        assert!(driver
+            .calls()
+            .contains(&DriverCall::ConnectGeneration(peer, Some(old_generation))));
+
+        let reconnect = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&reconnected_with_players(&[uuid(0), peer]))
+                .unwrap(),
+        );
+        mesh.handle_event(&reconnect);
+        assert!(mesh.session().topology().is_none());
+        assert!(mesh.session().peers().is_empty());
+        assert!(driver.calls().contains(&DriverCall::Disconnect(peer)));
+
+        driver.emit(DriverEvent::Signal {
+            peer,
+            generation: Some(old_generation),
+            signal: PeerSignal::Offer("stale-after-reconnect".into()),
+        });
+        let result = tokio::time::timeout(std::time::Duration::from_millis(60), mesh.recv()).await;
+        assert!(result.is_err(), "stale driver output surfaced: {result:?}");
+        assert!(sent.lock().unwrap().iter().all(|frame| {
+            !matches!(
+                serde_json::from_str::<crate::protocol::ClientMessage>(frame),
+                Ok(crate::protocol::ClientMessage::Signal { .. })
+            )
+        }));
+
+        let replacement = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&session_plan_with_generation(
+                peer,
+                false,
+                new_generation,
+            ))
+            .unwrap(),
+        );
+        mesh.handle_event(&replacement);
+        assert!(driver
+            .calls()
+            .contains(&DriverCall::ConnectGeneration(peer, Some(new_generation))));
+        assert_eq!(mesh.session().generation(), Some(new_generation));
         mesh.shutdown().await;
     }
 

@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignalFishPollingClient`, and `SignalFishClientApi`, so custom drivers can
   atomically refuse stale output when a replacement session plan races their
   event loop.
+- Added `ClientSnapshot::{requested_game_data_format,
+  effective_game_data_format}` and matching async, polling, and
+  `SignalFishClientApi` accessors. Configuration omission now remains visible
+  separately from the format selected by the server.
 
 ### Changed
 
@@ -43,8 +47,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plan, and never routes `Direct` or `Relay` plans through a WebRTC driver.
   Protocol-v3 signal sends before the first `SessionPlan` now fail locally.
   Generation-less server 0.4 plans and signals remain supported adaptively.
+- **Breaking:** the exhaustive `ClientSnapshot` struct has two new game-data
+  negotiation fields. `SignalFishClientApi` provides corresponding default
+  requested/effective format accessors through `snapshot()`.
+- Reconnect is now a hard WebRTC plan boundary: `MeshSession` and
+  `MeshController` clear the previous plan and driver peers at `Reconnected`,
+  then wait for Server 0.7's fresh live `SessionPlan` before authorizing new
+  signaling.
 
 ### Fixed
+
+- Fixed game-data encoding being treated as one mutable requested/effective
+  value. The shared core now resolves the first canonical Server 0.7
+  `ProtocolInfo.game_data_formats` atomically, preserves the configured request,
+  ignores the earlier unsupported-format advisory for state selection, validates
+  binary envelopes and outbound admission against the effective format, and
+  refuses fallback binary sends before transport admission. JSON-origin text
+  relays remain valid for MessagePack recipients, matching the server
+  materializer. Async, polling, and pinned Server 0.7 tests cover supported
+  MessagePack and unsupported Rkyv fallback.
+- Fixed malformed `Reconnected` baselines being applied under `Observe` and v3
+  payloads accepting missing replay/token metadata. Reconnect validation is now
+  version-strict and transactional: v3 requires replay status, a nonempty token
+  rotated from the submitted credential, exact player stamps, and complete
+  matching watermarks; v2 rejects those v3-only fields. Non-replayable nested
+  protocol/session messages remain rejected, and stale driver output is fenced
+  until the fresh post-reconnect plan.
 
 - Fixed decoded server messages being accepted outside their negotiated
   lifecycle/version phase, malformed authoritative session plans replacing

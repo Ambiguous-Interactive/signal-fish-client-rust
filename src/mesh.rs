@@ -148,31 +148,23 @@ impl MeshSession {
             // ICE pre-gather: seed the ICE servers during the lobby wait. Do not
             // create peers here — a relay-floor room may never produce a plan.
             SignalFishEvent::RoomJoined { ice_servers, .. } => self.apply_pre_gather(ice_servers),
-            // Reconnect: seed pre-gather ICE, then defensively replay any mesh
-            // events the server batched into `missed_events`. Today's server
-            // rebuilds the session by re-sending a *live* `SessionPlan` after the
-            // `Reconnected` (so `missed_events` is empty), but folding here keeps
-            // the view correct against servers that carry mesh state in
-            // `missed_events`. The fold is idempotent and a later live plan
-            // replaces the peer set wholesale.
-            SignalFishEvent::Reconnected {
-                ice_servers,
-                missed_events,
-                ..
-            } => {
-                let mut changed = self.apply_pre_gather(ice_servers);
-                for missed in missed_events {
-                    match missed {
-                        // Terminal / meta events never belong in a reconnect
-                        // replay — by definition we are back in the room.
-                        SignalFishEvent::RoomLeft
-                        | SignalFishEvent::Disconnected { .. }
-                        | SignalFishEvent::Reconnected { .. }
-                        | SignalFishEvent::RoomJoined { .. } => {}
-                        other => changed |= self.apply(other),
-                    }
-                }
-                changed
+            // Reconnect is a hard plan boundary. Server 0.7 publishes a fresh
+            // live SessionPlan after this baseline; SessionPlan and other mesh
+            // controls are not valid replay entries. Clear the prior plan and
+            // peer set immediately so stale topology cannot remain actionable
+            // during the gap, then seed the refreshed pre-gather ICE servers.
+            SignalFishEvent::Reconnected { ice_servers, .. } => {
+                let had_authoritative_state = self.generation.is_some()
+                    || self.topology.is_some()
+                    || self.transport.is_some()
+                    || self.fallback.is_some()
+                    || self.host.is_some()
+                    || self.direct_endpoint.is_some()
+                    || !self.peers.is_empty();
+                let ice_changed = self.ice_servers != *ice_servers;
+                *self = Self::default();
+                let _ = self.apply_pre_gather(ice_servers);
+                had_authoritative_state || ice_changed
             }
             // The session is over.
             SignalFishEvent::RoomLeft | SignalFishEvent::Disconnected { .. } => {
@@ -735,56 +727,33 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_replays_missed_mesh_events_to_rebuild_view() {
-        // A server that batches mesh state into `Reconnected.missed_events`
-        // (instead of re-sending a live SessionPlan) must still rebuild the view.
+    fn reconnect_fences_the_old_plan_until_a_fresh_live_plan_arrives() {
         let mut s = MeshSession::new();
-        let changed = s.apply(&reconnected(
-            vec![ice("stun:pre")],
-            vec![
-                plan(
-                    Topology::Mesh,
-                    None,
-                    vec![peer(1, true)],
-                    vec![ice("stun:plan")],
-                ),
-                SignalFishEvent::NewPeer {
-                    peer_id: uuid(2),
-                    you_initiate: false,
-                },
-            ],
-        ));
-        assert!(changed, "replaying missed mesh events changes the view");
+        assert!(s.apply(&plan(
+            Topology::Mesh,
+            None,
+            vec![peer(1, true)],
+            vec![ice("stun:old")],
+        )));
         assert_eq!(s.topology(), Some(Topology::Mesh));
-        assert!(s.peer(uuid(1)).is_some(), "plan peer restored");
-        assert!(s.peer(uuid(2)).is_some(), "missed NewPeer restored");
-        // The plan's ICE supersedes the pre-gather set.
-        assert_eq!(s.ice_servers(), &[ice("stun:plan")]);
-    }
 
-    #[test]
-    fn reconnect_ignores_terminal_events_in_missed_events() {
-        // Build an active mesh, then a reconnect whose missed_events contains a
-        // stray terminal event must NOT reset the freshly rebuilt session.
-        let mut s = MeshSession::new();
         let changed = s.apply(&reconnected(
-            vec![],
-            vec![
-                plan(Topology::Mesh, None, vec![peer(1, true)], vec![]),
-                SignalFishEvent::RoomLeft,
-                SignalFishEvent::Disconnected {
-                    reason: None,
-                    last_server_error: None,
-                },
-            ],
+            vec![ice("stun:refreshed")],
+            // Mesh controls are not canonical replay entries. Even if a caller
+            // constructs such an event directly, they cannot revive the old
+            // plan across the reconnect boundary.
+            vec![plan(
+                Topology::Mesh,
+                None,
+                vec![peer(2, false)],
+                vec![ice("stun:replayed")],
+            )],
         ));
         assert!(changed);
-        assert_eq!(
-            s.topology(),
-            Some(Topology::Mesh),
-            "terminal events were ignored"
-        );
-        assert!(s.peer(uuid(1)).is_some());
+        assert!(s.topology().is_none());
+        assert!(s.generation().is_none());
+        assert!(s.peers().is_empty());
+        assert_eq!(s.ice_servers(), &[ice("stun:refreshed")]);
     }
 
     #[test]

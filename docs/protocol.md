@@ -82,7 +82,13 @@ pub enum GameDataEncoding {
 |---------|-----------|-------------|
 | `Json` | `"json"` | JSON payloads delivered over text frames (default). |
 | `MessagePack` | `"message_pack"` | MessagePack binary payloads delivered over binary frames. |
-| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** the current server never negotiates rkyv — requesting it silently downgrades to JSON. |
+| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** Server 0.7 never advertises it; requesting it produces an `UnsupportedGameDataFormat` advisory and resolves to JSON. |
+
+Server 0.7 advertises exactly `[Json]` or `[Json, MessagePack]`. The first valid
+`ProtocolInfo` atomically resolves the client's effective format: a requested
+advertised format wins, while omission or an unsupported request resolves to
+JSON. The earlier unsupported-format error is advisory and does not mutate the
+negotiated state.
 
 ---
 
@@ -377,7 +383,7 @@ pub struct ProtocolInfoPayload {
 | `recommended_version` | `Option<String>` | Recommended SDK version. |
 | `capabilities` | `Vec<String>` | List of server-supported capability flags. |
 | `notes` | `Option<String>` | Freeform notes from the server (e.g. deprecation warnings). |
-| `game_data_formats` | `Vec<GameDataEncoding>` | Game-data encodings the server supports. |
+| `game_data_formats` | `Vec<GameDataEncoding>` | Ordered server-supported encodings. Server 0.7 emits exactly `[Json]` or `[Json, MessagePack]`; malformed, empty, duplicate, or reordered lists are rejected transactionally. |
 | `player_name_rules` | `Option<PlayerNameRulesPayload>` | Validation rules for player names (if enforced). |
 | `protocol_version` | `Option<u16>` | **Protocol v3+.** The negotiated protocol version. `None` for a v2 negotiation, keeping v2 bytes identical. |
 | `min_protocol_version` | `Option<u16>` | **Protocol v3+.** Lowest version this deployment accepts. |
@@ -462,8 +468,10 @@ pub struct SessionPeer {
 The per-recipient authoritative plan the server sends when a room finalizes
 (delivered as a [`SessionPlan`](events.md#mesh-events-protocol-v3) event).
 Relay plans can explicitly reset a prior peer-to-peer plan. A plan is also sent
-again on late join, host re-election, or reconnect replay; each one **fully
-replaces** the previous plan.
+again on late join, host re-election, or as a fresh live message after a
+successful reconnect; each one **fully replaces** the previous plan. A
+`Reconnected` baseline fences the prior plan immediately, and `SessionPlan` is
+not a legal `missed_events` replay entry.
 
 ```rust,ignore
 pub struct SessionPlanPayload {
@@ -611,7 +619,7 @@ pub enum ServerMessage { /* ... */ }
 | `LobbyStateChanged` | Lobby state changed (player readiness, room full, etc.). |
 | `GameStarting` | Game is starting — includes peer connection info for all players. |
 | `Pong` | Connection-scoped response to a `Ping`, including before authentication/negotiation completes. |
-| `Reconnected` | Reconnection successful. Contains full room state and missed events. |
+| `Reconnected` | Reconnection successful. Contains full room state and the canonical replayable control-event subset. Under v3, replay status, a rotated nonempty token, exact snapshot stamps, and complete matching sender watermarks are required. |
 | `ReconnectionFailed` | Reconnection failed. |
 | `PlayerReconnected` | Another player reconnected. |
 | `SpectatorJoined` | Successfully joined as a spectator. |
@@ -647,6 +655,7 @@ safely ignores any of these it doesn't recognize.
 | `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies` | Advertise the highest version, data-path transports, and topologies the client can fulfill. Set by `SignalFishConfig::enable_mesh()`. |
 | `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version` | The negotiated version (plus the deployment's accepted range). |
 | `RoomJoinedPayload` / `ReconnectedPayload` | `ice_servers: Vec<IceServer>` | ICE pre-gather: STUN/TURN servers delivered during the lobby wait so WebRTC candidate gathering can start early. Empty (and absent from the wire) for v2. |
+| `ReconnectedPayload` | `replay`, `sender_watermarks`, `reconnection_token` | Required v3 authoritative replay/accountability baseline and rotated reconnect credential. All are absent/empty under v2. |
 
 ---
 

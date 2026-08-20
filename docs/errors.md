@@ -35,7 +35,7 @@ variants**:
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
 | `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, or the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster. The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
 | `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
-| `BinaryFormatNotNegotiated` | — | A binary send was attempted on a connection using the default JSON game-data format. Request `MessagePack` (or a future server-supported binary encoding) in `SignalFishConfig::game_data_format`. |
+| `BinaryFormatNotNegotiated` | — | A binary send was attempted after negotiation resolved to JSON. Request `MessagePack` and confirm `effective_game_data_format() == Some(MessagePack)`; unsupported requests resolve to JSON and are refused before transport admission. Before `ProtocolInfo`, v3-only sends return `ProtocolUnsupported` instead. |
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 

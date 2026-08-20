@@ -409,6 +409,11 @@ lifecycle/plan/signal offenders are always suppressed; delivery-accountability
 new authoritative room/reconnect snapshot. `Pong` remains connection-scoped
 while authentication and protocol negotiation are still in flight.
 
+Requested game-data format preserves omission; effective format resolves from
+the first canonical Server 0.7 `ProtocolInfo`, with unsupported requests using
+JSON. V3 reconnects require replay, complete watermarks, and a rotated token;
+v2 exposes none. `Reconnected` fences peers until a fresh live `SessionPlan`.
+
 ### No Heavy Dependencies
 
 No `chrono` (timestamps remain `String` from the server), no `bytes` (binary

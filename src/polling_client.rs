@@ -29,10 +29,9 @@ use crate::client_core::{
 };
 use crate::error::{Result, SignalFishError};
 use crate::event::SignalFishEvent;
-#[cfg(test)]
-use crate::protocol::GameDataEncoding;
 use crate::protocol::{
-    ClientMessage, ConnectionInfo, PlayerId, RoomId, SessionGeneration, TransportKind,
+    ClientMessage, ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration,
+    TransportKind,
 };
 use crate::signal::PeerSignal;
 use crate::transport::{Transport, TransportDiagnostics, TransportFrame};
@@ -232,7 +231,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
         mut options: PollingClientOptions,
     ) -> Self {
         options.work_budget = options.work_budget.clamped();
-        let requested_game_data_encoding = config.game_data_format.unwrap_or_default();
         let mesh_enabled = config
             .supported_transports
             .as_ref()
@@ -252,7 +250,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             cmd_queue,
             command_capacity: config.command_channel_capacity.max(1),
             core: ClientCore::new(
-                requested_game_data_encoding,
+                config.game_data_format,
                 config.protocol_violation_policy,
                 mesh_enabled,
             ),
@@ -707,6 +705,17 @@ impl<T: Transport> SignalFishPollingClient<T> {
         self.core.negotiated_protocol_version()
     }
 
+    /// Exact game-data preference supplied in [`SignalFishConfig`].
+    pub fn requested_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.core.requested_game_data_format()
+    }
+
+    /// Server-selected game-data format, or `None` while negotiation is
+    /// incomplete or after disconnect.
+    pub fn effective_game_data_format(&self) -> Option<GameDataEncoding> {
+        self.core.effective_game_data_format()
+    }
+
     /// Returns `true` once the connection has negotiated protocol v3 and this
     /// client advertised WebRTC support through [`SignalFishConfig::enable_mesh`].
     /// This is the "am I in mesh mode?" check.
@@ -850,8 +859,19 @@ impl<T: Transport> SignalFishPollingClient<T> {
     // ── Private helpers ─────────────────────────────────────────────
 
     fn queue_operation(&mut self, operation: ClientOperation) -> Result<()> {
+        let reconnect_request = match &operation {
+            ClientOperation::Reconnect(player_id, room_id, token) => {
+                Some((*player_id, *room_id, token.clone()))
+            }
+            _ => None,
+        };
         let command = self.core.prepare(operation)?;
-        self.queue_command_at(command, Instant::now())
+        self.queue_command_at(command, Instant::now())?;
+        if let Some((player_id, room_id, token)) = reconnect_request {
+            self.core
+                .record_reconnect_admitted(player_id, room_id, token);
+        }
+        Ok(())
     }
 
     fn queue_command_at(&mut self, command: PollingCommand, now: Instant) -> Result<()> {
@@ -1374,6 +1394,27 @@ mod tests {
             &mut self,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+                let Some(Ok(TransportFrame::Text(json))) = item else {
+                    return false;
+                };
+                matches!(
+                    serde_json::from_str::<serde_json::Value>(json)
+                        .ok()
+                        .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+                        .as_deref(),
+                    Some("Reconnected" | "ReconnectionFailed")
+                )
+            });
+            let reconnect_was_sent = self.sent.iter().any(|json| {
+                matches!(
+                    serde_json::from_str::<ClientMessage>(json),
+                    Ok(ClientMessage::Reconnect { .. })
+                )
+            });
+            if reconnect_response_is_gated && !reconnect_was_sent {
+                return std::task::Poll::Pending;
+            }
             if let Some(item) = self.incoming.pop_front() {
                 std::task::Poll::Ready(item)
             } else {
@@ -2073,11 +2114,10 @@ mod tests {
 
     // ── Protocol v2/v3: start_game, signaling, negotiation guard ────
 
-    const PROTOCOL_INFO_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3}}"#;
+    const PROTOCOL_INFO_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
     // A v2 negotiation omits the version fields entirely (so the bytes stay
     // identical to a v2 server), which deserializes to `protocol_version: None`.
-    const PROTOCOL_INFO_V2: &str =
-        r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[]}}"#;
+    const PROTOCOL_INFO_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"]}}"#;
     const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 
     /// Parse every queued outgoing frame into a `ClientMessage`.
@@ -2313,9 +2353,16 @@ mod tests {
             current_spectators: vec![],
             ice_servers: vec![],
             missed_events: vec![],
-            replay: None,
-            sender_watermarks: vec![],
-            reconnection_token: None,
+            replay: Some(crate::protocol::ReplayStatus::Complete),
+            sender_watermarks: [local, peer]
+                .into_iter()
+                .map(|player_id| crate::protocol::SenderWatermark {
+                    player_id,
+                    epoch: 1,
+                    seq: 0,
+                })
+                .collect(),
+            reconnection_token: Some("rotated-token".into()),
         };
         let reconnected =
             serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap();
@@ -2325,6 +2372,10 @@ mod tests {
             Some(Ok(reconnected)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
+        client.poll();
+        client
+            .reconnect(local, uuid::Uuid::from_u128(100), "submitted-token".into())
+            .expect("reconnect must queue");
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
@@ -2337,7 +2388,7 @@ mod tests {
     #[test]
     fn v4_negotiation_still_enables_mesh() {
         // `>= 3` (not `== 3`): a future v4 negotiation must still enable mesh.
-        let pi_v4 = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":[],"protocol_version":4,"min_protocol_version":2,"max_protocol_version":4}}"#;
+        let pi_v4 = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":4,"min_protocol_version":2,"max_protocol_version":4,"transports":["websocket"]}}"#;
         let peer: PlayerId = PEER_UUID.parse().unwrap();
         let mut incoming = finalized_v3_room_incoming(
             peer,
@@ -2384,12 +2435,12 @@ mod tests {
             recommended_version: None,
             capabilities: vec![],
             notes: None,
-            game_data_formats: vec![],
+            game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
             player_name_rules: None,
             protocol_version: Some(3),
             min_protocol_version: Some(2),
             max_protocol_version: Some(3),
-            transports: None,
+            transports: Some(vec![crate::protocol::MessageTransport::Websocket]),
         }
     }
 
@@ -2853,6 +2904,18 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
+        client.poll();
+        client
+            .reconnect(
+                "00000000-0000-0000-0000-000000000003"
+                    .parse()
+                    .expect("test player_id UUID must parse"),
+                "00000000-0000-0000-0000-000000000001"
+                    .parse()
+                    .expect("test room_id UUID must parse"),
+                "submitted-token".into(),
+            )
+            .expect("reconnect must queue");
         let events = client.poll();
 
         // Verify the Reconnected event is emitted.
@@ -3921,6 +3984,14 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll();
+        client
+            .reconnect(
+                uuid::Uuid::from_u128(20),
+                uuid::Uuid::from_u128(10),
+                "submitted-token".into(),
+            )
+            .expect("reconnect must queue");
         let events = client.poll();
 
         assert!(events
