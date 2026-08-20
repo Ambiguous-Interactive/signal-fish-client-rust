@@ -2558,7 +2558,7 @@ async fn unknown_server_message_type_surfaces_decode_failed_then_next_arrives() 
 
 #[tokio::test]
 async fn send_signal_before_authentication_is_not_in_room() {
-    // Command queueing remains available before authentication, but a
+    // Command queuing remains available before authentication, but a
     // player-only operation still requires confirmed membership.
     let (mut client, _events, sent, _closed) = start_client(vec![]);
 
