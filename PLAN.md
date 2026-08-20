@@ -134,7 +134,7 @@ first authoritative `ProtocolInfo` and reconnect state transaction.
 - Session 028 records the rule-to-source-to-test matrix, pinned-server evidence,
   hosted review fixes, and green aggregate checks.
 
-## Current Correctness Milestone — Mesh Capability and Liveness
+## Completed Correctness Milestone — Mesh Capability and Liveness
 
 [Issue #102](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/102)
 separates negotiated local capability from the authoritative selected plan,
@@ -142,10 +142,17 @@ normalizes controller-owned WebRTC configuration, and makes peer liveness
 transport-specific. Session 029 records the configuration, state, transition,
 and async/polling/controller parity evidence.
 
-## Next Correctness Milestone — WebSocket Liveness
+## Current Correctness Milestone — WebSocket Liveness
 
-Continue with #105, then #103, #104, #106, and #107 before usability,
-performance, token binding, or presentation milestones.
+[Issue #105](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/105)
+bounds native WebSocket control-frame work, preserves automatic Pong/Close
+flush ordering, and makes EOF and socket errors terminal for direct Transport
+callers. Session 030 records socket, ownership, wake, and terminal-state evidence.
+
+## Next Correctness Milestones — Client State and Transport Deadlines
+
+Continue with #103, #104, #106, and #107 before usability, performance, token
+binding, or presentation milestones.
 
 ## Following Milestone — Negotiated Token Binding
 

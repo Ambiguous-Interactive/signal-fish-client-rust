@@ -162,11 +162,15 @@ ignored frames.
 Tungstenite automatically queues a Pong while reading Ping. The transport
 explicitly drives `poll_flush` before reading further frames, ensuring that the
 automatic RFC 6455 response reaches the peer even when the application has no
-outbound message to send.
+outbound message to send. Each receive poll skips at most 64 control frames; if
+that budget is exhausted, it schedules another poll so buffered application
+traffic cannot be hidden behind unbounded control-frame work.
 
 Peer Close code and reason are copied into `TransportCloseInfo`; a bare Close
 still records that the peer initiated termination. WebSocket close polling is
-idempotent.
+idempotent. EOF and terminal socket errors release the stream and fuse the
+transport: the first receive error remains observable, later receives return
+`None`, sends fail with `TransportClosed`, and repeated close calls succeed.
 
 ## Implementing a channel transport
 

@@ -88,7 +88,7 @@ non-forgeable authorization emitted when native close was attempted or observed 
 possible and intentionally leaks the small state allocation after a terminal
 failure rather than allowing a late callback to access freed memory; logical
 receive errors do not skip the native close attempt. The host-tested ownership
-state machine and source checker with its 43-case self-test enforce that guard.
+state machine and source checker with its 50-case self-test enforce that guard.
 
 The change-scoped PR, scheduled, and manual Deep Safety workflow provides
 fail-closed evidence from Miri protocol tests, all three protocol fuzz targets,
@@ -373,12 +373,12 @@ Emscripten SDK version are independent compatibility axes.
 
 ### Low-Latency Socket Defaults
 
-Transports that own their TCP socket disable Nagle's algorithm (`TCP_NODELAY`)
-by default so small game messages avoid TCP's delayed-ACK stall (tens of ms per
-round trip). `WebSocketTransport::connect` does this; callers override with
-`WebSocketConnectOptions::with_disable_nagle(false)`. Backends that delegate the
-socket to a browser/engine (Emscripten, Godot) leave the tuning to the platform.
-See the `transport-abstraction` and `websocket-client` skills.
+Socket-owning transports disable Nagle's algorithm (`TCP_NODELAY`) by default;
+`WebSocketTransport` callers override with
+`WebSocketConnectOptions::with_disable_nagle(false)`. Its receive poll bounds
+skipped control frames, flushes automatic Pong/Close responses before further
+reads, and fuses EOF or terminal socket errors. Browser/engine backends leave
+tuning to the platform. See the `transport-abstraction` and `websocket-client` skills.
 
 ### Wire Compatibility
 
