@@ -67,4 +67,9 @@ configured inner deadline calls abort before the async guard is dropped, so the
 outer task watchdog cannot mask a regression. The mandatory workspace workflow,
 quick all-configuration check, documentation/policy validators, strict MkDocs
 build, and three independent adversarial review tracks pass locally. Hosted
-checks and review feedback are recorded after the pull request is opened.
+PR #116's first run reached ten green aggregates, then exposed one
+configuration-specific documentation defect: the new WebSocket example was
+compiled without its feature in the no-default-feature doctest lane. The
+example now has an item-level `transport-websocket` gate, and both exact
+no-default workspace tests and all-feature doctests pass locally. Final hosted
+checks and review feedback are recorded after the corrected head completes.

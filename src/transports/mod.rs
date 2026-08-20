@@ -12,6 +12,7 @@
 //! # Example
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "transport-websocket")]
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
 //! use signal_fish_client::{SignalFishClient, SignalFishConfig, WebSocketTransport};
 //!
