@@ -16,7 +16,7 @@
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
 //! use signal_fish_client::{SignalFishClient, SignalFishConfig, WebSocketTransport};
 //!
-//! let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//! let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
 //! let config = SignalFishConfig::new("mb_app_example");
 //! let (mut client, mut events) = SignalFishClient::start(transport, config);
 //!

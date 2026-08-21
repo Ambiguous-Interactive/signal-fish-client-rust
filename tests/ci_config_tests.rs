@@ -5582,6 +5582,334 @@ mod markdown_policy_validation {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module: docs_onboarding_shape
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod docs_onboarding_shape {
+    use super::*;
+
+    fn collect_files_with_extension(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("Failed to read '{}': {error}", dir.display()))
+        {
+            let path = entry.expect("directory entry must be readable").path();
+            if path.is_dir() {
+                collect_files_with_extension(&path, extension, out);
+            } else if path.extension().and_then(|value| value.to_str()) == Some(extension) {
+                out.push(path);
+            }
+        }
+    }
+
+    fn server_pathname<'a>(spec: &'a str, server_name: &str) -> Option<&'a str> {
+        let mut in_servers = false;
+        let mut current_server = None;
+        for line in spec.lines() {
+            if line == "servers:" {
+                in_servers = true;
+                continue;
+            }
+            if !in_servers {
+                continue;
+            }
+            if !line.is_empty() && !line.starts_with(' ') {
+                break;
+            }
+            if let Some(name) = line
+                .strip_prefix("  ")
+                .filter(|value| !value.starts_with(' '))
+                .and_then(|value| value.strip_suffix(':'))
+            {
+                current_server = Some(name);
+                continue;
+            }
+            if current_server == Some(server_name) {
+                if let Some(pathname) = line.strip_prefix("    pathname: ") {
+                    return Some(pathname.trim_matches(['\'', '"']));
+                }
+            }
+        }
+        None
+    }
+
+    fn websocket_urls(line: &str) -> Vec<&str> {
+        let mut urls = Vec::new();
+        let lowercase = line.to_ascii_lowercase();
+        let mut offset = 0;
+        while offset < line.len() {
+            let remaining = &lowercase[offset..];
+            let Some((relative_start, scheme)) = ["ws://", "wss://"]
+                .iter()
+                .filter_map(|scheme| remaining.find(scheme).map(|start| (start, *scheme)))
+                .min_by_key(|(start, _)| *start)
+            else {
+                break;
+            };
+            let start = offset + relative_start;
+            let at_scheme_boundary = start == 0
+                || !line.as_bytes()[start - 1].is_ascii_alphanumeric()
+                    && !matches!(line.as_bytes()[start - 1], b'+' | b'-' | b'.');
+            let after_scheme = start + scheme.len();
+            let candidate = &line[start..];
+            let end = candidate
+                .find(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '"' | '\'' | '`' | ')' | ']' | '<' | '>')
+                })
+                .unwrap_or(candidate.len());
+            if at_scheme_boundary && end > scheme.len() {
+                urls.push(candidate[..end].trim_end_matches(['.', ',', ';', ':']));
+            }
+            offset = after_scheme;
+        }
+        urls
+    }
+
+    fn websocket_path(url: &str) -> Option<&str> {
+        let scheme_end = url.find("://")? + 3;
+        let after_scheme = &url[scheme_end..];
+        let path_start = after_scheme.find(['/', '?', '#'])?;
+        if after_scheme.as_bytes().get(path_start) != Some(&b'/') {
+            return None;
+        }
+        let path_and_suffix = &after_scheme[path_start..];
+        Some(
+            path_and_suffix
+                .split(['?', '#'])
+                .next()
+                .expect("split always returns the path"),
+        )
+    }
+
+    fn line_is_rustdoc(line: &str, in_block_doc: &mut bool) -> bool {
+        let trimmed = line.trim_start();
+        let starts_block = trimmed.starts_with("/**") || trimmed.starts_with("/*!");
+        let is_doc = *in_block_doc
+            || starts_block
+            || trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || trimmed.starts_with("#[doc")
+            || trimmed.starts_with("#![doc");
+        if starts_block && !trimmed.contains("*/") {
+            *in_block_doc = true;
+        }
+        if *in_block_doc && trimmed.contains("*/") {
+            *in_block_doc = false;
+        }
+        is_doc
+    }
+
+    #[test]
+    fn readme_remains_a_concise_on_ramp() {
+        let readme = read_project_file("README.md");
+        let word_count = readme.split_whitespace().count();
+        assert!(
+            word_count <= 1_000,
+            "README.md has {word_count} words; keep the repository landing page at or below \
+             1,000 words and move detailed guidance into docs/"
+        );
+        assert!(
+            readme.lines().count() <= 220 && readme.len() <= 16_000,
+            "README.md must remain a readable on-ramp (at most 220 lines and 16 KiB)"
+        );
+
+        for duplicate_section in [
+            "feature flags",
+            "custom transport",
+            "custom transports",
+            "webassembly",
+            "webassembly support",
+            "development",
+            "run ci locally",
+            "godot quick start",
+        ] {
+            assert!(
+                !readme.lines().any(|line| {
+                    let trimmed = line.trim();
+                    trimmed.starts_with('#')
+                        && trimmed.trim_start_matches('#').trim().to_ascii_lowercase()
+                            == duplicate_section
+                }),
+                "README.md must not recreate the dedicated `{duplicate_section}` manual; \
+                 link to the canonical docs page instead"
+            );
+        }
+
+        for canonical_page in [
+            "docs/getting-started.md",
+            "docs/examples.md",
+            "docs/client.md",
+            "docs/wasm.md",
+            "docs/protocol-versioning.md",
+            "docs/transport.md",
+        ] {
+            assert!(
+                readme.contains(&format!("]({canonical_page})")),
+                "README.md must route users to the canonical `{canonical_page}` page"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_home_routes_to_tasks_instead_of_duplicating_setup() {
+        let home = read_project_file("docs/index.md");
+        assert!(
+            !home.contains("use signal_fish_client") && !home.contains("SignalFishClient::start"),
+            "docs/index.md must link to the installation guide instead of duplicating its client program"
+        );
+        for task_page in ["getting-started.md", "examples.md", "client.md", "wasm.md"] {
+            assert!(
+                home.contains(&format!("]({task_page})")),
+                "docs/index.md must route users to `{task_page}`"
+            );
+        }
+    }
+
+    #[test]
+    fn basic_lobby_walkthrough_stays_beginner_focused() {
+        let walkthrough = read_project_file("docs/examples.md");
+        assert!(
+            walkthrough.lines().count() <= 150 && walkthrough.len() <= 8_000,
+            "docs/examples.md must remain a focused basic-lobby walkthrough; move advanced \
+             integration detail into its canonical guide"
+        );
+
+        for advanced_section in [
+            "custom transport",
+            "mesh session (protocol v3)",
+            "godot web export (polling client)",
+            "load lab (measurement harness)",
+        ] {
+            assert!(
+                !walkthrough.lines().any(|line| {
+                    let trimmed = line.trim();
+                    trimmed.starts_with('#')
+                        && trimmed.trim_start_matches('#').trim().to_ascii_lowercase()
+                            == advanced_section
+                }),
+                "docs/examples.md must link to the `{advanced_section}` guide or source \
+                 instead of duplicating its advanced walkthrough"
+            );
+        }
+
+        for canonical_guide in ["transport.md", "mesh-guide.md", "delivery.md", "wasm.md"] {
+            assert!(
+                walkthrough.contains(&format!("]({canonical_guide})")),
+                "docs/examples.md must route advanced readers to `{canonical_guide}`"
+            );
+        }
+    }
+
+    #[test]
+    fn user_facing_websocket_urls_use_a_server_070_versioned_route() {
+        let server_spec = read_project_file("tests/server-spec/signal-fish-protocol.asyncapi.yaml");
+        assert_eq!(server_pathname(&server_spec, "v2"), Some("/v2/ws"));
+        assert_eq!(server_pathname(&server_spec, "v3"), Some("/v3/ws"));
+
+        let root = project_root();
+        let mut all_content_paths = vec![root.join("README.md")];
+        collect_files_with_extension(&root.join("docs"), "md", &mut all_content_paths);
+        collect_files_with_extension(&root.join(".llm"), "md", &mut all_content_paths);
+        collect_files_with_extension(&root.join("examples"), "rs", &mut all_content_paths);
+        let mut rustdoc_paths = Vec::new();
+        collect_files_with_extension(&root.join("src"), "rs", &mut rustdoc_paths);
+        collect_files_with_extension(&root.join("crates"), "rs", &mut rustdoc_paths);
+
+        let mut invalid = Vec::new();
+        for (path, scan_all_content) in all_content_paths
+            .into_iter()
+            .map(|path| (path, true))
+            .chain(rustdoc_paths.into_iter().map(|path| (path, false)))
+        {
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("Failed to read '{}': {error}", path.display()));
+            let mut in_block_doc = false;
+            for (line_index, line) in content.lines().enumerate() {
+                if !scan_all_content && !line_is_rustdoc(line, &mut in_block_doc) {
+                    continue;
+                }
+                for url in websocket_urls(line) {
+                    if !matches!(websocket_path(url), Some("/v2/ws" | "/v3/ws")) {
+                        invalid.push(format!(
+                            "{}:{}: {url}",
+                            path.strip_prefix(&root).unwrap_or(&path).display(),
+                            line_index + 1
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            invalid.is_empty(),
+            "User-facing WebSocket URLs must use the pinned Server 0.7 `/v2/ws` \
+             or `/v3/ws` route:\n{}",
+            invalid.join("\n")
+        );
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn websocket_url_parser_is_boundary_path_and_suffix_aware() {
+            let cases = [
+                ("connect ws://host/v2/ws", Some("/v2/ws")),
+                ("connect WSS://host/v3/ws.", Some("/v3/ws")),
+                ("connect ws://host/v2/ws, then poll", Some("/v2/ws")),
+                ("connect ws://host/old?next=/v2/ws", Some("/old")),
+                ("connect ws://host?next=/v2/ws", None),
+                ("connect ws://host#example=/v2/ws", None),
+                ("not a WebSocket news://host/ws", None),
+                ("the bare scheme `wss://`", None),
+            ];
+            for (line, expected_path) in cases {
+                let urls = websocket_urls(line);
+                assert_eq!(
+                    urls.first().and_then(|url| websocket_path(url)),
+                    expected_path,
+                    "unexpected parsed WebSocket path for `{line}`"
+                );
+            }
+
+            let urls = websocket_urls(
+                "valid ws://host/v2/ws, invalid WSS://host/legacy; valid ws://host/v3/ws",
+            );
+            let paths: Vec<_> = urls.iter().map(|url| websocket_path(url)).collect();
+            assert_eq!(
+                paths,
+                [Some("/v2/ws"), Some("/legacy"), Some("/v3/ws")],
+                "every same-line WebSocket URL must be parsed independently"
+            );
+        }
+
+        #[test]
+        fn server_pathname_parser_reads_only_the_named_servers_mapping() {
+            let spec = "# pathname: /wrong\nservers:\n  v2:\n    description: pathname: /also-wrong\n    pathname: /v2/ws\n  v3:\n    pathname: '/v3/ws'\nchannels:\n  pathname: /wrong\n";
+            assert_eq!(server_pathname(spec, "v2"), Some("/v2/ws"));
+            assert_eq!(server_pathname(spec, "v3"), Some("/v3/ws"));
+            assert_eq!(server_pathname(spec, "v4"), None);
+        }
+
+        #[test]
+        fn rustdoc_detection_covers_line_block_and_attribute_forms() {
+            let mut in_block = false;
+            assert!(line_is_rustdoc("/// line docs", &mut in_block));
+            assert!(line_is_rustdoc("/** block docs", &mut in_block));
+            assert!(line_is_rustdoc(" * continued", &mut in_block));
+            assert!(line_is_rustdoc(" */", &mut in_block));
+            assert!(!in_block);
+            assert!(line_is_rustdoc(
+                "#[doc = \"attribute docs\"]",
+                &mut in_block
+            ));
+            assert!(!line_is_rustdoc("let value = 1;", &mut in_block));
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module: docs_nav_card_consistency
 // ─────────────────────────────────────────────────────────────────────────────
 

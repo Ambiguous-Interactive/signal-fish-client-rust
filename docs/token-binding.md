@@ -1,7 +1,7 @@
 # WebSocket Token Binding
 
 Signal Fish Server 0.7 can require the negotiated
-`signalfish.tokenbinding.v2` WebSocket extension. The built-in native
+`signalfish.tokenbinding.v2` WebSocket subprotocol. The built-in native
 `WebSocketTransport` supports it behind the opt-in `token-binding` Cargo
 feature.
 
@@ -48,7 +48,7 @@ not acceptable.
 
 ## Threat model and lifetime
 
-Token binding authenticates the order and contents of client-to-server
+The token-binding subprotocol authenticates the order and contents of client-to-server
 application frames to the one physical WebSocket handshake. It does not protect
 server-to-client frames and is not a substitute for TLS server authentication
 or confidentiality. On plain `ws://`, an on-path observer can read both
@@ -110,6 +110,6 @@ Fish protocol core:
   wrapping, shared sequence state, and key zeroization itself.
 - Browser WebSocket APIs do not expose `Sec-WebSocket-Key`. Consequently the
   browser, Emscripten, and Godot `WebSocketPeer` transports cannot support
-  required token binding. Use a server profile where the extension is not
+  required token binding. Use a server profile where token binding is not
   required, or terminate the connection through a capable trusted native
   component.

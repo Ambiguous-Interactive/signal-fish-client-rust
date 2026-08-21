@@ -235,10 +235,10 @@ Nagle's algorithm (`TCP_NODELAY`) by default; see `WebSocketConnectOptions` to
 override.
 
 ```rust,ignore
-let transport = WebSocketTransport::connect("ws://example.com/signal").await?;
+let transport = WebSocketTransport::connect("ws://example.com/v2/ws").await?;
 
 let transport = WebSocketTransport::connect_with_timeout(
-    "ws://example.com/signal",
+    "ws://example.com/v2/ws",
     std::time::Duration::from_secs(5),
 )
 .await?;

@@ -15,7 +15,7 @@
 //! cargo run --example basic_lobby
 //!
 //! # Override the server URL:
-//! SIGNAL_FISH_URL=ws://my-server:3536/ws cargo run --example basic_lobby
+//! SIGNAL_FISH_URL=ws://my-server:3536/v2/ws cargo run --example basic_lobby
 //! ```
 
 use signal_fish_client::protocol::LobbyState;
@@ -24,7 +24,7 @@ use signal_fish_client::{
 };
 
 /// Default server URL when `SIGNAL_FISH_URL` is not set.
-const DEFAULT_URL: &str = "ws://localhost:3536/ws";
+const DEFAULT_URL: &str = "ws://localhost:3536/v2/ws";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

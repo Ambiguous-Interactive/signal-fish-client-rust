@@ -20,7 +20,7 @@
 //! # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
 //! use signal_fish_client::WebSocketTransport;
 //!
-//! let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//! let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
 //! let _transport = transport; // pass it to SignalFishClient::start
 //! # Ok(())
 //! # }
@@ -215,7 +215,7 @@ async fn receive_token_binding_challenge(
 /// // Restore the OS default (Nagle enabled) for a throughput-oriented link.
 /// let options = WebSocketConnectOptions::new().with_disable_nagle(false);
 /// let transport =
-///     WebSocketTransport::connect_with_options("ws://localhost:3536/ws", options).await?;
+///     WebSocketTransport::connect_with_options("ws://localhost:3536/v2/ws", options).await?;
 /// # let _ = transport;
 /// # Ok(())
 /// # }
@@ -300,7 +300,7 @@ impl WebSocketConnectOptions {
 /// # async fn example() -> Result<(), signal_fish_client::SignalFishError> {
 /// use signal_fish_client::WebSocketTransport;
 ///
-/// let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+/// let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
 /// # Ok(())
 /// # }
 /// ```

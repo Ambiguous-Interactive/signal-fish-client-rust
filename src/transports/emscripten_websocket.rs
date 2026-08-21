@@ -61,7 +61,7 @@
 //!     EmscriptenWebSocketTransport, SignalFishConfig, SignalFishPollingClient,
 //! };
 //!
-//! let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
+//! let transport = EmscriptenWebSocketTransport::connect("wss://server/v2/ws")?;
 //! let config = SignalFishConfig::new("mb_app_abc123");
 //! let mut client = SignalFishPollingClient::new(transport, config);
 //! let events = client.poll();
@@ -272,7 +272,7 @@ impl RegisteredCallbackState {
 /// ```rust,ignore
 /// use signal_fish_client::EmscriptenWebSocketTransport;
 ///
-/// let transport = EmscriptenWebSocketTransport::connect("wss://server/ws")?;
+/// let transport = EmscriptenWebSocketTransport::connect("wss://server/v2/ws")?;
 /// ```
 ///
 /// # Threading

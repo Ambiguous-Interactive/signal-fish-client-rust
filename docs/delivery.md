@@ -8,9 +8,10 @@ consumer falls behind. This page documents the **end-to-end** contract
 Numbers on this page were originally measured against the reliable v2 relay.
 Protocol-v3 behavior and accountability were verified against Signal Fish
 Server 0.4.0 at commit `50b28a9`. The repository's
-[`load_lab`](examples.md#load-lab-measurement-harness) example. Localhost figures are lower bounds —
-real networks add RTT — but the *shapes* (where queues form, who waits,
-who gets evicted) are configuration-driven and transfer directly.
+[`load_lab`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/load_lab.rs)
+example captures repeatable measurements. Localhost figures are lower bounds —
+real networks add RTT — but the *shapes* (where queues form, who waits, who gets
+evicted) are configuration-driven and transfer directly.
 
 ## The pipeline
 

@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reorganized the guide around first connection, SDK usage, multiplayer
+  choices, and advanced reference topics. The README is now a concise on-ramp
+  that links to the canonical setup, engine, protocol, and transport pages
+  instead of duplicating their detailed instructions.
 - **Breaking:** `WebSocketConnectOptions` gains token-binding mode and challenge
   timeout fields, and exhaustive `SignalFishError` matches must handle
   `TokenBinding(TokenBindingFailure)`. Browser, Emscripten, Godot, and
@@ -120,6 +124,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Corrected the built-in examples and API documentation to use Signal Fish
+  Server's versioned `/v2/ws` endpoint instead of the nonexistent unversioned
+  `/ws` or `/signal` paths.
 - Fixed player-only commands being queued before join, after leave, or by a
   spectator, where Server 0.7 could silently discard gameplay data. Authority
   baselines and changes are validated before they affect local guards,

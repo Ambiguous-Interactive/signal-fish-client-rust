@@ -640,7 +640,7 @@ use signal_fish_client::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("SIGNAL_FISH_URL")
-        .unwrap_or_else(|_| "ws://localhost:3536/ws".to_string());
+        .unwrap_or_else(|_| "ws://localhost:3536/v2/ws".to_string());
 
     let transport = WebSocketTransport::connect(&url).await?;
     let config = SignalFishConfig::new("your-app-id");
