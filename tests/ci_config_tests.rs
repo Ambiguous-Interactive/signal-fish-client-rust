@@ -6216,7 +6216,8 @@ mod docs_brand_policy {
             "label[role=\"button\"]:focus-visible",
             "@media (prefers-reduced-motion: reduce)",
             "@media (prefers-contrast: more)",
-            "@media screen and (max-width: 44.9844em)",
+            "@media screen and (max-width: 59.984375em)",
+            "@media screen and (max-width: 44.984375em)",
             ".md-nav--primary #__toc:checked ~ .md-nav--secondary",
         ] {
             assert!(
@@ -6239,7 +6240,21 @@ mod docs_brand_policy {
             "controlledPanel.inert = !expanded",
             "trapFocus(",
             "activeDrawerScope",
-            "intersectsHorizontally(element, container)",
+            "const isContainedHorizontally = (element, container)",
+            "isHorizontallyEligible = intersectsHorizontally",
+            "activeDrawerScope,\n                isContainedHorizontally",
+            "alignDrawerScope(scope)",
+            "scrollwrap.scrollLeft +=",
+            "const isDrawerOverlay = () => (",
+            "window.matchMedia(\"(max-width: 76.234375em)\").matches",
+            "const isSearchOverlay = () => (",
+            "window.matchMedia(\"(max-width: 59.984375em)\").matches",
+            "() => isDrawerOverlay() && drawer.checked",
+            "() => isSearchOverlay() && search.checked",
+            "const expanded = !isDrawerOverlay() || toggle.checked",
+            "!scope.contains(focused)",
+            "|| !isVisible(focused)",
+            "|| !isContainedHorizontally(focused, sidebar)",
             "aria-modal",
             "searchDialog.setAttribute(\"aria-label\", \"Search documentation\")",
             "event.key === \"Escape\"",
@@ -6251,6 +6266,68 @@ mod docs_brand_policy {
                 "documentation shell must retain accessibility wiring: {wiring}"
             );
         }
+        assert!(
+            !accessibility.contains("isCompact"),
+            "documentation shell must not collapse Material's distinct responsive boundaries"
+        );
+        assert_eq!(
+            accessibility.matches("isDrawerOverlay()").count(),
+            5,
+            "drawer Escape, trap, state, section state, and section focus must share the drawer boundary"
+        );
+        assert_eq!(
+            accessibility.matches("isSearchOverlay()").count(),
+            2,
+            "search trap and state must share the full-screen search boundary"
+        );
+        let docs_workflow = read_project_file(".github/workflows/docs-validation.yml");
+        for browser_contract in [
+            "PLAYWRIGHT_VERSION: \"1.61.1\"",
+            "playwright@${PLAYWRIGHT_VERSION}",
+            "node scripts/check-docs-accessibility.cjs",
+        ] {
+            assert!(
+                docs_workflow.contains(browser_contract),
+                "Docs Validation must retain browser accessibility coverage: {browser_contract}"
+            );
+        }
+        let rendering_job = docs_workflow
+            .split("rendering-check:")
+            .nth(1)
+            .and_then(|jobs| jobs.split("  required:").next())
+            .expect("Docs Validation must retain its rendering job");
+        assert!(
+            rendering_job.contains("persist-credentials: false"),
+            "the docs rendering checkout must not persist repository credentials"
+        );
+        let render_position = rendering_job
+            .find("bash scripts/check-docs-rendering.sh")
+            .expect("Docs Validation must build docs before browser testing");
+        let browser_install_position = rendering_job
+            .find("npx playwright install --with-deps chromium")
+            .expect("Docs Validation must install pinned Chromium");
+        assert!(
+            render_position < browser_install_position,
+            "Docs Validation must reject broken docs before installing Chromium"
+        );
+
+        let browser_check = read_project_file("scripts/check-docs-accessibility.cjs");
+        for harness_contract in [
+            "const assertBuildFreshness = async () =>",
+            "const canonicalPath = await fs.realpath(filePath)",
+            "args: [\"--disable-gpu\"]",
+            "reducedMotion: \"reduce\"",
+            "await checkClosedBoundaries(page)",
+        ] {
+            assert!(
+                browser_check.contains(harness_contract),
+                "browser accessibility harness must retain: {harness_contract}"
+            );
+        }
+        assert!(
+            !browser_check.contains("document.getAnimations().every"),
+            "browser accessibility synchronization must avoid flaky animation enumeration"
+        );
 
         let nav_override = read_project_file("overrides/partials/nav.html");
         assert!(

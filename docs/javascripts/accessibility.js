@@ -24,6 +24,13 @@
         return bounds.width > 0 && bounds.height > 0;
     };
 
+    const isContainedHorizontally = (element, container) => {
+        const elementBounds = element.getBoundingClientRect();
+        const containerBounds = container.getBoundingClientRect();
+        return elementBounds.left >= containerBounds.left - 0.5
+            && elementBounds.right <= containerBounds.right + 0.5;
+    };
+
     const intersectsHorizontally = (element, container) => {
         const elementBounds = element.getBoundingClientRect();
         const containerBounds = container.getBoundingClientRect();
@@ -31,9 +38,19 @@
             && elementBounds.left < containerBounds.right;
     };
 
-    const isCompact = () => window.matchMedia("(max-width: 44.9844em)").matches;
+    const isDrawerOverlay = () => (
+        window.matchMedia("(max-width: 76.234375em)").matches
+    );
+    const isSearchOverlay = () => (
+        window.matchMedia("(max-width: 59.984375em)").matches
+    );
 
-    const trapFocus = (container, isActive, activeScope = () => container) => {
+    const trapFocus = (
+        container,
+        isActive,
+        activeScope = () => container,
+        isHorizontallyEligible = intersectsHorizontally
+    ) => {
         if (container.dataset.sfFocusTrap === "true") {
             return;
         }
@@ -48,7 +65,7 @@
             ].filter((element) => (
                 element.tabIndex >= 0
                 && isVisible(element)
-                && intersectsHorizontally(element, container)
+                && isHorizontallyEligible(element, container)
                 && !element.closest("[inert]")
             ));
             if (focusable.length === 0) {
@@ -107,7 +124,11 @@
             if (sidebar.dataset.sfEscapeClose !== "true") {
                 sidebar.dataset.sfEscapeClose = "true";
                 sidebar.addEventListener("keydown", (event) => {
-                    if (event.key === "Escape" && isCompact() && drawer.checked) {
+                    if (
+                        event.key === "Escape"
+                        && isDrawerOverlay()
+                        && drawer.checked
+                    ) {
                         event.preventDefault();
                         drawer.checked = false;
                         drawer.dispatchEvent(new Event("change", { bubbles: true }));
@@ -133,22 +154,41 @@
                     ) {
                         depth += 1;
                     }
-                    if (toggle?.checked && !panel.inert && depth >= activeDepth) {
+                    if (
+                        toggle?.checked
+                        && !panel.inert
+                        && isVisible(panel)
+                        && depth >= activeDepth
+                    ) {
                         active = panel;
                         activeDepth = depth;
                     }
                 }
                 return active;
             };
+            const alignDrawerScope = (scope) => {
+                const scrollwrap = sidebar.querySelector(".md-sidebar__scrollwrap");
+                if (!scrollwrap) {
+                    return;
+                }
+                const scopeBounds = scope.getBoundingClientRect();
+                const sidebarBounds = sidebar.getBoundingClientRect();
+                if (scopeBounds.left < sidebarBounds.left) {
+                    scrollwrap.scrollLeft += scopeBounds.left - sidebarBounds.left;
+                } else if (scopeBounds.right > sidebarBounds.right) {
+                    scrollwrap.scrollLeft += scopeBounds.right - sidebarBounds.right;
+                }
+            };
             trapFocus(
                 sidebar,
-                () => isCompact() && drawer.checked,
-                activeDrawerScope
+                () => isDrawerOverlay() && drawer.checked,
+                activeDrawerScope,
+                isContainedHorizontally
             );
 
             const syncDrawer = () => {
-                const compact = isCompact();
-                const expanded = compact && drawer.checked;
+                const overlay = isDrawerOverlay();
+                const expanded = overlay && drawer.checked;
                 drawerOpener.setAttribute("aria-expanded", String(expanded));
                 drawerCloser.setAttribute("aria-expanded", String(expanded));
                 if (expanded) {
@@ -166,7 +206,7 @@
                 );
                 drawerCloser.setAttribute("aria-label", "Close primary navigation");
                 const focusWasInSidebar = sidebar.contains(document.activeElement);
-                sidebar.inert = compact && !expanded;
+                sidebar.inert = overlay && !expanded;
                 if (sidebar.inert) {
                     sidebar.setAttribute("aria-hidden", "true");
                 } else {
@@ -175,8 +215,15 @@
 
                 if (expanded) {
                     requestAnimationFrame(() => {
-                        if (!sidebar.contains(document.activeElement)) {
-                            const scope = activeDrawerScope();
+                        const scope = activeDrawerScope();
+                        alignDrawerScope(scope);
+                        const focused = document.activeElement;
+                        if (
+                            !scope.contains(focused)
+                            || !isVisible(focused)
+                            || !isContainedHorizontally(focused, sidebar)
+                            || focused.closest("[inert]")
+                        ) {
                             const back = scope === sidebar
                                 ? null
                                 : scope.querySelector(
@@ -186,7 +233,7 @@
                         }
                     });
                 } else if (!expanded && focusWasInSidebar) {
-                    if (compact) {
+                    if (overlay) {
                         focusControl(drawerOpener);
                     } else if (!isVisible(document.activeElement)) {
                         const home = document.querySelector(".md-header__button.md-logo");
@@ -196,7 +243,7 @@
                     }
                 }
                 if (
-                    !compact
+                    !overlay
                     && drawer.checked
                     && (
                         document.activeElement === document.body
@@ -251,7 +298,7 @@
             }
 
             const syncSection = () => {
-                const expanded = !isCompact() || toggle.checked;
+                const expanded = !isDrawerOverlay() || toggle.checked;
                 label.setAttribute("aria-expanded", String(expanded));
                 backLabel?.setAttribute("aria-expanded", String(expanded));
                 const focusWasInPanel = controlledPanel.contains(document.activeElement);
@@ -264,7 +311,7 @@
                 if (!expanded && focusWasInPanel) {
                     focusControl(label);
                 } else if (
-                    isCompact()
+                    isDrawerOverlay()
                     && toggle.checked
                     && document.activeElement === label
                     && backLabel
@@ -291,11 +338,11 @@
             searchButton.setAttribute("aria-controls", searchDialog.id);
             trapFocus(
                 searchDialog,
-                () => isCompact() && search.checked
+                () => isSearchOverlay() && search.checked
             );
             const syncSearch = () => {
-                const compact = isCompact();
-                const expanded = compact && search.checked;
+                const overlay = isSearchOverlay();
+                const expanded = overlay && search.checked;
                 searchButton.setAttribute("aria-expanded", String(expanded));
                 if (expanded) {
                     searchDialog.setAttribute("aria-modal", "true");
@@ -303,7 +350,7 @@
                     searchDialog.removeAttribute("aria-modal");
                 }
                 const focusWasInSearch = searchDialog.contains(document.activeElement);
-                searchDialog.inert = compact && !expanded;
+                searchDialog.inert = overlay && !expanded;
                 if (searchDialog.inert) {
                     searchDialog.setAttribute("aria-hidden", "true");
                 } else {
@@ -317,7 +364,7 @@
                         }
                     });
                 } else if (!expanded && focusWasInSearch) {
-                    if (compact) {
+                    if (overlay) {
                         focusControl(searchButton);
                     } else if (!isVisible(document.activeElement)) {
                         const home = document.querySelector(".md-header__button.md-logo");
@@ -327,7 +374,7 @@
                     }
                 }
                 if (
-                    !compact
+                    !overlay
                     && search.checked
                     && (
                         document.activeElement === document.body

@@ -644,7 +644,7 @@ label[role="button"]:focus-visible,
     outline-offset: 2px;
 }
 
-@media screen and (max-width: 44.9844em) {
+@media screen and (max-width: 59.984375em) {
     [dir="ltr"] .md-nav--primary #__toc:checked ~ .md-nav--secondary {
         transform: translateX(100%);
     }
@@ -652,7 +652,9 @@ label[role="button"]:focus-visible,
     [dir="rtl"] .md-nav--primary #__toc:checked ~ .md-nav--secondary {
         transform: translateX(-100%);
     }
+}
 
+@media screen and (max-width: 44.984375em) {
     .sf-home-logo {
         width: 100%;
         margin-bottom: 1rem;

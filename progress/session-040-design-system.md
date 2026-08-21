@@ -58,6 +58,11 @@ license, byte size, and checksum for every other file recursively under
   table and banner behavior, visible `:focus-visible` treatment, reduced-motion
   handling, and print-safe colors without weakening the existing navigation,
   search, code-copy, admonition, or strict-build behavior.
+- Matched the accessibility shell to Material's distinct responsive boundaries:
+  primary navigation remains a modal drawer through 76.234375em, full-screen
+  search through 59.984375em, and phone-specific home layout through
+  44.984375em. Closed tablet drawers and collapsed nested panels are therefore
+  inert instead of retaining off-canvas keyboard targets.
 - Added `docs_brand_policy` regression tests for exact asset coverage and
   checksums, design wiring, local-font delivery, accessible identity,
   intrinsic image dimensions, focus/reduced-motion/responsive rules, and WCAG
@@ -128,6 +133,27 @@ Interaction checks also confirmed:
 - 390px → 1280px → 390px resizing and three instant-navigation transitions
   retain one correctly synchronized accessible shell.
 
+Post-publication automated review identified the missing tablet boundary. A
+direct pre-fix probe at 720–1219px found the closed drawer 242px off-canvas but
+still exposing 36 keyboard targets. The corrected boundary sweep covered
+719/720/800/959/960/1100/1219/1220px: closed navigation is inert through
+1219px and becomes static at 1220px, while closed full-screen search is inert
+through 959px and becomes the non-modal desktop search at 960px.
+
+LTR and RTL drawer probes at 800, 1100, and 1219px kept every active focus
+target inside the 242px modal drawer and restored the opener on Escape. A
+separate open-TOC regression resized
+800px → 1100px → 1219px → 800px → 1280px in both
+directions. When Material hid the drawer-embedded TOC at 1100px, the scroll
+container returned to its root position and focus moved to the fully visible
+active-section Back control; 20 forward and 20 reverse Tab presses remained
+trapped. At 1219px, another forward/reverse cycle remained fully contained and
+Escape restored the opener before the drawer was reopened. Returning to 800px
+restored the selected TOC, its logical scroll end, and its visible Back control;
+1280px removed modal/inert state with visible focus. This exact boundary,
+geometry, focus, and resize sequence now runs in Docs Validation through pinned
+Playwright 1.61.1 and Chromium.
+
 ## Verification and Review
 
 Focused verification passed during implementation:
@@ -144,6 +170,8 @@ The frozen tree also passed:
 - `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features`;
 - `node --check docs/javascripts/accessibility.js`, `mkdocs build --strict`, and
   all 17 documentation rendering checks;
+- `node scripts/check-docs-accessibility.cjs`, covering exact responsive state,
+  full drawer containment, forward/reverse focus traps, and resize recovery;
 - `cargo deny check` and `cargo audit` with a freshly resolved local lockfile.
 
 The final Chromium accessibility regression additionally cycled 30 forward and
@@ -152,10 +180,11 @@ live results, root and nested TOC panels, Escape/reopen behavior, and both
 resize directions. Settled LTR, RTL, Home TOC, and nested Quick Start TOC
 panels kept their complete focused bounds inside the 242px drawer.
 
-Independent design/accessibility and code/contract adversarial reviewers each
-reported zero remaining findings on the frozen tree. Hosted checks and review
-state are intentionally recorded on the resulting pull request, where they can
-be observed rather than predicted by this pre-publication session record.
+Independent design/accessibility, code/contract, and hosted-CI adversarial
+reviewers each reported zero remaining findings on the frozen tree. Hosted
+workflow and pull-request review state remain recorded on the resulting pull
+request, where they can be observed rather than predicted by this session
+record.
 
 ## Late Issue Triage
 

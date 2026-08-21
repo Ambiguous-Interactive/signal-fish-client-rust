@@ -160,16 +160,24 @@ configuration in `mkdocs.yml`. The required config:
 ### Testing Docs Rendering Locally
 
 ```shell
-# Full strict build (matches CI)
+# Validate the custom shell and build the site (matches CI)
+node --check docs/javascripts/accessibility.js
 mkdocs build --strict
+
+# Install the workflow-pinned browser driver, then exercise exact responsive
+# boundaries, focus traps, Escape restoration, and LTR/RTL resize behavior.
+export PLAYWRIGHT_VERSION=1.61.1
+npm install --no-save --no-package-lock "playwright@${PLAYWRIGHT_VERSION}"
+npx playwright install --with-deps chromium
+node scripts/check-docs-accessibility.cjs
 
 # Live preview with hot-reload
 mkdocs serve
 ```
 
-CI runs `mkdocs build --strict` in `.github/workflows/docs-deploy.yml`.
-Any Pygments warning or broken reference fails the build. The deploy
-workflow also performs a post-build verification that greps rendered HTML
+CI runs `mkdocs build --strict` in the docs validation and deployment
+workflows. Any Pygments warning or broken reference fails the build. The
+deployment workflow also performs a post-build verification that greps rendered HTML
 for unresolved rustdoc annotation class names (e.g., `language-rust,ignore`)
 and fails the build if any survive the hook. Always run `mkdocs build
 --strict` locally before pushing docs changes.
