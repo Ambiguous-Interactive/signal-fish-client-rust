@@ -320,6 +320,12 @@ Use the polling client's read-only `transport()` accessor for Godot's
 zero-expected `admission_watermark_violations()` counter and the separately
 accounted `one_frame_escape_bytes()` empty-buffer exception.
 
+### Performance Contract
+
+The opt-in unpublished `tools/perf-lab` drives 28 deterministic polling-client
+workloads through shared `ClientCore`. Pinned CI gates exact protocol ledgers
+and all six allocation counters; see `tools/perf-lab/README.md`.
+
 ## Feature Flags
 
 | Flag | Default | Description |
@@ -339,7 +345,7 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 | `tokio` | Async runtime (sync, macros, rt, time features) |
 | `serde` + `serde_json` + `serde_bytes` | JSON serialization of protocol messages |
 | `rmp` + `rmp-serde` | Strict protocol-v3 MessagePack envelope decoding |
-| `uuid` | Player/room IDs matching server format |
+| `uuid` | Player/room IDs serialized as lowercase hyphenated wire strings |
 | `thiserror` | Derive macro for `SignalFishError` |
 | `tracing` | Structured logging and diagnostics |
 | `tokio-tungstenite` | WebSocket transport (optional) |
@@ -353,8 +359,7 @@ an inherited workspace dependency, `default-features = false`, and
 `godot = ">=0.4.5, <0.6"` with no-thread WASM and lazy-function-table support.
 Its minimum 0.4.5 and latest 0.5.4 standalone fixtures must each lock exactly
 one `godot` and one version of every `godot-*` family crate.
-
-`tokio` (full features, for tests) and `tracing-subscriber` (test log output).
+Tests additionally use full-featured `tokio` and `tracing-subscriber`.
 
 ## Key Design Decisions
 
@@ -419,11 +424,6 @@ No `chrono` (timestamps remain `String` from the server), no `bytes` (binary
 payloads are `Vec<u8>` with `serde_bytes`), no `reqwest` (HTTP is out of scope).
 TLS is opt-in: the default build pulls no crypto stack; `wss://` support
 (rustls + ring) is gated behind the `tls` feature.
-
-### UUID Convention
-
-Player IDs and room IDs are `uuid::Uuid`, serialized as lowercase hyphenated
-strings to match server expectations.
 
 ### Connection / Auth Flow
 

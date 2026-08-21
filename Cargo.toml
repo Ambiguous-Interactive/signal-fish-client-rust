@@ -152,7 +152,7 @@ indexing_slicing = "deny"
 unsafe_code = "deny"
 
 [workspace]
-members = ["crates/signal-fish-client-godot"]
+members = ["crates/signal-fish-client-godot", "tools/perf-lab"]
 resolver = "2"
 
 [workspace.package]

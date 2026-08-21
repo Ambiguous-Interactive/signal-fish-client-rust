@@ -1,0 +1,57 @@
+[package]
+name = "signal-fish-client-perf-lab"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.87.0"
+license = "MIT"
+description = "Deterministic performance and allocation laboratory for signal-fish-client"
+
+[lib]
+path = "src/workloads.rs"
+
+[features]
+default = []
+perf = [
+    "dep:rmp-serde",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:signal-fish-client",
+    "dep:stats_alloc",
+    "signal-fish-client/polling-client",
+]
+
+[dependencies]
+rmp-serde = { version = "1.3", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+sha2 = { version = "0.11", optional = true }
+signal-fish-client = { path = "../..", default-features = false, optional = true }
+stats_alloc = { version = "=0.1.10", optional = true }
+
+[[bin]]
+name = "perf-smoke"
+path = "src/bin/smoke.rs"
+required-features = ["perf"]
+
+[[bin]]
+name = "perf-timing"
+path = "src/bin/timing.rs"
+required-features = ["perf"]
+
+[[bin]]
+name = "perf-allocations"
+path = "src/bin/allocations.rs"
+required-features = ["perf"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+
+[lints.rust]
+unsafe_code = "deny"

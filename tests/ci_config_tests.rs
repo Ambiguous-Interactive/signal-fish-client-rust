@@ -97,6 +97,45 @@ mod required_check_policy {
     }
 }
 
+mod performance_contract_policy {
+    use super::*;
+
+    #[test]
+    fn performance_lab_is_isolated_and_required() {
+        let manifest = read_project_file("tools/perf-lab/Cargo.toml");
+        let workflow = read_project_file(".github/workflows/ci.yml");
+        let baselines = read_project_file("tools/perf-lab/allocation-baselines.json");
+        let protocol = read_project_file("tools/perf-lab/protocol-baselines.json");
+        let coverage = read_project_file(".github/workflows/coverage.yml");
+
+        assert!(manifest.contains("default = []"));
+        assert!(manifest.contains("required-features = [\"perf\"]"));
+        assert!(manifest.contains("signal-fish-client/polling-client"));
+        assert!(workflow.contains("  performance-contract:\n"));
+        assert!(workflow.contains("runs-on: ubuntu-24.04-arm"));
+        assert!(workflow.contains("--bin perf-smoke"));
+        assert_eq!(workflow.matches("--bin perf-allocations").count(), 2);
+        assert!(workflow.contains("--bin perf-timing"));
+        assert!(workflow.contains("deny, performance-contract, publish-dry-run"));
+        assert!(baselines.contains("\"validated_profiles\": [\"debug\", \"release\"]"));
+        assert_eq!(baselines.matches("\"workload\":").count(), 28);
+        assert_eq!(baselines.matches("\"exact_zero\":true").count(), 2);
+        assert_eq!(protocol.matches("\"workload\":").count(), 28);
+        assert_eq!(
+            coverage
+                .matches("--exclude signal-fish-client-perf-lab")
+                .count(),
+            1
+        );
+        assert_eq!(
+            coverage
+                .matches("--ignore-filename-regex 'tools/perf-lab/'")
+                .count(),
+            3
+        );
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module: Godot issue #61 system-regression policy
 // ─────────────────────────────────────────────────────────────────────────────

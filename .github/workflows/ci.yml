@@ -298,6 +298,44 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2.1.1
 
   # ──────────────────────────────────────────────────────────────
+  # Deterministic ClientCore performance and allocation contract
+  # ──────────────────────────────────────────────────────────────
+  performance-contract:
+    name: Performance contract
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    needs: fmt
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+      - name: Install pinned measurement toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RELEASE_RUST }}
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.2
+      - name: Generate workspace lockfile
+        run: bash scripts/cargo-retry.sh +"${RELEASE_RUST}" generate-lockfile
+      - name: Verify deterministic workload ledgers
+        run: cargo +"${RELEASE_RUST}" run --locked -p signal-fish-client-perf-lab --features perf --bin perf-smoke
+      - name: Enforce debug allocation ceilings
+        run: cargo +"${RELEASE_RUST}" run --locked -p signal-fish-client-perf-lab --features perf --bin perf-allocations -- --samples 10 > allocation-debug.json
+      - name: Enforce release allocation ceilings
+        run: cargo +"${RELEASE_RUST}" run --locked --release -p signal-fish-client-perf-lab --features perf --bin perf-allocations -- --samples 10 > allocation-release.json
+      - name: Capture release timing diagnostics
+        run: cargo +"${RELEASE_RUST}" run --locked --release -p signal-fish-client-perf-lab --features perf --bin perf-timing -- --samples 5 > timing-release.json
+      - name: Upload measurement reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: client-core-performance-${{ github.sha }}
+          path: |
+            allocation-debug.json
+            allocation-release.json
+            timing-release.json
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────────────────────
   # Publish dry-run — verify crate packages correctly
   # Depends on tests and clippy passing first.
   # ──────────────────────────────────────────────────────────────
@@ -328,7 +366,7 @@ jobs:
   required:
     name: CI Required
     if: ${{ always() }}
-    needs: [fmt, spell-check, clippy, test, server-mesh-e2e, msrv, adapter-msrv, doc, deny, publish-dry-run]
+    needs: [fmt, spell-check, clippy, test, server-mesh-e2e, msrv, adapter-msrv, doc, deny, performance-contract, publish-dry-run]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
