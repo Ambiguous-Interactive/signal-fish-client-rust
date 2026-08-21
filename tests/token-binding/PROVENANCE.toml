@@ -1,0 +1,11 @@
+server_repository = "https://github.com/Ambiguous-Interactive/signal-fish-server"
+server_release = "0.7.0"
+server_commit = "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333"
+synced = "2026-08-21"
+vectors_sha256 = "ea0ce944b5819cdde0c174fae1b79409405266532b93a3e0b803ed8f9a402fe6"
+
+[upstream_sha256]
+"src/security/token_binding.rs" = "63ab131c47f1a61bc64217530e0bbb46e4d138e154178faf668c5d17f2277f52"
+"src/websocket/token_binding.rs" = "2eacb6f0a92bbe189fc4a9e8e8df312b3c434ec6bf2737147b62b8083d7b2fe3"
+"docs/configuration-recipes.md" = "cefa5380830b575f8b7f195afd08759a4a08a09f96aba0b76f2fe34b5c7e2796"
+"tests/mtls_token_binding_e2e.rs" = "b8158e517c52d4433a58fba6ecfb5cdbb718d312be82199de5749a48225e4617"

@@ -80,6 +80,8 @@ jobs:
             flags: ""
           - name: all-features
             flags: "--all-features"
+          - name: token-binding-no-tls
+            flags: "--no-default-features --features token-binding"
           - name: no-default-features
             flags: "--no-default-features"
     steps:
@@ -110,6 +112,8 @@ jobs:
             flags: ""
           - name: all-features
             flags: "--all-features"
+          - name: token-binding-no-tls
+            flags: "--no-default-features --features token-binding"
           - name: no-default-features
             flags: "--no-default-features"
     steps:
@@ -123,11 +127,11 @@ jobs:
         run: cargo test --workspace ${{ matrix.flags }}
 
   # ──────────────────────────────────────────────────────────────
-  # Pinned server mesh wire smokes — generation-less 0.4 compatibility plus
-  # generation-aware signaling and retained-pair replan on 0.7.
+  # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh and
+  # reconnect behavior, and required token-binding security cases.
   # ──────────────────────────────────────────────────────────────
   server-mesh-e2e:
-    name: Server mesh E2E (${{ matrix.server_version }})
+    name: Server compatibility E2E (${{ matrix.server_version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: fmt
@@ -144,6 +148,12 @@ jobs:
           - server_version: "0.7.0"
             server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
             test_name: e2e_reconnect_after_disconnect_uses_server_token
+          - server_version: "0.7.0"
+            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+            test_name: e2e_server_070_required_token_binding_wss
+          - server_version: "0.7.0"
+            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+            test_name: e2e_server_070_rejects_invalid_token_binding_proofs
           - server_version: "0.4.0"
             server_sha256: "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
             test_name: e2e_server_040_generationless_mesh_signal
@@ -167,7 +177,7 @@ jobs:
           printf '%s  %s\n' "${SERVER_SHA256}" "${asset}" | sha256sum --check
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server
-      - name: Run pinned mesh compatibility smoke
+      - name: Run pinned server compatibility E2E
         run: |
           set -euo pipefail
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"

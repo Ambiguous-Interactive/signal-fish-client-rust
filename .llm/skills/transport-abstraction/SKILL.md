@@ -284,9 +284,18 @@ dropping it each call.
 - bounds skipped control frames per receive poll and self-wakes to resume;
 - fuses EOF and terminal socket errors while clearing retained poll state;
 - disables Nagle's algorithm (`TCP_NODELAY`) by default on the socket it owns.
+- when opt-in token binding is active, owns subprotocol/challenge/key/proof
+  state and advances the shared JSON/binary sequence only after `start_send`
+  accepts the protected frame.
 
 Do not treat Ping/Pong as application frames. Do not skip binary application
 frames.
+
+Browser/Godot/Emscripten WebSocket APIs and post-handshake `from_stream` do not
+expose the RFC 6455 client key, so they cannot claim required token binding. A
+custom capable transport owns negotiation, proof wrapping, and key lifetime;
+none of those details belong in `SignalFishConfig`, `ClientCore`, or protocol
+events.
 
 ### Low-latency socket options (class-level rule)
 

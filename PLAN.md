@@ -42,6 +42,9 @@ zero-file merge commit. The checked-in `GITHUB_TOKEN` Dependabot auto-merge path
 is now removed; repository policy rejects Dependabot-specific workflows,
 automated-merge primitives, and non-allowlisted workflow write permissions.
 PR #94 then merged despite its explicit do-not-merge gates and zero approvals.
+PR #118 likewise merged into current `main` with zero approvals after all
+code-tree workflows succeeded; its only review was the quota-exhausted Copilot
+comment. The latest scheduled Repository Policy run remains red.
 Ordinary reviewed merges remain policy but are not enforced until issue #90 is
 fixed. Restoring the live ruleset, disabling or funding the quota-broken
 Copilot review gate, adding an eligible independent reviewer (the repository
@@ -68,6 +71,11 @@ were delivered by PR #91 and closed when it merged as `963a9fc`.
 - PR #91 passed all eleven project aggregates plus Deep Safety and Protocol
   Sync, but merged without the approval and quota-green state it explicitly
   required. That governance failure remains tracked in issue #90.
+- Issue #117's later umbrella request for fuzzing, mutation, and formal methods
+  was closed as completed after confirming this existing fail-closed program.
+  TLA+/Z3 remains applicability-driven: add a formal model only for a concrete
+  invariant with a useful counterexample oracle, not as an unscoped tool-count
+  target.
 
 ## Completed Correctness Follow-up — FFI and Dependency Automation
 
@@ -181,10 +189,11 @@ drivers must preserve accepted-send-before-close ordering while proving
 deadline abandonment, resource release, and no later transport polling.
 Session 033 records the contract and evidence.
 
-## Current Correctness Decision — Datagram Scope
+## Completed Correctness Decision — Datagram Scope
 
 [Issue #107](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/107)
-is being resolved as out of scope for this SDK's current transport abstraction.
+shipped in [PR #118](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/118)
+as an out-of-scope decision for this SDK's current transport abstraction.
 
 - `Transport` begins at one complete, ordered text/binary frame stream bound to
   the intended server. A raw stream/datagram backend owns framing,
@@ -204,7 +213,7 @@ is being resolved as out of scope for this SDK's current transport abstraction.
 
 Session 034 records the source-to-decision matrix and verification evidence.
 
-## Next Correctness Milestone — Negotiated Token Binding
+## Current Correctness Milestone — Negotiated Token Binding
 
 Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
 
@@ -215,6 +224,12 @@ Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-ru
 - Make handshake-material capability differences explicit for native, browser,
   Godot, polling, and custom transports, with typed required-mode failures.
 - Keep keys, proofs, and handshake secrets out of `Debug`, tracing, and errors.
+- The implementation keeps this state in native `WebSocketTransport`, gates the
+  crypto dependency graph behind `token-binding`, consumes the challenge before
+  client construction, and advances one JSON/binary sequence only at backend
+  ownership transfer. Exact Server 0.7 goldens and a required-WSS pinned-server
+  smoke provide interoperability evidence; browser/Godot/Emscripten and
+  post-handshake `from_stream` paths remain explicitly incapable.
 
 ## Later Milestone — Allocation and Performance Evidence
 

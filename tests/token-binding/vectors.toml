@@ -1,0 +1,14 @@
+handshake_key_base64 = "MDEyMzQ1Njc4OWFiY2RlZg=="
+nonce_base64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+derived_key_hex = "abb5860d3be9f16fad2763e718d0e9a038b7196fd136f24d62cb3ab6fc631da7"
+hkdf_info = "signalfish.tokenbinding.v2/session-key"
+json_domain_hex = "7369676e616c666973682e746f6b656e62696e64696e672e7632006a736f6e00"
+json_input = '{"zzz":{"y":2,"x":"é"},"type":"Ping","aaa":[3,1]}'
+json_canonical = '{"aaa":[3,1],"type":"Ping","zzz":{"x":"é","y":2}}'
+json_sequence = 1
+json_signature_base64 = "HobFBjbmzHgNF/QoXXFpqNy5s4/InE7+tCYO56+Dqig="
+binary_domain_hex = "7369676e616c666973682e746f6b656e62696e64696e672e76320062696e61727900"
+binary_payload_hex = "81a46461746101"
+binary_sequence = 2
+binary_signature_base64 = "7/4RSNk/Euc4JnPJqlrMVDqp1l8oLXl+A8jAqDZIt1A="
+binary_envelope_hex = "82ad746f6b656e5f62696e64696e6785a776657273696f6e02a6736368656d65b87365727665725f6e6f6e63655f686b64665f736861323536a873657175656e636502a97369676e6174757265d92c372f3452534e6b2f457563344a6e504a716c724d56447170316c386f4c586c2b41386a4171445a497431413dab66696e6765727072696e74c0a77061796c6f6164c40781a46461746101"

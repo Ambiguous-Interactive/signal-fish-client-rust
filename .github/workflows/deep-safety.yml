@@ -32,6 +32,11 @@ on:
       - src/protocol.rs
       - src/protocol/**
       - src/signal.rs
+      - src/token_binding.rs
+      - src/transports/websocket.rs
+      - tests/real_server_e2e.rs
+      - tests/token-binding/**
+      - tests/token_binding_conformance_tests.rs
       - tests/protocol_tests.rs
   schedule:
     # Weekdays at 04:00 UTC — staggered from unused-deps at 05:00 and security at 06:00

@@ -245,7 +245,18 @@ let transport = WebSocketTransport::connect_with_timeout(
 ```
 
 `from_stream` wraps an already-established `WsStream` for custom TLS, proxy,
-headers, or cookie setup.
+headers, or cookie setup. It cannot turn on token binding after the handshake;
+a custom constructor/transport must retain the exact handshake key and own the
+complete extension state machine.
+
+The opt-in native `token-binding` feature adds disabled, optional, and required
+`signalfish.tokenbinding.v2` policies to `WebSocketConnectOptions`. Negotiation,
+challenge validation, and outbound frame protection stay inside this physical
+transport, so the same connected transport works with both async and polling
+clients. Required Server 0.7 deployments use WSS; private trust roots or mTLS
+can be supplied through `connect_with_tls_config`. See
+[WebSocket Token Binding](token-binding.md) for downgrade behavior, platform
+limits, and the exact wire contract.
 
 The WebSocket mapping is direct:
 

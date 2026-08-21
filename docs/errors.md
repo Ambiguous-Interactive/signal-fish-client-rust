@@ -19,14 +19,15 @@ All fallible client methods return `Result<T>`, which is an alias for
 pub type Result<T> = std::result::Result<T, SignalFishError>;
 ```
 
-`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It has **18
-variants**:
+`SignalFishError` derives `Debug` and `Error` (via `thiserror`). It is an
+exhaustive public enum:
 
 | Variant | Fields | When it occurs |
 |---------|--------|----------------|
 | `TransportSend` | `String` | Failed to send a message through the transport. |
 | `TransportReceive` | `String` | Failed to receive a message from the transport. |
 | `TransportClosed` | — | The transport connection was closed unexpectedly. |
+| `TokenBinding` | `TokenBindingFailure` | Native WebSocket token-binding negotiation, challenge validation, key derivation, canonicalization, encoding, or sequence handling failed. Reasons are typed and contain no key, nonce, proof, signature, fingerprint, URL credential, or payload material. See [WebSocket Token Binding](token-binding.md). |
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |

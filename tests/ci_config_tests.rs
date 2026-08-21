@@ -1474,6 +1474,16 @@ mod ci_workflow_policy {
                 "e2e_reconnect_after_disconnect_uses_server_token",
             ),
             (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_required_token_binding_wss",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_rejects_invalid_token_binding_proofs",
+            ),
+            (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.4.0",
                 "e2e_server_040_generationless_mesh_signal",
@@ -1679,21 +1689,27 @@ mod ci_workflow_policy {
         }
     }
 
-    /// Verify that the CI clippy job tests all feature combinations:
-    /// default, `--all-features`, and `--no-default-features`.
+    /// Verify that both ordinary Rust jobs cover the pure minimal build and the
+    /// token-binding implementation without TLS.
     ///
     /// Regression: Without `--no-default-features`, dead_code warnings from
     /// items only used behind feature gates go undetected until a user builds
     /// the crate with a minimal feature set.
     #[test]
-    fn ci_clippy_covers_no_default_features() {
+    fn ci_covers_minimal_and_token_binding_without_tls() {
         let contents = ci_contents();
-        assert!(
-            contents.contains("--no-default-features"),
-            "ci.yml clippy job must include a '--no-default-features' matrix entry. \
-             Without this check, dead_code and other warnings that only appear \
-             when optional features are disabled will not be caught in CI."
-        );
+        for job_name in ["clippy", "test"] {
+            let job = extract_job_block(&contents, job_name)
+                .unwrap_or_else(|| panic!("ci.yml must define the {job_name} job"));
+            assert!(
+                job.contains("flags: \"--no-default-features\""),
+                "ci.yml {job_name} matrix must retain the pure no-default-features row"
+            );
+            assert!(
+                job.contains("flags: \"--no-default-features --features token-binding\""),
+                "ci.yml {job_name} matrix must compile token binding without TLS"
+            );
+        }
     }
 
     #[test]

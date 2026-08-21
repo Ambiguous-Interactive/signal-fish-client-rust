@@ -27,16 +27,210 @@
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+use futures_util::{SinkExt as _, StreamExt as _};
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+use rustls::pki_types::pem::PemObject as _;
 use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
     ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
     SignalFishEvent, WebSocketTransport,
 };
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+use signal_fish_client::{TokenBindingMode, TokenBindingStatus, WebSocketConnectOptions};
 
 // ── Harness ─────────────────────────────────────────────────────────
 
 struct ServerGuard {
     child: Child,
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+struct TlsFixture {
+    directory: std::path::PathBuf,
+    certificate: std::path::PathBuf,
+    private_key: std::path::PathBuf,
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl TlsFixture {
+    fn generate() -> Self {
+        let directory = std::env::temp_dir().join(format!(
+            "signal-fish-token-binding-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).expect("create token-binding TLS fixture directory");
+        let certificate = directory.join("server-cert.pem");
+        let private_key = directory.join("server-key.pem");
+        let status = Command::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes", "-keyout",
+            ])
+            .arg(&private_key)
+            .arg("-out")
+            .arg(&certificate)
+            .args([
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+                "-addext",
+                "basicConstraints=critical,CA:FALSE",
+                "-addext",
+                "keyUsage=critical,digitalSignature,keyEncipherment",
+                "-addext",
+                "extendedKeyUsage=serverAuth",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run openssl for token-binding TLS fixture");
+        assert!(status.success(), "openssl must generate the TLS fixture");
+        Self {
+            directory,
+            certificate,
+            private_key,
+        }
+    }
+
+    fn client_config(&self) -> std::sync::Arc<rustls::ClientConfig> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let certificate = rustls::pki_types::CertificateDer::from_pem_file(&self.certificate)
+            .expect("parse generated server certificate");
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(certificate)
+            .expect("trust generated token-binding server certificate");
+        std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl Drop for TlsFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+type RawTlsWebSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+async fn raw_token_binding_connect(
+    url: &str,
+    tls_config: std::sync::Arc<rustls::ClientConfig>,
+) -> (RawTlsWebSocket, zeroize::Zeroizing<[u8; 32]>) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    use tokio_tungstenite::tungstenite::http::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL};
+
+    let mut request = url
+        .into_client_request()
+        .expect("raw negative client URL must be valid");
+    let handshake_key = request
+        .headers()
+        .get(SEC_WEBSOCKET_KEY)
+        .and_then(|value| value.to_str().ok())
+        .expect("tungstenite must generate a handshake key");
+    let handshake_key = zeroize::Zeroizing::new(
+        STANDARD
+            .decode(handshake_key)
+            .expect("generated handshake key must be base64"),
+    );
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+            "signalfish.tokenbinding.v2",
+        ),
+    );
+    let (mut stream, response) = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        true,
+        Some(tokio_tungstenite::Connector::Rustls(tls_config)),
+    )
+    .await
+    .expect("raw token-binding handshake must succeed");
+    assert_eq!(
+        response
+            .headers()
+            .get(SEC_WEBSOCKET_PROTOCOL)
+            .and_then(|value| value.to_str().ok()),
+        Some("signalfish.tokenbinding.v2")
+    );
+    let challenge = stream
+        .next()
+        .await
+        .expect("server must send a challenge")
+        .expect("challenge frame must be valid")
+        .into_text()
+        .expect("challenge must be text");
+    let challenge: serde_json::Value =
+        serde_json::from_str(&challenge).expect("challenge must parse");
+    let nonce = challenge["data"]["nonce"]
+        .as_str()
+        .expect("challenge nonce must be a string");
+    let nonce = zeroize::Zeroizing::new(STANDARD.decode(nonce).expect("nonce must be base64"));
+    let hkdf = hkdf::Hkdf::<sha2::Sha256>::new(Some(nonce.as_slice()), handshake_key.as_slice());
+    let mut secret = zeroize::Zeroizing::new([0_u8; 32]);
+    hkdf.expand(b"signalfish.tokenbinding.v2/session-key", secret.as_mut())
+        .expect("raw negative client must derive the session key");
+    (stream, secret)
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+fn raw_signed_json(secret: &[u8], sequence: u64, signed_payload: &str, sent_type: &str) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use hmac::Mac as _;
+
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+    let mut mac = <HmacSha256 as hmac::KeyInit>::new_from_slice(secret)
+        .expect("SHA-256 accepts the derived key");
+    mac.update(b"signalfish.tokenbinding.v2\0json\0");
+    mac.update(&sequence.to_be_bytes());
+    mac.update(signed_payload.as_bytes());
+    serde_json::json!({
+        "type": sent_type,
+        "token_binding": {
+            "version": 2,
+            "scheme": "server_nonce_hkdf_sha256",
+            "sequence": sequence,
+            "signature": STANDARD.encode(mac.finalize().into_bytes()),
+            "fingerprint": null
+        }
+    })
+    .to_string()
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+async fn expect_token_binding_rejection(stream: &mut RawTlsWebSocket) {
+    let rejected = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&text).expect("server response must parse");
+                    assert_ne!(value["type"], "Pong", "invalid proof must not reach Ping");
+                    if value["type"] == "Error" {
+                        return true;
+                    }
+                }
+                Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => return true,
+                Ok(_) => {}
+            }
+        }
+        true
+    })
+    .await
+    .expect("server must reject an invalid proof promptly");
+    assert!(rejected);
 }
 
 impl Drop for ServerGuard {
@@ -166,6 +360,190 @@ async fn recv_next_event(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
+
+/// Native token-binding-v2 interoperability against required WSS on the pinned
+/// Server 0.7 release. A Pong after mixed JSON/binary traffic proves the server
+/// accepted the shared proof sequence instead of disconnecting the client.
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+#[tokio::test]
+#[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
+async fn e2e_server_070_required_token_binding_wss() {
+    let tls = TlsFixture::generate();
+    let certificate = tls.certificate.to_string_lossy().into_owned();
+    let private_key = tls.private_key.to_string_lossy().into_owned();
+    let Some((_guard, url)) = spawn_server(&[
+        ("SIGNAL_FISH__SECURITY__TRANSPORT__TLS__ENABLED", "true"),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__CERTIFICATE_PATH",
+            certificate.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__PRIVATE_KEY_PATH",
+            private_key.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__ENABLED",
+            "true",
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__REQUIRED",
+            "true",
+        ),
+    ])
+    .await
+    else {
+        eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
+        return;
+    };
+    let url = url.replacen("ws://127.0.0.1", "wss://localhost", 1);
+    let options = WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Required);
+    let transport = WebSocketTransport::connect_with_tls_config(&url, options, tls.client_config())
+        .await
+        .expect("required token-binding WSS must connect");
+    assert_eq!(transport.token_binding_status(), TokenBindingStatus::Active);
+
+    let mut config = SignalFishConfig::new(app_id()).enable_v3();
+    config.game_data_format = Some(GameDataEncoding::MessagePack);
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+    wait_for_event(
+        &mut events,
+        "Authenticated",
+        Duration::from_secs(5),
+        |event| matches!(event, SignalFishEvent::Authenticated { .. }),
+    )
+    .await;
+    client
+        .join_room(JoinRoomParams::new("e2e-token-binding", "protected-client"))
+        .expect("token-bound client must queue JoinRoom");
+    wait_for_event(&mut events, "RoomJoined", Duration::from_secs(5), |event| {
+        matches!(event, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    client
+        .send_game_data(serde_json::json!({"protected": 1}))
+        .expect("token-bound JSON must queue");
+    client
+        .send_binary_game_data(vec![1, 2, 3, 4])
+        .expect("token-bound MessagePack frame must queue");
+    client.ping().expect("token-bound Ping must queue");
+    let pong = wait_for_event(&mut events, "Pong", Duration::from_secs(5), |event| {
+        matches!(
+            event,
+            SignalFishEvent::Pong | SignalFishEvent::Disconnected { .. }
+        )
+    })
+    .await;
+    assert!(
+        matches!(pong, SignalFishEvent::Pong),
+        "Server 0.7 must accept mixed token-bound traffic: {pong:?}"
+    );
+    client.shutdown().await;
+}
+
+/// Raw negative cases prove that the pinned server rejects proof replay,
+/// signature/payload mismatch, a wrong per-connection key, and malformed proof
+/// envelopes. Each case gets a fresh challenge and sequence space.
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+#[tokio::test]
+#[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
+async fn e2e_server_070_rejects_invalid_token_binding_proofs() {
+    use tokio_tungstenite::tungstenite::Message;
+
+    let tls = TlsFixture::generate();
+    let certificate = tls.certificate.to_string_lossy().into_owned();
+    let private_key = tls.private_key.to_string_lossy().into_owned();
+    let Some((_guard, url)) = spawn_server(&[
+        ("SIGNAL_FISH__SECURITY__TRANSPORT__TLS__ENABLED", "true"),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__CERTIFICATE_PATH",
+            certificate.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__PRIVATE_KEY_PATH",
+            private_key.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__ENABLED",
+            "true",
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__REQUIRED",
+            "true",
+        ),
+    ])
+    .await
+    else {
+        eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
+        return;
+    };
+    let url = url.replacen("ws://127.0.0.1", "wss://localhost", 1);
+
+    // Replay: the first sequence-1 Ping succeeds, then the same proof fails.
+    let (mut stream, secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    let signed_ping = raw_signed_json(&secret[..], 1, r#"{"type":"Ping"}"#, "Ping");
+    stream
+        .send(Message::Text(signed_ping.clone().into()))
+        .await
+        .expect("valid raw Ping must send");
+    let pong = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(message) = stream.next().await {
+            let message = message.expect("valid Ping response must be a frame");
+            if let Message::Text(text) = message {
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).expect("valid Ping response must parse");
+                if value["type"] == "Pong" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await
+    .expect("valid signed Ping must receive a prompt response");
+    assert!(pong, "the control Ping must prove sequence 1 was accepted");
+    stream
+        .send(Message::Text(signed_ping.into()))
+        .await
+        .expect("replayed frame must reach the server verifier");
+    expect_token_binding_rejection(&mut stream).await;
+
+    // Tamper: authenticate a different canonical payload than the one sent.
+    let (mut stream, secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    let tampered = raw_signed_json(&secret[..], 1, r#"{"type":"Pong"}"#, "Ping");
+    stream
+        .send(Message::Text(tampered.into()))
+        .await
+        .expect("tampered frame must reach the server verifier");
+    expect_token_binding_rejection(&mut stream).await;
+
+    // Wrong key/cross-connection reuse: sign B with A's derived key.
+    let (stale_stream, stale_secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    let (mut stream, _fresh_secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    drop(stale_stream);
+    let wrong_key = raw_signed_json(&stale_secret[..], 1, r#"{"type":"Ping"}"#, "Ping");
+    stream
+        .send(Message::Text(wrong_key.into()))
+        .await
+        .expect("wrong-key frame must reach the server verifier");
+    expect_token_binding_rejection(&mut stream).await;
+
+    // Malformed envelope: a proof member must be the exact structured object.
+    let (mut stream, _secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    stream
+        .send(Message::Text(
+            r#"{"type":"Ping","token_binding":"malformed"}"#.into(),
+        ))
+        .await
+        .expect("malformed proof must reach the server verifier");
+    expect_token_binding_rejection(&mut stream).await;
+
+    let (mut stream, _secret) = raw_token_binding_connect(&url, tls.client_config()).await;
+    stream
+        .send(Message::Binary(vec![0x81, 0xad, b't'].into()))
+        .await
+        .expect("malformed binary envelope must reach the server verifier");
+    expect_token_binding_rejection(&mut stream).await;
+}
 
 /// Server 0.7 fallback smoke: an unsupported Rkyv preference produces the
 /// warning-before-authentication sequence, then resolves coherently to JSON.

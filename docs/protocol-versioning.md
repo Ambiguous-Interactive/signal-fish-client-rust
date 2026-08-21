@@ -6,12 +6,12 @@ and backward-compatible** — a client that opts into nothing sends the same v2
 authentication bytes and remains on the relay floor. Version 0.8 separately
 made protocol-v2 game start explicit. This page explains both changes.
 
-!!! warning "Optional Server 0.7 token binding"
-    Compatibility currently covers the default token-binding-disabled Server
-    0.7 deployment profile. This SDK does not yet negotiate or answer
-    `signalfish.tokenbinding.v2` / `TokenBindingChallenge`; a deployment that
-    requires that extension will reject the connection. Implementation is
-    tracked in [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
+!!! info "Server 0.7 token binding is a transport negotiation"
+    The opt-in native `token-binding` feature supports disabled, optional, and
+    required `signalfish.tokenbinding.v2` modes. It is negotiated and completed
+    before either protocol driver sends `Authenticate`, so it is separate from
+    v2/v3 application capability negotiation. See
+    [WebSocket Token Binding](token-binding.md).
 
 !!! tip "Just want peer-to-peer?"
     If you have a WebRTC stack and want full mesh, jump to the
