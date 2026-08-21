@@ -230,6 +230,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_binding_failure_display_is_actionable_for_every_reason() {
+        let cases = [
+            (TokenBindingFailure::FeatureDisabled, "feature"),
+            (TokenBindingFailure::NegotiationRejected, "rejected"),
+            (
+                TokenBindingFailure::SubprotocolNotNegotiated,
+                "did not select",
+            ),
+            (TokenBindingFailure::UnexpectedSubprotocol, "unexpected"),
+            (TokenBindingFailure::MissingChallenge, "closed"),
+            (TokenBindingFailure::ChallengeTimeout, "timed out"),
+            (TokenBindingFailure::MalformedChallenge, "malformed"),
+            (TokenBindingFailure::UnsupportedVersion, "version"),
+            (TokenBindingFailure::UnsupportedScheme, "scheme"),
+            (TokenBindingFailure::InvalidNonce, "nonce"),
+            (TokenBindingFailure::InvalidFirstSequence, "sequence"),
+            (TokenBindingFailure::InvalidHandshakeKey, "handshake key"),
+            (TokenBindingFailure::KeyDerivation, "derived"),
+            (TokenBindingFailure::UnsupportedJson, "JSON"),
+            (TokenBindingFailure::MessageEncoding, "encoded"),
+            (TokenBindingFailure::SequenceExhausted, "exhausted"),
+        ];
+
+        for (failure, expected) in cases {
+            let message = failure.to_string();
+            assert!(
+                message.contains(expected),
+                "{failure:?} must retain an actionable display message: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn server_error_uses_typed_error_code() {
         let err = SignalFishError::ServerError {
             message: "room full".into(),

@@ -164,3 +164,8 @@ required `feat!:` major marker; the next head event re-evaluates that policy.
 The automated review inventory contains one quota-exhausted Copilot comment,
 no approval, and no review threads. An eligible human approval and the separate
 #90 branch-protection administration therefore remain external merge blockers.
+
+The fresh major-classified head passed Semver Checks. Deep Safety then exposed
+one missed mutation that replaced `TokenBindingFailure::fmt` with an empty
+success; an exhaustive actionable-display regression test now kills that
+mutant for every static failure reason.
