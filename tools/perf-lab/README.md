@@ -50,47 +50,67 @@ the measured implementation change. `stats_alloc` is exact-pinned; compatible
 SDK serialization dependency updates remain inside the contract so an
 allocation regression is reviewed instead of silently hidden by a lockfile.
 
+## JSON allocation attribution
+
+A same-lockfile Heaptrack comparison of `main` and the optimized head resolved
+the 4 KiB outbound burst's original growth to two sites. Serde JSON's 128-byte
+`to_string` buffer grew twice for each of 64 frames (128 reallocations), while
+the polling command `VecDeque` grew four times. The 64-message binary control
+has the same four queue reallocations and no serializer allocation. On the
+optimized head, the Serde growth stacks disappear and only the four queue
+growths remain.
+
+Both drivers now share capacity-aware serialization only for direct JSON
+string game payloads of at least 4 KiB, the measured class. The hint reads the
+existing string length in constant time and leaves structured or smaller JSON
+on Serde's default path. Serde remains the canonical encoder, including for
+large escaped and multibyte strings; underestimated escaping merely uses its
+normal safe buffer growth.
+
 ## Baseline
 
-Captured 2026-08-21 on Rust 1.96.1, a 12-vCPU aarch64 WSL2 Linux runner. The
-timing columns are release-profile medians over 25 samples. Allocation columns
-are exact across 10 isolated samples in both debug and release profiles; both
-profiles produced identical values. `A/D/R` means allocation, deallocation,
-and reallocation. Byte columns use the same order. Queue age is the maximum
-observed oldest queued frame age, so inbound-only cells correctly report zero.
+Refreshed 2026-08-21 on Rust 1.96.1, a 12-vCPU aarch64 WSL2 Linux runner. The
+timing columns are release-profile medians over 25 samples pinned to one CPU.
+Allocation columns are exact across 10 isolated samples in both debug and
+release profiles; both profiles produced identical values. `A/D/R` means
+allocation, deallocation, and reallocation. Byte columns use the same order.
+Queue age is the maximum observed oldest queued frame age, so inbound-only
+cells correctly report zero.
 
 | Workload | Median ns | ns/op | ops/s | Peak queue ns | A/D/R | Bytes A/D/R |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `lobby/2` | 3000 | 3000 | 333333 | 0 | 17/5/0 | 3989/3752/0 |
-| `lobby/8` | 5000 | 5000 | 200000 | 0 | 29/5/1 | 5053/4776/704 |
-| `lobby/16` | 7800 | 7800 | 128205 | 0 | 49/7/2 | 8259/7304/2112 |
-| `json/in/256/single` | 2001 | 2001 | 499750 | 0 | 3/3/0 | 2560/2992/0 |
-| `json/in/256/burst64` | 31802 | 496 | 2012452 | 0 | 129/129/4 | 108544/136192/17280 |
-| `json/in/4096/single` | 2600 | 2600 | 384615 | 0 | 3/3/0 | 6400/10672/0 |
-| `json/in/4096/burst64` | 70704 | 1104 | 905182 | 0 | 133/133/8 | 355456/628864/13824 |
-| `json/out/256/single` | 1900 | 1900 | 526315 | 600 | 1/1/2 | 582/256/454 |
-| `json/out/256/burst64` | 50303 | 785 | 1272289 | 46503 | 64/64/132 | 45888/16384/37696 |
-| `json/out/4096/single` | 3100 | 3100 | 322580 | 800 | 1/1/2 | 8262/4096/8134 |
-| `json/out/4096/burst64` | 182510 | 2851 | 350665 | 298317 | 64/64/132 | 537408/262144/529216 |
-| `binary/in/256/single` | 1800 | 1800 | 555555 | 0 | 3/3/0 | 2560/2944/0 |
-| `binary/in/256/burst64` | 15901 | 248 | 4024904 | 0 | 129/129/4 | 108544/133120/17280 |
-| `binary/in/4096/single` | 1900 | 1900 | 526315 | 0 | 3/3/0 | 6400/10624/0 |
-| `binary/in/4096/burst64` | 27401 | 428 | 2335681 | 0 | 133/133/8 | 355456/625792/13824 |
-| `binary/out/256/single` | 1500 | 1500 | 666666 | 800 | 0/0/0 | 0/0/0 |
-| `binary/out/256/burst64` | 35102 | 548 | 1823257 | 47003 | 0/0/4 | 8640/0/8640 |
-| `binary/out/4096/single` | 1500 | 1500 | 666666 | 600 | 0/0/0 | 0/0/0 |
-| `binary/out/4096/burst64` | 38102 | 595 | 1679701 | 48203 | 0/0/4 | 8640/0/8640 |
-| `classified/latest` | 55403 | 865 | 1155172 | 45302 | 64/256/132 | 48684/57600/40492 |
-| `classified/volatile` | 55003 | 859 | 1163572 | 43202 | 64/256/132 | 48684/57600/40492 |
-| `classified/authorized-gap` | 3600 | 3600 | 277777 | 0 | 14/11/0 | 7378/6472/0 |
-| `reconnect/2` | 4601 | 4601 | 217344 | 600 | 25/10/1 | 6916/6534/128 |
-| `reconnect/8` | 7500 | 7500 | 133333 | 600 | 37/10/3 | 8108/8582/960 |
-| `reconnect/16` | 11301 | 11301 | 88487 | 601 | 61/16/5 | 12882/14470/2624 |
-| `polling/ready-frame-burst` | 13901 | 817 | 1222933 | 9401 | 17/68/3 | 6208/11492/4032 |
-| `polling/ready-byte-burst` | 6301 | 1575 | 634819 | 4101 | 4/16/8 | 6048/5376/5536 |
-| `polling/pending-recovery` | 2300 | 2300 | 434782 | 1500 | 1/4/2 | 624/900/496 |
+| `lobby/2` | 3301 | 3301 | 302938 | 0 | 17/5/0 | 3989/3752/0 |
+| `lobby/8` | 5500 | 5500 | 181818 | 0 | 29/5/1 | 5053/4776/704 |
+| `lobby/16` | 8801 | 8801 | 113623 | 0 | 49/7/2 | 8259/7304/2112 |
+| `json/in/256/single` | 2500 | 2500 | 400000 | 0 | 3/3/0 | 2560/2992/0 |
+| `json/in/256/burst64` | 34101 | 532 | 1876777 | 0 | 129/129/4 | 108544/136192/17280 |
+| `json/in/4096/single` | 3000 | 3000 | 333333 | 0 | 3/3/0 | 6400/10672/0 |
+| `json/in/4096/burst64` | 73204 | 1143 | 874269 | 0 | 133/133/8 | 355456/628864/13824 |
+| `json/out/256/single` | 2000 | 2000 | 500000 | 700 | 1/1/2 | 582/256/454 |
+| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/132 | 45888/16384/37696 |
+| `json/out/4096/single` | 3600 | 3600 | 277777 | 1000 | 1/1/0 | 4226/4096/0 |
+| `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 279104/262144/8640 |
+| `binary/in/256/single` | 2200 | 2200 | 454545 | 0 | 3/3/0 | 2560/2944/0 |
+| `binary/in/256/burst64` | 17201 | 268 | 3720713 | 0 | 129/129/4 | 108544/133120/17280 |
+| `binary/in/4096/single` | 2300 | 2300 | 434782 | 0 | 3/3/0 | 6400/10624/0 |
+| `binary/in/4096/burst64` | 30102 | 470 | 2126104 | 0 | 133/133/8 | 355456/625792/13824 |
+| `binary/out/256/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
+| `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 8640/0/8640 |
+| `binary/out/4096/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
+| `binary/out/4096/burst64` | 42602 | 665 | 1502276 | 42002 | 0/0/4 | 8640/0/8640 |
+| `classified/latest` | 59803 | 934 | 1070180 | 36602 | 64/256/132 | 48684/57600/40492 |
+| `classified/volatile` | 58603 | 915 | 1092094 | 76204 | 64/256/132 | 48684/57600/40492 |
+| `classified/authorized-gap` | 4100 | 4100 | 243902 | 0 | 14/11/0 | 7378/6472/0 |
+| `reconnect/2` | 5101 | 5101 | 196039 | 700 | 25/10/1 | 6916/6534/128 |
+| `reconnect/8` | 8001 | 8001 | 124984 | 600 | 37/10/3 | 8108/8582/960 |
+| `reconnect/16` | 12301 | 12301 | 81294 | 801 | 61/16/5 | 12882/14470/2624 |
+| `polling/ready-frame-burst` | 15601 | 917 | 1089673 | 61204 | 17/68/3 | 6208/11492/4032 |
+| `polling/ready-byte-burst` | 6900 | 1725 | 579710 | 6100 | 4/16/8 | 6048/5376/5536 |
+| `polling/pending-recovery` | 2600 | 2600 | 384615 | 1501 | 1/4/2 | 624/900/496 |
 
-The data identifies JSON serialization, especially 4 KiB outbound bursts, as
-the current time and byte-allocation hotspot. That is evidence for a future
-optimization, not permission to weaken frame ownership, backpressure, event
-delivery, or exact accountability.
+In alternating base/head timing runs pinned to the same CPU, the 4 KiB outbound
+burst medians moved from 202,010/199,010 ns to 151,207/150,108 ns. Its checked
+allocation record moved from `64/64/132` operations and
+`537408/262144/529216` bytes to `64/64/4` and `279104/262144/8640`, while its
+protocol-ledger digest and every ownership, backpressure, delivery, and
+accountability invariant remained unchanged.

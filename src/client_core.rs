@@ -5,6 +5,7 @@
 //! client state lives here so both drivers cannot drift semantically.
 
 use std::collections::{HashSet, VecDeque};
+use std::io;
 
 use crate::accountability::{self, DeliveryAccountability, GameDataDisposition};
 use crate::client::{
@@ -28,6 +29,39 @@ pub(crate) struct FrameOutcome {
 pub(crate) enum CoreCommand {
     Message(ClientMessage),
     Binary(Vec<u8>),
+}
+
+const GAME_DATA_JSON_ENVELOPE_CAPACITY: usize = 128;
+const GAME_DATA_JSON_PREALLOCATION_THRESHOLD: usize = 4_096;
+
+/// Serialize one client message while avoiding geometric buffer growth for
+/// application-owned JSON payloads.
+///
+/// `serde_json::to_string` begins with a small fixed buffer. That is a good
+/// default for control messages, but it repeatedly reallocates when a
+/// direct `GameData` string is already known to be large. Its existing byte
+/// length gives an O(1) capacity hint, with fixed space for the adjacent-tagged
+/// envelope, delivery class, and key. Heavily escaped strings may still grow
+/// the buffer; ordinary game payloads avoid both an extra scan and geometric
+/// reallocations. Structured values retain serde_json's default path until a
+/// representative workload proves that a recursive hint is worthwhile.
+pub(crate) fn serialize_client_message(message: &ClientMessage) -> serde_json::Result<String> {
+    let ClientMessage::GameData { data, .. } = message else {
+        return serde_json::to_string(message);
+    };
+
+    let serde_json::Value::String(data) = data else {
+        return serde_json::to_string(message);
+    };
+    if data.len() < GAME_DATA_JSON_PREALLOCATION_THRESHOLD {
+        return serde_json::to_string(message);
+    }
+    let value_capacity = data.len().saturating_add(2);
+    let capacity = value_capacity.saturating_add(GAME_DATA_JSON_ENVELOPE_CAPACITY);
+    let mut encoded = Vec::with_capacity(capacity);
+    serde_json::to_writer(&mut encoded, message)?;
+    String::from_utf8(encoded)
+        .map_err(|error| serde_json::Error::io(io::Error::new(io::ErrorKind::InvalidData, error)))
 }
 
 impl std::fmt::Debug for CoreCommand {
@@ -1755,6 +1789,68 @@ mod tests {
         RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
         SessionPeer, SpectatorJoinedPayload, V2BinaryGameDataFrame,
     };
+
+    #[test]
+    fn optimized_game_data_serialization_preserves_canonical_wire() {
+        let values = [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!(u64::MAX),
+            serde_json::json!(i64::MIN),
+            serde_json::json!(f64::MAX),
+            serde_json::json!("quoted \" text \\ and controls\n\t\u{0000}"),
+            serde_json::json!({
+                "unicode-鱼": ["signal", {"nested": "j".repeat(4_096)}],
+                "numbers": [0, -1, 1.5e200],
+            }),
+            serde_json::Value::String("\"\\\n\t\u{0000}".repeat(1_024)),
+            serde_json::Value::String("鱼🐟".repeat(1_024)),
+        ];
+        let deliveries = [
+            (None, None),
+            (Some(DeliveryClass::Latest), Some(u32::MAX)),
+            (Some(DeliveryClass::Volatile), None),
+        ];
+
+        for value in values {
+            for (class, key) in deliveries {
+                let message = ClientMessage::GameData {
+                    data: value.clone(),
+                    class,
+                    key,
+                };
+                let canonical = serde_json::to_string(&message)
+                    .expect("canonical GameData fixture should serialize");
+                let optimized = serialize_client_message(&message)
+                    .expect("optimized GameData fixture should serialize");
+                assert_eq!(optimized, canonical);
+            }
+        }
+
+        let ordinary_large_payload = serde_json::Value::String("j".repeat(4_096));
+        let message = ClientMessage::GameData {
+            data: ordinary_large_payload.clone(),
+            class: None,
+            key: None,
+        };
+        assert!(
+            ordinary_large_payload
+                .as_str()
+                .expect("fixture is a JSON string")
+                .len()
+                .saturating_add(2)
+                .saturating_add(GAME_DATA_JSON_ENVELOPE_CAPACITY)
+                >= serde_json::to_string(&message)
+                    .expect("large GameData fixture should serialize")
+                    .len()
+        );
+
+        let control = ClientMessage::Ping;
+        assert_eq!(
+            serialize_client_message(&control).expect("optimized control message should serialize"),
+            serde_json::to_string(&control).expect("canonical control message should serialize")
+        );
+    }
 
     const LOCAL: u128 = 1;
     const PEER: u128 = 2;

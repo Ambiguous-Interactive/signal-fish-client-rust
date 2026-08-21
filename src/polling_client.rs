@@ -25,7 +25,8 @@ use tracing::{debug, error};
 
 use crate::client::{ClientSnapshot, GameDataDelivery, JoinRoomParams, RoomRole, SignalFishConfig};
 use crate::client_core::{
-    ClientCore, ClientOperation, CoreCommand as PollingCommand, SignalGeneration,
+    serialize_client_message, ClientCore, ClientOperation, CoreCommand as PollingCommand,
+    SignalGeneration,
 };
 use crate::error::{Result, SignalFishError};
 use crate::event::SignalFishEvent;
@@ -1019,7 +1020,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 match queued.command {
                     PollingCommand::Message(message) => {
                         let Some(json) =
-                            self.finish_serialization_at(serde_json::to_string(&message), now)
+                            self.finish_serialization_at(serialize_client_message(&message), now)
                         else {
                             continue;
                         };

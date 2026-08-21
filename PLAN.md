@@ -17,8 +17,11 @@
 - A deterministic 28-cell `ClientCore` laboratory now pins latency,
   throughput, queue-age, and all six allocation-counter baselines. Required CI
   enforces debug/release ceilings while leaving timings diagnostic.
-- The 12 required workflows on PR #122's head were green before merge to
-  current `main` commit `1acc211`; the separate live Repository Policy audit
+- Direct JSON string game payloads of at least 4 KiB now use measured
+  capacity-aware serialization in both drivers. The pinned 4 KiB burst drops
+  from 132 to four reallocations while all 28 wire ledgers remain unchanged.
+- The 12 required workflows on PR #123's head were green before merge to
+  current `main` commit `8c1c620`; the separate live Repository Policy audit
   remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files

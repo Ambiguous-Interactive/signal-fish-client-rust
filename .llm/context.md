@@ -322,9 +322,9 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 
 ### Performance Contract
 
-The opt-in unpublished `tools/perf-lab` drives 28 deterministic polling-client
-workloads through shared `ClientCore`. Pinned CI gates exact protocol ledgers
-and all six allocation counters; see `tools/perf-lab/README.md`.
+The opt-in `tools/perf-lab` drives 28 deterministic polling-client workloads;
+pinned CI gates their protocol ledgers and allocation counters. Direct JSON
+strings at least 4 KiB use capacity-aware serialization. See its README.
 
 ## Feature Flags
 
