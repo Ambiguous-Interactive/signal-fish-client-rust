@@ -107,6 +107,7 @@ pub(crate) struct TokenBindingSession {
     secret: zeroize::Zeroizing<[u8; 32]>,
     next_sequence: u64,
     challenge: TokenBindingChallenge,
+    client_fingerprint: Option<zeroize::Zeroizing<String>>,
 }
 
 #[cfg(feature = "token-binding")]
@@ -124,6 +125,7 @@ impl TokenBindingSession {
     pub(crate) fn from_challenge(
         handshake_key: &str,
         challenge: TokenBindingChallenge,
+        client_fingerprint: Option<String>,
     ) -> Result<Self, SignalFishError> {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -172,6 +174,7 @@ impl TokenBindingSession {
             secret,
             next_sequence: challenge.first_sequence,
             challenge,
+            client_fingerprint: client_fingerprint.map(zeroize::Zeroizing::new),
         })
     }
 
@@ -214,12 +217,18 @@ impl TokenBindingSession {
         mac.update(domain);
         mac.update(&self.next_sequence.to_be_bytes());
         mac.update(payload);
+        if let Some(fingerprint) = self.client_fingerprint.as_deref() {
+            mac.update(fingerprint.as_bytes());
+        }
         Ok(TokenBindingProof {
             version: VERSION,
             scheme: TokenBindingScheme::ServerNonceHkdfSha256,
             sequence: self.next_sequence,
             signature: STANDARD.encode(mac.finalize().into_bytes()),
-            fingerprint: None,
+            fingerprint: self
+                .client_fingerprint
+                .as_deref()
+                .map(std::string::ToString::to_string),
         })
     }
 
@@ -538,6 +547,25 @@ mod tests {
         binary_sequence: u64,
         binary_signature_base64: String,
         binary_envelope_hex: String,
+        client_fingerprint: String,
+        fingerprint_json_signature_base64: String,
+        fingerprint_binary_signature_base64: String,
+        fingerprint_json_mac_input_hex: String,
+        fingerprint_binary_mac_input_hex: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SignedBinaryEnvelope {
+        token_binding: SignedProof,
+        #[serde(rename = "payload")]
+        #[serde(with = "serde_bytes")]
+        _payload: Vec<u8>,
+    }
+
+    #[derive(Deserialize)]
+    struct SignedProof {
+        signature: String,
+        fingerprint: Option<String>,
     }
 
     fn golden_vectors() -> GoldenVectors {
@@ -581,7 +609,7 @@ mod tests {
         let mut challenge = challenge();
         challenge.nonce.clone_from(&vectors.nonce_base64);
         let mut session =
-            TokenBindingSession::from_challenge(&vectors.handshake_key_base64, challenge)
+            TokenBindingSession::from_challenge(&vectors.handshake_key_base64, challenge, None)
                 .expect("pinned Server 0.7 challenge must derive a session");
         assert_eq!(encode_hex(session.secret.as_ref()), vectors.derived_key_hex);
         assert_eq!(HKDF_INFO, vectors.hkdf_info.as_bytes());
@@ -631,7 +659,7 @@ mod tests {
 
     #[test]
     fn canonical_json_rejects_the_server_forbidden_input_class() {
-        let session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge())
+        let session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
             .expect("test challenge must derive a session");
         for raw in [
             r#"{"type":"Ping","n":1.0}"#,
@@ -649,6 +677,77 @@ mod tests {
                 ))
             ));
         }
+    }
+
+    #[test]
+    fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
+        let vectors = golden_vectors();
+        let mut challenge = challenge();
+        challenge.nonce.clone_from(&vectors.nonce_base64);
+        let mut session = TokenBindingSession::from_challenge(
+            &vectors.handshake_key_base64,
+            challenge,
+            Some(vectors.client_fingerprint.clone()),
+        )
+        .expect("pinned Server 0.7 fingerprint challenge must derive a session");
+        let UniqueJsonValue(unsigned_json) = serde_json::from_str(&vectors.json_input)
+            .expect("fingerprint JSON golden must be unique and strict");
+        let mut expected_json_mac_input = JSON_DOMAIN.to_vec();
+        expected_json_mac_input.extend_from_slice(&vectors.json_sequence.to_be_bytes());
+        expected_json_mac_input.extend_from_slice(
+            &canonical_json(&unsigned_json).expect("fingerprint JSON golden must canonicalize"),
+        );
+        expected_json_mac_input.extend_from_slice(vectors.client_fingerprint.as_bytes());
+        assert_eq!(
+            encode_hex(&expected_json_mac_input),
+            vectors.fingerprint_json_mac_input_hex
+        );
+
+        let TransportFrame::Text(signed_json) = session
+            .prepare(&TransportFrame::Text(vectors.json_input.clone()))
+            .expect("fingerprint-bound JSON golden must be signable")
+        else {
+            panic!("text input must produce text output");
+        };
+        let signed_json: serde_json::Value =
+            serde_json::from_str(&signed_json).expect("signed JSON must parse");
+        assert_eq!(
+            signed_json["token_binding"]["fingerprint"],
+            vectors.client_fingerprint
+        );
+        assert_eq!(
+            signed_json["token_binding"]["signature"],
+            vectors.fingerprint_json_signature_base64
+        );
+        session
+            .commit()
+            .expect("accepting the JSON golden must advance sequence");
+
+        let binary_payload = decode_hex(&vectors.binary_payload_hex);
+        let mut expected_binary_mac_input = BINARY_DOMAIN.to_vec();
+        expected_binary_mac_input.extend_from_slice(&vectors.binary_sequence.to_be_bytes());
+        expected_binary_mac_input.extend_from_slice(&binary_payload);
+        expected_binary_mac_input.extend_from_slice(vectors.client_fingerprint.as_bytes());
+        assert_eq!(
+            encode_hex(&expected_binary_mac_input),
+            vectors.fingerprint_binary_mac_input_hex
+        );
+        let TransportFrame::Binary(signed_binary) = session
+            .prepare(&TransportFrame::Binary(binary_payload))
+            .expect("fingerprint-bound binary golden must be signable")
+        else {
+            panic!("binary input must produce binary output");
+        };
+        let signed_binary: SignedBinaryEnvelope =
+            rmp_serde::from_slice(&signed_binary).expect("binary envelope must parse");
+        assert_eq!(
+            signed_binary.token_binding.fingerprint.as_deref(),
+            Some(vectors.client_fingerprint.as_str())
+        );
+        assert_eq!(
+            signed_binary.token_binding.signature,
+            vectors.fingerprint_binary_signature_base64
+        );
     }
 
     #[test]
@@ -686,8 +785,13 @@ mod tests {
     #[test]
     fn debug_and_errors_omit_handshake_and_proof_material() {
         let challenge = challenge();
-        let session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge.clone())
-            .expect("test challenge must derive a session");
+        let fingerprint = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+        let session = TokenBindingSession::from_challenge(
+            HANDSHAKE_KEY,
+            challenge.clone(),
+            Some(fingerprint.to_string()),
+        )
+        .expect("test challenge must derive a session");
         let signed = session
             .prepare(&TransportFrame::Text(r#"{"type":"Ping"}"#.to_string()))
             .expect("Ping must be signable");
@@ -718,6 +822,10 @@ mod tests {
                 "proof signature leaked: {output}"
             );
             assert!(
+                !output.contains(fingerprint),
+                "fingerprint leaked: {output}"
+            );
+            assert!(
                 !output.contains("Ping"),
                 "application payload leaked: {output}"
             );
@@ -726,7 +834,7 @@ mod tests {
 
     #[test]
     fn sequence_exhaustion_is_fail_closed() {
-        let mut session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge())
+        let mut session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
             .expect("test challenge must derive a session");
         session.next_sequence = MAX_SAFE_INTEGER;
         assert!(session

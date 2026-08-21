@@ -172,11 +172,11 @@ RFC 6455 key plus server nonce, zeroizes retained key material, and protects all
 outbound JSON/binary frames with one sequence. Sequence commits only at backend
 ownership transfer. Browser, Emscripten, and Godot APIs cannot expose the
 handshake key; `from_stream` is likewise post-handshake and cannot opt in.
-Required Server 0.7 profiles require WSS. Custom roots/mTLS use
-`connect_with_tls_config`, but `require_client_fingerprint=true` profiles remain
-unsupported: the SDK does not calculate, transmit, or authenticate the leaf
-certificate fingerprint, and presenting an mTLS certificate alone is
-insufficient.
+Required Server 0.7 profiles require WSS. Custom rustls token-binding offers
+wrap the resolver and disable resumption only on a clone, including Optional
+fallback; a compatible X.509 signer binds proofs to its selected leaf's
+lowercase SHA-256-of-DER fingerprint without a caller claim. This supports
+strict Server 0.7; browser, Emscripten, Godot, and post-handshake transports remain incapable.
 The v2 proof is client-to-server only and binds content/order to one physical
 handshake; it is not confidentiality or server authentication. On `ws://`, an
 on-path observer sees the key and nonce and can forge it. Every reconnect gets a

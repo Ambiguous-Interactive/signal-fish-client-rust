@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `token_binding_status`, and `token_binding_challenge`. Strict challenge
   validation, shared JSON/binary proof sequencing, canonical Server 0.7
   goldens, and pinned positive/negative required-WSS smokes back the surface.
+  Certificate-capable custom rustls connections automatically bind proofs to
+  the exact selected mTLS leaf certificate, supporting Server 0.7's
+  `require_client_fingerprint=true` profile without a caller-supplied claim.
   The default connection path and dependency graph remain unchanged.
 - Added Signal Fish Server 0.7.0 protocol conformance, including
   `SessionGeneration`, `DirectEndpoint::{host, port}`,

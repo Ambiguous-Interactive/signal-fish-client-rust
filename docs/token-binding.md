@@ -70,12 +70,21 @@ specific reason to inspect it; its `Debug` output redacts the nonce.
 
 For private roots or mutual TLS, enable `tls` and call
 `WebSocketTransport::connect_with_tls_config` with an
-`Arc<rustls::ClientConfig>`. The transport uses that configuration only during
-connection setup and does not retain or format it. Server profiles that set
-`require_client_fingerprint=true` are not supported: this implementation does
-not calculate the leaf-certificate fingerprint, add it to the proof, or include
-its bytes in the HMAC. Supplying an mTLS certificate alone does not satisfy that
-profile.
+`Arc<rustls::ClientConfig>`. When token binding is offered, the transport
+delegates to that configuration's resolver. If rustls chooses a compatible
+X.509 client signer, active proofs bind to the exact selected leaf certificate.
+The transport hashes the leaf's DER bytes with SHA-256, sends the lowercase
+hexadecimal fingerprint, and signs those same ASCII bytes. It does not treat an
+RFC 7250 raw public key as a certificate, and there is no caller-supplied claim.
+
+The transport clones the custom configuration and disables TLS resumption on
+that clone so every offered physical connection performs a certificate
+selection that the proof signer can observe. In `Optional` mode this also
+applies to the unsigned fallback connection after the server omits the
+subprotocol. The caller's configuration and resumption cache are not mutated.
+Server 0.7 profiles with `require_client_fingerprint=true` additionally require
+built-in WSS, a trusted client CA, mTLS client authentication, and required
+token binding.
 
 ## Wire and failure contract
 
@@ -94,8 +103,9 @@ JSON/MessagePack goldens live under `tests/token-binding/`. Unsupported JSON
 forms—duplicate object members, floats/exponents/negative zero, and integers
 outside JavaScript's safe range—fail closed with a typed, non-secret reason.
 
-Handshake keys, derived keys, proofs, signatures, URL credentials, and wrapped
-payloads are never included in token-binding `Debug`, tracing, or error text.
+Handshake keys, derived keys, certificate fingerprints, proofs, signatures,
+URL credentials, and wrapped payloads are not included in token-binding
+`Debug`, tracing, or error text.
 
 ## Transport and platform capability
 

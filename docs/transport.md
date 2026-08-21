@@ -254,7 +254,10 @@ The opt-in native `token-binding` feature adds disabled, optional, and required
 challenge validation, and outbound frame protection stay inside this physical
 transport, so the same connected transport works with both async and polling
 clients. Required Server 0.7 deployments use WSS; private trust roots or mTLS
-can be supplied through `connect_with_tls_config`. See
+can be supplied through `connect_with_tls_config`. When a compatible X.509
+client signer is selected, the active custom-rustls token-binding path
+automatically binds each proof to that exact leaf, supporting Server 0.7's
+`require_client_fingerprint=true` profile without a caller-supplied claim. See
 [WebSocket Token Binding](token-binding.md) for downgrade behavior, platform
 limits, and the exact wire contract.
 

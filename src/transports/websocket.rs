@@ -64,11 +64,152 @@ fn install_tls_provider() {
     });
 }
 
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+#[derive(Clone)]
+struct ClientCertificateFingerprintTracker {
+    selected: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl std::fmt::Debug for ClientCertificateFingerprintTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientCertificateFingerprintTracker")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl ClientCertificateFingerprintTracker {
+    fn wrap(
+        tls_config: std::sync::Arc<rustls::ClientConfig>,
+    ) -> (
+        std::sync::Arc<rustls::ClientConfig>,
+        Option<ClientCertificateFingerprintTracker>,
+    ) {
+        let tracker = Self {
+            selected: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        };
+        let mut tracked_config = (*tls_config).clone();
+        tracked_config.resumption = rustls::client::Resumption::disabled();
+        tracked_config.client_auth_cert_resolver =
+            std::sync::Arc::new(TrackingClientCertificateResolver {
+                delegate: tls_config.client_auth_cert_resolver.clone(),
+                tracker: tracker.clone(),
+            });
+        (std::sync::Arc::new(tracked_config), Some(tracker))
+    }
+
+    fn fingerprint(&self) -> Option<String> {
+        match self.selected.lock() {
+            Ok(selected) => selected.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn record(&self, fingerprint: Option<String>) {
+        match self.selected.lock() {
+            Ok(mut selected) => *selected = fingerprint,
+            Err(poisoned) => *poisoned.into_inner() = fingerprint,
+        }
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+struct TrackingClientCertificateResolver {
+    delegate: std::sync::Arc<dyn rustls::client::ResolvesClientCert>,
+    tracker: ClientCertificateFingerprintTracker,
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+struct TrackingSigningKey {
+    delegate: std::sync::Arc<dyn rustls::sign::SigningKey>,
+    fingerprint: Option<String>,
+    tracker: ClientCertificateFingerprintTracker,
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl std::fmt::Debug for TrackingSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackingSigningKey").finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl rustls::sign::SigningKey for TrackingSigningKey {
+    fn choose_scheme(
+        &self,
+        offered: &[rustls::SignatureScheme],
+    ) -> Option<Box<dyn rustls::sign::Signer>> {
+        let signer = self.delegate.choose_scheme(offered);
+        self.tracker
+            .record(signer.as_ref().and(self.fingerprint.clone()));
+        signer
+    }
+
+    fn public_key(&self) -> Option<rustls::pki_types::SubjectPublicKeyInfoDer<'_>> {
+        self.delegate.public_key()
+    }
+
+    fn algorithm(&self) -> rustls::SignatureAlgorithm {
+        self.delegate.algorithm()
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl std::fmt::Debug for TrackingClientCertificateResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackingClientCertificateResolver")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+fn client_certificate_fingerprint(certificate_der: &[u8]) -> String {
+    use sha2::Digest as _;
+
+    sha2::Sha256::digest(certificate_der)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+impl rustls::client::ResolvesClientCert for TrackingClientCertificateResolver {
+    fn resolve(
+        &self,
+        root_hint_subjects: &[&[u8]],
+        sigschemes: &[rustls::SignatureScheme],
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        self.tracker.record(None);
+        let selected = self.delegate.resolve(root_hint_subjects, sigschemes)?;
+        let fingerprint = (!self.delegate.only_raw_public_keys())
+            .then(|| selected.cert.first())
+            .flatten()
+            .map(|certificate| client_certificate_fingerprint(certificate.as_ref()));
+        let mut tracked = (*selected).clone();
+        tracked.key = std::sync::Arc::new(TrackingSigningKey {
+            delegate: selected.key.clone(),
+            fingerprint,
+            tracker: self.tracker.clone(),
+        });
+        Some(std::sync::Arc::new(tracked))
+    }
+
+    fn only_raw_public_keys(&self) -> bool {
+        self.delegate.only_raw_public_keys()
+    }
+
+    fn has_certs(&self) -> bool {
+        self.delegate.has_certs()
+    }
+}
+
 #[cfg(feature = "token-binding")]
 async fn connect_with_token_binding(
     url: &str,
     options: WebSocketConnectOptions,
     #[cfg(feature = "tls")] connector: Option<tokio_tungstenite::Connector>,
+    #[cfg(feature = "tls")] client_fingerprint: Option<ClientCertificateFingerprintTracker>,
 ) -> Result<(WsStream, WebSocketTokenBinding), SignalFishError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     use tokio_tungstenite::tungstenite::error::{ProtocolError, SubProtocolError};
@@ -163,6 +304,10 @@ async fn connect_with_token_binding(
     let session = crate::token_binding::TokenBindingSession::from_challenge(
         handshake_key.as_str(),
         challenge,
+        #[cfg(feature = "tls")]
+        client_fingerprint.and_then(|tracker| tracker.fingerprint()),
+        #[cfg(not(feature = "tls"))]
+        None,
     )?;
     Ok((stream, WebSocketTokenBinding::Active(Some(session))))
 }
@@ -513,7 +658,7 @@ impl WebSocketTransport {
             (stream, WebSocketTokenBinding::Disabled)
         } else {
             #[cfg(feature = "tls")]
-            let connected = connect_with_token_binding(url, options, None).await?;
+            let connected = connect_with_token_binding(url, options, None, None).await?;
             #[cfg(not(feature = "tls"))]
             let connected = connect_with_token_binding(url, options).await?;
             connected
@@ -542,7 +687,11 @@ impl WebSocketTransport {
     ///
     /// This is the token-binding-capable path for private roots, custom trust
     /// stores, and mTLS. The configuration is used only during connection setup
-    /// and is not retained or formatted by the transport.
+    /// and is not retained or formatted by the transport. When token binding is
+    /// offered, the transport wraps the resolver and disables TLS resumption on
+    /// its cloned configuration, including an unsigned fallback after optional
+    /// negotiation. If rustls selects an X.509 client signer, active proofs bind
+    /// to that exact leaf. The caller's configuration and cache are not mutated.
     ///
     /// # Errors
     ///
@@ -562,7 +711,7 @@ impl WebSocketTransport {
         }
 
         install_tls_provider();
-        let connector = tokio_tungstenite::Connector::Rustls(tls_config);
+        let connector = tokio_tungstenite::Connector::Rustls(tls_config.clone());
         tracing::debug!(
             secure = url.starts_with("wss://"),
             disable_nagle = options.disable_nagle,
@@ -583,7 +732,10 @@ impl WebSocketTransport {
             .map_err(map_connect_error)?;
             (stream, WebSocketTokenBinding::Disabled)
         } else {
-            connect_with_token_binding(url, options, Some(connector)).await?
+            let (tls_config, fingerprint_tracker) =
+                ClientCertificateFingerprintTracker::wrap(tls_config);
+            let connector = tokio_tungstenite::Connector::Rustls(tls_config);
+            connect_with_token_binding(url, options, Some(connector), fingerprint_tracker).await?
         };
 
         #[cfg(not(feature = "token-binding"))]
@@ -1025,6 +1177,8 @@ impl Transport for WebSocketTransport {
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    use rustls::client::ResolvesClientCert as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::task::{Wake, Waker};
@@ -1040,6 +1194,148 @@ mod tests {
     fn websocket_transport_is_debug() {
         fn assert_debug<T: std::fmt::Debug>() {}
         assert_debug::<WebSocketTransport>();
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[test]
+    fn client_certificate_fingerprint_is_lowercase_sha256_and_redacted() {
+        let fingerprint = client_certificate_fingerprint(b"abc");
+        assert_eq!(
+            fingerprint,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let tracker = ClientCertificateFingerprintTracker {
+            selected: Arc::new(std::sync::Mutex::new(Some(fingerprint.clone()))),
+        };
+        assert!(!format!("{tracker:?}").contains(&fingerprint));
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[test]
+    fn custom_tls_tracking_clones_even_when_resolver_reports_no_certificates() {
+        install_tls_provider();
+        let config = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let (wrapped, tracker) = ClientCertificateFingerprintTracker::wrap(config.clone());
+        assert!(!Arc::ptr_eq(&wrapped, &config));
+        assert!(!wrapped.client_auth_cert_resolver.has_certs());
+        assert!(!config.client_auth_cert_resolver.has_certs());
+        assert_eq!(
+            tracker.expect("tracking must be installed").fingerprint(),
+            None
+        );
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[derive(Debug)]
+    struct TestSigningKey {
+        compatible: bool,
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    impl rustls::sign::SigningKey for TestSigningKey {
+        fn choose_scheme(
+            &self,
+            offered: &[rustls::SignatureScheme],
+        ) -> Option<Box<dyn rustls::sign::Signer>> {
+            (self.compatible && offered.contains(&rustls::SignatureScheme::ECDSA_NISTP256_SHA256))
+                .then(|| Box::new(TestSigner) as Box<dyn rustls::sign::Signer>)
+        }
+
+        fn algorithm(&self) -> rustls::SignatureAlgorithm {
+            rustls::SignatureAlgorithm::ECDSA
+        }
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[derive(Debug)]
+    struct TestSigner;
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    impl rustls::sign::Signer for TestSigner {
+        fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+            Ok(vec![1])
+        }
+
+        fn scheme(&self) -> rustls::SignatureScheme {
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256
+        }
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[derive(Debug)]
+    struct TestClientCertificateResolver {
+        certified_key: Arc<rustls::sign::CertifiedKey>,
+        raw_public_key: bool,
+        reports_certificates: bool,
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    impl rustls::client::ResolvesClientCert for TestClientCertificateResolver {
+        fn resolve(
+            &self,
+            _root_hint_subjects: &[&[u8]],
+            _sigschemes: &[rustls::SignatureScheme],
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(self.certified_key.clone())
+        }
+
+        fn only_raw_public_keys(&self) -> bool {
+            self.raw_public_key
+        }
+
+        fn has_certs(&self) -> bool {
+            self.reports_certificates
+        }
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    fn test_client_certificate_resolver(
+        compatible: bool,
+        raw_public_key: bool,
+        reports_certificates: bool,
+    ) -> Arc<dyn rustls::client::ResolvesClientCert> {
+        let certified_key = rustls::sign::CertifiedKey::new(
+            vec![rustls::pki_types::CertificateDer::from(vec![1, 2, 3])],
+            Arc::new(TestSigningKey { compatible }),
+        );
+        Arc::new(TestClientCertificateResolver {
+            certified_key: Arc::new(certified_key),
+            raw_public_key,
+            reports_certificates,
+        })
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[test]
+    fn fingerprint_is_recorded_only_when_rustls_selects_an_x509_signer() {
+        let offered = [rustls::SignatureScheme::ECDSA_NISTP256_SHA256];
+        for (compatible, raw_public_key, expected) in [
+            (
+                true,
+                false,
+                Some(client_certificate_fingerprint(&[1, 2, 3])),
+            ),
+            (false, false, None),
+            (true, true, None),
+        ] {
+            let tracker = ClientCertificateFingerprintTracker {
+                selected: Arc::new(std::sync::Mutex::new(None)),
+            };
+            let resolver = TrackingClientCertificateResolver {
+                delegate: test_client_certificate_resolver(compatible, raw_public_key, false),
+                tracker: tracker.clone(),
+            };
+            let selected = resolver
+                .resolve(&[], &offered)
+                .expect("dynamic test resolver returns a key");
+            assert_eq!(tracker.fingerprint(), None);
+            assert_eq!(selected.key.choose_scheme(&offered).is_some(), compatible);
+            assert_eq!(tracker.fingerprint(), expected);
+        }
     }
 
     #[tokio::test]
@@ -1956,9 +2252,11 @@ mod tests {
         .await;
         let challenge = crate::token_binding::parse_challenge(challenge_json())
             .expect("fixture challenge must parse");
+        let fingerprint = "1376a851f01e89a6b4784fefcd761ec41187b7a5de02da57b764d9d920cf7107";
         let session = crate::token_binding::TokenBindingSession::from_challenge(
             "MDEyMzQ1Njc4OWFiY2RlZg==",
             challenge,
+            Some(fingerprint.to_string()),
         )
         .expect("fixture handshake key must derive a session");
         let mut state = WebSocketState::new(client);
@@ -2001,6 +2299,7 @@ mod tests {
             retry["token_binding"]["sequence"], 1,
             "preparation and backend refusal must not consume a sequence"
         );
+        assert_eq!(retry["token_binding"]["fingerprint"], fingerprint);
 
         state.mark_terminal();
         assert_eq!(state.token_binding.status(), TokenBindingStatus::Active);
