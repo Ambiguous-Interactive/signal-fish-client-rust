@@ -96,5 +96,35 @@ cargo test --workspace --all-features
 
 Two fresh independent adversarial reviews followed the final content changes.
 The verifier and documentation UX reviewer both reported zero remaining
-findings. Hosted PR and workflow evidence will be appended after the pull
-request exists.
+findings.
+
+## Hosted Pull Request
+
+[PR #121](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/121)
+opened non-draft and mergeable. Its first Docs Validation run `32450621351`
+found one hosted-only Markdownlint failure: `docs/index.md` combined a YAML
+`title` with its visible H1, which violates MD025. Removing the redundant YAML
+title preserved the rendered page and made the replacement Docs Validation run
+green.
+
+All 12 pull-request workflows passed on code-bearing head
+`792539205f8b1ac130fedc6ed1e2753f6903a0c8`:
+
+| Workflow | Run |
+| --- | ---: |
+| Docs Validation | 32450770155 |
+| No Panics | 32450769678 |
+| Security | 32450769971 |
+| Workflow Lint | 32450769817 |
+| Unused Deps | 32450769844 |
+| Coverage | 32450769783 |
+| Examples Validation | 32450769872 |
+| Semver Checks | 32450769831 |
+| WASM | 32450769796 |
+| CI | 32450769805 |
+| Deep Safety | 32450769867 |
+| Godot Web | 32450769908 |
+
+The PR has no review threads or actionable hosted comments. Its two submitted
+reviews are quota-exhausted Copilot notices, the known governance limitation
+tracked by issue #90.
