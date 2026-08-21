@@ -1142,22 +1142,35 @@ mod tests {
         ) -> std::task::Poll<
             Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
         > {
-            let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+            let terminal_response = self.incoming.front().and_then(|item| {
                 let Some(Ok(json)) = item else {
-                    return false;
+                    return None;
                 };
-                matches!(
-                    serde_json::from_str::<ServerMessage>(json),
-                    Ok(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. })
-                )
+                serde_json::from_str::<ServerMessage>(json).ok()
             });
-            let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
-                matches!(
-                    serde_json::from_str::<crate::protocol::ClientMessage>(json),
-                    Ok(crate::protocol::ClientMessage::Reconnect { .. })
-                )
+            let expected_command = match terminal_response {
+                Some(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. }) => {
+                    Some("Reconnect")
+                }
+                Some(ServerMessage::RoomLeft) => Some("LeaveRoom"),
+                _ => None,
+            };
+            let expected_command_was_sent = expected_command.is_none_or(|expected| {
+                self.sent.lock().unwrap().iter().any(|json| {
+                    serde_json::from_str::<crate::protocol::ClientMessage>(json).is_ok_and(
+                        |message| {
+                            matches!(
+                                (expected, message),
+                                (
+                                    "Reconnect",
+                                    crate::protocol::ClientMessage::Reconnect { .. }
+                                ) | ("LeaveRoom", crate::protocol::ClientMessage::LeaveRoom)
+                            )
+                        },
+                    )
+                })
             });
-            if reconnect_response_is_gated && !reconnect_was_sent {
+            if !expected_command_was_sent {
                 return std::task::Poll::Pending;
             }
             if let Some(item) = self.incoming.pop_front() {
@@ -1434,6 +1447,16 @@ mod tests {
         }
     }
 
+    fn start_in_scripted_room(
+        transport: MockTransport,
+        driver: SharedDriver,
+    ) -> MeshController<SharedDriver> {
+        let mut mesh = MeshController::start(transport, SignalFishConfig::new("app"), driver);
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted room response must follow an admitted join");
+        mesh
+    }
+
     fn sent_count(sent: &Arc<Mutex<Vec<String>>>, needles: &[&str]) -> usize {
         sent.lock()
             .unwrap()
@@ -1604,6 +1627,24 @@ mod tests {
         ) -> std::task::Poll<
             Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
         > {
+            let room_joined_is_waiting = self.incoming.front().is_some_and(|item| {
+                let Some(Ok(json)) = item else {
+                    return false;
+                };
+                matches!(
+                    serde_json::from_str::<ServerMessage>(json),
+                    Ok(ServerMessage::RoomJoined(_))
+                )
+            });
+            let join_was_sent = self.sent.lock().unwrap().iter().any(|json| {
+                matches!(
+                    serde_json::from_str::<ClientMessage>(json),
+                    Ok(ClientMessage::JoinRoom { .. })
+                )
+            });
+            if room_joined_is_waiting && !join_was_sent {
+                return std::task::Poll::Pending;
+            }
             if let Some(item) = self.incoming.pop_front() {
                 std::task::Poll::Ready(
                     item.map(|result| result.map(crate::transport::TransportFrame::Text)),
@@ -1627,8 +1668,8 @@ mod tests {
     #[tokio::test]
     async fn congestion_buffers_driver_signal_and_relays_exactly_once() {
         let peer = uuid(9);
-        // One permit: exactly the Authenticate send is allowed through.
-        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        // Two permits establish the real Authenticate + JoinRoom setup.
+        let permits = Arc::new(tokio::sync::Semaphore::new(2));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sent = Arc::new(Mutex::new(Vec::new()));
         let transport = GatedTransport {
@@ -1646,6 +1687,15 @@ mod tests {
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
         let mut mesh = MeshController::start(transport, config, driver.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while sent_count(&sent, &[r#""type":"Authenticate""#]) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Authenticate never left the capacity-1 queue");
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted RoomJoined must follow an admitted join");
 
         // Pump until the SessionPlan is folded: the driver has been told to
         // connect and holds an Offer ready to relay (not yet drained).
@@ -1664,7 +1714,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 2 {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1710,8 +1760,8 @@ mod tests {
     #[tokio::test]
     async fn generation_change_discards_buffered_signal_without_retagging() {
         let peer = uuid(9);
-        // One permit: exactly the Authenticate send is allowed through.
-        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        // Two permits establish the real Authenticate + JoinRoom setup.
+        let permits = Arc::new(tokio::sync::Semaphore::new(2));
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sent = Arc::new(Mutex::new(Vec::new()));
         let transport = GatedTransport {
@@ -1732,6 +1782,15 @@ mod tests {
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
         let mut mesh = MeshController::start(transport, config, driver.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while sent_count(&sent, &[r#""type":"Authenticate""#]) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Authenticate never left the capacity-1 queue");
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted RoomJoined must follow an admitted join");
 
         // Fold the SessionPlan (driver told to connect; Offer queued in the
         // driver, not yet drained). The replacement plan is still undelivered.
@@ -1749,7 +1808,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 2 {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1834,8 +1893,7 @@ mod tests {
                 serde_json::json!({ "Answer": "remote" }),
             ))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         let connected = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1905,8 +1963,7 @@ mod tests {
                 serde_json::json!({ "Offer": "remote-offer" }),
             ))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         let connected = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1951,8 +2008,7 @@ mod tests {
             Some(Ok(session_plan(peer, false))),
             Some(Ok(player_left)),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         for _ in 0..8 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
@@ -1973,8 +2029,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, false))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .contains(&DriverCall::Connect(peer, false)))
@@ -2008,8 +2063,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(uuid(1), false))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         mesh.send_to(peer, &[9, 9]);
         assert!(driver.calls().contains(&DriverCall::Send(peer, vec![9, 9])));
         mesh.shutdown().await;
@@ -2042,8 +2096,7 @@ mod tests {
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         // Drive the handshake to PeerConnected.
         tokio::time::timeout(
@@ -2092,8 +2145,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[], &[]))),
             Some(Ok(new_peer)),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         for _ in 0..6 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
             if driver.calls().contains(&DriverCall::Connect(peer, true)) {
@@ -2115,8 +2167,15 @@ mod tests {
             Some(Ok(session_plan(peer, false))),
             Some(Ok(room_left)),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls
+                .contains(&DriverCall::Connect(peer, false)))
+            .await,
+            "precondition: the peer must be connected before leaving"
+        );
+        mesh.leave_room()
+            .expect("scripted RoomLeft must follow an admitted leave");
         for _ in 0..8 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
             if driver.calls().contains(&DriverCall::Disconnect(peer)) {
@@ -2139,8 +2198,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(room_joined.to_string())),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         for _ in 0..6 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
             if driver
@@ -2173,8 +2231,7 @@ mod tests {
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         // Drive the handshake to an open channel (reports TransportStatus(true)).
         tokio::time::timeout(
@@ -2217,8 +2274,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[(a, false), (b, false)], &[]))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(a, false)) && c.contains(&DriverCall::Connect(b, false))
         })
@@ -2287,8 +2343,7 @@ mod tests {
                 &["stun:2"],
             ))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         pump_until(&mut mesh, &driver, |c2| {
             c2.contains(&DriverCall::Connect(c, true))
         })
@@ -2342,8 +2397,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, false, first))),
             Some(Ok(session_plan_with_generation(peer, false, second))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
@@ -2374,8 +2428,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, false, first))),
             Some(Ok(session_plan_with_generation(peer, false, second))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .contains(&DriverCall::ConnectGeneration(peer, Some(second))))
@@ -2420,8 +2473,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, true, first))),
             Some(Ok(session_plan_with_generation(peer, true, second))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         loop {
             if matches!(
@@ -2482,8 +2534,7 @@ mod tests {
                 serde_json::json!({ "Offer": "unplanned" }),
             ))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         drain(&mut mesh, 8).await;
         assert!(!driver
             .calls()
@@ -2512,8 +2563,7 @@ mod tests {
                 })
                 .unwrap())),
             ]);
-            let mut mesh =
-                MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+            let mut mesh = start_in_scripted_room(transport, driver.clone());
             drain(&mut mesh, 10).await;
             let calls = driver.calls();
             assert!(calls.contains(&DriverCall::Disconnect(old_peer)));
@@ -2558,8 +2608,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[(p, true)], &["stun:a"]))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         drain(&mut mesh, 12).await;
         assert_eq!(
             count_calls(
@@ -2588,8 +2637,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         drain(&mut mesh, 12).await;
         assert_eq!(
             count_calls(
@@ -2627,8 +2675,7 @@ mod tests {
             Some(Ok(session_plan(p, false))),
             Some(Ok(session_plan(p, true))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         let flipped = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(p, true))
         })
@@ -2676,8 +2723,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, false))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         let flipped = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(p, true))
         })
@@ -2713,8 +2759,7 @@ mod tests {
             Some(Ok(session_plan(p, true))),
             Some(Ok(signal_from(p, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
 
         // Drive the handshake to an open channel (reports TransportStatus(true)).
         tokio::time::timeout(
@@ -2778,8 +2823,7 @@ mod tests {
                 &["stun:2"],
             ))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         pump_until(&mut mesh, &driver, |calls| {
             calls.contains(&DriverCall::Connect(c, false))
         })
@@ -2844,8 +2888,7 @@ mod tests {
             Some(Ok(signal_from(p, serde_json::json!({ "Bogus": "x" })))),
             Some(Ok(signal_from(p, serde_json::json!({ "Offer": "ok" })))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::OnSignal(p, PeerSignal::Offer("ok".into())))
         })
@@ -2873,8 +2916,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[(p, false)], &["stun:real"]))),
             Some(Ok(session_plan_multi(&[(p, false), (q, false)], &[]))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(q, false))
         })
@@ -2906,8 +2948,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(session_plan_multi(&[(q, true)], &["stun:a"]))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone());
         let ok = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(q, true))
         })
@@ -3055,9 +3096,8 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(uuid(1), false))),
         ]);
-        let mut mesh =
-            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone())
-                .with_pump_interval(std::time::Duration::from_secs(30));
+        let mut mesh = start_in_scripted_room(transport, driver.clone())
+            .with_pump_interval(std::time::Duration::from_secs(30));
 
         // Drain the initial signaling events so the next recv() genuinely parks.
         while (tokio::time::timeout(std::time::Duration::from_millis(60), mesh.recv()).await)

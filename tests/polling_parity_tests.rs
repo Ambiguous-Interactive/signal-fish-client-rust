@@ -48,10 +48,182 @@ fn selected_plan_through_common_api(
     )
 }
 
+#[derive(Clone, Copy)]
+enum InitialRoomOperation {
+    JoinPlayer,
+    JoinSpectator,
+}
+
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum RoomResponseKind {
+    JoinPlayer,
+    LeavePlayer,
+    ReconnectPlayer,
+    JoinSpectator,
+    LeaveSpectator,
+}
+
+impl RoomResponseKind {
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn matches_command(self, message: &ClientMessage) -> bool {
+        matches!(
+            (self, message),
+            (Self::JoinPlayer, ClientMessage::JoinRoom { .. })
+                | (Self::LeavePlayer, ClientMessage::LeaveRoom)
+                | (Self::ReconnectPlayer, ClientMessage::Reconnect { .. })
+                | (Self::JoinSpectator, ClientMessage::JoinAsSpectator { .. })
+                | (Self::LeaveSpectator, ClientMessage::LeaveSpectator)
+        )
+    }
+}
+
+fn room_response_kind_json(json: &str) -> Option<RoomResponseKind> {
+    match serde_json::from_str::<ServerMessage>(json).ok()? {
+        ServerMessage::RoomJoined(_) | ServerMessage::RoomJoinFailed { .. } => {
+            Some(RoomResponseKind::JoinPlayer)
+        }
+        ServerMessage::RoomLeft => Some(RoomResponseKind::LeavePlayer),
+        ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. } => {
+            Some(RoomResponseKind::ReconnectPlayer)
+        }
+        ServerMessage::SpectatorJoined(_) | ServerMessage::SpectatorJoinFailed { .. } => {
+            Some(RoomResponseKind::JoinSpectator)
+        }
+        ServerMessage::SpectatorLeft {
+            reason:
+                None
+                | Some(
+                    signal_fish_client::protocol::SpectatorStateChangeReason::VoluntaryLeave
+                    | signal_fish_client::protocol::SpectatorStateChangeReason::Joined,
+                ),
+            ..
+        } => Some(RoomResponseKind::LeaveSpectator),
+        _ => None,
+    }
+}
+
+fn room_response_kind(frame: &TransportFrame) -> Option<RoomResponseKind> {
+    let TransportFrame::Text(json) = frame else {
+        return None;
+    };
+    room_response_kind_json(json)
+}
+
+fn text_matches_room_command(json: &str, kind: RoomResponseKind) -> bool {
+    serde_json::from_str::<ClientMessage>(json).is_ok_and(|message| kind.matches_command(&message))
+}
+
+#[derive(Clone, Copy, Default)]
+enum ScriptedRoomMembership {
+    #[default]
+    Outside,
+    Player,
+    Spectator,
+}
+
+struct RoomCommandRequirements {
+    counts: [usize; 5],
+    membership: ScriptedRoomMembership,
+}
+
+impl Default for RoomCommandRequirements {
+    fn default() -> Self {
+        Self {
+            counts: [1; 5],
+            membership: ScriptedRoomMembership::Outside,
+        }
+    }
+}
+
+fn advance_room_command_requirements(json: &str, gate: &mut RoomCommandRequirements) {
+    let Ok(message) = serde_json::from_str::<ServerMessage>(json) else {
+        return;
+    };
+    // Only accepted-looking lifecycle transitions advance the next command
+    // ordinal. A raw duplicate exit while already outside must remain
+    // deliverable without consuming the rejoin that is currently pending.
+    match (gate.membership, message) {
+        (ScriptedRoomMembership::Outside, ServerMessage::RoomJoined(_)) => {
+            gate.membership = ScriptedRoomMembership::Player;
+            gate.counts[RoomResponseKind::LeavePlayer.index()] =
+                gate.counts[RoomResponseKind::JoinPlayer.index()];
+        }
+        (ScriptedRoomMembership::Outside, ServerMessage::Reconnected(_)) => {
+            gate.membership = ScriptedRoomMembership::Player;
+        }
+        (ScriptedRoomMembership::Player, ServerMessage::RoomLeft) => {
+            gate.membership = ScriptedRoomMembership::Outside;
+            gate.counts[RoomResponseKind::JoinPlayer.index()] += 1;
+        }
+        (ScriptedRoomMembership::Outside, ServerMessage::SpectatorJoined(_)) => {
+            gate.membership = ScriptedRoomMembership::Spectator;
+            gate.counts[RoomResponseKind::LeaveSpectator.index()] =
+                gate.counts[RoomResponseKind::JoinSpectator.index()];
+        }
+        (ScriptedRoomMembership::Spectator, ServerMessage::SpectatorLeft { .. }) => {
+            gate.membership = ScriptedRoomMembership::Outside;
+            gate.counts[RoomResponseKind::JoinSpectator.index()] += 1;
+        }
+        _ => {}
+    }
+}
+
+fn advance_frame_room_command_requirements(
+    frame: &TransportFrame,
+    gate: &mut RoomCommandRequirements,
+) {
+    if let TransportFrame::Text(json) = frame {
+        advance_room_command_requirements(json, gate);
+    }
+}
+
+fn initial_room_operation<'a>(
+    frames: impl IntoIterator<Item = &'a TransportFrame>,
+) -> Option<InitialRoomOperation> {
+    frames
+        .into_iter()
+        .find_map(room_response_kind)
+        .and_then(|kind| match kind {
+            RoomResponseKind::JoinPlayer => Some(InitialRoomOperation::JoinPlayer),
+            RoomResponseKind::JoinSpectator => Some(InitialRoomOperation::JoinSpectator),
+            _ => None,
+        })
+}
+
+fn room_response_counts(frames: &[TransportFrame]) -> [usize; 5] {
+    let mut counts = [0; 5];
+    for frame in frames {
+        if let Some(kind) = room_response_kind(frame) {
+            counts[kind.index()] += 1;
+        }
+    }
+    counts
+}
+
+fn admit_initial_room_operation(
+    client: &mut dyn SignalFishClientApi,
+    operation: Option<InitialRoomOperation>,
+) {
+    match operation {
+        Some(InitialRoomOperation::JoinPlayer) => client
+            .join_room(JoinRoomParams::new("game", "local"))
+            .expect("scripted player response must follow an admitted join"),
+        Some(InitialRoomOperation::JoinSpectator) => client
+            .join_as_spectator("game".into(), "ROOM".into(), "local".into())
+            .expect("scripted spectator response must follow an admitted join"),
+        None => {}
+    }
+}
+
 #[derive(Clone)]
 struct FrameMock {
     incoming: Arc<Mutex<VecDeque<TransportFrame>>>,
     sent: Arc<Mutex<Vec<TransportFrame>>>,
+    required_room_commands: Arc<Mutex<RoomCommandRequirements>>,
 }
 
 #[derive(Clone)]
@@ -121,6 +293,7 @@ impl FrameMock {
                 TransportFrame::Text(PI_V3.into()),
             ]))),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
         }
     }
 
@@ -137,6 +310,7 @@ impl FrameMock {
                 ),
             ]))),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
         }
     }
 
@@ -150,6 +324,7 @@ impl FrameMock {
                 ),
             ]))),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
         }
     }
 
@@ -211,6 +386,7 @@ impl FrameMock {
         Self {
             incoming: Arc::new(Mutex::new(frames)),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
         }
     }
 }
@@ -233,10 +409,41 @@ impl Transport for FrameMock {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        match self.incoming.lock().unwrap().pop_front() {
+        let response_kind = self
+            .incoming
+            .lock()
+            .unwrap()
+            .front()
+            .and_then(room_response_kind);
+        if let Some(kind) = response_kind {
+            let index = kind.index();
+            let sent_count = self
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|frame| {
+                    let TransportFrame::Text(json) = frame else {
+                        return false;
+                    };
+                    text_matches_room_command(json, kind)
+                })
+                .count();
+            if sent_count < self.required_room_commands.lock().unwrap().counts[index] {
+                return std::task::Poll::Pending;
+            }
+        }
+        let delivered = match self.incoming.lock().unwrap().pop_front() {
             Some(frame) => std::task::Poll::Ready(Some(Ok(frame))),
             None => std::task::Poll::Pending,
+        };
+        if let std::task::Poll::Ready(Some(Ok(frame))) = &delivered {
+            advance_frame_room_command_requirements(
+                frame,
+                &mut self.required_room_commands.lock().unwrap(),
+            );
         }
+        delivered
     }
 
     fn poll_close(
@@ -377,7 +584,7 @@ fn membership_result(result: Result<(), SignalFishError>) -> MembershipResult {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MembershipPhase {
     Outside,
     Player,
@@ -457,7 +664,63 @@ async fn async_membership_result(
         frame_mock_for_phase(phase),
         SignalFishConfig::new("app").enable_v3(),
     );
-    while !matches!(events.recv().await, Some(SignalFishEvent::Pong)) {}
+    let initial = match phase {
+        MembershipPhase::Outside => None,
+        MembershipPhase::Player | MembershipPhase::PlayerLeft | MembershipPhase::PlayerRejoined => {
+            Some(InitialRoomOperation::JoinPlayer)
+        }
+        MembershipPhase::Spectator
+        | MembershipPhase::SpectatorLeft
+        | MembershipPhase::SpectatorRejoined => Some(InitialRoomOperation::JoinSpectator),
+    };
+    admit_initial_room_operation(&mut client, initial);
+    let mut leave_issued = false;
+    let mut rejoin_issued = false;
+    loop {
+        match events.recv().await {
+            Some(SignalFishEvent::RoomJoined { .. })
+                if matches!(
+                    phase,
+                    MembershipPhase::PlayerLeft | MembershipPhase::PlayerRejoined
+                ) && !leave_issued =>
+            {
+                client
+                    .leave_room()
+                    .expect("scripted player leave is admitted");
+                leave_issued = true;
+            }
+            Some(SignalFishEvent::RoomLeft)
+                if phase == MembershipPhase::PlayerRejoined && !rejoin_issued =>
+            {
+                client
+                    .join_room(JoinRoomParams::new("game", "local"))
+                    .expect("scripted player rejoin is admitted");
+                rejoin_issued = true;
+            }
+            Some(SignalFishEvent::SpectatorJoined { .. })
+                if matches!(
+                    phase,
+                    MembershipPhase::SpectatorLeft | MembershipPhase::SpectatorRejoined
+                ) && !leave_issued =>
+            {
+                client
+                    .leave_spectator()
+                    .expect("scripted spectator leave is admitted");
+                leave_issued = true;
+            }
+            Some(SignalFishEvent::SpectatorLeft { .. })
+                if phase == MembershipPhase::SpectatorRejoined && !rejoin_issued =>
+            {
+                client
+                    .join_as_spectator("game".into(), "ROOM".into(), "local".into())
+                    .expect("scripted spectator rejoin is admitted");
+                rejoin_issued = true;
+            }
+            Some(SignalFishEvent::Pong) => break,
+            Some(_) => {}
+            None => panic!("membership trace closed before Pong"),
+        }
+    }
     let (expected_role, expected_participant) = expected_membership_state(phase);
     assert_eq!(client.room_role(), expected_role, "async {phase:?}");
     assert_eq!(
@@ -475,7 +738,45 @@ fn polling_membership_result(phase: MembershipPhase, case: CommonCommandCase) ->
         frame_mock_for_phase(phase),
         SignalFishConfig::new("app").enable_v3(),
     );
+    let initial = match phase {
+        MembershipPhase::Outside => None,
+        MembershipPhase::Player | MembershipPhase::PlayerLeft | MembershipPhase::PlayerRejoined => {
+            Some(InitialRoomOperation::JoinPlayer)
+        }
+        MembershipPhase::Spectator
+        | MembershipPhase::SpectatorLeft
+        | MembershipPhase::SpectatorRejoined => Some(InitialRoomOperation::JoinSpectator),
+    };
+    admit_initial_room_operation(&mut client, initial);
     let _ = client.poll();
+    if matches!(
+        phase,
+        MembershipPhase::PlayerLeft | MembershipPhase::PlayerRejoined
+    ) {
+        client
+            .leave_room()
+            .expect("scripted player leave is admitted");
+        let _ = client.poll();
+    } else if matches!(
+        phase,
+        MembershipPhase::SpectatorLeft | MembershipPhase::SpectatorRejoined
+    ) {
+        client
+            .leave_spectator()
+            .expect("scripted spectator leave is admitted");
+        let _ = client.poll();
+    }
+    if phase == MembershipPhase::PlayerRejoined {
+        client
+            .join_room(JoinRoomParams::new("game", "local"))
+            .expect("scripted player rejoin is admitted");
+        let _ = client.poll();
+    } else if phase == MembershipPhase::SpectatorRejoined {
+        client
+            .join_as_spectator("game".into(), "ROOM".into(), "local".into())
+            .expect("scripted spectator rejoin is admitted");
+        let _ = client.poll();
+    }
     let (expected_role, expected_participant) = expected_membership_state(phase);
     assert_eq!(client.room_role(), expected_role, "polling {phase:?}");
     assert_eq!(
@@ -501,6 +802,9 @@ const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_da
 struct SharedMock {
     incoming: Arc<Mutex<VecDeque<Option<Result<String, SignalFishError>>>>>,
     sent: Arc<Mutex<Vec<String>>>,
+    required_room_commands: Arc<Mutex<RoomCommandRequirements>>,
+    gate_room_responses: bool,
+    gate_reconnect_responses: bool,
 }
 
 impl SharedMock {
@@ -510,13 +814,29 @@ impl SharedMock {
                 msgs.into_iter().map(|m| Some(Ok(m.to_string()))).collect(),
             )),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
+            gate_room_responses: false,
+            gate_reconnect_responses: false,
         }
     }
     fn from_msgs(msgs: Vec<Option<Result<String, SignalFishError>>>) -> Self {
         Self {
             incoming: Arc::new(Mutex::new(msgs.into())),
             sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
+            gate_room_responses: false,
+            gate_reconnect_responses: false,
         }
+    }
+
+    fn from_msgs_gated(
+        msgs: Vec<Option<Result<String, SignalFishError>>>,
+        gate_reconnect_responses: bool,
+    ) -> Self {
+        let mut mock = Self::from_msgs(msgs);
+        mock.gate_room_responses = true;
+        mock.gate_reconnect_responses = gate_reconnect_responses;
+        mock
     }
 }
 
@@ -540,9 +860,38 @@ impl Transport for SharedMock {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        let response_kind = self.incoming.lock().unwrap().front().and_then(|item| {
+            let Some(Ok(json)) = item else {
+                return None;
+            };
+            room_response_kind_json(json)
+        });
+        if self.gate_room_responses {
+            if let Some(kind) = response_kind.filter(|kind| {
+                !matches!(kind, RoomResponseKind::ReconnectPlayer) || self.gate_reconnect_responses
+            }) {
+                let index = kind.index();
+                let sent_count = self
+                    .sent
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|json| text_matches_room_command(json, kind))
+                    .count();
+                if sent_count < self.required_room_commands.lock().unwrap().counts[index] {
+                    return std::task::Poll::Pending;
+                }
+            }
+        }
         let item = self.incoming.lock().unwrap().pop_front();
         match item {
             Some(inner) => {
+                if let Some(Ok(json)) = &inner {
+                    advance_room_command_requirements(
+                        json,
+                        &mut self.required_room_commands.lock().unwrap(),
+                    );
+                }
                 std::task::Poll::Ready(inner.map(|result| result.map(TransportFrame::Text)))
             }
             None => std::task::Poll::Pending,
@@ -734,10 +1083,13 @@ async fn wait_for_sent_len(mock: &SharedMock, expected_len: usize) {
 #[derive(Clone)]
 struct TraceMock {
     incoming: Arc<Mutex<VecDeque<Option<Result<TransportFrame, SignalFishError>>>>>,
+    sent: Arc<Mutex<Vec<TransportFrame>>>,
+    required_room_commands: Arc<Mutex<RoomCommandRequirements>>,
+    gate_reconnect_responses: bool,
 }
 
 impl TraceMock {
-    fn new(frames: Vec<TransportFrame>) -> Self {
+    fn new(frames: Vec<TransportFrame>, gate_reconnect_responses: bool) -> Self {
         Self {
             incoming: Arc::new(Mutex::new(
                 frames
@@ -746,6 +1098,9 @@ impl TraceMock {
                     .chain(std::iter::once(None))
                     .collect(),
             )),
+            sent: Arc::new(Mutex::new(Vec::new())),
+            required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
+            gate_reconnect_responses,
         }
     }
 }
@@ -758,7 +1113,9 @@ impl Transport for TraceMock {
         _cx: &mut std::task::Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> std::task::Poll<Result<(), SignalFishError>> {
-        let _ = frame.take();
+        if let Some(frame) = frame.take() {
+            self.sent.lock().unwrap().push(frame);
+        }
         std::task::Poll::Ready(Ok(()))
     }
 
@@ -766,10 +1123,43 @@ impl Transport for TraceMock {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        match self.incoming.lock().unwrap().pop_front() {
+        let response_kind = self.incoming.lock().unwrap().front().and_then(|item| {
+            let Some(Ok(TransportFrame::Text(json))) = item else {
+                return None;
+            };
+            room_response_kind_json(json)
+        });
+        if let Some(kind) = response_kind.filter(|kind| {
+            !matches!(kind, RoomResponseKind::ReconnectPlayer) || self.gate_reconnect_responses
+        }) {
+            let index = kind.index();
+            let sent_count = self
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|frame| {
+                    let TransportFrame::Text(json) = frame else {
+                        return false;
+                    };
+                    text_matches_room_command(json, kind)
+                })
+                .count();
+            if sent_count < self.required_room_commands.lock().unwrap().counts[index] {
+                return std::task::Poll::Pending;
+            }
+        }
+        let delivered = match self.incoming.lock().unwrap().pop_front() {
             Some(item) => std::task::Poll::Ready(item),
             None => std::task::Poll::Pending,
+        };
+        if let std::task::Poll::Ready(Some(Ok(frame))) = &delivered {
+            advance_frame_room_command_requirements(
+                frame,
+                &mut self.required_room_commands.lock().unwrap(),
+            );
         }
+        delivered
     }
 
     fn poll_close(
@@ -1053,6 +1443,94 @@ fn canonical_event(event: &SignalFishEvent) -> String {
     }
 }
 
+#[derive(Default)]
+struct RoomTraceContinuation {
+    player_leave_issued: bool,
+    player_rejoin_issued: bool,
+    spectator_leave_issued: bool,
+    spectator_rejoin_issued: bool,
+}
+
+impl RoomTraceContinuation {
+    fn after_event(
+        &mut self,
+        client: &mut dyn SignalFishClientApi,
+        event: &SignalFishEvent,
+        response_counts: &[usize; 5],
+    ) {
+        match event {
+            SignalFishEvent::RoomJoined { .. }
+                if response_counts[RoomResponseKind::LeavePlayer.index()] > 0
+                    && !self.player_leave_issued =>
+            {
+                client
+                    .leave_room()
+                    .expect("scripted RoomLeft must follow an admitted leave");
+                self.player_leave_issued = true;
+            }
+            SignalFishEvent::RoomLeft
+                if response_counts[RoomResponseKind::JoinPlayer.index()] > 1
+                    && !self.player_rejoin_issued =>
+            {
+                client
+                    .join_room(JoinRoomParams::new("game", "local"))
+                    .expect("scripted RoomJoined must follow an admitted rejoin");
+                self.player_rejoin_issued = true;
+            }
+            SignalFishEvent::SpectatorJoined { .. }
+                if response_counts[RoomResponseKind::LeaveSpectator.index()] > 0
+                    && !self.spectator_leave_issued =>
+            {
+                client
+                    .leave_spectator()
+                    .expect("scripted SpectatorLeft must follow an admitted leave");
+                self.spectator_leave_issued = true;
+            }
+            SignalFishEvent::SpectatorLeft { .. }
+                if response_counts[RoomResponseKind::JoinSpectator.index()] > 1
+                    && !self.spectator_rejoin_issued =>
+            {
+                client
+                    .join_as_spectator("game".into(), "ROOM".into(), "local".into())
+                    .expect("scripted SpectatorJoined must follow an admitted rejoin");
+                self.spectator_rejoin_issued = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn drive_polling_room_continuations<T: Transport>(
+    client: &mut SignalFishPollingClient<T>,
+    response_counts: &[usize; 5],
+    events: &mut Vec<SignalFishEvent>,
+) {
+    if response_counts[RoomResponseKind::LeavePlayer.index()] > 0 {
+        client
+            .leave_room()
+            .expect("scripted RoomLeft must follow an admitted leave");
+        events.extend(client.poll());
+        if response_counts[RoomResponseKind::JoinPlayer.index()] > 1 {
+            client
+                .join_room(JoinRoomParams::new("game", "local"))
+                .expect("scripted RoomJoined must follow an admitted rejoin");
+            events.extend(client.poll());
+        }
+    }
+    if response_counts[RoomResponseKind::LeaveSpectator.index()] > 0 {
+        client
+            .leave_spectator()
+            .expect("scripted SpectatorLeft must follow an admitted leave");
+        events.extend(client.poll());
+        if response_counts[RoomResponseKind::JoinSpectator.index()] > 1 {
+            client
+                .join_as_spectator("game".into(), "ROOM".into(), "local".into())
+                .expect("scripted SpectatorJoined must follow an admitted rejoin");
+            events.extend(client.poll());
+        }
+    }
+}
+
 async fn assert_frame_trace_parity(
     frames: Vec<TransportFrame>,
     config: SignalFishConfig,
@@ -1074,10 +1552,13 @@ async fn assert_frame_trace_parity_with_stats(
     admit_reconnect: bool,
     expected_stats: Option<ClientStats>,
 ) -> Vec<String> {
-    let make_mock = || TraceMock::new(frames.clone());
+    let make_mock = || TraceMock::new(frames.clone(), admit_reconnect);
+    let initial_room_operation = initial_room_operation(&frames);
+    let response_counts = room_response_counts(&frames);
 
     let async_mock = make_mock();
     let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    admit_initial_room_operation(&mut async_client, initial_room_operation);
     if admit_reconnect {
         async_client
             .reconnect(
@@ -1088,8 +1569,10 @@ async fn assert_frame_trace_parity_with_stats(
             .expect("async reconnect must queue");
     }
     let mut async_events = Vec::new();
+    let mut room_continuation = RoomTraceContinuation::default();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while let Some(event) = async_rx.recv().await {
+            room_continuation.after_event(&mut async_client, &event, &response_counts);
             async_events.push(event);
         }
     })
@@ -1098,6 +1581,7 @@ async fn assert_frame_trace_parity_with_stats(
 
     let polling_mock = make_mock();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    admit_initial_room_operation(&mut polling_client, initial_room_operation);
     if admit_reconnect {
         polling_client
             .reconnect(
@@ -1107,7 +1591,8 @@ async fn assert_frame_trace_parity_with_stats(
             )
             .expect("polling reconnect must queue");
     }
-    let polling_events = polling_client.poll();
+    let mut polling_events = polling_client.poll();
+    drive_polling_room_continuations(&mut polling_client, &response_counts, &mut polling_events);
 
     let async_events = async_events
         .iter()
@@ -1229,18 +1714,27 @@ async fn assert_open_text_trace_parity_with_reconnect(
     admit_reconnect: bool,
 ) -> (Vec<String>, signal_fish_client::ClientSnapshot) {
     let expected_events = messages.len() + 1;
+    let frames = messages
+        .iter()
+        .cloned()
+        .map(TransportFrame::Text)
+        .collect::<Vec<_>>();
+    let initial_room_operation = initial_room_operation(&frames);
+    let response_counts = room_response_counts(&frames);
     let make_mock = || {
-        SharedMock::from_msgs(
+        SharedMock::from_msgs_gated(
             messages
                 .iter()
                 .cloned()
                 .map(|message| Some(Ok(message)))
                 .collect(),
+            admit_reconnect,
         )
     };
 
     let async_mock = make_mock();
     let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    admit_initial_room_operation(&mut async_client, initial_room_operation);
     if admit_reconnect {
         async_client
             .reconnect(
@@ -1251,14 +1745,15 @@ async fn assert_open_text_trace_parity_with_reconnect(
             .expect("async reconnect must queue");
     }
     let mut async_events = Vec::with_capacity(expected_events);
+    let mut room_continuation = RoomTraceContinuation::default();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while async_events.len() < expected_events {
-            async_events.push(
-                async_rx
-                    .recv()
-                    .await
-                    .expect("open async trace should emit every scripted outcome"),
-            );
+            let event = async_rx
+                .recv()
+                .await
+                .expect("open async trace should emit every scripted outcome");
+            room_continuation.after_event(&mut async_client, &event, &response_counts);
+            async_events.push(event);
         }
     })
     .await
@@ -1267,6 +1762,7 @@ async fn assert_open_text_trace_parity_with_reconnect(
 
     let polling_mock = make_mock();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    admit_initial_room_operation(&mut polling_client, initial_room_operation);
     if admit_reconnect {
         polling_client
             .reconnect(
@@ -1276,7 +1772,8 @@ async fn assert_open_text_trace_parity_with_reconnect(
             )
             .expect("polling reconnect must queue");
     }
-    let polling_events = polling_client.poll();
+    let mut polling_events = polling_client.poll();
+    drive_polling_room_continuations(&mut polling_client, &response_counts, &mut polling_events);
     let polling_snapshot = polling_client.snapshot();
 
     let async_events = async_events
@@ -1504,6 +2001,7 @@ async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_d
     );
     let (mut async_client, mut async_events) =
         SignalFishClient::start(async_mock.clone(), config.clone());
+    admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     for _ in 0..=messages.len() {
         tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
             .await
@@ -1533,6 +2031,7 @@ async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_d
             .collect(),
     );
     let mut polling_client = SignalFishPollingClient::new(polling_mock.clone(), config);
+    admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_mock.sent.lock().unwrap().clear();
     assert!(matches!(
@@ -1793,6 +2292,326 @@ fn text_server_frame(message: ServerMessage) -> TransportFrame {
     TransportFrame::Text(
         serde_json::to_string(&message).expect("serialize accountability parity fixture"),
     )
+}
+
+#[tokio::test]
+async fn unsolicited_join_and_reconnect_responses_have_driver_policy_parity() {
+    let player_joined = match &binary_accountability_prefix(uuid::Uuid::from_u128(365))[2] {
+        TransportFrame::Text(message) => message.clone(),
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let spectator_joined = match &spectator_accountability_prefix(uuid::Uuid::from_u128(365))[2] {
+        TransportFrame::Text(message) => message.clone(),
+        TransportFrame::Binary(_) => unreachable!("spectator baseline must be text"),
+    };
+    let responses = [
+        player_joined,
+        serde_json::to_string(&ServerMessage::RoomJoinFailed {
+            reason: "unsolicited".into(),
+            error_code: Some(ErrorCode::RoomFull),
+        })
+        .expect("RoomJoinFailed fixture"),
+        reconnected_with_missed(vec![]),
+        serde_json::to_string(&ServerMessage::ReconnectionFailed {
+            reason: "unsolicited".into(),
+            error_code: ErrorCode::ReconnectionFailed,
+        })
+        .expect("ReconnectionFailed fixture"),
+        spectator_joined,
+        serde_json::to_string(&ServerMessage::SpectatorJoinFailed {
+            reason: "unsolicited".into(),
+            error_code: Some(ErrorCode::SpectatorNotAllowed),
+        })
+        .expect("SpectatorJoinFailed fixture"),
+    ];
+
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+    ] {
+        for response in &responses {
+            let messages = vec![AUTH, PI_V3, response];
+            let config = SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy);
+
+            let async_mock = SharedMock::new(messages.clone());
+            let (mut async_client, mut async_events) =
+                SignalFishClient::start(async_mock, config.clone());
+            let mut observed = Vec::new();
+            loop {
+                let event =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+                        .await
+                        .expect("async unsolicited response must be processed")
+                        .expect("async event stream must remain available through the violation");
+                let terminal = matches!(event, SignalFishEvent::Disconnected { .. });
+                let violation = matches!(event, SignalFishEvent::ProtocolViolation { .. });
+                if !matches!(event, SignalFishEvent::Connected) {
+                    observed.push(canonical_event(&event));
+                }
+                if violation && policy != ProtocolViolationPolicy::Disconnect || terminal {
+                    break;
+                }
+            }
+
+            let polling_mock = SharedMock::new(messages);
+            let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+            let polling = polling_client
+                .poll()
+                .iter()
+                .filter(|event| !matches!(event, SignalFishEvent::Connected))
+                .map(canonical_event)
+                .collect::<Vec<_>>();
+
+            assert_eq!(observed, polling, "policy {policy:?}, response {response}");
+            assert_eq!(async_client.room_role(), None);
+            assert_eq!(polling_client.room_role(), None);
+            assert_eq!(async_client.snapshot().room_id, None);
+            assert_eq!(polling_client.snapshot().room_id, None);
+            async_client.shutdown().await;
+            polling_client.close();
+        }
+    }
+}
+
+async fn async_unsolicited_exit(
+    policy: ProtocolViolationPolicy,
+    operation: InitialRoomOperation,
+    baseline: String,
+    response: String,
+) -> (Vec<String>, Option<RoomRole>) {
+    let mock = SharedMock::new(vec![AUTH, PI_V3]);
+    let controls = mock.clone();
+    let config = SignalFishConfig::new("app")
+        .enable_v3()
+        .with_protocol_violation_policy(policy);
+    let (mut client, mut events) = SignalFishClient::start(mock, config);
+    loop {
+        if matches!(events.recv().await, Some(SignalFishEvent::ProtocolInfo(_))) {
+            break;
+        }
+    }
+
+    controls
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back(Some(Ok(baseline)));
+    admit_initial_room_operation(&mut client, Some(operation));
+    loop {
+        let event = events
+            .recv()
+            .await
+            .expect("async setup must establish membership");
+        if matches!(
+            (operation, event),
+            (
+                InitialRoomOperation::JoinPlayer,
+                SignalFishEvent::RoomJoined { .. }
+            ) | (
+                InitialRoomOperation::JoinSpectator,
+                SignalFishEvent::SpectatorJoined { .. }
+            )
+        ) {
+            break;
+        }
+    }
+
+    controls
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back(Some(Ok(response)));
+    client.ping().expect("ping wakes the scripted transport");
+    let mut observed = Vec::new();
+    loop {
+        let event = events
+            .recv()
+            .await
+            .expect("async unsolicited exit must reach a terminal policy event");
+        let violation = matches!(event, SignalFishEvent::ProtocolViolation { .. });
+        let disconnected = matches!(event, SignalFishEvent::Disconnected { .. });
+        observed.push(canonical_event(&event));
+        if violation && policy != ProtocolViolationPolicy::Disconnect || disconnected {
+            break;
+        }
+    }
+    let role = client.room_role();
+    client.shutdown().await;
+    (observed, role)
+}
+
+fn polling_unsolicited_exit(
+    policy: ProtocolViolationPolicy,
+    operation: InitialRoomOperation,
+    baseline: String,
+    response: String,
+) -> (Vec<String>, Option<RoomRole>) {
+    let mock = SharedMock::new(vec![AUTH, PI_V3]);
+    let controls = mock.clone();
+    let config = SignalFishConfig::new("app")
+        .enable_v3()
+        .with_protocol_violation_policy(policy);
+    let mut client = SignalFishPollingClient::new(mock, config);
+    let _ = client.poll();
+
+    controls
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back(Some(Ok(baseline)));
+    admit_initial_room_operation(&mut client, Some(operation));
+    let setup = client.poll();
+    assert!(setup.iter().any(|event| matches!(
+        (operation, event),
+        (
+            InitialRoomOperation::JoinPlayer,
+            SignalFishEvent::RoomJoined { .. }
+        ) | (
+            InitialRoomOperation::JoinSpectator,
+            SignalFishEvent::SpectatorJoined { .. }
+        )
+    )));
+
+    controls
+        .incoming
+        .lock()
+        .unwrap()
+        .push_back(Some(Ok(response)));
+    client.ping().expect("ping wakes the scripted transport");
+    let observed = client.poll().iter().map(canonical_event).collect();
+    let role = client.room_role();
+    client.close();
+    (observed, role)
+}
+
+#[tokio::test]
+async fn unsolicited_room_exits_reach_correlation_in_both_drivers() {
+    let player_baseline = match &binary_accountability_prefix(uuid::Uuid::from_u128(365))[2] {
+        TransportFrame::Text(message) => message.clone(),
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let spectator_baseline = match &spectator_accountability_prefix(uuid::Uuid::from_u128(365))[2] {
+        TransportFrame::Text(message) => message.clone(),
+        TransportFrame::Binary(_) => unreachable!("spectator baseline must be text"),
+    };
+    let cases = [
+        (
+            InitialRoomOperation::JoinPlayer,
+            player_baseline,
+            serde_json::to_string(&ServerMessage::RoomLeft).expect("RoomLeft fixture"),
+            RoomRole::Player,
+        ),
+        (
+            InitialRoomOperation::JoinSpectator,
+            spectator_baseline,
+            serde_json::to_string(&ServerMessage::SpectatorLeft {
+                room_id: Some(uuid::Uuid::from_u128(201)),
+                room_code: Some("SPECTATOR".into()),
+                reason: None,
+                current_spectators: vec![],
+            })
+            .expect("SpectatorLeft fixture"),
+            RoomRole::Spectator,
+        ),
+    ];
+
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+    ] {
+        for (operation, baseline, response, retained_role) in &cases {
+            let (async_events, async_role) =
+                async_unsolicited_exit(policy, *operation, baseline.clone(), response.clone())
+                    .await;
+            let (polling_events, polling_role) =
+                polling_unsolicited_exit(policy, *operation, baseline.clone(), response.clone());
+            assert_eq!(async_events, polling_events, "{policy:?}, {response}");
+            if policy != ProtocolViolationPolicy::Disconnect {
+                assert_eq!(async_role, Some(*retained_role));
+                assert_eq!(polling_role, Some(*retained_role));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn delayed_duplicate_exit_does_not_consume_rejoin_fence_in_either_driver() {
+    let mut frames = binary_accountability_prefix(uuid::Uuid::from_u128(365));
+    let rejoined = frames[2].clone();
+    frames.extend([
+        text_server_frame(ServerMessage::RoomLeft),
+        text_server_frame(ServerMessage::RoomLeft),
+        rejoined,
+    ]);
+
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+    ] {
+        let events = assert_frame_trace_parity(
+            frames.clone(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("RoomJoined|"))
+                .count(),
+            2,
+            "{policy:?} must preserve the live rejoin fence after the delayed exit: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.as_str() == "RoomLeft")
+                .count(),
+            1,
+            "the duplicate exit must be rejected under {policy:?}: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("ProtocolViolation|Lifecycle|")),
+            "the duplicate exit must reach lifecycle correlation under {policy:?}: {events:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn authoritative_room_closed_spectator_exit_has_driver_parity() {
+    let mut frames = spectator_accountability_prefix(uuid::Uuid::from_u128(365));
+    frames.push(text_server_frame(ServerMessage::SpectatorLeft {
+        room_id: Some(uuid::Uuid::from_u128(201)),
+        room_code: Some("SPECTATOR".into()),
+        reason: Some(signal_fish_client::protocol::SpectatorStateChangeReason::RoomClosed),
+        current_spectators: vec![],
+    }));
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+    ] {
+        let events = assert_frame_trace_parity(
+            frames.clone(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(events
+            .iter()
+            .any(|event| event.starts_with("SpectatorLeft")));
+        assert!(events
+            .iter()
+            .all(|event| !event.starts_with("ProtocolViolation")));
+    }
 }
 
 #[tokio::test]
@@ -2462,6 +3281,7 @@ async fn every_common_command_produces_identical_physical_frames() {
         let async_sent = Arc::clone(&async_mock.sent);
         let (mut async_client, mut async_events) =
             SignalFishClient::start(async_mock, config.clone());
+        admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !matches!(
                 async_events.recv().await,
@@ -2492,6 +3312,7 @@ async fn every_common_command_produces_identical_physical_frames() {
         let polling_mock = FrameMock::v3();
         let polling_sent = Arc::clone(&polling_mock.sent);
         let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+        admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
         let _ = polling_client.poll();
         polling_sent.lock().unwrap().clear();
         case.invoke(&mut polling_client)
@@ -2527,6 +3348,7 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
     let async_mock = FrameMock::v3();
     let async_sent = Arc::clone(&async_mock.sent);
     let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while !matches!(
             async_events.recv().await,
@@ -2562,6 +3384,7 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
     let polling_mock = FrameMock::v3();
     let polling_sent = Arc::clone(&polling_mock.sent);
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_sent.lock().unwrap().clear();
     for target in unauthorized {
@@ -2712,6 +3535,7 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
     let async_mock = FrameMock::v3();
     let async_sent = Arc::clone(&async_mock.sent);
     let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     while !matches!(
         async_events.recv().await,
         Some(SignalFishEvent::SessionPlan { .. })
@@ -2726,6 +3550,7 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
     let polling_mock = FrameMock::v3();
     let polling_sent = Arc::clone(&polling_mock.sent);
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_sent.lock().unwrap().clear();
     polling_client
@@ -2844,6 +3669,7 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
     );
     let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
+    admit_initial_room_operation(&mut client, Some(InitialRoomOperation::JoinPlayer));
     // Drain until the v2 room baseline has been processed into client state.
     loop {
         match events.recv().await {
@@ -2860,6 +3686,7 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
             .collect(),
     );
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    admit_initial_room_operation(&mut poll_client, Some(InitialRoomOperation::JoinPlayer));
     poll_client.poll();
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();
 
@@ -3231,6 +4058,7 @@ async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
     );
     let mut polling_client =
         SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app").enable_mesh());
+    admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     assert_eq!(polling_client.session_topology(), Some(Topology::Mesh));
     assert_eq!(
@@ -3250,8 +4078,9 @@ async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
             ))))
             .collect(),
     );
-    let (async_client, mut events) =
+    let (mut async_client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
+    admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     let mut saw_plan = false;
     loop {
         match tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())

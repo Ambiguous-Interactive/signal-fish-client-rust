@@ -2198,6 +2198,7 @@ mod tests {
         sent: Arc<StdMutex<Vec<String>>>,
         /// Whether `poll_close` was called.
         closed: Arc<AtomicBool>,
+        delivered_room_responses: [usize; 5],
     }
 
     impl MockTransport {
@@ -2210,6 +2211,7 @@ mod tests {
                 incoming: VecDeque::from(incoming),
                 sent: Arc::clone(&sent),
                 closed: Arc::clone(&closed),
+                delivered_room_responses: [0; 5],
             };
             (transport, sent, closed)
         }
@@ -2239,28 +2241,51 @@ mod tests {
             &mut self,
             _cx: &mut Context<'_>,
         ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
-            let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+            let response_kind = self.incoming.front().and_then(|item| {
                 let Some(Ok(json)) = item else {
-                    return false;
+                    return None;
                 };
-                matches!(
-                    serde_json::from_str::<serde_json::Value>(json)
-                        .ok()
-                        .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
-                        .as_deref(),
-                    Some("Reconnected" | "ReconnectionFailed")
-                )
+                let message_type = serde_json::from_str::<serde_json::Value>(json)
+                    .ok()?
+                    .get("type")?
+                    .as_str()?
+                    .to_owned();
+                match message_type.as_str() {
+                    "RoomJoined" | "RoomJoinFailed" => Some(0),
+                    "RoomLeft" => Some(1),
+                    "Reconnected" | "ReconnectionFailed" => Some(2),
+                    "SpectatorJoined" | "SpectatorJoinFailed" => Some(3),
+                    "SpectatorLeft" => Some(4),
+                    _ => None,
+                }
             });
-            let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
-                matches!(
-                    serde_json::from_str::<ClientMessage>(json),
-                    Ok(ClientMessage::Reconnect { .. })
-                )
-            });
-            if reconnect_response_is_gated && !reconnect_was_sent {
-                return Poll::Pending;
+            if let Some(kind) = response_kind {
+                let sent_count = self
+                    .sent
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|json| {
+                        serde_json::from_str::<ClientMessage>(json).is_ok_and(
+                            |message| match kind {
+                                0 => matches!(message, ClientMessage::JoinRoom { .. }),
+                                1 => matches!(message, ClientMessage::LeaveRoom),
+                                2 => matches!(message, ClientMessage::Reconnect { .. }),
+                                3 => matches!(message, ClientMessage::JoinAsSpectator { .. }),
+                                4 => matches!(message, ClientMessage::LeaveSpectator),
+                                _ => false,
+                            },
+                        )
+                    })
+                    .count();
+                if sent_count <= self.delivered_room_responses[kind] {
+                    return Poll::Pending;
+                }
             }
             if let Some(item) = self.incoming.pop_front() {
+                if let Some(kind) = response_kind {
+                    self.delivered_room_responses[kind] += 1;
+                }
                 // An explicit `None` entry signals a clean transport close;
                 // `Some(result)` delivers the scripted message or error.
                 Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
@@ -2631,7 +2656,60 @@ mod tests {
         let mut core = lock_core(&client.state);
         let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
         let _ = core.process_frame(TransportFrame::Text(protocol_info_v2_json()));
+        core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("test-game", "local"),
+        )));
         let _ = core.process_frame(TransportFrame::Text(room_joined_json()));
+    }
+
+    async fn enter_scripted_player_room(
+        client: &mut SignalFishClient,
+        events: &mut mpsc::Receiver<SignalFishEvent>,
+    ) {
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("scripted player join should be admitted");
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+    }
+
+    async fn enter_scripted_spectator_room(
+        client: &mut SignalFishClient,
+        events: &mut mpsc::Receiver<SignalFishEvent>,
+    ) {
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_as_spectator("spec-game".into(), "SPEC1".into(), "local".into())
+            .expect("scripted spectator join should be admitted");
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::SpectatorJoined { .. })
+        ));
     }
 
     // ── Tests ───────────────────────────────────────────────────────
@@ -2876,10 +2954,7 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
 
         assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
         assert!(client.current_room_id().await.is_some());
@@ -3183,10 +3258,18 @@ mod tests {
         let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(1);
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        // Give the transport loop time to run ahead; it must block, not drop.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
         let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(
+                events
+                    .recv()
+                    .await
+                    .expect("connection prelude should remain lossless"),
+            );
+        }
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("scripted player join should be admitted");
         while let Some(event) = events.recv().await {
             received.push(event);
         }
@@ -3234,6 +3317,7 @@ mod tests {
         // Tiny event buffer: correctness must not depend on channel capacity.
         let config = SignalFishConfig::new("mb_test").with_event_channel_capacity(2);
         let (mut client, mut events) = SignalFishClient::start(transport, config);
+        enter_scripted_player_room(&mut client, &mut events).await;
 
         let mut seqs = Vec::new();
         while let Some(event) = events.recv().await {
@@ -3276,14 +3360,7 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let event = events.recv().await.unwrap();
-        assert!(matches!(event, SignalFishEvent::Connected));
-        let event = events.recv().await.unwrap();
-        assert!(matches!(event, SignalFishEvent::Authenticated { .. }));
-        let event = events.recv().await.unwrap();
-        assert!(matches!(event, SignalFishEvent::ProtocolInfo(_)));
-        let event = events.recv().await.unwrap();
-        assert!(matches!(event, SignalFishEvent::RoomJoined { .. }));
+        enter_scripted_player_room(&mut client, &mut events).await;
 
         for seq in 0..3 {
             client
@@ -3328,10 +3405,7 @@ mod tests {
 
         assert_eq!(client.stats(), ClientStats::default());
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
         let _ = events.recv().await; // GameData 0
         let _ = events.recv().await; // GameData 1
 
@@ -3948,6 +4022,9 @@ mod tests {
             let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
             let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
             if initially_in_room {
+                core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                    JoinRoomParams::new("game", "local"),
+                )));
                 let room_a = serde_json::to_string(&joined(
                     uuid::Uuid::from_u128(100),
                     uuid::Uuid::from_u128(101),
@@ -4006,9 +4083,13 @@ mod tests {
         {
             let mut core = lock_core(&client.state);
             if initially_in_room {
+                core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
                 let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
                 let _ = core.process_frame(TransportFrame::Text(room_left));
             }
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("game", "local"),
+            )));
             let room_b = serde_json::to_string(&joined(
                 uuid::Uuid::from_u128(200),
                 uuid::Uuid::from_u128(201),
@@ -4119,10 +4200,7 @@ mod tests {
         ]);
         let (mut client, mut events) =
             SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
 
         assert!(matches!(
             client.send_binary_game_data(vec![1, 2, 3]),
@@ -4184,22 +4262,7 @@ mod tests {
         ]);
         let (mut client, mut events) =
             SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Connected)
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Authenticated { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::ProtocolInfo(_))
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::RoomJoined { .. })
-        ));
+        enter_scripted_player_room(&mut client, &mut events).await;
         assert!(matches!(
             events.recv().await,
             Some(SignalFishEvent::ProtocolViolation { .. })
@@ -4313,6 +4376,9 @@ mod tests {
             let mut core = lock_core(&client.state);
             let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
             let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("test-game", "local"),
+            )));
             let _ = core.process_frame(TransportFrame::Text(finalized_room_v3_json(peer)));
             let original = serde_json::to_string(&plan(original_generation))
                 .expect("original SessionPlan should serialize");
@@ -4416,10 +4482,7 @@ mod tests {
         let config = SignalFishConfig::new("mb_test").enable_mesh();
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo (negotiates v3)
-        let _ = events.recv().await; // RoomJoined (finalized roster)
+        enter_scripted_player_room(&mut client, &mut events).await;
         let _ = events.recv().await; // SessionPlan (establishes generation)
 
         client
@@ -4427,7 +4490,7 @@ mod tests {
             .await
             .unwrap();
 
-        wait_for_sent_len(&sent, 2).await;
+        wait_for_sent_len(&sent, 3).await;
         {
             let messages = sent.lock().unwrap();
             let last: ClientMessage = serde_json::from_str(messages.last().unwrap()).unwrap();
@@ -4717,10 +4780,10 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
+        client
+            .leave_room()
+            .expect("scripted player leave should be admitted");
         let _ = events.recv().await; // RoomLeft
 
         assert!(client.current_room_id().await.is_none());
@@ -4759,13 +4822,10 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
         client.leave_room().unwrap();
 
-        wait_for_sent_len(&sent, 2).await;
+        wait_for_sent_len(&sent, 3).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -4787,13 +4847,10 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
         client.set_ready().unwrap();
 
-        wait_for_sent_len(&sent, 2).await;
+        wait_for_sent_len(&sent, 3).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -4963,15 +5020,12 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // RoomJoined
+        enter_scripted_player_room(&mut client, &mut events).await;
 
         let data = serde_json::json!({ "action": "move", "x": 10, "y": 20 });
         client.send_game_data(data.clone()).unwrap();
 
-        wait_for_sent_len(&sent, 2).await;
+        wait_for_sent_len(&sent, 3).await;
 
         {
             let messages = sent.lock().unwrap();
@@ -5140,11 +5194,7 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let ev = events.recv().await.unwrap(); // SpectatorJoined
-        assert!(matches!(ev, SignalFishEvent::SpectatorJoined { .. }));
+        enter_scripted_spectator_room(&mut client, &mut events).await;
 
         assert_eq!(client.current_room_code().await.as_deref(), Some("SPEC1"));
         assert_eq!(
@@ -5171,10 +5221,10 @@ mod tests {
         let config = SignalFishConfig::new("mb_test");
         let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-        let _ = events.recv().await; // Connected
-        let _ = events.recv().await; // Authenticated
-        let _ = events.recv().await; // ProtocolInfo
-        let _ = events.recv().await; // SpectatorJoined
+        enter_scripted_spectator_room(&mut client, &mut events).await;
+        client
+            .leave_spectator()
+            .expect("scripted spectator leave should be admitted");
         let ev = events.recv().await.unwrap(); // SpectatorLeft
         assert!(matches!(ev, SignalFishEvent::SpectatorLeft { .. }));
 
@@ -5233,6 +5283,9 @@ mod tests {
         let config = SignalFishConfig::new("mb_test")
             .with_shutdown_timeout(std::time::Duration::from_millis(1));
         let (mut client, mut events) = SignalFishClient::start(transport, config);
+        lock_core(&client.state).record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinRoom(JoinRoomParams::new("test-game", "local")),
+        ));
 
         let _ = events.recv().await; // Connected
         let _ = events.recv().await; // Authenticated

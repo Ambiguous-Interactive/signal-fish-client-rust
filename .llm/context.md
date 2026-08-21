@@ -301,8 +301,8 @@ offerer-role changes. `MeshSession` accepts liveness only for the selected trans
 
 Membership pairs `room_role` with room/participant IDs. Commands validate
 connection, transition, role, authority, protocol/session, then queue capacity.
-Admitted joins/leaves/reconnects fence later work until a matching typed terminal
-response; generic errors/absence stay fenced until teardown. Events are never dropped: a full event
+Admitted joins/leaves/reconnects fence later work until a matching typed terminal response; generic errors/absence stay fenced until teardown.
+Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event
 channel backpressures; undecodable frames surface as `DecodeFailed`; events are
 missed only on receiver/handle drop or shutdown (abandons ≤1 in-flight).
 Snapshots distinguish nonterminal `connected`, observed `transport_ready`, server-confirmed `authenticated`, and authoritative room membership.

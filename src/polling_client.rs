@@ -1769,8 +1769,35 @@ mod tests {
             .process_frame(TransportFrame::Text(PROTOCOL_INFO_V2.to_string()));
     }
 
+    fn admit_player_join<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        client
+            .core
+            .record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("test-game", "local"),
+            )));
+    }
+
+    fn admit_player_leave<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        client
+            .core
+            .record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+    }
+
+    fn admit_spectator_join<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        client.core.record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinAsSpectator("test-game".into(), "SPEC1".into(), "local".into()),
+        ));
+    }
+
+    fn admit_spectator_leave<T: Transport>(client: &mut SignalFishPollingClient<T>) {
+        client
+            .core
+            .record_admission(ClientCore::admission_for(&ClientOperation::LeaveSpectator));
+    }
+
     fn prime_room<T: Transport>(client: &mut SignalFishPollingClient<T>) {
         prime_connection(client);
+        admit_player_join(client);
         let room = room_incoming(String::new())
             .into_iter()
             .nth(2)
@@ -1781,7 +1808,11 @@ mod tests {
     }
 
     fn prime_v3_room<T: Transport>(client: &mut SignalFishPollingClient<T>) {
-        for item in finalized_v3_room_incoming(uuid::Uuid::from_u128(7), []) {
+        let incoming = finalized_v3_room_incoming(uuid::Uuid::from_u128(7), []);
+        for (index, item) in incoming.into_iter().enumerate() {
+            if index == 2 {
+                admit_player_join(client);
+            }
             let frame = item
                 .expect("v3 room fixture item")
                 .expect("valid v3 room fixture");
@@ -1791,6 +1822,7 @@ mod tests {
 
     fn prime_spectator<T: Transport>(client: &mut SignalFishPollingClient<T>) {
         prime_connection(client);
+        admit_spectator_join(client);
         let joined = r#"{"type":"SpectatorJoined","data":{"room_id":"00000000-0000-0000-0000-000000000001","room_code":"SPEC1","spectator_id":"00000000-0000-0000-0000-000000000004","game_name":"test-game","current_players":[],"current_spectators":[],"lobby_state":"waiting"}}"#;
         let _ = client
             .core
@@ -1852,6 +1884,7 @@ mod tests {
                 .enable_v3()
                 .with_protocol_violation_policy(policy);
             let mut client = SignalFishPollingClient::new(transport, config);
+            admit_player_join(&mut client);
 
             let events = client.poll();
             assert_eq!(
@@ -1907,6 +1940,7 @@ mod tests {
         let mut config = default_config().enable_v3();
         config.game_data_format = Some(crate::protocol::GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
+        admit_player_join(&mut client);
 
         let events = client.poll();
         assert!(events
@@ -1987,6 +2021,7 @@ mod tests {
         let mut config = default_config();
         config.game_data_format = Some(GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
+        admit_player_join(&mut client);
         let events = client.poll();
         assert!(events.iter().any(|event| matches!(
             event,
@@ -2036,6 +2071,7 @@ mod tests {
             ]);
             let config = default_config().with_protocol_violation_policy(policy);
             let mut client = SignalFishPollingClient::new(transport, config);
+            admit_player_join(&mut client);
             let events = client.poll();
             assert!(events
                 .iter()
@@ -2082,6 +2118,7 @@ mod tests {
             .enable_v3()
             .with_protocol_violation_policy(crate::client::ProtocolViolationPolicy::Observe);
         let mut client = SignalFishPollingClient::new(transport, config);
+        admit_player_join(&mut client);
         let events = client.poll();
         assert_eq!(
             events
@@ -2113,6 +2150,7 @@ mod tests {
         ));
         let transport = MockTransport::new().with_frames(invalid_frames);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_v3());
+        admit_player_join(&mut client);
         let events = client.poll();
         assert!(events
             .iter()
@@ -2136,6 +2174,7 @@ mod tests {
         ));
         let transport = MockTransport::new().with_frames(duplicate_frames);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_v3());
+        admit_player_join(&mut client);
         let events = client.poll();
         assert!(events
             .iter()
@@ -2285,6 +2324,7 @@ mod tests {
             Some(Ok(PROTOCOL_INFO_V2.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         client.poll();
         prime_room(&mut client);
         assert!(client.negotiated_protocol_version().is_none());
@@ -2336,6 +2376,7 @@ mod tests {
             [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
+        admit_player_join(&mut client);
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
@@ -2356,6 +2397,7 @@ mod tests {
             [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         client.poll();
         client.send_answer(peer, "ans").expect("send_answer");
         client.send_ice_candidate(peer, "cand").expect("send_ice");
@@ -2493,6 +2535,7 @@ mod tests {
         incoming[1] = Some(Ok(pi_v4.to_string()));
         let transport = MockTransport::new().with_incoming(incoming);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
+        admit_player_join(&mut client);
         client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(4));
         assert!(client.supports_mesh());
@@ -2552,6 +2595,7 @@ mod tests {
         let transport = MockTransport::new()
             .with_incoming(finalized_v3_room_incoming(peer, [session_plan, signal]));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -2582,6 +2626,7 @@ mod tests {
             ],
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
+        admit_player_join(&mut client);
         client.poll();
         assert_eq!(client.snapshot().session_generation, Some(second));
 
@@ -2625,6 +2670,7 @@ mod tests {
             ],
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -2695,6 +2741,7 @@ mod tests {
         incoming.push(Some(Ok(game_data_json(1))));
         let transport = MockTransport::new().with_incoming(incoming);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
 
         assert_eq!(client.stats(), crate::client::ClientStats::default());
         let _ = client.poll();
@@ -2728,6 +2775,7 @@ mod tests {
             Some(Ok(room_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
 
         let events = client.poll();
 
@@ -2762,6 +2810,7 @@ mod tests {
             Some(Ok(room_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
 
         assert!(client.current_room_id().is_none());
         assert!(client.current_room_code().is_none());
@@ -3057,10 +3106,16 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(room_joined_json.to_string())),
-            Some(Ok(room_left_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
 
+        client.poll();
+        admit_player_leave(&mut client);
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(room_left_json.to_string()))));
         client.poll();
 
         assert!(client.current_room_id().is_none());
@@ -3123,6 +3178,7 @@ mod tests {
             Some(Ok(spectator_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_spectator_join(&mut client);
 
         client.poll();
 
@@ -3146,10 +3202,18 @@ mod tests {
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V2.to_string())),
             Some(Ok(spectator_joined_json.to_string())),
-            Some(Ok(spectator_left_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_spectator_join(&mut client);
 
+        let _ = client.poll();
+        admit_spectator_leave(&mut client);
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(
+                spectator_left_json.to_string(),
+            ))));
         let events = client.poll();
 
         // Verify the SpectatorLeft event is emitted.
@@ -3876,6 +3940,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -3896,6 +3961,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -3922,6 +3988,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         let gd = events
@@ -3956,6 +4023,7 @@ mod tests {
         let mut config = default_config().enable_v3();
         config.game_data_format = Some(crate::protocol::GameDataEncoding::MessagePack);
         let mut client = SignalFishPollingClient::new(transport, config);
+        admit_player_join(&mut client);
         let events = client.poll();
 
         let gdb = events
@@ -3996,6 +4064,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -4018,6 +4087,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -4041,6 +4111,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         let ar = events
@@ -4074,6 +4145,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -4094,6 +4166,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events
@@ -4108,6 +4181,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(e, SignalFishEvent::Pong)));
@@ -4195,6 +4269,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         let rjf = events
@@ -4222,6 +4297,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_spectator_join(&mut client);
         let events = client.poll();
 
         assert!(events
@@ -4265,6 +4341,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -4292,6 +4369,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events
@@ -4311,6 +4389,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(room_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         let events = client.poll();
 
         assert!(events.iter().any(|e| matches!(
@@ -5466,11 +5545,18 @@ mod tests {
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json)),
             Some(Ok(PROTOCOL_INFO_V2.to_string())),
-            Some(Ok(room_joined_json)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
-        let events = client.poll();
+        let mut events = client.poll();
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("join must be admitted before its response");
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(room_joined_json))));
+        events.extend(client.poll());
 
         // Should contain: Connected, Authenticated, ProtocolInfo, RoomJoined
         assert_eq!(events.len(), 4, "expected 4 events, got: {events:?}");
@@ -5536,13 +5622,34 @@ mod tests {
         let transport = MockTransport::new().with_incoming(vec![
             Some(Ok(authenticated_json_str().to_string())),
             Some(Ok(PROTOCOL_INFO_V2.to_string())),
-            Some(Ok(room_joined1)),
-            Some(Ok(room_left)),
-            Some(Ok(room_joined2)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
-        let events = client.poll();
+        let mut events = client.poll();
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("first join must be admitted");
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(room_joined1))));
+        events.extend(client.poll());
+
+        client.leave_room().expect("leave must be admitted");
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(room_left))));
+        events.extend(client.poll());
+
+        client
+            .join_room(JoinRoomParams::new("test-game-2", "local"))
+            .expect("second join must be admitted");
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(room_joined2))));
+        events.extend(client.poll());
 
         // After all messages: connection baseline, RoomJoined, RoomLeft, RoomJoined
         assert_eq!(events.len(), 6, "expected 6 events, got: {events:?}");
@@ -5619,6 +5726,7 @@ mod tests {
             Some(Ok(room_joined_json.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
         client.poll();
 
         // Verify state is populated.

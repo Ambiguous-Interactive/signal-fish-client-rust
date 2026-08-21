@@ -15,10 +15,10 @@ use signal_fish_client::protocol::{
 };
 use signal_fish_client::{
     DeliveryClass, DeliveryCountersByClass, DeliveryGap, DeliveryGapReason, DeliveryReportPayload,
-    GameDataDelivery, LatestDeliveryCounters, MessageTransport, PollingClientOptions,
-    PollingClosePolicy, PollingWorkBudget, ReplayStatus, RoomRole, SenderWatermark, ServerMessage,
-    SignalFishConfig, SignalFishError, SignalFishEvent, SignalFishPollingClient, Transport,
-    TransportFrame,
+    GameDataDelivery, JoinRoomParams, LatestDeliveryCounters, MessageTransport,
+    PollingClientOptions, PollingClosePolicy, PollingWorkBudget, ReplayStatus, RoomRole,
+    SenderWatermark, ServerMessage, SignalFishConfig, SignalFishError, SignalFishEvent,
+    SignalFishPollingClient, Transport, TransportFrame,
 };
 
 const LOCAL_PLAYER: u128 = 100;
@@ -329,6 +329,7 @@ enum Command {
 #[derive(Debug, Default)]
 struct DeterministicTransport {
     setup_incoming: VecDeque<TransportFrame>,
+    setup_room_ingress_open: Rc<Cell<bool>>,
     measured_incoming: VecDeque<TransportFrame>,
     measured_ingress_open: Rc<Cell<bool>>,
     sent: Vec<TransportFrame>,
@@ -365,12 +366,16 @@ impl Transport for DeterministicTransport {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        let next = self.setup_incoming.pop_front().or_else(|| {
-            self.measured_ingress_open
-                .get()
-                .then(|| self.measured_incoming.pop_front())
-                .flatten()
-        });
+        let setup_open = self.received_frames < 2 || self.setup_room_ingress_open.get();
+        let next = setup_open
+            .then(|| self.setup_incoming.pop_front())
+            .flatten()
+            .or_else(|| {
+                self.measured_ingress_open
+                    .get()
+                    .then(|| self.measured_incoming.pop_front())
+                    .flatten()
+            });
         match next {
             Some(frame) => {
                 self.received_frames = self.received_frames.saturating_add(1);
@@ -842,19 +847,28 @@ pub fn prepare_and_warm(spec: WorkloadSpec) -> Result<WorkloadFixture, String> {
         .chain(measured_incoming.iter())
         .fold(0u64, |total, frame| total.saturating_add(frame_len(frame)));
     let measured_ingress_open = Rc::new(Cell::new(false));
-    let expected_sent = commands.len().saturating_add(1);
+    let setup_room_ingress_open = Rc::new(Cell::new(false));
+    let expected_sent = commands.len().saturating_add(2);
     let transport = DeterministicTransport {
         setup_incoming,
+        setup_room_ingress_open: Rc::clone(&setup_room_ingress_open),
         measured_incoming,
         measured_ingress_open: Rc::clone(&measured_ingress_open),
         sent: Vec::with_capacity(expected_sent),
-        pending_after_accepted_sends: pending_game_send_once.then_some(1),
+        pending_after_accepted_sends: pending_game_send_once.then_some(2),
         ..DeterministicTransport::default()
     };
     let mut client = SignalFishPollingClient::new_with_options(transport, config, options);
     let mut setup_events = EventAccumulator::default();
     let mut setup_polls = 0;
     observe_poll(&mut client, &mut setup_events, &mut setup_polls)?;
+    if !matches!(spec.workload, Workload::Reconnect { .. }) {
+        client
+            .join_room(JoinRoomParams::new("performance-lab", "local"))
+            .map_err(|error| format!("{} room admission failed: {error}", spec.id))?;
+        setup_room_ingress_open.set(true);
+        observe_poll(&mut client, &mut setup_events, &mut setup_polls)?;
+    }
     if !client.transport().setup_incoming.is_empty()
         || client.transport().received_frames != expected_setup_frames(spec.workload)
     {
@@ -1566,12 +1580,12 @@ fn expected_outbound_frames(workload: Workload) -> u64 {
             ..
         } => usize_to_u64(messages),
         Workload::Latest | Workload::Volatile => 64,
-        Workload::Reconnect { .. } | Workload::PollingPendingRecovery => 1,
+        Workload::PollingPendingRecovery => 1,
         Workload::PollingReadyFrameBurst => 17,
         Workload::PollingReadyByteBurst => 4,
         _ => 0,
     };
-    1u64.saturating_add(workload_frames)
+    2u64.saturating_add(workload_frames)
 }
 
 fn expected_send_budget_exhaustions(workload: Workload) -> u64 {

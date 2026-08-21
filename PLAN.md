@@ -24,7 +24,7 @@
   typography now span the README and task-oriented MkDocs site, with exact
   asset provenance and desktop/mobile visual evidence.
 - All 12 push workflows completed successfully on current `main` commit
-  `40a030b` after PR #125 merged. The separate live Repository Policy audit
+  `bb24986` after PR #127 merged. The separate live Repository Policy audit
   remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -65,6 +65,13 @@ measured evidence before accepting performance complexity:
    stream fragments, datagram reassembly, peer authentication, and UDP loss
    policy explicitly at the transport boundary—the SDK consumes complete
    ordered messages and must not imply guarantees it cannot provide.
+   The first correctness slice is complete: typed player/spectator
+   join/leave/reconnect responses with no compatible pending operation are
+   rejected under every policy in both drivers, while Server 0.7's
+   authoritative spectator exits remain valid. Continue with
+   [#128](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/128)
+   for same-kind response identity, oversized complete frames,
+   disconnect-adjacent transitions, and the remaining inventory cells.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote
