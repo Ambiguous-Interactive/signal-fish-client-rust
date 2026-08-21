@@ -1,5 +1,4 @@
 ---
-title: Home
 description: "Connect Rust and Godot games to the Signal Fish multiplayer signaling service"
 ---
 
