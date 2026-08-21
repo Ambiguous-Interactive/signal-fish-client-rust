@@ -5,6 +5,72 @@ use crate::protocol::SessionGeneration;
 use crate::RoomRole;
 use thiserror::Error;
 
+/// A non-secret reason that token-binding-v2 setup or message protection failed.
+///
+/// The variants deliberately contain no handshake key, derived key, nonce,
+/// proof, signature, certificate fingerprint, or application payload, so the
+/// exhaustive public error remains safe to format in ambient logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenBindingFailure {
+    /// The crate was built without the opt-in `token-binding` feature.
+    FeatureDisabled,
+    /// The server rejected the WebSocket upgrade while token binding was offered.
+    NegotiationRejected,
+    /// Required mode completed an upgrade without selecting token-binding-v2.
+    SubprotocolNotNegotiated,
+    /// The server selected a WebSocket subprotocol other than the one offered.
+    UnexpectedSubprotocol,
+    /// The selected connection closed before sending its challenge.
+    MissingChallenge,
+    /// The selected connection did not send its challenge before the deadline.
+    ChallengeTimeout,
+    /// The first application frame was not a valid token-binding challenge.
+    MalformedChallenge,
+    /// The challenge declared an unsupported protocol version.
+    UnsupportedVersion,
+    /// The challenge declared an unsupported proof scheme.
+    UnsupportedScheme,
+    /// The challenge nonce was not canonical base64 for exactly 32 bytes.
+    InvalidNonce,
+    /// The challenge did not start at the pinned protocol's first sequence.
+    InvalidFirstSequence,
+    /// The WebSocket handshake key was missing, malformed, or not 16 bytes.
+    InvalidHandshakeKey,
+    /// The per-connection HKDF key could not be derived.
+    KeyDerivation,
+    /// An outbound JSON frame cannot be represented by the pinned canonical form.
+    UnsupportedJson,
+    /// An outbound binary proof envelope could not be encoded.
+    MessageEncoding,
+    /// The shared text/binary sequence space has been exhausted.
+    SequenceExhausted,
+}
+
+impl std::fmt::Display for TokenBindingFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::FeatureDisabled => "crate feature `token-binding` is disabled",
+            Self::NegotiationRejected => "the server rejected token-binding negotiation",
+            Self::SubprotocolNotNegotiated => {
+                "the server did not select signalfish.tokenbinding.v2"
+            }
+            Self::UnexpectedSubprotocol => "the server selected an unexpected subprotocol",
+            Self::MissingChallenge => "the server closed before the token-binding challenge",
+            Self::ChallengeTimeout => "the server token-binding challenge timed out",
+            Self::MalformedChallenge => "the server sent a malformed token-binding challenge",
+            Self::UnsupportedVersion => "the server selected an unsupported token-binding version",
+            Self::UnsupportedScheme => "the server selected an unsupported token-binding scheme",
+            Self::InvalidNonce => "the server challenge nonce is invalid",
+            Self::InvalidFirstSequence => "the server challenge sequence is invalid",
+            Self::InvalidHandshakeKey => "the WebSocket handshake key is unavailable or invalid",
+            Self::KeyDerivation => "the token-binding session key could not be derived",
+            Self::UnsupportedJson => "the outbound JSON frame is not token-binding compatible",
+            Self::MessageEncoding => "the token-bound frame could not be encoded",
+            Self::SequenceExhausted => "the token-binding sequence space is exhausted",
+        })
+    }
+}
+
 /// Errors that can occur when using the Signal Fish client.
 #[derive(Debug, Error)]
 pub enum SignalFishError {
@@ -132,6 +198,13 @@ pub enum SignalFishError {
     )]
     BinaryFormatNotNegotiated,
 
+    /// Native WebSocket token-binding-v2 setup or outbound protection failed.
+    ///
+    /// The reason is intentionally structured and contains no secret or proof
+    /// material. Required mode never silently falls back after this error.
+    #[error("token binding error: {0}")]
+    TokenBinding(TokenBindingFailure),
+
     /// An operation timed out.
     #[error("operation timed out")]
     Timeout,
@@ -155,6 +228,39 @@ pub type Result<T> = std::result::Result<T, SignalFishError>;
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_binding_failure_display_is_actionable_for_every_reason() {
+        let cases = [
+            (TokenBindingFailure::FeatureDisabled, "feature"),
+            (TokenBindingFailure::NegotiationRejected, "rejected"),
+            (
+                TokenBindingFailure::SubprotocolNotNegotiated,
+                "did not select",
+            ),
+            (TokenBindingFailure::UnexpectedSubprotocol, "unexpected"),
+            (TokenBindingFailure::MissingChallenge, "closed"),
+            (TokenBindingFailure::ChallengeTimeout, "timed out"),
+            (TokenBindingFailure::MalformedChallenge, "malformed"),
+            (TokenBindingFailure::UnsupportedVersion, "version"),
+            (TokenBindingFailure::UnsupportedScheme, "scheme"),
+            (TokenBindingFailure::InvalidNonce, "nonce"),
+            (TokenBindingFailure::InvalidFirstSequence, "sequence"),
+            (TokenBindingFailure::InvalidHandshakeKey, "handshake key"),
+            (TokenBindingFailure::KeyDerivation, "derived"),
+            (TokenBindingFailure::UnsupportedJson, "JSON"),
+            (TokenBindingFailure::MessageEncoding, "encoded"),
+            (TokenBindingFailure::SequenceExhausted, "exhausted"),
+        ];
+
+        for (failure, expected) in cases {
+            let message = failure.to_string();
+            assert!(
+                message.contains(expected),
+                "{failure:?} must retain an actionable display message: {message}"
+            );
+        }
+    }
 
     #[test]
     fn server_error_uses_typed_error_code() {

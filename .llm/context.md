@@ -3,16 +3,13 @@
 ## Identity
 
 - **Company:** Ambiguous Interactive
-- **Product:** Signal Fish Client SDK
 - **Crates:** `signal-fish-client` (core) and `signal-fish-client-godot` (adapter)
 - **Version:** 0.10.0 lockstep across both crates
 - **Edition:** 2021
 - **MSRV:** Rust 1.87.0 for core; Rust 1.94.0 for the Godot adapter
 - **License:** MIT
 - **Repository:** <https://github.com/Ambiguous-Interactive/signal-fish-client-rust>
-- **Guide (GitHub Pages):** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/>
-- **API Docs (docs.rs):** <https://docs.rs/signal-fish-client> and
-  <https://docs.rs/signal-fish-client-godot>
+- **Guide/API:** <https://Ambiguous-Interactive.github.io/signal-fish-client-rust/> · <https://docs.rs/signal-fish-client>
 
 ## Purpose
 
@@ -24,7 +21,7 @@ Framed-transport-agnostic client over one complete, ordered text/binary frame st
 cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
 
-Run this before every commit. All three steps must pass with zero warnings.
+Run this before every commit.
 
 ## Release Automation
 
@@ -79,46 +76,24 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 
 Production Rust is safe by default. The core manifest denies `unsafe_code`, the
 Godot adapter forbids it, and the target-gated Emscripten WebSocket module is
-the sole documented exception because it binds the platform C API. The
-required WASM workflow runs the Emscripten FFI policy checker and its negative
-self-test before compiling and linting the actual target. Registered browser
-callback state is reclaimed only by its owning wrapper after it consumes a
-non-forgeable authorization emitted when native close was attempted or observed and
-`emscripten_websocket_delete` reports success. Cleanup retries deletion where
-possible and intentionally leaks the small state allocation after a terminal
-failure rather than allowing a late callback to access freed memory; logical
-receive errors do not skip the native close attempt. The host-tested ownership
-state machine and source checker with its 50-case self-test enforce that guard.
+sole documented exception for the platform C API. Required WASM policy and 50
+checker self-tests enforce close-before-delete callback-state ownership;
+terminal deletion failure intentionally leaks the small allocation instead of
+risking late-callback use-after-free.
 
-The change-scoped PR, scheduled, and manual Deep Safety workflow provides
-fail-closed evidence from Miri protocol tests, all three protocol fuzz targets,
-and a narrow mutation scope. Fuzzing selects the nightly host explicitly and
-writes discoveries only to temporary corpora; committed seeds are read-only
-inputs. The binary target exercises raw, valid, and perturbed protocol-v2 and
-protocol-v3 MessagePack envelopes. Deep Safety is intentionally not a required
-PR workflow because of nightly/runtime variability; required Clippy and WASM
-aggregates enforce the compiler safety and warning policies on every PR.
+Change-scoped, scheduled, and manual Deep Safety runs Miri protocol tests, three
+raw-byte JSON/MessagePack fuzz targets with temporary corpora, and focused
+mutation testing. It is not required because of nightly/runtime variability;
+required Clippy and WASM gates enforce compiler safety on every PR.
 
-Native ASan is deferred because the only owned unsafe implementation is
-Emscripten-only, so a native sanitizer lane would not execute it. The fuzz
-lane's sanitizer instrumentation instead covers the owned protocol parsers it
-actually drives. Blanket Clippy pedantic/nursery/cargo groups are also deferred:
-the inventory produced more than 170 mostly stylistic/documentation findings,
-and its only suspicious correctness warning was verified as a false positive.
-Add either class only when it demonstrates a stable, actionable defect.
+Native ASan is deferred because owned unsafe is Emscripten-only; fuzz sanitizer
+instrumentation covers the parsers it drives. Blanket Clippy
+pedantic/nursery/cargo groups remain deferred after a noisy inventory; add them
+only for stable, actionable defects.
 
-Dependabot monitors the root Cargo workspace from one root updater; Cargo
-discovers the Godot adapter as a real workspace member. Hosted run 31964370221
-proved that a multi-directory Cargo updater does not combine directory file
-sets: adapter processing lost the workspace root, fixture processing lost its
-sibling path dependency, and Dependabot opened the second zero-file PR #96.
-The minimum and latest Godot fixtures therefore remain deliberately standalone
-and are updated only with their locked compatibility/browser E2E evidence;
-putting them in the root workspace would unify incompatible Godot types and
-expand ordinary `--workspace --all-features` builds into engine-dependent
-fixtures. Default-branch updater run 31969079956 subsequently completed
-successfully on the root workspace, discovered the adapter dependencies,
-reported no resolution errors, and opened no Cargo PR.
+Dependabot uses one root-workspace updater; minimum/latest Godot fixtures remain
+standalone because combining incompatible godot-rust versions would break the
+workspace. Hosted run 31969079956 proved clean root discovery.
 
 ## Architecture — Core Modules
 
@@ -139,6 +114,7 @@ reported no resolution errors, and opened no Cargo PR.
 | `src/mesh.rs` | `MeshSession` v3 state tracker (feature: `mesh`) |
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
+| `src/token_binding.rs` | Native WebSocket token-binding-v2 types, validation, canonicalization, and proof state (feature: `token-binding`) |
 | `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 35 fake-backend tests |
 
 ### Transport Trait
@@ -186,6 +162,25 @@ The Emscripten transport reports `Pending` while its browser WebSocket is still
 connecting and must not call `emscripten_websocket_send_*` or consume the
 caller's frame until `onopen`. Preparation or FFI send errors likewise leave
 the exact frame available to its caller.
+
+Native token binding belongs exclusively to `WebSocketTransport`. Disabled is
+the byte/dependency-compatible default; optional retries without the offer only
+after tungstenite's exact successful-upgrade/no-selection result; required
+fails closed. A selected connection consumes and validates the first challenge
+before either client sees a ready transport, derives HKDF-SHA-256 from the exact
+RFC 6455 key plus server nonce, zeroizes retained key material, and protects all
+outbound JSON/binary frames with one sequence. Sequence commits only at backend
+ownership transfer. Browser, Emscripten, and Godot APIs cannot expose the
+handshake key; `from_stream` is likewise post-handshake and cannot opt in.
+Required Server 0.7 profiles require WSS. Custom roots/mTLS use
+`connect_with_tls_config`, but `require_client_fingerprint=true` profiles remain
+unsupported: the SDK does not calculate, transmit, or authenticate the leaf
+certificate fingerprint, and presenting an mTLS certificate alone is
+insufficient.
+The v2 proof is client-to-server only and binds content/order to one physical
+handshake; it is not confidentiality or server authentication. On `ws://`, an
+on-path observer sees the key and nonce and can forge it. Every reconnect gets a
+fresh nonce, derived key, and sequence space; replay/reordering/tamper fails.
 
 The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
@@ -330,6 +325,7 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `transport-websocket` | on | Built-in WebSocket via `tokio-tungstenite` |
+| `token-binding` | off | Native `signalfish.tokenbinding.v2` negotiation and outbound proofs; enables `transport-websocket` |
 | `tls` | off | `wss://` TLS for the built-in WebSocket transport (rustls + ring provider + webpki roots) |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
@@ -348,6 +344,7 @@ accounted `one_frame_escape_bytes()` empty-buffer exception.
 | `tracing` | Structured logging and diagnostics |
 | `tokio-tungstenite` | WebSocket transport (optional) |
 | `futures-util` | Stream/sink utilities for WebSocket (optional) |
+| `base64` + `hkdf` + `hmac` + `sha2` + `zeroize` | Opt-in token-binding-v2 derivation, proofs, and secret lifetime |
 
 The core manifest must never depend on `godot` or expose godot-rust types.
 `signal-fish-client-godot` depends exactly on the same core version with
@@ -430,11 +427,14 @@ strings to match server expectations.
 
 ### Connection / Auth Flow
 
-1. `SignalFishClient::start(transport, config)` queues `ClientMessage::Authenticate`
+1. A token-binding-selected native WebSocket consumes its challenge and
+   establishes proof state inside `connect_with_options`; disabled transports
+   keep the old path.
+2. `SignalFishClient::start(transport, config)` queues `ClientMessage::Authenticate`
    immediately before spawning the transport loop.
-2. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
-3. Client may then call `join_room`, etc.
-4. Both clients emit synthetic `SignalFishEvent::Connected` when their driver first observes `Transport::is_ready() == true`.
+3. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
+4. Client may then call `join_room`, etc.
+5. Both clients emit synthetic `SignalFishEvent::Connected` when their driver first observes `Transport::is_ready() == true`.
    `SignalFishEvent::Disconnected` is emitted when the transport closes
    (best-effort; missed only if the receiver is dropped, shutdown times out,
    or the handle is dropped without `shutdown()`).

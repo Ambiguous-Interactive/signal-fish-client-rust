@@ -123,6 +123,8 @@ pub mod error_codes;
 pub mod event;
 pub mod protocol;
 pub mod signal;
+#[cfg(feature = "transport-websocket")]
+pub mod token_binding;
 pub mod transport;
 pub mod transports;
 
@@ -141,7 +143,7 @@ pub use client::{
     RoomRole, SignalFishClient, SignalFishConfig,
 };
 pub use client_api::SignalFishClientApi;
-pub use error::SignalFishError;
+pub use error::{SignalFishError, TokenBindingFailure};
 pub use error_codes::ErrorCode;
 pub use event::{
     ProtocolViolationKind, ServerErrorInfo, SignalFishEvent, DECODE_FAILED_RAW_PREFIX_MAX,
@@ -154,6 +156,10 @@ pub use protocol::{
     V3BinaryGameDataFrame, VolatileDeliveryCounters,
 };
 pub use signal::PeerSignal;
+#[cfg(feature = "transport-websocket")]
+pub use token_binding::{
+    TokenBindingChallenge, TokenBindingMode, TokenBindingScheme, TokenBindingStatus,
+};
 pub use transport::{Transport, TransportCloseInfo, TransportDiagnostics, TransportFrame};
 
 #[cfg(feature = "transport-websocket")]

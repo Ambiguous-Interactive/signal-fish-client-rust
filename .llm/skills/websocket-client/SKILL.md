@@ -24,6 +24,15 @@ let transport = WebSocketTransport::connect_with_timeout(url, timeout).await?;
 or cookies. Connection failures map to `SignalFishError::Io`, preserving an
 underlying I/O error kind when possible.
 
+The opt-in `token-binding` feature adds `TokenBindingMode` to
+`WebSocketConnectOptions`. Keep disabled mode on the exact old connect path.
+Optional mode may reconnect without an offer only for tungstenite's exact
+`NoSubProtocol` result; never downgrade HTTP/TLS/network rejection, unexpected
+selection, or a malformed/missing challenge. Required mode maps missing
+selection to a typed failure. Consume the first challenge inside connect before
+returning the transport, so `Authenticate` cannot race it. `from_stream` cannot
+opt in after losing the exact generated handshake key.
+
 ## Low-Latency Socket Defaults
 
 `connect` and `connect_with_timeout` disable Nagle's algorithm (`TCP_NODELAY`)
@@ -64,14 +73,18 @@ Raw `Message::Frame` is not expected from the read half and is ignored.
 
 1. If no send is active and the caller slot is empty, return `Ready(Ok(()))`.
 2. Otherwise call `poll_ready`; on `Pending`, leave the caller slot untouched.
-3. On readiness, take exactly one `TransportFrame` and translate it to
-   `Message::Text` or `Message::Binary`.
-4. Call `start_send` once and, on success, record that a send is active.
+3. On readiness, prepare an active token-binding wrapper from `frame.as_ref()`;
+   do not take the original yet. Disabled mode translates it directly.
+4. Call `start_send` once and, on success, take the original, commit the shared
+   JSON/binary sequence, and record that a send is active.
 5. Poll `poll_flush` until ready; do not take another frame while pending.
 
 This preserves an accepted frame across `Pending` and prevents duplicate
 `start_send` calls. If a custom stream rejects the message with
-`WriteBufferFull`, restore the exact Text/Binary frame to the caller slot.
+`WriteBufferFull`, restore the exact Text/Binary frame to the caller slot in
+disabled mode. In active token-binding mode the original never left the slot;
+discard the rejected protected message and do not advance the sequence. Never
+restore a protected envelope, which would be wrapped twice on retry.
 
 ```rust,ignore
 match frame {
@@ -145,6 +158,9 @@ which panics when both `ring` and `aws_lc_rs` are in the dependency graph.
 Without the `tls` feature, a `wss://` connect fails cleanly with
 `SignalFishError::Io` (never a panic). Keep TLS features aligned with
 `Cargo.toml` rather than duplicating an alternative stack in the transport.
+`connect_with_tls_config` accepts caller-controlled roots or mTLS without
+retaining or formatting the configuration. Server 0.7 refuses required token
+binding without built-in TLS, so its positive E2E must use WSS.
 
 ## Reconnection
 
@@ -167,6 +183,13 @@ closed WebSocket object.
 - A real waker is notified when socket readiness changes.
 - The connected TCP socket has `TCP_NODELAY` set by default; `connect_with_options`
   can turn it off.
+- Disabled token binding offers no subprotocol and keeps application bytes exact.
+- Optional fallback occurs only for `NoSubProtocol`; HTTP rejection is not retried.
+- Required negotiation consumes a strict first-message challenge under timeout.
+- Preparation, `Pending`, and `WriteBufferFull` preserve the original frame and
+  sequence; JSON/binary goldens share one sequence.
+- Debug/tracing/errors omit keys, nonces, proofs, signatures, URL credentials,
+  and protected payloads.
 
 ## Common Errors
 

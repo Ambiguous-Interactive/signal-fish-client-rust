@@ -24,6 +24,11 @@ flow is unchanged.
 **Never regress the relay floor.** Any new optional field on an existing message
 MUST be `Option` + `skip_serializing_if` (or `Vec` + `default` + `skip_if-empty`).
 
+WebSocket token binding is a separate physical-transport negotiation completed
+before client construction. Its disabled mode must preserve both the handshake
+and these `Authenticate` bytes. Do not add its mode/challenge to
+`SignalFishConfig`, `ClientMessage`, `ServerMessage`, or `SignalFishEvent`.
+
 ## Capability Negotiation Flow
 
 1. The client advertises what it can fulfill in `Authenticate`:

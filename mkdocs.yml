@@ -135,6 +135,7 @@ nav:
       - Installation & Quick Start: getting-started.md
       - Core Concepts: concepts.md
       - Protocol Versioning: protocol-versioning.md
+      - WebSocket Token Binding: token-binding.md
       - Migrating 0.7 to 0.8: migration-0.8.md
       - Migrating 0.8 to 0.9: migration-0.9.md
   - API Reference:

@@ -657,7 +657,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             "registry-plan",
             "SHA256SUMS",
             "cargo cyclonedx",
-            "actions/attest@v4.2.0",
+            "actions/attest@v4.2.2",
             "cargo publish --dry-run",
             "cargo publish",
             "gh release create",

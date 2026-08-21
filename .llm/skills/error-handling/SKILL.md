@@ -190,6 +190,13 @@ Call `error_code.description()` for a human-readable explanation.
 
 ## Mapping External Errors
 
+`SignalFishError::TokenBinding(TokenBindingFailure)` carries only static,
+typed, non-secret reasons. Never attach a handshake/derived key, nonce, proof,
+signature, fingerprint, URL credential, protected frame, or TLS client config
+to `Debug`, `Display`, tracing, or an error source. Challenge fields remain
+explicitly inspectable through the transport accessor, while its `Debug`
+redacts the nonce.
+
 ```rust
 // WebSocket transport errors → TransportSend / TransportReceive
 stream.send(msg).await

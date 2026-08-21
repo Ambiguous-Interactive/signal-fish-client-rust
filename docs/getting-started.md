@@ -43,6 +43,8 @@ cannot use the SDK's transitive Tokio dependency directly.
 |------------------------|---------|--------------------------------------------------|
 | `transport-websocket`  | Yes     | WebSocket transport via `tokio-tungstenite`       |
 | `transport-websocket-emscripten` | No | Emscripten WebSocket transport for `wasm32-unknown-emscripten` |
+| `token-binding` | No | Native `WebSocketTransport` support for Server 0.7 token binding |
+| `tls` | No | Native `wss://` via rustls; required by token-binding-required Server 0.7 profiles |
 | `polling-client` | No | Synchronous, caller-driven `SignalFishPollingClient` |
 | `tokio-runtime` | No (enabled by default `transport-websocket`) | Tokio task/time integration used by the async client |
 | `mesh` | No | Protocol-v3 `MeshSession`, `WebRtcDriver`, and `MeshController` helpers |

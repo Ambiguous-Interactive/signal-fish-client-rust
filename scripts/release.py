@@ -37,6 +37,7 @@ VERSION_FILES = (
 PROVENANCE_FILES = (
     "tests/compatibility.toml",
     "tests/server-spec/PROVENANCE.toml",
+    "tests/token-binding/PROVENANCE.toml",
     "tests/wire-samples/PROVENANCE.toml",
 )
 CHANGELOG_CATEGORIES = (

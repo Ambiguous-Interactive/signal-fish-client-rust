@@ -50,8 +50,9 @@ and receive strongly typed events.
   signaling-server trust/source binding, and packet recovery remain backend
   responsibilities
 - **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
-- **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver. Server 0.7 compatibility currently targets the default token-binding-disabled deployment profile.
+- **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
 - **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
+- **Native token binding** — the opt-in `token-binding` feature negotiates Server 0.7's `signalfish.tokenbinding.v2` extension with disabled, optional, and required policies while preserving the default handshake
 - **Typed events for both drivers** — receive `SignalFishEvent`s through the
   async driver's bounded Tokio MPSC channel or directly from each polling call
 - **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
@@ -88,10 +89,11 @@ for 0.11. Until the next release, test those APIs and fixes with:
 signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
 
-> Server deployments that require the optional
-> `signalfish.tokenbinding.v2` WebSocket extension are not supported yet and
-> will reject this client. That negotiated transport feature is tracked in
-> [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
+Server deployments that require `signalfish.tokenbinding.v2` need the native
+`token-binding` and `tls` features plus required-mode WebSocket options. See
+[WebSocket Token Binding](docs/token-binding.md). Browser, Emscripten, and Godot
+WebSocket APIs cannot expose the handshake key and therefore cannot use a
+required token-binding server profile.
 
 ## Quick Start
 
@@ -141,6 +143,8 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 | --------------------- | ------- | ----------------------------------------------------------------------- |
 | `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
 | `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
+| `token-binding` | no | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2`; preserves the crypto-free default build |
+| `tls` | no | Native `wss://` support with rustls and bundled webpki roots |
 | `polling-client` | no | Synchronous protocol pump for frame-driven and single-threaded hosts |
 | `mesh` | no | v3 mesh state, signaling orchestration, and WebRTC driver seam |
 | `tokio-runtime` | **yes** (via `transport-websocket`) | Tokio runtime integration (`rt`, `time`); disable for pure WASM targets |

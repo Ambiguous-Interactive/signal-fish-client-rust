@@ -645,6 +645,7 @@ for the full workflow. Key steps:
 |---------|---------|-------------|:------------------------:|:---------------------------:|
 | `transport-websocket` | Yes | WebSocket transport via `tokio-tungstenite` (TCP sockets) | No | No |
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
+| `token-binding` | No | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2` | No | No |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
@@ -661,6 +662,13 @@ for the full workflow. Key steps:
     Do not enable `transport-websocket` or `tokio-runtime` when targeting any
     WASM target. They depend on `tokio::net::TcpStream` and Tokio's
     multi-threaded runtime, which do not compile to WebAssembly.
+
+!!! warning "Required token-binding deployments are native-only"
+    Browser WebSocket APIs—including Emscripten and Godot's browser-backed
+    `WebSocketPeer`—do not expose the generated `Sec-WebSocket-Key`. Those
+    transports therefore cannot derive `signalfish.tokenbinding.v2` proofs.
+    Use a server profile where token binding is not required, or connect
+    through a trusted native component that owns the handshake and proof state.
 
 ---
 

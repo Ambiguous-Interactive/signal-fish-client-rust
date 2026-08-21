@@ -30,9 +30,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_util::{Sink, Stream};
+#[cfg(feature = "token-binding")]
+use futures_util::{SinkExt as _, StreamExt as _};
 use tokio_tungstenite::tungstenite::{protocol::Message, Error as WebSocketError};
 
 use crate::error::SignalFishError;
+use crate::token_binding::{TokenBindingChallenge, TokenBindingMode, TokenBindingStatus};
 use crate::transport::{Transport, TransportCloseInfo, TransportFrame};
 
 /// Type alias for the underlying WebSocket stream.
@@ -43,6 +46,162 @@ pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 const MAX_SKIPPED_CONTROL_FRAMES_PER_POLL: usize = 64;
+
+fn map_connect_error(error: WebSocketError) -> SignalFishError {
+    let kind = match &error {
+        WebSocketError::Io(io) => io.kind(),
+        _ => std::io::ErrorKind::Other,
+    };
+    SignalFishError::Io(std::io::Error::new(kind, error))
+}
+
+#[cfg(feature = "tls")]
+fn install_tls_provider() {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+#[cfg(feature = "token-binding")]
+async fn connect_with_token_binding(
+    url: &str,
+    options: WebSocketConnectOptions,
+    #[cfg(feature = "tls")] connector: Option<tokio_tungstenite::Connector>,
+) -> Result<(WsStream, WebSocketTokenBinding), SignalFishError> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    use tokio_tungstenite::tungstenite::error::{ProtocolError, SubProtocolError};
+    use tokio_tungstenite::tungstenite::http::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL};
+
+    let mut request = url.into_client_request().map_err(map_connect_error)?;
+    let handshake_key = zeroize::Zeroizing::new(
+        request
+            .headers()
+            .get(SEC_WEBSOCKET_KEY)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::InvalidHandshakeKey,
+            ))?
+            .to_owned(),
+    );
+    request.headers_mut().insert(
+        SEC_WEBSOCKET_PROTOCOL,
+        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+        ),
+    );
+
+    #[cfg(feature = "tls")]
+    let connected = tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        options.disable_nagle,
+        connector.clone(),
+    )
+    .await;
+    #[cfg(not(feature = "tls"))]
+    let connected =
+        tokio_tungstenite::connect_async_with_config(request, None, options.disable_nagle).await;
+    let (mut stream, _response) = match connected {
+        Ok(connected) => connected,
+        Err(WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
+            SubProtocolError::NoSubProtocol,
+        ))) if options.token_binding == TokenBindingMode::Optional => {
+            // Tungstenite rejects an otherwise successful 101 when an offered
+            // subprotocol is omitted. That exact response proves the server
+            // permits an unsigned connection; reconnect without the offer.
+            #[cfg(feature = "tls")]
+            let fallback = tokio_tungstenite::connect_async_tls_with_config(
+                url,
+                None,
+                options.disable_nagle,
+                connector,
+            )
+            .await;
+            #[cfg(not(feature = "tls"))]
+            let fallback =
+                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
+                    .await;
+            let (stream, _response) = fallback.map_err(|error| match error {
+                WebSocketError::Http(_) => {
+                    SignalFishError::TokenBinding(crate::TokenBindingFailure::NegotiationRejected)
+                }
+                error => map_connect_error(error),
+            })?;
+            return Ok((stream, WebSocketTokenBinding::NotNegotiated));
+        }
+        Err(WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
+            SubProtocolError::NoSubProtocol,
+        ))) => {
+            return Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::SubprotocolNotNegotiated,
+            ))
+        }
+        Err(WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
+            SubProtocolError::InvalidSubProtocol
+            | SubProtocolError::ServerSentSubProtocolNoneRequested,
+        ))) => {
+            return Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::UnexpectedSubprotocol,
+            ))
+        }
+        Err(WebSocketError::Http(_)) => {
+            return Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::NegotiationRejected,
+            ))
+        }
+        Err(error) => return Err(map_connect_error(error)),
+    };
+
+    let challenge = tokio::time::timeout(
+        options.token_binding_challenge_timeout,
+        receive_token_binding_challenge(&mut stream),
+    )
+    .await
+    .map_err(|_| SignalFishError::TokenBinding(crate::TokenBindingFailure::ChallengeTimeout))??;
+    let session = crate::token_binding::TokenBindingSession::from_challenge(
+        handshake_key.as_str(),
+        challenge,
+    )?;
+    Ok((stream, WebSocketTokenBinding::Active(Some(session))))
+}
+
+#[cfg(feature = "token-binding")]
+async fn receive_token_binding_challenge(
+    stream: &mut WsStream,
+) -> Result<TokenBindingChallenge, SignalFishError> {
+    for _ in 0..MAX_SKIPPED_CONTROL_FRAMES_PER_POLL {
+        let message = stream
+            .next()
+            .await
+            .ok_or(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingChallenge,
+            ))?
+            .map_err(|error| SignalFishError::TransportReceive(error.to_string()))?;
+        match message {
+            Message::Text(text) => return crate::token_binding::parse_challenge(&text),
+            Message::Ping(_) => stream
+                .flush()
+                .await
+                .map_err(|error| SignalFishError::TransportSend(error.to_string()))?,
+            Message::Pong(_) | Message::Frame(_) => {}
+            Message::Close(_) => {
+                return Err(SignalFishError::TokenBinding(
+                    crate::TokenBindingFailure::MissingChallenge,
+                ))
+            }
+            Message::Binary(_) => {
+                return Err(SignalFishError::TokenBinding(
+                    crate::TokenBindingFailure::MalformedChallenge,
+                ))
+            }
+        }
+    }
+    Err(SignalFishError::TokenBinding(
+        crate::TokenBindingFailure::MalformedChallenge,
+    ))
+}
 
 /// Options controlling how a [`WebSocketTransport`] connection is established.
 ///
@@ -74,6 +233,16 @@ pub struct WebSocketConnectOptions {
     /// Applied to the raw socket before any TLS handshake, so it covers both
     /// `ws://` and `wss://`.
     pub disable_nagle: bool,
+    /// Token-binding-v2 negotiation policy.
+    ///
+    /// Defaults to [`TokenBindingMode::Disabled`]. Optional or required mode
+    /// needs the crate's `token-binding` feature; otherwise connection fails
+    /// with a typed [`SignalFishError::TokenBinding`] error.
+    pub token_binding: TokenBindingMode,
+    /// Maximum wait for the first token-binding challenge after negotiation.
+    ///
+    /// Defaults to 10 seconds and is ignored when token binding is not selected.
+    pub token_binding_challenge_timeout: std::time::Duration,
 }
 
 impl Default for WebSocketConnectOptions {
@@ -81,6 +250,8 @@ impl Default for WebSocketConnectOptions {
         // NB: a *derived* `Default` would yield `false`; the low-latency default is `true`.
         Self {
             disable_nagle: true,
+            token_binding: TokenBindingMode::Disabled,
+            token_binding_challenge_timeout: std::time::Duration::from_secs(10),
         }
     }
 }
@@ -98,6 +269,20 @@ impl WebSocketConnectOptions {
     #[must_use]
     pub fn with_disable_nagle(mut self, disable_nagle: bool) -> Self {
         self.disable_nagle = disable_nagle;
+        self
+    }
+
+    /// Set whether token-binding-v2 is disabled, optional, or required.
+    #[must_use]
+    pub fn with_token_binding(mut self, mode: TokenBindingMode) -> Self {
+        self.token_binding = mode;
+        self
+    }
+
+    /// Set the deadline for receiving the negotiated server challenge.
+    #[must_use]
+    pub fn with_token_binding_challenge_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.token_binding_challenge_timeout = timeout;
         self
     }
 }
@@ -121,7 +306,8 @@ impl WebSocketConnectOptions {
 /// ```
 ///
 /// For advanced use-cases (custom TLS, proxy, headers) construct the stream
-/// yourself and use [`WebSocketTransport::from_stream`].
+/// yourself and use [`WebSocketTransport::from_stream`]. Because that receives
+/// an already-completed handshake, it cannot enable token binding.
 ///
 /// # Polling Safety
 ///
@@ -140,6 +326,67 @@ struct WebSocketState<S> {
     send_started: bool,
     control_flush_pending: bool,
     peer_close_pending: bool,
+    token_binding: WebSocketTokenBinding,
+}
+
+enum WebSocketTokenBinding {
+    Disabled,
+    #[cfg(feature = "token-binding")]
+    NotNegotiated,
+    #[cfg(feature = "token-binding")]
+    Active(Option<crate::token_binding::TokenBindingSession>),
+}
+
+impl WebSocketTokenBinding {
+    fn status(&self) -> TokenBindingStatus {
+        match self {
+            Self::Disabled => TokenBindingStatus::Disabled,
+            #[cfg(feature = "token-binding")]
+            Self::NotNegotiated => TokenBindingStatus::NotNegotiated,
+            #[cfg(feature = "token-binding")]
+            Self::Active(_) => TokenBindingStatus::Active,
+        }
+    }
+
+    fn challenge(&self) -> Option<&TokenBindingChallenge> {
+        match self {
+            #[cfg(feature = "token-binding")]
+            Self::Active(Some(session)) => Some(session.challenge()),
+            #[cfg(feature = "token-binding")]
+            Self::Active(None) => None,
+            Self::Disabled => None,
+            #[cfg(feature = "token-binding")]
+            Self::NotNegotiated => None,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        matches!(self.status(), TokenBindingStatus::Active)
+    }
+
+    fn prepare(&self, frame: &TransportFrame) -> Result<TransportFrame, SignalFishError> {
+        match self {
+            #[cfg(feature = "token-binding")]
+            Self::Active(Some(session)) => session.prepare(frame),
+            #[cfg(feature = "token-binding")]
+            Self::Active(None) => Err(SignalFishError::TransportClosed),
+            Self::Disabled => Ok(frame.clone()),
+            #[cfg(feature = "token-binding")]
+            Self::NotNegotiated => Ok(frame.clone()),
+        }
+    }
+
+    fn commit(&mut self) -> Result<(), SignalFishError> {
+        match self {
+            #[cfg(feature = "token-binding")]
+            Self::Active(Some(session)) => session.commit(),
+            #[cfg(feature = "token-binding")]
+            Self::Active(None) => Err(SignalFishError::TransportClosed),
+            Self::Disabled => Ok(()),
+            #[cfg(feature = "token-binding")]
+            Self::NotNegotiated => Ok(()),
+        }
+    }
 }
 
 impl std::fmt::Debug for WebSocketTransport {
@@ -153,12 +400,17 @@ impl std::fmt::Debug for WebSocketTransport {
             .field("send_started", &self.state.send_started)
             .field("control_flush_pending", &self.state.control_flush_pending)
             .field("peer_close_pending", &self.state.peer_close_pending)
+            .field("token_binding", &self.state.token_binding.status())
             .finish()
     }
 }
 
 impl<S> WebSocketState<S> {
     fn new(stream: S) -> Self {
+        Self::new_with_token_binding(stream, WebSocketTokenBinding::Disabled)
+    }
+
+    fn new_with_token_binding(stream: S, token_binding: WebSocketTokenBinding) -> Self {
         Self {
             stream: Some(stream),
             closed: false,
@@ -166,6 +418,7 @@ impl<S> WebSocketState<S> {
             send_started: false,
             control_flush_pending: false,
             peer_close_pending: false,
+            token_binding,
         }
     }
 
@@ -175,6 +428,12 @@ impl<S> WebSocketState<S> {
         self.send_started = false;
         self.control_flush_pending = false;
         self.peer_close_pending = false;
+        #[cfg(feature = "token-binding")]
+        if let WebSocketTokenBinding::Active(session) = &mut self.token_binding {
+            // Drop and zeroize the derived key/challenge as soon as the
+            // physical connection becomes terminal while preserving status.
+            *session = None;
+        }
     }
 
     fn close_info(&self) -> Option<TransportCloseInfo> {
@@ -210,50 +469,64 @@ impl WebSocketTransport {
     /// [`WebSocketConnectOptions`].
     ///
     /// Behaves like [`connect`](Self::connect) but lets the caller control
-    /// socket tuning — currently whether Nagle's algorithm is disabled
-    /// (`TCP_NODELAY`). The option is applied to the raw socket before any TLS
-    /// handshake, so it covers both `ws://` and `wss://`.
+    /// socket tuning and token-binding negotiation policy. Socket options are
+    /// applied before any TLS handshake, so they cover both `ws://` and
+    /// `wss://`. A selected token-binding challenge is consumed before this
+    /// method returns.
     ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::Io`] if the URL is invalid or the connection
     /// cannot be established. When the underlying error is an I/O error its
     /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
-    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other).
+    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other). Optional or
+    /// required mode returns [`SignalFishError::TokenBinding`] when the feature
+    /// is disabled or negotiation, challenge validation, or key derivation
+    /// fails.
     pub async fn connect_with_options(
         url: &str,
         options: WebSocketConnectOptions,
     ) -> Result<Self, SignalFishError> {
-        #[cfg(feature = "tls")]
-        {
-            // Ensure a rustls crypto provider is installed process-wide so the
-            // wss:// path below cannot panic when the dependency graph enables
-            // both `ring` and `aws_lc_rs` (rustls' auto-detection panics on that
-            // ambiguity). Idempotent and first-wins: yields to any provider the
-            // application already installed.
-            use std::sync::Once;
-            static INSTALL: Once = Once::new();
-            INSTALL.call_once(|| {
-                let _ = rustls::crypto::ring::default_provider().install_default();
-            });
+        #[cfg(not(feature = "token-binding"))]
+        if options.token_binding != TokenBindingMode::Disabled {
+            return Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::FeatureDisabled,
+            ));
         }
+
+        #[cfg(feature = "tls")]
+        install_tls_provider();
 
         tracing::debug!(
             secure = url.starts_with("wss://"),
             disable_nagle = options.disable_nagle,
+            token_binding = ?options.token_binding,
             "connecting to WebSocket server"
         );
 
-        let (stream, _response) =
-            tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
-                .await
-                .map_err(|e| {
-                    let kind = match &e {
-                        tokio_tungstenite::tungstenite::Error::Io(io) => io.kind(),
-                        _ => std::io::ErrorKind::Other,
-                    };
-                    SignalFishError::Io(std::io::Error::new(kind, e))
-                })?;
+        #[cfg(feature = "token-binding")]
+        let (stream, token_binding) = if options.token_binding == TokenBindingMode::Disabled {
+            let (stream, _response) =
+                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
+                    .await
+                    .map_err(map_connect_error)?;
+            (stream, WebSocketTokenBinding::Disabled)
+        } else {
+            #[cfg(feature = "tls")]
+            let connected = connect_with_token_binding(url, options, None).await?;
+            #[cfg(not(feature = "tls"))]
+            let connected = connect_with_token_binding(url, options).await?;
+            connected
+        };
+
+        #[cfg(not(feature = "token-binding"))]
+        let (stream, token_binding) = {
+            let (stream, _response) =
+                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
+                    .await
+                    .map_err(map_connect_error)?;
+            (stream, WebSocketTokenBinding::Disabled)
+        };
 
         tracing::info!(
             secure = url.starts_with("wss://"),
@@ -261,7 +534,78 @@ impl WebSocketTransport {
         );
 
         Ok(Self {
-            state: WebSocketState::new(stream),
+            state: WebSocketState::new_with_token_binding(stream, token_binding),
+        })
+    }
+
+    /// Establish a native WebSocket with an explicit rustls client configuration.
+    ///
+    /// This is the token-binding-capable path for private roots, custom trust
+    /// stores, and mTLS. The configuration is used only during connection setup
+    /// and is not retained or formatted by the transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same connection and token-binding errors as
+    /// [`connect_with_options`](Self::connect_with_options).
+    #[cfg(feature = "tls")]
+    pub async fn connect_with_tls_config(
+        url: &str,
+        options: WebSocketConnectOptions,
+        tls_config: std::sync::Arc<rustls::ClientConfig>,
+    ) -> Result<Self, SignalFishError> {
+        #[cfg(not(feature = "token-binding"))]
+        if options.token_binding != TokenBindingMode::Disabled {
+            return Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::FeatureDisabled,
+            ));
+        }
+
+        install_tls_provider();
+        let connector = tokio_tungstenite::Connector::Rustls(tls_config);
+        tracing::debug!(
+            secure = url.starts_with("wss://"),
+            disable_nagle = options.disable_nagle,
+            token_binding = ?options.token_binding,
+            custom_tls = true,
+            "connecting to WebSocket server"
+        );
+
+        #[cfg(feature = "token-binding")]
+        let (stream, token_binding) = if options.token_binding == TokenBindingMode::Disabled {
+            let (stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
+                url,
+                None,
+                options.disable_nagle,
+                Some(connector),
+            )
+            .await
+            .map_err(map_connect_error)?;
+            (stream, WebSocketTokenBinding::Disabled)
+        } else {
+            connect_with_token_binding(url, options, Some(connector)).await?
+        };
+
+        #[cfg(not(feature = "token-binding"))]
+        let (stream, token_binding) = {
+            let (stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
+                url,
+                None,
+                options.disable_nagle,
+                Some(connector),
+            )
+            .await
+            .map_err(map_connect_error)?;
+            (stream, WebSocketTokenBinding::Disabled)
+        };
+
+        tracing::info!(
+            secure = url.starts_with("wss://"),
+            custom_tls = true,
+            "WebSocket connection established"
+        );
+        Ok(Self {
+            state: WebSocketState::new_with_token_binding(stream, token_binding),
         })
     }
 
@@ -273,10 +617,28 @@ impl WebSocketTransport {
     /// Unlike [`connect`](Self::connect), this does **not** touch socket options:
     /// the caller owns the stream and is responsible for `TCP_NODELAY` (Nagle) or
     /// any other tuning on the underlying socket before wrapping it here.
+    /// It also cannot enable token binding: an established stream no longer
+    /// exposes the exact generated `Sec-WebSocket-Key`, so callers needing that
+    /// extension must own the full handshake/proof wrapper or use a connect API.
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
             state: WebSocketState::new(stream),
         }
+    }
+
+    /// Return the negotiated token-binding state for this physical connection.
+    #[must_use]
+    pub fn token_binding_status(&self) -> TokenBindingStatus {
+        self.state.token_binding.status()
+    }
+
+    /// Return the validated server challenge when token binding is active.
+    ///
+    /// The transport consumes this challenge internally before it can sign any
+    /// application frame. Callers normally need only [`token_binding_status`](Self::token_binding_status).
+    #[must_use]
+    pub fn token_binding_challenge(&self) -> Option<&TokenBindingChallenge> {
+        self.state.token_binding.challenge()
     }
 
     /// Establish a new WebSocket connection with a timeout.
@@ -340,8 +702,20 @@ where
                 }
                 Poll::Ready(Ok(())) => {}
             }
-            let Some(accepted_frame) = frame.take() else {
+            let token_binding_active = self.token_binding.is_active();
+            let Some(original_frame) = frame.as_ref() else {
                 return Poll::Ready(Ok(()));
+            };
+            let accepted_frame = if token_binding_active {
+                match self.token_binding.prepare(original_frame) {
+                    Ok(prepared) => prepared,
+                    Err(error) => return Poll::Ready(Err(error)),
+                }
+            } else {
+                let Some(frame) = frame.take() else {
+                    return Poll::Ready(Ok(()));
+                };
+                frame
             };
             let message = match accepted_frame {
                 TransportFrame::Text(text) => Message::Text(text.into()),
@@ -357,38 +731,44 @@ where
             if let Err(error) = send_result {
                 let detail = error.to_string();
                 if let WebSocketError::WriteBufferFull(message) = error {
-                    let restored = match *message {
-                        Message::Text(text) => {
-                            *frame = Some(TransportFrame::Text(text.to_string()));
-                            true
-                        }
-                        Message::Binary(bytes) => {
-                            *frame = Some(TransportFrame::Binary(bytes.to_vec()));
-                            true
-                        }
-                        Message::Frame(frame_data) => {
-                            use tokio_tungstenite::tungstenite::protocol::frame::coding::{
-                                Data, OpCode,
-                            };
+                    let restored = if token_binding_active {
+                        // The exact original remains in the caller slot. Never
+                        // restore the protected envelope or a retry would wrap it twice.
+                        true
+                    } else {
+                        match *message {
+                            Message::Text(text) => {
+                                *frame = Some(TransportFrame::Text(text.to_string()));
+                                true
+                            }
+                            Message::Binary(bytes) => {
+                                *frame = Some(TransportFrame::Binary(bytes.to_vec()));
+                                true
+                            }
+                            Message::Frame(frame_data) => {
+                                use tokio_tungstenite::tungstenite::protocol::frame::coding::{
+                                    Data, OpCode,
+                                };
 
-                            match frame_data.header().opcode {
-                                OpCode::Data(Data::Text) => match frame_data.into_text() {
-                                    Ok(text) => {
-                                        *frame = Some(TransportFrame::Text(text.to_string()));
+                                match frame_data.header().opcode {
+                                    OpCode::Data(Data::Text) => match frame_data.into_text() {
+                                        Ok(text) => {
+                                            *frame = Some(TransportFrame::Text(text.to_string()));
+                                            true
+                                        }
+                                        Err(_) => false,
+                                    },
+                                    OpCode::Data(Data::Binary) => {
+                                        *frame = Some(TransportFrame::Binary(
+                                            frame_data.into_payload().to_vec(),
+                                        ));
                                         true
                                     }
-                                    Err(_) => false,
-                                },
-                                OpCode::Data(Data::Binary) => {
-                                    *frame = Some(TransportFrame::Binary(
-                                        frame_data.into_payload().to_vec(),
-                                    ));
-                                    true
+                                    _ => false,
                                 }
-                                _ => false,
                             }
+                            _ => false,
                         }
-                        _ => false,
                     };
                     if !restored {
                         self.mark_terminal();
@@ -397,6 +777,13 @@ where
                     self.mark_terminal();
                 }
                 return Poll::Ready(Err(SignalFishError::TransportSend(detail)));
+            }
+            if token_binding_active {
+                let _accepted_original = frame.take();
+                if let Err(error) = self.token_binding.commit() {
+                    self.mark_terminal();
+                    return Poll::Ready(Err(error));
+                }
             }
             self.send_started = true;
         }
@@ -632,7 +1019,8 @@ impl Transport for WebSocketTransport {
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::result_large_err
 )]
 mod tests {
     use super::*;
@@ -666,6 +1054,22 @@ mod tests {
         let result = WebSocketTransport::connect("ws://127.0.0.1:1").await;
         let err = result.unwrap_err();
         assert!(matches!(err, SignalFishError::Io(_)));
+    }
+
+    #[cfg(not(feature = "token-binding"))]
+    #[tokio::test]
+    async fn non_disabled_mode_requires_the_token_binding_feature() {
+        let result = WebSocketTransport::connect_with_options(
+            "ws://127.0.0.1:1",
+            WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Required),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::FeatureDisabled
+            ))
+        ));
     }
 
     // ── Mock-stream helpers ──────────────────────────────────────────────
@@ -707,6 +1111,328 @@ mod tests {
             .await
             .expect("mock WebSocket server must finish promptly")
             .expect("mock WebSocket server must not panic");
+    }
+
+    #[cfg(feature = "token-binding")]
+    fn required_token_binding_options() -> WebSocketConnectOptions {
+        WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Required)
+    }
+
+    #[cfg(feature = "token-binding")]
+    fn challenge_json() -> &'static str {
+        r#"{"type":"TokenBindingChallenge","data":{"version":2,"scheme":"server_nonce_hkdf_sha256","nonce":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","first_sequence":1}}"#
+    }
+
+    #[tokio::test]
+    async fn default_connect_does_not_offer_a_subprotocol() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("default-handshake listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("default-handshake listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert!(
+                        request.headers().get(SEC_WEBSOCKET_PROTOCOL).is_none(),
+                        "disabled/default mode must not change the WebSocket handshake"
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("default handshake must succeed");
+            assert_eq!(
+                ws.next()
+                    .await
+                    .expect("client must send one frame")
+                    .expect("client frame must be valid"),
+                Message::Text(r#"{"type":"Ping"}"#.into())
+            );
+        });
+
+        let mut transport = WebSocketTransport::connect(&format!("ws://{addr}"))
+            .await
+            .expect("default connect must succeed");
+        assert_eq!(
+            transport.token_binding_status(),
+            TokenBindingStatus::Disabled
+        );
+        let mut frame = Some(TransportFrame::Text(r#"{"type":"Ping"}"#.to_string()));
+        std::future::poll_fn(|cx| transport.poll_send(cx, &mut frame))
+            .await
+            .expect("default frame must send");
+        assert!(frame.is_none());
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn required_mode_selects_and_consumes_challenge_before_sending() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("required-handshake listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("required-handshake listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get(SEC_WEBSOCKET_PROTOCOL)
+                            .and_then(|value| value.to_str().ok()),
+                        Some(crate::token_binding::TOKEN_BINDING_SUBPROTOCOL)
+                    );
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("required handshake must succeed");
+            ws.send(Message::Text(challenge_json().into()))
+                .await
+                .expect("server must send challenge");
+            let signed = ws
+                .next()
+                .await
+                .expect("client must send after challenge")
+                .expect("signed client frame must be valid")
+                .into_text()
+                .expect("Ping must remain text");
+            let signed: serde_json::Value =
+                serde_json::from_str(&signed).expect("signed Ping must parse");
+            assert_eq!(signed["type"], "Ping");
+            assert_eq!(signed["token_binding"]["sequence"], 1);
+            assert!(signed["token_binding"]["signature"].is_string());
+        });
+
+        let mut transport = WebSocketTransport::connect_with_options(
+            &format!("ws://{addr}"),
+            required_token_binding_options(),
+        )
+        .await
+        .expect("required token binding must connect");
+        assert_eq!(transport.token_binding_status(), TokenBindingStatus::Active);
+        assert!(transport.token_binding_challenge().is_some());
+        let mut frame = Some(TransportFrame::Text(r#"{"type":"Ping"}"#.to_string()));
+        std::future::poll_fn(|cx| transport.poll_send(cx, &mut frame))
+            .await
+            .expect("signed Ping must send");
+        assert!(frame.is_none());
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn optional_mode_retries_only_after_unsigned_upgrade_is_permitted() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("optional-handshake listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("optional-handshake listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (first, _) = listener.accept().await.expect("server must accept offer");
+            let mut first = tokio_tungstenite::accept_hdr_async(
+                first,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert!(request.headers().get(SEC_WEBSOCKET_PROTOCOL).is_some());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("server permits unsigned first upgrade");
+            let _closed_first_attempt = first.next().await;
+
+            let (second, _) = listener
+                .accept()
+                .await
+                .expect("server must accept fallback");
+            let mut second = tokio_tungstenite::accept_hdr_async(
+                second,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert!(request.headers().get(SEC_WEBSOCKET_PROTOCOL).is_none());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("unsigned fallback handshake must succeed");
+            while second.next().await.is_some() {}
+        });
+
+        let transport = WebSocketTransport::connect_with_options(
+            &format!("ws://{addr}"),
+            WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Optional),
+        )
+        .await
+        .expect("optional mode must accept server-permitted fallback");
+        assert_eq!(
+            transport.token_binding_status(),
+            TokenBindingStatus::NotNegotiated
+        );
+        drop(transport);
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn optional_mode_does_not_retry_an_http_rejection() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("rejection listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("rejection listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.expect("server must accept offer");
+            tcp.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .expect("server must reject the offered handshake");
+            drop(tcp);
+
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "HTTP rejection must not trigger an unsigned fallback"
+            );
+        });
+
+        let error = WebSocketTransport::connect_with_options(
+            &format!("ws://{addr}"),
+            WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Optional),
+        )
+        .await
+        .expect_err("optional mode must preserve an HTTP rejection");
+        assert!(matches!(
+            error,
+            SignalFishError::TokenBinding(crate::TokenBindingFailure::NegotiationRejected)
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn selected_mode_times_out_waiting_for_the_first_challenge() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("challenge-timeout listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("challenge-timeout listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let _ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("selected handshake must succeed");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        });
+
+        let options = required_token_binding_options()
+            .with_token_binding_challenge_timeout(std::time::Duration::from_millis(20));
+        let error = WebSocketTransport::connect_with_options(&format!("ws://{addr}"), options)
+            .await
+            .expect_err("selected connection must not wait forever for its challenge");
+        assert!(matches!(
+            error,
+            SignalFishError::TokenBinding(crate::TokenBindingFailure::ChallengeTimeout)
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn required_mode_rejects_missing_selection_and_malformed_challenge() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        for (send_selection, challenge, expected) in [
+            (
+                false,
+                None,
+                crate::TokenBindingFailure::SubprotocolNotNegotiated,
+            ),
+            (
+                true,
+                Some(r#"{"type":"Authenticated","data":{}}"#),
+                crate::TokenBindingFailure::MalformedChallenge,
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("negative-handshake listener must bind");
+            let addr = listener
+                .local_addr()
+                .expect("negative-handshake listener must have an address");
+            let server_task = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("server must accept client");
+                let mut ws = tokio_tungstenite::accept_hdr_async(
+                    tcp,
+                    move |_request: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        if send_selection {
+                            response.headers_mut().insert(
+                                SEC_WEBSOCKET_PROTOCOL,
+                                tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                    crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                                ),
+                            );
+                        }
+                        Ok(response)
+                    },
+                )
+                .await
+                .expect("server-side negative handshake must complete");
+                if let Some(challenge) = challenge {
+                    ws.send(Message::Text(challenge.into()))
+                        .await
+                        .expect("server must send malformed challenge");
+                }
+            });
+            let error = WebSocketTransport::connect_with_options(
+                &format!("ws://{addr}"),
+                required_token_binding_options(),
+            )
+            .await
+            .expect_err("required mode must fail closed");
+            assert!(matches!(
+                error,
+                SignalFishError::TokenBinding(actual) if actual == expected
+            ));
+            finish_mock_server(server_task).await;
+        }
     }
 
     type MemoryWebSocket = tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>;
@@ -875,6 +1601,7 @@ mod tests {
                 send_started: false,
                 control_flush_pending: false,
                 peer_close_pending: false,
+                token_binding: WebSocketTokenBinding::Disabled,
             },
         };
 
@@ -883,7 +1610,8 @@ mod tests {
         assert_eq!(
             output,
             "WebSocketTransport { has_stream: false, closed: true, has_close_info: true, \
-             send_started: false, control_flush_pending: false, peer_close_pending: false }"
+             send_started: false, control_flush_pending: false, peer_close_pending: false, \
+             token_binding: Disabled }"
         );
     }
 
@@ -1209,6 +1937,78 @@ mod tests {
             );
             assert!(!state.send_started);
         }
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn token_binding_failures_preserve_original_frame_and_sequence() {
+        use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
+
+        let (client_io, _server_io) = tokio::io::duplex(64);
+        let config = WebSocketConfig::default()
+            .write_buffer_size(0)
+            .max_write_buffer_size(16);
+        let client = tokio_tungstenite::WebSocketStream::from_raw_socket(
+            client_io,
+            Role::Client,
+            Some(config),
+        )
+        .await;
+        let challenge = crate::token_binding::parse_challenge(challenge_json())
+            .expect("fixture challenge must parse");
+        let session = crate::token_binding::TokenBindingSession::from_challenge(
+            "MDEyMzQ1Njc4OWFiY2RlZg==",
+            challenge,
+        )
+        .expect("fixture handshake key must derive a session");
+        let mut state = WebSocketState::new(client);
+        state.token_binding = WebSocketTokenBinding::Active(Some(session));
+        let (_wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let unsupported = TransportFrame::Text(r#"{"type":"Ping","bad":9007199254740992}"#.into());
+        let mut offered = Some(unsupported.clone());
+        assert!(matches!(
+            state.poll_send(&mut cx, &mut offered),
+            Poll::Ready(Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::UnsupportedJson
+            )))
+        ));
+        assert_eq!(offered, Some(unsupported));
+
+        let original = TransportFrame::Text(format!(
+            r#"{{"type":"Ping","padding":"{}"}}"#,
+            "x".repeat(64)
+        ));
+        let mut offered = Some(original.clone());
+        assert!(matches!(
+            state.poll_send(&mut cx, &mut offered),
+            Poll::Ready(Err(SignalFishError::TransportSend(_)))
+        ));
+        assert_eq!(offered, Some(original.clone()));
+        assert!(!state.closed, "buffer refusal must remain retryable");
+
+        let TransportFrame::Text(retry) = state
+            .token_binding
+            .prepare(&original)
+            .expect("retry preparation must succeed")
+        else {
+            panic!("text input must produce a text proof");
+        };
+        let retry: serde_json::Value =
+            serde_json::from_str(&retry).expect("retry proof must parse");
+        assert_eq!(
+            retry["token_binding"]["sequence"], 1,
+            "preparation and backend refusal must not consume a sequence"
+        );
+
+        state.mark_terminal();
+        assert_eq!(state.token_binding.status(), TokenBindingStatus::Active);
+        assert!(
+            state.token_binding.challenge().is_none(),
+            "terminalization must drop challenge and zeroize the active session"
+        );
+        assert!(state.stream.is_none());
     }
 
     #[tokio::test]

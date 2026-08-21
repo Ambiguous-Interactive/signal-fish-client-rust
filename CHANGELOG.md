@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added opt-in native `signalfish.tokenbinding.v2` support through the
+  `token-binding` feature. New public types are `TokenBindingMode`,
+  `TokenBindingStatus`, `TokenBindingScheme`, `TokenBindingChallenge`, and
+  `TokenBindingFailure`. `WebSocketConnectOptions` gains public
+  `token_binding` / `token_binding_challenge_timeout` fields and matching
+  `with_token_binding` / `with_token_binding_challenge_timeout` builders.
+  `WebSocketTransport` gains `connect_with_tls_config`,
+  `token_binding_status`, and `token_binding_challenge`. Strict challenge
+  validation, shared JSON/binary proof sequencing, canonical Server 0.7
+  goldens, and pinned positive/negative required-WSS smokes back the surface.
+  The default connection path and dependency graph remain unchanged.
 - Added Signal Fish Server 0.7.0 protocol conformance, including
   `SessionGeneration`, `DirectEndpoint::{host, port}`,
   `SessionPlanPayload::generation`, `SessionPlanPayload::direct_endpoint`,
@@ -47,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `WebSocketConnectOptions` gains token-binding mode and challenge
+  timeout fields, and exhaustive `SignalFishError` matches must handle
+  `TokenBinding(TokenBindingFailure)`. Browser, Emscripten, Godot, and
+  post-handshake `from_stream` transports remain incapable of required mode
+  because their APIs do not expose the RFC 6455 handshake key.
 - Clarified that `Transport` requires a complete, ordered text/binary frame
   stream for the intended signaling server and that `RelayTransport::Udp` is
   ignored legacy `JoinRoom` metadata under Server 0.7, not a built-in UDP
