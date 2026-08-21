@@ -156,3 +156,14 @@ Independent design/accessibility and code/contract adversarial reviewers each
 reported zero remaining findings on the frozen tree. Hosted checks and review
 state are intentionally recorded on the resulting pull request, where they can
 be observed rather than predicted by this pre-publication session record.
+
+## Late Issue Triage
+
+Issue #126, a repository-wide correctness and performance audit, was opened
+while this design-system work was underway but before its pull request was
+published. It supersedes presentation work as the next gameplay-impacting
+milestone, but does not invalidate this already isolated documentation change.
+`PLAN.md` now gives the audit a correctness-first, all-feature sequence that
+requires an exact pin to the Server reference client, preserves the SDK's
+complete-message transport boundary, and requires usability, differential,
+scoped-safety, and profiling evidence before optimization work is accepted.
