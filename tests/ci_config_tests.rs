@@ -5654,11 +5654,11 @@ mod docs_onboarding_shape {
             let end = candidate
                 .find(|character: char| {
                     character.is_whitespace()
-                        || matches!(character, '"' | '\'' | '`' | ')' | ']' | '<' | '>')
+                        || matches!(character, '"' | '\'' | '`' | ')' | '<' | '>')
                 })
                 .unwrap_or(candidate.len());
             if at_scheme_boundary && end > scheme.len() {
-                urls.push(candidate[..end].trim_end_matches(['.', ',', ';', ':']));
+                urls.push(candidate[..end].trim_end_matches(['.', ',', ';', ':', ']']));
             }
             offset = after_scheme;
         }
@@ -5858,6 +5858,8 @@ mod docs_onboarding_shape {
                 ("connect ws://host/v2/ws", Some("/v2/ws")),
                 ("connect WSS://host/v3/ws.", Some("/v3/ws")),
                 ("connect ws://host/v2/ws, then poll", Some("/v2/ws")),
+                ("connect ws://[::1]:3536/v2/ws", Some("/v2/ws")),
+                ("connect [ws://host/v2/ws]", Some("/v2/ws")),
                 ("connect ws://host/old?next=/v2/ws", Some("/old")),
                 ("connect ws://host?next=/v2/ws", None),
                 ("connect ws://host#example=/v2/ws", None),

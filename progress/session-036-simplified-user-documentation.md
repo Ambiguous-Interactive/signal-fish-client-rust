@@ -125,6 +125,9 @@ All 12 pull-request workflows passed on code-bearing head
 | Deep Safety | 32450769867 |
 | Godot Web | 32450769908 |
 
-The PR has no review threads or actionable hosted comments. Its two submitted
-reviews are quota-exhausted Copilot notices, the known governance limitation
-tracked by issue #90.
+Cursor Bugbot later found that the endpoint scanner treated `]` as a URL
+terminator and therefore falsely rejected a valid bracketed-IPv6 host. The
+final fix preserves an IPv6 authority bracket while trimming a prose-closing
+bracket, with table regressions for both forms. The submitted hosted reviews
+are this addressed Bugbot comment and two quota-exhausted Copilot notices; the
+Copilot limitation remains tracked by issue #90.
