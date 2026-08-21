@@ -217,6 +217,16 @@ Session 034 records the source-to-decision matrix and verification evidence.
 
 Track [issue #88](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/88).
 
+[PR #119](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/119)
+implements the milestone and is open, non-draft, mergeable, and fully green on
+code-bearing head `3bf73fdd1eebadf9aa3821b224492575fe8da312`. All twelve hosted workflows
+passed, including required-WSS positive and adversarial Server 0.7 E2E, Deep
+Safety, and the full Godot Web matrix. Two independent adversarial review
+passes found no remaining concrete issue, and hosted review has zero threads.
+It remains intentionally unmerged because the repository has no eligible
+independent collaborator, Copilot review is quota-exhausted, and issue #90's
+approval/ruleset administration is still incomplete.
+
 - Preserve byte-for-byte default connections while adding explicit disabled,
   optional, and required token-binding-v2 modes.
 - Bind the native proof algorithm and negative cases to one exact server
