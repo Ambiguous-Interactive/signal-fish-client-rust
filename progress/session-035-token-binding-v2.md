@@ -149,3 +149,18 @@ challenge and zeroizes the active session while preserving historical `Active`
 status, and the test pins that behavior. The exact provenance paths/hashes and
 every golden field are consumed by tests. Pass 2 reached zero remaining concrete
 findings.
+
+## Hosted Checkpoint
+
+PR #119 (`feat!: support negotiated WebSocket token binding v2`) links and
+closes #88 when merged. The first published head, `7751e32`, reached ten green
+hosted workflows while Godot Web and Deep Safety were still running. Semver
+Checks correctly identified the two documented breaking surfaces—new public
+fields on exhaustively constructible `WebSocketConnectOptions` and the new
+exhaustive `SignalFishError::TokenBinding` variant—but its original event had
+the pre-classification `feat:` title. The PR title now carries the repository's
+required `feat!:` major marker; the next head event re-evaluates that policy.
+
+The automated review inventory contains one quota-exhausted Copilot comment,
+no approval, and no review threads. An eligible human approval and the separate
+#90 branch-protection administration therefore remain external merge blockers.
