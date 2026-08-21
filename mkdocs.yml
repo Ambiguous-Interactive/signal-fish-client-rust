@@ -1,5 +1,5 @@
 site_name: Signal Fish Client SDK
-site_description: "Framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
+site_description: "Connect Rust and Godot games to the Signal Fish multiplayer signaling service"
 site_url: https://Ambiguous-Interactive.github.io/signal-fish-client-rust/
 repo_url: https://github.com/Ambiguous-Interactive/signal-fish-client-rust
 repo_name: signal-fish-client-rust
@@ -131,24 +131,24 @@ validation:
 
 nav:
   - Home: index.md
-  - Getting Started:
+  - Start Here:
       - Installation & Quick Start: getting-started.md
+      - Basic Lobby Walkthrough: examples.md
+  - Use the SDK:
+      - Client Commands & State: client.md
+      - Events: events.md
+      - Errors: errors.md
+      - WebAssembly & Godot: wasm.md
+      - Godot + Fortress: fortress.md
+  - Multiplayer Choices:
       - Core Concepts: concepts.md
       - Protocol Versioning: protocol-versioning.md
+      - Delivery Contract & Backpressure: delivery.md
+      - Mesh (v3): mesh-guide.md
+  - Advanced Reference:
+      - Custom Transports: transport.md
+      - Protocol Types: protocol.md
       - WebSocket Token Binding: token-binding.md
       - Migrating 0.7 to 0.8: migration-0.8.md
       - Migrating 0.8 to 0.9: migration-0.9.md
-  - API Reference:
-      - Client: client.md
-      - Transport: transport.md
-      - Events: events.md
-      - Errors: errors.md
-      - Protocol Types: protocol.md
-  - Guides:
-      - Delivery Contract & Backpressure: delivery.md
-      - Mesh (v3): mesh-guide.md
-      - WebAssembly: wasm.md
-      - Godot + Fortress: fortress.md
       - Release Operations: releasing.md
-  - Examples:
-      - Walkthroughs: examples.md

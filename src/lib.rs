@@ -76,7 +76,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 //!     // 1. Connect a WebSocket transport to the signaling server.
-//!     let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+//!     let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
 //!
 //!     // 2. Build a client config with your application ID.
 //!     let config = SignalFishConfig::new("mb_app_abc123");

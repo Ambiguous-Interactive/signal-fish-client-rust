@@ -174,7 +174,7 @@ into the transport's `poll_recv()` method.
 ```rust,ignore
 use signal_fish_client::EmscriptenWebSocketTransport;
 
-let transport = EmscriptenWebSocketTransport::connect("wss://example.com/signal")?;
+let transport = EmscriptenWebSocketTransport::connect("wss://example.com/v2/ws")?;
 ```
 
 `connect()` is **synchronous** — the WebSocket object is created immediately,
@@ -289,7 +289,7 @@ the client by calling `poll()` once per frame from the game loop.
 use signal_fish_client::{SignalFishPollingClient, SignalFishConfig};
 use signal_fish_client_godot::GodotWebSocketTransport;
 
-let transport = GodotWebSocketTransport::connect("wss://example.com/signal")?;
+let transport = GodotWebSocketTransport::connect("wss://example.com/v2/ws")?;
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 ```
@@ -510,7 +510,7 @@ impl INode for SignalFishNode {
     }
 
     fn ready(&mut self) {
-        let transport = GodotWebSocketTransport::connect("wss://example.com/signal")
+        let transport = GodotWebSocketTransport::connect("wss://example.com/v2/ws")
             .expect("failed to create WebSocket");
         let config = SignalFishConfig::new("mb_app_abc123");
         self.client = Some(SignalFishPollingClient::new(transport, config));

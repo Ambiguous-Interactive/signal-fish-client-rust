@@ -1,104 +1,52 @@
 ---
-title: Home
-description: "Signal Fish Client SDK — A framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
+description: "Connect Rust and Godot games to the Signal Fish multiplayer signaling service"
 ---
 
 <p align="center">
   <img src="assets/logo-banner.svg" alt="Signal Fish Client SDK" width="600">
 </p>
 
-**A framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol.**
-
-!!! note "Release status"
-    **0.10.0** is the current crates.io release. This site follows unreleased
-    `main`; use the [0.10.0 API docs](https://docs.rs/signal-fish-client/0.10.0/)
-    for the published surface.
-
-[![Crates.io](https://img.shields.io/crates/v/signal-fish-client?style=flat-square&logo=rust)](https://crates.io/crates/signal-fish-client)
-[![docs.rs](https://img.shields.io/docsrs/signal-fish-client?style=flat-square&logo=docs.rs)](https://docs.rs/signal-fish-client)
-[![CI](https://img.shields.io/github/actions/workflow/status/Ambiguous-Interactive/signal-fish-client-rust/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.87.0-brightgreen?style=flat-square&logo=rust)](https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15)
 
----
+# Signal Fish Client SDK
 
-## Key Features
+Use this SDK to connect a Rust game to Signal Fish, place players in rooms,
+relay game data, and react to server events. Choose an async Tokio client or a
+polling client that runs inside your game loop.
 
-- :material-swap-horizontal: **Framed-Transport-Agnostic** — Plug in a backend that yields complete, ordered text/binary frames; raw stream/datagram framing and signaling-server trust remain backend responsibilities.
-- :material-lightning-bolt: **Async or Frame-Driven** — Use the Tokio background driver or the synchronous polling client. Command admission is bounded and explicit in both.
-- :material-message-flash: **Typed Event Architecture** — The async driver
-  delivers strongly typed `SignalFishEvent` variants on a bounded `mpsc`
-  channel; the polling driver returns them directly from each `poll()` call.
-- :material-lan: **Protocol v2 relay + v3 mesh** — v3 WebRTC mesh signaling is opt-in and a default client keeps the v2 authentication wire shape; game start is now an explicit `start_game()` request. See [Protocol Versioning](protocol-versioning.md) and the [Mesh Guide](mesh-guide.md).
-- :material-web: **WebSocket Built-In** — `WebSocketTransport` ships out of the box (enabled by default via the `transport-websocket` feature) so you can connect in one line.
-- :material-gamepad-variant: **Godot Adapter** — the lockstep `signal-fish-client-godot` crate provides the Godot 4.5 native/web `WebSocketPeer` transport without coupling core to godot-rust.
-- :material-refresh: **Reconnection Support** — Gracefully handle disconnects and reconnect to your session without losing context.
-- :material-eye: **Spectator Mode** — Join rooms as a spectator to observe game state without participating.
-- :material-shield-check: **Explicit Flow Control** — Event-channel overflow applies backpressure during normal operation, and the bounded send queue surfaces congestion explicitly. Shutdown and receiver-drop boundaries are documented. See [Core Concepts](concepts.md#reliability-and-flow-control).
-- :material-tune-variant: **Configurable** — Tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods.
+!!! note "Release status"
+    **0.10.0** is the current crates.io release and supports Rust **1.87.0** or
+    newer. This site follows unreleased `main`; use the [0.10.0 API
+    docs](https://docs.rs/signal-fish-client/0.10.0/) for the published surface.
 
----
+## Get connected
 
-## Quick Start
+1. Run or obtain a Signal Fish server and choose an App ID. It is a public
+   application label, not a secret. The server's
+   [five-minute quick start](https://ambiguous-interactive.github.io/signal-fish-server/quickstart/)
+   provides a development setup.
+2. Add `signal-fish-client` to your game.
+3. Connect a transport and start a client.
+4. Wait for `Authenticated`, then join a room.
+5. Keep draining events while the client is active.
 
-Add the crate to your project:
+The [installation guide](getting-started.md) includes a complete first client.
+The repository's [`basic_lobby` example](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/basic_lobby.rs)
+adds readiness, game start, reconnection state, error, and shutdown handling.
 
-```bash
-cargo add signal-fish-client
-cargo add tokio --features macros,rt-multi-thread
-```
+## Pick the right path
 
-Then connect, authenticate, and join a room in just a few lines:
+| If you are building | Start with |
+| --- | --- |
+| A Tokio-based Rust game or service | `SignalFishClient` and the built-in WebSocket transport |
+| A Godot 4.5 native or web game | `SignalFishPollingClient` and the Godot adapter |
+| A browser or frame-driven engine | `SignalFishPollingClient` and a platform transport |
+| A game with WebRTC peers | Protocol v3 and the mesh guide after the relay path works |
 
-```rust
-use signal_fish_client::{
-    WebSocketTransport, SignalFishClient, SignalFishConfig,
-    JoinRoomParams, SignalFishEvent,
-};
+Protocol v2 relay is the simplest starting point. Protocol v3 adds delivery
+accountability and mesh signaling when your game needs them.
 
-#[tokio::main]
-async fn main() -> Result<(), signal_fish_client::SignalFishError> {
-    let transport = WebSocketTransport::connect("ws://example.com/signal").await?;
-    let config = SignalFishConfig::new("mb_app_abc123");
-    let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
-    let mut start_request_sent = false;
-
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            SignalFishEvent::Authenticated { app_name, .. } => {
-                println!("Authenticated as {app_name}");
-                client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
-            }
-            SignalFishEvent::RoomJoined { room_code, .. } => {
-                println!("Joined room {room_code}");
-                client.set_ready()?;
-            }
-            SignalFishEvent::LobbyStateChanged { all_ready: true, .. }
-                if !start_request_sent =>
-            {
-                // The default JoinRoomParams creates a non-authority room.
-                client.start_game()?;
-                start_request_sent = true;
-            }
-            SignalFishEvent::Disconnected { .. } => break,
-            _ => {}
-        }
-    }
-
-    client.shutdown().await;
-    Ok(())
-}
-```
-
-!!! tip "Feature flag"
-    `WebSocketTransport` requires the **`transport-websocket`** feature, which is enabled by default. If you disabled default features, re-enable it explicitly:
-    ```toml
-    signal-fish-client = { version = "0.10.0", default-features = false, features = ["transport-websocket"] }
-    ```
-
----
-
-## Explore the Docs
+## Read by task
 
 <div class="grid cards" markdown>
 
@@ -106,49 +54,45 @@ async fn main() -> Result<(), signal_fish_client::SignalFishError> {
 
     ---
 
-    Install the crate, set up Tokio, and make your first connection in under five minutes.
+    Install the crate, connect, authenticate, and join a room.
 
     [:octicons-arrow-right-24: Installation & Quick Start](getting-started.md)
 
-- :material-book-open-variant:{ .lg .middle } **Client API Reference**
+- :material-code-tags:{ .lg .middle } **Basic Lobby Walkthrough**
 
     ---
 
-    Configuration, builder methods, and command reference for `SignalFishClient`.
+    Add readiness, game start, error handling, and graceful shutdown.
+
+    [:octicons-arrow-right-24: Basic Lobby Walkthrough](examples.md)
+
+- :material-gamepad-variant:{ .lg .middle } **Client API Reference**
+
+    ---
+
+    Find client configuration, room commands, game-data methods, and state.
 
     [:octicons-arrow-right-24: Client API Reference](client.md)
 
-- :material-code-tags:{ .lg .middle } **Example Walkthroughs**
+- :material-web:{ .lg .middle } **WebAssembly (WASM)**
 
     ---
 
-    Walkthroughs of real-world usage patterns — lobby management, custom transports, and more.
+    Integrate browser, Emscripten, or Godot native/web builds.
 
-    [:octicons-arrow-right-24: Example Walkthroughs](examples.md)
-
-- :material-file-document:{ .lg .middle } **API Docs (docs.rs)**
-
-    ---
-
-    Auto-generated API documentation with full type signatures and doc comments.
-
-    [:octicons-arrow-right-24: docs.rs](https://docs.rs/signal-fish-client)
+    [:octicons-arrow-right-24: WebAssembly (WASM)](wasm.md)
 
 </div>
 
----
+## When you need more detail
 
-## Links
+- [Events](events.md) and [errors](errors.md) describe what your event loop can
+  receive.
+- [Protocol versioning](protocol-versioning.md) helps you choose v2 relay or
+  v3 delivery and mesh features.
+- [Delivery and backpressure](delivery.md) explains queue sizing and congestion.
+- [Transport](transport.md) is the contract for custom network backends.
+- [docs.rs](https://docs.rs/signal-fish-client) is the exact Rust API reference.
 
-| Resource | URL |
-|----------|-----|
-| **GitHub Repository** | [Ambiguous-Interactive/signal-fish-client-rust](https://github.com/Ambiguous-Interactive/signal-fish-client-rust) |
-| **Guide (GitHub Pages)** | [Signal Fish Client SDK](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/) |
-| **crates.io** | [signal-fish-client](https://crates.io/crates/signal-fish-client) |
-| **docs.rs** | [signal-fish-client](https://docs.rs/signal-fish-client) |
-
----
-
-<p style="text-align: center; opacity: 0.7;">
-Built with :heart: by <strong>Ambiguous Interactive</strong>
-</p>
+The navigation groups these deeper topics separately so you can start without
+reading the protocol internals first.

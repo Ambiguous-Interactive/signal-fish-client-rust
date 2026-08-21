@@ -164,7 +164,7 @@ enum ClosePhase {
 ///
 /// impl MyNode {
 ///     fn ready(&mut self) {
-///         let transport = GodotWebSocketTransport::connect("wss://server/ws")
+///         let transport = GodotWebSocketTransport::connect("wss://server/v2/ws")
 ///             .expect("failed to create WebSocket");
 ///         let config = SignalFishConfig::new("my_app_id");
 ///         self.client = Some(SignalFishPollingClient::new(transport, config));

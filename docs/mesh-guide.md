@@ -331,7 +331,7 @@ machine does not authenticate or sequence `MeshEvent::Data`.
 
 ## See also
 
-- [Mesh Session example walkthrough](examples.md#mesh-session-protocol-v3) — a runnable end-to-end demo.
+- [`mesh_session.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/mesh_session.rs) — a runnable end-to-end demo.
 - [Protocol Versioning](protocol-versioning.md) — negotiation, the fail-fast guard, migration.
 - [Events: Mesh Events](events.md#mesh-events-protocol-v3) — the four v3 events.
 - [Protocol Types](protocol.md#topology-protocol-v3) — `Topology`, `TransportKind`, `SessionPlanPayload`, `PeerSignal`.

@@ -14,7 +14,7 @@ machine.
 Connection setup remains outside `Transport`:
 
 ```rust,ignore
-let transport = WebSocketTransport::connect("ws://signal.example/ws").await?;
+let transport = WebSocketTransport::connect("ws://signal.example/v2/ws").await?;
 let transport = WebSocketTransport::connect_with_timeout(url, timeout).await?;
 ```
 

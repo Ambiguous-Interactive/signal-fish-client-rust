@@ -3,68 +3,31 @@
 </p>
 
 <p align="center">
-  <a href="https://Ambiguous-Interactive.github.io/signal-fish-client-rust/">
-    <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?logo=github" alt="Documentation">
-  </a>
-  <a href="https://crates.io/crates/signal-fish-client">
-    <img src="https://img.shields.io/crates/v/signal-fish-client.svg" alt="Crates.io">
-  </a>
-  <a href="https://docs.rs/signal-fish-client">
-    <img src="https://img.shields.io/docsrs/signal-fish-client" alt="docs.rs">
-  </a>
-  <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml">
-    <img src="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml/badge.svg" alt="CI">
-  </a>
-  <a href="https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15">
-    <img src="https://img.shields.io/badge/MSRV-1.87.0-blue.svg" alt="MSRV">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
-  </a>
+  <a href="https://Ambiguous-Interactive.github.io/signal-fish-client-rust/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue?logo=github" alt="Documentation"></a>
+  <a href="https://crates.io/crates/signal-fish-client"><img src="https://img.shields.io/crates/v/signal-fish-client.svg" alt="Crates.io"></a>
+  <a href="https://docs.rs/signal-fish-client"><img src="https://img.shields.io/docsrs/signal-fish-client" alt="docs.rs"></a>
+  <a href="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml"><img src="https://github.com/Ambiguous-Interactive/signal-fish-client-rust/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15"><img src="https://img.shields.io/badge/MSRV-1.87.0-blue.svg" alt="MSRV"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-Framed-transport-agnostic Rust client SDK for the **Signal Fish** multiplayer
-signaling protocol. Choose the Tokio background driver or the caller-driven
-polling client to connect through a backend that provides one ordered
-text/binary frame stream for the intended server, authenticate, join rooms,
-and receive strongly typed events.
+Signal Fish is a multiplayer signaling service. This Rust SDK connects a game
+to a Signal Fish server, joins players to rooms, relays game data, and exposes
+server activity as typed events. It supports ordinary Tokio applications and
+frame-driven engines such as Godot.
 
----
+The SDK does not provide a game engine, rollback implementation, or WebRTC
+backend. It handles the Signal Fish protocol while your game owns simulation
+and peer networking.
 
-> **🤖 AI Disclosure**
->
-> This project was developed with **substantial AI assistance**. The protocol
-> design and core technology concepts were created entirely by humans, but the
-> vast majority of the code, documentation, and tests were written with the
-> help of **Claude Opus 4.6** and **Codex 5.3**. Human oversight covered code
-> review and architectural decisions, but day-to-day implementation was
-> primarily AI-driven. This transparency is provided so users can make informed
-> decisions about using this crate.
+## Start here
 
----
+Need a local server or app ID? Follow the server's [five-minute quick
+start](https://ambiguous-interactive.github.io/signal-fish-server/quickstart/).
+Its development setup accepts a test app ID. The App ID is a public application
+label, not a secret; production servers use the operator's configured policy.
 
-## Features
-
-- **Framed-transport-agnostic** — implement `Transport` for a backend that
-  supplies complete text/binary frames; stream or datagram framing,
-  signaling-server trust/source binding, and packet recovery remain backend
-  responsibilities
-- **Wire-compatible** — protocol types are conformance-tested against the server's published wire samples and error-code registry; undecodable frames surface as a typed `DecodeFailed` event
-- **Protocol support: v2 relay + server 0.7.0 v3** — opt-in v3 adds classified delivery, accountability, binary frames, reconnect tokens, graceful drain, and generation-fenced WebRTC mesh signaling; the default remains byte-identical to v2. Generation-less server 0.4 plans remain supported. Use `enable_v3()` for relay-only support or `enable_mesh()` with a WebRTC driver.
-- **Feature-gated WebSocket transport** — the default `transport-websocket` feature provides a ready-to-use `WebSocketTransport`
-- **Native token binding** — the opt-in `token-binding` feature negotiates Server 0.7's `signalfish.tokenbinding.v2` extension with disabled, optional, and required policies while preserving the default handshake
-- **Typed events for both drivers** — receive `SignalFishEvent`s through the
-  async driver's bounded Tokio MPSC channel or directly from each polling call
-- **Structured errors** — typed client errors, server error codes, decode failures, and categorized protocol-accountability violations
-- **Typed negotiated-protocol coverage** — typed v2/v3 messages and events, including strict physical MessagePack envelopes
-- **No silent loss while receivers remain active** — event delivery uses backpressure, and the bounded send queue surfaces congestion as `SignalFishError::SendBufferFull` instead of buffering without bound; receiver/handle drop and shutdown remain explicit terminal boundaries, while `stats()` exposes transport-acceptance and decoded-receipt diagnostics
-- **Configurable** — tune event channel capacity, command queue capacity, shutdown timeout, and more via `SignalFishConfig` builder methods
-- **WebAssembly ready** — compiles to `wasm32-unknown-unknown` and `wasm32-unknown-emscripten` with zero unsafe panics
-- **Godot 4.5 native + web adapter** — the lockstep `signal-fish-client-godot` crate wraps Godot's own `WebSocketPeer`, including official no-thread web exports
-- **Advanced Emscripten transport** — `transport-websocket-emscripten` remains available for custom hosts that explicitly link Emscripten's WebSocket library
-- **Polling client** — `SignalFishPollingClient` drives the protocol from a game loop without an async runtime, ideal for frame-driven engines and wasm targets (e.g. Godot 4.5 web exports)
-
-## Installation
+Add the client and Tokio:
 
 ```toml
 [dependencies]
@@ -72,342 +35,105 @@ signal-fish-client = "0.10.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Without the built-in WebSocket transport (bring your own):
+Connect, wait for authentication, and join a room:
 
-```toml
-[dependencies]
-signal-fish-client = { version = "0.10.0", default-features = false }
-```
-
-The published `0.10.0` crate is the stable release. This `main`-branch README
-also documents fixes listed under [`Unreleased`](CHANGELOG.md), including the
-issue #61 browser polling guarantees and the breaking Server 0.7 surface planned
-for 0.11. Until the next release, test those APIs and fixes with:
-
-```toml
-[dependencies]
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
-```
-
-Server deployments that require `signalfish.tokenbinding.v2` need the native
-`token-binding` and `tls` features plus required-mode WebSocket options. See
-[WebSocket Token Binding](docs/token-binding.md). Browser, Emscripten, and Godot
-WebSocket APIs cannot expose the handshake key and therefore cannot use a
-required token-binding server profile.
-
-## Quick Start
-
-```rust,no_run
+```rust
 use signal_fish_client::{
-    WebSocketTransport, SignalFishClient, SignalFishConfig,
-    JoinRoomParams, SignalFishEvent,
+    JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishEvent,
+    WebSocketTransport,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), signal_fish_client::SignalFishError> {
-    // 1. Connect a WebSocket transport to the signaling server.
-    let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
-
-    // 2. Build a client config with your application ID.
+    let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
     let config = SignalFishConfig::new("mb_app_abc123");
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-    // 3. Start the client — returns a handle and an event receiver.
-    //    The client automatically sends Authenticate on start.
-    let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
-
-    // 4. Process events — wait for Authenticated before joining a room.
-    while let Some(event) = event_rx.recv().await {
+    while let Some(event) = events.recv().await {
         match event {
-            SignalFishEvent::Authenticated { app_name, .. } => {
-                println!("Authenticated as {app_name}");
-                // Now it's safe to join a room.
+            SignalFishEvent::Authenticated { .. } => {
                 client.join_room(JoinRoomParams::new("my-game", "Alice"))?;
             }
             SignalFishEvent::RoomJoined { room_code, .. } => {
-                println!("Joined room {room_code}");
+                println!("joined {room_code}");
             }
             SignalFishEvent::Disconnected { .. } => break,
             _ => {}
         }
     }
 
-    // 5. Shut down gracefully.
     client.shutdown().await;
     Ok(())
 }
 ```
 
-## Feature Flags
-
-| Feature               | Default | Description                                                             |
-| --------------------- | ------- | ----------------------------------------------------------------------- |
-| `transport-websocket` | **yes** | Built-in WebSocket transport via `tokio-tungstenite` and `futures-util` |
-| `transport-websocket-emscripten` | no | Emscripten WebSocket transport via raw FFI to `<emscripten/websocket.h>` |
-| `token-binding` | no | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2`; preserves the crypto-free default build |
-| `tls` | no | Native `wss://` support with rustls and bundled webpki roots |
-| `polling-client` | no | Synchronous protocol pump for frame-driven and single-threaded hosts |
-| `mesh` | no | v3 mesh state, signaling orchestration, and WebRTC driver seam |
-| `tokio-runtime` | **yes** (via `transport-websocket`) | Tokio runtime integration (`rt`, `time`); disable for pure WASM targets |
-
-## Architecture
-
-| Module        | Purpose                                                           |
-| ------------- | ----------------------------------------------------------------- |
-| `client`      | `SignalFishClient` handle, `SignalFishConfig`, `JoinRoomParams`   |
-| `event`       | Typed application, transport, delivery, and violation events      |
-| `protocol`    | Wire-compatible v2/v3 client and server message types             |
-| `error`       | `SignalFishError` unified client/transport error type             |
-| `error_codes` | Typed server error-code registry                                  |
-| `transport`   | `Transport` trait for pluggable backends                          |
-| `transports`  | Built-in Tokio and advanced Emscripten WebSocket transports |
-| `polling_client` | `SignalFishPollingClient` — synchronous, game-loop-driven client |
-| `mesh`        | `MeshSession` — zero-dep v3 mesh state tracker (`mesh` feature)    |
-| `webrtc`      | `WebRtcDriver` seam + `MeshController` v3 orchestrator (`mesh` feature) |
-
-## Examples
-
-### Basic Lobby
-
-Full lifecycle: connect, authenticate, join a room, handle events, and shut down gracefully with Ctrl+C support.
+Run the complete example, which also handles readiness, game start,
+reconnection state, errors, and Ctrl+C:
 
 ```sh
 cargo run --example basic_lobby
-
-# Override the server URL:
-SIGNAL_FISH_URL=ws://my-server:3536/ws cargo run --example basic_lobby
 ```
 
-See [`examples/basic_lobby.rs`](examples/basic_lobby.rs).
+Set `SIGNAL_FISH_URL` to use a server other than
+`ws://localhost:3536/v2/ws`.
 
-### Custom Transport
+The published `0.10.0` crate is the stable release. This branch also documents
+unreleased changes planned for 0.11. Use the [0.10.0 API
+docs](https://docs.rs/signal-fish-client/0.10.0/) for the published surface, or
+see the [changelog](CHANGELOG.md) before depending on `main`.
 
-Implement a channel-based loopback transport, wire it into the client, and verify events flow correctly — no network required.
+## Choose your integration
 
-```sh
-cargo run --example custom_transport
-```
+| Your application | Use |
+| --- | --- |
+| Tokio application | `SignalFishClient` with the built-in `WebSocketTransport` |
+| Native or web Godot 4.5 game | `SignalFishPollingClient` with `signal-fish-client-godot` |
+| Browser or another frame-driven host | `SignalFishPollingClient` with your own `Transport` |
+| Custom async network stack | `SignalFishClient` with your own `Transport + Send` |
 
-See [`examples/custom_transport.rs`](examples/custom_transport.rs).
+Start with protocol v2 relay unless you need Server 0.7 delivery
+accountability or WebRTC mesh signaling. Opt into those features deliberately;
+the [protocol versioning guide](docs/protocol-versioning.md) explains the
+choice.
 
-### WebAssembly
+## Documentation
 
-The SDK compiles to WebAssembly. See the [WebAssembly Guide](docs/wasm.md) for Godot gdext integration examples and build instructions.
+- [Installation and first connection](docs/getting-started.md)
+- [Basic lobby walkthrough](docs/examples.md)
+- [Client commands and configuration](docs/client.md)
+- [Events](docs/events.md) and [errors](docs/errors.md)
+- [Godot and WebAssembly](docs/wasm.md)
+- [Protocol v2, v3, and mesh](docs/protocol-versioning.md)
+- [Custom transports](docs/transport.md)
+- [API reference](https://docs.rs/signal-fish-client)
 
-## Custom Transport
+The [full guide](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/)
+keeps advanced protocol, delivery, transport, and migration material separate
+from the onboarding path.
 
-Implement the `Transport` trait for any framed I/O backend that fulfills the
-complete-frame contract:
+## Before production
 
-```rust,ignore
-use std::task::{Context, Poll};
-use signal_fish_client::transport::TransportFrame;
-use signal_fish_client::{SignalFishError, Transport};
+- Enable the `tls` feature and use `wss://` outside a trusted local environment.
+- Drain events continuously; a full event channel intentionally backpressures
+  the transport loop.
+- Treat `SendBufferFull` as congestion and retry according to your game policy.
+- Call `shutdown().await` when possible so the transport can close cleanly.
+- Allow the exact HTTPS origin serving a browser or Godot web build in the
+  Signal Fish server configuration.
 
-struct MyTransport { /* … */ }
+## Project notes
 
-impl Transport for MyTransport {
-    fn poll_send(
-        &mut self,
-        cx: &mut Context<'_>,
-        frame: &mut Option<TransportFrame>,
-    ) -> Poll<Result<(), SignalFishError>> {
-        // Leave `frame` in place until accepted. If you take it and return
-        // Pending, retain that exact send internally until it completes.
-        todo!()
-    }
+The core crate supports Rust 1.87.0 and newer. The Godot adapter requires Rust
+1.94.0 because of its godot-rust dependency.
 
-    fn poll_recv(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        todo!()
-    }
+<details>
+<summary>AI disclosure</summary>
 
-    fn poll_close(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), SignalFishError>> {
-        // Drive one idempotent close handshake across as many polls as needed.
-        todo!()
-    }
+This project was developed with substantial AI assistance. Humans created the
+protocol and core technology concepts and retained responsibility for
+architecture and review; AI tools assisted heavily with implementation,
+documentation, and tests.
 
-    fn abort(&mut self) {
-        // Promptly abandon retained work and release or safely detach resources.
-        // This method must be non-blocking, non-panicking, and idempotent.
-        todo!()
-    }
-}
-```
+</details>
 
-Key requirements:
-
-- Preserve both `TransportFrame::Text` and `TransportFrame::Binary` boundaries
-- Supply exactly one complete protocol frame per successful receive; raw byte
-  streams and UDP sockets need an external framing and signaling-server
-  trust/source-binding policy before they satisfy `Transport`
-- Retain accepted outbound frames and partial receives across `Poll::Pending`
-- Register the supplied waker when async progress becomes possible
-- Make `poll_close` idempotent and expose structured peer metadata via `close_info`
-- Make `abort` prompt, non-blocking, non-panicking, and idempotent; it must
-  release or safely detach owned resources and discard retained sends
-- A transport constructor may begin an asynchronous connection attempt; both clients defer `Connected` until `is_ready()`, and the transport retains sends and wakes blocked async I/O when the handshake completes
-- The trait has no `Send` bound; only `SignalFishClient::start` requires
-  `Send + 'static`, while `SignalFishPollingClient` accepts non-`Send` transports
-
-## WebAssembly Support
-
-The SDK supports two WASM targets:
-
-| Target | Use Case | Transport | Client |
-| --- | --- | --- | --- |
-| `wasm32-unknown-unknown` | Browser apps (wasm-pack, wasm-bindgen) | Bring your own | `SignalFishPollingClient` (with `polling-client` feature) |
-| `wasm32-unknown-emscripten` | Godot native/web exports | `GodotWebSocketTransport`; Emscripten transport only with custom link-enabled templates | `SignalFishPollingClient` |
-
-The async `SignalFishClient` needs a *driven* tokio runtime (its transport loop runs under `tokio::spawn`); manually "ticking" a runtime once per frame starves it. Frame-driven or single-threaded environments — game loops on native as well as wasm — should use `SignalFishPollingClient` (feature `polling-client`), a synchronous pump you call once per frame.
-
-### Godot 4.5 Quick Start
-
-`GodotWebSocketTransport` uses Godot's own `WebSocketPeer`, so the same Rust
-code works in native builds and official no-thread web export templates.
-
-```rust,ignore
-use signal_fish_client::{
-    SignalFishPollingClient, SignalFishConfig, JoinRoomParams, SignalFishEvent,
-};
-use signal_fish_client_godot::GodotWebSocketTransport;
-
-// 1. Connect (synchronous — no .await needed).
-let transport = GodotWebSocketTransport::connect("wss://server/ws")
-    .expect("WebSocket creation failed");
-
-// 2. Create the polling client (auto-sends Authenticate).
-let config = SignalFishConfig::new("mb_app_abc123");
-let mut client = SignalFishPollingClient::new(transport, config);
-
-// Reset after authentication/setup, then monitor both queue depth and age.
-client.reset_queue_age_peak();
-let queue_age = client.queue_age_stats();
-assert!(queue_age.current_oldest_queue_age <= queue_age.peak_oldest_queue_age);
-
-// Optional: tune the bounded per-frame work and flush queued commands on close
-// with SignalFishPollingClient::new_with_options(...).
-// Godot admission defaults to an adaptive 50 ms target in the 4-32 KiB range,
-// further limited by the native backend; use connect_with_options to override it.
-
-// 3. Each frame, poll and handle events.
-for event in client.poll() {
-    match event {
-        SignalFishEvent::Authenticated { app_name, .. } => {
-            println!("Authenticated as {app_name}");
-            client.join_room(JoinRoomParams::new("my-game", "Alice")).ok();
-        }
-        SignalFishEvent::RoomJoined { room_code, .. } => {
-            println!("Joined room {room_code}");
-        }
-        _ => {}
-    }
-}
-```
-
-Browser and Godot-web handshakes include an `Origin` header. Signal Fish Server
-0.7 validates it, so production deployments must allow the exact HTTPS origin
-that serves the game. The wildcard `SIGNAL_FISH__SECURITY__CORS_ORIGINS='*'`
-setting is appropriate only for isolated local/CI fixtures.
-
-Enable it in a Godot GDExtension crate with:
-
-```toml
-godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
-signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
-```
-
-The adapter supports godot-rust `0.4.5` through `0.5.x` and requires Rust
-1.94 or newer. The framed-transport-agnostic core remains at Rust 1.87. If Cargo
-selects two binding families, inspect `cargo tree -d` and align the direct
-`godot` version with the adapter before compiling; Godot binding types from
-different versions are not interchangeable.
-
-The custom Godot API binding is required for the 32-bit Emscripten ABI. Set
-`GODOT4_BIN` to the Godot 4.5 editor when compiling the web extension.
-
-For rollback games, the [Godot + Fortress guide](docs/fortress.md) documents
-the bounded binary relay and exact frame order exercised by the real
-two-process browser test in CI.
-
-`EmscriptenWebSocketTransport` is retained for advanced custom-template
-integrations. It requires the final host to link Emscripten's WebSocket
-JavaScript library; official Godot templates do not.
-
-### Building the Advanced Emscripten Transport
-
-```sh
-# Install prerequisites
-rustup toolchain install nightly
-rustup component add rust-src --toolchain nightly
-
-# Build
-cargo +nightly build -Zbuild-std \
-    --target wasm32-unknown-emscripten \
-    --no-default-features \
-    --features transport-websocket-emscripten
-```
-
-See the [WebAssembly Guide](docs/wasm.md) for the full reference including Godot integration examples and toolchain setup.
-
-## Development
-
-### Run CI Locally
-
-A unified script runs all CI checks locally:
-
-```sh
-# Run all checks (matches CI exactly)
-bash scripts/check-all.sh
-
-# Quick mode: fmt + clippy + test only
-bash scripts/check-all.sh --quick
-```
-
-### Mandatory baseline
-
-```sh
-cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
-```
-
-### Additional quality checks
-
-| Command | CI Workflow | Install |
-| ------- | ----------- | ------- |
-| `cargo deny check` | ci.yml | `cargo install cargo-deny` |
-| `cargo audit` | security-supply-chain.yml | `cargo install cargo-audit` |
-| `bash scripts/check-no-panics.sh` | no-panics.yml | (built-in) |
-| `typos` | ci.yml | `cargo install typos-cli` |
-| `markdownlint-cli2 "**/*.md"` | docs-validation.yml | `npm install -g markdownlint-cli2` |
-| `lychee --config .lychee.toml "**/*.md"` | docs-validation.yml | `cargo install lychee` |
-| `cargo machete` | unused-deps.yml | `cargo install cargo-machete` |
-| `cargo semver-checks check-release` | semver-checks.yml | `cargo install cargo-semver-checks` |
-| `bash scripts/check-workflows.sh` | workflow-lint.yml | (built-in) |
-| `cargo +nightly miri test --test protocol_tests` | deep-safety.yml | `rustup component add miri --toolchain nightly` |
-| `cd fuzz && cargo +nightly fuzz run ...` | deep-safety.yml | `cargo install cargo-fuzz` |
-| `cargo mutants --file src/protocol.rs ...` | deep-safety.yml | `cargo install cargo-mutants` |
-| `cargo llvm-cov --all-features --summary-only` | coverage.yml | `cargo install cargo-llvm-cov` + `rustup component add llvm-tools-preview` |
-
-Release operators should follow the [release runbook](docs/releasing.md) for
-the reviewed preparation workflow, protected crates.io publication, and
-fail-closed recovery procedure.
-
-## Minimum Supported Rust Version (MSRV)
-
-<!-- markdownlint-disable-next-line MD036 -->
-**1.87.0**
-
-Tested against the latest stable Rust and the declared MSRV. Bumping the MSRV is considered a minor version change.
-
-## License
-
-[MIT](LICENSE) — Copyright (c) 2025-2026 Ambiguous Interactive
-
----
-
-📖 **[Full guide on GitHub Pages](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/)** | 📚 **[API reference on docs.rs](https://docs.rs/signal-fish-client)**
+Signal Fish Client SDK is available under the [MIT License](LICENSE).

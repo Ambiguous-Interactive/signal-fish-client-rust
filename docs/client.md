@@ -184,7 +184,7 @@ use signal_fish_client::{
     SignalFishClient, SignalFishConfig, WebSocketTransport,
 };
 
-let transport = WebSocketTransport::connect("ws://localhost:3536/ws").await?;
+let transport = WebSocketTransport::connect("ws://localhost:3536/v2/ws").await?;
 let config = SignalFishConfig::new("mb_app_abc123");
 let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 ```
@@ -734,7 +734,7 @@ fn new_with_options(
 use signal_fish_client::{SignalFishPollingClient, SignalFishConfig};
 use signal_fish_client_godot::GodotWebSocketTransport;
 
-let transport = GodotWebSocketTransport::connect("wss://server/ws")
+let transport = GodotWebSocketTransport::connect("wss://server/v2/ws")
     .expect("connection failed");
 let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);

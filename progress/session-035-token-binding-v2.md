@@ -124,9 +124,8 @@ cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warning
   cargo test --workspace --all-features
 ```
 
-The exact mandatory repository gate passes with zero warnings on the final
-local diff. Hosted PR checks/reviews and issue closure remain pending until the
-branch head is published.
+The exact mandatory repository gate passed with zero warnings on the final
+local diff. The final hosted and merge outcome is recorded below.
 
 ## Adversarial Review
 
@@ -150,41 +149,25 @@ status, and the test pins that behavior. The exact provenance paths/hashes and
 every golden field are consumed by tests. Pass 2 reached zero remaining concrete
 findings.
 
-## Hosted Checkpoint
+## Hosted Completion
 
-PR #119 (`feat!: support negotiated WebSocket token binding v2`) links and
-closes #88 when merged. The first published head, `7751e32`, reached ten green
-hosted workflows while Godot Web and Deep Safety were still running. Semver
-Checks correctly identified the two documented breaking surfaces—new public
-fields on exhaustively constructible `WebSocketConnectOptions` and the new
-exhaustive `SignalFishError::TokenBinding` variant—but its original event had
-the pre-classification `feat:` title. The PR title now carries the repository's
-required `feat!:` major marker; the next head event re-evaluates that policy.
+The final PR head, `ea332d71effcfd66d0179083b87b16e8505a5ed6`, passed all
+twelve project workflows:
 
-The automated review inventory contains one quota-exhausted Copilot comment,
-no approval, and no review threads. An eligible human approval and the separate
-#90 branch-protection administration therefore remain external merge blockers.
-
-The fresh major-classified head passed Semver Checks. Deep Safety then exposed
-one missed mutation that replaced `TokenBindingFailure::fmt` with an empty
-success; an exhaustive actionable-display regression test now kills that
-mutant for every static failure reason.
-
-The resulting code-bearing head,
-`3bf73fdd1eebadf9aa3821b224492575fe8da312`, passed every hosted workflow:
-
-- CI 32444513502, including both pinned Server 0.7 token-binding E2Es;
-- Deep Safety 32444513103, including the corrected mutation lane, Miri, and all
-  protocol fuzz smokes;
-- Godot Web 32444513087, including build/export and clean, impaired, and soak
+- CI 32445499765, including both pinned Server 0.7 token-binding E2Es;
+- Deep Safety 32445499749, including Miri, fuzzing, and mutation testing;
+- Godot Web 32445499698, including build/export and clean, impaired, and soak
   browser scenarios;
-- Semver Checks 32444513016 under the `feat!:` major-change policy; and
+- Semver Checks 32445499911 under the `feat!:` major-change policy; and
 - WASM, Docs Validation, Workflow Lint, Security, Coverage, Unused Deps,
   Examples Validation, and No Panics.
 
-PR #119 is open, non-draft, mergeable, and has zero review threads. Three
-Copilot attempts ended before analysis because the requesting account has no
-remaining quota, and the only repository collaborator is also the PR author.
-The implementation and hosted verification are complete; an eligible external
-approval plus issue #90's live ruleset and Repository Policy administration are
-the remaining merge/issue-closure dependencies.
+PR #119 merged as `3115c2b70ca2b68f6e833ec958a91db0adbfe462` on
+2026-08-21 and closed issue #88. It had zero review threads, zero approvals,
+and four Copilot quota-exhaustion comments. The merge therefore completed the
+token-binding implementation while adding another direct proof of issue #90's
+unenforced approval and required-check policy.
+
+The explicit Server 0.7 `require_client_fingerprint=true` limitation is tracked
+separately in issue #120 with pinned positive, adversarial, API-binding, and
+redaction acceptance criteria.
