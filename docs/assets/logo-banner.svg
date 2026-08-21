@@ -1,94 +1,47 @@
-<svg xmlns="http://www.w3.org/2000/svg" lang="en" xml:lang="en" width="800" height="200" viewBox="0 0 800 200" role="img" aria-labelledby="sf-client-logoTitle sf-client-logoDesc" shape-rendering="geometricPrecision">
-  <title id="sf-client-logoTitle">Signal Fish Client SDK</title>
-  <desc id="sf-client-logoDesc">Logo banner for Signal Fish Client SDK by Ambiguous Interactive. A framed-transport-agnostic async Rust client for the Signal Fish multiplayer signaling protocol.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" viewBox="0 0 800 220" role="img" aria-labelledby="title description">
+  <title id="title">Signal Fish Client SDK</title>
+  <desc id="description">The approved Vector fish mark and Signal Fish Client SDK wordmark in the dark oceanic brand palette.</desc>
   <defs>
-    <linearGradient id="sf-client-fishGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#4dd0e1"/>
-      <stop offset="50%" stop-color="#00bcd4"/>
-      <stop offset="100%" stop-color="#00838f"/>
-    </linearGradient>
-    <linearGradient id="sf-client-signalGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#00bcd4"/>
-      <stop offset="100%" stop-color="#4dd0e1"/>
-    </linearGradient>
-    <radialGradient id="sf-client-haloGrad" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#1a237e" stop-opacity="0.1"/>
-      <stop offset="60%" stop-color="#1a237e" stop-opacity="0.04"/>
-      <stop offset="100%" stop-color="#1a237e" stop-opacity="0"/>
+    <radialGradient id="aqua-glow" cx="25%" cy="50%" r="48%">
+      <stop offset="0" stop-color="#2EE6C6" stop-opacity=".14"/>
+      <stop offset=".62" stop-color="#2EE6C6" stop-opacity=".04"/>
+      <stop offset="1" stop-color="#2EE6C6" stop-opacity="0"/>
     </radialGradient>
-    <clipPath id="sf-client-bannerClip">
-      <rect x="0" y="0" width="800" height="200" rx="8"/>
-    </clipPath>
+    <linearGradient id="ocean" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10151D"/>
+      <stop offset="1" stop-color="#090C11"/>
+    </linearGradient>
   </defs>
-  <rect x="0.5" y="0.5" width="799" height="199" rx="8" fill="#ffffff" stroke="#e0e0e0" stroke-width="1"/>
-  <g clip-path="url(#sf-client-bannerClip)">
-    <path d="M 0,185 Q 100,178 200,185 Q 300,192 400,185 Q 500,178 600,185 Q 700,192 800,185 L 800,200 L 0,200 Z" fill="#1a237e" fill-opacity="0.1"/>
-    <path d="M 0,178 Q 100,168 200,178 Q 300,188 400,178 Q 500,168 600,178 Q 700,188 800,178 L 800,200 L 0,200 Z" fill="#1a237e" fill-opacity="0.22"/>
+  <rect x=".75" y=".75" width="798.5" height="218.5" rx="18" fill="url(#ocean)" stroke="#2C3744" stroke-width="1.5"/>
+  <rect x="1.5" y="1.5" width="797" height="217" rx="17" fill="url(#aqua-glow)"/>
+  <g transform="translate(72 47) scale(2.7)" fill="none">
+    <path d="M43.5 13.5 A12.5 12.5 0 0 1 43.5 34.5" stroke="#2EE6C6" stroke-width="2" stroke-linecap="round" opacity=".42"/>
+    <path d="M14 24 Q24 9 37 17 Q43 21 43 24 Q43 27 37 31 Q24 39 14 24 Z" fill="#2EE6C6"/>
+    <path d="M14 24 C10 21 6.5 17 3 12.5 C6.5 18 8.5 21.5 10 24 C8.5 26.5 6.5 30 3 35.5 C6.5 31 10 27 14 24 Z" fill="#2EE6C6"/>
+    <circle cx="35" cy="20.6" r="1.8" fill="#090C11"/>
   </g>
-  <circle cx="120" cy="100" r="68" fill="url(#sf-client-haloGrad)"/>
-  <g transform="translate(120, 100)">
-    <path d="M 52,-32 A 60,60 0 0,1 52,32" fill="none" stroke="#00bcd4" stroke-width="5.6" stroke-linecap="round" stroke-opacity="0.12"/>
-    <path d="M 66,-44 A 80,80 0 0,1 66,44" fill="none" stroke="#00bcd4" stroke-width="4.4" stroke-linecap="round" stroke-opacity="0.08"/>
-    <path d="M 80,-55 A 98,98 0 0,1 80,55" fill="none" stroke="#00bcd4" stroke-width="3.2" stroke-linecap="round" stroke-opacity="0.05"/>
-    <path d="M 52,-32 A 60,60 0 0,1 52,32" fill="none" stroke="url(#sf-client-signalGrad)" stroke-width="2.8" stroke-linecap="round" stroke-opacity="0.8"/>
-    <path d="M 66,-44 A 80,80 0 0,1 66,44" fill="none" stroke="url(#sf-client-signalGrad)" stroke-width="2.2" stroke-linecap="round" stroke-opacity="0.5"/>
-    <path d="M 80,-55 A 98,98 0 0,1 80,55" fill="none" stroke="url(#sf-client-signalGrad)" stroke-width="1.6" stroke-linecap="round" stroke-opacity="0.25"/>
-    <!-- Client differentiator: inbound-signal chevrons at arc endpoints.
-         Rotation angles derived from atan2(y, x) at each arc endpoint,
-         pointing radially inward to suggest the client receives signals. -->
-    <g fill="none" stroke="#00bcd4" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M 6,-4 L 0,0 L 6,4" transform="translate(52,-32) rotate(-31.6)" stroke-width="2" stroke-opacity="0.7"/>
-      <path d="M 6,-4 L 0,0 L 6,4" transform="translate(52,32) rotate(31.6)" stroke-width="2" stroke-opacity="0.7"/>
-      <path d="M 5,-3.5 L 0,0 L 5,3.5" transform="translate(66,-44) rotate(-33.7)" stroke-width="1.6" stroke-opacity="0.44"/>
-      <path d="M 5,-3.5 L 0,0 L 5,3.5" transform="translate(66,44) rotate(33.7)" stroke-width="1.6" stroke-opacity="0.44"/>
-      <path d="M 4,-3 L 0,0 L 4,3" transform="translate(80,-55) rotate(-34.5)" stroke-width="1.4" stroke-opacity="0.28"/>
-      <path d="M 4,-3 L 0,0 L 4,3" transform="translate(80,55) rotate(34.5)" stroke-width="1.4" stroke-opacity="0.28"/>
-    </g>
+  <path d="M241 42V190" stroke="#2C3744" stroke-width="1"/>
+  <g fill="#EAF0F2">
+    <path d="M292.69 105.76Q288.31 105.76 284.96 104.19Q281.62 102.62 279.73 99.71Q277.84 96.79 277.84 92.69V91.18H284.86V92.69Q284.86 96.09 286.96 97.79Q289.07 99.49 292.69 99.49Q296.36 99.49 298.17 98.03Q299.98 96.58 299.98 94.31Q299.98 92.74 299.09 91.77Q298.19 90.8 296.49 90.18Q294.79 89.56 292.36 89.02L291.12 88.75Q287.23 87.88 284.45 86.56Q281.67 85.24 280.19 83.08Q278.7 80.92 278.7 77.46Q278.7 74 280.35 71.55Q281.99 69.09 284.99 67.77Q287.99 66.44 292.04 66.44Q296.09 66.44 299.25 67.82Q302.41 69.2 304.22 71.93Q306.02 74.65 306.02 78.76V80.38H299V78.76Q299 76.6 298.17 75.27Q297.33 73.95 295.76 73.33Q294.2 72.71 292.04 72.71Q288.8 72.71 287.26 73.92Q285.72 75.14 285.72 77.24Q285.72 78.65 286.45 79.62Q287.18 80.59 288.64 81.24Q290.09 81.89 292.36 82.37L293.6 82.64Q297.65 83.51 300.65 84.86Q303.65 86.21 305.32 88.42Q307 90.64 307 94.09Q307 97.55 305.24 100.17Q303.49 102.79 300.27 104.27Q297.06 105.76 292.69 105.76Z"/>
+    <path d="M311.5 105V78.22H318.31V105ZM314.91 75.08Q313.07 75.08 311.8 73.9Q310.53 72.71 310.53 70.76Q310.53 68.82 311.8 67.63Q313.07 66.44 314.91 66.44Q316.8 66.44 318.04 67.63Q319.28 68.82 319.28 70.76Q319.28 72.71 318.04 73.9Q316.8 75.08 314.91 75.08Z"/>
+    <path d="M323.57 91.72V90.85Q323.57 86.64 325.25 83.64Q326.92 80.65 329.7 79.05Q332.48 77.46 335.78 77.46Q339.45 77.46 341.34 78.76Q343.23 80.05 344.09 81.46H345.06V78.22H351.76V109.75Q351.76 112.51 350.14 114.15Q348.52 115.8 345.82 115.8H327.89V109.86H343.44Q344.96 109.86 344.96 108.24V101.27H343.98Q343.44 102.14 342.47 103.03Q341.5 103.92 339.88 104.51Q338.26 105.11 335.78 105.11Q332.48 105.11 329.7 103.52Q326.92 101.92 325.25 98.92Q323.57 95.93 323.57 91.72ZM337.72 99.17Q340.85 99.17 342.96 97.17Q345.06 95.17 345.06 91.55V91.01Q345.06 87.34 342.98 85.37Q340.91 83.4 337.72 83.4Q334.59 83.4 332.48 85.37Q330.38 87.34 330.38 91.01V91.55Q330.38 95.17 332.48 97.17Q334.59 99.17 337.72 99.17Z"/>
+    <path d="M358.32 105V78.22H365.02V81.73H365.99Q366.64 80.32 368.42 79.05Q370.2 77.78 373.82 77.78Q376.95 77.78 379.3 79.22Q381.65 80.65 382.94 83.16Q384.24 85.67 384.24 89.02V105H377.44V89.56Q377.44 86.53 375.95 85.02Q374.47 83.51 371.71 83.51Q368.58 83.51 366.85 85.59Q365.12 87.67 365.12 91.39V105Z"/>
+    <path d="M398.9 105.76Q396.04 105.76 393.77 104.76Q391.5 103.76 390.18 101.84Q388.86 99.92 388.86 97.17Q388.86 94.42 390.18 92.55Q391.5 90.69 393.85 89.75Q396.2 88.8 399.22 88.8H406.57V87.29Q406.57 85.4 405.38 84.18Q404.19 82.97 401.6 82.97Q399.06 82.97 397.82 84.13Q396.58 85.29 396.2 87.13L389.94 85.02Q390.58 82.97 392.01 81.27Q393.45 79.57 395.85 78.51Q398.25 77.46 401.71 77.46Q407 77.46 410.08 80.11Q413.16 82.75 413.16 87.77V97.76Q413.16 99.38 414.67 99.38H416.83V105H412.29Q410.29 105 409 104.03Q407.7 103.06 407.7 101.44V101.38H406.68Q406.46 102.03 405.7 103.08Q404.95 104.14 403.33 104.95Q401.71 105.76 398.9 105.76ZM400.09 100.25Q402.95 100.25 404.76 98.66Q406.57 97.06 406.57 94.42V93.88H399.71Q397.82 93.88 396.74 94.69Q395.66 95.5 395.66 96.95Q395.66 98.41 396.79 99.33Q397.93 100.25 400.09 100.25Z"/>
+    <path d="M420.8 105V67.2H427.6V105Z"/>
+    <path d="M446.66 105V67.2H470.42V73.68H453.79V82.81H469.12V89.29H453.79V105Z"/>
+    <path d="M474.71 105V78.22H481.52V105ZM478.11 75.08Q476.28 75.08 475.01 73.9Q473.74 72.71 473.74 70.76Q473.74 68.82 475.01 67.63Q476.28 66.44 478.11 66.44Q480 66.44 481.25 67.63Q482.49 68.82 482.49 70.76Q482.49 72.71 481.25 73.9Q480 75.08 478.11 75.08Z"/>
+    <path d="M499.2 105.76Q493.96 105.76 490.61 103.49Q487.27 101.22 486.56 97.01L492.83 95.39Q493.21 97.28 494.1 98.36Q494.99 99.44 496.31 99.9Q497.63 100.36 499.2 100.36Q501.58 100.36 502.71 99.52Q503.84 98.68 503.84 97.44Q503.84 96.2 502.76 95.52Q501.68 94.85 499.31 94.42L497.8 94.15Q494.99 93.61 492.67 92.66Q490.34 91.72 488.94 90.04Q487.54 88.37 487.54 85.72Q487.54 81.73 490.45 79.59Q493.37 77.46 498.12 77.46Q502.6 77.46 505.57 79.46Q508.54 81.46 509.46 84.7L503.14 86.64Q502.71 84.59 501.39 83.72Q500.06 82.86 498.12 82.86Q496.18 82.86 495.15 83.53Q494.12 84.21 494.12 85.4Q494.12 86.69 495.2 87.31Q496.28 87.94 498.12 88.26L499.63 88.53Q502.66 89.07 505.11 89.96Q507.57 90.85 509 92.5Q510.43 94.15 510.43 96.95Q510.43 101.17 507.38 103.46Q504.33 105.76 499.2 105.76Z"/>
+    <path d="M515.37 105V67.2H522.18V81.51H523.15Q523.58 80.65 524.5 79.78Q525.42 78.92 526.95 78.35Q528.49 77.78 530.87 77.78Q534 77.78 536.35 79.22Q538.7 80.65 540 83.16Q541.29 85.67 541.29 89.02V105H534.49V89.56Q534.49 86.53 533 85.02Q531.52 83.51 528.76 83.51Q525.63 83.51 523.9 85.59Q522.18 87.67 522.18 91.39V105Z"/>
   </g>
-  <g transform="translate(120, 100)">
-    <path d="M -45,0 C -32,-36 8,-30 24,-22 C 42,-13 50,-6 52,0 C 50,6 42,13 24,22 C 8,30 -32,36 -45,0 Z" fill="url(#sf-client-fishGrad)" stroke="#00838f" stroke-width="0.5" stroke-opacity="0.3"/>
-    <path d="M -30,-28 C -10,-26 18,-19 36,-10" fill="none" stroke="#ffffff" stroke-width="2" stroke-opacity="0.25" stroke-linecap="round"/>
-    <path d="M -42,0 C -44,-4 -50,-12 -60,-22 C -56,-8 -50,-2 -46,0 C -50,2 -56,8 -60,22 C -50,12 -44,4 -42,0 Z" fill="url(#sf-client-fishGrad)"/>
-    <path d="M 20,4 C 28,8 28,16 18,14 C 14,12 16,6 20,4 Z" fill="#00838f" fill-opacity="0.6"/>
-    <circle cx="30" cy="-6" r="5.5" fill="#1a237e"/>
-    <circle cx="32" cy="-8.5" r="2.2" fill="#fffbf0"/>
-    <path d="M 18,-14 C 13,-2 13,2 18,14" fill="none" stroke="#00838f" stroke-width="1.5" stroke-opacity="0.5" stroke-linecap="round"/>
-    <path d="M -5,-10 Q 2,-16 9,-10" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-opacity="0.32"/>
-    <path d="M -18,-6 Q -11,-12 -4,-6" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-opacity="0.32"/>
-    <path d="M -12,6 Q -5,0 2,6" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-opacity="0.28"/>
-    <path d="M -26,2 Q -19,-4 -12,2" fill="none" stroke="#ffffff" stroke-width="0.9" stroke-opacity="0.28"/>
-    <path d="M -35,-4 Q -28,-10 -21,-4" fill="none" stroke="#ffffff" stroke-width="0.8" stroke-opacity="0.22"/>
-    <path d="M -32,8 Q -25,2 -18,8" fill="none" stroke="#ffffff" stroke-width="0.8" stroke-opacity="0.22"/>
-  </g>
-  <g transform="translate(120, 100)" opacity="0.75">
-    <circle cx="95" cy="-38" r="5" fill="#00bcd4"/>
-    <circle cx="95" cy="-38" r="2" fill="#ffffff" fill-opacity="0.8"/>
-    <circle cx="115" cy="5" r="4.5" fill="#00bcd4"/>
-    <circle cx="115" cy="5" r="1.8" fill="#ffffff" fill-opacity="0.8"/>
-    <circle cx="90" cy="45" r="4" fill="#00bcd4"/>
-    <circle cx="90" cy="45" r="1.6" fill="#ffffff" fill-opacity="0.8"/>
-    <line x1="45" y1="-15" x2="90" y2="-35" stroke="#00bcd4" stroke-width="1" stroke-opacity="0.8"/>
-    <line x1="50" y1="0" x2="111" y2="4" stroke="#00bcd4" stroke-width="1" stroke-opacity="0.8"/>
-    <line x1="42" y1="16" x2="86" y2="42" stroke="#00bcd4" stroke-width="1" stroke-opacity="0.8"/>
-    <line x1="95" y1="-33" x2="113" y2="1" stroke="#00bcd4" stroke-width="0.8" stroke-opacity="0.65" stroke-dasharray="5,4"/>
-    <line x1="113" y1="9" x2="90" y2="41" stroke="#00bcd4" stroke-width="0.8" stroke-opacity="0.65" stroke-dasharray="5,4"/>
-    <line x1="92" y1="-34" x2="88" y2="41" stroke="#00bcd4" stroke-width="0.7" stroke-opacity="0.65" stroke-dasharray="5,4"/>
-  </g>
-  <text x="298" y="88" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="50" font-weight="700" fill="#1a237e" text-rendering="optimizeLegibility" textLength="310" lengthAdjust="spacing">Signal Fish</text>
-  <text x="298" y="122" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="30" font-weight="600" fill="#5c6bc0" letter-spacing="-0.2" text-rendering="optimizeLegibility">Client SDK</text>
-  <text x="298" y="152" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="12" fill="#5c6bc0" fill-opacity="0.7" letter-spacing="1.2" text-rendering="optimizeLegibility">FRAMED-TRANSPORT-AGNOSTIC RUST CLIENT</text>
-  <g transform="translate(690, 100)" opacity="0.55">
-    <circle cx="0" cy="0" r="38" fill="none" stroke="#1a237e" stroke-width="3"/>
-    <circle cx="0" cy="0" r="14" fill="#1a237e"/>
-    <circle cx="0" cy="0" r="9" fill="#ffffff"/>
-    <rect x="-5.5" y="-53" width="11" height="15" rx="2" fill="#1a237e"/>
-    <rect x="-5.5" y="38" width="11" height="15" rx="2" fill="#1a237e"/>
-    <rect x="-53" y="-5.5" width="15" height="11" rx="2" fill="#1a237e"/>
-    <rect x="38" y="-5.5" width="15" height="11" rx="2" fill="#1a237e"/>
-    <rect x="-5.5" y="-53" width="11" height="15" rx="2" fill="#1a237e" transform="rotate(45, 0, 0)"/>
-    <rect x="-5.5" y="38" width="11" height="15" rx="2" fill="#1a237e" transform="rotate(45, 0, 0)"/>
-    <rect x="-53" y="-5.5" width="15" height="11" rx="2" fill="#1a237e" transform="rotate(45, 0, 0)"/>
-    <rect x="38" y="-5.5" width="15" height="11" rx="2" fill="#1a237e" transform="rotate(45, 0, 0)"/>
-    <text x="0" y="0" font-family="'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle" dy="0.35em">R</text>
+  <g fill="#2EE6C6">
+    <path d="M286.97 151.38Q283.5 151.38 281.46 149.42Q279.42 147.46 279.42 143.79V139.31Q279.42 135.64 281.46 133.68Q283.5 131.72 286.97 131.72Q290.42 131.72 292.3 133.62Q294.17 135.51 294.17 138.81V138.96H290.98V138.71Q290.98 136.92 289.99 135.77Q289.01 134.62 286.97 134.62Q284.96 134.62 283.81 135.86Q282.66 137.1 282.66 139.25V143.85Q282.66 145.98 283.81 147.23Q284.96 148.48 286.97 148.48Q289.01 148.48 289.99 147.32Q290.98 146.16 290.98 144.39V143.92H294.17V144.29Q294.17 147.59 292.3 149.48Q290.42 151.38 286.97 151.38Z"/>
+    <path d="M298.44 151V132.1H301.68V148.05H310.55V151Z"/>
+    <path d="M314.3 151V132.1H317.54V151Z"/>
+    <path d="M322.49 151V132.1H334.51V135.05H325.73V140H333.76V142.95H325.73V148.05H334.67V151Z"/>
+    <path d="M338.7 151V132.1H344.89L349.34 148.82H349.8V132.1H353V151H346.81L342.36 134.28H341.9V151Z"/>
+    <path d="M362.38 151V135.05H356.73V132.1H371.27V135.05H365.62V151Z"/>
+    <path d="M389.6 151.38Q387.44 151.38 385.78 150.61Q384.12 149.84 383.18 148.38Q382.24 146.91 382.24 144.83V144.11H385.43V144.83Q385.43 146.69 386.57 147.61Q387.7 148.53 389.6 148.53Q391.52 148.53 392.49 147.74Q393.46 146.94 393.46 145.71Q393.46 144.87 392.99 144.34Q392.53 143.82 391.65 143.49Q390.78 143.16 389.55 142.89L388.74 142.7Q386.86 142.27 385.5 141.62Q384.14 140.97 383.41 139.9Q382.67 138.84 382.67 137.14Q382.67 135.45 383.49 134.24Q384.31 133.03 385.79 132.37Q387.27 131.72 389.27 131.72Q391.27 131.72 392.83 132.4Q394.4 133.08 395.3 134.43Q396.2 135.77 396.2 137.8V138.69H393V137.8Q393 136.65 392.54 135.94Q392.08 135.23 391.24 134.9Q390.4 134.57 389.27 134.57Q387.59 134.57 386.73 135.23Q385.87 135.89 385.87 137.06Q385.87 137.83 386.26 138.35Q386.66 138.87 387.43 139.21Q388.2 139.55 389.36 139.81L390.17 139.99Q392.1 140.41 393.56 141.07Q395.01 141.73 395.83 142.82Q396.66 143.91 396.66 145.62Q396.66 147.34 395.79 148.63Q394.92 149.92 393.33 150.65Q391.75 151.38 389.6 151.38Z"/>
+    <path d="M400.09 151V148.14H402.61V134.96H400.09V132.1H407.76Q411.55 132.1 413.55 134.02Q415.55 135.94 415.55 139.78V143.33Q415.55 147.16 413.55 149.08Q411.55 151 407.76 151ZM405.86 148.05H407.81Q410.11 148.05 411.21 146.87Q412.31 145.68 412.31 143.43V139.67Q412.31 137.4 411.21 136.22Q410.11 135.05 407.81 135.05H405.86Z"/>
+    <path d="M419.87 151V132.1H423.11V139.79H423.57L430.16 132.1H434.35L426.13 141.42L434.63 151H430.32L423.57 143.15H423.11V151Z"/>
   </g>
 </svg>

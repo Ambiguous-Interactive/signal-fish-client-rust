@@ -3891,12 +3891,12 @@ mod ci_config_validation {
         let cases = [
             Case {
                 path: "README.md",
-                marker: "MSRV",
+                marker: "alt=\"MSRV",
                 required_url: "https://doc.rust-lang.org/stable/releases.html",
             },
             Case {
                 path: "docs/index.md",
-                marker: "[![MSRV]",
+                marker: "alt=\"MSRV",
                 required_url: "https://doc.rust-lang.org/stable/releases.html",
             },
         ];
@@ -3915,7 +3915,7 @@ mod ci_config_validation {
                 });
 
             assert!(
-                contents.contains(case.required_url),
+                marker_line.contains(case.required_url),
                 "{} MSRV link must target stable Rust release notes ({}) \
                  to avoid flaky blog.rust-lang.org availability in CI.\n\
                  Marker line: {}",
@@ -3924,7 +3924,7 @@ mod ci_config_validation {
                 marker_line
             );
             assert!(
-                !contents.contains("https://blog.rust-lang.org/"),
+                !marker_line.contains("https://blog.rust-lang.org/"),
                 "{} MSRV link must not target blog.rust-lang.org due to \
                  intermittent 503 responses in CI.\n\
                  Marker line: {}",
@@ -5962,6 +5962,455 @@ mod docs_onboarding_shape {
             ));
             assert!(!line_is_rustdoc("let value = 1;", &mut in_block));
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: docs_brand_policy
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod docs_brand_policy {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn shipped_documentation_asset_paths() -> BTreeSet<String> {
+        fn collect(directory: &Path, root: &Path, paths: &mut BTreeSet<String>) {
+            for entry in std::fs::read_dir(directory)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", directory.display()))
+            {
+                let entry = entry.expect("asset directory entry must be readable");
+                let path = entry.path();
+                if entry
+                    .file_type()
+                    .expect("asset entry type must be readable")
+                    .is_dir()
+                {
+                    collect(&path, root, paths);
+                    continue;
+                }
+
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("asset path must remain below its root");
+                if relative == Path::new("PROVENANCE.toml") {
+                    continue;
+                }
+                let normalized = relative
+                    .components()
+                    .map(|component| {
+                        component
+                            .as_os_str()
+                            .to_str()
+                            .expect("asset paths must be UTF-8")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                paths.insert(normalized);
+            }
+        }
+
+        let root = project_root().join("docs/assets");
+        let mut paths = BTreeSet::new();
+        collect(&root, &root, &mut paths);
+        paths
+    }
+
+    fn css_scheme_value<'a>(css: &'a str, scheme: &str, property: &str) -> &'a str {
+        let selector = format!(r#"[data-md-color-scheme="{scheme}"]"#);
+        let scheme_start = css
+            .find(&selector)
+            .unwrap_or_else(|| panic!("missing CSS scheme selector {selector}"));
+        let block_start = css[scheme_start..]
+            .find('{')
+            .map(|offset| scheme_start + offset + 1)
+            .expect("scheme block must open");
+        let block_end = css[block_start..]
+            .find('}')
+            .map(|offset| block_start + offset)
+            .expect("scheme block must close");
+        let declaration = format!("{property}:");
+
+        css[block_start..block_end]
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix(&declaration)
+                    .map(|value| value.trim().trim_end_matches(';').trim())
+            })
+            .unwrap_or_else(|| panic!("{selector} must define {property}"))
+    }
+
+    fn srgb_luminance(hex: &str) -> f64 {
+        assert!(
+            hex.len() == 7 && hex.starts_with('#'),
+            "expected a six-digit hexadecimal CSS color, got {hex}"
+        );
+        let channel = |start| {
+            let value = u8::from_str_radix(&hex[start..start + 2], 16)
+                .unwrap_or_else(|_| panic!("invalid hexadecimal CSS color {hex}"));
+            let normalized = f64::from(value) / 255.0;
+            if normalized <= 0.04045 {
+                normalized / 12.92
+            } else {
+                ((normalized + 0.055) / 1.055).powf(2.4)
+            }
+        };
+
+        0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5)
+    }
+
+    fn contrast_ratio(first: &str, second: &str) -> f64 {
+        let first = srgb_luminance(first);
+        let second = srgb_luminance(second);
+        let (lighter, darker) = if first >= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn documentation_asset_provenance_is_complete_and_checksum_verified() {
+        let manifest: toml::Value =
+            toml::from_str(&read_project_file("docs/assets/PROVENANCE.toml"))
+                .expect("brand provenance must be valid TOML");
+        let package = manifest
+            .get("design_package")
+            .and_then(toml::Value::as_table)
+            .expect("[design_package] table");
+        assert_eq!(
+            package.get("sha256").and_then(toml::Value::as_str),
+            Some("e5568dd7ab3b337cb937f1f2c43e7334ba5b7f34f2b556a3f0ca43938772ffa1")
+        );
+        assert!(
+            package
+                .get("authority")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|value| value.contains("issue #80")),
+            "brand provenance must record the project-owner authorization"
+        );
+        assert_eq!(
+            manifest
+                .get("server_reference")
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("commit"))
+                .and_then(toml::Value::as_str),
+            Some("3d3944f89739d367ddb60f90fbea64352c834a28")
+        );
+
+        let entries = manifest
+            .get("assets")
+            .and_then(toml::Value::as_array)
+            .expect("[[assets]] entries");
+        let shipped = shipped_documentation_asset_paths();
+        assert_eq!(
+            entries.len(),
+            shipped.len(),
+            "every file recursively under docs/assets except PROVENANCE.toml must have exactly one provenance entry"
+        );
+        let mut declared = BTreeSet::new();
+        for entry in entries {
+            let table = entry.as_table().expect("asset entry must be a table");
+            let path = table
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .expect("asset path");
+            assert!(
+                declared.insert(path.to_owned()),
+                "duplicate provenance entry for {path}"
+            );
+            for field in ["format", "dimensions", "color_space", "source", "license"] {
+                assert!(
+                    table
+                        .get(field)
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "{path} must record nonempty {field} metadata"
+                );
+            }
+
+            let bytes = std::fs::read(project_root().join("docs/assets").join(path))
+                .unwrap_or_else(|error| {
+                    panic!("failed to read documentation asset {path}: {error}")
+                });
+            assert_eq!(
+                table.get("size_bytes").and_then(toml::Value::as_integer),
+                Some(i64::try_from(bytes.len()).expect("asset size fits i64")),
+                "{path} size differs from provenance"
+            );
+            let expected = table
+                .get("sha256")
+                .and_then(toml::Value::as_str)
+                .expect("asset checksum");
+            assert_eq!(
+                hex_encode(&Sha256::digest(&bytes)),
+                expected,
+                "{path} checksum differs from docs/assets/PROVENANCE.toml"
+            );
+        }
+
+        assert_eq!(
+            declared, shipped,
+            "provenance paths must cover every file recursively under docs/assets except PROVENANCE.toml"
+        );
+    }
+
+    #[test]
+    fn brand_assets_fonts_and_accessibility_contract_are_wired() {
+        let mkdocs = read_project_file("mkdocs.yml");
+        let css = read_project_file("docs/stylesheets/extra.css");
+        for required in [
+            "logo: assets/logo.svg",
+            "favicon: assets/favicon.svg",
+            "custom_dir: overrides",
+            "font: false",
+            "scheme: slate",
+            "scheme: default",
+            "primary: custom",
+            "accent: custom",
+            "copyright: © 2026 Ambiguous Interactive",
+            "Brand & Font Attribution: attributions.md",
+            "javascripts/accessibility.js",
+        ] {
+            assert!(
+                mkdocs.contains(required),
+                "mkdocs.yml must preserve the approved client brand contract: {required}"
+            );
+        }
+
+        for family in ["Hanken Grotesk", "JetBrains Mono", "Space Grotesk"] {
+            assert!(
+                css.contains(&format!("font-family: \"{family}\"")),
+                "extra.css must self-host the approved {family} family"
+            );
+        }
+        assert!(
+            !css.contains("fonts.googleapis.com") && !css.contains("fonts.gstatic.com"),
+            "the documentation theme must not fetch runtime fonts from third parties"
+        );
+        let template = read_project_file("overrides/main.html");
+        for font in [
+            "space-grotesk-latin.woff2",
+            "hanken-grotesk-latin.woff2",
+            "jetbrains-mono-latin.woff2",
+        ] {
+            let preload = format!(
+                "<link rel=\"preload\" href=\"{{{{ 'assets/fonts/{font}' | url }}}}\" as=\"font\" type=\"font/woff2\" crossorigin>"
+            );
+            assert!(
+                template.contains(&preload),
+                "the {font} preload prevents first-paint font layout shifts"
+            );
+        }
+        for accessibility_rule in [
+            ":focus-visible",
+            "label[role=\"button\"]:focus-visible",
+            "@media (prefers-reduced-motion: reduce)",
+            "@media (prefers-contrast: more)",
+            "@media screen and (max-width: 59.984375em)",
+            "@media screen and (max-width: 44.984375em)",
+            ".md-nav--primary #__toc:checked ~ .md-nav--secondary",
+        ] {
+            assert!(
+                css.contains(accessibility_rule),
+                "brand CSS must retain {accessibility_rule}"
+            );
+        }
+
+        let accessibility = read_project_file("docs/javascripts/accessibility.js");
+        for wiring in [
+            "label.tabIndex = 0",
+            "event.key !== \" \"",
+            "sidebar.inert",
+            "searchDialog.inert",
+            "aria-expanded",
+            "radio.tabIndex = -1",
+            "const back = scope === sidebar",
+            "focusControl(back || drawerCloser)",
+            "label.setAttribute(\"aria-controls\", controlledPanel.id)",
+            "controlledPanel.inert = !expanded",
+            "trapFocus(",
+            "activeDrawerScope",
+            "const isContainedHorizontally = (element, container)",
+            "isHorizontallyEligible = intersectsHorizontally",
+            "activeDrawerScope,\n                isContainedHorizontally",
+            "alignDrawerScope(scope)",
+            "scrollwrap.scrollLeft +=",
+            "const isDrawerOverlay = () => (",
+            "window.matchMedia(\"(max-width: 76.234375em)\").matches",
+            "const isSearchOverlay = () => (",
+            "window.matchMedia(\"(max-width: 59.984375em)\").matches",
+            "() => isDrawerOverlay() && drawer.checked",
+            "() => isSearchOverlay() && search.checked",
+            "const expanded = !isDrawerOverlay() || toggle.checked",
+            "!scope.contains(focused)",
+            "|| !isVisible(focused)",
+            "|| !isContainedHorizontally(focused, sidebar)",
+            "aria-modal",
+            "searchDialog.setAttribute(\"aria-label\", \"Search documentation\")",
+            "event.key === \"Escape\"",
+            "sfKeyboardFocus",
+            "document$.subscribe(enhanceShell)",
+        ] {
+            assert!(
+                accessibility.contains(wiring),
+                "documentation shell must retain accessibility wiring: {wiring}"
+            );
+        }
+        assert!(
+            !accessibility.contains("isCompact"),
+            "documentation shell must not collapse Material's distinct responsive boundaries"
+        );
+        assert_eq!(
+            accessibility.matches("isDrawerOverlay()").count(),
+            5,
+            "drawer Escape, trap, state, section state, and section focus must share the drawer boundary"
+        );
+        assert_eq!(
+            accessibility.matches("isSearchOverlay()").count(),
+            2,
+            "search trap and state must share the full-screen search boundary"
+        );
+        let docs_workflow = read_project_file(".github/workflows/docs-validation.yml");
+        for browser_contract in [
+            "PLAYWRIGHT_VERSION: \"1.61.1\"",
+            "playwright@${PLAYWRIGHT_VERSION}",
+            "node scripts/check-docs-accessibility.cjs",
+        ] {
+            assert!(
+                docs_workflow.contains(browser_contract),
+                "Docs Validation must retain browser accessibility coverage: {browser_contract}"
+            );
+        }
+        let rendering_job = docs_workflow
+            .split("rendering-check:")
+            .nth(1)
+            .and_then(|jobs| jobs.split("  required:").next())
+            .expect("Docs Validation must retain its rendering job");
+        assert!(
+            rendering_job.contains("persist-credentials: false"),
+            "the docs rendering checkout must not persist repository credentials"
+        );
+        let render_position = rendering_job
+            .find("bash scripts/check-docs-rendering.sh")
+            .expect("Docs Validation must build docs before browser testing");
+        let browser_install_position = rendering_job
+            .find("npx playwright install --with-deps chromium")
+            .expect("Docs Validation must install pinned Chromium");
+        assert!(
+            render_position < browser_install_position,
+            "Docs Validation must reject broken docs before installing Chromium"
+        );
+
+        let browser_check = read_project_file("scripts/check-docs-accessibility.cjs");
+        for harness_contract in [
+            "const assertBuildFreshness = async () =>",
+            "const canonicalPath = await fs.realpath(filePath)",
+            "args: [\"--disable-gpu\"]",
+            "reducedMotion: \"reduce\"",
+            "await checkClosedBoundaries(page)",
+        ] {
+            assert!(
+                browser_check.contains(harness_contract),
+                "browser accessibility harness must retain: {harness_contract}"
+            );
+        }
+        assert!(
+            !browser_check.contains("document.getAnimations().every"),
+            "browser accessibility synchronization must avoid flaky animation enumeration"
+        );
+
+        let nav_override = read_project_file("overrides/partials/nav.html");
+        assert!(
+            nav_override.contains("<button class=\"md-icon sf-drawer-close\"")
+                && !nav_override.contains("<label class=\"md-nav__title\" for=\"__drawer\">"),
+            "the drawer title must keep its logo link separate from a native close button"
+        );
+
+        let readme = read_project_file("README.md");
+        let home = read_project_file("docs/index.md");
+        assert!(readme.contains("docs/assets/logo-banner.svg"));
+        assert!(home.contains("assets/logo-banner.svg"));
+        assert!(readme.contains("alt=\"Signal Fish Client SDK\""));
+        assert!(home.contains("alt=\"Signal Fish Client SDK\""));
+        assert!(
+            home.contains("width=\"800\" height=\"220\"")
+                && home.contains("width=\"103\" height=\"20\""),
+            "home images need intrinsic dimensions to prevent layout shifts"
+        );
+
+        let banner = read_project_file("docs/assets/logo-banner.svg");
+        assert!(
+            !banner.contains("<text"),
+            "banner typography must use paths so GitHub and MkDocs render one lockup"
+        );
+        for identity in ["Signal Fish Client SDK", "Vector fish mark"] {
+            assert!(
+                banner.contains(identity),
+                "banner metadata must retain client identity: {identity}"
+            );
+        }
+        assert!(
+            read_project_file("docs/assets/logo.svg").contains("Signal Fish Client SDK"),
+            "compact logo needs an accessible client-specific title"
+        );
+    }
+
+    #[test]
+    fn brand_component_tokens_meet_wcag_contrast() {
+        let css = read_project_file("docs/stylesheets/extra.css");
+        for scheme in ["slate", "default"] {
+            let background = css_scheme_value(&css, scheme, "--md-default-bg-color");
+            for property in [
+                "--md-default-fg-color",
+                "--md-default-fg-color--light",
+                "--md-default-fg-color--lighter",
+                "--md-typeset-color",
+                "--md-typeset-a-color",
+                "--sf-accent",
+            ] {
+                let foreground = css_scheme_value(&css, scheme, property);
+                let ratio = contrast_ratio(foreground, background);
+                assert!(
+                    ratio >= 4.5,
+                    "{scheme} {property} ({foreground}) has only {ratio:.2}:1 contrast against \
+                     {background}; normal text requires at least 4.5:1"
+                );
+            }
+
+            for (foreground_property, background_property, component) in [
+                ("--sf-on-accent", "--sf-accent", "primary button"),
+                ("--sf-code-comment", "--md-code-bg-color", "code comment"),
+                (
+                    "--md-primary-bg-color",
+                    "--md-primary-fg-color",
+                    "site header",
+                ),
+            ] {
+                let foreground = css_scheme_value(&css, scheme, foreground_property);
+                let surface = css_scheme_value(&css, scheme, background_property);
+                let ratio = contrast_ratio(foreground, surface);
+                assert!(
+                    ratio >= 4.5,
+                    "{scheme} {component} colors {foreground}/{surface} have only {ratio:.2}:1 \
+                     contrast; text requires at least 4.5:1"
+                );
+            }
+        }
+
+        assert!(
+            contrast_ratio("#2EE6C6", "#0B1A22") >= 3.0,
+            "the compact Vector mark needs at least 3:1 non-text contrast"
+        );
     }
 }
 

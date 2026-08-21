@@ -459,24 +459,24 @@ for the v2/v3 deltas.
 
 - `.llm/context.md` -- this file (canonical source of truth)
 - `.llm/skills/index.md` -- auto-generated human-readable skill catalog (do not edit)
-- `.llm/skills/<name>/SKILL.md` -- focused Agent Skill with YAML `name` and
-  trigger-focused `description` metadata
-- `.llm/skills/<name>/{scripts,references,assets}/` -- optional resources loaded
-  only when a skill needs them
+- `.llm/skills/<name>/SKILL.md` -- focused skill with YAML trigger metadata
+- `.llm/skills/<name>/{scripts,references,assets}/` -- on-demand resources
 
-Agents discover skills from frontmatter, then load the matching `SKILL.md` only
-when its description applies. Resolve relative resource links from the skill's
-directory. Skill directory names and frontmatter names must match and use
-lowercase hyphen-case.
+Agents discover skills from frontmatter and load a matching `SKILL.md` only when
+its description applies. Resolve links from its directory; directory and
+frontmatter names must match and use lowercase hyphen-case.
 
 ## Documentation Rendering (MkDocs)
 
-MkDocs Material with pymdownx extensions powers GitHub Pages. A build-time
-hook (`hooks/rustdoc_codeblocks.py`) strips rustdoc code-fence annotations
-(`rust,ignore`, `rust,no_run`, `rust,compile_fail`) so Pygments highlights
-correctly. Mermaid diagrams require `custom_fences` in `mkdocs.yml`. CI runs
-`mkdocs build --strict` (`.github/workflows/docs-deploy.yml`). See
-`skills/markdown-and-doc-validation/SKILL.md` for full guidance.
+MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
+rustdoc fence annotations for Pygments; `hooks/llms_txt.py` generates model text.
+Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use
+pinned provenance and local OFL fonts preloaded via `overrides/main.html`, with
+no runtime provider. Both palettes retain AA contrast, visible focus,
+reduced-motion behavior, and responsive scrolling. `docs_brand_policy` pins
+these contracts; evidence lives under `progress/assets/`. CI runs strict MkDocs
+(`.github/workflows/docs-deploy.yml`) and 17 checks in
+`.github/workflows/docs-validation.yml`; see `skills/markdown-and-doc-validation/SKILL.md`.
 
 ## Pre-commit Enforcement
 

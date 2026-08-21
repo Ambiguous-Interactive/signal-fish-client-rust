@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo-banner.svg" alt="Signal Fish Client SDK" width="600">
+  <img src="docs/assets/logo-banner.svg" alt="Signal Fish Client SDK" width="640">
 </p>
 
 <p align="center">
@@ -137,3 +137,5 @@ documentation, and tests.
 </details>
 
 Signal Fish Client SDK is available under the [MIT License](LICENSE).
+Brand asset provenance and bundled font licenses are recorded in the
+[documentation attribution page](docs/attributions.md).

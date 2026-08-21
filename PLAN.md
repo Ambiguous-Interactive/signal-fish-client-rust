@@ -20,8 +20,11 @@
 - Direct JSON string game payloads of at least 4 KiB now use measured
   capacity-aware serialization in both drivers. The pinned 4 KiB burst drops
   from 132 to four reallocations while all 28 wire ledgers remain unchanged.
-- The 12 required workflows on PR #123's head were green before merge to
-  current `main` commit `8c1c620`; the separate live Repository Policy audit
+- The approved Vector identity, accessible oceanic theme, and self-hosted
+  typography now span the README and task-oriented MkDocs site, with exact
+  asset provenance and desktop/mobile visual evidence.
+- All 12 push workflows completed successfully on current `main` commit
+  `40a030b` after PR #125 merged. The separate live Repository Policy audit
   remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -39,6 +42,43 @@ Work open issues in gameplay-impact order:
 Finish one coherent PR and make it fully green before starting the next. Do
 not stack dependent PRs.
 
+## Next Milestone — Correctness and Performance Audit
+
+[Issue #126](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/126)
+is the next gameplay-impacting milestone. Execute it correctness-first against
+the pinned Server 0.7 fixture and reference client implementation, and require
+measured evidence before accepting performance complexity:
+
+1. Inventory the all-feature matrix: protocol codecs and transitions,
+   `ClientCore`, async and polling drivers, native and target-gated Emscripten
+   WebSockets, Godot, token binding, and mesh/WebRTC. Audit setup, configuration,
+   recovery, cross-driver parity, misuse resistance, and documented success
+   paths as well as the wire behavior.
+2. Pin the exact server/reference-client source commit and map every inventoried
+   wire/interoperability behavior—including existing wire ledgers and
+   real-server regressions—to that authority. Map SDK-owned behavior to explicit
+   public contracts and tests. Add differential fixtures for uncovered cases
+   and document every intentional compatibility deviation.
+3. Exercise duplicate, delayed, logically out-of-transition, malformed,
+   oversized, and disconnect-adjacent complete messages; cancellation, queue
+   saturation, and reconnect races; and generation compatibility. Keep raw
+   stream fragments, datagram reassembly, peer authentication, and UDP loss
+   policy explicitly at the transport boundary—the SDK consumes complete
+   ordered messages and must not imply guarantees it cannot provide.
+4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
+   gates. Evaluate focused Loom models and additional sanitizer or lint coverage
+   only where target support and owned boundaries make them applicable; promote
+   only stable, actionable findings to warning-as-error policy. Turn every
+   confirmed gap into a minimal regression before changing production code.
+5. Profile representative signaling and 4 KiB burst paths before optimizing.
+   Compare allocation counts, queue age, throughput, and wire ledgers against
+   the existing 28-cell laboratory; accept batching, reuse, or pooling only
+   when the gain is repeatable and protocol behavior and API simplicity remain
+   unchanged.
+6. Record the audit matrix and evidence in `progress/`, open narrowly scoped
+   follow-up issues for independent findings, and land one coherent green PR at
+   a time in correctness, usability/safety, then measured-performance order.
+
 ## Hosted Governance Blocker
 
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
@@ -53,16 +93,6 @@ bypass list in the ruleset UI, and dispatching a green policy audit require
 maintainer administration unavailable through the connected tools. The first
 substantive non-bot PR opened after restoration must prove that approval,
 thread resolution, branch freshness, and all 11 aggregate checks are enforced.
-
-## Current Work — Documentation Design System
-
-Track [issue #80](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/80).
-
-- Inventory and validate the supplied design assets and their licensing.
-- Translate the design system into MkDocs theme overrides without weakening
-  strict builds, accessibility, responsive behavior, or code readability.
-- Update repository and published-site branding together, with rendered
-  desktop and mobile review.
 
 ## Permanent Acceptance Gates
 
