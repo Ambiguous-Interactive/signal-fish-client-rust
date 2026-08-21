@@ -1,0 +1,106 @@
+schema = 1
+recorded = "2026-08-21"
+
+[design_package]
+source_url = "https://github.com/user-attachments/files/30513171/Signal.Fish.cloud.design.zip"
+sha256 = "e5568dd7ab3b337cb937f1f2c43e7334ba5b7f34f2b556a3f0ca43938772ffa1"
+size_bytes = 327701
+authority = "Ambiguous Interactive supplied the approved design package and directed its use in client issue #80."
+license_note = "The archive contains no separate artwork license; repository-use authority is the project owner's issue and approved Server implementation. Bundled fonts retain their SIL OFL 1.1 notices."
+
+[server_reference]
+issue_url = "https://github.com/Ambiguous-Interactive/signal-fish-server/issues/204"
+decision_url = "https://github.com/Ambiguous-Interactive/signal-fish-server/issues/204#issuecomment-5300615954"
+commit = "3d3944f89739d367ddb60f90fbea64352c834a28"
+commit_url = "https://github.com/Ambiguous-Interactive/signal-fish-server/commit/3d3944f89739d367ddb60f90fbea64352c834a28"
+adaptation = "Reuse the approved Vector mark, oceanic tokens, and local typography; retain client-specific wording, task navigation, and SDK content."
+
+[[assets]]
+path = "logo.svg"
+sha256 = "926709171c17f88dc32bebfdd0b4a6fbef165df070d5dd123704a80aa0348b7d"
+size_bytes = 744
+format = "SVG"
+dimensions = "64x64 viewBox"
+color_space = "sRGB hexadecimal colors"
+source = "Server commit 3d3944f logo.svg, with accessible title adapted for the Client SDK"
+license = "Ambiguous Interactive project brand asset; repository use approved by issue #80"
+
+[[assets]]
+path = "favicon.svg"
+sha256 = "5fe051cdca0faeeb98005e55d279047edc6c6421ccb945bee9a427bbd60d37cf"
+size_bytes = 598
+format = "SVG"
+dimensions = "64x64 viewBox"
+color_space = "sRGB hexadecimal colors"
+source = "Server commit 3d3944f favicon.svg"
+license = "Ambiguous Interactive project brand asset; repository use approved by issue #80"
+
+[[assets]]
+path = "logo-banner.svg"
+sha256 = "438313b96e5a89324d335fda116957f574203c9e951ddb607b60e17a4d2b5a3f"
+size_bytes = 8476
+format = "SVG"
+dimensions = "800x220 viewBox"
+color_space = "sRGB hexadecimal colors"
+source = "Client-specific path-only lockup derived from the approved Vector mark plus Hanken Grotesk and Space Grotesk outlines"
+license = "Ambiguous Interactive project brand asset approved by issue #80; wordmark outlines use SIL OFL 1.1 fonts from the adjacent Hanken Grotesk and Space Grotesk notices"
+
+[[assets]]
+path = "fonts/hanken-grotesk-latin.woff2"
+sha256 = "e9201eddf1d41d0b62253295d869ce3cf65768f7102b797f02c7f8c876b4a9d5"
+size_bytes = 34704
+format = "WOFF2 variable font"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "https://fonts.gstatic.com/s/hankengrotesk/v12/ieVn2YZDLWuGJpnzaiwFXS9tYtpd59A.woff2"
+license = "SIL Open Font License 1.1; see fonts/Hanken-Grotesk-OFL.txt"
+
+[[assets]]
+path = "fonts/jetbrains-mono-latin.woff2"
+sha256 = "83c005d49d8a6a50474c73a5a36ac0468076e9c4a29da7bdb14995d80560a5be"
+size_bytes = 31432
+format = "WOFF2 variable font"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwg.woff2"
+license = "SIL Open Font License 1.1; see fonts/JetBrains-Mono-OFL.txt"
+
+[[assets]]
+path = "fonts/space-grotesk-latin.woff2"
+sha256 = "0640890476fc1198ab4de571fb658de443c4d85b66466ec09534a8737ab1ce9d"
+size_bytes = 22288
+format = "WOFF2 variable font"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "https://fonts.gstatic.com/s/spacegrotesk/v22/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2"
+license = "SIL Open Font License 1.1; see fonts/Space-Grotesk-OFL.txt"
+
+[[assets]]
+path = "fonts/Hanken-Grotesk-OFL.txt"
+sha256 = "bb93c61eef5b10204ac305aeb3d204ce74c22c40aa8398f9e2c3bdab2263f2d1"
+size_bytes = 4401
+format = "UTF-8 text"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "Server commit 3d3944f font notice"
+license = "SIL Open Font License 1.1"
+
+[[assets]]
+path = "fonts/JetBrains-Mono-OFL.txt"
+sha256 = "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d"
+size_bytes = 4399
+format = "UTF-8 text"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "Server commit 3d3944f font notice"
+license = "SIL Open Font License 1.1"
+
+[[assets]]
+path = "fonts/Space-Grotesk-OFL.txt"
+sha256 = "18a4de52385f6b988782639d5d0cc1326e5a8c2de9a7f01d7b20d9aedcc60943"
+size_bytes = 4401
+format = "UTF-8 text"
+dimensions = "not applicable"
+color_space = "not applicable"
+source = "Server commit 3d3944f font notice"
+license = "SIL Open Font License 1.1"

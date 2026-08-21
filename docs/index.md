@@ -3,16 +3,21 @@ description: "Connect Rust and Godot games to the Signal Fish multiplayer signal
 ---
 
 <p align="center">
-  <img src="assets/logo-banner.svg" alt="Signal Fish Client SDK" width="600">
+  <img src="assets/logo-banner.svg" alt="Signal Fish Client SDK" class="sf-home-logo" width="800" height="220">
 </p>
 
-[![MSRV](https://img.shields.io/badge/MSRV-1.87.0-brightgreen?style=flat-square&logo=rust)](https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15)
+<a href="https://doc.rust-lang.org/stable/releases.html#version-1870-2025-05-15"><img src="https://img.shields.io/badge/MSRV-1.87.0-brightgreen?style=flat-square&amp;logo=rust" alt="MSRV 1.87.0" width="103" height="20"></a>
+
+<span class="sf-hero-tag">Rust + Godot multiplayer signaling</span>
 
 # Signal Fish Client SDK
 
 Use this SDK to connect a Rust game to Signal Fish, place players in rooms,
 relay game data, and react to server events. Choose an async Tokio client or a
 polling client that runs inside your game loop.
+
+[Install and connect](getting-started.md){ .md-button .md-button--primary .sf-home-action }
+[View on GitHub](https://github.com/Ambiguous-Interactive/signal-fish-client-rust){ .md-button .sf-home-action }
 
 !!! note "Release status"
     **0.10.0** is the current crates.io release and supports Rust **1.87.0** or

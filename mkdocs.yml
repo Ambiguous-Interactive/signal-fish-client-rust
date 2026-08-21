@@ -4,6 +4,7 @@ site_url: https://Ambiguous-Interactive.github.io/signal-fish-client-rust/
 repo_url: https://github.com/Ambiguous-Interactive/signal-fish-client-rust
 repo_name: signal-fish-client-rust
 edit_uri: edit/main/docs/
+copyright: © 2026 Ambiguous Interactive
 
 hooks:
   - hooks/rustdoc_codeblocks.py
@@ -11,6 +12,9 @@ hooks:
 
 theme:
   name: material
+  custom_dir: overrides
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
@@ -50,9 +54,7 @@ theme:
     - header.autohide
   icon:
     repo: fontawesome/brands/github
-  font:
-    text: Roboto
-    code: Roboto Mono
+  font: false
 
 plugins:
   - search:
@@ -122,6 +124,9 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
+extra_javascript:
+  - javascripts/accessibility.js
+
 validation:
   nav:
     omitted_files: info
@@ -152,3 +157,4 @@ nav:
       - Migrating 0.7 to 0.8: migration-0.8.md
       - Migrating 0.8 to 0.9: migration-0.9.md
       - Release Operations: releasing.md
+      - Brand & Font Attribution: attributions.md

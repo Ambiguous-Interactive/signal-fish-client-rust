@@ -20,8 +20,11 @@
 - Direct JSON string game payloads of at least 4 KiB now use measured
   capacity-aware serialization in both drivers. The pinned 4 KiB burst drops
   from 132 to four reallocations while all 28 wire ledgers remain unchanged.
-- The 12 required workflows on PR #123's head were green before merge to
-  current `main` commit `8c1c620`; the separate live Repository Policy audit
+- The approved Vector identity, accessible oceanic theme, and self-hosted
+  typography now span the README and task-oriented MkDocs site, with exact
+  asset provenance and desktop/mobile visual evidence.
+- All 12 push workflows completed successfully on current `main` commit
+  `40a030b` after PR #125 merged. The separate live Repository Policy audit
   remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -53,16 +56,6 @@ bypass list in the ruleset UI, and dispatching a green policy audit require
 maintainer administration unavailable through the connected tools. The first
 substantive non-bot PR opened after restoration must prove that approval,
 thread resolution, branch freshness, and all 11 aggregate checks are enforced.
-
-## Current Work — Documentation Design System
-
-Track [issue #80](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/80).
-
-- Inventory and validate the supplied design assets and their licensing.
-- Translate the design system into MkDocs theme overrides without weakening
-  strict builds, accessibility, responsive behavior, or code readability.
-- Update repository and published-site branding together, with rendered
-  desktop and mobile review.
 
 ## Permanent Acceptance Gates
 

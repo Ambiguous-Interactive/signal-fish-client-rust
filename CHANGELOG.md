@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Adopted Ambiguous Interactive's approved Vector design system across the
+  README and MkDocs site, including a client-specific source-vector identity,
+  accessible light and dark oceanic palettes, self-hosted typography, clearer
+  start actions, responsive navigation, and published brand/font attribution.
 - Reduced allocation churn when either client sends direct JSON string game
   payloads of at least 4 KiB. The wire format, frame ownership, backpressure,
   delivery accounting, and smaller or structured JSON paths are unchanged.
