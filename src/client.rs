@@ -79,7 +79,8 @@ use tracing::{debug, error, warn};
 
 #[cfg(feature = "tokio-runtime")]
 use crate::client_core::{
-    ClientCore, ClientOperation, CoreCommand as ClientCommand, SignalGeneration,
+    serialize_client_message, ClientCore, ClientOperation, CoreCommand as ClientCommand,
+    SignalGeneration,
 };
 #[cfg(feature = "tokio-runtime")]
 use crate::error::{Result, SignalFishError};
@@ -1957,7 +1958,7 @@ async fn transport_loop(
                     break;
                 };
                 let (frame, is_game_data) = match command {
-                    ClientCommand::Message(message) => match serde_json::to_string(&message) {
+                    ClientCommand::Message(message) => match serialize_client_message(&message) {
                         Ok(json) => (
                             Some(TransportFrame::Text(json)),
                             matches!(message, ClientMessage::GameData { .. }),

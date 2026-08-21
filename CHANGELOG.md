@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced allocation churn when either client sends direct JSON string game
+  payloads of at least 4 KiB. The wire format, frame ownership, backpressure,
+  delivery accounting, and smaller or structured JSON paths are unchanged.
 - Reorganized the guide around first connection, SDK usage, multiplayer
   choices, and advanced reference topics. The README is now a concise on-ramp
   that links to the canonical setup, engine, protocol, and transport pages
