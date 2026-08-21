@@ -59,6 +59,58 @@ APIs are gated on negotiated v3 plus MessagePack. A transport treats binary
 payloads as opaque bytes, preserves frame boundaries, and must not silently
 discard either kind.
 
+## Datagram and raw-stream scope
+
+`Transport` begins at one **complete, ordered text/binary signaling-frame
+stream bound to the intended server**. It is not a byte-stream codec, a
+datagram protocol, or a server-authentication mechanism. `TransportFrame` carries
+no source address or peer identity, so the client attributes every yielded
+frame to that server. The built-in transports connect to the server's
+WebSocket endpoint, and the pinned Server 0.7
+[AsyncAPI contract](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/spec/signal-fish-protocol.asyncapi.yaml)
+defines one bidirectional WebSocket channel for signaling and relayed
+`GameData`. Its room service
+[accepts but ignores `JoinRoom.relay_transport`](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/src/server/room_service.rs#L213-L222),
+and its relay policy states that Server 0.7
+[contains no separate relay server](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/src/server/relay_policy.rs#L5-L20).
+
+A custom TCP or QUIC-stream adapter must delimit messages before returning a
+frame. A custom datagram adapter would likewise need an external protocol that
+defines, at minimum, versioning, maximum message size, server trust/source
+binding (which may deliberately provide no cryptographic identity),
+text-versus-binary classification, truncation and fragmentation, duplicate and
+reorder handling, loss signaling/recovery, and terminal/error behavior. It
+must yield one ordered frame stream for the intended signaling server, or
+report a transport error instead of fabricating or silently skipping a frame.
+Only after that layer produces one complete `TransportFrame` does this SDK's
+JSON/MessagePack decoding, lifecycle validation, and v3 delivery
+accountability apply.
+
+These upper layers validate representation, lifecycle, and sequence
+consistency; they do not authenticate frame origin. If the backend's
+trust/source-binding policy provides no cryptographic identity, the SDK offers
+no separate spoof protection.
+
+The SDK intentionally provides no raw UDP backend or datagram envelope. It
+therefore makes no claim that arbitrary, truncated, duplicated, reordered, or
+spoofed datagrams are safe protocol input. Adding parser fuzzing or loopback
+UDP tests here would test a nonexistent wire contract. Datagram behavior stays
+with the component that owns the actual data path:
+
+- an engine/networking integration consumes self-declared
+  `ConnectionInfo::Direct`/`ConnectionInfo::Relay` metadata and applies its
+  trust/credential rules;
+- a `WebRtcDriver` implementation owns ICE/DTLS/SCTP and its underlying UDP
+  sockets, while `MeshController` sees assembled data-channel messages;
+- any future server/client datagram transport must define and test its envelope
+  and trust boundary before adapting complete frames into `Transport` (or use a
+  separate abstraction if its semantics are not connection-oriented).
+
+`RelayTransport::Udp` is only a legacy wire label. Signal Fish Server 0.7
+ignores it when selected in `JoinRoomParams`; that selection neither creates an
+executable UDP path nor reconfigures the signaling transport, opens a UDP
+socket, or bypasses the complete-frame requirement.
+
 ## Sending and ownership across `Pending`
 
 The `Option<TransportFrame>` argument is an ownership slot shared by the caller
@@ -331,6 +383,11 @@ the [WebAssembly guide](wasm.md) for target and linker requirements.
 ## Custom transport checklist
 
 - Preserve both text and binary frame boundaries.
+- Delimit raw stream/datagram input and apply the backend's signaling-server
+  trust/source-binding policy before returning a frame; preserve the intended
+  signaling server's ordering and surface unrecoverable loss/corruption as an
+  error rather than passing partial, concatenated, duplicated, or reordered
+  bytes through.
 - Do not take the caller frame before the backend accepts it.
 - Retain accepted sends and partial receives across `Pending`; do not wait for
   a socket-wide buffered byte count to reach zero as per-frame completion.

@@ -47,6 +47,28 @@ pub trait Transport {
 - `Text(String)` for JSON protocol messages.
 - `Binary(Vec<u8>)` for opaque protocol-v2/v3 binary game data.
 
+## Datagram and Stream Framing Boundary
+
+`Transport` consumes and produces one complete, ordered text/binary
+signaling-frame stream for one intended signaling server. It does not define
+server authentication, framing for a raw TCP/QUIC stream, or an envelope for UDP
+datagrams. A backend over either medium must first own message delimiting,
+maximum size, server trust/source binding (possibly with no cryptographic
+identity), text/binary classification, truncation and fragmentation,
+loss/duplicate/reorder handling, and error/close semantics. Unrecoverable
+violations become a transport error; they are not silently skipped or passed
+up as fabricated frames.
+
+This crate has no raw UDP backend. `RelayTransport::Udp` is ignored legacy
+`JoinRoom` metadata under pinned Server 0.7 and otherwise only labels
+self-declared `ConnectionInfo::Relay` metadata; it is not a switch for the
+signaling `Transport`. WebRTC drivers likewise own their underlying
+ICE/DTLS/SCTP and UDP sockets and expose assembled messages to
+`MeshController`. Do not claim datagram resilience or add parser/fuzz/loopback
+evidence until an actual owned datagram envelope exists; adapt complete frames
+only, or introduce a separate abstraction if datagram semantics are not
+connection-oriented.
+
 The trait is object-safe and deliberately has no `Send`, `Sync`, or `'static`
 supertrait. `Box<dyn Transport>` works. The async driver places
 `Send + 'static` on `SignalFishClient::start` because it moves the transport

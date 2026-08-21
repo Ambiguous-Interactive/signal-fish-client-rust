@@ -110,7 +110,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_room_code(code)` | `impl Into<String>` | Set an explicit room code to join. |
 | `.with_max_players(n)` | `u8` | Set the maximum number of players allowed in the room. |
 | `.with_supports_authority(flag)` | `bool` | Enable or disable authority delegation support. |
-| `.with_relay_transport(transport)` | `RelayTransport` | Set the preferred relay transport protocol. |
+| `.with_relay_transport(transport)` | `RelayTransport` | Set legacy relay metadata retained for wire compatibility; Server 0.7 ignores it and it does not reconfigure signaling. |
 
 ### Full Example
 
@@ -123,6 +123,13 @@ let params = JoinRoomParams::new("my-game", "Alice")
     .with_supports_authority(true)
     .with_relay_transport(RelayTransport::Udp);
 ```
+
+`RelayTransport::Udp` is legacy descriptor metadata, not a raw UDP
+implementation in this SDK. Signal Fish Server 0.7 accepts but ignores this
+`JoinRoom` field, and continues to relay `GameData` over the WebSocket
+connection. An application/engine owns any self-declared relay metadata carried
+through `ConnectionInfo`; see the
+[datagram scope](transport.md#datagram-and-raw-stream-scope).
 
 ---
 

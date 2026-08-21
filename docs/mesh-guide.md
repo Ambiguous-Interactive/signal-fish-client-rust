@@ -319,6 +319,14 @@ Map your backend's primitives onto `WebRtcDriver`:
 - **webrtc-rs**. Works via manual signaling, but is Tokio-coupled and heavier;
   prefer str0m for new native drivers.
 
+The backend must keep any raw UDP inside its WebRTC stack and emit
+`DriverEvent::Data` only for assembled data-channel messages. A sans-I/O stack
+accepts those packets from the driver, while managed browser/runtime stacks own
+their sockets internally. ICE/DTLS/SCTP own peer authentication,
+fragmentation/reassembly, and the channel's configured ordering/reliability.
+`MeshController` does not parse datagrams, and the relay accountability state
+machine does not authenticate or sequence `MeshEvent::Data`.
+
 ---
 
 ## See also

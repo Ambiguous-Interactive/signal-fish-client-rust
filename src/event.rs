@@ -171,7 +171,7 @@ pub enum SignalFishEvent {
         lobby_state: LobbyState,
         /// Players that have signaled readiness.
         ready_players: Vec<PlayerId>,
-        /// Relay transport type label (e.g. `"auto"`, `"tcp"`).
+        /// Legacy deployment relay label; not proof of a physical transport.
         relay_type: String,
         /// Spectators currently watching.
         current_spectators: Vec<SpectatorInfo>,
@@ -392,7 +392,7 @@ pub enum SignalFishEvent {
         lobby_state: LobbyState,
         /// Players that have signaled readiness.
         ready_players: Vec<PlayerId>,
-        /// Relay transport type label.
+        /// Legacy deployment relay label; not proof of a physical transport.
         relay_type: String,
         /// Spectators currently watching.
         current_spectators: Vec<SpectatorInfo>,

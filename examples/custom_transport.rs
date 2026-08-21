@@ -4,7 +4,8 @@
 //! loopback channel. This is useful for:
 //!
 //! - **Testing** — unit-test your game logic without a real server
-//! - **Custom backends** — adapt any I/O layer (TCP, QUIC, WebRTC data channels)
+//! - **Custom backends** — adapt a framed I/O layer (WebSocket, framed TCP/QUIC,
+//!   or assembled WebRTC data-channel messages)
 //!
 //! ## Running
 //!

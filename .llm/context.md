@@ -16,7 +16,7 @@
 
 ## Purpose
 
-Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol. Enables game clients to join rooms, exchange JSON or binary game data, and receive server-pushed events over any bidirectional frame transport.
+Framed-transport-agnostic client over one complete, ordered text/binary frame stream bound to the intended server; raw stream/datagram framing and trust policy remain outside core.
 
 ## Mandatory Workflow
 
@@ -159,9 +159,9 @@ pub trait Transport {
 }
 ```
 
-The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`.
-`poll_send` may take a frame only at backend ownership transfer; that increments
-`game_data_sent` even if completion later fails, but never proves peer delivery.
+The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`. Its boundary is one complete, ordered text/binary frame stream for one intended server, not raw bytes, datagrams, or server authentication.
+A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.7 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.
+`poll_send` may take a frame only at backend ownership transfer; that increments `game_data_sent` even if completion later fails, but never proves peer delivery.
 `Pending` before acceptance leaves the frame intact. Async readiness changes wake registered I/O; both drivers map the first `is_ready()` observation to `transport_ready` and `Connected`. Close is
 idempotent; on error, logical I/O terminates and fallible cleanup remains safe for the abort fallback. `abort` is a required,
 prompt, nonblocking, non-panicking, idempotent fallback that releases or safely detaches backend resources,
@@ -361,12 +361,12 @@ one `godot` and one version of every `godot-*` family crate.
 
 ## Key Design Decisions
 
-### Transport Agnosticism
+### Framed Transport Agnosticism
 
-The `Transport` trait decouples protocol logic from network I/O. Tests use
-in-memory `VecDeque`-backed transports. Production code uses WebSocket. Custom
-transports (QUIC, raw TCP, engine WebSockets, etc.) implement three object-safe
-polling methods and can preserve structured close metadata.
+The `Transport` trait decouples protocol logic from framed network I/O. Tests use
+in-memory transports; Server 0.7 production I/O exposes only WebSocket. Custom
+backends must provide one complete, ordered text/binary stream for the intended
+server and own trust/source binding plus raw stream/datagram policy.
 
 Concrete engine bindings live outside core. In particular, all Godot bindings,
 constructors, backend behavior, and godot-rust public types belong to the

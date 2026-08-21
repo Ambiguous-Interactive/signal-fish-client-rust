@@ -1,13 +1,17 @@
 //! # Signal Fish Client
 //!
-//! Transport-agnostic Rust client for the Signal Fish multiplayer signaling protocol.
+//! Framed-transport-agnostic Rust client for the Signal Fish multiplayer signaling
+//! protocol.
 //!
 //! This crate provides a high-level async client that communicates with a Signal Fish
-//! signaling server using JSON text messages over any bidirectional transport.
+//! signaling server using complete text/binary frames over a bidirectional
+//! [`Transport`]. Raw stream/datagram framing and signaling-server
+//! trust/source binding are backend responsibilities.
 //!
 //! ## Features
 //!
-//! - **Transport-agnostic** — implement the [`Transport`] trait for any backend
+//! - **Framed-transport-agnostic** — implement [`Transport`] for a backend that
+//!   supplies complete text/binary frames
 //! - **Wire-compatible** — all protocol types match the server's v2 format exactly
 //! - **Protocol v2 relay + v3 mesh** — v3 is additive and opt-in; a default client
 //!   stays byte-identical to v2 (see [Protocol versions](#protocol-versions))

@@ -1,13 +1,13 @@
 ---
 title: Home
-description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
+description: "Signal Fish Client SDK — A framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol"
 ---
 
 <p align="center">
   <img src="assets/logo-banner.svg" alt="Signal Fish Client SDK" width="600">
 </p>
 
-**A transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol.**
+**A framed-transport-agnostic Rust client SDK for the Signal Fish multiplayer signaling protocol.**
 
 !!! note "Release status"
     **0.10.0** is the current crates.io release. This site follows unreleased
@@ -24,7 +24,7 @@ description: "Signal Fish Client SDK — A transport-agnostic Rust client SDK fo
 
 ## Key Features
 
-- :material-swap-horizontal: **Transport-Agnostic** — Plug in any transport that implements the `Transport` trait; swap WebSocket for TCP, QUIC, or a test loopback without changing your game code.
+- :material-swap-horizontal: **Framed-Transport-Agnostic** — Plug in a backend that yields complete, ordered text/binary frames; raw stream/datagram framing and signaling-server trust remain backend responsibilities.
 - :material-lightning-bolt: **Async or Frame-Driven** — Use the Tokio background driver or the synchronous polling client. Command admission is bounded and explicit in both.
 - :material-message-flash: **Typed Event Architecture** — The async driver
   delivers strongly typed `SignalFishEvent` variants on a bounded `mpsc`

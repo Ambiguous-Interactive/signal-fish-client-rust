@@ -15,7 +15,7 @@ signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/sig
 ```
 
 The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94;
-the transport-agnostic core remains compatible with Rust 1.87. Keep the direct
+the framed-transport-agnostic core remains compatible with Rust 1.87. Keep the direct
 `godot` dependency aligned with the binding used by the adapter. Run
 `cargo tree -d` after dependency updates and resolve any duplicate `godot` or
 `godot-*` families before passing `Gd` values across the adapter boundary,

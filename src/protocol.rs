@@ -34,21 +34,28 @@ pub type SessionGeneration = Uuid;
 
 // ── Enums ───────────────────────────────────────────────────────────
 
-/// Relay transport protocol selection.
+/// Legacy relay labels retained for wire compatibility.
+///
+/// This value appears in the ignored [`ClientMessage::JoinRoom`] preference
+/// and in self-declared [`ConnectionInfo::Relay`] metadata. It does not select
+/// the [`Transport`](crate::Transport) used by this crate, open a socket, or add
+/// datagram framing. The core client continues to exchange complete
+/// text/binary signaling frames with its configured `Transport`.
+///
+/// Signal Fish Server 0.7 accepts but ignores the `JoinRoom` field and carries
+/// all signaling and relayed game data over the current WebSocket connection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RelayTransport {
-    /// TCP transport (reliable, ordered delivery).
-    /// Recommended for: Turn-based games, lobby systems, RPGs.
+    /// Label an external relay data path as TCP.
     Tcp,
-    /// UDP transport (low-latency, unreliable).
-    /// Recommended for: FPS, racing games, real-time action.
+    /// Label an external relay data path as UDP.
+    ///
+    /// The SDK does not open or parse UDP datagrams for this variant.
     Udp,
-    /// WebSocket transport (reliable, browser-compatible).
-    /// Recommended for: WebGL builds, browser games, cross-platform.
+    /// Label a relay data path as WebSocket.
     Websocket,
-    /// Automatic selection based on room size and game type.
-    /// Default: UDP for 2-4 players, TCP for 5+ players, WebSocket for browser builds.
+    /// Legacy automatic-selection label; no selection occurs in this SDK.
     #[default]
     Auto,
 }
@@ -228,21 +235,24 @@ pub enum ConnectionInfo {
         connection_data: String,
         key: String,
     },
-    /// Built-in relay server (for Unity NetCode, FishNet, Mirror).
+    /// Legacy, self-declared relay metadata forwarded to room peers.
+    ///
+    /// Neither this SDK nor Signal Fish Server 0.7 opens the endpoint or proves
+    /// its reachability or source identity.
     #[serde(rename = "relay")]
     Relay {
-        /// Relay server host.
+        /// Self-declared external relay host.
         host: String,
-        /// Relay server port (TCP or UDP depending on transport).
+        /// Self-declared external relay port.
         port: u16,
-        /// Transport protocol (TCP, UDP, or Auto).
+        /// Self-declared external relay protocol label.
         #[serde(default)]
         transport: RelayTransport,
-        /// Allocation ID (room ID).
+        /// Opaque external relay allocation label supplied by the peer.
         allocation_id: String,
-        /// Client authentication token (opaque server-issued value).
+        /// Opaque external relay credential supplied by the peer.
         token: String,
-        /// Assigned client ID (set by server after connection).
+        /// Optional external relay client label supplied by the peer.
         #[serde(skip_serializing_if = "Option::is_none")]
         client_id: Option<u16>,
     },
@@ -329,6 +339,7 @@ pub struct PeerConnectionInfo {
     pub player_id: PlayerId,
     pub player_name: String,
     pub is_authority: bool,
+    /// Legacy deployment relay label; not proof of a physical data path.
     pub relay_type: String,
     /// Connection info provided by the peer for P2P establishment.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -480,6 +491,7 @@ pub struct RoomJoinedPayload {
     pub is_authority: bool,
     pub lobby_state: LobbyState,
     pub ready_players: Vec<PlayerId>,
+    /// Legacy deployment relay label; protocol metadata only on Server 0.7.
     pub relay_type: String,
     /// List of spectators currently watching (if any).
     #[serde(default)]
@@ -515,6 +527,7 @@ pub struct ReconnectedPayload {
     pub is_authority: bool,
     pub lobby_state: LobbyState,
     pub ready_players: Vec<PlayerId>,
+    /// Legacy deployment relay label; protocol metadata only on Server 0.7.
     pub relay_type: String,
     /// List of spectators currently watching (if any).
     #[serde(default)]
@@ -635,8 +648,11 @@ pub enum ClientMessage {
         player_name: String,
         max_players: Option<u8>,
         supports_authority: Option<bool>,
-        /// Preferred relay transport protocol (TCP, UDP, or Auto).
-        /// If not specified, defaults to Auto.
+        /// Optional legacy relay data-path descriptor.
+        ///
+        /// This wire value does not change the signaling [`Transport`](crate::Transport)
+        /// or make the client consume raw datagrams. Signal Fish Server 0.7
+        /// accepts but ignores it.
         #[serde(default)]
         relay_transport: Option<RelayTransport>,
     },

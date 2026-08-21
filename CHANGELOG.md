@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Clarified that `Transport` requires a complete, ordered text/binary frame
+  stream for the intended signaling server and that `RelayTransport::Udp` is
+  ignored legacy `JoinRoom` metadata under Server 0.7, not a built-in UDP
+  backend or executable relay request. Custom stream/datagram adapters own
+  framing, signaling-server trust/source binding, fragmentation,
+  loss/duplicate/reorder, and error policy before yielding `TransportFrame`s.
 - **Breaking:** `Transport::abort` is now required. Custom transport
   implementors must provide a prompt, nonblocking, non-panicking, idempotent
   backend-abandonment path that releases or safely detaches resources and

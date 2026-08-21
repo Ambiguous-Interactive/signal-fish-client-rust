@@ -14,6 +14,12 @@
 //! the WASM/polling runtimes and matches sans-I/O backends like str0m. The
 //! client still "obeys the server": the controller passes the server-assigned
 //! `initiate` flag straight through and never computes who offers.
+//!
+//! A real driver owns the complete WebRTC transport boundary: ICE and the
+//! underlying UDP sockets, DTLS peer authentication, SCTP fragmentation and
+//! reassembly, and each data channel's configured ordering/reliability. It
+//! yields only assembled data-channel messages; neither `MeshController` nor
+//! relay delivery accountability parses or authenticates raw datagrams.
 
 use crate::protocol::{IceServer, PlayerId, SessionGeneration};
 use crate::signal::PeerSignal;
@@ -121,7 +127,10 @@ pub enum DriverEvent {
         /// Authoritative session generation whose channel closed.
         generation: Option<SessionGeneration>,
     },
-    /// Application bytes arrived from `peer`.
+    /// An assembled WebRTC data-channel message arrived from `peer`.
+    ///
+    /// The driver/WebRTC stack must already have applied its ICE/DTLS/SCTP
+    /// transport policy. Do not emit raw UDP datagrams through this event.
     Data {
         /// The sending peer.
         peer: PlayerId,
@@ -159,7 +168,10 @@ pub enum MeshEvent {
     PeerConnected(PlayerId),
     /// A peer's peer-to-peer data channel closed.
     PeerDisconnected(PlayerId),
-    /// Application bytes received from a peer over the peer-to-peer data channel.
+    /// An assembled application message received over a peer data channel.
+    ///
+    /// The external WebRTC driver owns all underlying datagram validation,
+    /// authentication, fragmentation, ordering, and reliability semantics.
     Data {
         /// The sending peer.
         from: PlayerId,
