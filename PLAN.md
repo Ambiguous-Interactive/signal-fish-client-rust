@@ -14,9 +14,12 @@
   certificate-capable custom rustls connections.
 - Release preparation and publication are workspace-aware, reproducible, and
   protected by required aggregate checks.
-- All 11 required project workflows are green on current `main` commit
-  `3f38367`; the separate live Repository Policy audit remains red because of
-  issue #90.
+- A deterministic 28-cell `ClientCore` laboratory now pins latency,
+  throughput, queue-age, and all six allocation-counter baselines. Required CI
+  enforces debug/release ceilings while leaving timings diagnostic.
+- The 12 required workflows on PR #122's head were green before merge to
+  current `main` commit `1acc211`; the separate live Repository Policy audit
+  remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -38,9 +41,8 @@ not stack dependent PRs.
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
 tracks live drift from `.github/required-checks.json`. Ruleset #14801090 still
 lacks approval and required-status-check rules, and the scheduled Repository
-Policy workflow is genuinely red. Multiple PRs, most recently #121, merged
-without an approval or enforced required checks; #121 merged as current `main`
-commit `3f38367` with zero approvals and a quota-failed Copilot review check.
+Policy workflow is genuinely red. Multiple PRs, including #121 and #122,
+merged without the ruleset enforcing independent approval or required checks.
 
 Restoring the live ruleset, disabling or funding the quota-broken Copilot
 review rule, adding an eligible independent reviewer, confirming an empty
@@ -49,35 +51,7 @@ maintainer administration unavailable through the connected tools. The first
 substantive non-bot PR opened after restoration must prove that approval,
 thread resolution, branch freshness, and all 11 aggregate checks are enforced.
 
-## Current Work — Certificate-Fingerprint Token Binding
-
-Track [issue #120](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/120).
-
-- Bind the native token proof to the exact leaf certificate presented by the
-  configured rustls client for Server 0.7 profiles that require a client
-  fingerprint.
-- Pin positive and adversarial mTLS/fingerprint interoperability evidence to
-  the exact server contract without changing disabled/default connections.
-- Preserve explicit incapability boundaries for browser, Emscripten, Godot,
-  and post-handshake transports.
-
-## Later Milestone — Allocation and Performance Evidence
-
-Track [issue #82](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/82).
-
-- Define representative lobby, JSON relay, binary relay,
-  classified-delivery, reconnect, and polling workloads.
-- Establish deterministic throughput, latency, allocation, and queue-age
-  baselines before optimizing.
-- Optimize only measured bottlenecks and retain stable regression thresholds.
-- Preserve frame ownership, backpressure, exact accountability, and event
-  delivery invariants in every optimization.
-
-The stale `agent/fortress-rollback-throughput-e2e` branch is research input
-only. Its pre-session-018 fixture was superseded by the merged two-browser
-Godot Fortress suite and must not be cherry-picked.
-
-## Later Milestone — Documentation Design System
+## Current Work — Documentation Design System
 
 Track [issue #80](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/80).
 
