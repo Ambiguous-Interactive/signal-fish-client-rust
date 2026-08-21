@@ -9,13 +9,13 @@
 - The async and polling clients share protocol behavior through `ClientCore`.
 - The lockstep Godot adapter supports native and official Godot 4.5 web
   exports, with blocking real-server gameplay coverage.
-- Native WebSocket token binding supports disabled, optional, and required
-  Server 0.7 profiles except the explicit client-certificate-fingerprint
-  profile tracked in issue #120.
+- Native WebSocket token binding supports disabled, optional, required, and
+  client-certificate-fingerprint-bound Server 0.7 profiles on
+  certificate-capable custom rustls connections.
 - Release preparation and publication are workspace-aware, reproducible, and
   protected by required aggregate checks.
 - All 11 required project workflows are green on current `main` commit
-  `3115c2b`; the separate live Repository Policy audit remains red because of
+  `3f38367`; the separate live Repository Policy audit remains red because of
   issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -38,9 +38,9 @@ not stack dependent PRs.
 [Issue #90](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/90)
 tracks live drift from `.github/required-checks.json`. Ruleset #14801090 still
 lacks approval and required-status-check rules, and the scheduled Repository
-Policy workflow is genuinely red. Multiple PRs, most recently #119, merged
-without an approval or enforced required checks; #119 merged as current `main`
-commit `3115c2b` with zero approvals and four quota-exhausted Copilot comments.
+Policy workflow is genuinely red. Multiple PRs, most recently #121, merged
+without an approval or enforced required checks; #121 merged as current `main`
+commit `3f38367` with zero approvals and a quota-failed Copilot review check.
 
 Restoring the live ruleset, disabling or funding the quota-broken Copilot
 review rule, adding an eligible independent reviewer, confirming an empty
@@ -49,24 +49,7 @@ maintainer administration unavailable through the connected tools. The first
 substantive non-bot PR opened after restoration must prove that approval,
 thread resolution, branch freshness, and all 11 aggregate checks are enforced.
 
-## Current Work — Simplified Documentation
-
-Track [issue #110](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/110).
-Its server-side prerequisite, Signal Fish Server issue #383, is complete.
-
-- Keep the repository README as a concise on-ramp instead of a duplicate
-  reference manual.
-- Organize the guide around first connection, SDK use, multiplayer choices,
-  and advanced reference.
-- Preserve exact protocol, transport, delivery, and platform contracts in
-  dedicated pages without requiring newcomers to read them before connecting.
-- Keep user-facing WebSocket examples aligned with the pinned Server 0.7
-  `/v2/ws` and `/v3/ws` routes.
-
-This coherent docs session was already in progress when issue #120 was opened;
-finish and green it before starting the next correctness PR.
-
-## Next Correctness Milestone — Certificate-Fingerprint Token Binding
+## Current Work — Certificate-Fingerprint Token Binding
 
 Track [issue #120](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/120).
 

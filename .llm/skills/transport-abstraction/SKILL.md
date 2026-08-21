@@ -286,7 +286,10 @@ dropping it each call.
 - disables Nagle's algorithm (`TCP_NODELAY`) by default on the socket it owns.
 - when opt-in token binding is active, owns subprotocol/challenge/key/proof
   state and advances the shared JSON/binary sequence only after `start_send`
-  accepts the protected frame.
+  accepts the protected frame;
+- on custom rustls connections, binds active token proofs to the exact client
+  leaf selected with a compatible X.509 signer, without treating raw public
+  keys as certificates or accepting a caller-supplied fingerprint.
 
 Do not treat Ping/Pong as application frames. Do not skip binary application
 frames.

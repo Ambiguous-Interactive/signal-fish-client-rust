@@ -1484,6 +1484,21 @@ mod ci_workflow_policy {
                 "e2e_server_070_rejects_invalid_token_binding_proofs",
             ),
             (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_required_client_fingerprint_token_binding_wss",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_polling_client_fingerprint_token_binding_wss",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_rejects_invalid_client_fingerprint_proofs",
+            ),
+            (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.4.0",
                 "e2e_server_040_generationless_mesh_signal",
