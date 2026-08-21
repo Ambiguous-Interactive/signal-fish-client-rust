@@ -113,6 +113,7 @@ cargo +1.87.0 check -p signal-fish-client --all-features --lib
 cargo test --all-features --test ci_config_tests
 python3 -m unittest scripts.test_release
 MKDOCS=/tmp/signal-fish-docs-venv/bin/mkdocs bash scripts/check-docs-rendering.sh
+bash scripts/extract-rust-snippets.sh
 SIGNAL_FISH_SERVER_BIN=/tmp/signal-fish-server-pinned/target/release/signal-fish-server \
   cargo test --all-features --test real_server_e2e \
   e2e_server_070_required_token_binding_wss -- --ignored --exact --test-threads=1

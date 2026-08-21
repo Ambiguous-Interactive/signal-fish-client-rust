@@ -26,7 +26,6 @@ use signal_fish_client::{
     WebSocketTransport,
 };
 
-# async fn connect() -> Result<(), signal_fish_client::SignalFishError> {
 let options = WebSocketConnectOptions::new()
     .with_token_binding(TokenBindingMode::Required);
 let transport = WebSocketTransport::connect_with_options(
@@ -34,8 +33,6 @@ let transport = WebSocketTransport::connect_with_options(
     options,
 ).await?;
 assert_eq!(transport.token_binding_status(), TokenBindingStatus::Active);
-# Ok(())
-# }
 ```
 
 | Mode | Behavior |
