@@ -128,6 +128,6 @@ All 12 pull-request workflows passed on code-bearing head
 Cursor Bugbot later found that the endpoint scanner treated `]` as a URL
 terminator and therefore falsely rejected a valid bracketed-IPv6 host. The
 final fix preserves an IPv6 authority bracket while trimming a prose-closing
-bracket, with table regressions for both forms. The submitted hosted reviews
-are this addressed Bugbot comment and two quota-exhausted Copilot notices; the
-Copilot limitation remains tracked by issue #90.
+bracket, with table regressions for both forms. The Bugbot thread was answered
+and resolved. Submitted hosted reviews otherwise contain only quota-exhausted
+Copilot notices; that limitation remains tracked by issue #90.
