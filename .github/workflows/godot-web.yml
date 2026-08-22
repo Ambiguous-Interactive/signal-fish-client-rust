@@ -23,6 +23,7 @@ env:
   NETEM_SEED: "6101"
   IPROUTE2_VERSION: "6.6.0"
   IPROUTE2_SHA256: "8738c804afd09f0bf756937f0c3de23117832a98d8cbbf50386cf5005cd613ce"
+  NATIVE_SERVER_VERSION: "0.7.0"
 
 jobs:
   build-export:
@@ -84,6 +85,165 @@ jobs:
             --all-targets --locked -- -D warnings
           cargo test --manifest-path tests/godot-web-smoke/Cargo.toml --locked
           node --test scripts/test-godot-e2e-validators.mjs
+
+      - name: Run official native large-inbound smoke
+        env:
+          GODOT4_BIN: ${{ github.workspace }}/.godot/Godot_v4.5-stable_linux.x86_64
+        run: |
+          set -euo pipefail
+          asset="signal-fish-server-v${NATIVE_SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${NATIVE_SERVER_VERSION}"
+          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
+          sha256sum --check "${asset}.sha256"
+          mkdir -p .signal-fish-native-server tests/godot-web-smoke/project/bin
+          tar -xzf "${asset}" -C .signal-fish-native-server
+          server_bin="$(find .signal-fish-native-server -type f -name signal-fish-server -print -quit)"
+          chmod +x "${server_bin}"
+
+          cargo build --manifest-path tests/godot-web-smoke/Cargo.toml --locked
+          cp tests/godot-web-smoke/target/debug/libsignal_fish_godot_smoke.so \
+            tests/godot-web-smoke/project/bin/libsignal_fish_godot_smoke.so
+
+          cleanup() {
+            if [ -n "${godot_pid:-}" ]; then
+              kill "${godot_pid}" 2>/dev/null || true
+              wait "${godot_pid}" 2>/dev/null || true
+            fi
+            if [ -n "${server_pid:-}" ]; then
+              kill "${server_pid}" 2>/dev/null || true
+              wait "${server_pid}" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          SIGNAL_FISH__PORT=3536 \
+          SIGNAL_FISH__LOGGING__LEVEL=debug \
+          SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
+          SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \
+          SIGNAL_FISH__SECURITY__MAX_MESSAGE_SIZE=131072 \
+          SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
+          SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
+          SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
+            "${server_bin}" >native-server.log 2>&1 &
+          server_pid=$!
+
+          for attempt in $(seq 1 150); do
+            if timeout 1 bash -c 'printf "\n" >/dev/tcp/127.0.0.1/3536' 2>/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 150 ]; then
+              printf 'Signal Fish server did not become ready\n' >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+
+          "${GODOT4_BIN}" --headless --path tests/godot-web-smoke/project -- \
+            --server-url ws://127.0.0.1:3536/v2/ws >godot-native.log 2>&1 &
+          godot_pid=$!
+
+          wait_for_godot_marker() {
+            marker="$1"
+            description="$2"
+            max_attempts="$3"
+            for attempt in $(seq 1 "${max_attempts}"); do
+              if grep -Fq -- "${marker}" godot-native.log; then
+                return 0
+              fi
+              if ! kill -0 "${godot_pid}" 2>/dev/null; then
+                wait "${godot_pid}" || true
+                godot_pid=""
+                printf 'Godot exited before %s\n' "${description}" >&2
+                return 1
+              fi
+              sleep 0.1
+            done
+            printf 'Godot did not reach %s\n' "${description}" >&2
+            return 1
+          }
+
+          wait_for_godot_marker \
+            'SIGNAL_FISH_SMOKE load-summary' 'the JSON load summary' 600
+          wait_for_godot_marker \
+            'SIGNAL_FISH_SMOKE json-shutdown-ok' 'JSON graceful shutdown' 300
+          wait_for_godot_marker \
+            'SIGNAL_FISH_SMOKE binary-ready-for-server-close' \
+            'binary readiness for server close' 300
+
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import {
+              validateLargeInboundMarkers,
+              validateLoadSummary,
+            } from "./scripts/godot-e2e-validators.mjs";
+            const lines = readFileSync("godot-native.log", "utf8").split(/\r?\n/);
+            const largeInbound = validateLargeInboundMarkers(lines);
+            if (!largeInbound.ok) {
+              throw new Error(`native large-inbound assertions failed: ${JSON.stringify(largeInbound)}`);
+            }
+            const prefix = "SIGNAL_FISH_SMOKE load-summary ";
+            const summaries = lines.filter((line) => line.includes(prefix));
+            if (summaries.length !== 1) {
+              throw new Error(`native load-summary count was ${summaries.length}, expected one`);
+            }
+            const summary = JSON.parse(summaries[0].slice(summaries[0].indexOf(prefix) + prefix.length));
+            const samples = lines
+              .filter((line) => line.includes("SIGNAL_FISH_LOAD sample "))
+              .map((line) => JSON.parse(line.slice(line.indexOf("SIGNAL_FISH_LOAD sample ") + 24)));
+            const load = validateLoadSummary(summary, samples);
+            if (!load.ok) {
+              throw new Error(`native load assertions failed: ${JSON.stringify(load)}`);
+            }
+          '
+
+          kill -TERM "${server_pid}"
+          for attempt in $(seq 1 150); do
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 150 ]; then
+              printf 'Signal Fish server did not stop after SIGTERM\n' >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          wait "${server_pid}" || true
+          server_pid=""
+
+          wait_for_godot_marker \
+            'SIGNAL_FISH_SMOKE close-attribution-ok' 'server close attribution' 300
+          wait_for_godot_marker \
+            'SIGNAL_FISH_SMOKE complete' 'fixture completion' 300
+          for attempt in $(seq 1 300); do
+            if ! kill -0 "${godot_pid}" 2>/dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 300 ]; then
+              printf 'Godot did not complete after server shutdown\n' >&2
+              exit 1
+            fi
+            sleep 0.1
+          done
+          wait "${godot_pid}"
+          godot_pid=""
+          if grep -Eq 'SIGNAL_FISH_SMOKE .*(-error|unexpected-disconnect)' godot-native.log; then
+            printf 'Godot native smoke reported a failure\n' >&2
+            exit 1
+          fi
+          trap - EXIT
+          cleanup
+
+      - name: Upload native large-inbound evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: godot-native-large-inbound-evidence
+          path: |
+            godot-native.log
+            native-server.log
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Build Godot GDExtension for web
         env:
@@ -288,6 +448,7 @@ jobs:
               SIGNAL_FISH__LOGGING__LEVEL=debug \
               SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
               SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \
+              SIGNAL_FISH__SECURITY__MAX_MESSAGE_SIZE=131072 \
               SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
               SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
               SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \
@@ -297,6 +458,7 @@ jobs:
             SIGNAL_FISH__LOGGING__LEVEL=debug \
             SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS=1 \
             SIGNAL_FISH__SECURITY__CORS_ORIGINS='*' \
+            SIGNAL_FISH__SECURITY__MAX_MESSAGE_SIZE=131072 \
             SIGNAL_FISH__SECURITY__REQUIRE_METRICS_AUTH=false \
             SIGNAL_FISH__SECURITY__REQUIRE_WEBSOCKET_AUTH=false \
             SIGNAL_FISH__PROTOCOL__SDK_COMPATIBILITY__ENFORCE=false \

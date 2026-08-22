@@ -114,29 +114,61 @@ export function validateLoadSummary(summary, samples) {
     !isNonnegativeInteger(summary?.admission_hits) ||
     summary?.within_absolute_adaptive_ceiling !== true ||
     summary?.binary_pair_admission_watermark_violations !== 0 ||
+    !isNonnegativeInteger(summary?.binary_pair_one_frame_escape_frames) ||
     !isNonnegativeInteger(summary?.binary_pair_one_frame_escape_bytes) ||
     summary?.binary_pair_within_absolute_adaptive_ceiling !== true ||
+    !isNonnegativeInteger(summary?.one_frame_escape_frames) ||
     !isNonnegativeInteger(summary?.one_frame_escape_bytes)
   ) errors.push("adaptive-buffering evidence failed");
   if (
     !isFixedLengthArray(summary?.per_client_peak_buffered_bytes, 2, isNonnegativeInteger) ||
     !isFixedLengthArray(summary?.per_client_effective_watermark_bytes, 2, isNonnegativeInteger) ||
+    !isFixedLengthArray(summary?.per_client_one_frame_escape_frames, 2, isNonnegativeInteger) ||
     !isFixedLengthArray(summary?.per_client_one_frame_escape_bytes, 2, isNonnegativeInteger) ||
+    summary.per_client_one_frame_escape_frames[0] !== 1 ||
+    summary.per_client_one_frame_escape_frames[1] !== 0 ||
+    summary.per_client_one_frame_escape_bytes[0] <= 32_768 ||
+    summary.per_client_one_frame_escape_bytes[1] !== 0 ||
     summary.per_client_effective_watermark_bytes.some((watermark) =>
       watermark < 4_096 || watermark > 32_768
     ) ||
-    summary.per_client_peak_buffered_bytes.some((peak) => peak > 32_768) ||
+    summary.per_client_peak_buffered_bytes.some((peak, index) =>
+      peak > Math.max(
+        32_768,
+        summary.per_client_one_frame_escape_frames[index] === 1
+          ? summary.per_client_one_frame_escape_bytes[index]
+          : 0,
+      )
+    ) ||
     !isFixedLengthArray(summary?.binary_pair_peak_buffered_bytes, 2, isNonnegativeInteger) ||
     !isFixedLengthArray(
       summary?.binary_pair_effective_watermark_bytes, 2, isNonnegativeInteger,
     ) ||
+    !isFixedLengthArray(
+      summary?.binary_pair_per_client_escape_frames, 2, isNonnegativeInteger,
+    ) ||
     !isFixedLengthArray(summary?.binary_pair_per_client_escape_bytes, 2, isNonnegativeInteger) ||
+    summary.binary_pair_per_client_escape_frames.some((count) => count !== 0) ||
+    summary.binary_pair_per_client_escape_bytes.some((bytes) => bytes !== 0) ||
     summary.binary_pair_effective_watermark_bytes.some((watermark) =>
       watermark < 4_096 || watermark > 32_768
     ) ||
-    summary.binary_pair_peak_buffered_bytes.some((peak) => peak > 32_768) ||
+    summary.binary_pair_peak_buffered_bytes.some((peak, index) =>
+      peak > Math.max(
+        32_768,
+        summary.binary_pair_per_client_escape_frames[index] === 1
+          ? summary.binary_pair_per_client_escape_bytes[index]
+          : 0,
+      )
+    ) ||
+    summary.binary_pair_one_frame_escape_frames !==
+      summary.binary_pair_per_client_escape_frames.reduce((sum, value) => sum + value, 0) ||
     summary.binary_pair_one_frame_escape_bytes !==
       summary.binary_pair_per_client_escape_bytes.reduce((sum, value) => sum + value, 0) ||
+    summary.one_frame_escape_frames !==
+      [...summary.per_client_one_frame_escape_frames,
+        ...summary.binary_pair_per_client_escape_frames]
+        .reduce((sum, value) => sum + value, 0) ||
     summary.one_frame_escape_bytes !==
       [...summary.per_client_one_frame_escape_bytes,
         ...summary.binary_pair_per_client_escape_bytes]
@@ -318,4 +350,23 @@ export function validateServerConservation(values) {
     values.harmfulDeltas.length > 0
   ) errors.push("server delivery conservation failed");
   return { ok: errors.length === 0, errors };
+}
+
+export function validateLargeInboundMarkers(lines) {
+  const token = "SIGNAL_FISH_SMOKE large-inbound-ok";
+  const candidates = lines.filter((line) => line.includes(token));
+  const errors = [];
+  if (candidates.length !== 1) errors.push("large inbound marker count was not exactly one");
+  const payload = candidates[0]?.slice(candidates[0].indexOf(token)).trim();
+  const match = /^SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=(\d+) padding_bytes=(\d+)$/.exec(
+    payload ?? "",
+  );
+  const observed = match
+    ? { wireBytes: Number(match[1]), paddingBytes: Number(match[2]) }
+    : undefined;
+  if (
+    !observed || !Number.isSafeInteger(observed.wireBytes) || observed.wireBytes <= 65_535 ||
+    !Number.isSafeInteger(observed.paddingBytes) || observed.paddingBytes !== 80 * 1_024
+  ) errors.push("large inbound marker lengths were invalid");
+  return { ok: errors.length === 0, errors, observed };
 }

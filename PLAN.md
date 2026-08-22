@@ -32,8 +32,8 @@
   package metadata; repository integration tests, other standalone wire
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
-- All 12 push workflows passed on `main` commit `c2b22b2`, including merged PR
-  #132's bounded native WebSocket input. The separate live Repository Policy
+- All 12 push workflows passed on `main` commit `4fc5f5c`, including merged PR
+  #133's negotiated room-operation identity. The separate live Repository Policy
   audit remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -93,8 +93,16 @@ measured evidence before accepting performance complexity:
    errors. No finite value is a Server 0.7 compatibility guarantee, so
    [signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399)
    tracks a negotiated/enforced outbound contract. Disconnect-adjacent
-   transitions, browser/engine boundary parity, and the remaining inventory
-   cells remain independent client audit slices.
+   transitions now have the focused follow-up
+   [#134](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/134).
+   The Godot engine-boundary slice is complete: SDK-created peers raise
+   Godot's inbound buffer from 65,535 bytes to 8 MiB before connecting,
+   caller-owned peers remain unchanged, and official native plus web runs
+   require a valid Signal Fish frame larger than the legacy default. Browser
+   assembly remains platform-owned. Replayed stale session plans are tracked
+   independently by
+   [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135),
+   and the remaining inventory cells remain separate client audit slices.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote

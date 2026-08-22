@@ -115,7 +115,7 @@ workspace. Hosted run 31969079956 proved clean root discovery.
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
 | `src/token_binding.rs` | Native WebSocket token-binding-v2 types, validation, canonicalization, and proof state (feature: `token-binding`) |
-| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 35 fake-backend tests |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 38 fake-backend tests |
 
 ### Transport Trait
 
@@ -185,9 +185,10 @@ fresh nonce, derived key, and sequence space; replay/reordering/tamper fails.
 The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
-The blocking Godot workflow builds one official export and runs clean,
-seeded-netem impaired, and 3,600-frame soak jobs through Signal Fish Server
-0.7.0, plus a clean 0.4.0 legacy gate. It checksum-verifies and builds iproute2
+SDK-created Godot peers set an 8 MiB inbound buffer before connecting, which may reserve roughly 16 MiB in Godot; `from_peer` preserves caller settings. The
+blocking workflow covers official native/web Godot 4.5, requires a valid frame
+over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
+3,600-frame soak jobs on Server 0.7 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
 6.6.0 for seeded netem rather
 than relying on the runner's older `tc`. A 20-frame Fortress prediction window
 leaves recovery headroom. Simulated frames 1 through 60 form an explicit
@@ -317,9 +318,9 @@ explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
 age peak after authentication/setup when measuring gameplay. Backend acceptance
 ends queue age but is not peer delivery. Use `transport_diagnostics()` for
 backend buffering/admission diagnostics.
-Use the polling client's read-only `transport()` accessor for Godot's
-zero-expected `admission_watermark_violations()` counter and the separately
-accounted `one_frame_escape_bytes()` empty-buffer exception.
+Use the polling client's read-only `transport()` accessor for Godot's zero-expected
+`admission_watermark_violations()` and separately accounted
+`one_frame_escape_frames()` / `one_frame_escape_bytes()` diagnostics.
 
 ### Performance Contract
 

@@ -5,9 +5,28 @@ import {
   validateFortressPair,
   validateFortressPeer,
   validateFinalSlope,
+  validateLargeInboundMarkers,
   validateLoadSummary,
   validateServerConservation,
 } from "./godot-e2e-validators.mjs";
+
+test("large inbound oracle requires one exact over-64-KiB marker", () => {
+  const valid = [
+    "prefix SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=82080 padding_bytes=81920",
+  ];
+  assert.equal(validateLargeInboundMarkers(valid).ok, true);
+  for (const invalid of [
+    [],
+    [...valid, ...valid],
+    [...valid, "SIGNAL_FISH_SMOKE large-inbound-ok malformed"],
+    ["SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=65535 padding_bytes=81920"],
+    ["SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=82080 padding_bytes=81919"],
+    ["SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=not-a-number padding_bytes=81920"],
+    ["SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes=82080 padding_bytes=81920 trailing"],
+  ]) {
+    assert.equal(validateLargeInboundMarkers(invalid).ok, false);
+  }
+});
 
 function peer(role) {
   return {
@@ -56,14 +75,17 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     multi_frame_poll: true, buffered_bytes: 0, accepted_frames: 4_352, admission_hits: 0,
     within_absolute_adaptive_ceiling: true,
     binary_pair_admission_watermark_violations: 0,
-    binary_pair_one_frame_escape_bytes: 64,
+    binary_pair_one_frame_escape_frames: 0,
+    binary_pair_one_frame_escape_bytes: 0,
     binary_pair_within_absolute_adaptive_ceiling: true,
     binary_pair_peak_buffered_bytes: [1_000, 1_000],
     binary_pair_effective_watermark_bytes: [4_096, 4_096],
-    binary_pair_per_client_escape_bytes: [32, 32],
-    per_client_peak_buffered_bytes: [1_000, 1_000],
+    binary_pair_per_client_escape_frames: [0, 0],
+    binary_pair_per_client_escape_bytes: [0, 0],
+    per_client_peak_buffered_bytes: [82_080, 1_000],
     per_client_effective_watermark_bytes: [4_096, 4_096],
-    per_client_one_frame_escape_bytes: [32, 32], one_frame_escape_bytes: 128,
+    per_client_one_frame_escape_frames: [1, 0], one_frame_escape_frames: 1,
+    per_client_one_frame_escape_bytes: [82_080, 0], one_frame_escape_bytes: 82_080,
     max_poll_work_frames: 64, max_poll_work_bytes: 65_536, max_poll_receive_frames: 64,
   };
   const samples = Array.from({ length: 8 }, (_, index) => ({
@@ -106,9 +128,20 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     ["binary admission", (value) => { value.binary_pair_admission_watermark_violations = 1; }],
     ["buffer schema", (value) => { delete value.per_client_peak_buffered_bytes; }],
     ["binary buffer schema", (value) => { delete value.binary_pair_peak_buffered_bytes; }],
-    ["buffer ceiling", (value) => { value.per_client_peak_buffered_bytes[0] = 32_769; }],
+    ["buffer beyond single escape", (value) => {
+      value.per_client_peak_buffered_bytes[0] = 82_081;
+    }],
     ["binary buffer ceiling", (value) => {
       value.binary_pair_peak_buffered_bytes[0] = 32_769;
+    }],
+    ["multiple JSON escapes", (value) => {
+      value.per_client_one_frame_escape_frames[0] = 2;
+      value.one_frame_escape_frames = 2;
+    }],
+    ["binary escape", (value) => {
+      value.binary_pair_per_client_escape_frames[0] = 1;
+      value.binary_pair_one_frame_escape_frames = 1;
+      value.one_frame_escape_frames = 2;
     }],
     ["escape conservation", (value) => { value.one_frame_escape_bytes -= 1; }],
     ["missing latency", (value) => { delete value.p99_latency_us; }],

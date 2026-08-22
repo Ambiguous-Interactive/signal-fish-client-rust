@@ -4,7 +4,11 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { chromium } from "playwright";
-import { validateLoadSummary, validateServerConservation } from "./godot-e2e-validators.mjs";
+import {
+  validateLargeInboundMarkers,
+  validateLoadSummary,
+  validateServerConservation,
+} from "./godot-e2e-validators.mjs";
 
 const [exportDirectoryArgument, modeArgument] = process.argv.slice(2);
 if (!exportDirectoryArgument || !modeArgument) {
@@ -212,12 +216,18 @@ try {
       "SIGNAL_FISH_SMOKE json-pong-ok",
       "SIGNAL_FISH_SMOKE binary-pong-ok",
       "SIGNAL_FISH_SMOKE text-relay-ok",
+      "SIGNAL_FISH_SMOKE large-inbound-ok",
       "SIGNAL_FISH_SMOKE binary-relay-ok",
       "SIGNAL_FISH_SMOKE binary-four-one-poll",
       "SIGNAL_FISH_SMOKE load-summary",
       "SIGNAL_FISH_SMOKE binary-ready-for-server-close",
     ]) {
       await waitForMarker(marker);
+    }
+
+    const largeInbound = validateLargeInboundMarkers(consoleLines);
+    if (!largeInbound.ok) {
+      throw new Error(`Godot large-inbound assertions failed: ${JSON.stringify(largeInbound)}`);
     }
 
     const summaryLine = consoleLines.find((line) => line.includes("SIGNAL_FISH_SMOKE load-summary "));

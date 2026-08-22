@@ -294,6 +294,20 @@ let config = SignalFishConfig::new("mb_app_abc123");
 let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
+The standard `connect` and `connect_with_options` paths configure Godot's
+`inbound_buffer_size` to 8 MiB before starting the connection. This is a
+protective client default sized above the roughly 6.25 MiB aggregate snapshots
+that a default Server 0.7 deployment can legally produce, not a protocol
+maximum or a guarantee that every larger message is rejected at exactly that
+boundary. Godot may reserve roughly twice that amount per peer across its
+receive ring and packet buffer.
+
+Applications with a different trusted size contract can create and configure a
+Godot `WebSocketPeer`, call `connect_to_url`, and pass it through `from_peer` or
+`from_peer_with_options`. Those advanced constructors preserve the caller's
+buffer choices. Browser and engine implementations still own frame/message
+assembly before the SDK receives a complete packet.
+
 !!! warning "Allow the browser's exact Origin on Server 0.7"
     Browsers attach an `Origin` header to the WebSocket upgrade, and Signal Fish
     Server 0.7 validates it. Configure the server's `security.cors_origins`
@@ -313,8 +327,10 @@ tuning. Backend-accepted, browser-buffered, and peer-delivered are separate
 stages; inspect `transport_diagnostics()` rather than treating buffered zero as
 per-frame completion. For a stronger admission audit,
 `client.transport().admission_watermark_violations()` must remain zero;
-`client.transport().one_frame_escape_bytes()` separately counts payload
-accepted through the documented empty-buffer exception. The read-only
+`client.transport().one_frame_escape_frames()` counts uses of the documented
+empty-buffer exception, while `one_frame_escape_bytes()` retains their
+cumulative payload bytes. Together they distinguish one individually oversized
+frame from the same byte total spread across multiple escapes. The read-only
 `transport()` accessor is for transport-specific diagnostics; continue to drive
 all protocol and I/O progress through `poll()`.
 

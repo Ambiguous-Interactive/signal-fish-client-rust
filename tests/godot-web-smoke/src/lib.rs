@@ -1,9 +1,12 @@
 #![recursion_limit = "512"]
 
+use godot::classes::WebSocketPeer;
+use godot::global::Error;
+use godot::obj::NewGd;
 use godot::prelude::*;
 use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::{
-    JoinRoomParams, SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
+    JoinRoomParams, ServerMessage, SignalFishConfig, SignalFishEvent, SignalFishPollingClient,
 };
 use signal_fish_client_godot::{
     GodotBackpressurePolicy, GodotWebSocketOptions, GodotWebSocketTransport,
@@ -16,6 +19,10 @@ use fortress::FortressScenario;
 const SERVER_URL: &str = "ws://127.0.0.1:3536/v2/ws";
 const APP_ID: &str = "e2e-test-app";
 const BINARY_PAYLOAD: &[u8] = &[0, 1, 2, 255];
+const LARGE_INBOUND_PADDING_BYTES: usize = 80 * 1024;
+const LEGACY_GODOT_INBOUND_BUFFER_SIZE: usize = 65_535;
+const LARGE_SENDER_INBOUND_BUFFER_SIZE: i32 = 2 * 1024 * 1024 + 17;
+const LARGE_SENDER_OUTBOUND_BUFFER_SIZE: i32 = 128 * 1024;
 const LOAD_SECONDS: u64 = 16;
 const LOAD_RATE_PER_CLIENT: u64 = 136;
 const LOAD_TARGET_PER_CLIENT: u64 = LOAD_SECONDS * LOAD_RATE_PER_CLIENT;
@@ -141,10 +148,12 @@ struct SmokePair {
     peak_aggregate_depth: u64,
     other_pair_poll_timing: PollTimingWindow,
     other_pair_admission_violations: u64,
+    other_pair_one_frame_escape_frames: u64,
     other_pair_one_frame_escape_bytes: u64,
     other_pair_within_absolute_ceiling: bool,
     other_pair_peak_buffered_bytes: [u64; 2],
     other_pair_effective_watermark_bytes: [u64; 2],
+    other_pair_per_client_escape_frames: [u64; 2],
     other_pair_per_client_escape_bytes: [u64; 2],
 }
 
@@ -193,10 +202,12 @@ impl SmokePair {
             peak_aggregate_depth: 0,
             other_pair_poll_timing: PollTimingWindow::default(),
             other_pair_admission_violations: 0,
+            other_pair_one_frame_escape_frames: 0,
             other_pair_one_frame_escape_bytes: 0,
             other_pair_within_absolute_ceiling: true,
             other_pair_peak_buffered_bytes: [0; 2],
             other_pair_effective_watermark_bytes: [0; 2],
+            other_pair_per_client_escape_frames: [0; 2],
             other_pair_per_client_escape_bytes: [0; 2],
         }
     }
@@ -361,13 +372,50 @@ impl SmokePair {
                 godot_print!("SIGNAL_FISH_SMOKE {label}-joined-second");
                 self.send_relay();
             }
-            SignalFishEvent::GameData { data, .. }
-                if self.kind == PairKind::Json
-                    && data.get("smoke").and_then(serde_json::Value::as_str)
-                        == Some("text-relay") =>
+            SignalFishEvent::GameData {
+                from_player,
+                data,
+                seq,
+                epoch,
+                class,
+                key,
+            } if self.kind == PairKind::Json
+                && data.get("smoke").and_then(serde_json::Value::as_str) == Some("text-relay") =>
             {
-                godot_print!("SIGNAL_FISH_SMOKE text-relay-ok");
-                self.relay_received = true;
+                let padding_bytes = data
+                    .get("large_inbound")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or(0, str::len);
+                let wire = serde_json::to_vec(&ServerMessage::GameData {
+                    from_player,
+                    data,
+                    seq,
+                    epoch,
+                    class,
+                    key,
+                });
+                match wire {
+                    Ok(wire)
+                        if padding_bytes == LARGE_INBOUND_PADDING_BYTES
+                            && wire.len() > LEGACY_GODOT_INBOUND_BUFFER_SIZE =>
+                    {
+                        godot_print!("SIGNAL_FISH_SMOKE text-relay-ok");
+                        godot_print!(
+                            "SIGNAL_FISH_SMOKE large-inbound-ok wire_bytes={} padding_bytes={padding_bytes}",
+                            wire.len()
+                        );
+                        self.relay_received = true;
+                    }
+                    Ok(wire) => {
+                        godot_error!(
+                            "SIGNAL_FISH_SMOKE large-inbound-error wire_bytes={} padding_bytes={padding_bytes}",
+                            wire.len()
+                        );
+                    }
+                    Err(error) => {
+                        godot_error!("SIGNAL_FISH_SMOKE large-inbound-error {error}");
+                    }
+                }
             }
             SignalFishEvent::GameData { data, .. }
                 if data.get("load_sender").and_then(serde_json::Value::as_str) == Some("a") =>
@@ -399,7 +447,8 @@ impl SmokePair {
         };
         let result = match self.kind {
             PairKind::Json => client.send_game_data(serde_json::json!({
-                "smoke": "text-relay"
+                "smoke": "text-relay",
+                "large_inbound": "x".repeat(LARGE_INBOUND_PADDING_BYTES),
             })),
             PairKind::Binary => {
                 self.burst_accepted_before = Some(client.transport_diagnostics().accepted_frames);
@@ -639,10 +688,12 @@ impl SmokePair {
                     .saturating_add(diagnostics.backend_capacity_hits)
             })
             .fold(0u64, u64::saturating_add);
-        let (own_violations, own_escape_bytes, own_within_ceiling) =
+        let (own_violations, own_escape_frames, own_escape_bytes, own_within_ceiling) =
             aggregate_godot_admission(self.first.as_ref(), self.second.as_ref());
         let admission_violations =
             own_violations.saturating_add(self.other_pair_admission_violations);
+        let one_frame_escape_frames =
+            own_escape_frames.saturating_add(self.other_pair_one_frame_escape_frames);
         let one_frame_escape_bytes =
             own_escape_bytes.saturating_add(self.other_pair_one_frame_escape_bytes);
         let within_absolute_ceiling = own_within_ceiling && self.other_pair_within_absolute_ceiling;
@@ -680,9 +731,14 @@ impl SmokePair {
                 client.transport_diagnostics().effective_watermark_bytes
             })
         });
+        let per_client_escape_frames = [self.first.as_ref(), self.second.as_ref()]
+            .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_frames()));
         let per_client_escape_bytes = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_bytes()));
-        let passed = passed && !self.load_error;
+        let passed = passed
+            && per_client_escape_frames == [1, 0]
+            && self.other_pair_per_client_escape_frames == [0, 0]
+            && !self.load_error;
         let summary = serde_json::json!({
             "passed": passed,
             "offered_per_client": [self.offered_a, self.offered_b],
@@ -709,14 +765,18 @@ impl SmokePair {
             "admission_watermark_violations": admission_violations,
             "within_absolute_adaptive_ceiling": within_absolute_ceiling,
             "binary_pair_admission_watermark_violations": self.other_pair_admission_violations,
+            "binary_pair_one_frame_escape_frames": self.other_pair_one_frame_escape_frames,
             "binary_pair_one_frame_escape_bytes": self.other_pair_one_frame_escape_bytes,
             "binary_pair_within_absolute_adaptive_ceiling": self.other_pair_within_absolute_ceiling,
             "binary_pair_peak_buffered_bytes": self.other_pair_peak_buffered_bytes,
             "binary_pair_effective_watermark_bytes": self.other_pair_effective_watermark_bytes,
+            "binary_pair_per_client_escape_frames": self.other_pair_per_client_escape_frames,
             "binary_pair_per_client_escape_bytes": self.other_pair_per_client_escape_bytes,
             "per_client_peak_buffered_bytes": per_client_peak_buffered,
             "per_client_effective_watermark_bytes": per_client_watermark,
+            "per_client_one_frame_escape_frames": per_client_escape_frames,
             "per_client_one_frame_escape_bytes": per_client_escape_bytes,
+            "one_frame_escape_frames": one_frame_escape_frames,
             "one_frame_escape_bytes": one_frame_escape_bytes,
             "load_error": self.load_error,
         });
@@ -821,18 +881,24 @@ impl INode for SignalFishSmoke {
         binary.poll();
         let binary_poll_timing = binary.poll_timing;
         let binary_close_attributed = binary.close_attributed;
-        let (binary_violations, binary_escape_bytes, binary_within_ceiling) =
+        let (binary_violations, binary_escape_frames, binary_escape_bytes, binary_within_ceiling) =
             aggregate_godot_admission(binary.first.as_ref(), binary.second.as_ref());
-        let (binary_peaks, binary_watermarks, binary_per_client_escape) =
-            godot_admission_snapshots(binary.first.as_ref(), binary.second.as_ref());
+        let (
+            binary_peaks,
+            binary_watermarks,
+            binary_per_client_escape_frames,
+            binary_per_client_escape_bytes,
+        ) = godot_admission_snapshots(binary.first.as_ref(), binary.second.as_ref());
         let Some(json) = &mut self.json else { return };
         json.other_pair_poll_timing = binary_poll_timing;
         json.other_pair_admission_violations = binary_violations;
+        json.other_pair_one_frame_escape_frames = binary_escape_frames;
         json.other_pair_one_frame_escape_bytes = binary_escape_bytes;
         json.other_pair_within_absolute_ceiling = binary_within_ceiling;
         json.other_pair_peak_buffered_bytes = binary_peaks;
         json.other_pair_effective_watermark_bytes = binary_watermarks;
-        json.other_pair_per_client_escape_bytes = binary_per_client_escape;
+        json.other_pair_per_client_escape_frames = binary_per_client_escape_frames;
+        json.other_pair_per_client_escape_bytes = binary_per_client_escape_bytes;
         let load_started_now = json.poll();
         // The load summary combines both pairs, so both timing windows must
         // begin on the same rendered callback. Otherwise the binary pair's
@@ -958,16 +1024,22 @@ fn aggregate_queue_age(first: Option<&Client>, second: Option<&Client>) -> (Dura
     )
 }
 
-fn aggregate_godot_admission(first: Option<&Client>, second: Option<&Client>) -> (u64, u64, bool) {
+fn aggregate_godot_admission(
+    first: Option<&Client>,
+    second: Option<&Client>,
+) -> (u64, u64, u64, bool) {
     [first, second].into_iter().flatten().fold(
-        (0u64, 0u64, true),
-        |(violations, escape_bytes, within_ceiling), client| {
+        (0u64, 0u64, 0u64, true),
+        |(violations, total_escape_frames, total_escape_bytes, within_ceiling), client| {
             let transport = client.transport();
             let peak = client.transport_diagnostics().peak_buffered_bytes;
+            let escape_frames = transport.one_frame_escape_frames();
+            let escape_bytes = transport.one_frame_escape_bytes();
             (
                 violations.saturating_add(transport.admission_watermark_violations()),
-                escape_bytes.saturating_add(transport.one_frame_escape_bytes()),
-                within_ceiling && adaptive_peak_is_safe(peak),
+                total_escape_frames.saturating_add(escape_frames),
+                total_escape_bytes.saturating_add(escape_bytes),
+                within_ceiling && adaptive_peak_is_safe(peak, escape_frames, escape_bytes),
             )
         },
     )
@@ -976,7 +1048,7 @@ fn aggregate_godot_admission(first: Option<&Client>, second: Option<&Client>) ->
 fn godot_admission_snapshots(
     first: Option<&Client>,
     second: Option<&Client>,
-) -> ([u64; 2], [u64; 2], [u64; 2]) {
+) -> ([u64; 2], [u64; 2], [u64; 2], [u64; 2]) {
     let clients = [first, second];
     (
         clients.map(|client| {
@@ -990,12 +1062,21 @@ fn godot_admission_snapshots(
             })
         }),
         clients
+            .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_frames())),
+        clients
             .map(|client| client.map_or(0, |client| client.transport().one_frame_escape_bytes())),
     )
 }
 
-fn adaptive_peak_is_safe(peak_buffered_bytes: u64) -> bool {
-    default_adaptive_ceiling_bytes().is_some_and(|ceiling| peak_buffered_bytes <= ceiling)
+fn adaptive_peak_is_safe(
+    peak_buffered_bytes: u64,
+    one_frame_escape_frames: u64,
+    one_frame_escape_bytes: u64,
+) -> bool {
+    default_adaptive_ceiling_bytes().is_some_and(|ceiling| {
+        peak_buffered_bytes <= ceiling
+            || (one_frame_escape_frames == 1 && peak_buffered_bytes <= one_frame_escape_bytes)
+    })
 }
 
 fn default_adaptive_ceiling_bytes() -> Option<u64> {
@@ -1008,7 +1089,22 @@ fn default_adaptive_ceiling_bytes() -> Option<u64> {
 }
 
 fn connect_client(kind: PairKind, suffix: &str, server_url: &str) -> Option<Client> {
-    match GodotWebSocketTransport::connect(server_url) {
+    let transport = if kind == PairKind::Json && suffix == "a" {
+        let mut peer = WebSocketPeer::new_gd();
+        peer.set_inbound_buffer_size(LARGE_SENDER_INBOUND_BUFFER_SIZE);
+        peer.set_outbound_buffer_size(LARGE_SENDER_OUTBOUND_BUFFER_SIZE);
+        let result = peer.connect_to_url(server_url);
+        if result == Error::OK {
+            Ok(GodotWebSocketTransport::from_peer(peer))
+        } else {
+            Err(format!(
+                "caller-configured Godot WebSocketPeer connect_to_url failed with {result:?}"
+            ))
+        }
+    } else {
+        GodotWebSocketTransport::connect(server_url).map_err(|error| error.to_string())
+    };
+    match transport {
         Ok(transport) => {
             let mut config = SignalFishConfig::new(APP_ID).enable_v3();
             config.platform = Some(format!("godot-smoke-{}-{suffix}", kind.label()));
@@ -1096,9 +1192,24 @@ mod tests {
         let ceiling = default_adaptive_ceiling_bytes().unwrap_or_default();
 
         assert_eq!(ceiling, 32 * 1024);
-        assert!(adaptive_peak_is_safe(0));
-        assert!(adaptive_peak_is_safe(ceiling));
-        assert!(!adaptive_peak_is_safe(ceiling.saturating_add(1)));
+        assert!(adaptive_peak_is_safe(0, 0, 0));
+        assert!(adaptive_peak_is_safe(ceiling, 0, 0));
+        assert!(!adaptive_peak_is_safe(ceiling.saturating_add(1), 0, 0));
+        assert!(adaptive_peak_is_safe(
+            ceiling.saturating_add(1),
+            1,
+            ceiling.saturating_add(1)
+        ));
+        assert!(!adaptive_peak_is_safe(
+            ceiling.saturating_add(2),
+            1,
+            ceiling.saturating_add(1)
+        ));
+        assert!(!adaptive_peak_is_safe(
+            ceiling.saturating_add(1),
+            2,
+            ceiling.saturating_mul(2)
+        ));
     }
 
     #[test]
@@ -1107,7 +1218,7 @@ mod tests {
         let later_effective_watermark = 4 * 1024;
 
         assert!(historical_peak > later_effective_watermark);
-        assert!(adaptive_peak_is_safe(historical_peak));
+        assert!(adaptive_peak_is_safe(historical_peak, 0, 0));
     }
 }
 
