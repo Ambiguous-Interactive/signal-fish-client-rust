@@ -37,6 +37,8 @@ pub struct MockTransport {
     pub sent: Arc<StdMutex<Vec<String>>>,
     /// Whether `close()` has been called.
     pub closed: Arc<AtomicBool>,
+    delivered_room_responses: [usize; 5],
+    gate_room_responses: bool,
 }
 
 impl MockTransport {
@@ -56,7 +58,20 @@ impl MockTransport {
                 .collect(),
             sent: Arc::clone(&sent),
             closed: Arc::clone(&closed),
+            delivered_room_responses: [0; 5],
+            gate_room_responses: true,
         };
+        (transport, sent, closed)
+    }
+
+    /// Create a transport that intentionally delivers terminal room responses
+    /// without waiting for matching commands, for lifecycle-violation tests.
+    #[allow(dead_code)]
+    pub fn new_ungated(
+        incoming: Vec<Option<Result<String, SignalFishError>>>,
+    ) -> (Self, Arc<StdMutex<Vec<String>>>, Arc<AtomicBool>) {
+        let (mut transport, sent, closed) = Self::new(incoming);
+        transport.gate_room_responses = false;
         (transport, sent, closed)
     }
 
@@ -71,6 +86,8 @@ impl MockTransport {
                 incoming: VecDeque::from(incoming),
                 sent: Arc::clone(&sent),
                 closed: Arc::clone(&closed),
+                delivered_room_responses: [0; 5],
+                gate_room_responses: true,
             },
             sent,
             closed,
@@ -102,25 +119,51 @@ impl Transport for MockTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        let reconnect_response_is_gated = self.incoming.front().is_some_and(|item| {
+        let response_kind = self.incoming.front().and_then(|item| {
             let Some(Ok(TransportFrame::Text(json))) = item else {
-                return false;
+                return None;
             };
-            matches!(
-                serde_json::from_str::<ServerMessage>(json),
-                Ok(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. })
-            )
+            let message = serde_json::from_str::<ServerMessage>(json).ok()?;
+            match message {
+                ServerMessage::RoomJoined(_) | ServerMessage::RoomJoinFailed { .. } => Some(0),
+                ServerMessage::RoomLeft => Some(1),
+                ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. } => Some(2),
+                ServerMessage::SpectatorJoined(_) | ServerMessage::SpectatorJoinFailed { .. } => {
+                    Some(3)
+                }
+                ServerMessage::SpectatorLeft { .. } => Some(4),
+                _ => None,
+            }
         });
-        let reconnect_was_sent = self.sent.lock().unwrap().iter().any(|json| {
-            matches!(
-                serde_json::from_str::<ClientMessage>(json),
-                Ok(ClientMessage::Reconnect { .. })
-            )
-        });
-        if reconnect_response_is_gated && !reconnect_was_sent {
-            return std::task::Poll::Pending;
+        if self.gate_room_responses {
+            if let Some(kind) = response_kind {
+                let sent_count = self
+                    .sent
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|json| {
+                        serde_json::from_str::<ClientMessage>(json).is_ok_and(
+                            |message| match kind {
+                                0 => matches!(message, ClientMessage::JoinRoom { .. }),
+                                1 => matches!(message, ClientMessage::LeaveRoom),
+                                2 => matches!(message, ClientMessage::Reconnect { .. }),
+                                3 => matches!(message, ClientMessage::JoinAsSpectator { .. }),
+                                4 => matches!(message, ClientMessage::LeaveSpectator),
+                                _ => false,
+                            },
+                        )
+                    })
+                    .count();
+                if sent_count <= self.delivered_room_responses[kind] {
+                    return std::task::Poll::Pending;
+                }
+            }
         }
         if let Some(item) = self.incoming.pop_front() {
+            if let Some(kind) = response_kind {
+                self.delivered_room_responses[kind] += 1;
+            }
             std::task::Poll::Ready(item)
         } else {
             std::task::Poll::Pending

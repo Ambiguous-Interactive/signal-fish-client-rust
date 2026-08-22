@@ -144,6 +144,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attributable typed room-transition failures roll back their admission fence,
   and both drivers preserve identical error precedence without consuming queue
   capacity.
+- Fixed typed room join, leave, reconnect, and spectator responses being
+  accepted when no compatible room operation was pending. Unsolicited responses
+  and duplicates received after a completed transition now follow the configured
+  lifecycle-violation policy; responses mismatched with a pending operation
+  remain fenced. Server-authoritative spectator removal, disconnect, and
+  room-close exits continue to clear stale membership without a voluntary leave.
 - Fixed `MeshController` attempting a room-scoped transport-status update after
   a confirmed room/spectator exit; peer drivers still tear down immediately.
 

@@ -1033,13 +1033,46 @@ impl ClientCore {
                 "SpectatorJoinFailed",
             ),
             ServerMessage::SpectatorLeft {
-                room_id, room_code, ..
+                room_id,
+                room_code,
+                reason,
+                ..
             } => {
-                self.validate_pending_room_response(
-                    PendingRoomOperation::LeaveSpectator,
-                    "SpectatorLeft",
-                )?;
-                if room_id.is_some_and(|room_id| Some(room_id) != self.snapshot.room_id)
+                let authoritative_exit = matches!(
+                    reason,
+                    Some(
+                        crate::protocol::SpectatorStateChangeReason::Disconnected
+                            | crate::protocol::SpectatorStateChangeReason::Removed
+                            | crate::protocol::SpectatorStateChangeReason::RoomClosed
+                    )
+                );
+                match reason {
+                    Some(
+                        crate::protocol::SpectatorStateChangeReason::Disconnected
+                        | crate::protocol::SpectatorStateChangeReason::Removed
+                        | crate::protocol::SpectatorStateChangeReason::RoomClosed,
+                    ) => {
+                        if *room_id != self.snapshot.room_id {
+                            return Err(
+                                "lifecycle violation: authoritative SpectatorLeft must identify the current room"
+                                    .into(),
+                            );
+                        }
+                    }
+                    Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave) | None => {
+                        self.validate_pending_room_response(
+                            PendingRoomOperation::LeaveSpectator,
+                            "SpectatorLeft",
+                        )?;
+                    }
+                    Some(crate::protocol::SpectatorStateChangeReason::Joined) => {
+                        return Err(
+                            "lifecycle violation: SpectatorLeft carries a joined reason".into()
+                        );
+                    }
+                }
+                if (!authoritative_exit
+                    && room_id.is_some_and(|room_id| Some(room_id) != self.snapshot.room_id))
                     || room_code
                         .as_ref()
                         .is_some_and(|room_code| Some(room_code) != self.snapshot.room_code.as_ref())
@@ -1155,10 +1188,19 @@ impl ClientCore {
                 )?;
                 self.validate_reconnected_payload(payload)
             }
-            ServerMessage::ReconnectionFailed { .. } if self.pending_reconnects.is_empty() => Err(
-                "lifecycle violation: ReconnectionFailed arrived without an admitted Reconnect"
-                    .into(),
-            ),
+            ServerMessage::ReconnectionFailed { .. } => {
+                self.validate_pending_room_response(
+                    PendingRoomOperation::ReconnectPlayer,
+                    "ReconnectionFailed",
+                )?;
+                if self.pending_reconnects.is_empty() {
+                    return Err(
+                        "lifecycle violation: ReconnectionFailed arrived without an admitted Reconnect"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -1168,16 +1210,15 @@ impl ClientCore {
         expected: PendingRoomOperation,
         response: &str,
     ) -> Result<(), String> {
-        if self
-            .pending_room_operation
-            .is_some_and(|pending| pending != expected)
-        {
-            return Err(format!(
-                "lifecycle violation: {response} conflicts with pending room operation {:?}",
-                self.pending_room_operation
-            ));
+        match self.pending_room_operation {
+            Some(pending) if pending == expected => Ok(()),
+            Some(pending) => Err(format!(
+                "lifecycle violation: {response} conflicts with pending room operation {pending:?}"
+            )),
+            None => Err(format!(
+                "lifecycle violation: {response} arrived without an admitted {expected:?} operation"
+            )),
         }
-        Ok(())
     }
 
     fn validate_session_plan(
@@ -1981,6 +2022,9 @@ mod tests {
         let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
         assert_eq!(process(&mut core, authenticated()).events.len(), 1);
         assert_eq!(process(&mut core, protocol_info(Some(3))).events.len(), 1);
+        core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
         assert_eq!(process(&mut core, room_joined()).events.len(), 1);
         core
     }
@@ -1989,6 +2033,9 @@ mod tests {
         let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
         let _ = process(&mut core, authenticated());
         let _ = process(&mut core, protocol_info(Some(3)));
+        core.record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        ));
         let _ = process(&mut core, spectator_joined());
         core
     }
@@ -2044,6 +2091,7 @@ mod tests {
         assert!(quarantined.events.is_empty());
         assert_eq!(core.stats().game_data_received, 3);
 
+        core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
         let _ = process(&mut core, ServerMessage::RoomLeft);
         let _ = core.disconnect(None);
         assert_eq!(
@@ -2077,6 +2125,9 @@ mod tests {
             &mut binary_core,
             ServerMessage::ProtocolInfo(binary_protocol),
         );
+        binary_core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
         let _ = process(&mut binary_core, room_joined_v2());
         binary_core.snapshot.quarantined = true;
         let rejected = binary_core.process_frame(TransportFrame::Binary(
@@ -2324,6 +2375,191 @@ mod tests {
     }
 
     #[test]
+    fn unsolicited_room_operation_responses_never_mutate_membership() {
+        let outside_responses = [
+            room_joined(),
+            ServerMessage::RoomJoinFailed {
+                reason: "late failure".into(),
+                error_code: None,
+            },
+            spectator_joined(),
+            ServerMessage::SpectatorJoinFailed {
+                reason: "late failure".into(),
+                error_code: None,
+            },
+            reconnected(vec![]),
+            ServerMessage::ReconnectionFailed {
+                reason: "late failure".into(),
+                error_code: crate::ErrorCode::ReconnectionFailed,
+            },
+        ];
+
+        for response in outside_responses {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            let before = core.snapshot();
+
+            let outcome = process(&mut core, response);
+
+            assert_lifecycle_violation(&outcome);
+            assert_eq!(core.snapshot(), before);
+            assert_eq!(core.pending_room_operation, None);
+        }
+
+        let mut player = v3_room(ProtocolViolationPolicy::Observe);
+        let before = player.snapshot();
+        assert_lifecycle_violation(&process(&mut player, ServerMessage::RoomLeft));
+        assert_eq!(player.snapshot(), before);
+
+        let mut spectator = v3_spectator(ProtocolViolationPolicy::Observe);
+        let before = spectator.snapshot();
+        assert_lifecycle_violation(&process(
+            &mut spectator,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: None,
+                current_spectators: vec![],
+            },
+        ));
+        assert_eq!(spectator.snapshot(), before);
+    }
+
+    #[test]
+    fn completed_room_operations_do_not_authorize_duplicate_or_delayed_responses() {
+        let mut joined = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut joined, authenticated());
+        let _ = process(&mut joined, protocol_info(Some(3)));
+        joined.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
+        let _ = process(&mut joined, room_joined());
+        let before = joined.snapshot();
+        assert_lifecycle_violation(&process(&mut joined, room_joined()));
+        assert_eq!(joined.snapshot(), before);
+        assert_eq!(joined.pending_room_operation, None);
+
+        joined.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+        let _ = process(&mut joined, ServerMessage::RoomLeft);
+        let before = joined.snapshot();
+        assert_lifecycle_violation(&process(&mut joined, ServerMessage::RoomLeft));
+        assert_eq!(joined.snapshot(), before);
+
+        let mut failed_join = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut failed_join, authenticated());
+        let _ = process(&mut failed_join, protocol_info(Some(3)));
+        failed_join.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
+        let failure = ServerMessage::RoomJoinFailed {
+            reason: "full".into(),
+            error_code: Some(crate::ErrorCode::RoomFull),
+        };
+        let _ = process(&mut failed_join, failure.clone());
+        let before = failed_join.snapshot();
+        assert_lifecycle_violation(&process(&mut failed_join, failure));
+        assert_eq!(failed_join.snapshot(), before);
+        assert_eq!(failed_join.pending_room_operation, None);
+
+        let mut failed_reconnect = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut failed_reconnect, authenticated());
+        let _ = process(&mut failed_reconnect, protocol_info(Some(3)));
+        failed_reconnect.record_reconnect_admitted(
+            PlayerId::from_u128(LOCAL),
+            RoomId::from_u128(10),
+            "submitted-token".into(),
+        );
+        let failure = ServerMessage::ReconnectionFailed {
+            reason: "expired".into(),
+            error_code: crate::ErrorCode::ReconnectionExpired,
+        };
+        let _ = process(&mut failed_reconnect, failure.clone());
+        let before = failed_reconnect.snapshot();
+        assert_lifecycle_violation(&process(&mut failed_reconnect, failure));
+        assert_eq!(failed_reconnect.snapshot(), before);
+        assert_eq!(failed_reconnect.pending_room_operation, None);
+    }
+
+    #[test]
+    fn authoritative_spectator_exits_do_not_require_a_voluntary_leave() {
+        for policy in [
+            ProtocolViolationPolicy::Observe,
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+        ] {
+            for reason in [
+                crate::protocol::SpectatorStateChangeReason::Disconnected,
+                crate::protocol::SpectatorStateChangeReason::Removed,
+                crate::protocol::SpectatorStateChangeReason::RoomClosed,
+            ] {
+                let mut core = v3_spectator(policy);
+                let outcome = process(
+                    &mut core,
+                    ServerMessage::SpectatorLeft {
+                        room_id: Some(RoomId::from_u128(10)),
+                        room_code: Some("ROOM".into()),
+                        reason: Some(reason),
+                        current_spectators: vec![],
+                    },
+                );
+                assert!(matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::SpectatorLeft { .. }]
+                ));
+                assert!(!outcome.disconnect);
+                assert_eq!(core.room_role(), None);
+                assert!(!core.snapshot().quarantined);
+            }
+        }
+
+        let mut invalid = v3_spectator(ProtocolViolationPolicy::Observe);
+        invalid.record_admission(ClientCore::admission_for(&ClientOperation::LeaveSpectator));
+        let outcome = process(
+            &mut invalid,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::Joined),
+                current_spectators: vec![],
+            },
+        );
+        assert_lifecycle_violation_containing(&outcome, "joined reason");
+        assert_eq!(invalid.room_role(), Some(RoomRole::Spectator));
+
+        for room_id in [None, Some(RoomId::from_u128(999))] {
+            let mut invalid = v3_spectator(ProtocolViolationPolicy::Observe);
+            let outcome = process(
+                &mut invalid,
+                ServerMessage::SpectatorLeft {
+                    room_id,
+                    room_code: None,
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
+                    current_spectators: vec![],
+                },
+            );
+            assert_lifecycle_violation_containing(&outcome, "identify the current room");
+            assert_eq!(invalid.room_role(), Some(RoomRole::Spectator));
+        }
+    }
+
+    #[test]
     fn pending_room_responses_are_correlated_and_unattributed_errors_stay_fenced() {
         let mut player_join = ClientCore::new(
             Some(GameDataEncoding::Json),
@@ -2455,6 +2691,17 @@ mod tests {
         ));
     }
 
+    fn assert_lifecycle_violation_containing(outcome: &FrameOutcome, expected: &str) {
+        assert_lifecycle_violation(outcome);
+        let SignalFishEvent::ProtocolViolation { diagnostic, .. } = &outcome.events[0] else {
+            unreachable!("assert_lifecycle_violation verified the event variant")
+        };
+        assert!(
+            diagnostic.contains(expected),
+            "expected diagnostic containing {expected:?}, found {diagnostic:?}"
+        );
+    }
+
     #[test]
     fn lifecycle_classifier_rejects_pre_auth_pre_room_post_room_and_v2_v3_mismatches() {
         let cases = [
@@ -2492,6 +2739,16 @@ mod tests {
                 true,
             );
             for message in prefix {
+                match &message {
+                    ServerMessage::RoomJoined(_) => {
+                        core.record_admission(ClientCore::admission_for(
+                            &ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+                        ))
+                    }
+                    ServerMessage::RoomLeft => core
+                        .record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom)),
+                    _ => {}
+                }
                 let _ = process(&mut core, message);
             }
             let before = core.snapshot();
@@ -2663,11 +2920,9 @@ mod tests {
                 let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 let _ = process(&mut core, authenticated());
                 let _ = process(&mut core, protocol_info(Some(3)));
-                core.record_reconnect_admitted(
-                    PlayerId::from_u128(LOCAL),
-                    RoomId::from_u128(10),
-                    "submitted-token".into(),
-                );
+                core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                    JoinRoomParams::new("game", "local"),
+                )));
                 let before = core.snapshot();
                 let stats_before = core.stats();
                 let ServerMessage::RoomJoined(mut payload) = room_joined() else {
@@ -2681,7 +2936,7 @@ mod tests {
                 }
 
                 let outcome = process(&mut core, ServerMessage::RoomJoined(payload));
-                assert_lifecycle_violation(&outcome);
+                assert_lifecycle_violation_containing(&outcome, "exactly once");
                 assert_eq!(
                     outcome.disconnect,
                     policy == ProtocolViolationPolicy::Disconnect
@@ -2701,22 +2956,22 @@ mod tests {
     #[test]
     fn authority_baselines_and_changes_are_cross_field_validated_transactionally() {
         let invalid_baselines = [
-            {
+            ("local authority flag", {
                 let ServerMessage::RoomJoined(mut payload) = room_joined() else {
                     unreachable!("room_joined helper always returns RoomJoined")
                 };
                 payload.is_authority = false;
                 ServerMessage::RoomJoined(payload)
-            },
-            {
+            }),
+            ("multiple authority players", {
                 let ServerMessage::RoomJoined(mut payload) = room_joined() else {
                     unreachable!("room_joined helper always returns RoomJoined")
                 };
                 payload.current_players[1].is_authority = true;
                 ServerMessage::RoomJoined(payload)
-            },
+            }),
         ];
-        for message in invalid_baselines {
+        for (diagnostic, message) in invalid_baselines {
             let mut core = ClientCore::new(
                 Some(GameDataEncoding::Json),
                 ProtocolViolationPolicy::Observe,
@@ -2724,9 +2979,12 @@ mod tests {
             );
             let _ = process(&mut core, authenticated());
             let _ = process(&mut core, protocol_info(Some(3)));
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("game", "local"),
+            )));
             let before = core.snapshot();
             let outcome = process(&mut core, message);
-            assert_lifecycle_violation(&outcome);
+            assert_lifecycle_violation_containing(&outcome, diagnostic);
             assert_eq!(core.snapshot(), before);
             assert_eq!(core.authority_player, None);
         }
@@ -2931,9 +3189,14 @@ mod tests {
                 let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 let _ = process(&mut core, authenticated());
                 let _ = process(&mut core, protocol_info(Some(3)));
+                core.record_reconnect_admitted(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "submitted-token".into(),
+                );
                 let before = core.snapshot();
                 let outcome = process(&mut core, reconnected(vec![nested.clone()]));
-                assert_lifecycle_violation(&outcome);
+                assert_lifecycle_violation_containing(&outcome, "non-replayable");
                 assert_eq!(core.snapshot().room_id, before.room_id);
                 assert_eq!(
                     core.snapshot().session_generation,
@@ -3531,6 +3794,7 @@ mod tests {
             Some(TransportKind::Relay)
         );
 
+        core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
         let _ = process(&mut core, ServerMessage::RoomLeft);
         assert!(core.retired_generationless_signal_peers.is_empty());
         assert!(core.snapshot().session_topology.is_none());
@@ -3575,6 +3839,17 @@ mod tests {
             ] {
                 let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
                 for message in prefix {
+                    match &message {
+                        ServerMessage::RoomJoined(_) => {
+                            core.record_admission(ClientCore::admission_for(
+                                &ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+                            ))
+                        }
+                        ServerMessage::RoomLeft => core.record_admission(
+                            ClientCore::admission_for(&ClientOperation::LeaveRoom),
+                        ),
+                        _ => {}
+                    }
                     let _ = process(&mut core, message);
                 }
                 let before = core.snapshot();

@@ -26,7 +26,7 @@ use signal_fish_client::protocol::{
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
-    SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
+    JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
 };
 
 use common::{
@@ -368,17 +368,20 @@ impl Transport for SendErrorTransport {
 /// A `send()` error mid-flight must emit `Disconnected` AND clear session state.
 #[tokio::test]
 async fn send_error_midflight_disconnects_and_clears_state() {
-    // send #1 = Authenticate (ok), send #2 = our ping (errors).
+    // send #1 = Authenticate, send #2 = JoinRoom, send #3 = our ping (errors).
     let (transport, _sent, _closed) = SendErrorTransport::new(
         vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_json(None))),
             Some(Ok(room_joined_json())),
         ],
-        2,
+        3,
     );
     let config = SignalFishConfig::new("mb_audit").enable_mesh();
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    client
+        .join_room(JoinRoomParams::new("test-game", "Alice"))
+        .expect("room fixture must follow an admitted join");
 
     drain_until_authenticated(&mut events).await;
     loop {
@@ -459,7 +462,7 @@ async fn v3_send_after_disconnect_does_not_panic() {
 /// Out-of-order / post-close server messages must not panic.
 #[tokio::test]
 async fn out_of_order_and_post_close_messages_do_not_panic() {
-    let (mut client, mut events, _sent, _closed) = start_client(vec![
+    let (transport, _sent, _closed) = common::MockTransport::new_ungated(vec![
         Some(Ok(game_data_json(
             uuid::Uuid::from_u128(7),
             serde_json::json!({"k": "v"}),
@@ -468,6 +471,8 @@ async fn out_of_order_and_post_close_messages_do_not_panic() {
         Some(Ok(common::room_left_json())),
         None, // clean close
     ]);
+    let config = SignalFishConfig::new("mb_audit").enable_mesh();
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
 
     let mut saw_disconnect = false;
     while let Some(ev) = events.recv().await {

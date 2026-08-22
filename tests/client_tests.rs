@@ -55,8 +55,27 @@ fn start_client_with_config(
     incoming: Vec<Option<Result<String, SignalFishError>>>,
     config: SignalFishConfig,
 ) -> StartedClient {
+    let scripted_room_operation = incoming.iter().find_map(|item| {
+        let json = item.as_ref()?.as_ref().ok()?;
+        match serde_json::from_str::<ServerMessage>(json).ok()? {
+            ServerMessage::RoomJoined(_) | ServerMessage::RoomJoinFailed { .. } => Some(false),
+            ServerMessage::SpectatorJoined(_) | ServerMessage::SpectatorJoinFailed { .. } => {
+                Some(true)
+            }
+            _ => None,
+        }
+    });
     let (transport, sent, closed) = MockTransport::new(incoming);
-    let (client, events) = SignalFishClient::start(transport, config);
+    let (mut client, events) = SignalFishClient::start(transport, config);
+    match scripted_room_operation {
+        Some(false) => client
+            .join_room(JoinRoomParams::new("test-game", "Alice"))
+            .expect("scripted player response must follow an admitted join"),
+        Some(true) => client
+            .join_as_spectator("spec-game".into(), "SPEC1".into(), "Viewer".into())
+            .expect("scripted spectator response must follow an admitted join"),
+        None => {}
+    }
     (client, events, sent, closed)
 }
 
@@ -266,9 +285,6 @@ async fn auth_flow_connected_then_authenticated() {
 
 #[tokio::test]
 async fn room_join_leave_rejoin_flow() {
-    // NOTE: Scripted messages are consumed immediately, so we cannot
-    // assert intermediate state between RoomLeft and the next RoomJoined.
-    // Instead we test each transition in sequence.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
@@ -294,11 +310,13 @@ async fn room_join_leave_rejoin_flow() {
         panic!("expected RoomJoined, got {ev:?}");
     }
 
-    // Leave room.
+    client.leave_room().expect("leave must be admitted");
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::RoomLeft));
 
-    // Rejoin.
+    client
+        .join_room(JoinRoomParams::new("test-game", "Alice"))
+        .expect("rejoin must be admitted");
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::RoomJoined { .. }));
 
@@ -375,8 +393,6 @@ async fn reconnection_flow_updates_state() {
 
 #[tokio::test]
 async fn spectator_join_and_leave_flow() {
-    // NOTE: Scripted messages are consumed immediately, so we avoid
-    // asserting intermediate state between SpectatorJoined and SpectatorLeft.
     let (mut client, mut events, _sent, _closed) = start_client(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
@@ -403,7 +419,9 @@ async fn spectator_join_and_leave_flow() {
         panic!("expected SpectatorJoined, got {ev:?}");
     }
 
-    // Leave spectator.
+    client
+        .leave_spectator()
+        .expect("spectator leave must be admitted");
     let ev = events.recv().await.expect("event");
     assert!(matches!(ev, SignalFishEvent::SpectatorLeft { .. }));
 
@@ -443,7 +461,7 @@ async fn authority_request_granted() {
     }
 
     // Verify the AuthorityRequest message was sent.
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     {
         let messages = sent.lock().unwrap();
         let found = messages.iter().any(|m| {
@@ -506,7 +524,7 @@ async fn provide_connection_info_sends_correct_message() {
         .provide_connection_info(conn_info)
         .expect("provide_connection_info");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -556,7 +574,7 @@ async fn provide_relay_connection_info() {
         .provide_connection_info(conn_info)
         .expect("provide_connection_info");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -649,7 +667,7 @@ async fn leave_spectator_sends_correct_message() {
 
     client.leave_spectator().expect("leave_spectator");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -846,6 +864,9 @@ async fn game_data_binary_event_received() {
     let mut config = SignalFishConfig::new("mb_test_integration").enable_v3();
     config.game_data_format = Some(GameDataEncoding::MessagePack);
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    client
+        .join_room(JoinRoomParams::new("test", "Local"))
+        .expect("binary room fixture must follow an admitted join");
 
     drain_until_authenticated(&mut events).await;
     assert!(matches!(
@@ -897,6 +918,9 @@ async fn v2_message_pack_binary_event_received() {
     let mut config = SignalFishConfig::new("mb_test_integration");
     config.game_data_format = Some(GameDataEncoding::MessagePack);
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    client
+        .join_room(JoinRoomParams::new("test", "Local"))
+        .expect("binary room fixture must follow an admitted join");
     drain_until_authenticated(&mut events).await;
     assert!(matches!(
         events.recv().await,
@@ -995,6 +1019,9 @@ async fn async_observe_advances_valid_wrong_representation_sequence() {
         .enable_v3()
         .with_protocol_violation_policy(signal_fish_client::ProtocolViolationPolicy::Observe);
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    client
+        .join_room(JoinRoomParams::new("test", "Local"))
+        .expect("binary room fixture must follow an admitted join");
     drain_until_authenticated(&mut events).await;
     assert!(matches!(
         events.recv().await,
@@ -1032,7 +1059,7 @@ async fn send_game_data_produces_correct_json() {
     let data = serde_json::json!({"type": "chat", "msg": "hello"});
     client.send_game_data(data.clone()).expect("send_game_data");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -1071,7 +1098,7 @@ async fn set_ready_sends_player_ready_message() {
 
     client.set_ready().expect("set_ready");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -1721,6 +1748,9 @@ async fn shutdown_timeout_clears_state_even_when_disconnected_event_is_skipped()
     let config = SignalFishConfig::new("mb_test_integration")
         .with_shutdown_timeout(std::time::Duration::from_millis(1));
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    client
+        .join_room(JoinRoomParams::new("test-game", "Alice"))
+        .expect("room fixture must follow an admitted join");
 
     drain_until_authenticated(&mut events).await;
     drain_until_protocol_info(&mut events).await;
@@ -1749,7 +1779,7 @@ async fn leave_room_sends_leave_room_message() {
 
     client.leave_room().expect("leave_room");
 
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     {
         let messages = sent.lock().unwrap();
@@ -2159,7 +2189,7 @@ async fn start_game_sends_start_game_message() {
     drain_player_room(&mut events).await;
 
     client.start_game().expect("start_game");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     assert!(sent_messages(&sent)
         .iter()
@@ -2177,7 +2207,7 @@ async fn start_game_available_on_relay_floor() {
     client
         .start_game()
         .expect("start_game must work on the relay floor");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     assert!(sent_messages(&sent)
         .iter()
         .any(|m| matches!(m, ClientMessage::StartGame)));
@@ -2227,7 +2257,7 @@ async fn send_signal_after_v3_negotiation_is_sent() {
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
     client.send_offer(peer, "the-sdp").expect("send_offer");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
 
     let signal = sent_messages(&sent).into_iter().find_map(|m| match m {
         ClientMessage::Signal {
@@ -2374,7 +2404,7 @@ async fn legacy_generationless_plan_keeps_generationless_signal_wire() {
     ) {}
 
     client.send_offer(peer, "legacy").expect("legacy signal");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     let message = sent_messages(&sent)
         .into_iter()
         .find(|message| matches!(message, ClientMessage::Signal { .. }))
@@ -2406,7 +2436,7 @@ async fn report_transport_status_after_v3_is_sent() {
     client
         .report_transport_status(TransportKind::WebRtc, true)
         .expect("report_transport_status");
-    wait_for_sent_len(&sent, 2).await;
+    wait_for_sent_len(&sent, 3).await;
     assert!(sent_messages(&sent).iter().any(|m| matches!(
         m,
         ClientMessage::TransportStatus {
