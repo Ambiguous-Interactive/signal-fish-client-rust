@@ -180,12 +180,12 @@ jobs:
             const lines = readFileSync("godot-native.log", "utf8").split(/\r?\n/);
             const largeInbound = validateLargeInboundMarkers(lines);
             if (!largeInbound.ok) {
-              throw new Error(`native large-inbound assertions failed: ${JSON.stringify(largeInbound)}`);
+              throw new Error("native large-inbound assertions failed: " + JSON.stringify(largeInbound));
             }
             const prefix = "SIGNAL_FISH_SMOKE load-summary ";
             const summaries = lines.filter((line) => line.includes(prefix));
             if (summaries.length !== 1) {
-              throw new Error(`native load-summary count was ${summaries.length}, expected one`);
+              throw new Error("native load-summary count was " + summaries.length + ", expected one");
             }
             const summary = JSON.parse(summaries[0].slice(summaries[0].indexOf(prefix) + prefix.length));
             const samples = lines
@@ -193,7 +193,7 @@ jobs:
               .map((line) => JSON.parse(line.slice(line.indexOf("SIGNAL_FISH_LOAD sample ") + 24)));
             const load = validateLoadSummary(summary, samples);
             if (!load.ok) {
-              throw new Error(`native load assertions failed: ${JSON.stringify(load)}`);
+              throw new Error("native load assertions failed: " + JSON.stringify(load));
             }
           '
 

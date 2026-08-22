@@ -93,5 +93,10 @@ hygiene, shell portability, the 228-test CI policy suite, and the exact
 format/Clippy/workspace-test mandatory chain pass. The standalone
 fixture cannot compile in the development container because its `api-custom`
 godot-rust build requires a Godot 4 executable; the pinned hosted job owns that
-official engine proof. Final mandatory, adversarial, pull-request, and hosted
-workflow evidence will be appended after the implementation diff is frozen.
+official engine proof. PR #136's first hosted pass exposed one deterministic
+Actionlint failure: the native oracle's single-quoted inline JavaScript used
+template-literal `${...}` expressions, which Actionlint's embedded ShellCheck
+reported as SC2016. Rewriting those three diagnostics as string concatenation
+preserves their behavior without shell-looking interpolation. Final mandatory,
+pull-request, and hosted workflow evidence will be appended after the repaired
+implementation diff is frozen.
