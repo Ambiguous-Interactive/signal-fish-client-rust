@@ -251,6 +251,14 @@ pub struct SignalFishConfig {
 }
 
 impl SignalFishConfig {
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    pub(crate) fn requests_room_operation_ids(&self) -> bool {
+        match self.protocol_version {
+            Some(version) => version >= 3,
+            None => self.supported_transports.is_some() || self.supported_topologies.is_some(),
+        }
+    }
+
     /// Create a new configuration with the given App ID and default values.
     pub fn new(app_id: impl Into<String>) -> Self {
         Self {
@@ -791,10 +799,11 @@ impl SignalFishClient {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let mesh_capable = config.advertises_mesh_capability();
-        let state = Arc::new(Mutex::new(ClientCore::new(
+        let state = Arc::new(Mutex::new(ClientCore::new_with_room_operation_ids(
             config.game_data_format,
             config.protocol_violation_policy,
             mesh_capable,
+            config.requests_room_operation_ids(),
         )));
         let loop_state = Arc::clone(&state);
 
@@ -1469,9 +1478,8 @@ impl SignalFishClient {
         // Keep the state lock through nonblocking queue admission. In
         // particular, an exact-generation signal must not pass validation and
         // then race with a replacement SessionPlan before it is queued.
-        let admission = ClientCore::admission_for(&operation);
         let mut core = lock_core(&self.state);
-        let command = core.prepare(operation)?;
+        let (command, admission) = core.prepare_with_admission(operation)?;
         let result = match self.cmd_tx.try_send(command) {
             Ok(()) => {
                 core.record_admission(admission);
@@ -2170,7 +2178,9 @@ async fn emit_event_or_shutdown(
 )]
 mod tests {
     use super::*;
-    use crate::protocol::{LobbyState, RateLimitInfo, RoomJoinedPayload};
+    use crate::protocol::{
+        LobbyState, RateLimitInfo, RoomJoinedPayload, ROOM_OPERATION_IDS_CAPABILITY,
+    };
     use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
@@ -2745,6 +2755,7 @@ mod tests {
             assert!(val["data"].get("protocol_version").is_none());
             assert!(val["data"].get("supported_transports").is_none());
             assert!(val["data"].get("supported_topologies").is_none());
+            assert!(val["data"].get("requested_capabilities").is_none());
         }
 
         client.shutdown().await;
@@ -2921,6 +2932,10 @@ mod tests {
             assert_eq!(
                 val["data"]["supported_topologies"],
                 serde_json::json!(["mesh", "host", "relay"])
+            );
+            assert_eq!(
+                val["data"]["requested_capabilities"],
+                serde_json::json!([ROOM_OPERATION_IDS_CAPABILITY])
             );
         }
 
@@ -3121,6 +3136,51 @@ mod tests {
             config.supported_topologies,
             Some(vec![Topology::Mesh, Topology::Relay])
         );
+    }
+
+    #[test]
+    fn room_operation_capability_request_intent_matches_authentication_wire() {
+        let cases = [
+            ("default", SignalFishConfig::new("app"), false),
+            (
+                "explicit-v2",
+                SignalFishConfig::new("app")
+                    .with_protocol_version(2)
+                    .with_transports([TransportKind::Relay]),
+                false,
+            ),
+            (
+                "explicit-v3",
+                SignalFishConfig::new("app").enable_v3(),
+                true,
+            ),
+            (
+                "future-version",
+                SignalFishConfig::new("app").with_protocol_version(4),
+                true,
+            ),
+            (
+                "endpoint-default-v3-shape",
+                SignalFishConfig::new("app").with_transports([TransportKind::Relay]),
+                true,
+            ),
+        ];
+
+        for (name, config, expected) in cases {
+            assert_eq!(config.requests_room_operation_ids(), expected, "{name}");
+            let ClientCommand::Message(ClientMessage::Authenticate {
+                requested_capabilities,
+                ..
+            }) = ClientCore::authenticate(&config)
+            else {
+                panic!("authenticate helper must return Authenticate")
+            };
+            assert_eq!(
+                requested_capabilities,
+                expected.then(|| vec![ROOM_OPERATION_IDS_CAPABILITY.to_string()]),
+                "{name}"
+            );
+        }
     }
 
     #[tokio::test]

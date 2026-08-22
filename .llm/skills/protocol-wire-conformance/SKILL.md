@@ -33,8 +33,11 @@ enum covers the spec's error-code token space in both directions. This closes
 the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
-The canonical corpus currently pins server 0.7.0 commit
-`3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`. The client retains six legacy
+The canonical corpus currently pins post-0.7 protocol-authority commit
+`2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`, including negotiated room-operation
+correlation. Released runtime compatibility remains separately bound to Server
+0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` in
+`tests/compatibility.toml`. The client retains six legacy
 `ErrorCode::NON_EMITTED` variants outside the 0.7 emitted-token set; conformance
 must compare the spec plus that explicit compatibility marker, not delete them.
 

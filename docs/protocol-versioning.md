@@ -51,19 +51,24 @@ v3 is **purely additive** on v2. It introduces:
   [`TransportKind`](protocol.md#transportkind-protocol-v3),
   [`IceServer`](protocol.md#iceserver-protocol-v3),
   [`SessionPeer`](protocol.md#sessionpeer-protocol-v3),
-  [`SessionPlanPayload`](protocol.md#sessionplanpayload-protocol-v3), and
-  [`PeerSignal`](protocol.md#peersignal-protocol-v3).
-- **New client messages:** `Signal`, `TransportStatus`.
+  [`SessionPlanPayload`](protocol.md#sessionplanpayload-protocol-v3),
+  [`PeerSignal`](protocol.md#peersignal-protocol-v3), `RoomOperationId`,
+  `RoomOperationRequest`, and `RoomOperationResult`.
+- **New client messages:** `Signal`, `TransportStatus`, and negotiated
+  `RoomOperation`.
 - **New server messages:** `Signal`, `NewPeer`, `SessionPlan`,
-  `PeerTransportStatus`, `DeliveryReport`, `RelayStats`, and `GoingAway`.
+  `PeerTransportStatus`, `DeliveryReport`, `RelayStats`, `GoingAway`, and
+  negotiated `RoomOperationResult`.
 - **Classified relay delivery:** reliable, keyed-latest, and volatile JSON
   messages with exact gap accountability; strict physical binary envelopes.
 - **Reconnect accountability:** rotating tokens, replay status, sender
   watermarks, and lifecycle epoch/sequence metadata.
 - **New events:** mesh events plus typed delivery reports, relay statistics,
-  graceful-drain advisories, and categorized protocol violations.
+  graceful-drain advisories, categorized protocol violations, and attributed
+  `RoomOperationFailed` outcomes.
 - **New optional fields** on existing messages: `Authenticate`
-  (`protocol_version` / `supported_transports` / `supported_topologies`),
+  (`protocol_version` / `supported_transports` / `supported_topologies` /
+  `requested_capabilities`),
   `ProtocolInfo` (`protocol_version` / `min_protocol_version` /
   `max_protocol_version`), and `ice_servers` on `RoomJoined` / `Reconnected`
   (ICE "pre-gather").
@@ -109,7 +114,8 @@ Power-user escape hatches exist for finer control:
 Negotiation is a single round trip layered onto the existing handshake:
 
 1. The client **advertises** what it can fulfill in `Authenticate`
-   (`protocol_version`, `supported_transports`, `supported_topologies`).
+   (`protocol_version`, `supported_transports`, `supported_topologies`, and
+   additive `requested_capabilities`).
 2. The server caps the advertised version at its configured maximum and echoes
    the negotiated `protocol_version` (plus min/max) back in `ProtocolInfo`. If
    the client's maximum is below the server minimum, authentication fails with

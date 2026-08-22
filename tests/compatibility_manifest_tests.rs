@@ -80,15 +80,25 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     )
     .unwrap_or_else(|error| panic!("parse spec provenance: {error}"));
 
-    assert_eq!(wire_provenance["upstream"]["commit"].as_str(), Some(commit));
-    assert_eq!(spec_provenance["upstream"]["commit"].as_str(), Some(commit));
+    let protocol_commit = manifest["protocol_authority"]["commit"]
+        .as_str()
+        .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
+    assert_eq!(protocol_commit, "2d7c3836edf64bb734482b7fbb2b3db3f88fea8b");
+    assert_eq!(
+        wire_provenance["upstream"]["commit"].as_str(),
+        Some(protocol_commit)
+    );
+    assert_eq!(
+        spec_provenance["upstream"]["commit"].as_str(),
+        Some(protocol_commit)
+    );
     assert_eq!(
         wire_provenance["upstream"]["synced"].as_str(),
-        manifest["synced"].as_str()
+        manifest["protocol_authority"]["synced"].as_str()
     );
     assert_eq!(
         spec_provenance["upstream"]["synced"].as_str(),
-        manifest["synced"].as_str()
+        manifest["protocol_authority"]["synced"].as_str()
     );
 
     for (name, expected) in manifest["wire_samples"]
@@ -101,12 +111,12 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         assert_eq!(
             sha256(&root.join("tests/wire-samples").join(name)),
             expected,
-            "{name} must remain byte-identical to server v0.7.0"
+            "{name} must remain byte-identical to the pinned protocol authority"
         );
         assert_eq!(
             wire_provenance["files"][name].as_str(),
             Some(expected),
-            "{name} legacy provenance must agree"
+            "{name} protocol provenance must agree"
         );
     }
 
@@ -120,12 +130,12 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         assert_eq!(
             sha256(&root.join("tests/server-spec").join(name)),
             expected,
-            "{name} must remain byte-identical to server v0.7.0"
+            "{name} must remain byte-identical to the pinned protocol authority"
         );
         assert_eq!(
             spec_provenance["files"][name].as_str(),
             Some(expected),
-            "{name} legacy provenance must agree"
+            "{name} protocol provenance must agree"
         );
     }
 }

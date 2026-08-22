@@ -636,6 +636,16 @@ An uncorrelated generic server error or an absent response cannot safely release
 that fence; the client stays fail-closed until transport teardown, after which
 a new connection may retry.
 
+Configurations that can negotiate v3 automatically request the
+`room_operation_ids` capability. Once the server echoes it in `ProtocolInfo`,
+each directed room operation carries a fresh UUID and only the terminal result
+with that exact UUID can release the fence. Delayed, duplicate, wrong-kind,
+malformed, or legacy unwrapped results are reported as `ProtocolViolation`
+without changing membership. If the server does not echo the capability, the
+connection continues with the legacy Server 0.7 wire behavior. Operations
+admitted before the first `ProtocolInfo` also remain legacy for their complete
+request/response lifetime, even if negotiation finishes while one is pending.
+
 Room command admission is role-specific:
 
 | Local state | Allowed room operations |

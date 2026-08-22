@@ -27,8 +27,9 @@ use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
     DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState,
     PlayerId, PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
-    ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage, SpectatorJoinedPayload,
-    Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
+    ReplayStatus, RoomJoinedPayload, RoomOperationRequest, RoomOperationResult, SenderWatermark,
+    ServerMessage, SpectatorJoinedPayload, Topology, TransportKind, V2BinaryGameDataFrame,
+    V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ClientStats, ErrorCode, ProtocolViolationPolicy, RoomRole};
@@ -70,6 +71,22 @@ impl RoomResponseKind {
     }
 
     fn matches_command(self, message: &ClientMessage) -> bool {
+        if let ClientMessage::RoomOperation { operation, .. } = message {
+            return matches!(
+                (self, operation.as_ref()),
+                (Self::JoinPlayer, RoomOperationRequest::JoinRoom { .. })
+                    | (Self::LeavePlayer, RoomOperationRequest::LeaveRoom)
+                    | (
+                        Self::ReconnectPlayer,
+                        RoomOperationRequest::Reconnect { .. }
+                    )
+                    | (
+                        Self::JoinSpectator,
+                        RoomOperationRequest::JoinAsSpectator { .. }
+                    )
+                    | (Self::LeaveSpectator, RoomOperationRequest::LeaveSpectator)
+            );
+        }
         matches!(
             (self, message),
             (Self::JoinPlayer, ClientMessage::JoinRoom { .. })
@@ -146,7 +163,33 @@ fn advance_room_command_requirements(json: &str, gate: &mut RoomCommandRequireme
     // Only accepted-looking lifecycle transitions advance the next command
     // ordinal. A raw duplicate exit while already outside must remain
     // deliverable without consuming the rejoin that is currently pending.
-    match (gate.membership, message) {
+    let membership_result = match message {
+        ServerMessage::RoomOperationResult { result, .. } => match *result {
+            RoomOperationResult::RoomJoined(payload) => ServerMessage::RoomJoined(payload),
+            RoomOperationResult::RoomLeft => ServerMessage::RoomLeft,
+            RoomOperationResult::Reconnected(payload) => ServerMessage::Reconnected(payload),
+            RoomOperationResult::SpectatorJoined(payload) => {
+                ServerMessage::SpectatorJoined(payload)
+            }
+            RoomOperationResult::SpectatorLeft {
+                room_id,
+                room_code,
+                reason,
+                current_spectators,
+            } => ServerMessage::SpectatorLeft {
+                room_id,
+                room_code,
+                reason,
+                current_spectators,
+            },
+            RoomOperationResult::RoomJoinFailed { .. }
+            | RoomOperationResult::ReconnectionFailed { .. }
+            | RoomOperationResult::SpectatorJoinFailed { .. }
+            | RoomOperationResult::OperationFailed { .. } => return,
+        },
+        message => message,
+    };
+    match (gate.membership, membership_result) {
         (ScriptedRoomMembership::Outside, ServerMessage::RoomJoined(_)) => {
             gate.membership = ScriptedRoomMembership::Player;
             gate.counts[RoomResponseKind::LeavePlayer.index()] =
@@ -274,6 +317,100 @@ impl Transport for NeverSendMock {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[derive(Clone)]
+struct CorrelationRaceMock {
+    incoming: Arc<Mutex<VecDeque<TransportFrame>>>,
+    sent: Arc<Mutex<Vec<String>>>,
+    attempted_room_send: Arc<Mutex<Option<String>>>,
+    allow_room_send: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+impl CorrelationRaceMock {
+    fn new() -> Self {
+        Self {
+            incoming: Arc::new(Mutex::new(VecDeque::from([
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3_ROOM_OPERATION_IDS.into()),
+            ]))),
+            sent: Arc::new(Mutex::new(Vec::new())),
+            attempted_room_send: Arc::new(Mutex::new(None)),
+            allow_room_send: Arc::new(AtomicBool::new(true)),
+            waker: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn block_room_sends(&self) {
+        self.allow_room_send.store(false, Ordering::Release);
+    }
+
+    fn release_room_sends(&self) {
+        self.allow_room_send.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+
+    fn push(&self, message: ServerMessage) {
+        self.incoming
+            .lock()
+            .unwrap()
+            .push_back(text_server_frame(message));
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+}
+
+impl Transport for CorrelationRaceMock {
+    fn abort(&mut self) {
+        let _ = self.waker.lock().unwrap().take();
+    }
+
+    fn poll_send(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let room_message = match frame.as_ref() {
+            Some(TransportFrame::Text(json)) => serde_json::from_str::<ClientMessage>(json)
+                .ok()
+                .filter(|message| matches!(message, ClientMessage::RoomOperation { .. }))
+                .map(|_| json.clone()),
+            _ => None,
+        };
+        if let Some(json) = room_message {
+            *self.attempted_room_send.lock().unwrap() = Some(json);
+            if !self.allow_room_send.load(Ordering::Acquire) {
+                *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+        }
+        if let Some(TransportFrame::Text(json)) = frame.take() {
+            self.sent.lock().unwrap().push(json);
+        }
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if let Some(frame) = self.incoming.lock().unwrap().pop_front() {
+            return std::task::Poll::Ready(Some(Ok(frame)));
+        }
+        *self.waker.lock().unwrap() = Some(cx.waker().clone());
         std::task::Poll::Pending
     }
 
@@ -792,6 +929,7 @@ fn polling_membership_result(phase: MembershipPhase, case: CommonCommandCase) ->
 const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 const AUTH: &str = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
 const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
+const PI_V3_ROOM_OPERATION_IDS: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":["room_operation_ids"],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
 // A v2 negotiation omits the version fields, so it deserializes to
 // `protocol_version: None` — a terminal relay floor.
 const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"]}}"#;
@@ -1440,6 +1578,9 @@ fn canonical_event(event: &SignalFishEvent) -> String {
             message,
             error_code,
         } => event_fields!("Error", message, error_code),
+        SignalFishEvent::RoomOperationFailed { reason, error_code } => {
+            event_fields!("RoomOperationFailed", reason, error_code)
+        }
     }
 }
 
@@ -3504,6 +3645,226 @@ async fn pending_transport_queue_capacity_and_errors_match() {
         polling_client.send_game_data(serde_json::json!({"after": "join"})),
         Err(SignalFishError::RoomOperationPending)
     ));
+    async_client.shutdown().await;
+}
+
+fn room_operation_id(json: &str) -> Option<uuid::Uuid> {
+    match serde_json::from_str::<ClientMessage>(json).ok()? {
+        ClientMessage::RoomOperation { operation_id, .. } => Some(operation_id),
+        _ => None,
+    }
+}
+
+fn correlated_join_failure(operation_id: uuid::Uuid, reason: &str) -> ServerMessage {
+    ServerMessage::RoomOperationResult {
+        operation_id,
+        result: Box::new(RoomOperationResult::RoomJoinFailed {
+            reason: reason.into(),
+            error_code: Some(ErrorCode::RoomFull),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn stale_same_kind_result_while_current_send_is_blocked_has_driver_parity() {
+    let config = SignalFishConfig::new("app")
+        .enable_v3()
+        .with_protocol_violation_policy(ProtocolViolationPolicy::Observe);
+
+    let async_mock = CorrelationRaceMock::new();
+    let async_control = async_mock.clone();
+    let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    for expected in ["Connected", "Authenticated", "ProtocolInfo"] {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async negotiation event timeout")
+            .expect("async negotiation event");
+        assert_eq!(format!("{event:?}"), expected);
+    }
+
+    async_client
+        .join_room(JoinRoomParams::new("game", "async-a"))
+        .expect("async A admitted");
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while async_control
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|json| room_operation_id(json))
+            .count()
+            < 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("async A send timeout");
+    let async_a = async_control
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|json| room_operation_id(json))
+        .expect("async A id");
+    async_control.push(correlated_join_failure(async_a, "A complete"));
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async A response timeout"),
+        Some(SignalFishEvent::RoomJoinFailed { .. })
+    ));
+
+    async_control.block_room_sends();
+    async_client
+        .join_room(JoinRoomParams::new("game", "async-b"))
+        .expect("async B admitted");
+    let async_b = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if let Some(id) = async_control
+                .attempted_room_send
+                .lock()
+                .unwrap()
+                .as_deref()
+                .and_then(room_operation_id)
+                .filter(|id| *id != async_a)
+            {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("async B retained-send timeout");
+    assert_eq!(
+        async_control
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|json| room_operation_id(json))
+            .count(),
+        1,
+        "B must remain client-owned while the transport is blocked"
+    );
+    async_control.push(correlated_join_failure(async_a, "A stale"));
+    let async_stale = tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+        .await
+        .expect("async stale response timeout")
+        .expect("async stale response event");
+    assert!(matches!(
+        async_stale,
+        SignalFishEvent::ProtocolViolation { .. }
+    ));
+    assert!(matches!(
+        async_client.join_room(JoinRoomParams::new("game", "blocked")),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    async_control.release_room_sends();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while async_control
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|json| room_operation_id(json))
+            .count()
+            < 2
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("async B send timeout");
+    async_control.push(correlated_join_failure(async_b, "B complete"));
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("async B response timeout"),
+        Some(SignalFishEvent::RoomJoinFailed { .. })
+    ));
+
+    let polling_mock = CorrelationRaceMock::new();
+    let polling_control = polling_mock.clone();
+    let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    assert_eq!(
+        polling_client
+            .poll()
+            .iter()
+            .map(|event| format!("{event:?}"))
+            .collect::<Vec<_>>(),
+        ["Connected", "Authenticated", "ProtocolInfo"]
+    );
+    polling_client
+        .join_room(JoinRoomParams::new("game", "polling-a"))
+        .expect("polling A admitted");
+    let _ = polling_client.poll();
+    let polling_a = polling_control
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|json| room_operation_id(json))
+        .expect("polling A id");
+    polling_control.push(correlated_join_failure(polling_a, "A complete"));
+    assert!(matches!(
+        polling_client.poll().as_slice(),
+        [SignalFishEvent::RoomJoinFailed { .. }]
+    ));
+
+    polling_control.block_room_sends();
+    polling_client
+        .join_room(JoinRoomParams::new("game", "polling-b"))
+        .expect("polling B admitted");
+    let _ = polling_client.poll();
+    let polling_b = polling_control
+        .attempted_room_send
+        .lock()
+        .unwrap()
+        .as_deref()
+        .and_then(room_operation_id)
+        .filter(|id| *id != polling_a)
+        .expect("polling B retained id");
+    assert_eq!(
+        polling_control
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|json| room_operation_id(json))
+            .count(),
+        1
+    );
+    polling_control.push(correlated_join_failure(polling_a, "A stale"));
+    assert!(matches!(
+        polling_client.poll().as_slice(),
+        [SignalFishEvent::ProtocolViolation { .. }]
+    ));
+    assert!(matches!(
+        polling_client.join_room(JoinRoomParams::new("game", "blocked")),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    polling_control.release_room_sends();
+    let _ = polling_client.poll();
+    assert_eq!(
+        polling_control
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|json| room_operation_id(json))
+            .count(),
+        2
+    );
+    polling_control.push(correlated_join_failure(polling_b, "B complete"));
+    assert!(matches!(
+        polling_client.poll().as_slice(),
+        [SignalFishEvent::RoomJoinFailed { .. }]
+    ));
+
+    assert_ne!(async_a, async_b);
+    assert_ne!(polling_a, polling_b);
+    assert_eq!(async_client.snapshot(), polling_client.snapshot());
     async_client.shutdown().await;
 }
 

@@ -6,6 +6,9 @@
 - Canonical protocol fixture: Signal Fish Server 0.7.0 at commit
   `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`; Server 0.4
   generation-less signaling remains an explicit compatibility case.
+- Post-0.7 protocol wire/spec authority is pinned separately at server commit
+  `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`, including negotiated
+  `room_operation_ids` support.
 - The async and polling clients share protocol behavior through `ClientCore`.
 - The lockstep Godot adapter supports native and official Godot 4.5 web
   exports, with blocking real-server gameplay coverage.
@@ -17,9 +20,11 @@
 - A deterministic 28-cell `ClientCore` laboratory now pins latency,
   throughput, queue-age, and all six allocation-counter baselines. Required CI
   enforces debug/release ceilings while leaving timings diagnostic.
-- Direct JSON string game payloads of at least 4 KiB now use measured
-  capacity-aware serialization in both drivers. The pinned 4 KiB burst drops
-  from 132 to four reallocations while all 28 wire ledgers remain unchanged.
+- Direct JSON string game payloads of at least 4 KiB use measured
+  capacity-aware serialization in both drivers, keeping the pinned 4 KiB burst
+  at four reallocations. Room-operation negotiation changes authentication
+  bytes and adds an event-ledger slot, so all 28 protocol pins are refreshed
+  while their semantic invariants remain unchanged.
 - The approved Vector identity, accessible oceanic theme, and self-hosted
   typography now span the README and task-oriented MkDocs site, with exact
   asset provenance and desktop/mobile visual evidence.
@@ -27,12 +32,9 @@
   package metadata; repository integration tests, other standalone wire
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
-- All 12 push workflows pass on current `main` commit `c7790e8`, including
-  merged PR #131's package minimization and robust Godot poll-timing gate. Docs
-  Validation attempt 1 hit its 180-second Playwright accessibility watchdog;
-  the unchanged attempt 2 passed in under a minute, confirming a hosted-runner
-  stall rather than deterministic product failure. The separate live Repository
-  Policy audit remains red because of issue #90.
+- All 12 push workflows passed on `main` commit `c2b22b2`, including merged PR
+  #132's bounded native WebSocket input. The separate live Repository Policy
+  audit remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -75,13 +77,16 @@ measured evidence before accepting performance complexity:
    The first correctness slice is complete: typed player/spectator
    join/leave/reconnect responses with no compatible pending operation are
    rejected under every policy in both drivers, while Server 0.7's
-   authoritative spectator exits remain valid. Continue with
+   authoritative spectator exits remain valid. The
    [#128](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/128)
-   for same-kind response identity. That fix requires a negotiated server
-   operation identifier tracked by
-   [signal-fish-server#395](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/395)
-   before the client can distinguish old and current same-kind responses
-   without timing heuristics. The native WebSocket oversized-input slice is
+   same-kind response identity slice is now implemented against completed
+   [signal-fish-server#395](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/395):
+   v3-capable authentication requests `room_operation_ids`, exact echoes enable
+   fresh UUID envelopes for all five directed room operations, and stale or
+   mismatched results cannot consume the current fence. Missing echoes and
+   released Server 0.7 retain the legacy wire. Upstream goldens, both-driver
+   backpressure races, and all violation policies cover the boundary. The
+   native WebSocket oversized-input slice is
    complete: all built-in connect paths now bound individual frames and
    fragmented-message assembly at a configurable 8 MiB default before
    `ClientCore`, preserve caller-owned `from_stream` limits, and fuse capacity

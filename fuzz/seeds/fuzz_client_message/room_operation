@@ -1,0 +1,1 @@
+{"type":"RoomOperation","data":{"operation_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","operation":{"type":"Reconnect","data":{"player_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","room_id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","auth_token":"seed-token"}}}}

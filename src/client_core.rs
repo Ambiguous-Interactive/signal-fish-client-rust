@@ -15,7 +15,8 @@ use crate::client::{
 use crate::event::{ProtocolViolationKind, ServerErrorInfo, SignalFishEvent};
 use crate::protocol::{
     ClientMessage, ConnectionInfo, DeliveryClass, GameDataEncoding, PlayerId, RoomId,
-    ServerMessage, SessionGeneration, SessionPlanPayload, Topology, TransportKind,
+    RoomOperationId, RoomOperationRequest, RoomOperationResult, ServerMessage, SessionGeneration,
+    SessionPlanPayload, Topology, TransportKind, ROOM_OPERATION_IDS_CAPABILITY,
 };
 use crate::signal::PeerSignal;
 use crate::transport::TransportFrame;
@@ -120,6 +121,8 @@ impl FrameOutcome {
 pub(crate) struct ClientCore {
     snapshot: ClientSnapshot,
     protocol_info_seen: bool,
+    requested_room_operation_ids: bool,
+    room_operation_ids: bool,
     mesh_capable: bool,
     stats: ClientStats,
     last_server_error: Option<ServerErrorInfo>,
@@ -131,7 +134,7 @@ pub(crate) struct ClientCore {
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
     retired_generationless_signal_peers: HashSet<PlayerId>,
-    pending_room_operation: Option<PendingRoomOperation>,
+    pending_room_operation: Option<PendingRoomOperationState>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
@@ -165,9 +168,15 @@ pub(crate) enum PendingRoomOperation {
     LeaveSpectator,
 }
 
-pub(crate) enum ClientOperationAdmission {
-    Room(PendingRoomOperation),
-    Reconnect(PendingReconnect),
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingRoomOperationState {
+    kind: PendingRoomOperation,
+    operation_id: Option<RoomOperationId>,
+}
+
+pub(crate) struct ClientOperationAdmission {
+    pending: PendingRoomOperationState,
+    reconnect: Option<PendingReconnect>,
 }
 
 impl ClientCore {
@@ -180,13 +189,31 @@ impl ClientCore {
             protocol_version: config.protocol_version,
             supported_transports: config.supported_transports.clone(),
             supported_topologies: config.supported_topologies.clone(),
+            requested_capabilities: config
+                .requests_room_operation_ids()
+                .then(|| vec![ROOM_OPERATION_IDS_CAPABILITY.to_string()]),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         requested_game_data_format: Option<GameDataEncoding>,
         violation_policy: ProtocolViolationPolicy,
         mesh_capable: bool,
+    ) -> Self {
+        Self::new_with_room_operation_ids(
+            requested_game_data_format,
+            violation_policy,
+            mesh_capable,
+            false,
+        )
+    }
+
+    pub(crate) fn new_with_room_operation_ids(
+        requested_game_data_format: Option<GameDataEncoding>,
+        violation_policy: ProtocolViolationPolicy,
+        mesh_capable: bool,
+        requested_room_operation_ids: bool,
     ) -> Self {
         Self {
             snapshot: ClientSnapshot {
@@ -195,6 +222,8 @@ impl ClientCore {
                 ..ClientSnapshot::default()
             },
             protocol_info_seen: false,
+            requested_room_operation_ids,
+            room_operation_ids: false,
             mesh_capable,
             stats: ClientStats::default(),
             last_server_error: None,
@@ -455,8 +484,32 @@ impl ClientCore {
         self.prepare(operation)
     }
 
+    #[cfg(any(feature = "tokio-runtime", test))]
     pub(crate) fn prepare(&self, operation: ClientOperation) -> crate::error::Result<CoreCommand> {
+        if Self::admission_for(&operation).is_some() {
+            // Internal reliable-send paths never carry membership transitions.
+            // Refuse a future accidental call rather than manufacturing a
+            // correlated frame whose admission could be discarded.
+            return Err(crate::SignalFishError::RoomOperationPending);
+        }
+        self.prepare_with_admission(operation)
+            .map(|(command, admission)| {
+                debug_assert!(admission.is_none());
+                command
+            })
+    }
+
+    pub(crate) fn prepare_with_admission(
+        &self,
+        operation: ClientOperation,
+    ) -> crate::error::Result<(CoreCommand, Option<ClientOperationAdmission>)> {
         self.validate(&operation)?;
+        let mut admission = Self::admission_for(&operation);
+        if self.room_operation_ids {
+            if let Some(admission) = &mut admission {
+                admission.pending.operation_id = Some(RoomOperationId::new_v4());
+            }
+        }
         let message = match operation {
             ClientOperation::JoinRoom(params) => ClientMessage::JoinRoom {
                 game_name: params.game_name,
@@ -476,7 +529,7 @@ impl ClientCore {
                 ClientMessage::GameData { data, class, key }
             }
             ClientOperation::Binary(payload) => {
-                return Ok(CoreCommand::Binary(payload));
+                return Ok((CoreCommand::Binary(payload), admission));
             }
             ClientOperation::SetReady => ClientMessage::PlayerReady,
             ClientOperation::StartGame => ClientMessage::StartGame,
@@ -535,7 +588,15 @@ impl ClientCore {
                 }
             }
         };
-        Ok(CoreCommand::Message(message))
+        let message = if let Some(operation_id) = admission
+            .as_ref()
+            .and_then(|admission| admission.pending.operation_id)
+        {
+            correlate_room_operation(message, operation_id)
+        } else {
+            message
+        };
+        Ok((CoreCommand::Message(message), admission))
     }
 
     fn ensure_v3(&self) -> crate::error::Result<()> {
@@ -557,61 +618,51 @@ impl ClientCore {
         self.stats.game_data_sent = self.stats.game_data_sent.saturating_add(1);
     }
 
-    pub(crate) fn record_reconnect_admitted(
-        &mut self,
-        player_id: PlayerId,
-        room_id: RoomId,
-        token: String,
-    ) {
-        self.pending_room_operation = Some(PendingRoomOperation::ReconnectPlayer);
-        self.pending_reconnects.push_back(PendingReconnect {
-            player_id,
-            room_id,
-            token,
-        });
-    }
-
     pub(crate) fn admission_for(operation: &ClientOperation) -> Option<ClientOperationAdmission> {
-        match operation {
-            ClientOperation::JoinRoom(_) => Some(ClientOperationAdmission::Room(
-                PendingRoomOperation::JoinPlayer,
-            )),
-            ClientOperation::LeaveRoom => Some(ClientOperationAdmission::Room(
-                PendingRoomOperation::LeavePlayer,
-            )),
-            ClientOperation::Reconnect(player_id, room_id, token) => {
-                Some(ClientOperationAdmission::Reconnect(PendingReconnect {
+        let (kind, reconnect) = match operation {
+            ClientOperation::JoinRoom(_) => (PendingRoomOperation::JoinPlayer, None),
+            ClientOperation::LeaveRoom => (PendingRoomOperation::LeavePlayer, None),
+            ClientOperation::Reconnect(player_id, room_id, token) => (
+                PendingRoomOperation::ReconnectPlayer,
+                Some(PendingReconnect {
                     player_id: *player_id,
                     room_id: *room_id,
                     token: token.clone(),
-                }))
-            }
-            ClientOperation::JoinAsSpectator(..) => Some(ClientOperationAdmission::Room(
-                PendingRoomOperation::JoinSpectator,
-            )),
-            ClientOperation::LeaveSpectator => Some(ClientOperationAdmission::Room(
-                PendingRoomOperation::LeaveSpectator,
-            )),
-            _ => None,
-        }
+                }),
+            ),
+            ClientOperation::JoinAsSpectator(..) => (PendingRoomOperation::JoinSpectator, None),
+            ClientOperation::LeaveSpectator => (PendingRoomOperation::LeaveSpectator, None),
+            _ => return None,
+        };
+        Some(ClientOperationAdmission {
+            pending: PendingRoomOperationState {
+                kind,
+                operation_id: None,
+            },
+            reconnect,
+        })
     }
 
     pub(crate) fn record_admission(&mut self, admission: Option<ClientOperationAdmission>) {
         let Some(admission) = admission else {
             return;
         };
-        match admission {
-            ClientOperationAdmission::Room(operation) => {
-                self.pending_room_operation = Some(operation);
-            }
-            ClientOperationAdmission::Reconnect(reconnect) => {
-                self.record_reconnect_admitted(
-                    reconnect.player_id,
-                    reconnect.room_id,
-                    reconnect.token,
-                );
-            }
+        self.pending_room_operation = Some(admission.pending);
+        if let Some(reconnect) = admission.reconnect {
+            self.pending_reconnects.push_back(reconnect);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_reconnect_admitted(
+        &mut self,
+        player_id: PlayerId,
+        room_id: RoomId,
+        token: String,
+    ) {
+        self.record_admission(Self::admission_for(&ClientOperation::Reconnect(
+            player_id, room_id, token,
+        )));
     }
 
     pub(crate) fn clear_session(&mut self) {
@@ -627,6 +678,7 @@ impl ClientCore {
         self.snapshot.session_transport = None;
         self.snapshot.quarantined = false;
         self.protocol_info_seen = false;
+        self.room_operation_ids = false;
         self.snapshot.room_role = None;
         self.authority_player = None;
         self.room_finalized = false;
@@ -673,6 +725,20 @@ impl ClientCore {
                     .events
                     .push(SignalFishEvent::decode_failed(&text, &error));
                 outcome.disconnect = disconnect;
+                return outcome;
+            }
+        };
+        let server_msg = match self.normalize_room_operation_result(server_msg) {
+            Ok(Ok(message)) => message,
+            Ok(Err((reason, error_code))) => {
+                self.clear_pending_operation_after_correlated_failure();
+                outcome
+                    .events
+                    .push(SignalFishEvent::RoomOperationFailed { reason, error_code });
+                return outcome;
+            }
+            Err(diagnostic) => {
+                self.reject_inbound(&mut outcome, diagnostic);
                 return outcome;
             }
         };
@@ -791,6 +857,67 @@ impl ClientCore {
         self.update_state(&server_msg);
         outcome.events.push(SignalFishEvent::from(server_msg));
         outcome
+    }
+
+    fn normalize_room_operation_result(
+        &self,
+        message: ServerMessage,
+    ) -> Result<Result<ServerMessage, (String, Option<crate::ErrorCode>)>, String> {
+        let ServerMessage::RoomOperationResult {
+            operation_id,
+            result,
+        } = message
+        else {
+            if self
+                .pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id)
+                .is_some()
+                && is_uncorrelated_directed_room_response(&message)
+            {
+                return Err(format!(
+                    "lifecycle violation: {} omitted the negotiated room operation id",
+                    server_message_name(&message)
+                ));
+            }
+            return Ok(Ok(message));
+        };
+
+        if !self.room_operation_ids {
+            return Err(
+                "lifecycle violation: RoomOperationResult arrived without negotiating room_operation_ids"
+                    .into(),
+            );
+        }
+        let Some(pending) = self.pending_room_operation.as_ref() else {
+            return Err(format!(
+                "lifecycle violation: RoomOperationResult {operation_id} arrived without a pending room operation"
+            ));
+        };
+        if pending.operation_id != Some(operation_id) {
+            return Err(format!(
+                "lifecycle violation: RoomOperationResult {operation_id} did not match the pending room operation id"
+            ));
+        }
+        if !room_operation_result_matches(pending.kind, &result) {
+            return Err(format!(
+                "lifecycle violation: {} result conflicts with pending room operation {:?}",
+                room_operation_result_name(&result),
+                pending.kind
+            ));
+        }
+        Ok(result.into_server_message())
+    }
+
+    fn clear_pending_operation_after_correlated_failure(&mut self) {
+        if self
+            .pending_room_operation
+            .as_ref()
+            .is_some_and(|pending| pending.kind == PendingRoomOperation::ReconnectPlayer)
+        {
+            self.pending_reconnects.pop_front();
+        }
+        self.pending_room_operation = None;
     }
 
     fn process_binary(&mut self, bytes: Vec<u8>) -> FrameOutcome {
@@ -952,6 +1079,7 @@ impl ClientCore {
             ServerMessage::SpectatorLeft { .. } => {
                 authenticated && membership == Some(RoomRole::Spectator)
             }
+            ServerMessage::RoomOperationResult { .. } => false,
             ServerMessage::PlayerJoined { .. }
             | ServerMessage::PlayerLeft { .. }
             | ServerMessage::GameData { .. }
@@ -1003,7 +1131,21 @@ impl ClientCore {
         }
 
         match message {
-            ServerMessage::ProtocolInfo(payload) => validate_protocol_info_formats(payload),
+            ServerMessage::ProtocolInfo(payload) => {
+                validate_protocol_info_formats(payload)?;
+                if payload
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == ROOM_OPERATION_IDS_CAPABILITY)
+                    && !self.requested_room_operation_ids
+                {
+                    return Err(
+                        "lifecycle violation: ProtocolInfo enabled unrequested room_operation_ids"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
             ServerMessage::RoomJoined(payload) => {
                 self.validate_pending_room_response(
                     PendingRoomOperation::JoinPlayer,
@@ -1201,6 +1343,10 @@ impl ClientCore {
                 }
                 Ok(())
             }
+            ServerMessage::RoomOperationResult { .. } => Err(
+                "lifecycle violation: RoomOperationResult was not normalized before validation"
+                    .into(),
+            ),
             _ => Ok(()),
         }
     }
@@ -1210,10 +1356,11 @@ impl ClientCore {
         expected: PendingRoomOperation,
         response: &str,
     ) -> Result<(), String> {
-        match self.pending_room_operation {
-            Some(pending) if pending == expected => Ok(()),
+        match self.pending_room_operation.as_ref() {
+            Some(pending) if pending.kind == expected => Ok(()),
             Some(pending) => Err(format!(
-                "lifecycle violation: {response} conflicts with pending room operation {pending:?}"
+                "lifecycle violation: {response} conflicts with pending room operation {:?}",
+                pending.kind
             )),
             None => Err(format!(
                 "lifecycle violation: {response} arrived without an admitted {expected:?} operation"
@@ -1461,6 +1608,12 @@ impl ClientCore {
                         self.requested_game_data_format(),
                         &payload.game_data_formats,
                     ));
+                self.room_operation_ids = self.requested_room_operation_ids
+                    && payload.protocol_version.is_some_and(|version| version >= 3)
+                    && payload
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability == ROOM_OPERATION_IDS_CAPABILITY);
                 self.protocol_info_seen = true;
             }
             ServerMessage::RoomJoined(payload) => {
@@ -1484,7 +1637,11 @@ impl ClientCore {
                 });
             }
             ServerMessage::RoomJoinFailed { .. } => {
-                if self.pending_room_operation == Some(PendingRoomOperation::JoinPlayer) {
+                if self
+                    .pending_room_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind == PendingRoomOperation::JoinPlayer)
+                {
                     self.pending_room_operation = None;
                 }
             }
@@ -1531,14 +1688,22 @@ impl ClientCore {
                 });
             }
             ServerMessage::SpectatorJoinFailed { .. } => {
-                if self.pending_room_operation == Some(PendingRoomOperation::JoinSpectator) {
+                if self
+                    .pending_room_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind == PendingRoomOperation::JoinSpectator)
+                {
                     self.pending_room_operation = None;
                 }
             }
             ServerMessage::SpectatorLeft { .. } => self.clear_room(),
             ServerMessage::ReconnectionFailed { .. } => {
                 self.pending_reconnects.pop_front();
-                if self.pending_room_operation == Some(PendingRoomOperation::ReconnectPlayer) {
+                if self
+                    .pending_room_operation
+                    .as_ref()
+                    .is_some_and(|pending| pending.kind == PendingRoomOperation::ReconnectPlayer)
+                {
                     self.pending_room_operation = None;
                 }
             }
@@ -1675,6 +1840,120 @@ impl ClientCore {
     }
 }
 
+fn correlate_room_operation(
+    message: ClientMessage,
+    operation_id: RoomOperationId,
+) -> ClientMessage {
+    let operation = match message {
+        ClientMessage::JoinRoom {
+            game_name,
+            room_code,
+            player_name,
+            max_players,
+            supports_authority,
+            relay_transport,
+        } => RoomOperationRequest::JoinRoom {
+            game_name,
+            room_code,
+            player_name,
+            max_players,
+            supports_authority,
+            relay_transport,
+        },
+        ClientMessage::LeaveRoom => RoomOperationRequest::LeaveRoom,
+        ClientMessage::Reconnect {
+            player_id,
+            room_id,
+            auth_token,
+        } => RoomOperationRequest::Reconnect {
+            player_id,
+            room_id,
+            auth_token,
+        },
+        ClientMessage::JoinAsSpectator {
+            game_name,
+            room_code,
+            spectator_name,
+        } => RoomOperationRequest::JoinAsSpectator {
+            game_name,
+            room_code,
+            spectator_name,
+        },
+        ClientMessage::LeaveSpectator => RoomOperationRequest::LeaveSpectator,
+        other => return other,
+    };
+    ClientMessage::RoomOperation {
+        operation_id,
+        operation: Box::new(operation),
+    }
+}
+
+fn is_uncorrelated_directed_room_response(message: &ServerMessage) -> bool {
+    match message {
+        ServerMessage::RoomJoined(_)
+        | ServerMessage::RoomJoinFailed { .. }
+        | ServerMessage::RoomLeft
+        | ServerMessage::Reconnected(_)
+        | ServerMessage::ReconnectionFailed { .. }
+        | ServerMessage::SpectatorJoined(_)
+        | ServerMessage::SpectatorJoinFailed { .. } => true,
+        ServerMessage::SpectatorLeft { reason, .. } => !matches!(
+            reason,
+            Some(
+                crate::protocol::SpectatorStateChangeReason::Disconnected
+                    | crate::protocol::SpectatorStateChangeReason::Removed
+                    | crate::protocol::SpectatorStateChangeReason::RoomClosed
+            )
+        ),
+        _ => false,
+    }
+}
+
+fn room_operation_result_matches(
+    pending: PendingRoomOperation,
+    result: &RoomOperationResult,
+) -> bool {
+    match (pending, result) {
+        (_, RoomOperationResult::OperationFailed { .. }) => true,
+        (
+            PendingRoomOperation::JoinPlayer,
+            RoomOperationResult::RoomJoined(_) | RoomOperationResult::RoomJoinFailed { .. },
+        )
+        | (PendingRoomOperation::LeavePlayer, RoomOperationResult::RoomLeft)
+        | (
+            PendingRoomOperation::ReconnectPlayer,
+            RoomOperationResult::Reconnected(_) | RoomOperationResult::ReconnectionFailed { .. },
+        )
+        | (
+            PendingRoomOperation::JoinSpectator,
+            RoomOperationResult::SpectatorJoined(_)
+            | RoomOperationResult::SpectatorJoinFailed { .. },
+        ) => true,
+        (
+            PendingRoomOperation::LeaveSpectator,
+            RoomOperationResult::SpectatorLeft { reason, .. },
+        ) => matches!(
+            reason,
+            None | Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave)
+        ),
+        _ => false,
+    }
+}
+
+fn room_operation_result_name(result: &RoomOperationResult) -> &'static str {
+    match result {
+        RoomOperationResult::RoomJoined(_) => "RoomJoined",
+        RoomOperationResult::RoomJoinFailed { .. } => "RoomJoinFailed",
+        RoomOperationResult::RoomLeft => "RoomLeft",
+        RoomOperationResult::Reconnected(_) => "Reconnected",
+        RoomOperationResult::ReconnectionFailed { .. } => "ReconnectionFailed",
+        RoomOperationResult::SpectatorJoined(_) => "SpectatorJoined",
+        RoomOperationResult::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
+        RoomOperationResult::SpectatorLeft { .. } => "SpectatorLeft",
+        RoomOperationResult::OperationFailed { .. } => "OperationFailed",
+    }
+}
+
 fn validate_protocol_info_formats(
     payload: &crate::protocol::ProtocolInfoPayload,
 ) -> Result<(), String> {
@@ -1703,7 +1982,19 @@ fn validate_protocol_info_formats(
         version_tuple => Err(format!(
             "lifecycle violation: ProtocolInfo version range {version_tuple:?} and transports presence do not form a coherent v2/v3 negotiation"
         )),
+    }?;
+    if payload
+        .capabilities
+        .iter()
+        .any(|capability| capability == ROOM_OPERATION_IDS_CAPABILITY)
+        && payload.protocol_version.is_none_or(|version| version < 3)
+    {
+        return Err(
+            "lifecycle violation: ProtocolInfo advertised room_operation_ids below protocol v3"
+                .into(),
+        );
     }
+    Ok(())
 }
 
 fn resolve_effective_game_data_format(
@@ -1773,6 +2064,7 @@ fn server_message_name(message: &ServerMessage) -> &'static str {
         ServerMessage::SpectatorJoined(_) => "SpectatorJoined",
         ServerMessage::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
         ServerMessage::SpectatorLeft { .. } => "SpectatorLeft",
+        ServerMessage::RoomOperationResult { .. } => "RoomOperationResult",
         ServerMessage::NewSpectatorJoined { .. } => "NewSpectatorJoined",
         ServerMessage::SpectatorDisconnected { .. } => "SpectatorDisconnected",
         ServerMessage::Error { .. } => "Error",
@@ -1932,6 +2224,66 @@ mod tests {
         })
     }
 
+    fn protocol_info_with_room_operation_ids(version: u16) -> ServerMessage {
+        let ServerMessage::ProtocolInfo(mut payload) = protocol_info(Some(version)) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        payload
+            .capabilities
+            .push(ROOM_OPERATION_IDS_CAPABILITY.to_string());
+        ServerMessage::ProtocolInfo(payload)
+    }
+
+    fn correlated_outside(policy: ProtocolViolationPolicy) -> ClientCore {
+        let mut core = ClientCore::new_with_room_operation_ids(
+            Some(GameDataEncoding::Json),
+            policy,
+            true,
+            true,
+        );
+        assert_eq!(process(&mut core, authenticated()).events.len(), 1);
+        assert_eq!(
+            process(&mut core, protocol_info_with_room_operation_ids(3))
+                .events
+                .len(),
+            1
+        );
+        core
+    }
+
+    fn prepare_and_admit(
+        core: &mut ClientCore,
+        operation: ClientOperation,
+    ) -> (CoreCommand, RoomOperationId) {
+        let (command, admission) = core
+            .prepare_with_admission(operation)
+            .expect("room operation should prepare");
+        let CoreCommand::Message(ClientMessage::RoomOperation { operation_id, .. }) = &command
+        else {
+            panic!("negotiated room operation must use the correlated envelope")
+        };
+        let operation_id = *operation_id;
+        core.record_admission(admission);
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(operation_id),
+            "the emitted UUID and admission fence must be identical"
+        );
+        (command, operation_id)
+    }
+
+    fn correlated_result(
+        operation_id: RoomOperationId,
+        result: RoomOperationResult,
+    ) -> ServerMessage {
+        ServerMessage::RoomOperationResult {
+            operation_id,
+            result: Box::new(result),
+        }
+    }
+
     fn player(id: u128) -> PlayerInfo {
         PlayerInfo {
             id: PlayerId::from_u128(id),
@@ -2038,6 +2390,472 @@ mod tests {
         ));
         let _ = process(&mut core, spectator_joined());
         core
+    }
+
+    #[test]
+    fn room_operation_capability_requires_request_and_echo_with_legacy_fallback() {
+        let join = || ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
+
+        let mut requested_without_echo = ClientCore::new_with_room_operation_ids(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+            true,
+        );
+        let _ = process(&mut requested_without_echo, authenticated());
+        let _ = process(&mut requested_without_echo, protocol_info(Some(3)));
+        let (command, admission) = requested_without_echo
+            .prepare_with_admission(join())
+            .expect("missing echo falls back to the legacy command");
+        assert!(matches!(
+            command,
+            CoreCommand::Message(ClientMessage::JoinRoom { .. })
+        ));
+        assert_eq!(
+            admission
+                .as_ref()
+                .and_then(|admission| admission.pending.operation_id),
+            None
+        );
+
+        let mut unsolicited = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut unsolicited, authenticated());
+        let outcome = process(&mut unsolicited, protocol_info_with_room_operation_ids(3));
+        assert_lifecycle_violation_containing(&outcome, "unrequested room_operation_ids");
+        assert!(!unsolicited.room_operation_ids);
+
+        let mut below_v3 = ClientCore::new_with_room_operation_ids(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+            true,
+        );
+        let _ = process(&mut below_v3, authenticated());
+        let ServerMessage::ProtocolInfo(mut payload) = protocol_info(None) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        payload
+            .capabilities
+            .push(ROOM_OPERATION_IDS_CAPABILITY.to_string());
+        let outcome = process(&mut below_v3, ServerMessage::ProtocolInfo(payload));
+        assert_lifecycle_violation_containing(&outcome, "below protocol v3");
+        assert!(!below_v3.room_operation_ids);
+
+        let mut unknown_only = ClientCore::new_with_room_operation_ids(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+            true,
+        );
+        let _ = process(&mut unknown_only, authenticated());
+        let ServerMessage::ProtocolInfo(mut payload) = protocol_info(Some(3)) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        payload.capabilities.push("future_capability".into());
+        let outcome = process(&mut unknown_only, ServerMessage::ProtocolInfo(payload));
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::ProtocolInfo(_)]
+        ));
+        assert!(!unknown_only.room_operation_ids);
+    }
+
+    #[test]
+    fn legacy_admission_before_capability_echo_retains_its_wire_mode() {
+        let mut core = ClientCore::new_with_room_operation_ids(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+            true,
+        );
+        let _ = process(&mut core, authenticated());
+        let (command, admission) = core
+            .prepare_with_admission(ClientOperation::JoinRoom(JoinRoomParams::new(
+                "game", "local",
+            )))
+            .expect("pre-ProtocolInfo join retains legacy interoperability");
+        assert!(matches!(
+            command,
+            CoreCommand::Message(ClientMessage::JoinRoom { .. })
+        ));
+        core.record_admission(admission);
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            None
+        );
+
+        let _ = process(&mut core, protocol_info_with_room_operation_ids(3));
+        assert!(core.room_operation_ids);
+        let outcome = process(&mut core, room_joined());
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::RoomJoined { .. }]
+        ));
+
+        let (_, operation_id) = prepare_and_admit(&mut core, ClientOperation::LeaveRoom);
+        assert_ne!(operation_id, RoomOperationId::nil());
+    }
+
+    #[test]
+    fn correlated_admission_uses_fresh_ids_and_rejects_mismatches_without_unfencing() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let join = || ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
+        let (_, first_id) = prepare_and_admit(&mut core, join());
+
+        let wrong_id = RoomOperationId::from_u128(0xdddd);
+        let outcome = process(
+            &mut core,
+            correlated_result(
+                wrong_id,
+                RoomOperationResult::RoomJoinFailed {
+                    reason: "stale".into(),
+                    error_code: None,
+                },
+            ),
+        );
+        assert_lifecycle_violation_containing(&outcome, "did not match");
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(first_id)
+        );
+
+        let outcome = process(
+            &mut core,
+            correlated_result(first_id, RoomOperationResult::RoomLeft),
+        );
+        assert_lifecycle_violation_containing(&outcome, "conflicts");
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(first_id)
+        );
+
+        let outcome = process(
+            &mut core,
+            correlated_result(
+                first_id,
+                RoomOperationResult::RoomJoinFailed {
+                    reason: "full".into(),
+                    error_code: Some(crate::ErrorCode::RoomFull),
+                },
+            ),
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::RoomJoinFailed { .. }]
+        ));
+        assert!(core.pending_room_operation.is_none());
+
+        let (_, second_id) = prepare_and_admit(&mut core, join());
+        assert_ne!(first_id, second_id, "each admission needs a fresh UUID");
+        let outcome = process(
+            &mut core,
+            correlated_result(
+                first_id,
+                RoomOperationResult::RoomJoinFailed {
+                    reason: "delayed duplicate".into(),
+                    error_code: None,
+                },
+            ),
+        );
+        assert_lifecycle_violation_containing(&outcome, "did not match");
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(second_id)
+        );
+    }
+
+    #[test]
+    fn correlated_operation_failed_is_attributed_without_becoming_server_error() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let (_, operation_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::Reconnect(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            ),
+        );
+        assert_eq!(core.pending_reconnects.len(), 1);
+
+        let outcome = process(
+            &mut core,
+            correlated_result(
+                operation_id,
+                RoomOperationResult::OperationFailed {
+                    reason: "cannot reconnect".into(),
+                    error_code: Some(crate::ErrorCode::ReconnectionFailed),
+                },
+            ),
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::RoomOperationFailed { reason, .. }] if reason == "cannot reconnect"
+        ));
+        assert!(core.pending_room_operation.is_none());
+        assert!(core.pending_reconnects.is_empty());
+        assert!(core.last_server_error.is_none());
+    }
+
+    #[test]
+    fn correlated_result_kind_matrix_covers_every_room_operation() {
+        let room_joined = match room_joined() {
+            ServerMessage::RoomJoined(payload) => RoomOperationResult::RoomJoined(payload),
+            _ => unreachable!("room_joined helper always returns RoomJoined"),
+        };
+        let spectator_joined = match spectator_joined() {
+            ServerMessage::SpectatorJoined(payload) => {
+                RoomOperationResult::SpectatorJoined(payload)
+            }
+            _ => unreachable!("spectator_joined helper always returns SpectatorJoined"),
+        };
+        let reconnected = match reconnected(vec![]) {
+            ServerMessage::Reconnected(payload) => RoomOperationResult::Reconnected(payload),
+            _ => unreachable!("reconnected helper always returns Reconnected"),
+        };
+        let cases = [
+            (PendingRoomOperation::JoinPlayer, room_joined),
+            (
+                PendingRoomOperation::JoinPlayer,
+                RoomOperationResult::RoomJoinFailed {
+                    reason: "failed".into(),
+                    error_code: None,
+                },
+            ),
+            (
+                PendingRoomOperation::LeavePlayer,
+                RoomOperationResult::RoomLeft,
+            ),
+            (PendingRoomOperation::ReconnectPlayer, reconnected),
+            (
+                PendingRoomOperation::ReconnectPlayer,
+                RoomOperationResult::ReconnectionFailed {
+                    reason: "failed".into(),
+                    error_code: crate::ErrorCode::ReconnectionFailed,
+                },
+            ),
+            (PendingRoomOperation::JoinSpectator, spectator_joined),
+            (
+                PendingRoomOperation::JoinSpectator,
+                RoomOperationResult::SpectatorJoinFailed {
+                    reason: "failed".into(),
+                    error_code: None,
+                },
+            ),
+            (
+                PendingRoomOperation::LeaveSpectator,
+                RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                    current_spectators: vec![],
+                },
+            ),
+        ];
+        for (pending, result) in &cases {
+            assert!(
+                room_operation_result_matches(*pending, result),
+                "{pending:?} must accept {}",
+                room_operation_result_name(result)
+            );
+        }
+        for pending in [
+            PendingRoomOperation::JoinPlayer,
+            PendingRoomOperation::LeavePlayer,
+            PendingRoomOperation::ReconnectPlayer,
+            PendingRoomOperation::JoinSpectator,
+            PendingRoomOperation::LeaveSpectator,
+        ] {
+            assert!(room_operation_result_matches(
+                pending,
+                &RoomOperationResult::OperationFailed {
+                    reason: "failed".into(),
+                    error_code: None,
+                }
+            ));
+            assert!(!room_operation_result_matches(
+                pending,
+                &RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                    current_spectators: vec![],
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn correlated_results_remain_forbidden_inside_reconnect_replay() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let (_, operation_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::Reconnect(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            ),
+        );
+        let nested = correlated_result(
+            RoomOperationId::from_u128(0xaaaa),
+            RoomOperationResult::RoomLeft,
+        );
+        let ServerMessage::Reconnected(payload) = reconnected(vec![nested]) else {
+            unreachable!("reconnected helper always returns Reconnected")
+        };
+        let outcome = process(
+            &mut core,
+            correlated_result(operation_id, RoomOperationResult::Reconnected(payload)),
+        );
+        assert_lifecycle_violation_containing(&outcome, "non-replayable RoomOperationResult");
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(operation_id)
+        );
+        assert_eq!(core.pending_reconnects.len(), 1);
+    }
+
+    #[test]
+    fn autonomous_spectator_exit_remains_valid_during_a_correlated_leave() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Quarantine);
+        let (_, join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        let joined = process(
+            &mut core,
+            correlated_result(join_id, RoomOperationResult::SpectatorJoined(payload)),
+        );
+        assert!(matches!(
+            joined.events.as_slice(),
+            [SignalFishEvent::SpectatorJoined { .. }]
+        ));
+        let (_, _leave_id) = prepare_and_admit(&mut core, ClientOperation::LeaveSpectator);
+
+        let outcome = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                current_spectators: vec![],
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SpectatorLeft { .. }]
+        ));
+        assert_eq!(core.room_role(), None);
+        assert!(core.pending_room_operation.is_none());
+    }
+
+    #[test]
+    fn stale_correlated_ids_never_release_the_current_fence_under_any_policy() {
+        for policy in [
+            ProtocolViolationPolicy::Observe,
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+        ] {
+            let mut core = correlated_outside(policy);
+            let (_, current_id) = prepare_and_admit(
+                &mut core,
+                ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+            );
+            let outcome = process(
+                &mut core,
+                correlated_result(
+                    RoomOperationId::from_u128(0xaaaa),
+                    RoomOperationResult::RoomJoinFailed {
+                        reason: "stale".into(),
+                        error_code: None,
+                    },
+                ),
+            );
+            assert_lifecycle_violation_containing(&outcome, "did not match");
+            assert_eq!(
+                outcome.disconnect,
+                policy == ProtocolViolationPolicy::Disconnect
+            );
+            assert_eq!(
+                core.pending_room_operation
+                    .as_ref()
+                    .and_then(|pending| pending.operation_id),
+                Some(current_id)
+            );
+        }
+    }
+
+    #[test]
+    fn physical_disconnect_clears_correlation_scope_and_pending_identity() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let _ = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+        );
+        assert!(core.room_operation_ids);
+        assert!(core.pending_room_operation.is_some());
+
+        let disconnected = core.disconnect(Some("transport closed".into()));
+        assert!(matches!(disconnected, SignalFishEvent::Disconnected { .. }));
+        assert!(!core.room_operation_ids);
+        assert!(core.pending_room_operation.is_none());
+        assert!(core.pending_reconnects.is_empty());
+    }
+
+    #[test]
+    fn malformed_or_uncorrelated_errors_never_release_a_correlated_fence() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let (_, operation_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+        );
+        let malformed = core.process_frame(TransportFrame::Text(format!(
+            r#"{{"type":"RoomOperationResult","data":{{"operation_id":"{operation_id}","result":{{"type":"RoomJoinFailed","data":null}}}}}}"#
+        )));
+        assert!(matches!(
+            malformed.events.as_slice(),
+            [SignalFishEvent::DecodeFailed { .. }]
+        ));
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(operation_id)
+        );
+
+        let outcome = process(
+            &mut core,
+            ServerMessage::Error {
+                message: "uncorrelated".into(),
+                error_code: Some(crate::ErrorCode::NotInRoom),
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::Error { .. }]
+        ));
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(operation_id)
+        );
     }
 
     #[test]
@@ -2575,7 +3393,10 @@ mod tests {
         assert_lifecycle_violation(&outcome);
         assert_eq!(player_join.snapshot(), before);
         assert_eq!(
-            player_join.pending_room_operation,
+            player_join
+                .pending_room_operation
+                .as_ref()
+                .map(|pending| pending.kind),
             Some(PendingRoomOperation::JoinPlayer)
         );
 
@@ -2593,7 +3414,10 @@ mod tests {
         assert_lifecycle_violation(&outcome);
         assert_eq!(spectator_join.snapshot(), before);
         assert_eq!(
-            spectator_join.pending_room_operation,
+            spectator_join
+                .pending_room_operation
+                .as_ref()
+                .map(|pending| pending.kind),
             Some(PendingRoomOperation::JoinSpectator)
         );
 
@@ -2635,7 +3459,10 @@ mod tests {
         assert_lifecycle_violation(&outcome);
         assert_eq!(spectator_leave.snapshot(), before);
         assert_eq!(
-            spectator_leave.pending_room_operation,
+            spectator_leave
+                .pending_room_operation
+                .as_ref()
+                .map(|pending| pending.kind),
             Some(PendingRoomOperation::LeaveSpectator)
         );
     }

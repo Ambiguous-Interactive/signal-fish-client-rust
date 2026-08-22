@@ -52,7 +52,9 @@
 //!   additionally advertises WebRTC plus mesh/host topologies, letting the server
 //!   form a peer-to-peer session when appropriate. v3 capabilities are additive
 //!   to the v2 relay floor, and the server falls back to relay whenever it cannot
-//!   form a session. On current servers, an eligible client explicitly calls
+//!   form a session. V3-capable configurations also request UUID-correlated room
+//!   operations and use them only after an exact `ProtocolInfo` capability echo.
+//!   On current servers, an eligible client explicitly calls
 //!   [`SignalFishClient::start_game`] after readiness instead of relying on
 //!   automatic start.
 //!
@@ -151,9 +153,10 @@ pub use event::{
 pub use protocol::{
     decode_v3_binary_game_data, ClientMessage, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
     DeliveryGapReason, DeliveryReportPayload, DirectEndpoint, IceServer, LatestDeliveryCounters,
-    MessageTransport, ReliableDeliveryCounters, ReplayStatus, SenderWatermark, ServerMessage,
-    SessionGeneration, SessionPeer, SessionPlanPayload, Topology, TransportKind,
-    V3BinaryGameDataFrame, VolatileDeliveryCounters,
+    MessageTransport, ReliableDeliveryCounters, ReplayStatus, RoomOperationId,
+    RoomOperationRequest, RoomOperationResult, SenderWatermark, ServerMessage, SessionGeneration,
+    SessionPeer, SessionPlanPayload, Topology, TransportKind, V3BinaryGameDataFrame,
+    VolatileDeliveryCounters, ROOM_OPERATION_IDS_CAPABILITY,
 };
 pub use signal::PeerSignal;
 #[cfg(feature = "transport-websocket")]

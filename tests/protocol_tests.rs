@@ -43,7 +43,7 @@ fn test_uuid(n: u128) -> uuid::Uuid {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// ClientMessage round-trip tests (11 variants)
+// ClientMessage round-trip tests
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -56,6 +56,7 @@ fn client_message_authenticate_round_trip() {
         protocol_version: None,
         supported_transports: None,
         supported_topologies: None,
+        requested_capabilities: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let deser: ClientMessage = serde_json::from_str(&json).expect("deserialize");
@@ -67,6 +68,7 @@ fn client_message_authenticate_round_trip() {
         protocol_version,
         supported_transports,
         supported_topologies,
+        requested_capabilities,
     } = deser
     {
         assert_eq!(app_id, "mb_app_test");
@@ -77,6 +79,7 @@ fn client_message_authenticate_round_trip() {
         assert!(protocol_version.is_none());
         assert!(supported_transports.is_none());
         assert!(supported_topologies.is_none());
+        assert!(requested_capabilities.is_none());
     } else {
         panic!("expected Authenticate variant");
     }
@@ -249,7 +252,7 @@ fn client_message_leave_spectator_round_trip() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// ServerMessage round-trip tests (24 variants)
+// ServerMessage round-trip tests
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -1403,6 +1406,7 @@ fn authenticate_relay_floor_omits_v3_fields() {
         protocol_version: None,
         supported_transports: None,
         supported_topologies: None,
+        requested_capabilities: None,
     };
     let json = serde_json::to_string(&msg).expect("ser");
     assert!(
@@ -1423,6 +1427,7 @@ fn authenticate_mesh_includes_v3_fields_with_exact_strings() {
         protocol_version: Some(3),
         supported_transports: Some(vec![TransportKind::WebRtc, TransportKind::Relay]),
         supported_topologies: Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]),
+        requested_capabilities: Some(vec!["room_operation_ids".into()]),
     };
     let val: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
@@ -2344,6 +2349,7 @@ fn client_message_uses_type_and_content_tags() {
         protocol_version: None,
         supported_transports: None,
         supported_topologies: None,
+        requested_capabilities: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");

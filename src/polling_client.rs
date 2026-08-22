@@ -246,10 +246,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
             transport,
             cmd_queue,
             command_capacity: config.command_channel_capacity.max(1),
-            core: ClientCore::new(
+            core: ClientCore::new_with_room_operation_ids(
                 config.game_data_format,
                 config.protocol_violation_policy,
                 mesh_capable,
+                config.requests_room_operation_ids(),
             ),
             options,
             polling_stats: PollingStats {
@@ -961,8 +962,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     // ── Private helpers ─────────────────────────────────────────────
 
     fn queue_operation(&mut self, operation: ClientOperation) -> Result<()> {
-        let admission = ClientCore::admission_for(&operation);
-        let command = self.core.prepare(operation)?;
+        let (command, admission) = self.core.prepare_with_admission(operation)?;
         self.queue_command_at(command, Instant::now())?;
         self.core.record_admission(admission);
         Ok(())

@@ -560,7 +560,7 @@ let signal = PeerSignal::try_from(&value)?;                     // fallible
 
 ## `ClientMessage`
 
-Messages sent from the client to the server. There are **14 variants**, all
+Messages sent from the client to the server. There are **15 variants**, all
 constructed internally by `SignalFishClient` methods — you never need to build
 these by hand. `StartGame` is the protocol-v2 explicit-start message; `Signal`
 and `TransportStatus` are protocol-v3 additions.
@@ -584,6 +584,7 @@ pub enum ClientMessage { /* ... */ }
 | `Reconnect` | Reconnect to a room after a disconnection. |
 | `JoinAsSpectator` | Join a room as a read-only spectator. |
 | `LeaveSpectator` | Leave spectator mode. |
+| `RoomOperation` | **(negotiated v3)** Wrap one of the five directed room commands with a fresh canonical UUID after `room_operation_ids` is echoed. |
 | `StartGame` | **(v2)** Explicitly start the game, finalizing the lobby (via `client.start_game()`). |
 | `Signal` | **(v3)** Relay an opaque WebRTC signal to a single peer (via `client.send_signal(...)`). |
 | `TransportStatus` | **(v3)** Report whether a data-path transport is established (via `client.report_transport_status(...)`). |
@@ -597,7 +598,7 @@ pub enum ClientMessage { /* ... */ }
 
 ## `ServerMessage`
 
-Messages received from the server. There are **31 variants**. You don't parse
+Messages received from the server. There are **32 variants**. You don't parse
 these manually — they arrive as `SignalFishEvent` variants through the event
 channel. The mesh, delivery, and drain additions are sent only on a v3-negotiated
 connection.
@@ -631,6 +632,7 @@ pub enum ServerMessage { /* ... */ }
 | `SpectatorJoined` | Successfully joined as a spectator. |
 | `SpectatorJoinFailed` | Failed to join as a spectator. |
 | `SpectatorLeft` | Successfully left spectator mode. |
+| `RoomOperationResult` | **(negotiated v3)** Echoes the exact UUID and carries an operation-specific terminal result or `OperationFailed`. |
 | `NewSpectatorJoined` | Another spectator joined the room. |
 | `SpectatorDisconnected` | Another spectator disconnected. |
 | `Error` | Generic server error. |
@@ -658,10 +660,21 @@ safely ignores any of these it doesn't recognize.
 
 | Message | New field(s) | Purpose |
 |---------|--------------|---------|
-| `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies` | Advertise the highest version, data-path transports, and topologies the client can fulfill. `enable_v3()` sets the version; `enable_mesh()` additionally supplies WebRTC/P2P defaults; power-user builders and `MeshController` can preserve or augment explicit choices. |
-| `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version` | The negotiated version (plus the deployment's accepted range). |
+| `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies`, `requested_capabilities` | Advertise the highest version, data-path transports, topologies, and additive tokens the client can fulfill. V3-capable configurations request `room_operation_ids`; default and explicit-v2 configurations omit it. |
+| `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version`, `capabilities` | The negotiated version and exact enabled capability tokens. A requested capability is inactive until echoed. |
 | `RoomJoinedPayload` / `ReconnectedPayload` | `ice_servers: Vec<IceServer>` | ICE pre-gather: STUN/TURN servers delivered during the lobby wait so WebRTC candidate gathering can start early. Empty (and absent from the wire) for v2. |
 | `ReconnectedPayload` | `replay`, `sender_watermarks`, `reconnection_token` | Required v3 authoritative replay/accountability baseline and rotated reconnect credential. All are absent/empty under v2. |
+
+### Correlated room operations (negotiated v3)
+
+`RoomOperationId` is a client-generated UUID serialized in lowercase hyphenated
+form. After `room_operation_ids` is requested and echoed on v3, `JoinRoom`,
+`LeaveRoom`, `Reconnect`, `JoinAsSpectator`, and `LeaveSpectator` are carried in
+`RoomOperation`; their terminal response arrives in `RoomOperationResult` with
+the identical ID. IDs are correlation fences, not idempotency keys: the server
+echoes them but does not deduplicate operations. A fresh physical connection
+negotiates a new scope. Autonomous spectator removal, disconnection, and room
+closure remain top-level `SpectatorLeft` messages.
 
 ---
 
