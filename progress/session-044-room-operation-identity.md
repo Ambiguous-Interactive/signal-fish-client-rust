@@ -102,5 +102,16 @@ checks passed during implementation. The final mandatory local chain passed:
 complete all-feature workspace test suite. The warnings-as-errors no-default
 feature build also passed. MkDocs rendering was unavailable in the container
 because `mkdocs` is not installed, and only the native aarch64 target is
-installed; hosted CI owns those matrix checks. Commit, PR, review, and hosted
-check evidence are recorded after the hosted tree is immutable.
+installed; hosted CI supplied those matrix checks.
+
+PR [#133](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/133)
+opened from implementation commit `ee4896856715e9513dc20c26ac1f4c0cbe9be5e4`
+and links `Closes #128`. All 13 pull-request workflows passed: CI, Coverage,
+Deep Safety, Docs Validation, Examples Validation, Godot Web, No Panics,
+Protocol Sync, Security, Semver Checks, Unused Deps, WASM, and Workflow Lint.
+The nested evidence includes Miri, fuzzing, mutation testing, the official
+Godot web export, clean Server 0.4/0.7 browser scenarios, impaired networking,
+and the Server 0.7 soak. No review thread or code finding was filed. The sole
+review submission says the Copilot reviewer quota was exhausted, the existing
+repository-policy limitation tracked by issue #90 rather than a product or PR
+failure.
