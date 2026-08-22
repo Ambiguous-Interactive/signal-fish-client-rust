@@ -68,5 +68,14 @@ The frozen implementation passes the mandatory local chain:
   parity tests, all workspace integration and doc tests; 11 live-server tests
   remain ignored by their explicit environment contract)
 
-Hosted PR evidence remains pending until the branch is committed, pushed, and
-opened as the session's single pull request.
+PR #138 is the session's single pull request. Its implementation head,
+`54b0f6a033a9305fec245df6f0274516499c8617`, passed all 11 hosted workflows:
+Security, No Panics, Workflow Lint, Unused Deps, WASM, Semver Checks, Examples
+Validation, Coverage, Docs Validation, CI, and Godot Web. The Godot Web matrix
+also passed its official-template build/export and clean Server 0.7, clean
+Server 0.4, soak, and impaired browser scenarios.
+
+The hosted review audit found no inline review threads or actionable review
+feedback. Copilot reported only that its review quota was exhausted; that is a
+known repository-administration limitation tracked separately by #90, not a
+finding against this change.
