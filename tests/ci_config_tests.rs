@@ -23,6 +23,14 @@ fn project_root() -> PathBuf {
 mod repository_artifact_policy {
     use super::*;
 
+    fn has_git_metadata_at(root: &Path) -> bool {
+        root.join(".git").exists()
+    }
+
+    fn has_git_metadata() -> bool {
+        has_git_metadata_at(&project_root())
+    }
+
     fn git_paths(arguments: &[&str]) -> Vec<String> {
         let output = std::process::Command::new("git")
             .args(arguments)
@@ -45,6 +53,12 @@ mod repository_artifact_policy {
 
     #[test]
     fn only_curated_planning_evidence_is_both_tracked_and_ignored() {
+        if !has_git_metadata() {
+            // cargo-mutants and source-distribution checks deliberately copy
+            // the crate without repository metadata. Index policy has no
+            // observable subject in those environments.
+            return;
+        }
         let unexpected: Vec<_> = git_paths(&[
             "ls-files",
             "--cached",
@@ -83,11 +97,33 @@ mod repository_artifact_policy {
             );
         }
 
+        if !has_git_metadata() {
+            return;
+        }
+
         let tracked = git_paths(&["ls-files", "--cached", "-z"]);
         assert!(
             !tracked.iter().any(|path| path == "pr-description.md"),
             "the transient root PR description must not be tracked"
         );
+    }
+
+    #[test]
+    fn isolated_source_copies_are_distinguished_from_git_checkouts() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after Unix epoch")
+            .as_nanos();
+        let copy = std::env::temp_dir().join(format!(
+            "signal-fish-artifact-policy-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&copy).expect("create isolated source copy");
+        assert!(!has_git_metadata_at(&copy));
+        std::fs::write(copy.join(".git"), "gitdir: omitted\n")
+            .expect("create worktree-style Git marker");
+        assert!(has_git_metadata_at(&copy));
+        std::fs::remove_dir_all(&copy).expect("remove isolated source copy");
     }
 }
 
