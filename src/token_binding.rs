@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn golden_vectors() -> GoldenVectors {
-        toml::from_str(include_str!("../tests/token-binding/vectors.toml"))
+        toml::from_str(include_str!("testdata/token-binding-vectors.toml"))
             .expect("pinned token-binding vectors must parse")
     }
 

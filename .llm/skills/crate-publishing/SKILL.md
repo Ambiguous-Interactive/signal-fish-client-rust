@@ -27,14 +27,10 @@ readme = "README.md"
 keywords = ["gamedev", "signaling", "multiplayer", "networking", "matchmaking"]
 categories = ["game-engines", "network-programming"]
 include = [
-    "src/**/*",
-    "examples/**/*",
-    "tests/**/*",
-    "!tests/godot_adapter_policy_tests.rs",
-    "Cargo.toml",
-    "LICENSE",
-    "README.md",
-    "CHANGELOG.md",
+    "/src/**",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
 ]
 ```
 
@@ -73,8 +69,11 @@ its crates.io name.
 
 - `keywords`: max 5, lowercase, hyphenated — used for crates.io search
 - `categories`: must be from the official crates.io category list
-- `include`: excludes `.llm/`, `scripts/`, `.github/`, target, and any
-  repository-policy test that reads those paths from the published package
+- `include`: ships library source, data required by its unit tests, and package
+  metadata. Examples, integration tests, standalone wire fixtures, changelogs,
+  `.llm/`, scripts, workflows, progress records, and other repository-only
+  content remain available from the linked source repository instead of being
+  duplicated in the crate archive.
 - `homepage`: project website / user guide (GitHub Pages URL)
 - `documentation`: API reference (docs.rs URL)
 - `.llm/context.md` must list **both** URLs separately so that LLM

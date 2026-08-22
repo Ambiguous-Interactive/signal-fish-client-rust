@@ -50,13 +50,15 @@ partial guarantees from separate rulesets into a passing audit.
 
 The core MSRV job must test Cargo's actual publishable `.crate` artifact. Do
 not recreate a standalone manifest by truncating or rewriting workspace TOML;
-that diverges from Cargo normalization and breaks inherited fields. Package
-with pinned release Cargo, extract the artifact, compile every packaged test
-target with `--no-run` under the core MSRV, and execute the package-independent
-library tests with `--lib`. Repository-policy tests that require `.github`,
-`.llm`, or sibling crates must stay excluded from `package.include`. Keep
+that diverges from Cargo normalization and breaks inherited fields. Compile
+every repository test target with `--no-run` and execute the core library tests
+under the MSRV so excluded test fixtures retain MSRV coverage. Then package
+with pinned release Cargo, extract the artifact, and compile that exact
+published library's tests under the MSRV. Tests, examples, and repository
+fixtures stay outside `package.include`; any data consumed by unit tests in
+`src/` must remain in the package with those tests. Keep
 `isolated_core_msrv_uses_the_publishable_package_artifact` and the package
-exclusion policy test in sync with this workflow.
+allowlist policy test in sync with this workflow.
 
 ### lychee: TOML vs CLI syntax
 

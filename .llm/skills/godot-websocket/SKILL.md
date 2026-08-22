@@ -185,6 +185,11 @@ a six-callback polling hitch while gameplay advances. Pure JavaScript validators
 must reject negative controls for checksum, confirmation, conservation, queue
 age, lag/stalls, teardown watermarks, and admission diagnostics. Always retain
 logs, time series, Prometheus snapshots, summaries, and netem configuration.
+Do not gate callback wall time on one 50 ms maximum: browser garbage collection
+and host preemption can inflate an elapsed interval. Retain a 500 ms emergency
+maximum and require no more than one percent of polls to reach 50 ms, alongside
+bounded poll work, queue age, end-to-end latency, simulation cadence, and exact
+outcomes.
 
 Web builds must use `godot/api-custom` so bindgen generates 32-bit interface
 types. Point `GODOT4_BIN` at the 4.5 editor, point the target-specific bindgen

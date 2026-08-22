@@ -219,6 +219,10 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
       - name: Generate workspace lockfile for packaging
         run: bash scripts/cargo-retry.sh +1.96.1 generate-lockfile
+      - name: Compile repository core tests with MSRV
+        run: cargo +1.87.0 test --locked --package signal-fish-client --all-features --no-run
+      - name: Test repository core library with MSRV
+        run: cargo +1.87.0 test --locked --package signal-fish-client --all-features --lib
       - name: Create isolated core package tree
         run: |
           core_dir="$RUNNER_TEMP/signal-fish-core-msrv"

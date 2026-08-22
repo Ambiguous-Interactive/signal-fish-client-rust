@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced the published `signal-fish-client` crate archive to library source,
+  its required token-binding unit-test vector, and package metadata.
+  Repository integration tests, other standalone wire fixtures, examples,
+  progress records, and changelog history remain available from the linked
+  source repository instead of being duplicated on crates.io.
 - Adopted Ambiguous Interactive's approved Vector design system across the
   README and MkDocs site, including a client-specific source-vector identity,
   accessible light and dark oceanic palettes, self-hosted typography, clearer

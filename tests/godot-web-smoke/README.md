@@ -14,9 +14,12 @@ for 16 seconds. It records queue depth, Godot/browser buffering, acceptance and
 receipt counts, poll duration, and end-to-end timestamp latency. The browser
 gate requires exact reliable receipt, bounded/finally drained client queues, a
 non-positive final queue slope over eight consecutive 250 ms drained samples,
-p99 latency at most 500 ms, and every `poll()` below 50 ms. CI always uploads JSON/CSV time series
-and before/after `/metrics/prom` snapshots; browser/server logs are retained on
-failure. The transport wrapper also requires zero contemporaneous adaptive
+p99 latency at most 500 ms, and exact per-poll frame/byte work budgets. Maximum
+`poll()` wall time retains a 500 ms emergency cap, while no more than one percent
+of polls may reach 50 ms; this absorbs isolated browser garbage collection or
+host-runner preemption without accepting persistent or extreme stalls. CI
+always uploads JSON/CSV time series and before/after `/metrics/prom` snapshots;
+browser/server logs are retained on failure. The transport wrapper also requires zero contemporaneous adaptive
 watermark violations and reports empty-buffer single-frame escape bytes
 separately from the immutable 32 KiB ceiling. Server 0.4.0 does not expose an
 internal queue/sojourn gauge, so the

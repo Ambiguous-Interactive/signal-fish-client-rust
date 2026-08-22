@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 #[test]
 fn pinned_server_070_token_binding_provenance_is_complete() {
     let provenance_path = "tests/token-binding/PROVENANCE.toml";
-    let vectors_path = "tests/token-binding/vectors.toml";
+    let vectors_path = "src/testdata/token-binding-vectors.toml";
     let provenance_text =
         std::fs::read_to_string(provenance_path).expect("read token-binding provenance");
     let provenance: toml::Value =
