@@ -90,10 +90,11 @@ The final re-review reported zero actionable issues.
 All 12 push workflows on the starting main commit passed. The 38-test Godot
 adapter suite and the five pure JavaScript oracle tests pass locally. Workflow
 hygiene, shell portability, the 228-test CI policy suite, and the exact
-format/Clippy/workspace-test mandatory chain pass. The standalone
-fixture cannot compile in the development container because its `api-custom`
-godot-rust build requires a Godot 4 executable; the pinned hosted job owns that
-official engine proof. PR #136's first hosted pass exposed one deterministic
+format/Clippy/workspace-test mandatory chain pass. The container did not ship a
+Godot executable, so the standalone fixture initially remained hosted-only; a
+later checksum-verified official Godot 4.5 arm64 download enabled the local
+native compile and engine startup checks described below. PR #136's first
+hosted pass exposed one deterministic
 Actionlint failure: the native oracle's single-quoted inline JavaScript used
 template-literal `${...}` expressions, which Actionlint's embedded ShellCheck
 reported as SC2016. Rewriting those three diagnostics as string concatenation
@@ -107,13 +108,24 @@ registered the native extension; the same isolated project with that one-line
 registry already present loaded `SignalFishSmoke`, emitted `fixture-ready`, and
 exited normally. The native harness therefore uses an isolated project copy and
 seeds `.godot/extension_list.cfg` before runtime, avoiding both the first-scan
-engine crash and contamination of the later web export. Final mandatory,
-pull-request, and hosted workflow evidence will be appended after the repaired
-implementation diff is frozen. The following hosted run reached the real
-native scenario and proved the exact large relay (`wire_bytes=82068`,
-`padding_bytes=81920`), JSON shutdown, and binary close readiness. It failed
-only because the harness also applied the browser load oracle's required
-`multi_frame_poll`; the faster native loop accepted one load frame per poll.
-The native gate retains the load/shutdown sequencing waits but now validates
-only its intended large-inbound oracle, leaving performance batching to the
-existing browser jobs.
+engine crash and contamination of the later web export. A following hosted run
+reached the real native scenario and proved the exact large relay
+(`wire_bytes=82068`, `padding_bytes=81920`), JSON shutdown, and binary close
+readiness. It failed only because the harness also applied the browser load
+oracle's required `multi_frame_poll`; the faster native loop accepted one load
+frame per poll. The native gate retains the load/shutdown sequencing waits but
+now validates only its intended large-inbound oracle, leaving performance
+batching to the existing browser jobs.
+
+PR #136 implementation head `088ade56afbee808b6e4de505374424b5095bea4`
+is mergeable and all 11 pull-request workflows passed. Godot Web run
+32589292120 passed the build/export aggregate, official native smoke, Server
+0.7 clean/impaired/3,600-frame soak browsers, Server 0.4 clean compatibility,
+and required aggregate gate. The other ten successful workflows were CI,
+Coverage, Docs Validation, Examples Validation, No Panics, Security, Semver
+Checks, Unused Deps, WASM, and Workflow Lint. The final local tree again passed
+the exact mandatory chain, all 16 available pre-commit checks, and all six
+pre-push checks. PR inspection found no inline review threads or code findings;
+the only automated review messages reported exhausted Copilot quota, the
+maintainer-only governance condition already tracked by issue #90. Follow-up
+correctness findings remain independently actionable in issues #134 and #135.
