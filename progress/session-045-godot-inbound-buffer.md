@@ -101,7 +101,12 @@ preserves their behavior without shell-looking interpolation. The next hosted
 pass reached the official native engine but timed out before any fixture marker;
 its retained Godot log showed `SignalFishSmoke` was an unloaded placeholder.
 The harness had copied the native GDExtension without running the project import
-that the existing web-export path already requires. It now performs the same
-official `--import` step before launching the native scene. Final mandatory,
+that the existing web-export path already requires. A checksum-verified official
+Godot 4.5 arm64 editor reproduced a Godot signal-11 crash after first-scan import
+registered the native extension; the same isolated project with that one-line
+registry already present loaded `SignalFishSmoke`, emitted `fixture-ready`, and
+exited normally. The native harness therefore uses an isolated project copy and
+seeds `.godot/extension_list.cfg` before runtime, avoiding both the first-scan
+engine crash and contamination of the later web export. Final mandatory,
 pull-request, and hosted workflow evidence will be appended after the repaired
 implementation diff is frozen.

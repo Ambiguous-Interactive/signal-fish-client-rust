@@ -96,15 +96,19 @@ jobs:
           curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
           curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
           sha256sum --check "${asset}.sha256"
-          mkdir -p .signal-fish-native-server tests/godot-web-smoke/project/bin
+          native_fixture=".godot-native-project"
+          mkdir -p .signal-fish-native-server "${native_fixture}"
+          cp -R tests/godot-web-smoke/project/. "${native_fixture}/"
+          mkdir -p "${native_fixture}/bin" "${native_fixture}/.godot"
           tar -xzf "${asset}" -C .signal-fish-native-server
           server_bin="$(find .signal-fish-native-server -type f -name signal-fish-server -print -quit)"
           chmod +x "${server_bin}"
 
           cargo build --manifest-path tests/godot-web-smoke/Cargo.toml --locked
           cp tests/godot-web-smoke/target/debug/libsignal_fish_godot_smoke.so \
-            tests/godot-web-smoke/project/bin/libsignal_fish_godot_smoke.so
-          "${GODOT4_BIN}" --headless --path tests/godot-web-smoke/project --import
+            "${native_fixture}/bin/libsignal_fish_godot_smoke.so"
+          printf 'res://signal_fish_smoke.gdextension\n' \
+            >"${native_fixture}/.godot/extension_list.cfg"
 
           cleanup() {
             if [ -n "${godot_pid:-}" ]; then
@@ -140,7 +144,7 @@ jobs:
             sleep 0.1
           done
 
-          "${GODOT4_BIN}" --headless --path tests/godot-web-smoke/project -- \
+          "${GODOT4_BIN}" --headless --path "${native_fixture}" -- \
             --server-url ws://127.0.0.1:3536/v2/ws >godot-native.log 2>&1 &
           godot_pid=$!
 
