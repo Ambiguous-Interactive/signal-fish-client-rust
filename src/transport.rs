@@ -136,6 +136,12 @@ pub trait Transport {
     fn begin_poll_cycle(&mut self) {}
 
     /// Advance one outbound frame.
+    ///
+    /// The clients treat an error as outbound-terminal. It must not take a
+    /// caller-owned frame unless the backend had already accepted it. They may
+    /// still call [`poll_recv`](Self::poll_recv) to process a bounded sequence
+    /// of complete frames that are immediately ready, stopping at its first
+    /// `Pending`, error, or EOF, before they close or abort the transport.
     fn poll_send(
         &mut self,
         cx: &mut Context<'_>,

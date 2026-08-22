@@ -164,6 +164,12 @@ graceful transport close without waiting for event-channel capacity. A close
 error or the configured close deadline invokes `Transport::abort` before the
 driver stops. If draining ever resumes instead, the buffered events (often
 including the eviction farewell) arrive, followed by `Disconnected`.
+After an outbound send failure, the clients process immediately ready frames in
+order before finalizing the disconnect. This terminal drain remains bounded by
+its deadline and frame/byte work limits, stops on protocol-directed disconnect
+or the transport's first `Pending`, and retains normal event-channel
+backpressure; shutdown may preempt it. A bound reached before a farewell means
+that farewell is intentionally not observed.
 
 ## Sizing the channels
 

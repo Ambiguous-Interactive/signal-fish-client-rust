@@ -141,10 +141,15 @@ immediately and is idempotent. Async task cancellation is protected by an
 owner guard that invokes abort unless graceful close completed; client drivers
 perform no later transport polls.
 
-EOF and terminal receive/send failures drop the stream, clear retained send and
-control state, and fuse the transport. Report the first receive failure as
-`TransportReceive`; later receives return `None`, sends return
-`TransportClosed` without taking their frame, and close remains idempotent.
+EOF and terminal receive failures drop the stream, clear retained send and
+control state, and fuse the transport. A terminal sink failure rejects later
+sends but retains the stream just long enough for `poll_recv` to surface
+already-buffered application frames; its first backend `Pending`, receive
+failure, EOF, close, or abort then drops the stream. Pre-acceptance token-
+binding errors and an exactly restored `WriteBufferFull` remain retryable.
+Report the first receive failure as `TransportReceive`; later receives return
+`None`, terminal sends return `TransportClosed` without taking their frame, and
+close remains idempotent.
 
 ## Wakers
 

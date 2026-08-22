@@ -92,9 +92,13 @@ measured evidence before accepting performance complexity:
    `ClientCore`, preserve caller-owned `from_stream` limits, and fuse capacity
    errors. No finite value is a Server 0.7 compatibility guarantee, so
    [signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399)
-   tracks a negotiated/enforced outbound contract. Disconnect-adjacent
-   transitions now have the focused follow-up
-   [#134](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/134).
+   tracks a negotiated/enforced outbound contract. The disconnect-adjacent
+   send-failure slice is complete: both drivers freeze command admission,
+   process bounded already-ready server frames through the shared core, retain
+   farewell attribution and exact event order, and preserve the original send
+   cause unless peer-initiated close metadata is stronger. Capacity-one event
+   backpressure, shutdown/deadline preemption, work bounds, terminal outcomes,
+   and no-retry behavior cover [#134](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/134).
    The Godot engine-boundary slice is complete: SDK-created peers raise
    Godot's inbound buffer from 65,535 bytes to 8 MiB before connecting,
    caller-owned peers remain unchanged, and official native plus web runs

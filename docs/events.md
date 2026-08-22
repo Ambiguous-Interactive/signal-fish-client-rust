@@ -55,6 +55,10 @@ Use these to track the raw connection lifecycle.
 | `reason` | `Option<String>` | Human-readable close explanation with structured transport code/reason when available. Servers use semantic codes such as `4000 server_shutdown` and `4002 slow_consumer`; Server 0.7 also uses `4005 room_inactive`. |
 | `last_server_error` | `Option<ServerErrorInfo>` | The most recent `Error`/`AuthenticationError` received on this connection — a correlation aid for attributing the disconnect. A server that evicts a slow consumer writes a best-effort `Error { error_code: SlowConsumer }` farewell before closing; when that frame arrives, it shows up here. See the [Delivery Contract](delivery.md). |
 
+After outbound send failure, ready server errors can still populate
+`last_server_error`; the exact bounded-drain and cause-precedence rules are in
+the [Delivery Contract](delivery.md#the-wedged-consumer-hazard).
+
 !!! note "Delivery of the terminal `Disconnected`"
     During normal operation `Disconnected` is delivered with backpressure
     like every other event — it is not dropped merely because the consumer
