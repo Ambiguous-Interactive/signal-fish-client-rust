@@ -377,12 +377,11 @@ Emscripten SDK version are independent compatibility axes.
 
 ### Low-Latency Socket Defaults
 
-Socket-owning transports disable Nagle's algorithm (`TCP_NODELAY`) by default;
-`WebSocketTransport` callers override with
-`WebSocketConnectOptions::with_disable_nagle(false)`. Its receive poll bounds
-skipped control frames, flushes automatic Pong/Close responses before further
-reads, and fuses EOF or terminal socket errors. Browser/engine backends leave
-tuning to the platform. See the `transport-abstraction` and `websocket-client` skills.
+Socket-owning transports disable Nagle (`TCP_NODELAY`) by default; `WebSocketTransport`
+callers override with `WebSocketConnectOptions::with_disable_nagle(false)`. Native
+connections cap frames and assembled messages at 8 MiB; `None` disables both and
+`from_stream` preserves caller policy. This is not a Server 0.7 maximum; signal-fish-server#399 tracks that contract.
+Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors.
 
 ### Wire Compatibility
 

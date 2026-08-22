@@ -27,12 +27,12 @@
   package metadata; repository integration tests, other standalone wire
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
-- All 12 push workflows pass on current `main` commit `00e9d84`. Godot Web's
-  first attempt failed only a scheduler-sensitive 50 ms maximum-poll oracle
-  after every deterministic soak outcome passed, then the unchanged 3,600-frame
-  soak and aggregate passed on retry. This branch replaces that single-sample
-  gate with a one-percent outlier budget and 500 ms emergency cap. The separate
-  live Repository Policy audit remains red because of issue #90.
+- All 12 push workflows pass on current `main` commit `c7790e8`, including
+  merged PR #131's package minimization and robust Godot poll-timing gate. Docs
+  Validation attempt 1 hit its 180-second Playwright accessibility watchdog;
+  the unchanged attempt 2 passed in under a minute, confirming a hosted-runner
+  stall rather than deterministic product failure. The separate live Repository
+  Policy audit remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -81,9 +81,15 @@ measured evidence before accepting performance complexity:
    operation identifier tracked by
    [signal-fish-server#395](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/395)
    before the client can distinguish old and current same-kind responses
-   without timing heuristics. Oversized complete frames, disconnect-adjacent
-   transitions, and the remaining inventory cells remain independent client
-   audit slices.
+   without timing heuristics. The native WebSocket oversized-input slice is
+   complete: all built-in connect paths now bound individual frames and
+   fragmented-message assembly at a configurable 8 MiB default before
+   `ClientCore`, preserve caller-owned `from_stream` limits, and fuse capacity
+   errors. No finite value is a Server 0.7 compatibility guarantee, so
+   [signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399)
+   tracks a negotiated/enforced outbound contract. Disconnect-adjacent
+   transitions, browser/engine boundary parity, and the remaining inventory
+   cells remain independent client audit slices.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote
