@@ -109,4 +109,11 @@ exited normally. The native harness therefore uses an isolated project copy and
 seeds `.godot/extension_list.cfg` before runtime, avoiding both the first-scan
 engine crash and contamination of the later web export. Final mandatory,
 pull-request, and hosted workflow evidence will be appended after the repaired
-implementation diff is frozen.
+implementation diff is frozen. The following hosted run reached the real
+native scenario and proved the exact large relay (`wire_bytes=82068`,
+`padding_bytes=81920`), JSON shutdown, and binary close readiness. It failed
+only because the harness also applied the browser load oracle's required
+`multi_frame_poll`; the faster native loop accepted one load frame per poll.
+The native gate retains the load/shutdown sequencing waits but now validates
+only its intended large-inbound oracle, leaving performance batching to the
+existing browser jobs.
