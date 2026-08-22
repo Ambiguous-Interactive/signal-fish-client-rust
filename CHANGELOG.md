@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frames and assembled messages to 8 MiB by default; callers can raise the
   inclusive limit or set it to `None` for an unbounded codec. Streams supplied
   through `WebSocketTransport::from_stream` retain their caller-owned limits.
+- Added `GodotWebSocketTransport::one_frame_escape_frames()` so admission
+  diagnostics distinguish one individually oversized empty-buffer escape from
+  the same cumulative byte total spread across multiple frames.
 - Added Signal Fish Server 0.7.0 protocol conformance, including
   `SessionGeneration`, `DirectEndpoint::{host, port}`,
   `SessionPlanPayload::generation`, `SessionPlanPayload::direct_endpoint`,
@@ -167,6 +170,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed standard Godot connections rejecting or omitting valid server messages
+  larger than Godot's 65,535-byte inbound default. SDK-created peers now set an
+  8 MiB inbound buffer before connecting, while `from_peer` keeps advanced
+  caller configuration intact. Official native and web smokes require an exact
+  over-64-KiB Signal Fish frame. The setting may reserve roughly 16 MiB per
+  peer inside Godot and is a protective default, not a protocol maximum.
 - Prevented a delayed terminal response from an older same-kind join, leave,
   reconnect, spectator join, or spectator leave from clearing or mutating the
   current operation fence after correlation is negotiated. Wrong, stale,

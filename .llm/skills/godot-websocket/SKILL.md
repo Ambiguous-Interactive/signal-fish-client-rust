@@ -203,7 +203,7 @@ undefined `emscripten_websocket_new` symbol.
 - [x] Core has no `godot` dependency, feature, module, or re-export.
 - [x] Adapter and core versions match; the adapter requires core exactly.
 - [x] The adapter range remains `>=0.4.5, <0.6` until deliberate compatibility evidence widens it.
-- [x] All 34 fake-backend transport tests pass in the adapter.
+- [x] All 38 fake-backend transport tests pass in the adapter.
 - [x] Minimum and latest fixtures compile natively and for Emscripten with one binding family.
 - [x] Official Godot 4.5 web templates export the fixture.
 - [x] Browser E2E proves connect, authentication, room join, Ping/Pong, relay,

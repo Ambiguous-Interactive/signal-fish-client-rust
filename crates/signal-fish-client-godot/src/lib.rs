@@ -27,6 +27,7 @@ use signal_fish_client::{
 const DEFAULT_ADAPTIVE_FLOOR: usize = 4 * 1024;
 const DEFAULT_ADAPTIVE_CEILING: usize = 32 * 1024;
 const DEFAULT_ADAPTIVE_LATENCY: Duration = Duration::from_millis(50);
+const DEFAULT_INBOUND_BUFFER_SIZE: i32 = 8 * 1024 * 1024;
 
 /// Godot outbound admission strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +154,8 @@ fn admission_decision(
 }
 
 trait GodotWebSocketBackend {
+    fn set_inbound_buffer_size(&mut self, bytes: i32);
+    fn connect_to_url(&mut self, url: &str) -> Result<(), String>;
     fn poll(&mut self);
     fn state(&self) -> PeerState;
     fn outbound_buffered_amount(&self) -> i32;
@@ -169,6 +172,21 @@ trait GodotWebSocketBackend {
 }
 
 impl GodotWebSocketBackend for Gd<WebSocketPeer> {
+    fn set_inbound_buffer_size(&mut self, bytes: i32) {
+        std::ops::DerefMut::deref_mut(self).set_inbound_buffer_size(bytes);
+    }
+
+    fn connect_to_url(&mut self, url: &str) -> Result<(), String> {
+        let result = std::ops::DerefMut::deref_mut(self).connect_to_url(url);
+        if result == Error::OK {
+            Ok(())
+        } else {
+            Err(format!(
+                "Godot WebSocketPeer connect_to_url failed with {result:?}"
+            ))
+        }
+    }
+
     fn poll(&mut self) {
         std::ops::DerefMut::deref_mut(self).poll();
     }
@@ -269,7 +287,7 @@ fn godot_send_result(result: Error, operation: &str) -> BackendSendResult {
 /// client's `poll()` method from the same Godot thread on every frame.
 pub struct GodotWebSocketTransport {
     backend: Box<dyn GodotWebSocketBackend>,
-    options: GodotWebSocketOptions,
+    backpressure_policy: GodotBackpressurePolicy,
     diagnostics: TransportDiagnostics,
     adaptive: AdaptiveState,
     ever_ready: bool,
@@ -278,6 +296,7 @@ pub struct GodotWebSocketTransport {
     terminal: bool,
     close_info: Option<TransportCloseInfo>,
     admission_watermark_violations: u64,
+    one_frame_escape_frames: u64,
     one_frame_escape_bytes: u64,
 }
 
@@ -294,7 +313,7 @@ impl fmt::Debug for GodotWebSocketTransport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GodotWebSocketTransport")
-            .field("options", &self.options)
+            .field("backpressure_policy", &self.backpressure_policy)
             .field("diagnostics", &self.diagnostics)
             .field("ever_ready", &self.ever_ready)
             .field("close_deferred_to_receive", &self.close_deferred_to_receive)
@@ -323,10 +342,24 @@ impl GodotWebSocketTransport {
         self.one_frame_escape_bytes
     }
 
+    /// Frames accepted through the single-frame watermark escape while the
+    /// backend buffer was empty.
+    ///
+    /// Pair this with [`Self::one_frame_escape_bytes`] to distinguish one
+    /// individually oversized frame from the same cumulative byte total
+    /// spread across multiple escapes.
+    #[must_use]
+    pub const fn one_frame_escape_frames(&self) -> u64 {
+        self.one_frame_escape_frames
+    }
+
     /// Create a Godot `WebSocketPeer` and begin a non-blocking connection.
     ///
     /// The connection handshake advances when the transport is polled. For web
-    /// exports, use `wss://` when the exported page is served over HTTPS.
+    /// exports, use `wss://` when the exported page is served over HTTPS. The
+    /// SDK-created peer uses an 8 MiB Godot inbound buffer so valid aggregated
+    /// server messages are not constrained by Godot's much smaller default.
+    /// Use [`Self::from_peer`] when the application must choose another size.
     ///
     /// # Errors
     ///
@@ -338,6 +371,10 @@ impl GodotWebSocketTransport {
 
     /// Create a Godot `WebSocketPeer` with explicit backpressure options.
     ///
+    /// These options control outbound admission. The SDK-created peer uses the
+    /// same 8 MiB inbound buffer as [`Self::connect`]; use
+    /// [`Self::from_peer_with_options`] to preserve a caller-configured peer.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::Io`] when Godot rejects the URL or cannot
@@ -346,14 +383,12 @@ impl GodotWebSocketTransport {
         url: &str,
         options: GodotWebSocketOptions,
     ) -> Result<Self, SignalFishError> {
-        let mut peer = WebSocketPeer::new_gd();
-        let result = peer.connect_to_url(url);
-        if result != Error::OK {
-            return Err(SignalFishError::Io(std::io::Error::other(format!(
-                "Godot WebSocketPeer connect_to_url failed with {result:?}"
-            ))));
-        }
-        Ok(Self::from_peer_with_options(peer, options))
+        Self::connect_backend_with_options(
+            Box::new(WebSocketPeer::new_gd()),
+            url,
+            DEFAULT_INBOUND_BUFFER_SIZE,
+            options,
+        )
     }
 
     /// Wrap a Godot `WebSocketPeer` whose connection attempt has already begun.
@@ -369,6 +404,19 @@ impl GodotWebSocketTransport {
         Self::from_backend_with_options(Box::new(peer), options)
     }
 
+    fn connect_backend_with_options(
+        mut backend: Box<dyn GodotWebSocketBackend>,
+        url: &str,
+        inbound_buffer_size: i32,
+        options: GodotWebSocketOptions,
+    ) -> Result<Self, SignalFishError> {
+        backend.set_inbound_buffer_size(inbound_buffer_size);
+        backend
+            .connect_to_url(url)
+            .map_err(|error| SignalFishError::Io(std::io::Error::other(error)))?;
+        Ok(Self::from_backend_with_options(backend, options))
+    }
+
     #[cfg(test)]
     fn from_backend(backend: Box<dyn GodotWebSocketBackend>) -> Self {
         Self::from_backend_with_options(backend, GodotWebSocketOptions::default())
@@ -381,7 +429,7 @@ impl GodotWebSocketTransport {
         let ever_ready = backend.state() == PeerState::Open;
         let mut transport = Self {
             backend,
-            options,
+            backpressure_policy: options.backpressure_policy,
             diagnostics: TransportDiagnostics::default(),
             adaptive: AdaptiveState::default(),
             ever_ready,
@@ -390,6 +438,7 @@ impl GodotWebSocketTransport {
             terminal: false,
             close_info: None,
             admission_watermark_violations: 0,
+            one_frame_escape_frames: 0,
             one_frame_escape_bytes: 0,
         };
         transport.sample_cycle_at(Instant::now());
@@ -468,7 +517,7 @@ impl GodotWebSocketTransport {
 
     fn configured_watermark(&self) -> usize {
         let safe_native = self.safe_native_watermark();
-        match self.options.backpressure_policy {
+        match self.backpressure_policy {
             GodotBackpressurePolicy::Fixed {
                 high_water_mark_bytes,
             } => high_water_mark_bytes.min(safe_native),
@@ -491,7 +540,7 @@ impl GodotWebSocketTransport {
             .max(self.diagnostics.current_buffered_bytes);
 
         let safe_native = self.safe_native_watermark();
-        let effective = match self.options.backpressure_policy {
+        let effective = match self.backpressure_policy {
             GodotBackpressurePolicy::Fixed {
                 high_water_mark_bytes,
             } => high_water_mark_bytes.min(safe_native),
@@ -540,7 +589,7 @@ impl GodotWebSocketTransport {
         };
         self.diagnostics.effective_watermark_bytes = u64::try_from(effective).unwrap_or(u64::MAX);
         if matches!(
-            self.options.backpressure_policy,
+            self.backpressure_policy,
             GodotBackpressurePolicy::Adaptive { .. }
         ) && previous_effective != self.diagnostics.effective_watermark_bytes
         {
@@ -633,6 +682,8 @@ impl Transport for GodotWebSocketTransport {
                 match accepted_admission_audit(current, next_bytes, watermark) {
                     AcceptedAdmissionAudit::WithinWatermark => {}
                     AcceptedAdmissionAudit::EmptyBufferEscape(bytes) => {
+                        self.one_frame_escape_frames =
+                            self.one_frame_escape_frames.saturating_add(1);
                         self.one_frame_escape_bytes = self
                             .one_frame_escape_bytes
                             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
@@ -792,6 +843,9 @@ mod tests {
         close_code: i32,
         close_codes_after_poll: VecDeque<i32>,
         close_reason: String,
+        configured_inbound_buffer_size: Rc<Cell<i32>>,
+        connection_steps: Rc<RefCell<Vec<&'static str>>>,
+        connect_error: Option<String>,
     }
 
     impl FakeBackend {
@@ -812,11 +866,24 @@ mod tests {
                 close_code: -1,
                 close_codes_after_poll: VecDeque::new(),
                 close_reason: String::new(),
+                configured_inbound_buffer_size: Rc::new(Cell::new(0)),
+                connection_steps: Rc::new(RefCell::new(Vec::new())),
+                connect_error: None,
             }
         }
     }
 
     impl GodotWebSocketBackend for FakeBackend {
+        fn set_inbound_buffer_size(&mut self, bytes: i32) {
+            self.configured_inbound_buffer_size.set(bytes);
+            self.connection_steps.borrow_mut().push("configure");
+        }
+
+        fn connect_to_url(&mut self, _url: &str) -> Result<(), String> {
+            self.connection_steps.borrow_mut().push("connect");
+            self.connect_error.take().map_or(Ok(()), Err)
+        }
+
         fn poll(&mut self) {
             if let Some(state) = self.states.pop_front() {
                 self.state = state;
@@ -1083,6 +1150,7 @@ mod tests {
             Poll::Ready(Ok(()))
         ));
         assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_frames(), 1);
         assert_eq!(transport.one_frame_escape_bytes(), 8 * 1024);
         let mut second = Some(TransportFrame::Binary(vec![1]));
         assert!(matches!(
@@ -1091,6 +1159,7 @@ mod tests {
         ));
         assert!(second.is_some());
         assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_frames(), 1);
         assert_eq!(transport.one_frame_escape_bytes(), 8 * 1024);
     }
 
@@ -1176,6 +1245,60 @@ mod tests {
             godot_send_result(Error::ERR_BUG, "send"),
             BackendSendResult::Error(_)
         ));
+    }
+
+    #[test]
+    fn sdk_created_peer_configures_inbound_buffer_before_connect() {
+        let backend = FakeBackend::new(PeerState::Connecting);
+        let observed_size = Rc::clone(&backend.configured_inbound_buffer_size);
+        let observed_steps = Rc::clone(&backend.connection_steps);
+
+        let transport = GodotWebSocketTransport::connect_backend_with_options(
+            Box::new(backend),
+            "ws://example.invalid/v2/ws",
+            DEFAULT_INBOUND_BUFFER_SIZE,
+            GodotWebSocketOptions::default(),
+        )
+        .expect("fake connection setup should succeed");
+
+        assert_eq!(observed_size.get(), DEFAULT_INBOUND_BUFFER_SIZE);
+        assert_eq!(&*observed_steps.borrow(), &["configure", "connect"]);
+        assert!(!transport.is_ready());
+    }
+
+    #[test]
+    fn connection_failure_follows_buffer_configuration() {
+        let mut backend = FakeBackend::new(PeerState::Connecting);
+        backend.connect_error = Some("scripted connect failure".to_string());
+        let observed_steps = Rc::clone(&backend.connection_steps);
+
+        let error = GodotWebSocketTransport::connect_backend_with_options(
+            Box::new(backend),
+            "ws://example.invalid/v2/ws",
+            DEFAULT_INBOUND_BUFFER_SIZE,
+            GodotWebSocketOptions::default(),
+        )
+        .expect_err("scripted setup failure must surface");
+
+        assert!(matches!(error, SignalFishError::Io(_)));
+        assert_eq!(&*observed_steps.borrow(), &["configure", "connect"]);
+    }
+
+    #[test]
+    fn wrapping_existing_backend_preserves_connection_configuration() {
+        const CALLER_INBOUND_BUFFER_SIZE: i32 = 2 * 1024 * 1024 + 17;
+        let backend = FakeBackend::new(PeerState::Open);
+        backend
+            .configured_inbound_buffer_size
+            .set(CALLER_INBOUND_BUFFER_SIZE);
+        let observed_size = Rc::clone(&backend.configured_inbound_buffer_size);
+        let observed_steps = Rc::clone(&backend.connection_steps);
+
+        let transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert_eq!(observed_size.get(), CALLER_INBOUND_BUFFER_SIZE);
+        assert!(observed_steps.borrow().is_empty());
+        assert!(transport.is_ready());
     }
 
     #[test]
