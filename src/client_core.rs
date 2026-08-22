@@ -133,6 +133,7 @@ pub(crate) struct ClientCore {
     room_players: HashSet<PlayerId>,
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
+    retired_session_generations: HashSet<SessionGeneration>,
     retired_generationless_signal_peers: HashSet<PlayerId>,
     pending_room_operation: Option<PendingRoomOperationState>,
     pending_reconnects: VecDeque<PendingReconnect>,
@@ -236,6 +237,7 @@ impl ClientCore {
             room_players: HashSet::new(),
             session_plan_seen: false,
             session_peers: HashSet::new(),
+            retired_session_generations: HashSet::new(),
             retired_generationless_signal_peers: HashSet::new(),
             pending_room_operation: None,
             pending_reconnects: VecDeque::new(),
@@ -698,6 +700,7 @@ impl ClientCore {
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
+        self.retired_session_generations.clear();
         self.retired_generationless_signal_peers.clear();
         self.pending_room_operation = None;
         self.pending_reconnects.clear();
@@ -1387,6 +1390,17 @@ impl ClientCore {
         local_player_id: Option<PlayerId>,
         room_players: &HashSet<PlayerId>,
     ) -> Result<(), String> {
+        if plan.generation != self.snapshot.session_generation
+            && plan
+                .generation
+                .is_some_and(|generation| self.retired_session_generations.contains(&generation))
+        {
+            return Err(format!(
+                "lifecycle violation: SessionPlan generation {:?} was already superseded",
+                plan.generation
+            ));
+        }
+
         if plan.fallback != TransportKind::Relay {
             return Err("lifecycle violation: SessionPlan fallback must be relay".into());
         }
@@ -1785,6 +1799,7 @@ impl ClientCore {
         self.room_players = baseline.players;
         self.session_plan_seen = false;
         self.session_peers.clear();
+        self.retired_session_generations.clear();
         self.retired_generationless_signal_peers.clear();
         self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
@@ -1807,6 +1822,7 @@ impl ClientCore {
         self.room_players.clear();
         self.session_plan_seen = false;
         self.session_peers.clear();
+        self.retired_session_generations.clear();
         self.retired_generationless_signal_peers.clear();
         self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
@@ -1820,6 +1836,11 @@ impl ClientCore {
         topology: Topology,
         transport: TransportKind,
     ) {
+        if self.snapshot.session_generation != generation {
+            if let Some(current) = self.snapshot.session_generation {
+                self.retired_session_generations.insert(current);
+            }
+        }
         if self.session_plan_seen
             && self.snapshot.session_generation.is_none()
             && self.snapshot.session_transport == Some(TransportKind::WebRtc)
@@ -3896,14 +3917,173 @@ mod tests {
         let mut core = v3_room(ProtocolViolationPolicy::Observe);
         let mut legacy = plan(Topology::Mesh, TransportKind::WebRtc);
         legacy.generation = None;
-        let outcome = process(&mut core, ServerMessage::SessionPlan(Box::new(legacy)));
-        assert!(matches!(
-            outcome.events.as_slice(),
-            [SignalFishEvent::SessionPlan {
-                generation: None,
-                ..
-            }]
-        ));
+        for _ in 0..2 {
+            let outcome = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(legacy.clone())),
+            );
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::SessionPlan {
+                    generation: None,
+                    ..
+                }]
+            ));
+        }
+        assert!(core.retired_session_generations.is_empty());
+    }
+
+    #[test]
+    fn superseded_session_plan_generation_is_rejected_transactionally_for_every_policy() {
+        let generation_a = SessionGeneration::from_u128(10);
+        let generation_b = SessionGeneration::from_u128(11);
+        let mut plan_a = plan(Topology::Mesh, TransportKind::WebRtc);
+        plan_a.generation = Some(generation_a);
+        plan_a.peers = vec![peer(4)];
+        let mut plan_b = plan(Topology::Host, TransportKind::WebRtc);
+        plan_b.generation = Some(generation_b);
+        plan_b.host = Some(PlayerId::from_u128(LOCAL));
+
+        for policy in [
+            ProtocolViolationPolicy::Observe,
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+        ] {
+            let mut core = v3_room(policy);
+            assert!(matches!(
+                process(
+                    &mut core,
+                    ServerMessage::SessionPlan(Box::new(plan_a.clone()))
+                )
+                .events
+                .as_slice(),
+                [SignalFishEvent::SessionPlan { .. }]
+            ));
+            assert!(matches!(
+                process(
+                    &mut core,
+                    ServerMessage::SessionPlan(Box::new(plan_b.clone()))
+                )
+                .events
+                .as_slice(),
+                [SignalFishEvent::SessionPlan { .. }]
+            ));
+
+            let before = core.snapshot();
+            let peers_before = core.session_peers.clone();
+            #[cfg(feature = "tokio-runtime")]
+            let revision_before = core.session_plan_revision;
+            let outcome = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan_a.clone())),
+            );
+            assert_lifecycle_violation_containing(&outcome, "already superseded");
+            assert_eq!(
+                outcome.disconnect,
+                policy == ProtocolViolationPolicy::Disconnect,
+                "{policy:?}"
+            );
+            assert_eq!(core.snapshot().session_generation, Some(generation_b));
+            assert_eq!(core.snapshot().session_topology, before.session_topology);
+            assert_eq!(core.snapshot().session_transport, before.session_transport);
+            assert_eq!(core.session_peers, peers_before);
+            #[cfg(feature = "tokio-runtime")]
+            assert_eq!(core.session_plan_revision, revision_before);
+            assert_eq!(
+                core.snapshot().quarantined,
+                policy == ProtocolViolationPolicy::Quarantine
+            );
+
+            if policy != ProtocolViolationPolicy::Disconnect {
+                let stale_signal = process(
+                    &mut core,
+                    ServerMessage::Signal {
+                        from: PlayerId::from_u128(4),
+                        generation: Some(generation_a),
+                        signal: serde_json::json!({"Offer": "stale"}),
+                    },
+                );
+                assert!(stale_signal.events.is_empty(), "{policy:?}");
+
+                let current_signal = process(
+                    &mut core,
+                    ServerMessage::Signal {
+                        from: PlayerId::from_u128(PEER),
+                        generation: Some(generation_b),
+                        signal: serde_json::json!({"Offer": "current"}),
+                    },
+                );
+                assert!(matches!(
+                    current_signal.events.as_slice(),
+                    [SignalFishEvent::SignalReceived { .. }]
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn replayed_webrtc_plan_cannot_replace_the_current_direct_transport() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+        webrtc.generation = Some(SessionGeneration::from_u128(10));
+        let mut direct = plan(Topology::Host, TransportKind::Direct);
+        direct.generation = Some(SessionGeneration::from_u128(11));
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(webrtc.clone())),
+        );
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(direct)));
+
+        let outcome = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+        assert_lifecycle_violation_containing(&outcome, "already superseded");
+        assert_eq!(core.snapshot().session_topology, Some(Topology::Host));
+        assert_eq!(
+            core.snapshot().session_transport,
+            Some(TransportKind::Direct)
+        );
+    }
+
+    #[test]
+    fn duplicate_current_session_plan_generation_remains_authoritative() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let current = plan(Topology::Mesh, TransportKind::WebRtc);
+        for _ in 0..2 {
+            let outcome = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(current.clone())),
+            );
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::SessionPlan { .. }]
+            ));
+        }
+        assert!(core.retired_session_generations.is_empty());
+    }
+
+    #[test]
+    fn session_plan_replay_guard_retains_more_than_the_previous_generation() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let mut plan = plan(Topology::Mesh, TransportKind::WebRtc);
+        for generation in [10, 11, 12] {
+            plan.generation = Some(SessionGeneration::from_u128(generation));
+            let outcome = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan.clone())),
+            );
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::SessionPlan { .. }]
+            ));
+        }
+        assert_eq!(core.retired_session_generations.len(), 2);
+
+        plan.generation = Some(SessionGeneration::from_u128(10));
+        let outcome = process(&mut core, ServerMessage::SessionPlan(Box::new(plan)));
+        assert_lifecycle_violation_containing(&outcome, "already superseded");
+        assert_eq!(
+            core.snapshot().session_generation,
+            Some(SessionGeneration::from_u128(12))
+        );
     }
 
     #[test]
@@ -4045,6 +4225,54 @@ mod tests {
                 assert_eq!(core.stats(), ClientStats::default());
             }
         }
+    }
+
+    #[test]
+    fn authoritative_reconnect_resets_retired_session_generations_transactionally() {
+        let retired = SessionGeneration::from_u128(10);
+        let reconnecting = || {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            core.retired_session_generations.insert(retired);
+            core.record_reconnect_admitted(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            );
+            core
+        };
+
+        let mut accepted = reconnecting();
+        let outcome = process(&mut accepted, reconnected(vec![]));
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::Reconnected { .. }]
+        ));
+        assert!(accepted.retired_session_generations.is_empty());
+        let mut fresh_plan = plan(Topology::Mesh, TransportKind::WebRtc);
+        fresh_plan.generation = Some(retired);
+        let outcome = process(
+            &mut accepted,
+            ServerMessage::SessionPlan(Box::new(fresh_plan)),
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SessionPlan { .. }]
+        ));
+
+        let mut rejected = reconnecting();
+        let ServerMessage::Reconnected(mut invalid) = reconnected(vec![]) else {
+            unreachable!("reconnected helper always returns Reconnected")
+        };
+        invalid.replay = None;
+        let outcome = process(&mut rejected, ServerMessage::Reconnected(invalid));
+        assert_lifecycle_violation_containing(&outcome, "replay completeness");
+        assert!(rejected.retired_session_generations.contains(&retired));
     }
 
     #[test]
@@ -4640,11 +4868,34 @@ mod tests {
         assert!(core.snapshot().session_topology.is_none());
         assert!(core.snapshot().session_transport.is_none());
 
+        let mut generated_room = v3_room(ProtocolViolationPolicy::Observe);
+        let _ = process(
+            &mut generated_room,
+            ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+        );
+        let mut generated_replacement = plan(Topology::Mesh, TransportKind::WebRtc);
+        generated_replacement.generation = Some(SessionGeneration::from_u128(GENERATION + 1));
+        let _ = process(
+            &mut generated_room,
+            ServerMessage::SessionPlan(Box::new(generated_replacement)),
+        );
+        assert!(!generated_room.retired_session_generations.is_empty());
+        generated_room.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+        let _ = process(&mut generated_room, ServerMessage::RoomLeft);
+        assert!(generated_room.retired_session_generations.is_empty());
+
         let mut disconnecting = v3_room(ProtocolViolationPolicy::Observe);
         let _ = process(
             &mut disconnecting,
             ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
         );
+        let mut replacement = plan(Topology::Mesh, TransportKind::WebRtc);
+        replacement.generation = Some(SessionGeneration::from_u128(GENERATION + 1));
+        let _ = process(
+            &mut disconnecting,
+            ServerMessage::SessionPlan(Box::new(replacement)),
+        );
+        assert!(!disconnecting.retired_session_generations.is_empty());
         assert_eq!(
             disconnecting.snapshot().session_topology,
             Some(Topology::Mesh)
@@ -4654,6 +4905,7 @@ mod tests {
             Some(TransportKind::WebRtc)
         );
         let _ = disconnecting.disconnect(None);
+        assert!(disconnecting.retired_session_generations.is_empty());
         assert!(disconnecting.snapshot().session_topology.is_none());
         assert!(disconnecting.snapshot().session_transport.is_none());
     }
