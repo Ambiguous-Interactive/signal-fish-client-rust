@@ -662,6 +662,18 @@ pub struct ClientSnapshot {
     /// unsupported preference resolves to `Some(GameDataEncoding::Json)` in
     /// accordance with the Signal Fish Server 0.7 fallback contract.
     pub effective_game_data_format: Option<GameDataEncoding>,
+    /// Maximum complete application-payload size, in bytes, that the connected
+    /// deployment advertises for its own outbound WebSocket messages.
+    ///
+    /// Resolved from the negotiated v3
+    /// [`ProtocolInfo`](SignalFishEvent::ProtocolInfo)
+    /// `max_outbound_message_size`. The server counts the value after
+    /// protocol encoding and before WebSocket framing, rejects an over-limit
+    /// delivery whole, and closes that connection with RFC 6455 close code
+    /// 1009. `None` until negotiation completes, after the connection ends,
+    /// and for servers that omit the field — including every frozen-v2
+    /// connection.
+    pub server_max_outbound_message_size: Option<usize>,
     /// Authoritative local room role, or `None` outside a room.
     ///
     /// This changes only on server-confirmed room, reconnect, and spectator
@@ -712,6 +724,10 @@ impl std::fmt::Debug for ClientSnapshot {
             .field(
                 "effective_game_data_format",
                 &self.effective_game_data_format,
+            )
+            .field(
+                "server_max_outbound_message_size",
+                &self.server_max_outbound_message_size,
             )
             .field("room_role", &self.room_role)
             .field("player_id", &self.player_id)
@@ -2730,6 +2746,7 @@ mod tests {
                 min_protocol_version: None,
                 max_protocol_version: None,
                 transports: None,
+                max_outbound_message_size: None,
             },
         ))
         .unwrap()
@@ -4348,6 +4365,7 @@ mod tests {
             min_protocol_version: Some(2),
             max_protocol_version: Some(3),
             transports: Some(vec![crate::protocol::MessageTransport::Websocket]),
+            max_outbound_message_size: Some(8 * 1024 * 1024),
         }))
         .unwrap()
     }

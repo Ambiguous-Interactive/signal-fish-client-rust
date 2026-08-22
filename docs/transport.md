@@ -259,10 +259,22 @@ The size limit is inclusive and applies equally to a single frame and to the
 aggregate payload of fragmented frames. Set it to `None` only when another
 trusted layer supplies an appropriate bound; `Some(0)` is invalid. The 8 MiB
 default accommodates ordinary Server 0.7 room snapshots, but it is a client
-resource policy, not a protocol maximum. Deployments with unusually large
-player metadata, spectator rosters, replay buffers, or server limits must
-raise it. The server-side contract gap is tracked in
-[signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399).
+resource policy, not a protocol maximum.
+
+Server deployments advertise their own outbound bound
+(`security.max_outbound_message_size`, default 8 MiB, configurable up to
+64 MiB). A v3 connection carries the negotiated value in `ProtocolInfo` and
+mirrors it into the `server_max_outbound_message_size` field of
+`ClientSnapshot`; pre-connect discovery is available from the version's
+`/v2/client-config` or
+`/v3/client-config` endpoint and from the
+`x-signal-fish-max-outbound-message-size` upgrade response header. Raise your
+inbound limit to at least that advertised value before connecting when a
+deployment is known to exceed the default. If the server itself must deliver
+an encoded message above its own limit, it rejects that delivery whole and
+closes the connection with RFC 6455 close code 1009
+(`outbound_message_too_large`), which surfaces through the
+`Disconnected` event's close reason.
 
 `from_stream` wraps an already-established `WsStream` for custom TLS, proxy,
 headers, or cookie setup. It cannot turn on token binding after the handshake;

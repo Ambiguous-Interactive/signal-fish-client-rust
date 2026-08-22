@@ -306,6 +306,7 @@ fn server_message_protocol_info_round_trip() {
         min_protocol_version: None,
         max_protocol_version: None,
         transports: None,
+        max_outbound_message_size: None,
     });
     let deser = round_trip(&msg);
     if let ServerMessage::ProtocolInfo(payload) = deser {
@@ -1457,6 +1458,7 @@ fn protocol_info_v2_negotiation_omits_version_fields() {
         min_protocol_version: None,
         max_protocol_version: None,
         transports: None,
+        max_outbound_message_size: None,
     };
     let json = serde_json::to_string(&payload).expect("ser");
     assert!(!json.contains("protocol_version"), "{json}");
@@ -1470,6 +1472,7 @@ fn protocol_info_v2_json_without_version_fields_deserializes() {
     let v2 = r#"{"capabilities":["authority"],"game_data_formats":["json"]}"#;
     let payload: ProtocolInfoPayload = serde_json::from_str(v2).expect("deser");
     assert!(payload.protocol_version.is_none());
+    assert!(payload.max_outbound_message_size.is_none());
     assert_eq!(payload.capabilities, vec!["authority".to_string()]);
 }
 
@@ -1483,12 +1486,43 @@ fn protocol_info_v3_negotiation_surfaces_versions() {
 }
 
 #[test]
+fn protocol_info_advertised_outbound_limit_round_trips_on_v3_only() {
+    const EIGHT_MIB: usize = 8 * 1024 * 1024;
+
+    let v3 = r#"{"capabilities":[],"game_data_formats":[],"protocol_version":3,"max_outbound_message_size":8388608}"#;
+    let payload: ProtocolInfoPayload = serde_json::from_str(v3).expect("deser");
+    assert_eq!(payload.max_outbound_message_size, Some(EIGHT_MIB));
+
+    let advertised = ProtocolInfoPayload {
+        platform: None,
+        sdk_version: None,
+        minimum_version: None,
+        recommended_version: None,
+        capabilities: vec![],
+        notes: None,
+        game_data_formats: vec![],
+        player_name_rules: None,
+        protocol_version: Some(3),
+        min_protocol_version: None,
+        max_protocol_version: None,
+        transports: None,
+        max_outbound_message_size: Some(EIGHT_MIB),
+    };
+    let json = serde_json::to_string(&advertised).expect("ser");
+    assert!(
+        json.contains(r#""max_outbound_message_size":8388608"#),
+        "{json}"
+    );
+}
+
+#[test]
 fn protocol_info_rejects_explicit_null_optional_negotiation_fields() {
     for field in [
         "protocol_version",
         "min_protocol_version",
         "max_protocol_version",
         "transports",
+        "max_outbound_message_size",
     ] {
         let json = format!(r#"{{"capabilities":[],"game_data_formats":[],"{field}":null}}"#);
         assert!(
@@ -2511,6 +2545,7 @@ fn protocol_info_payload_round_trip_minimal() {
         min_protocol_version: None,
         max_protocol_version: None,
         transports: None,
+        max_outbound_message_size: None,
     };
     let deser = round_trip(&payload);
     assert!(deser.platform.is_none());

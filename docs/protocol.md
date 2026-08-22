@@ -378,6 +378,8 @@ pub struct ProtocolInfoPayload {
     pub protocol_version: Option<u16>,
     pub min_protocol_version: Option<u16>,
     pub max_protocol_version: Option<u16>,
+    pub transports: Option<Vec<MessageTransport>>,
+    pub max_outbound_message_size: Option<usize>,
 }
 ```
 
@@ -394,6 +396,8 @@ pub struct ProtocolInfoPayload {
 | `protocol_version` | `Option<u16>` | **Protocol v3+.** The negotiated protocol version. `None` for a v2 negotiation, keeping v2 bytes identical. |
 | `min_protocol_version` | `Option<u16>` | **Protocol v3+.** Lowest version this deployment accepts. |
 | `max_protocol_version` | `Option<u16>` | **Protocol v3+.** Highest version this deployment speaks. |
+| `transports` | `Option<Vec<MessageTransport>>` | **Protocol v3+.** Server message transports available to this connection. |
+| `max_outbound_message_size` | `Option<usize>` | **Protocol v3+.** Maximum complete encoded application payload, in bytes, this deployment sends in one WebSocket message. A delivery over this limit is rejected whole and closes that connection with WebSocket close code 1009. Also mirrored into `ClientSnapshot::server_max_outbound_message_size`. |
 
 ---
 

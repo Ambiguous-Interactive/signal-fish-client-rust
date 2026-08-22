@@ -381,6 +381,7 @@ pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPaylo
         max_protocol_version: protocol_version.map(|version| version.max(3)),
         transports: protocol_version
             .map(|_| vec![signal_fish_client::protocol::MessageTransport::Websocket]),
+        max_outbound_message_size: protocol_version.map(|_| 8 * 1024 * 1024),
     }
 }
 
