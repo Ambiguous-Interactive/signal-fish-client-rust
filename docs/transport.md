@@ -232,9 +232,12 @@ The default `transport-websocket` feature provides `WebSocketTransport`, backed
 by `tokio-tungstenite`. `ws://` is always available; `wss://` requires the
 optional `tls` feature (rustls with bundled webpki roots). Connections disable
 Nagle's algorithm (`TCP_NODELAY`) by default; see `WebSocketConnectOptions` to
-override.
+override. They also limit each inbound WebSocket frame and complete assembled
+message to 8 MiB by default, before it can reach `ClientCore`:
 
 ```rust,ignore
+use signal_fish_client::{WebSocketConnectOptions, WebSocketTransport};
+
 let transport = WebSocketTransport::connect("ws://example.com/v2/ws").await?;
 
 let transport = WebSocketTransport::connect_with_timeout(
@@ -242,12 +245,30 @@ let transport = WebSocketTransport::connect_with_timeout(
     std::time::Duration::from_secs(5),
 )
 .await?;
+
+let options = WebSocketConnectOptions::new()
+    .with_max_inbound_message_size(Some(16 * 1024 * 1024));
+let transport = WebSocketTransport::connect_with_options(
+    "ws://example.com/v2/ws",
+    options,
+)
+.await?;
 ```
+
+The size limit is inclusive and applies equally to a single frame and to the
+aggregate payload of fragmented frames. Set it to `None` only when another
+trusted layer supplies an appropriate bound; `Some(0)` is invalid. The 8 MiB
+default accommodates ordinary Server 0.7 room snapshots, but it is a client
+resource policy, not a protocol maximum. Deployments with unusually large
+player metadata, spectator rosters, replay buffers, or server limits must
+raise it. The server-side contract gap is tracked in
+[signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399).
 
 `from_stream` wraps an already-established `WsStream` for custom TLS, proxy,
 headers, or cookie setup. It cannot turn on token binding after the handshake;
 a custom constructor/transport must retain the exact handshake key and own the
-complete extension state machine.
+complete extension state machine. It also retains the stream's existing
+tungstenite frame/message limits instead of replacing them.
 
 The opt-in native `token-binding` feature adds disabled, optional, and required
 `signalfish.tokenbinding.v2` policies to `WebSocketConnectOptions`. Negotiation,

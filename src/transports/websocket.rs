@@ -7,7 +7,8 @@
 //! transparently via [`MaybeTlsStream`](tokio_tungstenite::MaybeTlsStream).
 //!
 //! Connections disable Nagle's algorithm (`TCP_NODELAY`) by default for low
-//! latency; see [`WebSocketConnectOptions`] to override.
+//! latency and reject inbound frames or assembled messages larger than 8 MiB;
+//! see [`WebSocketConnectOptions`] to override either policy.
 //!
 //! # Feature gate
 //!
@@ -32,7 +33,10 @@ use std::task::{Context, Poll};
 use futures_util::{Sink, Stream};
 #[cfg(feature = "token-binding")]
 use futures_util::{SinkExt as _, StreamExt as _};
-use tokio_tungstenite::tungstenite::{protocol::Message, Error as WebSocketError};
+use tokio_tungstenite::tungstenite::{
+    protocol::{Message, WebSocketConfig},
+    Error as WebSocketError,
+};
 
 use crate::error::SignalFishError;
 use crate::token_binding::{TokenBindingChallenge, TokenBindingMode, TokenBindingStatus};
@@ -46,6 +50,7 @@ pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 const MAX_SKIPPED_CONTROL_FRAMES_PER_POLL: usize = 64;
+const DEFAULT_MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
 fn map_connect_error(error: WebSocketError) -> SignalFishError {
     let kind = match &error {
@@ -53,6 +58,18 @@ fn map_connect_error(error: WebSocketError) -> SignalFishError {
         _ => std::io::ErrorKind::Other,
     };
     SignalFishError::Io(std::io::Error::new(kind, error))
+}
+
+fn websocket_config(options: WebSocketConnectOptions) -> Result<WebSocketConfig, SignalFishError> {
+    if options.max_inbound_message_size == Some(0) {
+        return Err(SignalFishError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "WebSocket max_inbound_message_size must be greater than zero or None",
+        )));
+    }
+    Ok(WebSocketConfig::default()
+        .max_frame_size(options.max_inbound_message_size)
+        .max_message_size(options.max_inbound_message_size))
 }
 
 #[cfg(feature = "tls")]
@@ -208,6 +225,7 @@ impl rustls::client::ResolvesClientCert for TrackingClientCertificateResolver {
 async fn connect_with_token_binding(
     url: &str,
     options: WebSocketConnectOptions,
+    websocket_config: WebSocketConfig,
     #[cfg(feature = "tls")] connector: Option<tokio_tungstenite::Connector>,
     #[cfg(feature = "tls")] client_fingerprint: Option<ClientCertificateFingerprintTracker>,
 ) -> Result<(WsStream, WebSocketTokenBinding), SignalFishError> {
@@ -236,14 +254,18 @@ async fn connect_with_token_binding(
     #[cfg(feature = "tls")]
     let connected = tokio_tungstenite::connect_async_tls_with_config(
         request,
-        None,
+        Some(websocket_config),
         options.disable_nagle,
         connector.clone(),
     )
     .await;
     #[cfg(not(feature = "tls"))]
-    let connected =
-        tokio_tungstenite::connect_async_with_config(request, None, options.disable_nagle).await;
+    let connected = tokio_tungstenite::connect_async_with_config(
+        request,
+        Some(websocket_config),
+        options.disable_nagle,
+    )
+    .await;
     let (mut stream, _response) = match connected {
         Ok(connected) => connected,
         Err(WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
@@ -255,15 +277,18 @@ async fn connect_with_token_binding(
             #[cfg(feature = "tls")]
             let fallback = tokio_tungstenite::connect_async_tls_with_config(
                 url,
-                None,
+                Some(websocket_config),
                 options.disable_nagle,
                 connector,
             )
             .await;
             #[cfg(not(feature = "tls"))]
-            let fallback =
-                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
-                    .await;
+            let fallback = tokio_tungstenite::connect_async_with_config(
+                url,
+                Some(websocket_config),
+                options.disable_nagle,
+            )
+            .await;
             let (stream, _response) = fallback.map_err(|error| match error {
                 WebSocketError::Http(_) => {
                     SignalFishError::TokenBinding(crate::TokenBindingFailure::NegotiationRejected)
@@ -378,6 +403,18 @@ pub struct WebSocketConnectOptions {
     /// Applied to the raw socket before any TLS handshake, so it covers both
     /// `ws://` and `wss://`.
     pub disable_nagle: bool,
+    /// Maximum payload bytes accepted in one inbound WebSocket frame or
+    /// assembled message.
+    ///
+    /// Defaults to 8 MiB, substantially below tungstenite's 64 MiB assembled
+    /// message default while retaining headroom for ordinary Server 0.7 room
+    /// snapshots. This is a protective client policy, not a protocol maximum:
+    /// deployments with larger player metadata, spectator rosters, replay
+    /// buffers, or server message limits must raise it. Set it to `None` to
+    /// disable both tungstenite receive limits.
+    ///
+    /// `Some(0)` is invalid and makes connection setup fail before network I/O.
+    pub max_inbound_message_size: Option<usize>,
     /// Token-binding-v2 negotiation policy.
     ///
     /// Defaults to [`TokenBindingMode::Disabled`]. Optional or required mode
@@ -395,6 +432,7 @@ impl Default for WebSocketConnectOptions {
         // NB: a *derived* `Default` would yield `false`; the low-latency default is `true`.
         Self {
             disable_nagle: true,
+            max_inbound_message_size: Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE),
             token_binding: TokenBindingMode::Disabled,
             token_binding_challenge_timeout: std::time::Duration::from_secs(10),
         }
@@ -414,6 +452,17 @@ impl WebSocketConnectOptions {
     #[must_use]
     pub fn with_disable_nagle(mut self, disable_nagle: bool) -> Self {
         self.disable_nagle = disable_nagle;
+        self
+    }
+
+    /// Set the maximum payload size for an inbound WebSocket frame or
+    /// assembled message.
+    ///
+    /// The limit is inclusive. Set `None` to disable both receive limits.
+    /// `Some(0)` is rejected by the connection methods.
+    #[must_use]
+    pub fn with_max_inbound_message_size(mut self, max_size: Option<usize>) -> Self {
+        self.max_inbound_message_size = max_size;
         self
     }
 
@@ -452,7 +501,8 @@ impl WebSocketConnectOptions {
 ///
 /// For advanced use-cases (custom TLS, proxy, headers) construct the stream
 /// yourself and use [`WebSocketTransport::from_stream`]. Because that receives
-/// an already-completed handshake, it cannot enable token binding.
+/// an already-completed handshake, it cannot enable token binding and retains
+/// the caller's WebSocket codec limits.
 ///
 /// # Polling Safety
 ///
@@ -597,8 +647,10 @@ impl WebSocketTransport {
     /// without it a `wss://` URL fails with [`SignalFishError::Io`].
     ///
     /// Nagle's algorithm is **disabled by default** (`TCP_NODELAY`) so small,
-    /// latency-sensitive game messages are sent without delay. Use
-    /// [`connect_with_options`](Self::connect_with_options) to override that.
+    /// latency-sensitive game messages are sent without delay. Inbound frames
+    /// and assembled messages are limited to 8 MiB by default. Use
+    /// [`connect_with_options`](Self::connect_with_options) to override either
+    /// policy.
     ///
     /// # Errors
     ///
@@ -614,10 +666,10 @@ impl WebSocketTransport {
     /// [`WebSocketConnectOptions`].
     ///
     /// Behaves like [`connect`](Self::connect) but lets the caller control
-    /// socket tuning and token-binding negotiation policy. Socket options are
-    /// applied before any TLS handshake, so they cover both `ws://` and
-    /// `wss://`. A selected token-binding challenge is consumed before this
-    /// method returns.
+    /// socket tuning, inbound frame/message size limits, and token-binding
+    /// negotiation policy. Socket options are applied before any TLS handshake,
+    /// so they cover both `ws://` and `wss://`. A selected token-binding
+    /// challenge is consumed before this method returns.
     ///
     /// # Errors
     ///
@@ -627,7 +679,10 @@ impl WebSocketTransport {
     /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other). Optional or
     /// required mode returns [`SignalFishError::TokenBinding`] when the feature
     /// is disabled or negotiation, challenge validation, or key derivation
-    /// fails.
+    /// fails. A zero inbound size limit returns [`SignalFishError::Io`] with
+    /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) before URL
+    /// parsing or network I/O. When token binding is requested without the
+    /// `token-binding` feature, its feature-disabled error takes precedence.
     pub async fn connect_with_options(
         url: &str,
         options: WebSocketConnectOptions,
@@ -638,6 +693,7 @@ impl WebSocketTransport {
                 crate::TokenBindingFailure::FeatureDisabled,
             ));
         }
+        let websocket_config = websocket_config(options)?;
 
         #[cfg(feature = "tls")]
         install_tls_provider();
@@ -645,31 +701,39 @@ impl WebSocketTransport {
         tracing::debug!(
             secure = url.starts_with("wss://"),
             disable_nagle = options.disable_nagle,
+            max_inbound_message_size = options.max_inbound_message_size,
             token_binding = ?options.token_binding,
             "connecting to WebSocket server"
         );
 
         #[cfg(feature = "token-binding")]
         let (stream, token_binding) = if options.token_binding == TokenBindingMode::Disabled {
-            let (stream, _response) =
-                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
-                    .await
-                    .map_err(map_connect_error)?;
+            let (stream, _response) = tokio_tungstenite::connect_async_with_config(
+                url,
+                Some(websocket_config),
+                options.disable_nagle,
+            )
+            .await
+            .map_err(map_connect_error)?;
             (stream, WebSocketTokenBinding::Disabled)
         } else {
             #[cfg(feature = "tls")]
-            let connected = connect_with_token_binding(url, options, None, None).await?;
+            let connected =
+                connect_with_token_binding(url, options, websocket_config, None, None).await?;
             #[cfg(not(feature = "tls"))]
-            let connected = connect_with_token_binding(url, options).await?;
+            let connected = connect_with_token_binding(url, options, websocket_config).await?;
             connected
         };
 
         #[cfg(not(feature = "token-binding"))]
         let (stream, token_binding) = {
-            let (stream, _response) =
-                tokio_tungstenite::connect_async_with_config(url, None, options.disable_nagle)
-                    .await
-                    .map_err(map_connect_error)?;
+            let (stream, _response) = tokio_tungstenite::connect_async_with_config(
+                url,
+                Some(websocket_config),
+                options.disable_nagle,
+            )
+            .await
+            .map_err(map_connect_error)?;
             (stream, WebSocketTokenBinding::Disabled)
         };
 
@@ -696,7 +760,10 @@ impl WebSocketTransport {
     /// # Errors
     ///
     /// Returns the same connection and token-binding errors as
-    /// [`connect_with_options`](Self::connect_with_options).
+    /// [`connect_with_options`](Self::connect_with_options), including
+    /// [`SignalFishError::Io`] with
+    /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) for a zero
+    /// inbound size limit.
     #[cfg(feature = "tls")]
     pub async fn connect_with_tls_config(
         url: &str,
@@ -709,12 +776,14 @@ impl WebSocketTransport {
                 crate::TokenBindingFailure::FeatureDisabled,
             ));
         }
+        let websocket_config = websocket_config(options)?;
 
         install_tls_provider();
         let connector = tokio_tungstenite::Connector::Rustls(tls_config.clone());
         tracing::debug!(
             secure = url.starts_with("wss://"),
             disable_nagle = options.disable_nagle,
+            max_inbound_message_size = options.max_inbound_message_size,
             token_binding = ?options.token_binding,
             custom_tls = true,
             "connecting to WebSocket server"
@@ -724,7 +793,7 @@ impl WebSocketTransport {
         let (stream, token_binding) = if options.token_binding == TokenBindingMode::Disabled {
             let (stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
                 url,
-                None,
+                Some(websocket_config),
                 options.disable_nagle,
                 Some(connector),
             )
@@ -735,14 +804,21 @@ impl WebSocketTransport {
             let (tls_config, fingerprint_tracker) =
                 ClientCertificateFingerprintTracker::wrap(tls_config);
             let connector = tokio_tungstenite::Connector::Rustls(tls_config);
-            connect_with_token_binding(url, options, Some(connector), fingerprint_tracker).await?
+            connect_with_token_binding(
+                url,
+                options,
+                websocket_config,
+                Some(connector),
+                fingerprint_tracker,
+            )
+            .await?
         };
 
         #[cfg(not(feature = "token-binding"))]
         let (stream, token_binding) = {
             let (stream, _response) = tokio_tungstenite::connect_async_tls_with_config(
                 url,
-                None,
+                Some(websocket_config),
                 options.disable_nagle,
                 Some(connector),
             )
@@ -769,6 +845,9 @@ impl WebSocketTransport {
     /// Unlike [`connect`](Self::connect), this does **not** touch socket options:
     /// the caller owns the stream and is responsible for `TCP_NODELAY` (Nagle) or
     /// any other tuning on the underlying socket before wrapping it here.
+    /// The caller likewise owns the stream's WebSocket codec configuration,
+    /// including frame and assembled-message size limits; this constructor
+    /// does not replace them.
     /// It also cannot enable token binding: an established stream no longer
     /// exposes the exact generated `Sec-WebSocket-Key`, so callers needing that
     /// extension must own the full handshake/proof wrapper or use a connect API.
@@ -1196,6 +1275,58 @@ mod tests {
         assert_debug::<WebSocketTransport>();
     }
 
+    #[test]
+    fn connect_options_apply_inbound_frame_and_message_limits_together() {
+        let default_config = websocket_config(WebSocketConnectOptions::default())
+            .expect("default inbound limit must be valid");
+        assert_eq!(
+            default_config.max_frame_size,
+            Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE)
+        );
+        assert_eq!(
+            default_config.max_message_size,
+            Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE)
+        );
+
+        for (limit, expected) in [(Some(1_024), Some(1_024)), (None, None)] {
+            let config = websocket_config(
+                WebSocketConnectOptions::new().with_max_inbound_message_size(limit),
+            )
+            .expect("positive or disabled inbound limit must be valid");
+            assert_eq!(config.max_frame_size, expected);
+            assert_eq!(config.max_message_size, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_inbound_message_limit_is_rejected_before_url_parsing() {
+        let error = WebSocketTransport::connect_with_options(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new().with_max_inbound_message_size(Some(0)),
+        )
+        .await
+        .expect_err("zero must not create a degenerate WebSocket codec");
+        assert!(
+            matches!(error, SignalFishError::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidInput)
+        );
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn zero_inbound_limit_precedes_token_binding_network_work_when_supported() {
+        let error = WebSocketTransport::connect_with_options(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new()
+                .with_token_binding(TokenBindingMode::Required)
+                .with_max_inbound_message_size(Some(0)),
+        )
+        .await
+        .expect_err("zero must be rejected before token-binding handshake work");
+        assert!(
+            matches!(error, SignalFishError::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidInput)
+        );
+    }
+
     #[cfg(all(feature = "tls", feature = "token-binding"))]
     #[test]
     fn client_certificate_fingerprint_is_lowercase_sha256_and_redacted() {
@@ -1368,6 +1499,24 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "token-binding"))]
+    #[tokio::test]
+    async fn unavailable_token_binding_precedes_an_invalid_inbound_limit() {
+        let result = WebSocketTransport::connect_with_options(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new()
+                .with_token_binding(TokenBindingMode::Required)
+                .with_max_inbound_message_size(Some(0)),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::FeatureDisabled
+            ))
+        ));
+    }
+
     // ── Mock-stream helpers ──────────────────────────────────────────────
 
     use tokio::net::TcpListener;
@@ -1516,11 +1665,14 @@ mod tests {
             assert_eq!(signed["type"], "Ping");
             assert_eq!(signed["token_binding"]["sequence"], 1);
             assert!(signed["token_binding"]["signature"].is_string());
+            ws.send(Message::Binary(vec![0xA5; 257].into()))
+                .await
+                .expect("server must send an oversized post-challenge message");
         });
 
         let mut transport = WebSocketTransport::connect_with_options(
             &format!("ws://{addr}"),
-            required_token_binding_options(),
+            required_token_binding_options().with_max_inbound_message_size(Some(256)),
         )
         .await
         .expect("required token binding must connect");
@@ -1531,6 +1683,10 @@ mod tests {
             .await
             .expect("signed Ping must send");
         assert!(frame.is_none());
+        assert!(matches!(
+            crate::transport::recv_frame(&mut transport).await,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
         finish_mock_server(server_task).await;
     }
 
@@ -1571,12 +1727,17 @@ mod tests {
             )
             .await
             .expect("unsigned fallback handshake must succeed");
-            while second.next().await.is_some() {}
+            second
+                .send(Message::Binary(vec![0x5A; 257].into()))
+                .await
+                .expect("server must send an oversized fallback message");
         });
 
-        let transport = WebSocketTransport::connect_with_options(
+        let mut transport = WebSocketTransport::connect_with_options(
             &format!("ws://{addr}"),
-            WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Optional),
+            WebSocketConnectOptions::new()
+                .with_token_binding(TokenBindingMode::Optional)
+                .with_max_inbound_message_size(Some(256)),
         )
         .await
         .expect("optional mode must accept server-permitted fallback");
@@ -1584,7 +1745,10 @@ mod tests {
             transport.token_binding_status(),
             TokenBindingStatus::NotNegotiated
         );
-        drop(transport);
+        assert!(matches!(
+            crate::transport::recv_frame(&mut transport).await,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
         finish_mock_server(server_task).await;
     }
 
@@ -2487,6 +2651,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inbound_limit_is_inclusive_and_can_be_disabled() {
+        for limit in [Some(257), None] {
+            let (url, server_task) = start_mock_server(|mut ws| async move {
+                ws.send(Message::Binary(vec![0xC7; 257].into()))
+                    .await
+                    .expect("server must send the boundary message");
+            })
+            .await;
+            let options = WebSocketConnectOptions::new().with_max_inbound_message_size(limit);
+            let mut transport = WebSocketTransport::connect_with_options(&url, options)
+                .await
+                .expect("custom inbound policy must connect");
+
+            let live_config = transport
+                .state
+                .stream
+                .as_ref()
+                .expect("connected transport must retain its WebSocket stream")
+                .get_config();
+            assert_eq!(live_config.max_frame_size, limit);
+            assert_eq!(live_config.max_message_size, limit);
+
+            assert_eq!(
+                expect_received_frame(crate::transport::recv_frame(&mut transport).await),
+                TransportFrame::Binary(vec![0xC7; 257]),
+                "limit {limit:?} must admit this complete message"
+            );
+            finish_mock_server(server_task).await;
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn explicit_rustls_connect_path_applies_inbound_size_policy() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            ws.send(Message::Binary(vec![0xC6; 257].into()))
+                .await
+                .expect("server must send the oversized message");
+        })
+        .await;
+        install_tls_provider();
+        let tls_config = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let options = WebSocketConnectOptions::new().with_max_inbound_message_size(Some(256));
+        let mut transport = WebSocketTransport::connect_with_tls_config(&url, options, tls_config)
+            .await
+            .expect("explicit rustls connect path must support a plain ws endpoint");
+
+        let live_config = transport
+            .state
+            .stream
+            .as_ref()
+            .expect("connected transport must retain its WebSocket stream")
+            .get_config();
+        assert_eq!(live_config.max_frame_size, Some(256));
+        assert_eq!(live_config.max_message_size, Some(256));
+        assert!(matches!(
+            crate::transport::recv_frame(&mut transport).await,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn oversized_inbound_frame_is_reported_once_and_fuses_transport() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            ws.send(Message::Binary(vec![0xC8; 257].into()))
+                .await
+                .expect("server must send the oversized message");
+        })
+        .await;
+        let options = WebSocketConnectOptions::new().with_max_inbound_message_size(Some(256));
+        let mut transport = WebSocketTransport::connect_with_options(&url, options)
+            .await
+            .expect("bounded WebSocket must connect");
+
+        assert!(matches!(
+            crate::transport::recv_frame(&mut transport).await,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
+        assert!(transport.state.closed);
+        assert!(transport.state.stream.is_none());
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+
+        let expected = TransportFrame::Text("caller-retains-oversize-retry".into());
+        let mut offered = Some(expected.clone());
+        let send_result = std::future::poll_fn(|cx| transport.poll_send(cx, &mut offered)).await;
+        assert!(matches!(send_result, Err(SignalFishError::TransportClosed)));
+        assert_eq!(offered, Some(expected));
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close after size rejection must be idempotent");
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("repeated close after size rejection must remain idempotent");
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn inbound_fragmented_limit_is_inclusive_and_rejects_boundary_plus_one() {
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
+        use tokio_tungstenite::tungstenite::protocol::frame::Frame;
+
+        for (final_fragment_size, accepted) in [(128, true), (129, false)] {
+            let (url, server_task) = start_mock_server(move |mut ws| async move {
+                ws.send(Message::Frame(Frame::message(
+                    vec![0xC9; 128],
+                    OpCode::Data(Data::Binary),
+                    false,
+                )))
+                .await
+                .expect("server must send the first fragment");
+                ws.send(Message::Frame(Frame::message(
+                    vec![0xCA; final_fragment_size],
+                    OpCode::Data(Data::Continue),
+                    true,
+                )))
+                .await
+                .expect("server must send the final fragment");
+            })
+            .await;
+            let options = WebSocketConnectOptions::new().with_max_inbound_message_size(Some(256));
+            let mut transport = WebSocketTransport::connect_with_options(&url, options)
+                .await
+                .expect("bounded WebSocket must connect");
+
+            let received = crate::transport::recv_frame(&mut transport).await;
+            if accepted {
+                let mut expected = vec![0xC9; 128];
+                expected.extend(vec![0xCA; final_fragment_size]);
+                assert_eq!(
+                    expect_received_frame(received),
+                    TransportFrame::Binary(expected),
+                    "an assembled message exactly at the limit must be accepted"
+                );
+            } else {
+                assert!(matches!(
+                    received,
+                    Some(Err(SignalFishError::TransportReceive(_)))
+                ));
+                assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+            }
+            finish_mock_server(server_task).await;
+        }
+    }
+
+    #[tokio::test]
     async fn socket_receive_error_is_reported_once_then_transport_is_terminal() {
         let mut transport = connect_to_reset_peer().await;
         let first = tokio::time::timeout(
@@ -2691,6 +3005,30 @@ mod tests {
             .expect("recv must return Ok");
         assert_eq!(msg, TransportFrame::Text("from_stream_msg".into()));
         drop(transport);
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn from_stream_preserves_the_callers_codec_limit() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            ws.send(Message::Binary(vec![0xCB; 129].into()))
+                .await
+                .expect("server must send the caller-oversized message");
+        })
+        .await;
+        let caller_config = WebSocketConfig::default()
+            .max_frame_size(Some(128))
+            .max_message_size(Some(128));
+        let (ws_stream, _) =
+            tokio_tungstenite::connect_async_with_config(&url, Some(caller_config), false)
+                .await
+                .expect("raw WebSocket connect must succeed");
+        let mut transport = WebSocketTransport::from_stream(ws_stream);
+
+        assert!(matches!(
+            crate::transport::recv_frame(&mut transport).await,
+            Some(Err(SignalFishError::TransportReceive(_)))
+        ));
         finish_mock_server(server_task).await;
     }
 

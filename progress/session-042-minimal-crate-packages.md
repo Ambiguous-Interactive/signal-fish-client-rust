@@ -143,3 +143,14 @@ proves that only the load-start transition clears all three windows, and proves
 that subsequent callbacks retain their measurements. Three slow JSON polls in
 100 plus 100 fast binary polls correctly fail at 3/200 even when the binary
 window previously contained 1,000 extra fast setup polls.
+
+## Final Hosted Result
+
+Commit `c0b3ae773709430e752c97eab5b613ad098dde15` was the final PR head. All 12
+pull-request workflows passed. The Cursor Bugbot finding above was fixed,
+answered, and resolved; two Copilot attempts failed only because the configured
+review account had exhausted quota and supplied no feedback. PR #131 merged as
+`c7790e8feb4090383cef9635e09847118e88b099`. All 12 push workflows on that
+exact main SHA are green; Docs Validation attempt 1 alone hit the 180-second
+accessibility watchdog, and the unchanged failed-jobs retry passed in under one
+minute.

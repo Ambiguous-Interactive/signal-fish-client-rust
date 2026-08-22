@@ -22,7 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Certificate-capable custom rustls connections automatically bind proofs to
   the exact selected mTLS leaf certificate, supporting Server 0.7's
   `require_client_fingerprint=true` profile without a caller-supplied claim.
-  The default connection path and dependency graph remain unchanged.
+  With token binding disabled, the handshake does not offer its subprotocol;
+  the default dependency graph remains unchanged.
+- Added `WebSocketConnectOptions::max_inbound_message_size` and its matching
+  builder. New native WebSocket connections limit both individual inbound
+  frames and assembled messages to 8 MiB by default; callers can raise the
+  inclusive limit or set it to `None` for an unbounded codec. Streams supplied
+  through `WebSocketTransport::from_stream` retain their caller-owned limits.
 - Added Signal Fish Server 0.7.0 protocol conformance, including
   `SessionGeneration`, `DirectEndpoint::{host, port}`,
   `SessionPlanPayload::generation`, `SessionPlanPayload::direct_endpoint`,
@@ -61,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `WebSocketConnectOptions` gains the public
+  `max_inbound_message_size` field, and built-in native WebSocket connections
+  no longer inherit tungstenite's larger receive defaults. Oversized input is
+  reported once as `SignalFishError::TransportReceive`, then the transport
+  becomes terminal. The 8 MiB default is a protective client policy rather
+  than a protocol maximum; larger deployments must configure it explicitly.
 - Reduced the published `signal-fish-client` crate archive to library source,
   its required token-binding unit-test vector, and package metadata.
   Repository integration tests, other standalone wire fixtures, examples,

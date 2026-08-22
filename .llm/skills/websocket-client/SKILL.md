@@ -21,8 +21,14 @@ let transport = WebSocketTransport::connect_with_timeout(url, timeout).await?;
 `wss://` needs the optional `tls` feature (see the [TLS](#tls) section).
 
 `from_stream(WsStream)` wraps a stream built with custom TLS, proxy, headers,
-or cookies. Connection failures map to `SignalFishError::Io`, preserving an
-underlying I/O error kind when possible.
+or cookies and preserves its caller-selected frame/message limits. New native
+connections instead apply `WebSocketConnectOptions::max_inbound_message_size`
+to tungstenite's frame and assembled-message limits together. The default is
+an inclusive 8 MiB; `None` disables both and `Some(0)` is rejected before
+network I/O. This is a protective client policy, not a Server 0.7 protocol
+maximum; signal-fish-server#399 tracks the missing outbound contract.
+Connection failures map to `SignalFishError::Io`, preserving an underlying I/O
+error kind when possible.
 
 The opt-in `token-binding` feature adds `TokenBindingMode` to
 `WebSocketConnectOptions`. Keep disabled mode on the exact old connect path.
@@ -36,7 +42,7 @@ opt in after losing the exact generated handshake key.
 ## Low-Latency Socket Defaults
 
 `connect` and `connect_with_timeout` disable Nagle's algorithm (`TCP_NODELAY`)
-by default via `connect_async_with_config(url, None, /*disable_nagle=*/ true)`.
+by default via `connect_async_with_config(url, Some(config), /*disable_nagle=*/ true)`.
 Small, latency-sensitive game messages are then sent without waiting on TCP's
 delayed-ACK timer — the Nagle + delayed-ACK stall costs tens of milliseconds per
 round trip. The flag is applied to the raw socket *before* any TLS handshake, so
@@ -190,6 +196,11 @@ closed WebSocket object.
 - A real waker is notified when socket readiness changes.
 - The connected TCP socket has `TCP_NODELAY` set by default; `connect_with_options`
   can turn it off.
+- Native connect paths apply the same configured inclusive limit to individual
+  inbound frames and fragmented-message assembly; boundary, limit+1,
+  fragmentation, override/disable, token-binding offer/fallback, and terminal
+  error behavior use real tungstenite codecs.
+- `from_stream` preserves the caller's WebSocket codec limits.
 - Disabled token binding offers no subprotocol and keeps application bytes exact.
 - Optional fallback occurs only for `NoSubProtocol`; HTTP rejection is not retried.
 - Required negotiation consumes a strict first-message challenge under timeout.
