@@ -97,4 +97,12 @@ rendering is the sole local skip because MkDocs is not installed. Three
 independent frozen-diff reviews report zero actionable correctness, test/docs,
 or simplicity findings after the fix loop.
 
-Hosted PR and CI disposition will be appended after the branch is published.
+PR [#137](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/137)
+was opened from implementation commit `eb04991`. All 12 hosted workflows passed
+on that implementation head: CI, Coverage, Deep Safety, Docs Validation,
+Examples Validation, Godot Web, No Panics, Security, Semver Checks, Unused
+Deps, WASM, and Workflow Lint. The PR is open, mergeable, and has no inline
+review threads. Copilot could not review because the requesting account had
+reached its quota; that governance limitation produced no code feedback. This
+evidence-only follow-up will be monitored to the same green state before
+handoff.
