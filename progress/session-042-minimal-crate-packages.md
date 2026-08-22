@@ -111,3 +111,12 @@ policy, hermetic artifact checks, order-independent allowlists, and robust
 poll-timing distributions. The repeated frozen-diff audit reported no code or
 policy findings after those corrections. Commit, draft-PR identity, hosted
 checks, and review disposition are appended after publication.
+
+## Publication
+
+Commit `05386cb044e7bbd878b160f1f1f131a41e54022b` passed all 18 pre-commit and
+six pre-push checks and was pushed to `chore/minimize-crate-packages`. Draft
+[PR #131](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/131)
+targets the audited `00e9d84b0f03eb615532e9f466b2d5733687dad0` main commit, closes issue #130,
+and records the main-CI root cause and upstream #128 dependency. Hosted check
+and review disposition follow on the final documented PR head.
