@@ -103,10 +103,14 @@ measured evidence before accepting performance complexity:
    Godot's inbound buffer from 65,535 bytes to 8 MiB before connecting,
    caller-owned peers remain unchanged, and official native plus web runs
    require a valid Signal Fish frame larger than the legacy default. Browser
-   assembly remains platform-owned. Replayed stale session plans are tracked
-   independently by
-   [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135),
-   and the remaining inventory cells remain separate client audit slices.
+   assembly remains platform-owned. The stale-session-plan replay slice is
+   complete: the shared core retains all superseded non-null generations for
+   the current room/session and rejects a replay before authoritative plan
+   fields, selected path, peer authority, or mesh revision change.
+   Current-generation duplicates, generation-less Server 0.4 plans, both
+   drivers, every violation policy, and teardown boundaries are covered for
+   [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
+   The remaining inventory cells remain separate client audit slices.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote

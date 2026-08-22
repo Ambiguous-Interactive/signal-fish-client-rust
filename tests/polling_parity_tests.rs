@@ -3398,6 +3398,118 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
     }
 }
 
+#[tokio::test]
+async fn superseded_session_plan_replay_has_complete_driver_policy_parity() {
+    use signal_fish_client::protocol::{SessionPeer, SessionPlanPayload, Topology};
+
+    let local = uuid::Uuid::from_u128(100);
+    let peer_a = uuid::Uuid::from_u128(352);
+    let peer_b = uuid::Uuid::from_u128(350);
+    let generation_a = uuid::Uuid::from_u128(351);
+    let generation_b = uuid::Uuid::from_u128(353);
+    let plan_a = SessionPlanPayload {
+        generation: Some(generation_a),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer_a,
+            player_name: "old-peer".into(),
+            is_authority: false,
+            initiate: false,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+    let plan_b = SessionPlanPayload {
+        generation: Some(generation_b),
+        topology: Topology::Host,
+        transport: TransportKind::WebRtc,
+        host: Some(local),
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer_b,
+            player_name: "current-peer".into(),
+            is_authority: false,
+            initiate: true,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    };
+
+    for policy in [
+        ProtocolViolationPolicy::Observe,
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+    ] {
+        let mut frames = binary_accountability_prefix(peer_b);
+        frames.push(text_server_frame(ServerMessage::LobbyStateChanged {
+            lobby_state: LobbyState::Finalized,
+            ready_players: vec![local, peer_a, peer_b],
+            all_ready: true,
+        }));
+        frames.extend([
+            text_server_frame(ServerMessage::SessionPlan(Box::new(plan_a.clone()))),
+            text_server_frame(ServerMessage::SessionPlan(Box::new(plan_b.clone()))),
+            text_server_frame(ServerMessage::SessionPlan(Box::new(plan_a.clone()))),
+            text_server_frame(ServerMessage::Signal {
+                from: peer_a,
+                generation: Some(generation_a),
+                signal: serde_json::json!({"Offer": "stale"}),
+            }),
+            text_server_frame(ServerMessage::Signal {
+                from: peer_b,
+                generation: Some(generation_b),
+                signal: serde_json::json!({"Offer": "current"}),
+            }),
+        ]);
+
+        let events = assert_frame_trace_parity(
+            frames,
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SessionPlan|"))
+                .count(),
+            2,
+            "replayed A must not replace B under {policy:?}: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("ProtocolViolation|Lifecycle|"))
+                .count(),
+            1,
+            "replayed A must emit exactly one lifecycle violation under {policy:?}: {events:?}"
+        );
+        let signals = events
+            .iter()
+            .filter(|event| event.starts_with("SignalReceived|"))
+            .collect::<Vec<_>>();
+        if policy == ProtocolViolationPolicy::Disconnect {
+            assert!(
+                signals.is_empty(),
+                "disconnect must terminate before signals"
+            );
+            assert!(events
+                .iter()
+                .any(|event| event.starts_with("Disconnected|")));
+        } else {
+            assert_eq!(signals.len(), 1, "{policy:?}: {events:?}");
+            assert!(
+                signals[0].contains(&generation_b.to_string()) && signals[0].contains("current"),
+                "only B's current signal may survive under {policy:?}: {events:?}"
+            );
+        }
+    }
+}
+
 fn mixed_coalesced_unsupported_report(sender: PlayerId) -> TransportFrame {
     text_server_frame(ServerMessage::DeliveryReport(Box::new(
         DeliveryReportPayload {

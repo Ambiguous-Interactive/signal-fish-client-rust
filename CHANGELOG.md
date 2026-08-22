@@ -170,6 +170,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed delayed or replayed `SessionPlan` messages rolling WebRTC signaling
+  authority back to a superseded generation. Both clients now reject every
+  previously superseded non-null generation before changing the selected
+  generation, topology, transport, peer set, or mesh revision. Current-plan
+  duplicates and generation-less Server 0.4 plans remain compatible, and room
+  or connection teardown clears the replay history.
 - Fixed async and polling clients discarding an immediately ready server
   `Error` farewell when an outbound transport send failed at the same time.
   Both drivers now freeze new commands, process bounded already-ready frames
