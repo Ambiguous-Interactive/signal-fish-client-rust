@@ -104,6 +104,7 @@ jobs:
           cargo build --manifest-path tests/godot-web-smoke/Cargo.toml --locked
           cp tests/godot-web-smoke/target/debug/libsignal_fish_godot_smoke.so \
             tests/godot-web-smoke/project/bin/libsignal_fish_godot_smoke.so
+          "${GODOT4_BIN}" --headless --path tests/godot-web-smoke/project --import
 
           cleanup() {
             if [ -n "${godot_pid:-}" ]; then

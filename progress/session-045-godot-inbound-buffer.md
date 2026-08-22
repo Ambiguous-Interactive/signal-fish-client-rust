@@ -97,6 +97,11 @@ official engine proof. PR #136's first hosted pass exposed one deterministic
 Actionlint failure: the native oracle's single-quoted inline JavaScript used
 template-literal `${...}` expressions, which Actionlint's embedded ShellCheck
 reported as SC2016. Rewriting those three diagnostics as string concatenation
-preserves their behavior without shell-looking interpolation. Final mandatory,
+preserves their behavior without shell-looking interpolation. The next hosted
+pass reached the official native engine but timed out before any fixture marker;
+its retained Godot log showed `SignalFishSmoke` was an unloaded placeholder.
+The harness had copied the native GDExtension without running the project import
+that the existing web-export path already requires. It now performs the same
+official `--import` step before launching the native scene. Final mandatory,
 pull-request, and hosted workflow evidence will be appended after the repaired
 implementation diff is frozen.
