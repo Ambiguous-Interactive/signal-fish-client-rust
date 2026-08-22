@@ -126,3 +126,20 @@ suite from an isolated source copy without `.git`. The new index-policy tests
 incorrectly treated that intentional environment as a Git failure. They now
 retain `.gitignore` content checks everywhere and condition only index queries
 on repository metadata being present; ordinary checkouts remain strict.
+
+## Hosted Review Follow-up
+
+After the initial final-head audit, Cursor Bugbot identified that the JSON pair
+reset its poll timing counters at load start while the binary pair contribution
+still included its pre-load session. Combining those mismatched windows could
+dilute repeated load-time slow polls below the one-percent failure threshold.
+
+The smoke controller now reports the exact callback where JSON load begins and
+atomically resets the binary pair's timing counters and the JSON pair's cached
+binary snapshot on that same callback. All three timing values—maximum,
+poll count, and slow-poll count—therefore cover one shared load window.
+A production-used pure timing-window regression seeds the exact dilution case,
+proves that only the load-start transition clears all three windows, and proves
+that subsequent callbacks retain their measurements. Three slow JSON polls in
+100 plus 100 fast binary polls correctly fail at 3/200 even when the binary
+window previously contained 1,000 extra fast setup polls.

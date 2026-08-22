@@ -27,6 +27,48 @@ const POLL_EXTREME_LIMIT_US: u64 = 500_000;
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PollTimingWindow {
+    max_poll_us: u64,
+    poll_count: u64,
+    slow_poll_count: u64,
+}
+
+impl PollTimingWindow {
+    fn record(&mut self, elapsed_us: u64) {
+        self.max_poll_us = self.max_poll_us.max(elapsed_us);
+        self.poll_count = self.poll_count.saturating_add(1);
+        if elapsed_us >= POLL_OUTLIER_THRESHOLD_US {
+            self.slow_poll_count = self.slow_poll_count.saturating_add(1);
+        }
+    }
+
+    fn combined_with(self, other: Self) -> Self {
+        Self {
+            max_poll_us: self.max_poll_us.max(other.max_poll_us),
+            poll_count: self.poll_count.saturating_add(other.poll_count),
+            slow_poll_count: self.slow_poll_count.saturating_add(other.slow_poll_count),
+        }
+    }
+
+    fn within_slow_poll_budget(self) -> bool {
+        self.poll_count > 0 && self.slow_poll_count.saturating_mul(100) <= self.poll_count
+    }
+}
+
+fn synchronize_load_poll_timing_windows(
+    load_started_now: bool,
+    json: &mut PollTimingWindow,
+    binary: &mut PollTimingWindow,
+    cached_binary: &mut PollTimingWindow,
+) {
+    if load_started_now {
+        *json = PollTimingWindow::default();
+        *binary = PollTimingWindow::default();
+        *cached_binary = PollTimingWindow::default();
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PairKind {
     Json,
@@ -80,8 +122,7 @@ struct SmokePair {
     received_a: u64,
     received_b: u64,
     latencies_us: Vec<u64>,
-    max_poll_us: u64,
-    slow_poll_count: u64,
+    poll_timing: PollTimingWindow,
     multi_frame_poll: bool,
     last_accepted_a: u64,
     last_accepted_b: u64,
@@ -96,12 +137,9 @@ struct SmokePair {
     max_poll_work_frames: u64,
     max_poll_work_bytes: u64,
     max_poll_receive_frames: u64,
-    poll_count: u64,
     load_error: bool,
     peak_aggregate_depth: u64,
-    other_pair_max_poll_us: u64,
-    other_pair_poll_count: u64,
-    other_pair_slow_poll_count: u64,
+    other_pair_poll_timing: PollTimingWindow,
     other_pair_admission_violations: u64,
     other_pair_one_frame_escape_bytes: u64,
     other_pair_within_absolute_ceiling: bool,
@@ -136,8 +174,7 @@ impl SmokePair {
             received_a: 0,
             received_b: 0,
             latencies_us: Vec::new(),
-            max_poll_us: 0,
-            slow_poll_count: 0,
+            poll_timing: PollTimingWindow::default(),
             multi_frame_poll: false,
             last_accepted_a: 0,
             last_accepted_b: 0,
@@ -152,12 +189,9 @@ impl SmokePair {
             max_poll_work_frames: 0,
             max_poll_work_bytes: 0,
             max_poll_receive_frames: 0,
-            poll_count: 0,
             load_error: false,
             peak_aggregate_depth: 0,
-            other_pair_max_poll_us: 0,
-            other_pair_poll_count: 0,
-            other_pair_slow_poll_count: 0,
+            other_pair_poll_timing: PollTimingWindow::default(),
             other_pair_admission_violations: 0,
             other_pair_one_frame_escape_bytes: 0,
             other_pair_within_absolute_ceiling: true,
@@ -167,26 +201,26 @@ impl SmokePair {
         }
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self) -> bool {
         if self.shutdown_done || self.close_attributed {
-            return;
+            return false;
         }
         if self.closing {
             self.drive_close();
-            return;
+            return false;
         }
+
+        let mut load_started_now = false;
 
         let first_events = poll_measured(
             &mut self.first,
-            &mut self.max_poll_us,
-            &mut self.slow_poll_count,
+            &mut self.poll_timing,
             &mut self.multi_frame_poll,
             &mut self.last_accepted_a,
             &mut self.max_poll_work_frames,
             &mut self.last_accepted_bytes_a,
             &mut self.max_poll_work_bytes,
             &mut self.max_poll_receive_frames,
-            &mut self.poll_count,
         );
         self.check_binary_burst_acceptance();
         for event in first_events {
@@ -199,15 +233,13 @@ impl SmokePair {
 
         let second_events = poll_measured(
             &mut self.second,
-            &mut self.max_poll_us,
-            &mut self.slow_poll_count,
+            &mut self.poll_timing,
             &mut self.multi_frame_poll,
             &mut self.last_accepted_b,
             &mut self.max_poll_work_frames,
             &mut self.last_accepted_bytes_b,
             &mut self.max_poll_work_bytes,
             &mut self.max_poll_receive_frames,
-            &mut self.poll_count,
         );
         for event in second_events {
             self.handle_second(event);
@@ -217,9 +249,8 @@ impl SmokePair {
             if self.load_started.is_none() {
                 let now = Instant::now();
                 self.load_started = Some(now);
+                load_started_now = true;
                 self.last_sample_at = Some(now);
-                self.max_poll_us = 0;
-                self.slow_poll_count = 0;
                 self.multi_frame_poll = false;
                 self.last_accepted_a = self
                     .first
@@ -245,7 +276,6 @@ impl SmokePair {
                 self.max_poll_work_frames = 0;
                 self.max_poll_work_bytes = 0;
                 self.max_poll_receive_frames = 0;
-                self.poll_count = 0;
                 if let Some(client) = &mut self.first {
                     client.reset_queue_age_peak();
                 }
@@ -264,6 +294,8 @@ impl SmokePair {
             godot_print!("SIGNAL_FISH_SMOKE binary-ready-for-server-close");
             self.server_close_ready_logged = true;
         }
+
+        load_started_now
     }
 
     fn handle_first(&mut self, event: SignalFishEvent) {
@@ -488,12 +520,12 @@ impl SmokePair {
                 "accepted_per_second": accepted_per_second,
                 "received_per_second": received_per_second,
                 "offered_frames": self.offered_a + self.offered_b,
-                "poll_max_us": self.max_poll_us,
+                "poll_max_us": self.poll_timing.max_poll_us,
                 "poll_work_frames": self.max_poll_work_frames,
                 "poll_work_bytes": self.max_poll_work_bytes,
                 "poll_receive_frames": self.max_poll_receive_frames,
-                "poll_count": self.poll_count,
-                "slow_poll_count": self.slow_poll_count,
+                "poll_count": self.poll_timing.poll_count,
+                "slow_poll_count": self.poll_timing.slow_poll_count,
                 "send_budget_exhaustions": send_budget_exhaustions,
                 "receive_budget_exhaustions": receive_budget_exhaustions,
                 "latest_latency_us": self.last_latency_us,
@@ -617,11 +649,7 @@ impl SmokePair {
         let buffering_safe = within_absolute_ceiling && admission_violations == 0;
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
-        let max_poll_us = self.max_poll_us.max(self.other_pair_max_poll_us);
-        let poll_count = self.poll_count.saturating_add(self.other_pair_poll_count);
-        let slow_poll_count = self
-            .slow_poll_count
-            .saturating_add(self.other_pair_slow_poll_count);
+        let poll_timing = self.poll_timing.combined_with(self.other_pair_poll_timing);
         let passed = self.offered_a == LOAD_TARGET_PER_CLIENT
             && self.offered_b == LOAD_TARGET_PER_CLIENT
             && self.received_a == LOAD_TARGET_PER_CLIENT
@@ -638,9 +666,8 @@ impl SmokePair {
             && self.max_poll_work_frames <= 64
             && self.max_poll_work_bytes <= 64 * 1024
             && self.max_poll_receive_frames <= 64
-            && max_poll_us < POLL_EXTREME_LIMIT_US
-            && poll_count > 0
-            && slow_poll_count.saturating_mul(100) <= poll_count
+            && poll_timing.max_poll_us < POLL_EXTREME_LIMIT_US
+            && poll_timing.within_slow_poll_budget()
             && p99_us <= 500_000
             && buffering_safe;
         let per_client_peak_buffered = [self.first.as_ref(), self.second.as_ref()].map(|client| {
@@ -674,9 +701,9 @@ impl SmokePair {
             "max_poll_work_frames": self.max_poll_work_frames,
             "max_poll_work_bytes": self.max_poll_work_bytes,
             "max_poll_receive_frames": self.max_poll_receive_frames,
-            "max_poll_us": max_poll_us,
-            "poll_count": poll_count,
-            "slow_poll_count": slow_poll_count,
+            "max_poll_us": poll_timing.max_poll_us,
+            "poll_count": poll_timing.poll_count,
+            "slow_poll_count": poll_timing.slow_poll_count,
             "p99_latency_us": p99_us,
             "buffering_safe": buffering_safe,
             "admission_watermark_violations": admission_violations,
@@ -792,25 +819,30 @@ impl INode for SignalFishSmoke {
             return;
         };
         binary.poll();
-        let binary_max_poll_us = binary.max_poll_us;
-        let binary_poll_count = binary.poll_count;
-        let binary_slow_poll_count = binary.slow_poll_count;
+        let binary_poll_timing = binary.poll_timing;
         let binary_close_attributed = binary.close_attributed;
         let (binary_violations, binary_escape_bytes, binary_within_ceiling) =
             aggregate_godot_admission(binary.first.as_ref(), binary.second.as_ref());
         let (binary_peaks, binary_watermarks, binary_per_client_escape) =
             godot_admission_snapshots(binary.first.as_ref(), binary.second.as_ref());
         let Some(json) = &mut self.json else { return };
-        json.other_pair_max_poll_us = binary_max_poll_us;
-        json.other_pair_poll_count = binary_poll_count;
-        json.other_pair_slow_poll_count = binary_slow_poll_count;
+        json.other_pair_poll_timing = binary_poll_timing;
         json.other_pair_admission_violations = binary_violations;
         json.other_pair_one_frame_escape_bytes = binary_escape_bytes;
         json.other_pair_within_absolute_ceiling = binary_within_ceiling;
         json.other_pair_peak_buffered_bytes = binary_peaks;
         json.other_pair_effective_watermark_bytes = binary_watermarks;
         json.other_pair_per_client_escape_bytes = binary_per_client_escape;
-        json.poll();
+        let load_started_now = json.poll();
+        // The load summary combines both pairs, so both timing windows must
+        // begin on the same rendered callback. Otherwise the binary pair's
+        // pre-load polls dilute the slow-poll ratio measured during load.
+        synchronize_load_poll_timing_windows(
+            load_started_now,
+            &mut json.poll_timing,
+            &mut binary.poll_timing,
+            &mut json.other_pair_poll_timing,
+        );
         if json.shutdown_done && binary_close_attributed {
             godot_print!("SIGNAL_FISH_SMOKE complete");
             self.complete = true;
@@ -824,27 +856,21 @@ impl INode for SignalFishSmoke {
 #[allow(clippy::too_many_arguments)]
 fn poll_measured(
     client: &mut Option<Client>,
-    max_poll_us: &mut u64,
-    slow_poll_count: &mut u64,
+    poll_timing: &mut PollTimingWindow,
     multi_frame_poll: &mut bool,
     last_accepted: &mut u64,
     max_poll_work_frames: &mut u64,
     last_accepted_bytes: &mut u64,
     max_poll_work_bytes: &mut u64,
     max_poll_receive_frames: &mut u64,
-    poll_count: &mut u64,
 ) -> Vec<SignalFishEvent> {
     let Some(client) = client else {
         return Vec::new();
     };
     let started = Instant::now();
     let events = client.poll();
-    *poll_count = poll_count.saturating_add(1);
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-    *max_poll_us = (*max_poll_us).max(elapsed_us);
-    if elapsed_us >= POLL_OUTLIER_THRESHOLD_US {
-        *slow_poll_count = (*slow_poll_count).saturating_add(1);
-    }
+    poll_timing.record(elapsed_us);
     let accepted = client.transport_diagnostics().accepted_frames;
     let accepted_delta = accepted.saturating_sub(*last_accepted);
     *multi_frame_poll |= accepted_delta > 1;
@@ -1011,7 +1037,59 @@ struct SmokeExtension;
 
 #[cfg(test)]
 mod tests {
-    use super::{adaptive_peak_is_safe, default_adaptive_ceiling_bytes};
+    use super::{
+        adaptive_peak_is_safe, default_adaptive_ceiling_bytes,
+        synchronize_load_poll_timing_windows, PollTimingWindow,
+    };
+
+    #[test]
+    fn load_poll_timing_sync_is_transition_bound_and_prevents_dilution() {
+        let mut json = PollTimingWindow {
+            max_poll_us: 60_000,
+            poll_count: 100,
+            slow_poll_count: 3,
+        };
+        let mut binary = PollTimingWindow {
+            max_poll_us: 1_000,
+            poll_count: 1_100,
+            slow_poll_count: 0,
+        };
+        let mut cached_binary = binary;
+
+        assert!(json.combined_with(cached_binary).within_slow_poll_budget());
+        let seeded = (json, binary, cached_binary);
+        synchronize_load_poll_timing_windows(false, &mut json, &mut binary, &mut cached_binary);
+        assert_eq!((json, binary, cached_binary), seeded);
+
+        synchronize_load_poll_timing_windows(true, &mut json, &mut binary, &mut cached_binary);
+        assert_eq!(
+            (json, binary, cached_binary),
+            (
+                PollTimingWindow::default(),
+                PollTimingWindow::default(),
+                PollTimingWindow::default(),
+            )
+        );
+
+        for _ in 0..3 {
+            json.record(60_000);
+        }
+        for _ in 0..97 {
+            json.record(1_000);
+        }
+        for _ in 0..100 {
+            binary.record(1_000);
+        }
+        cached_binary = binary;
+        let aligned_load = json.combined_with(cached_binary);
+        assert_eq!(aligned_load.poll_count, 200);
+        assert_eq!(aligned_load.slow_poll_count, 3);
+        assert!(!aligned_load.within_slow_poll_budget());
+
+        let measured_load = (json, binary, cached_binary);
+        synchronize_load_poll_timing_windows(false, &mut json, &mut binary, &mut cached_binary);
+        assert_eq!((json, binary, cached_binary), measured_load);
+    }
 
     #[test]
     fn historical_peak_is_compared_with_immutable_adaptive_ceiling() {
