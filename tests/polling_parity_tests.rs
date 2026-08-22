@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex};
 
 use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
 use signal_fish_client::error::SignalFishError;
-use signal_fish_client::polling_client::SignalFishPollingClient;
+use signal_fish_client::polling_client::{
+    PollingClientOptions, PollingWorkBudget, SignalFishPollingClient,
+};
 use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
     DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState,
@@ -943,6 +945,282 @@ struct SharedMock {
     required_room_commands: Arc<Mutex<RoomCommandRequirements>>,
     gate_room_responses: bool,
     gate_reconnect_responses: bool,
+}
+
+#[derive(Clone)]
+enum PostFailureRecv {
+    Farewell,
+    Pong,
+    PongBytes(usize),
+    ProtocolViolation,
+    Pending,
+    Eof,
+    Error,
+}
+
+struct SendFailureFarewellState {
+    authenticate_sent: bool,
+    authenticated_delivered: bool,
+    send_failed: bool,
+    pre_failure: VecDeque<PostFailureRecv>,
+    post_failure: VecDeque<PostFailureRecv>,
+    post_failure_recv_calls: usize,
+    ping_attempts: usize,
+    close_calls: usize,
+    abort_calls: usize,
+    close_info: Option<signal_fish_client::TransportCloseInfo>,
+    waker: Option<std::task::Waker>,
+}
+
+/// Refuses the first post-authentication Ping without taking its frame, then
+/// makes a complete server farewell and EOF immediately ready. The same mock
+/// drives both clients at the duplex send/receive failure boundary.
+#[derive(Clone)]
+struct SendFailureFarewellTransport {
+    state: Arc<Mutex<SendFailureFarewellState>>,
+}
+
+impl SendFailureFarewellTransport {
+    fn new(
+        post_failure: impl IntoIterator<Item = PostFailureRecv>,
+        close_info: Option<signal_fish_client::TransportCloseInfo>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SendFailureFarewellState {
+                authenticate_sent: false,
+                authenticated_delivered: false,
+                send_failed: false,
+                pre_failure: VecDeque::new(),
+                post_failure: post_failure.into_iter().collect(),
+                post_failure_recv_calls: 0,
+                ping_attempts: 0,
+                close_calls: 0,
+                abort_calls: 0,
+                close_info,
+                waker: None,
+            })),
+        }
+    }
+
+    fn with_pre_failure(self, steps: impl IntoIterator<Item = PostFailureRecv>) -> Self {
+        self.state.lock().unwrap().pre_failure = steps.into_iter().collect();
+        self
+    }
+
+    fn ping_attempts(&self) -> usize {
+        self.state.lock().unwrap().ping_attempts
+    }
+
+    fn send_failed(&self) -> bool {
+        self.state.lock().unwrap().send_failed
+    }
+
+    fn close_calls(&self) -> usize {
+        self.state.lock().unwrap().close_calls
+    }
+
+    fn abort_calls(&self) -> usize {
+        self.state.lock().unwrap().abort_calls
+    }
+
+    fn post_failure_recv_calls(&self) -> usize {
+        self.state.lock().unwrap().post_failure_recv_calls
+    }
+
+    fn poll_recv_step(
+        step: PostFailureRecv,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        let result = match step {
+            PostFailureRecv::Farewell => Ok(TransportFrame::Text(
+                r#"{"type":"Error","data":{"message":"Disconnected as a slow consumer","error_code":"SLOW_CONSUMER"}}"#.into(),
+            )),
+            PostFailureRecv::Pong => Ok(TransportFrame::Text(r#"{"type":"Pong"}"#.into())),
+            PostFailureRecv::PongBytes(bytes) => {
+                let mut pong = r#"{"type":"Pong"}"#.to_string();
+                pong.extend(std::iter::repeat_n(' ', bytes.saturating_sub(pong.len())));
+                Ok(TransportFrame::Text(pong))
+            }
+            PostFailureRecv::ProtocolViolation => Ok(TransportFrame::Text(AUTH.into())),
+            PostFailureRecv::Pending => return std::task::Poll::Pending,
+            PostFailureRecv::Eof => return std::task::Poll::Ready(None),
+            PostFailureRecv::Error => Err(SignalFishError::TransportReceive(
+                "scripted read failure".into(),
+            )),
+        };
+        std::task::Poll::Ready(Some(result))
+    }
+}
+
+impl Default for SendFailureFarewellTransport {
+    fn default() -> Self {
+        Self::new([PostFailureRecv::Farewell, PostFailureRecv::Eof], None)
+    }
+}
+
+impl Transport for SendFailureFarewellTransport {
+    fn abort(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        state.abort_calls = state.abort_calls.saturating_add(1);
+        let _ = state.waker.take();
+    }
+
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let message = frame.as_ref().and_then(|frame| match frame {
+            TransportFrame::Text(json) => serde_json::from_str::<ClientMessage>(json).ok(),
+            TransportFrame::Binary(_) => None,
+        });
+        let mut state = self.state.lock().unwrap();
+        match message {
+            Some(ClientMessage::Authenticate { .. }) => {
+                let _ = frame.take();
+                state.authenticate_sent = true;
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+                std::task::Poll::Ready(Ok(()))
+            }
+            Some(ClientMessage::Ping) => {
+                state.ping_attempts = state.ping_attempts.saturating_add(1);
+                state.send_failed = true;
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+                std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                    "scripted write failure".into(),
+                )))
+            }
+            _ => panic!("farewell transport received an unexpected outbound frame"),
+        }
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        let mut state = self.state.lock().unwrap();
+        if state.authenticate_sent && !state.authenticated_delivered {
+            state.authenticated_delivered = true;
+            return std::task::Poll::Ready(Some(Ok(TransportFrame::Text(AUTH.into()))));
+        }
+        if !state.send_failed {
+            if let Some(step) = state.pre_failure.pop_front() {
+                let polled = Self::poll_recv_step(step);
+                if polled.is_ready() {
+                    return polled;
+                }
+            }
+        }
+        if state.send_failed {
+            state.post_failure_recv_calls = state.post_failure_recv_calls.saturating_add(1);
+            if let Some(step) = state.post_failure.pop_front() {
+                let polled = Self::poll_recv_step(step);
+                if polled.is_ready() {
+                    return polled;
+                }
+            }
+        }
+        state.waker = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        let mut state = self.state.lock().unwrap();
+        state.close_calls = state.close_calls.saturating_add(1);
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn close_info(&self) -> Option<signal_fish_client::TransportCloseInfo> {
+        self.state.lock().unwrap().close_info.clone()
+    }
+}
+
+async fn wait_until(condition: impl Fn() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !condition() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("scripted transport state should advance promptly");
+}
+
+async fn count_async_terminal_pongs(
+    steps: impl IntoIterator<Item = PostFailureRecv>,
+) -> (usize, usize) {
+    let transport = SendFailureFarewellTransport::new(steps, None);
+    let observer = transport.clone();
+    let (mut client, mut events) = SignalFishClient::start(transport, SignalFishConfig::new("app"));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Authenticated { .. })
+    ));
+    client
+        .ping()
+        .expect("scripted async Ping should be admitted");
+    let pongs = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut pongs = 0usize;
+        loop {
+            match events
+                .recv()
+                .await
+                .expect("terminal event channel must remain open through Disconnected")
+            {
+                SignalFishEvent::Pong => pongs = pongs.saturating_add(1),
+                SignalFishEvent::Disconnected { .. } => break pongs,
+                other => panic!("unexpected async terminal event: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("bounded terminal drain must reach Disconnected");
+    client.shutdown().await;
+    (pongs, observer.post_failure_recv_calls())
+}
+
+fn count_polling_terminal_pongs(
+    steps: impl IntoIterator<Item = PostFailureRecv>,
+    receive_frames: usize,
+    receive_bytes: usize,
+) -> (usize, usize, u64) {
+    let transport = SendFailureFarewellTransport::new(steps, None);
+    let observer = transport.clone();
+    let options = PollingClientOptions {
+        work_budget: PollingWorkBudget {
+            receive_frames,
+            receive_bytes,
+            ..PollingWorkBudget::default()
+        },
+        ..PollingClientOptions::default()
+    };
+    let mut client =
+        SignalFishPollingClient::new_with_options(transport, SignalFishConfig::new("app"), options);
+    let _ = client.poll();
+    client.ping().expect("polling Ping should be admitted");
+    let events = client.poll();
+    let pongs = events
+        .iter()
+        .filter(|event| matches!(event, SignalFishEvent::Pong))
+        .count();
+    assert!(matches!(
+        events.last(),
+        Some(SignalFishEvent::Disconnected { .. })
+    ));
+    let recv_calls = observer.post_failure_recv_calls();
+    let exhaustions = client.polling_stats().receive_budget_exhaustions;
+    let _ = client.poll();
+    assert_eq!(observer.post_failure_recv_calls(), recv_calls);
+    (pongs, recv_calls, exhaustions)
 }
 
 impl SharedMock {
@@ -4662,4 +4940,567 @@ async fn parity_disconnected_carries_last_server_error() {
         async_info.error_code,
         Some(signal_fish_client::ErrorCode::SlowConsumer)
     );
+}
+
+#[tokio::test]
+async fn parity_ready_farewell_survives_simultaneous_send_failure() {
+    let async_transport = SendFailureFarewellTransport::default();
+    let async_observer = async_transport.clone();
+    let async_config = SignalFishConfig::new("app")
+        .with_event_channel_capacity(1)
+        .with_command_channel_capacity(4);
+    let (mut async_client, mut async_events) =
+        SignalFishClient::start(async_transport, async_config);
+
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    wait_until(|| async_client.is_authenticated() && async_events.capacity() == 0).await;
+    async_client
+        .ping()
+        .expect("first Ping should enter the async command queue");
+    async_client
+        .ping()
+        .expect("second Ping should queue behind the failing command");
+    wait_until(|| async_observer.send_failed()).await;
+    assert!(matches!(
+        async_client.ping(),
+        Err(SignalFishError::NotConnected)
+    ));
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::Authenticated { .. })
+    ));
+
+    let async_farewell =
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("ready farewell should make progress through event delivery")
+            .expect("farewell event channel should remain open");
+    assert!(matches!(
+        async_farewell,
+        SignalFishEvent::Error {
+            error_code: Some(ErrorCode::SlowConsumer),
+            ..
+        }
+    ));
+    let async_terminal =
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("Disconnected should follow the farewell")
+            .expect("terminal event channel should remain open");
+    let SignalFishEvent::Disconnected {
+        reason: async_reason,
+        last_server_error: async_error,
+    } = async_terminal
+    else {
+        panic!("expected async Disconnected after farewell");
+    };
+    assert_eq!(
+        async_reason.as_deref(),
+        Some("transport send error: scripted write failure")
+    );
+    let async_error = async_error.expect("async disconnect should attribute the farewell");
+    assert_eq!(async_error.error_code, Some(ErrorCode::SlowConsumer));
+    assert_eq!(async_observer.ping_attempts(), 1);
+    assert_eq!(async_observer.close_calls(), 1);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+            .await
+            .expect("terminal event sender should be dropped")
+            .is_none(),
+        "no event may follow Disconnected"
+    );
+
+    let polling_transport = SendFailureFarewellTransport::default();
+    let polling_observer = polling_transport.clone();
+    let mut polling_client =
+        SignalFishPollingClient::new(polling_transport, SignalFishConfig::new("app"));
+    let setup_events = polling_client.poll();
+    assert!(matches!(
+        setup_events.as_slice(),
+        [
+            SignalFishEvent::Connected,
+            SignalFishEvent::Authenticated { .. }
+        ]
+    ));
+    polling_client
+        .ping()
+        .expect("first Ping should enter the polling command queue");
+    polling_client
+        .ping()
+        .expect("second Ping should queue behind the failing command");
+
+    let polling_events = polling_client.poll();
+    assert!(matches!(
+        polling_events.as_slice(),
+        [
+            SignalFishEvent::Error {
+                error_code: Some(ErrorCode::SlowConsumer),
+                ..
+            },
+            SignalFishEvent::Disconnected { .. }
+        ]
+    ));
+    let SignalFishEvent::Disconnected {
+        reason: polling_reason,
+        last_server_error: polling_error,
+    } = &polling_events[1]
+    else {
+        unreachable!("slice shape asserted above")
+    };
+    assert_eq!(polling_reason, &async_reason);
+    assert_eq!(
+        polling_error.as_ref(),
+        Some(&async_error),
+        "both drivers must attribute the same terminal server farewell"
+    );
+    assert_eq!(polling_observer.ping_attempts(), 1);
+    assert!(matches!(
+        polling_client.ping(),
+        Err(SignalFishError::NotConnected)
+    ));
+
+    async_client.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutdown_preempts_capacity_one_send_failure_drain() {
+    let transport = SendFailureFarewellTransport::default();
+    let observer = transport.clone();
+    let config = SignalFishConfig::new("app")
+        .with_event_channel_capacity(1)
+        .with_command_channel_capacity(4)
+        .with_shutdown_timeout(std::time::Duration::from_secs(5));
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    wait_until(|| client.is_authenticated() && events.capacity() == 0).await;
+    client
+        .ping()
+        .expect("Ping should enter the async command queue");
+    client
+        .ping()
+        .expect("queued work behind the failing Ping should be discarded");
+    wait_until(|| observer.send_failed()).await;
+
+    tokio::time::timeout(std::time::Duration::from_millis(250), client.shutdown())
+        .await
+        .expect("shutdown should preempt blocked farewell delivery");
+    assert!(!client.is_connected());
+    assert!(!client.is_authenticated());
+    assert_eq!(observer.ping_attempts(), 1);
+    assert_eq!(observer.close_calls(), 1);
+
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Authenticated { .. })
+    ));
+    assert!(events.recv().await.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_deadline_bounds_blocked_async_farewell_delivery() {
+    let transport = SendFailureFarewellTransport::default();
+    let observer = transport.clone();
+    let config = SignalFishConfig::new("app")
+        .with_event_channel_capacity(1)
+        .with_shutdown_timeout(std::time::Duration::from_millis(20));
+    let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    wait_until(|| client.is_authenticated() && events.capacity() == 0).await;
+    client
+        .ping()
+        .expect("Ping should enter the async command queue");
+    wait_until(|| observer.send_failed()).await;
+    tokio::time::advance(std::time::Duration::from_millis(20)).await;
+    wait_until(|| !client.is_connected()).await;
+
+    assert_eq!(observer.ping_attempts(), 1);
+    assert_eq!(observer.post_failure_recv_calls(), 1);
+    assert_eq!(observer.close_calls(), 0);
+    assert_eq!(observer.abort_calls(), 1);
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Authenticated { .. })
+    ));
+    assert!(events.recv().await.is_none());
+    client.shutdown().await;
+}
+
+#[test]
+fn zero_terminal_deadline_skips_polling_farewell_drain() {
+    let transport = SendFailureFarewellTransport::default();
+    let observer = transport.clone();
+    let config = SignalFishConfig::new("app").with_shutdown_timeout(std::time::Duration::ZERO);
+    let mut client = SignalFishPollingClient::new(transport, config);
+    let _ = client.poll();
+    client
+        .ping()
+        .expect("Ping should enter the polling command queue");
+
+    let events = client.poll();
+    assert!(matches!(
+        events.as_slice(),
+        [SignalFishEvent::Disconnected {
+            last_server_error: None,
+            ..
+        }]
+    ));
+    assert_eq!(observer.post_failure_recv_calls(), 0);
+    assert_eq!(observer.ping_attempts(), 1);
+    assert_eq!(observer.abort_calls(), 1);
+}
+
+#[tokio::test]
+async fn terminal_send_failure_cause_precedence_and_ready_stop_are_driver_aligned() {
+    struct Case {
+        name: &'static str,
+        steps: Vec<PostFailureRecv>,
+        close_info: Option<signal_fish_client::TransportCloseInfo>,
+        expected_reason: &'static str,
+        expected_error_event: bool,
+        expected_recv_calls: usize,
+    }
+
+    let peer_close = signal_fish_client::TransportCloseInfo {
+        code: Some(4000),
+        reason: Some("peer ended".into()),
+        clean: Some(true),
+        initiated_by_peer: true,
+    };
+    let local_close = signal_fish_client::TransportCloseInfo {
+        initiated_by_peer: false,
+        ..peer_close.clone()
+    };
+    let cases = [
+        Case {
+            name: "Pending preserves the send failure and is never repolled",
+            steps: vec![PostFailureRecv::Pending, PostFailureRecv::Pong],
+            close_info: None,
+            expected_reason: "transport send error: scripted write failure",
+            expected_error_event: false,
+            expected_recv_calls: 1,
+        },
+        Case {
+            name: "bare EOF preserves the send failure",
+            steps: vec![PostFailureRecv::Eof],
+            close_info: None,
+            expected_reason: "transport send error: scripted write failure",
+            expected_error_event: false,
+            expected_recv_calls: 1,
+        },
+        Case {
+            name: "peer close metadata overrides the send failure at EOF",
+            steps: vec![PostFailureRecv::Eof],
+            close_info: Some(peer_close.clone()),
+            expected_reason: "closed by server: code=Some(4000), reason=Some(\"peer ended\")",
+            expected_error_event: false,
+            expected_recv_calls: 1,
+        },
+        Case {
+            name: "receive error preserves the send failure",
+            steps: vec![PostFailureRecv::Error],
+            close_info: None,
+            expected_reason: "transport send error: scripted write failure",
+            expected_error_event: false,
+            expected_recv_calls: 1,
+        },
+        Case {
+            name: "peer metadata and farewell attribution remain independent",
+            steps: vec![PostFailureRecv::Farewell, PostFailureRecv::Eof],
+            close_info: Some(peer_close),
+            expected_reason: "closed by server: code=Some(4000), reason=Some(\"peer ended\")",
+            expected_error_event: true,
+            expected_recv_calls: 2,
+        },
+        Case {
+            name: "non-peer metadata does not override the send failure",
+            steps: vec![PostFailureRecv::Farewell, PostFailureRecv::Eof],
+            close_info: Some(local_close),
+            expected_reason: "transport send error: scripted write failure",
+            expected_error_event: true,
+            expected_recv_calls: 2,
+        },
+    ];
+
+    for case in cases {
+        let async_transport =
+            SendFailureFarewellTransport::new(case.steps.clone(), case.close_info.clone());
+        let async_observer = async_transport.clone();
+        let (mut async_client, mut async_events) =
+            SignalFishClient::start(async_transport, SignalFishConfig::new("app"));
+        assert!(matches!(
+            async_events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            async_events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        async_client
+            .ping()
+            .expect("scripted async Ping should be admitted");
+
+        let mut async_terminal_events = Vec::new();
+        for _ in 0..3 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("{}: async terminal event timed out", case.name))
+                    .unwrap_or_else(|| panic!("{}: async event channel closed early", case.name));
+            let disconnected = matches!(event, SignalFishEvent::Disconnected { .. });
+            async_terminal_events.push(event);
+            if disconnected {
+                break;
+            }
+        }
+
+        let polling_transport = SendFailureFarewellTransport::new(case.steps, case.close_info);
+        let polling_observer = polling_transport.clone();
+        let mut polling_client =
+            SignalFishPollingClient::new(polling_transport, SignalFishConfig::new("app"));
+        let setup = polling_client.poll();
+        assert_eq!(setup.len(), 2, "{}: polling setup events", case.name);
+        polling_client
+            .ping()
+            .expect("scripted polling Ping should be admitted");
+        let polling_terminal_events = polling_client.poll();
+
+        for (driver, events) in [
+            ("async", async_terminal_events.as_slice()),
+            ("polling", polling_terminal_events.as_slice()),
+        ] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, SignalFishEvent::Error { .. }))
+                    .count(),
+                usize::from(case.expected_error_event),
+                "{}: {driver} Error event count",
+                case.name
+            );
+            let terminal = events
+                .last()
+                .unwrap_or_else(|| panic!("{}: {driver} terminal events", case.name));
+            let SignalFishEvent::Disconnected {
+                reason,
+                last_server_error,
+            } = terminal
+            else {
+                panic!("{}: {driver} must end with Disconnected", case.name);
+            };
+            assert_eq!(
+                reason.as_deref(),
+                Some(case.expected_reason),
+                "{}: {driver} terminal cause",
+                case.name
+            );
+            assert_eq!(
+                last_server_error.is_some(),
+                case.expected_error_event,
+                "{}: {driver} farewell attribution",
+                case.name
+            );
+        }
+        assert_eq!(
+            async_observer.post_failure_recv_calls(),
+            case.expected_recv_calls,
+            "{}: async receive bound",
+            case.name
+        );
+        assert_eq!(
+            polling_observer.post_failure_recv_calls(),
+            case.expected_recv_calls,
+            "{}: polling receive bound",
+            case.name
+        );
+        let _ = polling_client.poll();
+        assert_eq!(
+            polling_observer.post_failure_recv_calls(),
+            case.expected_recv_calls,
+            "{}: polling close must not resume terminal receive",
+            case.name
+        );
+        async_client.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn protocol_directed_disconnect_stops_send_failure_drain_in_both_drivers() {
+    let steps = [PostFailureRecv::ProtocolViolation, PostFailureRecv::Pong];
+    let config = || {
+        SignalFishConfig::new("app")
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect)
+    };
+
+    let async_transport = SendFailureFarewellTransport::new(steps.clone(), None);
+    let async_observer = async_transport.clone();
+    let (mut async_client, mut async_events) = SignalFishClient::start(async_transport, config());
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::Authenticated { .. })
+    ));
+    async_client.ping().expect("async Ping should be admitted");
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::ProtocolViolation { .. })
+    ));
+    assert!(matches!(
+        async_events.recv().await,
+        Some(SignalFishEvent::Disconnected {
+            last_server_error: None,
+            ..
+        })
+    ));
+    assert_eq!(async_observer.post_failure_recv_calls(), 1);
+
+    let polling_transport = SendFailureFarewellTransport::new(steps, None);
+    let polling_observer = polling_transport.clone();
+    let mut polling_client = SignalFishPollingClient::new(polling_transport, config());
+    let _ = polling_client.poll();
+    polling_client
+        .ping()
+        .expect("polling Ping should be admitted");
+    assert!(matches!(
+        polling_client.poll().as_slice(),
+        [
+            SignalFishEvent::ProtocolViolation { .. },
+            SignalFishEvent::Disconnected {
+                last_server_error: None,
+                ..
+            }
+        ]
+    ));
+    assert_eq!(polling_observer.post_failure_recv_calls(), 1);
+
+    async_client.shutdown().await;
+}
+
+#[test]
+fn polling_send_failure_drain_processes_a_prefetched_farewell_first() {
+    let transport = SendFailureFarewellTransport::new([PostFailureRecv::Pong], None)
+        .with_pre_failure([PostFailureRecv::Farewell]);
+    let observer = transport.clone();
+    let options = PollingClientOptions {
+        work_budget: PollingWorkBudget {
+            receive_frames: 1,
+            ..PollingWorkBudget::default()
+        },
+        ..PollingClientOptions::default()
+    };
+    let mut client =
+        SignalFishPollingClient::new_with_options(transport, SignalFishConfig::new("app"), options);
+    assert!(matches!(
+        client.poll().as_slice(),
+        [
+            SignalFishEvent::Connected,
+            SignalFishEvent::Authenticated { .. }
+        ]
+    ));
+    assert_eq!(client.polling_stats().receive_budget_exhaustions, 1);
+    client.ping().expect("polling Ping should be admitted");
+
+    assert!(matches!(
+        client.poll().as_slice(),
+        [
+            SignalFishEvent::Error {
+                error_code: Some(ErrorCode::SlowConsumer),
+                ..
+            },
+            SignalFishEvent::Disconnected {
+                last_server_error: Some(_),
+                ..
+            }
+        ]
+    ));
+    assert_eq!(observer.post_failure_recv_calls(), 0);
+    assert_eq!(client.polling_stats().receive_budget_exhaustions, 2);
+}
+
+#[tokio::test]
+async fn terminal_send_failure_drain_honors_shared_and_polling_receive_budgets() {
+    const SHARED_LIMIT: usize = 64;
+
+    for (name, steps, expected_frames) in [
+        (
+            "shared frame limit",
+            std::iter::repeat_n(PostFailureRecv::Pong, SHARED_LIMIT + 1).collect::<Vec<_>>(),
+            SHARED_LIMIT,
+        ),
+        (
+            "shared byte limit crossing",
+            vec![
+                PostFailureRecv::PongBytes(32 * 1024),
+                PostFailureRecv::PongBytes(32 * 1024),
+                PostFailureRecv::Pong,
+            ],
+            2,
+        ),
+        (
+            "shared oversized first frame",
+            vec![
+                PostFailureRecv::PongBytes(64 * 1024 + 1),
+                PostFailureRecv::Pong,
+            ],
+            1,
+        ),
+    ] {
+        let (pongs, recv_calls) = count_async_terminal_pongs(steps).await;
+        assert_eq!(pongs, expected_frames, "{name}");
+        assert_eq!(recv_calls, expected_frames, "{name}");
+    }
+
+    for (name, receive_frames, receive_bytes, steps, expected_frames) in [
+        (
+            "smaller caller frame budget",
+            2,
+            usize::MAX,
+            std::iter::repeat_n(PostFailureRecv::Pong, SHARED_LIMIT + 1).collect::<Vec<_>>(),
+            2,
+        ),
+        (
+            "shared polling safety cap",
+            100,
+            usize::MAX,
+            std::iter::repeat_n(PostFailureRecv::Pong, SHARED_LIMIT + 1).collect::<Vec<_>>(),
+            SHARED_LIMIT,
+        ),
+        (
+            "polling byte limit crossing",
+            usize::MAX,
+            32,
+            vec![
+                PostFailureRecv::PongBytes(20),
+                PostFailureRecv::PongBytes(20),
+                PostFailureRecv::Pong,
+            ],
+            2,
+        ),
+        (
+            "polling oversized first frame",
+            usize::MAX,
+            32,
+            vec![PostFailureRecv::PongBytes(33), PostFailureRecv::Pong],
+            1,
+        ),
+    ] {
+        let (pongs, recv_calls, exhaustions) =
+            count_polling_terminal_pongs(steps, receive_frames, receive_bytes);
+        assert_eq!(pongs, expected_frames, "{name}");
+        assert_eq!(recv_calls, expected_frames, "{name}");
+        assert_eq!(exhaustions, 1, "{name}");
+    }
 }

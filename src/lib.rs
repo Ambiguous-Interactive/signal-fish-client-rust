@@ -125,6 +125,8 @@ pub mod error_codes;
 pub mod event;
 pub mod protocol;
 pub mod signal;
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+mod terminal_drain;
 #[cfg(feature = "transport-websocket")]
 pub mod token_binding;
 pub mod transport;

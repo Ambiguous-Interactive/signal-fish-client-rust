@@ -510,6 +510,11 @@ impl WebSocketConnectOptions {
 /// receive state across `Poll::Pending`, registers the supplied waker, and
 /// bounds skipped control-frame work. EOF and terminal socket errors fuse the
 /// transport so later receives, sends, and closes have deterministic outcomes.
+/// After a terminal sink error, later sends are rejected while `poll_recv` may
+/// still return already-buffered frames; the first backend `Pending`, receive
+/// failure, EOF, close, or abort then fully fuses the transport. Pre-acceptance
+/// token-binding errors and `WriteBufferFull` with exact frame restoration are
+/// retryable refusals instead.
 pub struct WebSocketTransport {
     state: WebSocketState<WsStream>,
 }
@@ -519,6 +524,7 @@ struct WebSocketState<S> {
     closed: bool,
     close_info: Option<TransportCloseInfo>,
     send_started: bool,
+    send_failed: bool,
     control_flush_pending: bool,
     peer_close_pending: bool,
     token_binding: WebSocketTokenBinding,
@@ -593,6 +599,7 @@ impl std::fmt::Debug for WebSocketTransport {
             .field("closed", &self.state.closed)
             .field("has_close_info", &self.state.close_info.is_some())
             .field("send_started", &self.state.send_started)
+            .field("send_failed", &self.state.send_failed)
             .field("control_flush_pending", &self.state.control_flush_pending)
             .field("peer_close_pending", &self.state.peer_close_pending)
             .field("token_binding", &self.state.token_binding.status())
@@ -611,6 +618,7 @@ impl<S> WebSocketState<S> {
             closed: false,
             close_info: None,
             send_started: false,
+            send_failed: false,
             control_flush_pending: false,
             peer_close_pending: false,
             token_binding,
@@ -621,12 +629,25 @@ impl<S> WebSocketState<S> {
         self.stream = None;
         self.closed = true;
         self.send_started = false;
+        self.send_failed = true;
         self.control_flush_pending = false;
         self.peer_close_pending = false;
         #[cfg(feature = "token-binding")]
         if let WebSocketTokenBinding::Active(session) = &mut self.token_binding {
             // Drop and zeroize the derived key/challenge as soon as the
             // physical connection becomes terminal while preserving status.
+            *session = None;
+        }
+    }
+
+    fn mark_send_failed(&mut self) {
+        self.send_started = false;
+        self.send_failed = true;
+        // A failed sink cannot safely flush auto-generated control output.
+        // Keep only the read state needed to surface already-ready frames.
+        self.control_flush_pending = false;
+        #[cfg(feature = "token-binding")]
+        if let WebSocketTokenBinding::Active(session) = &mut self.token_binding {
             *session = None;
         }
     }
@@ -907,7 +928,7 @@ where
         cx: &mut Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> Poll<Result<(), SignalFishError>> {
-        if self.closed || self.peer_close_pending {
+        if self.closed || self.send_failed || self.peer_close_pending {
             return Poll::Ready(Err(SignalFishError::TransportClosed));
         }
         if self.stream.is_none() {
@@ -928,7 +949,7 @@ where
             match ready {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => {
-                    self.mark_terminal();
+                    self.mark_send_failed();
                     return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
                 }
                 Poll::Ready(Ok(())) => {}
@@ -961,7 +982,7 @@ where
             };
             if let Err(error) = send_result {
                 let detail = error.to_string();
-                if let WebSocketError::WriteBufferFull(message) = error {
+                let retryable = if let WebSocketError::WriteBufferFull(message) = error {
                     let restored = if token_binding_active {
                         // The exact original remains in the caller slot. Never
                         // restore the protected envelope or a retry would wrap it twice.
@@ -1001,18 +1022,19 @@ where
                             _ => false,
                         }
                     };
-                    if !restored {
-                        self.mark_terminal();
-                    }
+                    restored
                 } else {
-                    self.mark_terminal();
+                    false
+                };
+                if !retryable {
+                    self.mark_send_failed();
                 }
                 return Poll::Ready(Err(SignalFishError::TransportSend(detail)));
             }
             if token_binding_active {
                 let _accepted_original = frame.take();
                 if let Err(error) = self.token_binding.commit() {
-                    self.mark_terminal();
+                    self.mark_send_failed();
                     return Poll::Ready(Err(error));
                 }
             }
@@ -1031,7 +1053,7 @@ where
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => {
-                self.mark_terminal();
+                self.mark_send_failed();
                 Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
             }
             Poll::Pending => Poll::Pending,
@@ -1079,6 +1101,10 @@ where
             }
 
             if skipped_control_frames == MAX_SKIPPED_CONTROL_FRAMES_PER_POLL {
+                if self.send_failed {
+                    self.mark_terminal();
+                    return Poll::Ready(None);
+                }
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
@@ -1091,7 +1117,13 @@ where
                 Pin::new(stream).poll_next(cx)
             };
             let msg = match next {
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending => {
+                    if self.send_failed {
+                        self.mark_terminal();
+                        return Poll::Ready(None);
+                    }
+                    return Poll::Pending;
+                }
                 Poll::Ready(value) => match value {
                     Some(Ok(msg)) => msg,
                     Some(Err(e)) => {
@@ -1141,12 +1173,18 @@ where
                     // its flush before reporting the terminal receive state so a
                     // polling client cannot strand the handshake after seeing
                     // `None` and ceasing to poll the transport.
+                    if self.send_failed {
+                        self.mark_terminal();
+                        return Poll::Ready(None);
+                    }
                     self.peer_close_pending = true;
                     self.control_flush_pending = true;
                 }
                 Message::Ping(_) => {
                     tracing::trace!("received WebSocket ping (auto-pong handled by tungstenite)");
-                    self.control_flush_pending = true;
+                    if !self.send_failed {
+                        self.control_flush_pending = true;
+                    }
                     skipped_control_frames += 1;
                 }
                 Message::Pong(_) => {
@@ -1169,6 +1207,10 @@ where
             return Poll::Ready(Ok(()));
         }
         if self.stream.is_none() {
+            self.mark_terminal();
+            return Poll::Ready(Ok(()));
+        }
+        if self.send_failed {
             self.mark_terminal();
             return Poll::Ready(Ok(()));
         }
@@ -1258,6 +1300,7 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     #[cfg(all(feature = "tls", feature = "token-binding"))]
     use rustls::client::ResolvesClientCert as _;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::task::{Wake, Waker};
@@ -1901,6 +1944,49 @@ mod tests {
         ended: bool,
     }
 
+    struct SendErrorBufferedWebSocket {
+        buffered: VecDeque<Message>,
+    }
+
+    impl Stream for SendErrorBufferedWebSocket {
+        type Item = Result<Message, WebSocketError>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.buffered
+                .pop_front()
+                .map_or(Poll::Pending, |message| Poll::Ready(Some(Ok(message))))
+        }
+    }
+
+    impl Sink<Message> for SendErrorBufferedWebSocket {
+        type Error = WebSocketError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(WebSocketError::ConnectionClosed))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Err(WebSocketError::ConnectionClosed)
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(WebSocketError::ConnectionClosed))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(WebSocketError::ConnectionClosed))
+        }
+    }
+
     impl Stream for SyntheticWebSocket {
         type Item = Result<Message, WebSocketError>;
 
@@ -2059,6 +2145,7 @@ mod tests {
                     ..TransportCloseInfo::default()
                 }),
                 send_started: false,
+                send_failed: true,
                 control_flush_pending: false,
                 peer_close_pending: false,
                 token_binding: WebSocketTokenBinding::Disabled,
@@ -2070,7 +2157,7 @@ mod tests {
         assert_eq!(
             output,
             "WebSocketTransport { has_stream: false, closed: true, has_close_info: true, \
-             send_started: false, control_flush_pending: false, peer_close_pending: false, \
+             send_started: false, send_failed: true, control_flush_pending: false, peer_close_pending: false, \
              token_binding: Disabled }"
         );
     }
@@ -2337,6 +2424,41 @@ mod tests {
     }
 
     #[test]
+    fn send_error_preserves_one_buffered_inbound_farewell_until_ready_drain() {
+        let farewell = r#"{"type":"Error","data":{"message":"Disconnected as a slow consumer","error_code":"SLOW_CONSUMER"}}"#;
+        let mut state = WebSocketState::new(SendErrorBufferedWebSocket {
+            buffered: VecDeque::from([
+                Message::Ping(b"before-farewell".to_vec().into()),
+                Message::Text(farewell.into()),
+            ]),
+        });
+        let (_wake_counter, waker) = counting_waker();
+        let mut cx = Context::from_waker(&waker);
+        let expected = TransportFrame::Text("caller-owned".into());
+        let mut offered = Some(expected.clone());
+
+        assert!(matches!(
+            state.poll_send(&mut cx, &mut offered),
+            Poll::Ready(Err(SignalFishError::TransportSend(_)))
+        ));
+        assert_eq!(offered, Some(expected));
+        assert!(state.send_failed);
+        assert!(!state.closed);
+        assert!(state.stream.is_some());
+
+        assert_eq!(
+            expect_received_frame(match state.poll_recv(&mut cx) {
+                Poll::Ready(received) => received,
+                Poll::Pending => panic!("buffered farewell must remain immediately ready"),
+            }),
+            TransportFrame::Text(farewell.into())
+        );
+        assert!(matches!(state.poll_recv(&mut cx), Poll::Ready(None)));
+        assert!(state.closed);
+        assert!(state.stream.is_none());
+    }
+
+    #[test]
     fn raw_eof_fuses_receive_send_and_close_operations() {
         let mut state = WebSocketState::new(SyntheticWebSocket { ended: true });
         state.send_started = true;
@@ -2391,10 +2513,8 @@ mod tests {
                 Poll::Ready(Err(SignalFishError::TransportSend(_)))
             ));
             assert_eq!(frame, Some(expected));
-            assert!(
-                !state.closed,
-                "a per-message buffer refusal is not terminal"
-            );
+            assert!(!state.closed, "a per-message refusal is retryable");
+            assert!(!state.send_failed, "the restored frame may be retried");
             assert!(!state.send_started);
         }
     }
@@ -2834,7 +2954,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn socket_send_error_maps_to_transport_send_and_becomes_terminal() {
+    async fn socket_send_error_rejects_later_sends_and_receive_fuses_transport() {
         let mut transport = connect_to_reset_peer().await;
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -2851,15 +2971,18 @@ mod tests {
         .await
         .expect("reset socket must wake the send poll");
         assert!(matches!(first, Err(SignalFishError::TransportSend(_))));
-        assert!(transport.state.closed);
-        assert!(transport.state.stream.is_none());
+        assert!(transport.state.send_failed);
+        assert!(!transport.state.closed);
+        assert!(transport.state.stream.is_some());
 
         let expected = TransportFrame::Text("second".into());
         let mut offered = Some(expected.clone());
         let second = std::future::poll_fn(|cx| transport.poll_send(cx, &mut offered)).await;
         assert!(matches!(second, Err(SignalFishError::TransportClosed)));
         assert_eq!(offered, Some(expected));
-        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        let _ = crate::transport::recv_frame(&mut transport).await;
+        assert!(transport.state.closed);
+        assert!(transport.state.stream.is_none());
         crate::transport::close_transport(&mut transport)
             .await
             .expect("close after send failure must be idempotent");

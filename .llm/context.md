@@ -143,15 +143,15 @@ idempotent; on error, logical I/O terminates and fallible cleanup remains safe f
 prompt, nonblocking, non-panicking, idempotent fallback that releases or safely detaches backend resources,
 discards retained sends, and ends driver polling; completed cleanup is not repeated, while failed cleanup may retry safely. See `skills/transport-abstraction/SKILL.md`.
 
-The async driver retains an in-flight send in its main select loop and polls
-send and receive with the same runtime waker, so outbound backpressure cannot
-hide inbound frames, peer close, or shutdown. Once a transport takes ownership
-of a frame, graceful termination finishes that send before close under the
-configured deadline; expiry invokes `Transport::abort`. Terminal core
-state/event delivery and close progress are concurrent, so a full event channel
-cannot strand the backend.
+The async driver polls retained sends and receives with one runtime waker, so
+outbound backpressure cannot hide inbound work, peer close, or shutdown.
+Graceful termination finishes transport-owned sends before close under one
+deadline; expiry aborts. After terminal send failure both drivers freeze command
+admission and boundedly process immediately ready frames through `ClientCore`
+until `Pending`, terminal input, work bound, protocol stop, or deadline. A ready farewell precedes
+`Disconnected`; only peer-close metadata replaces the send cause; native WebSocket retains buffered read state.
 
-Public `Debug` and built-in transport tracing form an ambient-log boundary:
+Public `Debug`/tracing form an ambient-log boundary:
 reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data,
 buffered protocol frames, peer close reasons, and URL userinfo/query values
 must never be formatted. Safe diagnostics expose only variants, state flags,

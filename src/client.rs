@@ -100,6 +100,10 @@ use crate::protocol::{
 #[cfg(feature = "tokio-runtime")]
 use crate::signal::PeerSignal;
 #[cfg(feature = "tokio-runtime")]
+use crate::terminal_drain::{
+    close_reason, peer_close_reason, ReadyFrameDrain, ReadyFrameDrainBudget, ReadyFrameDrainPoll,
+};
+#[cfg(feature = "tokio-runtime")]
 use crate::transport::{close_transport, Transport, TransportFrame};
 
 /// Default capacity of the bounded event channel.
@@ -1494,7 +1498,16 @@ impl SignalFishClient {
         result
     }
 
-    async fn send_operation_reliable(&self, mut operation: ClientOperation) -> Result<()> {
+    async fn send_operation_reliable(&self, operation: ClientOperation) -> Result<()> {
+        self.send_operation_reliable_after_reserve(operation, || {})
+            .await
+    }
+
+    async fn send_operation_reliable_after_reserve(
+        &self,
+        mut operation: ClientOperation,
+        after_reserve: impl FnOnce(),
+    ) -> Result<()> {
         // Preserve immediate state/negotiation errors even when the queue is
         // full, then revalidate after waiting because room, plan, and format
         // state can change while capacity is unavailable.
@@ -1511,6 +1524,7 @@ impl SignalFishClient {
             .reserve()
             .await
             .map_err(|_| SignalFishError::NotConnected)?;
+        after_reserve();
         let core = lock_core(&self.state);
         let command = core.prepare_reliable(operation, binding)?;
         permit.send(command);
@@ -1797,6 +1811,11 @@ async fn finish_send_and_close_bounded(
     state: &Arc<Mutex<ClientCore>>,
     timeout: Duration,
 ) {
+    if timeout.is_zero() {
+        *pending_send = None;
+        transport.abort();
+        return;
+    }
     let accepted_send = pending_send
         .as_ref()
         .is_some_and(|pending| pending.frame.is_none());
@@ -1880,19 +1899,8 @@ async fn poll_transport_io(
                     return std::task::Poll::Ready(TransportIo::Sent);
                 }
                 std::task::Poll::Ready(Err(error)) => {
-                    let peer_closed = transport
-                        .close_info()
-                        .is_some_and(|info| info.initiated_by_peer);
                     *pending_send = None;
-                    return std::task::Poll::Ready(if peer_closed {
-                        // A duplex transport can discover a peer close while
-                        // an accepted send is still flushing. Prefer the
-                        // authoritative terminal receive state and its close
-                        // metadata over the consequential send refusal.
-                        TransportIo::Received(None)
-                    } else {
-                        TransportIo::SendFailed(error)
-                    });
+                    return std::task::Poll::Ready(TransportIo::SendFailed(error));
                 }
                 std::task::Poll::Pending => {}
             }
@@ -1910,6 +1918,104 @@ async fn poll_transport_io(
         }
     })
     .await
+}
+
+#[cfg(feature = "tokio-runtime")]
+async fn wait_for_terminal_deadline(deadline: Option<tokio::time::Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(deadline).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+async fn emit_terminal_event(
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    deadline: Option<tokio::time::Instant>,
+    event: SignalFishEvent,
+) -> bool {
+    tokio::select! {
+        biased;
+        result = event_tx.send(event) => {
+            if result.is_err() {
+                debug!("event channel closed, receiver dropped");
+            }
+            true
+        }
+        _ = &mut *shutdown_rx => false,
+        () = wait_for_terminal_deadline(deadline) => false,
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+async fn finish_send_failure(
+    transport: &mut impl Transport,
+    pending_send: &mut Option<PendingSend>,
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    state: &Arc<Mutex<ClientCore>>,
+    error: SignalFishError,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now().checked_add(timeout);
+    let mut drain = ReadyFrameDrain::new(None, ReadyFrameDrainBudget::standard());
+    let mut delivery_preempted = false;
+    loop {
+        let polled = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(drain.poll_next(
+                transport,
+                cx,
+                deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline),
+            ))
+        })
+        .await;
+        let ReadyFrameDrainPoll::Frame {
+            frame,
+            budget_reached,
+        } = polled
+        else {
+            match polled {
+                ReadyFrameDrainPoll::ReceiveFailed(receive_error) => {
+                    debug!(%receive_error, "ready-frame drain stopped at receive failure after send failure");
+                }
+                ReadyFrameDrainPoll::DeadlineReached => {
+                    debug!("ready-frame drain reached the shutdown deadline after send failure");
+                }
+                ReadyFrameDrainPoll::Pending | ReadyFrameDrainPoll::Closed => {}
+                ReadyFrameDrainPoll::Frame { .. } => {}
+            }
+            break;
+        };
+
+        let outcome = lock_core(state).process_frame(frame);
+        let protocol_stop = outcome.disconnect;
+        for event in outcome.events {
+            if !emit_terminal_event(event_tx, shutdown_rx, deadline, event).await {
+                delivery_preempted = true;
+                break;
+            }
+        }
+        if delivery_preempted || protocol_stop || budget_reached {
+            break;
+        }
+    }
+
+    let reason = peer_close_reason(transport).or_else(|| Some(error.to_string()));
+    let disconnected = lock_core(state).disconnect(reason);
+    let remaining = deadline.map_or(timeout, |deadline| {
+        deadline.saturating_duration_since(tokio::time::Instant::now())
+    });
+    let deliver_disconnected = async {
+        if delivery_preempted
+            || !emit_terminal_event(event_tx, shutdown_rx, deadline, disconnected.clone()).await
+        {
+            let _ = event_tx.try_send(disconnected);
+        }
+    };
+    let close = finish_send_and_close_bounded(transport, pending_send, state, remaining);
+    let ((), ()) = tokio::join!(deliver_disconnected, close);
 }
 
 /// Background transport loop that multiplexes send/receive via `tokio::select!`.
@@ -2043,13 +2149,19 @@ async fn transport_loop(
                 match io {
                     TransportIo::Ready | TransportIo::Sent => {}
                     TransportIo::SendFailed(error) => {
-                        emit_core_disconnected_or_shutdown(
+                        // The transport has made outbound I/O terminal. Freeze
+                        // admission before processing any already-ready
+                        // inbound farewell frames so no concurrent caller can
+                        // enqueue work that will never be attempted.
+                        lock_core(&state).freeze_admission();
+                        cmd_rx.close();
+                        finish_send_failure(
                             &mut transport,
                             &mut pending_send,
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
-                            Some(error.to_string()),
+                            error,
                             shutdown_timeout,
                         ).await;
                         break;
@@ -2103,12 +2215,7 @@ async fn transport_loop(
                         break;
                     }
                     TransportIo::Received(None) => {
-                        let reason = transport.close_info().map(|info| {
-                            format!(
-                                "closed by server: code={:?}, reason={:?}",
-                                info.code, info.reason
-                            )
-                        });
+                        let reason = close_reason(&transport);
                         emit_core_disconnected_or_shutdown(
                             &mut transport,
                             &mut pending_send,
@@ -2184,7 +2291,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{Barrier, Mutex as StdMutex};
     use std::task::{Context, Poll, Waker};
 
     #[test]
@@ -3963,6 +4070,51 @@ mod tests {
         wait_for_sent_len(&sent, 3).await;
 
         let mut client = Arc::into_inner(client).expect("all clones dropped");
+        client.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reliable_send_revalidates_admission_after_reserving_capacity() {
+        let (transport, entered_send, permits, _sent) = GatedSendTransport::new(0);
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (client, mut events) = SignalFishClient::start(transport, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+        prime_player_room(&client);
+
+        let reserved = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let client = Arc::new(client);
+        let sender = Arc::clone(&client);
+        let reserved_by_sender = Arc::clone(&reserved);
+        let release_sender = Arc::clone(&release);
+        let send = tokio::spawn(async move {
+            sender
+                .send_operation_reliable_after_reserve(
+                    ClientOperation::GameData(
+                        serde_json::json!({ "reserved": true }),
+                        GameDataDelivery::Reliable,
+                    ),
+                    || {
+                        reserved_by_sender.wait();
+                        release_sender.wait();
+                    },
+                )
+                .await
+        });
+
+        reserved.wait();
+        lock_core(&client.state).freeze_admission();
+        release.wait();
+        let result = send.await.expect("reliable-send task must not panic");
+        assert!(matches!(result, Err(SignalFishError::NotConnected)));
+
+        permits.add_permits(1);
+        let mut client = Arc::into_inner(client).expect("all client clones must be dropped");
         client.shutdown().await;
     }
 

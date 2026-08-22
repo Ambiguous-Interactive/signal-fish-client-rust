@@ -137,6 +137,8 @@ pub(crate) struct ClientCore {
     pending_room_operation: Option<PendingRoomOperationState>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
+    admission_frozen: bool,
+    #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
     #[cfg(feature = "tokio-runtime")]
     room_revision: u64,
@@ -238,6 +240,8 @@ impl ClientCore {
             pending_room_operation: None,
             pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
+            admission_frozen: false,
+            #[cfg(feature = "tokio-runtime")]
             session_plan_revision: 0,
             #[cfg(feature = "tokio-runtime")]
             room_revision: 0,
@@ -331,6 +335,10 @@ impl ClientCore {
     }
 
     pub(crate) fn validate(&self, operation: &ClientOperation) -> crate::error::Result<()> {
+        #[cfg(feature = "tokio-runtime")]
+        if self.admission_frozen {
+            return Err(crate::SignalFishError::NotConnected);
+        }
         if !self.is_connected() {
             return Err(crate::SignalFishError::NotConnected);
         }
@@ -438,6 +446,11 @@ impl ClientCore {
             _ => {}
         }
         Ok(())
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn freeze_admission(&mut self) {
+        self.admission_frozen = true;
     }
 
     #[cfg(feature = "tokio-runtime")]

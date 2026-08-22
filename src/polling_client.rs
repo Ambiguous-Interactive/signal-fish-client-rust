@@ -35,10 +35,14 @@ use crate::protocol::{
     TransportKind,
 };
 use crate::signal::PeerSignal;
+use crate::terminal_drain::{
+    close_reason, frame_payload_len, peer_close_reason, ReadyFrameDrain, ReadyFrameDrainBudget,
+    ReadyFrameDrainPoll, DEFAULT_DRIVER_WORK_BYTES, DEFAULT_DRIVER_WORK_FRAMES,
+};
 use crate::transport::{Transport, TransportDiagnostics, TransportFrame};
 
-const DEFAULT_POLL_FRAMES: usize = 64;
-const DEFAULT_POLL_BYTES: usize = 64 * 1024;
+const DEFAULT_POLL_FRAMES: usize = DEFAULT_DRIVER_WORK_FRAMES;
+const DEFAULT_POLL_BYTES: usize = DEFAULT_DRIVER_WORK_BYTES;
 
 /// Maximum send and receive work performed by one [`poll`](SignalFishPollingClient::poll).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +212,7 @@ pub struct SignalFishPollingClient<T: Transport> {
     send_in_flight: bool,
     pending_frame_is_game_data: bool,
     pending_inbound: Option<TransportFrame>,
+    terminal_receive_stopped: bool,
     close_phase: ClosePhase,
 }
 
@@ -265,6 +270,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             send_in_flight: false,
             pending_frame_is_game_data: false,
             pending_inbound: None,
+            terminal_receive_stopped: false,
             close_phase: ClosePhase::Open,
         };
         client.refresh_queue_diagnostics_at(now);
@@ -306,6 +312,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     fn poll_at(&mut self, now: Instant) -> Vec<SignalFishEvent> {
+        self.poll_at_with_terminal_clock(now, Instant::now)
+    }
+
+    fn poll_at_with_terminal_clock(
+        &mut self,
+        now: Instant,
+        mut terminal_now: impl FnMut() -> Instant,
+    ) -> Vec<SignalFishEvent> {
         let mut events = Vec::new();
         if matches!(self.close_phase, ClosePhase::Closed) {
             return events;
@@ -336,12 +350,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
         if let Err(error) = self.drive_outbound(&mut cx, now) {
             error!(%error, "transport send failed");
-            self.handle_disconnect_at(
-                &mut events,
-                Some(format!("transport send error: {error}")),
-                &mut cx,
-                now,
-            );
+            self.abandon_client_owned(false, now);
+            self.drain_ready_after_send_failure(&mut events, &mut cx, now, &mut terminal_now);
+            let reason = peer_close_reason(&self.transport).or_else(|| Some(error.to_string()));
+            let close_now = terminal_now().max(now);
+            self.handle_disconnect_between(&mut events, reason, &mut cx, now, close_now);
             return events;
         }
 
@@ -360,22 +373,12 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     std::task::Poll::Ready(Some(Ok(frame))) => frame,
                     std::task::Poll::Ready(Some(Err(e))) => {
                         error!("transport receive error: {e}");
-                        self.handle_disconnect_at(
-                            &mut events,
-                            Some(format!("transport receive error: {e}")),
-                            &mut cx,
-                            now,
-                        );
+                        self.handle_disconnect_at(&mut events, Some(e.to_string()), &mut cx, now);
                         break;
                     }
                     std::task::Poll::Ready(None) => {
                         debug!("transport closed by server");
-                        let reason = self.transport.close_info().map(|info| {
-                            format!(
-                                "closed by server: code={:?}, reason={:?}",
-                                info.code, info.reason
-                            )
-                        });
+                        let reason = close_reason(&self.transport);
                         self.handle_disconnect_at(&mut events, reason, &mut cx, now);
                         break;
                     }
@@ -1088,6 +1091,60 @@ impl<T: Transport> SignalFishPollingClient<T> {
         Ok(())
     }
 
+    fn drain_ready_after_send_failure(
+        &mut self,
+        events: &mut Vec<SignalFishEvent>,
+        cx: &mut std::task::Context<'_>,
+        started_at: Instant,
+        terminal_now: &mut impl FnMut() -> Instant,
+    ) {
+        let standard = ReadyFrameDrainBudget::standard();
+        let budget = ReadyFrameDrainBudget::new(
+            self.options.work_budget.receive_frames.min(standard.frames),
+            self.options.work_budget.receive_bytes.min(standard.bytes),
+        );
+        let deadline = started_at.checked_add(self.shutdown_timeout);
+        let first = self.pending_inbound.take();
+        let transport = &mut self.transport;
+        let core = &mut self.core;
+        let mut drain = ReadyFrameDrain::new(first, budget);
+        loop {
+            let polled = drain.poll_next(
+                transport,
+                cx,
+                deadline.is_some_and(|deadline| terminal_now() >= deadline),
+            );
+            match polled {
+                ReadyFrameDrainPoll::Frame {
+                    frame,
+                    budget_reached,
+                } => {
+                    let outcome = core.process_frame(frame);
+                    events.extend(outcome.events);
+                    if budget_reached {
+                        self.polling_stats.receive_budget_exhaustions = self
+                            .polling_stats
+                            .receive_budget_exhaustions
+                            .saturating_add(1);
+                    }
+                    if outcome.disconnect || budget_reached {
+                        break;
+                    }
+                }
+                ReadyFrameDrainPoll::ReceiveFailed(error) => {
+                    debug!(%error, "ready-frame drain stopped at receive failure after send failure");
+                    break;
+                }
+                ReadyFrameDrainPoll::DeadlineReached => {
+                    debug!("ready-frame drain reached the shutdown deadline after send failure");
+                    break;
+                }
+                ReadyFrameDrainPoll::Pending | ReadyFrameDrainPoll::Closed => break,
+            }
+        }
+        self.terminal_receive_stopped = true;
+    }
+
     fn drive_close_at(&mut self, now: Instant, cx: &mut std::task::Context<'_>) {
         let started_at = match self.close_phase {
             ClosePhase::Flushing { started_at } | ClosePhase::Closing { started_at } => started_at,
@@ -1105,7 +1162,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
             return;
         }
 
-        self.drain_closing_inbound(cx);
+        if !self.terminal_receive_stopped {
+            self.drain_closing_inbound(cx);
+        }
 
         if matches!(self.close_phase, ClosePhase::Flushing { .. }) {
             if let Err(error) = self.drive_outbound(cx, now) {
@@ -1180,12 +1239,23 @@ impl<T: Transport> SignalFishPollingClient<T> {
         cx: &mut std::task::Context<'_>,
         now: Instant,
     ) {
+        self.handle_disconnect_between(events, reason, cx, now, now);
+    }
+
+    fn handle_disconnect_between(
+        &mut self,
+        events: &mut Vec<SignalFishEvent>,
+        reason: Option<String>,
+        cx: &mut std::task::Context<'_>,
+        started_at: Instant,
+        now: Instant,
+    ) {
         self.abandon_client_owned(false, now);
         self.pending_inbound = None;
         self.close_phase = if self.send_in_flight {
-            ClosePhase::Flushing { started_at: now }
+            ClosePhase::Flushing { started_at }
         } else {
-            ClosePhase::Closing { started_at: now }
+            ClosePhase::Closing { started_at }
         };
         events.push(self.core.disconnect(reason));
         self.drive_close_at(now, cx);
@@ -1260,13 +1330,6 @@ impl<T: Transport> SignalFishPollingClient<T> {
     fn reset_queue_age_peak_at(&mut self, now: Instant) {
         self.refresh_queue_diagnostics_at(now);
         self.queue_age_stats.peak_oldest_queue_age = self.queue_age_stats.current_oldest_queue_age;
-    }
-}
-
-fn frame_payload_len(frame: &TransportFrame) -> usize {
-    match frame {
-        TransportFrame::Text(text) => text.len(),
-        TransportFrame::Binary(bytes) => bytes.len(),
     }
 }
 
@@ -3306,6 +3369,49 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct DeadlineDuringSendFailureTransport {
+        recv_calls: usize,
+        close_calls: usize,
+        abort_calls: usize,
+    }
+
+    impl Transport for DeadlineDuringSendFailureTransport {
+        fn abort(&mut self) {
+            self.abort_calls = self.abort_calls.saturating_add(1);
+        }
+
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            _frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                "deadline fixture".into(),
+            )))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            self.recv_calls = self.recv_calls.saturating_add(1);
+            if self.recv_calls == 1 {
+                std::task::Poll::Ready(Some(Ok(TransportFrame::Text(r#"{"type":"Pong"}"#.into()))))
+            } else {
+                std::task::Poll::Pending
+            }
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            self.close_calls = self.close_calls.saturating_add(1);
+            std::task::Poll::Pending
+        }
+    }
+
     /// A transport whose `poll_send` always returns `Pending`.
     struct PendingOnSendTransport;
 
@@ -4467,6 +4573,38 @@ mod tests {
             );
         }
         assert!(!client.is_connected());
+    }
+
+    #[test]
+    fn send_failure_deadline_includes_ready_drain_time_before_close() {
+        let transport = DeadlineDuringSendFailureTransport::default();
+        let config = default_config().with_shutdown_timeout(Duration::from_millis(5));
+        let mut client = SignalFishPollingClient::new(transport, config);
+        let started_at = Instant::now();
+        let mut clock_calls = 0usize;
+
+        let events = client.poll_at_with_terminal_clock(started_at, || {
+            clock_calls = clock_calls.saturating_add(1);
+            if clock_calls == 1 {
+                started_at + Duration::from_millis(1)
+            } else {
+                started_at + Duration::from_millis(6)
+            }
+        });
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                SignalFishEvent::Connected,
+                SignalFishEvent::Pong,
+                SignalFishEvent::Disconnected { .. }
+            ]
+        ));
+        assert_eq!(client.transport.recv_calls, 1);
+        assert_eq!(client.transport.close_calls, 0);
+        assert_eq!(client.transport.abort_calls, 1);
+        assert_eq!(client.polling_stats.close_deadline_expirations, 1);
+        assert!(matches!(client.close_phase, ClosePhase::Closed));
     }
 
     /// Transport whose `poll_send` stays `Pending` until `allow` is set, so tests

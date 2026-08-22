@@ -170,6 +170,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed async and polling clients discarding an immediately ready server
+  `Error` farewell when an outbound transport send failed at the same time.
+  Both drivers now freeze new commands, process bounded already-ready frames
+  before `Disconnected`, preserve `last_server_error` attribution, and retain
+  the original send error unless peer-initiated close metadata is available.
+  Native WebSockets retain buffered inbound frames after send failure, async
+  reliable sends cannot bypass the terminal freeze through an outstanding
+  channel permit, and polling error reasons no longer repeat their prefix.
 - Fixed standard Godot connections rejecting or omitting valid server messages
   larger than Godot's 65,535-byte inbound default. SDK-created peers now set an
   8 MiB inbound buffer before connecting, while `from_peer` keeps advanced
