@@ -47,6 +47,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 // guard while the frame/checksum/queue oracles remain exact.
 const DEFAULT_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 const TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const SLOW_POLL_US: u64 = 50_000;
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
@@ -209,6 +210,8 @@ pub(super) struct FortressScenario {
     startup_release_lateness_ms: Option<u128>,
     game_ready: bool,
     max_poll_us: u64,
+    poll_count: u64,
+    slow_poll_count: u64,
     last_time_series_frame: i32,
     last_accepted: u64,
     multi_frame_poll: bool,
@@ -317,6 +320,8 @@ impl FortressScenario {
             startup_release_lateness_ms: None,
             game_ready: false,
             max_poll_us: 0,
+            poll_count: 0,
+            slow_poll_count: 0,
             last_time_series_frame: -60,
             last_accepted: 0,
             multi_frame_poll: false,
@@ -394,9 +399,12 @@ impl FortressScenario {
         };
         let started = Instant::now();
         let events = client.poll();
-        self.max_poll_us = self
-            .max_poll_us
-            .max(started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
+        let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.max_poll_us = self.max_poll_us.max(elapsed_us);
+        self.poll_count = self.poll_count.saturating_add(1);
+        if elapsed_us >= SLOW_POLL_US {
+            self.slow_poll_count = self.slow_poll_count.saturating_add(1);
+        }
         let accepted = client.transport_diagnostics().accepted_frames;
         self.multi_frame_poll |= accepted.saturating_sub(self.last_accepted) > 1;
         self.last_accepted = accepted;
@@ -1325,6 +1333,8 @@ impl FortressScenario {
             "startup_barrier_elapsed_ms": self.startup_barrier_elapsed_ms,
             "startup_release_lateness_ms": self.startup_release_lateness_ms,
             "max_poll_us": self.max_poll_us,
+            "poll_count": self.poll_count,
+            "slow_poll_count": self.slow_poll_count,
             "multi_frame_poll": self.multi_frame_poll,
             "game_ready": self.game_ready,
             "sync_in_sync": sync_in_sync,

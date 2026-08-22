@@ -23,9 +23,16 @@
 - The approved Vector identity, accessible oceanic theme, and self-hosted
   typography now span the README and task-oriented MkDocs site, with exact
   asset provenance and desktop/mobile visual evidence.
-- All 12 push workflows completed successfully on current `main` commit
-  `bb24986` after PR #127 merged. The separate live Repository Policy audit
-  remains red because of issue #90.
+- Both crates now publish only library source, required unit-test data, and
+  package metadata; repository integration tests, other standalone wire
+  fixtures, examples, progress records, and changelog history remain in the
+  linked source repository.
+- All 12 push workflows pass on current `main` commit `00e9d84`. Godot Web's
+  first attempt failed only a scheduler-sensitive 50 ms maximum-poll oracle
+  after every deterministic soak outcome passed, then the unchanged 3,600-frame
+  soak and aggregate passed on retry. This branch replaces that single-sample
+  gate with a one-percent outlier budget and 500 ms emergency cap. The separate
+  live Repository Policy audit remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -70,8 +77,13 @@ measured evidence before accepting performance complexity:
    rejected under every policy in both drivers, while Server 0.7's
    authoritative spectator exits remain valid. Continue with
    [#128](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/128)
-   for same-kind response identity, oversized complete frames,
-   disconnect-adjacent transitions, and the remaining inventory cells.
+   for same-kind response identity. That fix requires a negotiated server
+   operation identifier tracked by
+   [signal-fish-server#395](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/395)
+   before the client can distinguish old and current same-kind responses
+   without timing heuristics. Oversized complete frames, disconnect-adjacent
+   transitions, and the remaining inventory cells remain independent client
+   audit slices.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote

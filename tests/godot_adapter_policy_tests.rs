@@ -38,7 +38,7 @@ fn workspace_version(manifest: &toml::Value) -> &str {
 }
 
 #[test]
-fn core_manifest_is_godot_independent() {
+fn core_manifest_is_godot_independent_and_package_minimal() {
     let manifest = parse_toml(root().join("Cargo.toml"));
     let dependencies = manifest["dependencies"]
         .as_table()
@@ -50,21 +50,21 @@ fn core_manifest_is_godot_independent() {
     assert!(!dependencies.contains_key("godot"));
     assert!(!features.contains_key("transport-godot"));
     assert!(!root().join("src/transports/godot_websocket.rs").exists());
-    let package_include = manifest["package"]["include"]
+    let package_include: BTreeSet<_> = manifest["package"]["include"]
         .as_array()
-        .expect("core package.include must be an array");
-    for repository_only_test in [
-        "!/tests/ci_config_tests.rs",
-        "!/tests/godot_adapter_policy_tests.rs",
-        "!/tests/shared_core_policy_tests.rs",
-    ] {
-        assert!(
-            package_include
-                .iter()
-                .any(|value| value.as_str() == Some(repository_only_test)),
-            "{repository_only_test} must not ship without its repository inputs"
-        );
-    }
+        .expect("core package.include must be an array")
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .expect("package.include entry must be a string")
+        })
+        .collect();
+    assert_eq!(
+        package_include,
+        BTreeSet::from(["/src/**", "/Cargo.toml", "/LICENSE", "/README.md"]),
+        "the core crate must publish only library source and required package content"
+    );
 
     let library = fs::read_to_string(root().join("src/lib.rs")).expect("read core crate root");
     assert!(!library.contains("GodotWebSocketTransport"));
@@ -90,6 +90,21 @@ fn adapter_declares_lockstep_core_and_supported_godot_range() {
         Some(1)
     );
     assert_eq!(adapter["package"]["rust-version"].as_str(), Some("1.94.0"));
+    let adapter_include: BTreeSet<_> = adapter["package"]["include"]
+        .as_array()
+        .expect("adapter package.include must be an array")
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .expect("package.include entry must be a string")
+        })
+        .collect();
+    assert_eq!(
+        adapter_include,
+        BTreeSet::from(["/src/**", "/Cargo.toml", "/README.md", "/LICENSE"]),
+        "the adapter crate must publish only runtime source and required package metadata"
+    );
 
     let godot = dependency(&adapter, "godot");
     assert_eq!(godot["version"].as_str(), Some(">=0.4.5, <0.6"));

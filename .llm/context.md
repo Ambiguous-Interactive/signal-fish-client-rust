@@ -33,8 +33,8 @@ has no version input and resumes only checksum-identical partial publication.
 Prepare Release derives its bump and breaking policy from `[Unreleased]`, so it
 also accepts no version, bump, breaking, or crate-selection input beyond its
 reversible dry-run switch.
-Release jobs pin Rust 1.96.1 and Ubuntu 24.04. See
-`skills/release-recovery/SKILL.md` and `docs/releasing.md`.
+Release jobs pin Rust 1.96.1 and Ubuntu 24.04; crate archives contain library source, required unit-test data, manifest, license, and readme.
+Repository-only material stays in the linked source repository; see `skills/release-recovery/SKILL.md` and `docs/releasing.md`.
 
 Every blocking workflow runs on PR and default-branch SHAs and ends in a
 uniquely named aggregate `Required` job. The names and desired rules live in

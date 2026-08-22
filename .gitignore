@@ -36,9 +36,17 @@ Cargo.lock
 __pycache__/
 *.pyc
 *.pyo
+/.pytest_cache/
 
 # MkDocs build output
 site/
+
+# Repository-root CI and release outputs
+/lcov.info
+/allocation-debug.json
+/allocation-release.json
+/timing-release.json
+**/*.cdx.json
 
 # Local Godot/browser E2E tools and retained evidence
 node_modules/
@@ -80,4 +88,5 @@ logs_*
 
 pre-commit.txt
 pre-push.txt
+/pr-description.md
 GOAL.md

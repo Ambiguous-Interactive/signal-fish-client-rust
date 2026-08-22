@@ -22,6 +22,8 @@ const LOAD_TARGET_PER_CLIENT: u64 = LOAD_SECONDS * LOAD_RATE_PER_CLIENT;
 const LOAD_MAX_QUEUE_DEPTH_PER_CLIENT: u64 = 32;
 const FINAL_DRAIN_SAMPLES: u8 = 8;
 const FINAL_DRAIN_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+const POLL_OUTLIER_THRESHOLD_US: u64 = 50_000;
+const POLL_EXTREME_LIMIT_US: u64 = 500_000;
 
 type Client = SignalFishPollingClient<GodotWebSocketTransport>;
 
@@ -79,6 +81,7 @@ struct SmokePair {
     received_b: u64,
     latencies_us: Vec<u64>,
     max_poll_us: u64,
+    slow_poll_count: u64,
     multi_frame_poll: bool,
     last_accepted_a: u64,
     last_accepted_b: u64,
@@ -97,6 +100,8 @@ struct SmokePair {
     load_error: bool,
     peak_aggregate_depth: u64,
     other_pair_max_poll_us: u64,
+    other_pair_poll_count: u64,
+    other_pair_slow_poll_count: u64,
     other_pair_admission_violations: u64,
     other_pair_one_frame_escape_bytes: u64,
     other_pair_within_absolute_ceiling: bool,
@@ -132,6 +137,7 @@ impl SmokePair {
             received_b: 0,
             latencies_us: Vec::new(),
             max_poll_us: 0,
+            slow_poll_count: 0,
             multi_frame_poll: false,
             last_accepted_a: 0,
             last_accepted_b: 0,
@@ -150,6 +156,8 @@ impl SmokePair {
             load_error: false,
             peak_aggregate_depth: 0,
             other_pair_max_poll_us: 0,
+            other_pair_poll_count: 0,
+            other_pair_slow_poll_count: 0,
             other_pair_admission_violations: 0,
             other_pair_one_frame_escape_bytes: 0,
             other_pair_within_absolute_ceiling: true,
@@ -171,6 +179,7 @@ impl SmokePair {
         let first_events = poll_measured(
             &mut self.first,
             &mut self.max_poll_us,
+            &mut self.slow_poll_count,
             &mut self.multi_frame_poll,
             &mut self.last_accepted_a,
             &mut self.max_poll_work_frames,
@@ -191,6 +200,7 @@ impl SmokePair {
         let second_events = poll_measured(
             &mut self.second,
             &mut self.max_poll_us,
+            &mut self.slow_poll_count,
             &mut self.multi_frame_poll,
             &mut self.last_accepted_b,
             &mut self.max_poll_work_frames,
@@ -209,6 +219,7 @@ impl SmokePair {
                 self.load_started = Some(now);
                 self.last_sample_at = Some(now);
                 self.max_poll_us = 0;
+                self.slow_poll_count = 0;
                 self.multi_frame_poll = false;
                 self.last_accepted_a = self
                     .first
@@ -482,6 +493,7 @@ impl SmokePair {
                 "poll_work_bytes": self.max_poll_work_bytes,
                 "poll_receive_frames": self.max_poll_receive_frames,
                 "poll_count": self.poll_count,
+                "slow_poll_count": self.slow_poll_count,
                 "send_budget_exhaustions": send_budget_exhaustions,
                 "receive_budget_exhaustions": receive_budget_exhaustions,
                 "latest_latency_us": self.last_latency_us,
@@ -605,6 +617,11 @@ impl SmokePair {
         let buffering_safe = within_absolute_ceiling && admission_violations == 0;
         let per_client_peak_depth = [self.first.as_ref(), self.second.as_ref()]
             .map(|client| client.map_or(0, |client| client.polling_stats().peak_queue_depth));
+        let max_poll_us = self.max_poll_us.max(self.other_pair_max_poll_us);
+        let poll_count = self.poll_count.saturating_add(self.other_pair_poll_count);
+        let slow_poll_count = self
+            .slow_poll_count
+            .saturating_add(self.other_pair_slow_poll_count);
         let passed = self.offered_a == LOAD_TARGET_PER_CLIENT
             && self.offered_b == LOAD_TARGET_PER_CLIENT
             && self.received_a == LOAD_TARGET_PER_CLIENT
@@ -621,7 +638,9 @@ impl SmokePair {
             && self.max_poll_work_frames <= 64
             && self.max_poll_work_bytes <= 64 * 1024
             && self.max_poll_receive_frames <= 64
-            && self.max_poll_us.max(self.other_pair_max_poll_us) < 50_000
+            && max_poll_us < POLL_EXTREME_LIMIT_US
+            && poll_count > 0
+            && slow_poll_count.saturating_mul(100) <= poll_count
             && p99_us <= 500_000
             && buffering_safe;
         let per_client_peak_buffered = [self.first.as_ref(), self.second.as_ref()].map(|client| {
@@ -655,7 +674,9 @@ impl SmokePair {
             "max_poll_work_frames": self.max_poll_work_frames,
             "max_poll_work_bytes": self.max_poll_work_bytes,
             "max_poll_receive_frames": self.max_poll_receive_frames,
-            "max_poll_us": self.max_poll_us.max(self.other_pair_max_poll_us),
+            "max_poll_us": max_poll_us,
+            "poll_count": poll_count,
+            "slow_poll_count": slow_poll_count,
             "p99_latency_us": p99_us,
             "buffering_safe": buffering_safe,
             "admission_watermark_violations": admission_violations,
@@ -772,6 +793,8 @@ impl INode for SignalFishSmoke {
         };
         binary.poll();
         let binary_max_poll_us = binary.max_poll_us;
+        let binary_poll_count = binary.poll_count;
+        let binary_slow_poll_count = binary.slow_poll_count;
         let binary_close_attributed = binary.close_attributed;
         let (binary_violations, binary_escape_bytes, binary_within_ceiling) =
             aggregate_godot_admission(binary.first.as_ref(), binary.second.as_ref());
@@ -779,6 +802,8 @@ impl INode for SignalFishSmoke {
             godot_admission_snapshots(binary.first.as_ref(), binary.second.as_ref());
         let Some(json) = &mut self.json else { return };
         json.other_pair_max_poll_us = binary_max_poll_us;
+        json.other_pair_poll_count = binary_poll_count;
+        json.other_pair_slow_poll_count = binary_slow_poll_count;
         json.other_pair_admission_violations = binary_violations;
         json.other_pair_one_frame_escape_bytes = binary_escape_bytes;
         json.other_pair_within_absolute_ceiling = binary_within_ceiling;
@@ -800,6 +825,7 @@ impl INode for SignalFishSmoke {
 fn poll_measured(
     client: &mut Option<Client>,
     max_poll_us: &mut u64,
+    slow_poll_count: &mut u64,
     multi_frame_poll: &mut bool,
     last_accepted: &mut u64,
     max_poll_work_frames: &mut u64,
@@ -816,6 +842,9 @@ fn poll_measured(
     *poll_count = poll_count.saturating_add(1);
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     *max_poll_us = (*max_poll_us).max(elapsed_us);
+    if elapsed_us >= POLL_OUTLIER_THRESHOLD_US {
+        *slow_poll_count = (*slow_poll_count).saturating_add(1);
+    }
     let accepted = client.transport_diagnostics().accepted_frames;
     let accepted_delta = accepted.saturating_sub(*last_accepted);
     *multi_frame_poll |= accepted_delta > 1;

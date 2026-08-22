@@ -50,6 +50,9 @@ export function validateLoadSummary(summary, samples) {
     isNonnegativeInteger(sample?.poll_work_frames) && sample.poll_work_frames <= 64 &&
     isNonnegativeInteger(sample?.poll_work_bytes) && sample.poll_work_bytes <= 65_536 &&
     isNonnegativeInteger(sample?.poll_receive_frames) && sample.poll_receive_frames <= 64 &&
+    isNonnegativeInteger(sample?.poll_count) && sample.poll_count > 0 &&
+    isNonnegativeInteger(sample?.slow_poll_count) &&
+    sample.slow_poll_count <= sample.poll_count &&
     isNonnegativeInteger(sample?.send_budget_exhaustions) &&
     isNonnegativeInteger(sample?.receive_budget_exhaustions)
   );
@@ -87,9 +90,12 @@ export function validateLoadSummary(summary, samples) {
   if (
     summary?.load_error !== false || !isNonnegativeNumber(summary?.p99_latency_us) ||
     summary.p99_latency_us > 500_000 || !isNonnegativeNumber(summary?.max_poll_us) ||
-    summary.max_poll_us >= 50_000
+    summary.max_poll_us >= 500_000 ||
+    !isNonnegativeInteger(summary?.poll_count) || summary.poll_count === 0 ||
+    !isNonnegativeInteger(summary?.slow_poll_count) ||
+    summary.slow_poll_count > Math.floor(summary.poll_count / 100)
   ) {
-    errors.push("load latency, ordering, or callback bound failed");
+    errors.push("load latency, ordering, or poll outlier bound failed");
   }
   if (summary?.buffering_safe !== true || summary?.admission_watermark_violations !== 0) {
     errors.push("transport admission diagnostics failed");
@@ -184,8 +190,11 @@ export function validateFortressPeer(summary, options = {}) {
     summary?.simulation_target_fps !== 18 ||
     !isNonnegativeNumber(summary?.observed_simulation_fps) ||
     summary.observed_simulation_fps < 12 || summary.observed_simulation_fps > 20 ||
-    !isNonnegativeNumber(summary?.max_poll_us) || summary.max_poll_us >= 50_000
-  ) errors.push("simulation or callback timing bound failed");
+    !isNonnegativeNumber(summary?.max_poll_us) || summary.max_poll_us >= 500_000 ||
+    !isNonnegativeInteger(summary?.poll_count) || summary.poll_count === 0 ||
+    !isNonnegativeInteger(summary?.slow_poll_count) ||
+    summary.slow_poll_count > Math.floor(summary.poll_count / 100)
+  ) errors.push("simulation timing or poll outlier bound failed");
   if (
     !startupRoleValid || summary?.startup_barrier_completed !== true ||
     summary?.startup_barrier_release_local_frame !== 0 ||

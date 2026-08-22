@@ -20,6 +20,77 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+mod repository_artifact_policy {
+    use super::*;
+
+    fn git_paths(arguments: &[&str]) -> Vec<String> {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(project_root())
+            .output()
+            .expect("git must be available for repository artifact policy");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn only_curated_planning_evidence_is_both_tracked_and_ignored() {
+        let unexpected: Vec<_> = git_paths(&[
+            "ls-files",
+            "--cached",
+            "--ignored",
+            "--exclude-per-directory=.gitignore",
+            "-z",
+        ])
+        .into_iter()
+        .filter(|path| {
+            path != "PLAN.md"
+                && !(path.starts_with("progress/session-") && path.ends_with(".md"))
+                && !(path.starts_with("progress/assets/") && path.ends_with(".png"))
+        })
+        .collect();
+        assert!(
+            unexpected.is_empty(),
+            "unexpected tracked files are ignored by repository policy: {unexpected:?}"
+        );
+    }
+
+    #[test]
+    fn generated_root_artifacts_are_ignored_and_not_tracked() {
+        let ignore = read_project_file(".gitignore");
+        for artifact in [
+            "/.pytest_cache/",
+            "/lcov.info",
+            "/allocation-debug.json",
+            "/allocation-release.json",
+            "/timing-release.json",
+            "**/*.cdx.json",
+            "/pr-description.md",
+        ] {
+            assert!(
+                ignore.lines().any(|line| line == artifact),
+                ".gitignore must cover generated artifact {artifact}"
+            );
+        }
+
+        let tracked = git_paths(&["ls-files", "--cached", "-z"]);
+        assert!(
+            !tracked.iter().any(|path| path == "pr-description.md"),
+            "the transient root PR description must not be tracked"
+        );
+    }
+}
+
 mod required_check_policy {
     use std::collections::BTreeSet;
 
@@ -1665,9 +1736,20 @@ mod ci_workflow_policy {
             "lockfile generation must precede --locked packaging"
         );
         assert!(
-            msrv_job.contains("--all-features --no-run")
-                && msrv_job.contains("--all-features --lib"),
-            "MSRV must compile every test target and execute package-independent library tests"
+            msrv_job.contains(
+                "cargo +1.87.0 test --locked --package signal-fish-client --all-features --no-run"
+            ) && msrv_job.contains(
+                "cargo +1.87.0 test --locked --package signal-fish-client --all-features --lib"
+            ),
+            "MSRV must compile every repository core test target and execute its library tests"
+        );
+        assert!(
+            msrv_job.contains(
+                "cargo +1.87.0 test --locked --manifest-path \"$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml\" --all-features --no-run"
+            ) && msrv_job.contains(
+                "cargo +1.87.0 test --locked --manifest-path \"$RUNNER_TEMP/signal-fish-core-msrv/Cargo.toml\" --all-features --lib"
+            ),
+            "MSRV must compile and execute the exact extracted publishable core library tests"
         );
         assert!(!msrv_job.contains("git archive HEAD"));
         assert!(!msrv_job.contains("awk -v version"));
@@ -5789,17 +5871,36 @@ mod docs_onboarding_shape {
             );
         }
 
-        for canonical_page in [
-            "docs/getting-started.md",
-            "docs/examples.md",
-            "docs/client.md",
-            "docs/wasm.md",
-            "docs/protocol-versioning.md",
-            "docs/transport.md",
+        for (canonical_page, published_url) in [
+            (
+                "docs/getting-started.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/getting-started/",
+            ),
+            (
+                "docs/examples.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/examples/",
+            ),
+            (
+                "docs/client.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/",
+            ),
+            (
+                "docs/wasm.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/",
+            ),
+            (
+                "docs/protocol-versioning.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol-versioning/",
+            ),
+            (
+                "docs/transport.md",
+                "https://Ambiguous-Interactive.github.io/signal-fish-client-rust/transport/",
+            ),
         ] {
             assert!(
-                readme.contains(&format!("]({canonical_page})")),
-                "README.md must route users to the canonical `{canonical_page}` page"
+                readme.contains(&format!("]({published_url})")),
+                "README.md must route source and packaged readers to the published form of \
+                 canonical `{canonical_page}`"
             );
         }
     }

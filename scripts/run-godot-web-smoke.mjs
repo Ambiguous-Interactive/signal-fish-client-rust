@@ -185,7 +185,7 @@ async function writeThroughputArtifacts() {
     "peak_queue_age_ms", "buffered_bytes",
     "accepted_frames", "received_frames", "accepted_per_second",
     "received_per_second", "offered_frames", "poll_max_us", "poll_work_frames",
-    "poll_work_bytes", "poll_receive_frames", "poll_count",
+    "poll_work_bytes", "poll_receive_frames", "poll_count", "slow_poll_count",
     "send_budget_exhaustions", "receive_budget_exhaustions", "latest_latency_us",
   ];
   const csv = [columns.join(","), ...samples.map((sample) =>

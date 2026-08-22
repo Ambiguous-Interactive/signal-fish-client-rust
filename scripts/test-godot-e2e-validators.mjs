@@ -21,7 +21,8 @@ function peer(role) {
     startup_commit_sent: role === "b", startup_commit_received: role === "a",
     startup_barrier_release_local_frame: 0, startup_barrier_elapsed_ms: 2_000,
     startup_release_lateness_ms: 20,
-    max_poll_us: 1_000, multi_frame_poll: true, peak_queue_depth: 4,
+    max_poll_us: 1_000, poll_count: 1_000, slow_poll_count: 0,
+    multi_frame_poll: true, peak_queue_depth: 4,
     confirmed_input_checksum: "123", target_state_checksum: "456", game_ready: true,
     sync_in_sync: true, queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 40,
     relay_inbound_depth: 0, relay_outbound_depth: 0, confirmation_lag_current: 0,
@@ -47,7 +48,8 @@ test("load oracle rejects independently corrupted age and admission fields", () 
   const summary = {
     passed: true, final_queue_depth: 0, current_queue_age_ms: 0, peak_queue_age_ms: 100,
     final_drained_samples: 8,
-    load_error: false, p99_latency_us: 100_000, max_poll_us: 1_000, buffering_safe: true,
+    load_error: false, p99_latency_us: 100_000, max_poll_us: 1_000,
+    poll_count: 1_000, slow_poll_count: 0, buffering_safe: true,
     admission_watermark_violations: 0, offered_per_client: [2_176, 2_176],
     received_per_client: [2_176, 2_176], peak_queue_depth: 32,
     peak_aggregate_queue_depth: 64, per_client_peak_queue_depth: [32, 32],
@@ -67,9 +69,27 @@ test("load oracle rejects independently corrupted age and admission fields", () 
   const samples = Array.from({ length: 8 }, (_, index) => ({
     elapsed_ms: index * 10, command_depth: 0, current_queue_age_ms: 0,
     poll_work_frames: 64, poll_work_bytes: 65_536, poll_receive_frames: 64,
+    poll_count: 1_000, slow_poll_count: 0,
     send_budget_exhaustions: 0, receive_budget_exhaustions: 0,
   }));
   assert.equal(validateLoadSummary(summary, samples).ok, true);
+  const preemptedLoad = structuredClone(summary);
+  preemptedLoad.max_poll_us = 80_000;
+  preemptedLoad.slow_poll_count = 1;
+  const earlyOutlierSamples = structuredClone(samples);
+  earlyOutlierSamples[0].poll_count = 30;
+  earlyOutlierSamples.forEach((sample) => { sample.slow_poll_count = 1; });
+  assert.equal(
+    validateLoadSummary(preemptedLoad, earlyOutlierSamples).ok,
+    true,
+    "one 80 ms poll is allowed in an otherwise healthy distribution",
+  );
+  const stalledLoad = structuredClone(preemptedLoad);
+  stalledLoad.max_poll_us = 500_000;
+  assert.equal(validateLoadSummary(stalledLoad, samples).ok, false, "extreme poll stall");
+  const repeatedLoadStalls = structuredClone(preemptedLoad);
+  repeatedLoadStalls.slow_poll_count = 11;
+  assert.equal(validateLoadSummary(repeatedLoadStalls, samples).ok, false, "repeated poll stalls");
   for (const [label, mutation] of [
     ["current age", (value) => { value.current_queue_age_ms = 1; }],
     ["drained samples", (value) => { value.final_drained_samples = 7; }],
@@ -93,6 +113,8 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     ["escape conservation", (value) => { value.one_frame_escape_bytes -= 1; }],
     ["missing latency", (value) => { delete value.p99_latency_us; }],
     ["missing callback", (value) => { delete value.max_poll_us; }],
+    ["missing callback count", (value) => { delete value.poll_count; }],
+    ["missing callback outlier count", (value) => { delete value.slow_poll_count; }],
     ["summary send work", (value) => { value.max_poll_work_frames = 65; }],
     ["summary receive work", (value) => { delete value.max_poll_receive_frames; }],
   ]) {
@@ -128,6 +150,20 @@ test("Fortress oracle rejects each critical negative control", () => {
   const second = peer("b");
   assert.equal(validateFortressPeer(first).ok, true);
   assert.equal(validateFortressPair(first, second).ok, true);
+  const preemptedPeer = structuredClone(first);
+  preemptedPeer.max_poll_us = 80_000;
+  preemptedPeer.slow_poll_count = 1;
+  assert.equal(
+    validateFortressPeer(preemptedPeer).ok,
+    true,
+    "one 80 ms poll is allowed in an otherwise healthy distribution",
+  );
+  const stalledPeer = structuredClone(preemptedPeer);
+  stalledPeer.max_poll_us = 500_000;
+  assert.equal(validateFortressPeer(stalledPeer).ok, false, "extreme poll stall");
+  const repeatedPeerStalls = structuredClone(preemptedPeer);
+  repeatedPeerStalls.slow_poll_count = 11;
+  assert.equal(validateFortressPeer(repeatedPeerStalls).ok, false, "repeated poll stalls");
   const impairedBoundary = structuredClone(first);
   impairedBoundary.confirmation_lag_current = 13;
   impairedBoundary.confirmation_lag_steady_max = 13;
@@ -169,6 +205,8 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["settlement schema", (value) => { delete value.settlement_frame_limit; }],
     ["timeout schema", (value) => { delete value.session_timeout_ms; }],
     ["callback schema", (value) => { delete value.max_poll_us; }],
+    ["callback count schema", (value) => { delete value.poll_count; }],
+    ["callback outlier schema", (value) => { delete value.slow_poll_count; }],
     ["local identity schema", (value) => { delete value.local_id; }],
     ["remote identity schema", (value) => { value.remote_id = ""; }],
     ["distinct identities", (value) => { value.remote_id = value.local_id; }],
