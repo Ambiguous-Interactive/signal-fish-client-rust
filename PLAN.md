@@ -118,8 +118,16 @@ measured evidence before accepting performance complexity:
    fields, selected path, peer authority, or mesh revision change.
    Current-generation duplicates, generation-less Server 0.4 plans, both
    drivers, every violation policy, and teardown boundaries are covered for
-   [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
-   The remaining inventory cells remain separate client audit slices.
+    [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
+    The negotiated outbound-size contract slice landed via
+    [#139](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/139).
+    The remaining inventory cells are tracked as narrowly scoped slices:
+    [#140](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/140)
+    (authentication-gated room admission),
+    [#141](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/141)
+    (bounded terminal disconnect delivery), and
+    [#142](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/142)
+    (cancellation-safety pins and dequeue-failure fence release).
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote
