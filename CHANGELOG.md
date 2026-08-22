@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added negotiated room-operation correlation for protocol-v3 connections.
+  `ClientMessage::Authenticate` gains the optional `requested_capabilities`
+  field. Configurations that can negotiate v3 request `room_operation_ids`;
+  after the server echoes it in `ProtocolInfo`, all five directed room
+  operations use a fresh client-generated UUID. Missing echoes and v2
+  negotiations retain the legacy wire unchanged. New public protocol surface
+  includes `RoomOperationId`,
+  `ROOM_OPERATION_IDS_CAPABILITY`, `RoomOperationRequest`,
+  `RoomOperationResult`, `ClientMessage::RoomOperation`,
+  `ServerMessage::RoomOperationResult`, and
+  `SignalFishEvent::RoomOperationFailed`. Exact wire and MessagePack goldens
+  are pinned to post-0.7 server commit
+  `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`. The added fields and exhaustive
+  enum variants are breaking API additions for the forthcoming 0.11 release;
+  published 0.10 does not expose them.
 - Added opt-in native `signalfish.tokenbinding.v2` support through the
   `token-binding` feature. New public types are `TokenBindingMode`,
   `TokenBindingStatus`, `TokenBindingScheme`, `TokenBindingChallenge`, and
@@ -152,6 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevented a delayed terminal response from an older same-kind join, leave,
+  reconnect, spectator join, or spectator leave from clearing or mutating the
+  current operation fence after correlation is negotiated. Wrong, stale,
+  duplicate, malformed, and unwrapped directed results are rejected without
+  consuming current state in both async and polling clients.
 - Corrected the built-in examples and API documentation to use Signal Fish
   Server's versioned `/v2/ws` endpoint instead of the nonexistent unversioned
   `/ws` or `/signal` paths.

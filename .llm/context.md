@@ -302,7 +302,8 @@ offerer-role changes. `MeshSession` accepts liveness only for the selected trans
 Membership pairs `room_role` with room/participant IDs. Commands validate
 connection, transition, role, authority, protocol/session, then queue capacity.
 Admitted joins/leaves/reconnects fence later work until a matching typed terminal response; generic errors/absence stay fenced until teardown.
-Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event
+A v3-capable config requests `room_operation_ids`; after an exact echo, the core records one fresh UUID at successful queue admission for all five room operations, and only the matching ID/result kind releases it.
+Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event
 channel backpressures; undecodable frames surface as `DecodeFailed`; events are
 missed only on receiver/handle drop or shutdown (abandons ≤1 in-flight).
 Snapshots distinguish nonterminal `connected`, observed `transport_ready`, server-confirmed `authenticated`, and authoritative room membership.
@@ -387,10 +388,9 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
-v2 JSON protocol. Never change serde attributes without verifying against the
-server 0.7.0 spec and pinned wire samples at commit
-`3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`. See
-`skills/serde-patterns/SKILL.md` for details.
+v2 JSON protocol. Server 0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the released runtime compatibility binding.
+The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension at commit `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`.
+Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
 ### Exhaustive Public Types
 

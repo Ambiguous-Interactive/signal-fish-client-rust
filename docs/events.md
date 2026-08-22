@@ -4,7 +4,7 @@ Decoded messages from the Signal Fish server, plus locally generated lifecycle
 and diagnostic events, are surfaced as [`SignalFishEvent`] variants through the
 event receiver returned by [`SignalFishClient::start`].
 
-This page documents all **35 variants** grouped by category, with field
+This page documents all **36 variants** grouped by category, with field
 descriptions and usage examples.
 
 !!! info "Protocol v2 relay + v3 mesh"
@@ -177,6 +177,7 @@ Events related to joining, failing to join, or leaving a room.
 | `RoomJoined` | `room_id`, `room_code`, `player_id`, `current_players`, … | Successfully joined a room. |
 | `RoomJoinFailed` | `reason: String`, `error_code: Option<ErrorCode>` | Failed to join a room. |
 | `RoomLeft` | — | Successfully left the current room. |
+| `RoomOperationFailed` | `reason: String`, `error_code: Option<ErrorCode>` | A UUID-correlated room operation failed without an operation-specific terminal result. The exact pending fence is released. |
 
 ### `RoomJoined`
 
@@ -215,6 +216,9 @@ match event {
     }
     SignalFishEvent::RoomLeft => {
         println!("Left the room");
+    }
+    SignalFishEvent::RoomOperationFailed { reason, error_code } => {
+        eprintln!("Room operation failed: {reason} ({error_code:?})");
     }
     _ => {}
 }

@@ -1,8 +1,8 @@
 //! High-level events emitted by the Signal Fish client.
 //!
-//! [`SignalFishEvent`] provides a 1:1 mapping from every [`ServerMessage`] variant
-//! plus synthetic connection, decoding, and validation events that originate
-//! in the client rather than mapping directly from the server.
+//! [`SignalFishEvent`] maps protocol outcomes into stable high-level events and
+//! adds synthetic connection, decoding, and validation events that originate
+//! in the client.
 //!
 //! Boxed payload types ([`RoomJoinedPayload`], [`ReconnectedPayload`],
 //! [`SpectatorJoinedPayload`]) are flattened into inline fields so callers can
@@ -193,6 +193,17 @@ pub enum SignalFishEvent {
 
     /// Successfully left the current room.
     RoomLeft,
+
+    /// A correlated room operation failed without an operation-specific result.
+    ///
+    /// Unlike [`Error`](Self::Error), this outcome is attributable to the exact
+    /// admitted room operation and releases its pending-operation fence.
+    RoomOperationFailed {
+        /// Human-readable failure reason.
+        reason: String,
+        /// Structured error code, if provided.
+        error_code: Option<ErrorCode>,
+    },
 
     // ── Player presence ─────────────────────────────────────────────
     /// Another player joined the room.
@@ -516,6 +527,7 @@ impl std::fmt::Debug for SignalFishEvent {
             Self::RoomJoined { .. } => "RoomJoined",
             Self::RoomJoinFailed { .. } => "RoomJoinFailed",
             Self::RoomLeft => "RoomLeft",
+            Self::RoomOperationFailed { .. } => "RoomOperationFailed",
             Self::PlayerJoined { .. } => "PlayerJoined",
             Self::PlayerLeft { .. } => "PlayerLeft",
             Self::GameData { .. } => "GameData",
@@ -822,6 +834,12 @@ impl From<ServerMessage> for SignalFishEvent {
                 reason,
                 current_spectators,
             },
+            ServerMessage::RoomOperationResult { result, .. } => {
+                match result.into_server_message() {
+                    Err((reason, error_code)) => Self::RoomOperationFailed { reason, error_code },
+                    Ok(message) => Self::from(message),
+                }
+            }
             ServerMessage::NewSpectatorJoined {
                 spectator,
                 current_spectators,

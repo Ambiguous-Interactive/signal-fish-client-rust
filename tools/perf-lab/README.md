@@ -69,8 +69,9 @@ normal safe buffer growth.
 
 ## Baseline
 
-Refreshed 2026-08-21 on Rust 1.96.1, a 12-vCPU aarch64 WSL2 Linux runner. The
-timing columns are release-profile medians over 25 samples pinned to one CPU.
+Timing was measured 2026-08-21 and allocation columns were refreshed
+2026-08-22 on Rust 1.96.1, a 12-vCPU aarch64 WSL2 Linux runner. The timing
+columns are release-profile medians over 25 samples pinned to one CPU.
 Allocation columns are exact across 10 isolated samples in both debug and
 release profiles; both profiles produced identical values. `A/D/R` means
 allocation, deallocation, and reallocation. Byte columns use the same order.
@@ -87,24 +88,24 @@ cells correctly report zero.
 | `json/in/4096/single` | 3000 | 3000 | 333333 | 0 | 3/3/0 | 6400/10672/0 |
 | `json/in/4096/burst64` | 73204 | 1143 | 874269 | 0 | 133/133/8 | 355456/628864/13824 |
 | `json/out/256/single` | 2000 | 2000 | 500000 | 700 | 1/1/2 | 582/256/454 |
-| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/132 | 45888/16384/37696 |
+| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/132 | 47328/16384/39136 |
 | `json/out/4096/single` | 3600 | 3600 | 277777 | 1000 | 1/1/0 | 4226/4096/0 |
-| `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 279104/262144/8640 |
+| `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 280544/262144/10080 |
 | `binary/in/256/single` | 2200 | 2200 | 454545 | 0 | 3/3/0 | 2560/2944/0 |
 | `binary/in/256/burst64` | 17201 | 268 | 3720713 | 0 | 129/129/4 | 108544/133120/17280 |
 | `binary/in/4096/single` | 2300 | 2300 | 434782 | 0 | 3/3/0 | 6400/10624/0 |
 | `binary/in/4096/burst64` | 30102 | 470 | 2126104 | 0 | 133/133/8 | 355456/625792/13824 |
 | `binary/out/256/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
-| `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 8640/0/8640 |
+| `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 10080/0/10080 |
 | `binary/out/4096/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
-| `binary/out/4096/burst64` | 42602 | 665 | 1502276 | 42002 | 0/0/4 | 8640/0/8640 |
-| `classified/latest` | 59803 | 934 | 1070180 | 36602 | 64/256/132 | 48684/57600/40492 |
-| `classified/volatile` | 58603 | 915 | 1092094 | 76204 | 64/256/132 | 48684/57600/40492 |
+| `binary/out/4096/burst64` | 42602 | 665 | 1502276 | 42002 | 0/0/4 | 10080/0/10080 |
+| `classified/latest` | 59803 | 934 | 1070180 | 36602 | 64/256/132 | 50124/57600/41932 |
+| `classified/volatile` | 58603 | 915 | 1092094 | 76204 | 64/256/132 | 50124/57600/41932 |
 | `classified/authorized-gap` | 4100 | 4100 | 243902 | 0 | 14/11/0 | 7378/6472/0 |
 | `reconnect/2` | 5101 | 5101 | 196039 | 700 | 25/10/1 | 6916/6534/128 |
 | `reconnect/8` | 8001 | 8001 | 124984 | 600 | 37/10/3 | 8108/8582/960 |
 | `reconnect/16` | 12301 | 12301 | 81294 | 801 | 61/16/5 | 12882/14470/2624 |
-| `polling/ready-frame-burst` | 15601 | 917 | 1089673 | 61204 | 17/68/3 | 6208/11492/4032 |
+| `polling/ready-frame-burst` | 15601 | 917 | 1089673 | 61204 | 17/68/3 | 6880/11492/4704 |
 | `polling/ready-byte-burst` | 6900 | 1725 | 579710 | 6100 | 4/16/8 | 6048/5376/5536 |
 | `polling/pending-recovery` | 2600 | 2600 | 384615 | 1501 | 1/4/2 | 624/900/496 |
 
@@ -113,4 +114,13 @@ burst medians moved from 202,010/199,010 ns to 151,207/150,108 ns. Its checked
 allocation record moved from `64/64/132` operations and
 `537408/262144/529216` bytes to `64/64/4` and `279104/262144/8640`, while its
 protocol-ledger digest and every ownership, backpressure, delivery, and
-accountability invariant remained unchanged.
+accountability invariant remained unchanged for that serialization change.
+
+Negotiated room-operation identity subsequently enlarged the exhaustive
+`ClientMessage` value carried in polling queue cells by 24 bytes. Queue growth
+therefore moves 1,440 additional bytes in 64-command burst cells (672 bytes in
+the 17-command ready-frame cell), without increasing allocation or
+reallocation counts. All 28 protocol digests were intentionally refreshed
+because v3 `Authenticate` bytes now request `room_operation_ids` and the event
+ledger gained the `RoomOperationFailed` slot; every semantic ledger check still
+passes.

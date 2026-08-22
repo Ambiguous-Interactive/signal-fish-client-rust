@@ -24,7 +24,7 @@ use signal_fish_client::{
 const LOCAL_PLAYER: u128 = 100;
 const ROOM_ID: u128 = 200;
 const FIRST_PEER: u128 = 1_000;
-const EVENT_KIND_COUNT: usize = 35;
+const EVENT_KIND_COUNT: usize = 36;
 const MAX_DRIVE_POLLS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -516,6 +516,7 @@ impl EventAccumulator {
             SignalFishEvent::NewSpectatorJoined { .. } => 32,
             SignalFishEvent::SpectatorDisconnected { .. } => 33,
             SignalFishEvent::Error { .. } => 34,
+            SignalFishEvent::RoomOperationFailed { .. } => 35,
         };
         let count = self
             .counts
