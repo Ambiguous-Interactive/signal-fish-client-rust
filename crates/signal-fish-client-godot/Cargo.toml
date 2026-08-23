@@ -31,6 +31,11 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+# Kept in lockstep with the core crate's stable restriction lints; `unsafe_code`
+# is already forbidden here, so the unsafe-documentation lint is moot.
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
 
 [lints.rust]
 # This adapter uses godot-rust's safe API and has no FFI exception of its own.
