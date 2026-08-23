@@ -455,6 +455,14 @@ Agents discover skills from frontmatter and load a matching `SKILL.md` only when
 its description applies. Resolve links from its directory; directory and
 frontmatter names must match and use lowercase hyphen-case.
 
+## Progress Records
+
+Session logs and evidence under `progress/` are local-only working notes:
+the directory is gitignored and its files are never committed or
+force-added. Durable conclusions belong in `PLAN.md`, `CHANGELOG.md`,
+docs, or tests instead; `PLAN.md` is the sole tracked planning artifact,
+and `only_plan_md_is_both_tracked_and_ignored` enforces that boundary.
+
 ## Documentation Rendering (MkDocs)
 
 MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
@@ -463,7 +471,7 @@ Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use
 pinned provenance and local OFL fonts preloaded via `overrides/main.html`, with
 no runtime provider. Both palettes retain AA contrast, visible focus,
 reduced-motion behavior, and responsive scrolling. `docs_brand_policy` pins
-these contracts; evidence lives under `progress/assets/`. CI runs strict MkDocs
+these contracts; evidence lives under local-only `progress/assets/`. CI runs strict MkDocs
 (`.github/workflows/docs-deploy.yml`) and 17 checks in
 `.github/workflows/docs-validation.yml`; see `skills/markdown-and-doc-validation/SKILL.md`.
 

@@ -43,10 +43,12 @@
   Miri protocol tests on nightly, three 30-second fuzz targets, FFI safety,
   and the Emscripten-only unsafe inventory), and all 28 perf-lab cells
   reproduced their protocol ledgers and allocation ceilings in both profiles;
-  timing stayed diagnostic with no regression signal (`progress/session-050-`).
+  timing stayed diagnostic with no regression signal (recorded in the
+  local-only session-050 progress log).
 
-Completed milestone history and verification evidence live in tracked files
-under `progress/`.
+Completed milestone history lives in this file; per-session work logs and
+verification evidence are kept as local-only notes under the gitignored
+`progress/` directory and are intentionally not part of the repository.
 
 ## Priority Order
 

@@ -52,7 +52,7 @@ mod repository_artifact_policy {
     }
 
     #[test]
-    fn only_curated_planning_evidence_is_both_tracked_and_ignored() {
+    fn only_plan_md_is_both_tracked_and_ignored() {
         if !has_git_metadata() {
             // cargo-mutants and source-distribution checks deliberately copy
             // the crate without repository metadata. Index policy has no
@@ -67,11 +67,7 @@ mod repository_artifact_policy {
             "-z",
         ])
         .into_iter()
-        .filter(|path| {
-            path != "PLAN.md"
-                && !(path.starts_with("progress/session-") && path.ends_with(".md"))
-                && !(path.starts_with("progress/assets/") && path.ends_with(".png"))
-        })
+        .filter(|path| path != "PLAN.md")
         .collect();
         assert!(
             unexpected.is_empty(),

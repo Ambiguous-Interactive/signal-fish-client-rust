@@ -76,6 +76,8 @@ fuzz/artifacts/
 fuzz/corpus/
 /fuzz/target/
 
+# Agent session records stay local-only; PLAN.md is the sole tracked
+# planning artifact (force-added by policy, enforced in ci_config_tests).
 progress/
 PLAN.md
 
