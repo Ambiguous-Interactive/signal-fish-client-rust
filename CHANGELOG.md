@@ -96,6 +96,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** Directed room operations are now refused before the server
+  confirms authentication. `join_room`, `leave_room`, `reconnect`,
+  `join_as_spectator`, and `leave_spectator` return the new
+  `SignalFishError::NotAuthenticated` variant without enqueuing it,
+  in both drivers, instead of admitting a command whose admission fence the
+  inbound lifecycle gates could never release (a permanent
+  `RoomOperationPending` after any early server response). Exhaustive
+  `SignalFishError` matches must handle the new variant. Follow the documented
+  flow and wait for `SignalFishEvent::Authenticated`; non-room commands keep
+  their existing pre-authentication behavior.
 - **Breaking:** `WebSocketConnectOptions` gains the public
   `max_inbound_message_size` field, and built-in native WebSocket connections
   no longer inherit tungstenite's larger receive defaults. Oversized input is
@@ -181,6 +191,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a terminal disconnect wedging the async transport loop forever when
+  the event consumer stops draining and `shutdown` is never called. Terminal
+  delivery is now bounded by [`shutdown_timeout`](SignalFishConfig::shutdown_timeout):
+  on expiry the loop attempts one nonblocking delivery of the terminal
+  `Disconnected` event, closes or aborts the transport, and exits — releasing
+  every sender parked on the command queue instead of leaking the task.
+  Shutdown-preempted multi-event frames now attempt their remaining events
+  through the same nonblocking fallback before abandoning them. (The polling
+  client emits events synchronously from `poll()` and was never affected.)
 - Fixed delayed or replayed `SessionPlan` messages rolling WebRTC signaling
   authority back to a superseded generation. Both clients now reject every
   previously superseded non-null generation before changing the selected

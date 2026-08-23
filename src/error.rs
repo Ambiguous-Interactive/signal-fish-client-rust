@@ -114,6 +114,24 @@ pub enum SignalFishError {
         capacity: usize,
     },
 
+    /// Attempted a directed room operation before the server confirmed
+    /// authentication.
+    ///
+    /// The five admission-fencing operations
+    /// ([`join_room`](crate::SignalFishClient::join_room),
+    /// [`leave_room`](crate::SignalFishClient::leave_room),
+    /// [`reconnect`](crate::SignalFishClient::reconnect),
+    /// [`join_as_spectator`](crate::SignalFishClient::join_as_spectator), and
+    /// [`leave_spectator`](crate::SignalFishClient::leave_spectator)) require
+    /// the server's `Authenticated` confirmation first. The command was
+    /// **not** queued: retry once
+    /// [`SignalFishEvent::Authenticated`](crate::SignalFishEvent::Authenticated)
+    /// arrives.
+    #[error(
+        "not yet authenticated: wait for SignalFishEvent::Authenticated before room operations"
+    )]
+    NotAuthenticated,
+
     /// Attempted a room operation but the client is not in a room.
     #[error("not in a room")]
     NotInRoom,

@@ -20,6 +20,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[allow(dead_code)]
+mod common;
+
 use signal_fish_client::client::{SignalFishClient, SignalFishConfig};
 use signal_fish_client::error::SignalFishError;
 use signal_fish_client::polling_client::{
@@ -276,6 +279,7 @@ struct NeverSendMock {
     attempted: Arc<std::sync::atomic::AtomicBool>,
     allow: Arc<std::sync::atomic::AtomicBool>,
     waker: Arc<Mutex<Option<std::task::Waker>>>,
+    incoming: Arc<Mutex<VecDeque<TransportFrame>>>,
 }
 
 impl NeverSendMock {
@@ -284,6 +288,9 @@ impl NeverSendMock {
             attempted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             allow: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             waker: Arc::new(Mutex::new(None)),
+            incoming: Arc::new(Mutex::new(VecDeque::from([TransportFrame::Text(
+                AUTH.into(),
+            )]))),
         }
     }
 
@@ -317,9 +324,15 @@ impl Transport for NeverSendMock {
 
     fn poll_recv(
         &mut self,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        std::task::Poll::Pending
+        match self.incoming.lock().unwrap().pop_front() {
+            Some(frame) => std::task::Poll::Ready(Some(Ok(frame))),
+            None => {
+                *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
     }
 
     fn poll_close(
@@ -812,6 +825,7 @@ async fn async_membership_result(
         | MembershipPhase::SpectatorLeft
         | MembershipPhase::SpectatorRejoined => Some(InitialRoomOperation::JoinSpectator),
     };
+    common::wait_for_authentication(&client).await;
     admit_initial_room_operation(&mut client, initial);
     let mut leave_issued = false;
     let mut rejoin_issued = false;
@@ -886,6 +900,16 @@ fn polling_membership_result(phase: MembershipPhase, case: CommonCommandCase) ->
         | MembershipPhase::SpectatorLeft
         | MembershipPhase::SpectatorRejoined => Some(InitialRoomOperation::JoinSpectator),
     };
+    for _ in 0..16 {
+        if client.is_authenticated() {
+            break;
+        }
+        let _ = client.poll();
+    }
+    assert!(
+        client.is_authenticated(),
+        "polling membership fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut client, initial);
     let _ = client.poll();
     if matches!(
@@ -1503,10 +1527,18 @@ struct TraceMock {
     sent: Arc<Mutex<Vec<TransportFrame>>>,
     required_room_commands: Arc<Mutex<RoomCommandRequirements>>,
     gate_reconnect_responses: bool,
+    /// Deliver the first `n` frames freely, then hold the trace until the
+    /// admitted room command reaches the wire. Pins admission ordering.
+    hold_until_command: Option<(usize, RoomResponseKind)>,
+    delivered_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl TraceMock {
-    fn new(frames: Vec<TransportFrame>, gate_reconnect_responses: bool) -> Self {
+    fn with_join_barrier(
+        frames: Vec<TransportFrame>,
+        gate_reconnect_responses: bool,
+        hold_until_command: Option<(usize, RoomResponseKind)>,
+    ) -> Self {
         Self {
             incoming: Arc::new(Mutex::new(
                 frames
@@ -1518,6 +1550,8 @@ impl TraceMock {
             sent: Arc::new(Mutex::new(Vec::new())),
             required_room_commands: Arc::new(Mutex::new(RoomCommandRequirements::default())),
             gate_reconnect_responses,
+            hold_until_command,
+            delivered_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }
@@ -1540,6 +1574,23 @@ impl Transport for TraceMock {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        if let Some((delivered_freely, required_kind)) = self.hold_until_command {
+            let behind_barrier = self
+                .delivered_count
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= delivered_freely;
+            if behind_barrier {
+                let command_sent = self.sent.lock().unwrap().iter().any(|frame| {
+                    let TransportFrame::Text(json) = frame else {
+                        return false;
+                    };
+                    text_matches_room_command(json, required_kind)
+                });
+                if !command_sent {
+                    return std::task::Poll::Pending;
+                }
+            }
+        }
         let response_kind = self.incoming.lock().unwrap().front().and_then(|item| {
             let Some(Ok(TransportFrame::Text(json))) = item else {
                 return None;
@@ -1570,6 +1621,10 @@ impl Transport for TraceMock {
             Some(item) => std::task::Poll::Ready(item),
             None => std::task::Poll::Pending,
         };
+        if let std::task::Poll::Ready(Some(Ok(_))) = &delivered {
+            self.delivered_count
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         if let std::task::Poll::Ready(Some(Ok(frame))) = &delivered {
             advance_frame_room_command_requirements(
                 frame,
@@ -1972,12 +2027,68 @@ async fn assert_frame_trace_parity_with_stats(
     admit_reconnect: bool,
     expected_stats: Option<ClientStats>,
 ) -> Vec<String> {
-    let make_mock = || TraceMock::new(frames.clone(), admit_reconnect);
     let initial_room_operation = initial_room_operation(&frames);
     let response_counts = room_response_counts(&frames);
+    // Wire-shape samples may omit authentication entirely; a trace that needs
+    // a scripted room operation is still driven behind a real handshake whose
+    // remainder is held until the admitted command reaches the wire.
+    let auth_frame_index = frames.iter().position(|frame| {
+        matches!(
+            frame,
+            TransportFrame::Text(json)
+                if serde_json::from_str::<ServerMessage>(json)
+                    .is_ok_and(|message| matches!(message, ServerMessage::Authenticated { .. }))
+        )
+    });
+    let needs_handshake_preamble = initial_room_operation.is_some() && auth_frame_index.is_none();
+    let preamble: Vec<TransportFrame> = if needs_handshake_preamble {
+        vec![
+            TransportFrame::Text(AUTH.to_string()),
+            TransportFrame::Text(PI_V3.to_string()),
+        ]
+    } else {
+        Vec::new()
+    };
+    let frames = preamble.into_iter().chain(frames).collect::<Vec<_>>();
+    let scripts_authentication = needs_handshake_preamble || auth_frame_index.is_some();
+    let hold_until_command = (initial_room_operation.is_some() && scripts_authentication).then({
+        move || {
+            let kind = match initial_room_operation.expect("admission checked above") {
+                InitialRoomOperation::JoinPlayer => RoomResponseKind::JoinPlayer,
+                InitialRoomOperation::JoinSpectator => RoomResponseKind::JoinSpectator,
+            };
+            if needs_handshake_preamble {
+                (2, kind)
+            } else {
+                (
+                    auth_frame_index.expect("authenticated frame index") + 1,
+                    kind,
+                )
+            }
+        }
+    });
+    let make_mock =
+        move || TraceMock::with_join_barrier(frames.clone(), admit_reconnect, hold_until_command);
 
     let async_mock = make_mock();
     let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    let mut async_events = Vec::new();
+    if scripts_authentication {
+        // Some scripted frames are intentionally undecodable wire samples, so
+        // synchronize on the Authenticated event itself rather than a snapshot
+        // that the whole trace may outlive.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while let Some(event) = async_rx.recv().await {
+                let authenticated = matches!(event, SignalFishEvent::Authenticated { .. });
+                async_events.push(event);
+                if authenticated {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("trace should reach its scripted Authenticated response");
+    }
     admit_initial_room_operation(&mut async_client, initial_room_operation);
     if admit_reconnect {
         async_client
@@ -1988,7 +2099,6 @@ async fn assert_frame_trace_parity_with_stats(
             )
             .expect("async reconnect must queue");
     }
-    let mut async_events = Vec::new();
     let mut room_continuation = RoomTraceContinuation::default();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while let Some(event) = async_rx.recv().await {
@@ -2001,6 +2111,20 @@ async fn assert_frame_trace_parity_with_stats(
 
     let polling_mock = make_mock();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    let mut polling_events = Vec::new();
+    if scripts_authentication {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !polling_events
+                .iter()
+                .any(|event| matches!(event, SignalFishEvent::Authenticated { .. }))
+            {
+                polling_events.extend(polling_client.poll());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("trace should reach its scripted Authenticated response");
+    }
     admit_initial_room_operation(&mut polling_client, initial_room_operation);
     if admit_reconnect {
         polling_client
@@ -2011,7 +2135,7 @@ async fn assert_frame_trace_parity_with_stats(
             )
             .expect("polling reconnect must queue");
     }
-    let mut polling_events = polling_client.poll();
+    polling_events.extend(polling_client.poll());
     drive_polling_room_continuations(&mut polling_client, &response_counts, &mut polling_events);
 
     let async_events = async_events
@@ -2154,6 +2278,23 @@ async fn assert_open_text_trace_parity_with_reconnect(
 
     let async_mock = make_mock();
     let (mut async_client, mut async_rx) = SignalFishClient::start(async_mock, config.clone());
+    let mut async_events = Vec::with_capacity(expected_events);
+    // Consume through the scripted Authenticated event before admitting; the
+    // whole trace may otherwise complete before a snapshot poll observes it.
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !async_events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Authenticated { .. }))
+        {
+            let event = async_rx
+                .recv()
+                .await
+                .expect("open async trace should reach its scripted authentication");
+            async_events.push(event);
+        }
+    })
+    .await
+    .expect("open async trace should authenticate");
     admit_initial_room_operation(&mut async_client, initial_room_operation);
     if admit_reconnect {
         async_client
@@ -2164,7 +2305,6 @@ async fn assert_open_text_trace_parity_with_reconnect(
             )
             .expect("async reconnect must queue");
     }
-    let mut async_events = Vec::with_capacity(expected_events);
     let mut room_continuation = RoomTraceContinuation::default();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while async_events.len() < expected_events {
@@ -2182,6 +2322,18 @@ async fn assert_open_text_trace_parity_with_reconnect(
 
     let polling_mock = make_mock();
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    let mut polling_events = Vec::with_capacity(expected_events);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !polling_events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Authenticated { .. }))
+        {
+            polling_events.extend(polling_client.poll());
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("open polling trace should authenticate");
     admit_initial_room_operation(&mut polling_client, initial_room_operation);
     if admit_reconnect {
         polling_client
@@ -2192,7 +2344,7 @@ async fn assert_open_text_trace_parity_with_reconnect(
             )
             .expect("polling reconnect must queue");
     }
-    let mut polling_events = polling_client.poll();
+    polling_events.extend(polling_client.poll());
     drive_polling_room_continuations(&mut polling_client, &response_counts, &mut polling_events);
     let polling_snapshot = polling_client.snapshot();
 
@@ -2412,15 +2564,17 @@ async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_d
     let mut config = SignalFishConfig::new("app").enable_v3();
     config.game_data_format = Some(GameDataEncoding::Rkyv);
 
-    let async_mock = SharedMock::from_msgs(
+    let async_mock = SharedMock::from_msgs_gated(
         messages
             .iter()
             .cloned()
             .map(|message| Some(Ok(message)))
             .collect(),
+        false,
     );
     let (mut async_client, mut async_events) =
         SignalFishClient::start(async_mock.clone(), config.clone());
+    common::wait_for_authentication(&async_client).await;
     admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     for _ in 0..=messages.len() {
         tokio::time::timeout(std::time::Duration::from_secs(1), async_events.recv())
@@ -2444,13 +2598,24 @@ async fn json_fallback_is_enforced_before_outbound_transport_admission_in_both_d
         ClientMessage::GameData { .. }
     ));
 
-    let polling_mock = SharedMock::from_msgs(
+    let polling_mock = SharedMock::from_msgs_gated(
         messages
             .into_iter()
             .map(|message| Some(Ok(message)))
             .collect(),
+        false,
     );
     let mut polling_client = SignalFishPollingClient::new(polling_mock.clone(), config);
+    for _ in 0..16 {
+        if polling_client.is_authenticated() {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(
+        polling_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_mock.sent.lock().unwrap().clear();
@@ -3813,6 +3978,7 @@ async fn every_common_command_produces_identical_physical_frames() {
         let async_sent = Arc::clone(&async_mock.sent);
         let (mut async_client, mut async_events) =
             SignalFishClient::start(async_mock, config.clone());
+        common::wait_for_authentication(&async_client).await;
         admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             while !matches!(
@@ -3844,6 +4010,16 @@ async fn every_common_command_produces_identical_physical_frames() {
         let polling_mock = FrameMock::v3();
         let polling_sent = Arc::clone(&polling_mock.sent);
         let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+        for _ in 0..16 {
+            if polling_client.is_authenticated() {
+                break;
+            }
+            let _ = polling_client.poll();
+        }
+        assert!(
+            polling_client.is_authenticated(),
+            "polling fixture must authenticate before admission"
+        );
         admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
         let _ = polling_client.poll();
         polling_sent.lock().unwrap().clear();
@@ -3880,6 +4056,7 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
     let async_mock = FrameMock::v3();
     let async_sent = Arc::clone(&async_mock.sent);
     let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    common::wait_for_authentication(&async_client).await;
     admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while !matches!(
@@ -3916,6 +4093,16 @@ async fn unauthorized_outbound_signals_fail_without_wire_output_in_both_drivers(
     let polling_mock = FrameMock::v3();
     let polling_sent = Arc::clone(&polling_mock.sent);
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    for _ in 0..16 {
+        if polling_client.is_authenticated() {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(
+        polling_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_sent.lock().unwrap().clear();
@@ -3983,19 +4170,16 @@ async fn pending_transport_queue_capacity_and_errors_match() {
         .expect_err("polling queue must be full");
     assert_eq!(format!("{async_error:?}"), format!("{polling_error:?}"));
 
-    for case in [
-        CommonCommandCase::JoinRoom,
-        CommonCommandCase::Reconnect,
-        CommonCommandCase::JoinSpectator,
-    ] {
+    for _ in 0..3 {
+        let async_error = async_client.ping().expect_err("async queue must be full");
+        let polling_error = polling_client
+            .ping()
+            .expect_err("polling queue must be full");
         assert!(matches!(
-            case.invoke(&mut async_client),
-            Err(SignalFishError::SendBufferFull { capacity: 1 })
+            async_error,
+            SignalFishError::SendBufferFull { capacity: 1 }
         ));
-        assert!(matches!(
-            case.invoke(&mut polling_client),
-            Err(SignalFishError::SendBufferFull { capacity: 1 })
-        ));
+        assert_eq!(format!("{async_error:?}"), format!("{polling_error:?}"));
     }
 
     // A locally invalid room operation wins over queue congestion and cannot
@@ -4013,7 +4197,14 @@ async fn pending_transport_queue_capacity_and_errors_match() {
 
     async_gate.release();
     polling_gate.release();
-    let _ = polling_client.poll();
+    common::wait_for_authentication(&async_client).await;
+    for _ in 0..16 {
+        if polling_client.is_authenticated() && polling_client.send_capacity() == 1 {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(polling_client.is_authenticated());
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while async_client.send_capacity() == 0 {
             tokio::task::yield_now().await;
@@ -4287,6 +4478,7 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
     let async_mock = FrameMock::v3();
     let async_sent = Arc::clone(&async_mock.sent);
     let (mut async_client, mut async_events) = SignalFishClient::start(async_mock, config.clone());
+    common::wait_for_authentication(&async_client).await;
     admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     while !matches!(
         async_events.recv().await,
@@ -4302,6 +4494,16 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
     let polling_mock = FrameMock::v3();
     let polling_sent = Arc::clone(&polling_mock.sent);
     let mut polling_client = SignalFishPollingClient::new(polling_mock, config);
+    for _ in 0..16 {
+        if polling_client.is_authenticated() {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(
+        polling_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     polling_sent.lock().unwrap().clear();
@@ -4412,15 +4614,17 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
         TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
     };
     let messages = [AUTH.to_string(), PI_V2.to_string(), room];
-    let async_mock = SharedMock::from_msgs(
+    let async_mock = SharedMock::from_msgs_gated(
         messages
             .iter()
             .cloned()
             .map(|message| Some(Ok(message)))
             .collect(),
+        false,
     );
     let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
+    common::wait_for_authentication(&client).await;
     admit_initial_room_operation(&mut client, Some(InitialRoomOperation::JoinPlayer));
     // Drain until the v2 room baseline has been processed into client state.
     loop {
@@ -4431,13 +4635,24 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
     }
     let async_err = client.send_offer(peer, "sdp").unwrap_err();
 
-    let poll_mock = SharedMock::from_msgs(
+    let poll_mock = SharedMock::from_msgs_gated(
         messages
             .into_iter()
             .map(|message| Some(Ok(message)))
             .collect(),
+        false,
     );
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    for _ in 0..16 {
+        if poll_client.is_authenticated() {
+            break;
+        }
+        let _ = poll_client.poll();
+    }
+    assert!(
+        poll_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut poll_client, Some(InitialRoomOperation::JoinPlayer));
     poll_client.poll();
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();
@@ -4480,6 +4695,7 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
     let async_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
     let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
+    common::wait_for_authentication(&client).await;
     client
         .reconnect(
             uuid::Uuid::from_u128(200),
@@ -4498,6 +4714,13 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
 
     let poll_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
+    for _ in 0..16 {
+        if poll_client.is_authenticated() {
+            break;
+        }
+        let _ = poll_client.poll();
+    }
+    assert!(poll_client.is_authenticated());
     poll_client
         .reconnect(
             uuid::Uuid::from_u128(200),
@@ -4801,15 +5024,26 @@ async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
     assert!(snapshot.session_topology.is_none());
     assert!(snapshot.session_transport.is_none());
 
-    let polling_mock = SharedMock::from_msgs(
+    let polling_mock = SharedMock::from_msgs_gated(
         populated
             .iter()
             .cloned()
             .map(|message| Some(Ok(message)))
             .collect(),
+        false,
     );
     let mut polling_client =
         SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app").enable_mesh());
+    for _ in 0..16 {
+        if polling_client.is_authenticated() {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(
+        polling_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
     admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
     let _ = polling_client.poll();
     assert_eq!(polling_client.session_topology(), Some(Topology::Mesh));
@@ -4821,7 +5055,7 @@ async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
     assert!(polling_client.session_topology().is_none());
     assert!(polling_client.session_transport().is_none());
 
-    let async_mock = SharedMock::from_msgs(
+    let async_mock = SharedMock::from_msgs_gated(
         populated
             .into_iter()
             .map(|message| Some(Ok(message)))
@@ -4829,9 +5063,11 @@ async fn parity_selected_plan_resets_at_room_and_connection_boundaries() {
                 SignalFishError::TransportReceive("reset".into()),
             ))))
             .collect(),
+        false,
     );
     let (mut async_client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_mesh());
+    common::wait_for_authentication(&async_client).await;
     admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
     let mut saw_plan = false;
     loop {

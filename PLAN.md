@@ -34,10 +34,10 @@
   package metadata; repository integration tests, other standalone wire
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
-- All 12 push workflows passed on `main` commit `4fc5f5c`, including merged PR
-  #133's negotiated room-operation identity, and on every subsequent merged
-  audit PR through #138. The separate live Repository Policy
-  audit remains red because of issue #90.
+- All 12 push workflows passed on `main` through merged PR #139, and the
+  #126 audit's correctness slices (#128/#129, #132–#136, #139, #140, #141,
+  #142) are all incorporated. The separate live Repository Policy audit
+  remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -121,13 +121,22 @@ measured evidence before accepting performance complexity:
     [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
     The negotiated outbound-size contract slice landed via
     [#139](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/139).
-    The remaining inventory cells are tracked as narrowly scoped slices:
+    The last inventory cells are complete:
     [#140](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/140)
-    (authentication-gated room admission),
+    gates the five directed room operations on server-confirmed
+    authentication with the new `SignalFishError::NotAuthenticated` refusal
+    in both drivers,
     [#141](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/141)
-    (bounded terminal disconnect delivery), and
+    bounds async terminal disconnect delivery by `shutdown_timeout` so a
+    wedged consumer can no longer leak the transport loop or park reliable
+    senders forever while keeping the at-most-one-in-flight bound honest for
+    multi-event frames, and
     [#142](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/142)
-    (cancellation-safety pins and dequeue-failure fence release).
+    pins reliable-send cancellation safety and releases operation fences when
+    dequeue-time serialization fails. With these landed, the issue-#126
+    audit's correctness slices are finished; the remaining milestone work is
+    the re-run of established unsafe-inventory, Miri, fuzz, dependency, and
+    no-panic gates plus measured profiling against the 28-cell laboratory.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote

@@ -300,13 +300,14 @@ Current-generation duplicates and generation-less Server 0.4 plans remain valid,
 selected plan. `MeshController` rebuilds retained pairs across generations or
 offerer-role changes. `MeshSession` accepts liveness only for the selected transport.
 
-Membership pairs `room_role` with room/participant IDs. Commands validate
-connection, transition, role, authority, protocol/session, then queue capacity.
+Membership pairs `room_role` with room/participant IDs. Commands validate connection, authentication (directed room
+operations refuse with `NotAuthenticated` before the server confirms it), transition, role, authority, protocol/session, then queue capacity.
 Admitted joins/leaves/reconnects fence later work until a matching typed terminal response; generic errors/absence stay fenced until teardown.
 A v3-capable config requests `room_operation_ids`; after an exact echo, the core records one fresh UUID at successful queue admission for all five room operations, and only the matching ID/result kind releases it.
-Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event
-channel backpressures; undecodable frames surface as `DecodeFailed`; events are
-missed only on receiver/handle drop or shutdown (abandons ≤1 in-flight).
+Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event channel backpressures; undecodable frames surface as `DecodeFailed`;
+events are missed only on receiver/handle drop or preempted delivery — `shutdown`, or an async terminal disconnect facing a
+non-draining consumer, abandons at most the one in-flight delivery (remaining batch events get one nonblocking attempt) after
+`shutdown_timeout` and terminates the loop so parked reliable senders resolve; the polling driver emits synchronously from `poll()`.
 Snapshots distinguish nonterminal `connected`, observed `transport_ready`, server-confirmed `authenticated`, and authoritative room membership.
 Decoded game-data receipt counts before suppression; counters are diagnostic boundaries, not cross-peer delivery equality.
 `SignalFishPollingClient` shares the classified/binary sends, queue bound,
@@ -435,9 +436,8 @@ TLS is opt-in: the default build pulls no crypto stack; `wss://` support
 3. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
 4. Client may then call `join_room`, etc.
 5. Both clients emit synthetic `SignalFishEvent::Connected` when their driver first observes `Transport::is_ready() == true`.
-   `SignalFishEvent::Disconnected` is emitted when the transport closes
-   (best-effort; missed only if the receiver is dropped, shutdown times out,
-   or the handle is dropped without `shutdown()`).
+   `SignalFishEvent::Disconnected` is emitted when the transport closes (best-effort; missed only if the receiver is dropped,
+   delivery was preempted as bounded above, or the handle is dropped without `shutdown()`).
 
 ## Protocol Overview
 

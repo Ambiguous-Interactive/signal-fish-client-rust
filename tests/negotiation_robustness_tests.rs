@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use signal_fish_client::protocol::{
-    LobbyState, PlayerInfo, ReconnectedPayload, ReplayStatus, SenderWatermark, ServerMessage,
-    SessionPeer, SessionPlanPayload, Topology, TransportKind,
+    ClientMessage, LobbyState, PlayerInfo, ReconnectedPayload, ReplayStatus, SenderWatermark,
+    ServerMessage, SessionPeer, SessionPlanPayload, Topology, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
@@ -170,15 +170,15 @@ async fn reconnect_rejects_protocol_info_without_downgrading_active_v3() {
         Some(Ok(protocol_info_json(Some(3)))), // negotiate v3
         Some(Ok(reconnected_with_missed(vec![protocol_info_msg(None)]))),
     ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     client
         .reconnect(
             uuid::Uuid::from_u128(200),
             uuid::Uuid::from_u128(100),
             "submitted-token".into(),
         )
-        .expect("reconnect must queue");
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+        .expect("authenticated reconnect must queue");
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
     drain_until_violation(&mut events).await;
@@ -203,15 +203,15 @@ async fn reconnect_multiple_protocol_info_is_rejected() {
             protocol_info_msg(Some(4)),
         ]))),
     ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     client
         .reconnect(
             uuid::Uuid::from_u128(200),
             uuid::Uuid::from_u128(100),
             "submitted-token".into(),
         )
-        .expect("reconnect must queue");
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+        .expect("authenticated reconnect must queue");
     drain_until_violation(&mut events).await;
 
     assert_eq!(
@@ -234,15 +234,15 @@ async fn reconnect_versioned_then_v2_keeps_version() {
             protocol_info_msg(None),
         ]))),
     ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     client
         .reconnect(
             uuid::Uuid::from_u128(200),
             uuid::Uuid::from_u128(100),
             "submitted-token".into(),
         )
-        .expect("reconnect must queue");
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+        .expect("authenticated reconnect must queue");
     drain_until_violation(&mut events).await;
 
     assert_eq!(
@@ -264,15 +264,15 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
         Some(Ok(reconnected_with_missed(vec![]))),
         Some(Ok(serde_json::to_string(&session_plan_msg()).unwrap())),
     ]);
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
     client
         .reconnect(
             uuid::Uuid::from_u128(200),
             uuid::Uuid::from_u128(100),
             "submitted-token".into(),
         )
-        .expect("reconnect must queue");
-    drain_until_authenticated(&mut events).await;
-    drain_until_protocol_info(&mut events).await;
+        .expect("authenticated reconnect must queue");
     assert_eq!(client.negotiated_protocol_version(), Some(3));
 
     drain_until_reconnected(&mut events).await;
@@ -304,6 +304,7 @@ struct SendErrorTransport {
     closed: Arc<AtomicBool>,
     send_count: usize,
     error_on_send: usize,
+    sent_join_room: bool,
 }
 
 impl SendErrorTransport {
@@ -319,6 +320,7 @@ impl SendErrorTransport {
             closed: Arc::clone(&closed),
             send_count: 0,
             error_on_send,
+            sent_join_room: false,
         };
         (t, sent, closed)
     }
@@ -340,6 +342,11 @@ impl Transport for SendErrorTransport {
             let TransportFrame::Text(message) = frame else {
                 panic!("test mock expected an outbound text frame");
             };
+            if serde_json::from_str::<ClientMessage>(&message)
+                .is_ok_and(|message| matches!(message, ClientMessage::JoinRoom { .. }))
+            {
+                self.sent_join_room = true;
+            }
             self.sent.lock().unwrap().push(message);
         }
         std::task::Poll::Ready(Ok(()))
@@ -349,6 +356,17 @@ impl Transport for SendErrorTransport {
         &mut self,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        // Room responses follow admitted joins on this fixture.
+        if !self.sent_join_room {
+            let front_is_room_joined = match self.incoming.front() {
+                Some(Some(Ok(json))) => serde_json::from_str::<ServerMessage>(json)
+                    .is_ok_and(|message| matches!(message, ServerMessage::RoomJoined(_))),
+                _ => false,
+            };
+            if front_is_room_joined {
+                return std::task::Poll::Pending;
+            }
+        }
         if let Some(item) = self.incoming.pop_front() {
             std::task::Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
         } else {
@@ -379,6 +397,7 @@ async fn send_error_midflight_disconnects_and_clears_state() {
     );
     let config = SignalFishConfig::new("mb_audit").enable_mesh();
     let (mut client, mut events) = SignalFishClient::start(transport, config);
+    common::wait_for_authentication(&client).await;
     client
         .join_room(JoinRoomParams::new("test-game", "Alice"))
         .expect("room fixture must follow an admitted join");

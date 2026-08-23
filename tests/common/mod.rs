@@ -476,6 +476,21 @@ pub async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: 
     });
 }
 
+/// Wait until the async driver observes the server's `Authenticated`
+/// confirmation without consuming any events, mirroring the documented
+/// requirement to await `SignalFishEvent::Authenticated` before room
+/// operations. Room operations refuse earlier with
+/// [`SignalFishError::NotAuthenticated`].
+pub async fn wait_for_authentication(client: &signal_fish_client::SignalFishClient) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !client.is_authenticated() {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("client must observe Authenticated before scripted room operations");
+}
+
 /// Returns the JSON for a `SessionPlan` (mesh + webrtc) naming a single peer.
 pub fn session_plan_json(peer_id: PlayerId, initiate: bool) -> String {
     serde_json::to_string(&session_plan_message(peer_id, initiate))

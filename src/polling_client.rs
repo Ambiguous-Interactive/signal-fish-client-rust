@@ -449,8 +449,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -462,7 +464,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a spectator,
     /// [`SignalFishError::RoomOperationPending`] during another room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
@@ -562,8 +565,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -580,8 +585,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -602,7 +609,8 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a player,
     /// [`SignalFishError::RoomOperationPending`] during another room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
@@ -1022,9 +1030,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 self.pending_frame_enqueued_at = Some(queued.enqueued_at);
                 match queued.command {
                     PollingCommand::Message(message) => {
-                        let Some(json) =
-                            self.finish_serialization_at(serialize_client_message(&message), now)
-                        else {
+                        let Some(json) = self.finish_serialization_at(
+                            serialize_client_message(&message),
+                            &message,
+                            now,
+                        ) else {
                             continue;
                         };
                         self.pending_frame_is_game_data =
@@ -1293,12 +1303,14 @@ impl<T: Transport> SignalFishPollingClient<T> {
     fn finish_serialization_at(
         &mut self,
         result: serde_json::Result<String>,
+        message: &ClientMessage,
         now: Instant,
     ) -> Option<String> {
         match result {
             Ok(json) => Some(json),
             Err(error) => {
                 error!(%error, "failed to serialize ClientMessage");
+                self.core.dequeue_serialization_failed(message);
                 self.record_serialization_failure_at(now);
                 None
             }
@@ -2894,16 +2906,19 @@ mod tests {
 
     #[test]
     fn join_room_queues_command() {
-        let transport = MockTransport::new();
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
-        // First poll to send the authenticate message and emit Connected.
+        // First poll sends Authenticate, emits Connected, and consumes
+        // Authenticated.
         client.poll();
+        assert!(client.is_authenticated());
 
         // Now join a room.
         client
             .join_room(JoinRoomParams::new("test-game", "Alice"))
-            .expect("join_room must succeed on connected client");
+            .expect("join_room must succeed on an authenticated client");
 
         // Poll again to flush the join_room command.
         client.poll();
@@ -2919,6 +2934,51 @@ mod tests {
         assert_eq!(sent_json["type"], "JoinRoom");
         assert_eq!(sent_json["data"]["game_name"], "test-game");
         assert_eq!(sent_json["data"]["player_name"], "Alice");
+    }
+
+    #[test]
+    fn room_operations_are_refused_before_authentication_completes() {
+        // The server never confirms authentication. A caller that skips the
+        // documented wait for `Authenticated` must get an immediate typed
+        // refusal instead of arming an operation fence that the inbound
+        // lifecycle gates would never release.
+        let transport = MockTransport::new();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        client.poll(); // Connected + Authenticate flushed
+
+        let result = client.join_room(JoinRoomParams::new("test-game", "Alice"));
+        assert!(
+            matches!(result, Err(SignalFishError::NotAuthenticated)),
+            "expected NotAuthenticated, got {result:?}"
+        );
+        assert!(!client.is_authenticated());
+        assert_eq!(
+            client.send_capacity(),
+            client.max_send_capacity(),
+            "a refused room operation must not consume queue capacity"
+        );
+
+        // The fence stayed unarmed: once authentication completes, the same
+        // operation is admitted immediately.
+        client
+            .transport
+            .incoming
+            .push_back(Some(Ok(TransportFrame::Text(
+                authenticated_json_str().to_string(),
+            ))));
+        let _ = client.poll();
+        assert!(client.is_authenticated());
+        client
+            .join_room(JoinRoomParams::new("test-game", "Alice"))
+            .expect("join_room must be admitted once authenticated");
+        client.poll();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value = serde_json::from_str(last_sent).unwrap();
+        assert_eq!(sent_json["type"], "JoinRoom");
     }
 
     #[test]
@@ -3844,7 +3904,8 @@ mod tests {
 
     #[test]
     fn reconnect_queues_command() {
-        let transport = MockTransport::new();
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
@@ -3852,7 +3913,7 @@ mod tests {
         let room_id = uuid::Uuid::from_u128(2);
         client
             .reconnect(player_id, room_id, "token123".into())
-            .expect("reconnect must succeed on connected client");
+            .expect("reconnect must succeed on authenticated client");
         client.poll();
 
         let last_sent = client
@@ -3870,13 +3931,14 @@ mod tests {
 
     #[test]
     fn join_as_spectator_queues_command() {
-        let transport = MockTransport::new();
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
         client
             .join_as_spectator("my-game".into(), "ROOM1".into(), "Spectator1".into())
-            .expect("join_as_spectator must succeed on connected client");
+            .expect("join_as_spectator must succeed on authenticated client");
         client.poll();
 
         let last_sent = client
@@ -3937,7 +3999,8 @@ mod tests {
 
     #[test]
     fn join_room_with_all_options_queues_command() {
-        let transport = MockTransport::new();
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         client.poll(); // flush auth
 
@@ -3948,7 +4011,7 @@ mod tests {
             .with_room_code("CUSTOM1");
         client
             .join_room(params)
-            .expect("join_room must succeed on connected client");
+            .expect("join_room must succeed on authenticated client");
         client.poll();
 
         let last_sent = client
@@ -4855,7 +4918,11 @@ mod tests {
         let serialization_error = serde_json::from_str::<serde_json::Value>("{")
             .expect_err("the injected malformed JSON should fail");
         assert!(client
-            .finish_serialization_at(Err(serialization_error), base + Duration::from_millis(20),)
+            .finish_serialization_at(
+                Err(serialization_error),
+                &ClientMessage::Ping,
+                base + Duration::from_millis(20),
+            )
             .is_none());
 
         let age = client.queue_age_stats();
