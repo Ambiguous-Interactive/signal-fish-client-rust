@@ -3076,6 +3076,12 @@ mod safety_analysis_policy {
         "todo",
         "unimplemented",
         "indexing_slicing",
+        // Promoted by the 2026-08 deep-safety evaluation after a measured
+        // zero-findings sweep across the workspace.
+        "dbg_macro",
+        "exit",
+        "mem_forget",
+        "undocumented_unsafe_blocks",
     ];
 
     fn manifest(path: &str) -> toml::Value {
@@ -3398,7 +3404,7 @@ mod safety_analysis_policy {
     }
 
     #[test]
-    fn cargo_toml_has_all_panic_free_lints() {
+    fn cargo_toml_denies_required_clippy_lints() {
         let cargo = manifest("Cargo.toml");
         let clippy = cargo["lints"]["clippy"]
             .as_table()
@@ -3427,12 +3433,6 @@ mod safety_analysis_policy {
             "Cargo.toml",
             "fuzz/**",
             "scripts/cargo-retry.sh",
-            "src/error.rs",
-            "src/error_codes.rs",
-            "src/lib.rs",
-            "src/protocol.rs",
-            "src/protocol/**",
-            "src/signal.rs",
             "tests/protocol_tests.rs",
         ] {
             assert!(
@@ -3440,8 +3440,38 @@ mod safety_analysis_policy {
                 "Deep Safety PR trigger must cover {path}"
             );
         }
+        // The `src/**` glob subsumes the previously enumerated codec, driver,
+        // and transport files: every production source change re-runs the
+        // analyzers.
+        for covered in [
+            "src/error.rs",
+            "src/error_codes.rs",
+            "src/lib.rs",
+            "src/protocol.rs",
+            "src/protocol/binary.rs",
+            "src/signal.rs",
+            "src/client.rs",
+            "src/client_core.rs",
+            "src/polling_client.rs",
+            "src/accountability.rs",
+            "src/mesh.rs",
+            "src/webrtc.rs",
+            "src/transports/websocket.rs",
+            "src/transports/emscripten_websocket.rs",
+            "src/token_binding.rs",
+        ] {
+            assert!(
+                workflow.contains("- src/**"),
+                "Deep Safety PR trigger must cover {covered} via the src/** glob"
+            );
+        }
         assert!(!workflow.contains("miri test --test ci_config_tests"));
         assert!(workflow.contains("miri test --test protocol_tests --all-features"));
+        assert!(
+            workflow.contains("-Zsanitizer=thread") && workflow.contains("-Zbuild-std"),
+            "Deep Safety must run the ThreadSanitizer workspace lane"
+        );
+        assert!(workflow.contains("--workspace --all-features --tests"));
         assert!(workflow.contains("fuzz_host=$(rustc +nightly -vV"));
         assert!(workflow.contains("--target \"$fuzz_host\""));
         assert!(workflow.contains("fuzz_corpus=$(mktemp -d)"));
