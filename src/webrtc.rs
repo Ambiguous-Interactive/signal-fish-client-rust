@@ -1149,6 +1149,7 @@ mod tests {
                 serde_json::from_str::<ServerMessage>(json).ok()
             });
             let expected_command = match terminal_response {
+                Some(ServerMessage::RoomJoined(_)) => Some("JoinRoom"),
                 Some(ServerMessage::Reconnected(_) | ServerMessage::ReconnectionFailed { .. }) => {
                     Some("Reconnect")
                 }
@@ -1161,10 +1162,12 @@ mod tests {
                         |message| {
                             matches!(
                                 (expected, message),
-                                (
-                                    "Reconnect",
-                                    crate::protocol::ClientMessage::Reconnect { .. }
-                                ) | ("LeaveRoom", crate::protocol::ClientMessage::LeaveRoom)
+                                ("JoinRoom", crate::protocol::ClientMessage::JoinRoom { .. })
+                                    | (
+                                        "Reconnect",
+                                        crate::protocol::ClientMessage::Reconnect { .. }
+                                    )
+                                    | ("LeaveRoom", crate::protocol::ClientMessage::LeaveRoom)
                             )
                         },
                     )
@@ -1447,11 +1450,34 @@ mod tests {
         }
     }
 
-    fn start_in_scripted_room(
+    /// Drain scripted signaling events until the controller observes the
+    /// server's `Authenticated` confirmation.
+    async fn wait_for_authenticated(mesh: &mut MeshController<SharedDriver>) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = mesh.recv().await {
+                if matches!(
+                    event,
+                    MeshEvent::Signaling(boxed)
+                        if matches!(*boxed, SignalFishEvent::Authenticated { .. })
+                ) {
+                    return;
+                }
+            }
+            panic!("scripted handshake ended before Authenticated");
+        })
+        .await
+        .expect("scripted handshake never reached Authenticated");
+    }
+
+    async fn start_in_scripted_room(
         transport: MockTransport,
         driver: SharedDriver,
     ) -> MeshController<SharedDriver> {
         let mut mesh = MeshController::start(transport, SignalFishConfig::new("app"), driver);
+        // Consume the scripted handshake so the directed room operation
+        // observes an authenticated connection; the mock keeps every room
+        // response gated behind the matching outgoing command.
+        wait_for_authenticated(&mut mesh).await;
         mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
             .expect("scripted room response must follow an admitted join");
         mesh
@@ -1893,7 +1919,7 @@ mod tests {
                 serde_json::json!({ "Answer": "remote" }),
             ))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         let connected = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -1963,7 +1989,7 @@ mod tests {
                 serde_json::json!({ "Offer": "remote-offer" }),
             ))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         let connected = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -2008,7 +2034,7 @@ mod tests {
             Some(Ok(session_plan(peer, false))),
             Some(Ok(player_left)),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         for _ in 0..8 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
@@ -2029,7 +2055,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(peer, false))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .contains(&DriverCall::Connect(peer, false)))
@@ -2063,7 +2089,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan(uuid(1), false))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         mesh.send_to(peer, &[9, 9]);
         assert!(driver.calls().contains(&DriverCall::Send(peer, vec![9, 9])));
         mesh.shutdown().await;
@@ -2096,7 +2122,7 @@ mod tests {
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         // Drive the handshake to PeerConnected.
         tokio::time::timeout(
@@ -2145,7 +2171,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[], &[]))),
             Some(Ok(new_peer)),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         for _ in 0..6 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
             if driver.calls().contains(&DriverCall::Connect(peer, true)) {
@@ -2167,7 +2193,7 @@ mod tests {
             Some(Ok(session_plan(peer, false))),
             Some(Ok(room_left)),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .contains(&DriverCall::Connect(peer, false)))
@@ -2198,7 +2224,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(room_joined.to_string())),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         for _ in 0..6 {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), mesh.recv()).await;
             if driver
@@ -2231,7 +2257,7 @@ mod tests {
             Some(Ok(session_plan(peer, true))),
             Some(Ok(signal_from(peer, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         // Drive the handshake to an open channel (reports TransportStatus(true)).
         tokio::time::timeout(
@@ -2274,7 +2300,7 @@ mod tests {
             Some(Ok(protocol_info_v3())),
             Some(Ok(session_plan_multi(&[(a, false), (b, false)], &[]))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(a, false)) && c.contains(&DriverCall::Connect(b, false))
         })
@@ -2343,7 +2369,7 @@ mod tests {
                 &["stun:2"],
             ))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         pump_until(&mut mesh, &driver, |c2| {
             c2.contains(&DriverCall::Connect(c, true))
         })
@@ -2397,7 +2423,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, false, first))),
             Some(Ok(session_plan_with_generation(peer, false, second))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
@@ -2428,7 +2454,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, false, first))),
             Some(Ok(session_plan_with_generation(peer, false, second))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         assert!(
             pump_until(&mut mesh, &driver, |calls| calls
                 .contains(&DriverCall::ConnectGeneration(peer, Some(second))))
@@ -2473,7 +2499,7 @@ mod tests {
             Some(Ok(session_plan_with_generation(peer, true, first))),
             Some(Ok(session_plan_with_generation(peer, true, second))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         loop {
             if matches!(
@@ -2534,7 +2560,7 @@ mod tests {
                 serde_json::json!({ "Offer": "unplanned" }),
             ))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         drain(&mut mesh, 8).await;
         assert!(!driver
             .calls()
@@ -2563,7 +2589,7 @@ mod tests {
                 })
                 .unwrap())),
             ]);
-            let mut mesh = start_in_scripted_room(transport, driver.clone());
+            let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
             drain(&mut mesh, 10).await;
             let calls = driver.calls();
             assert!(calls.contains(&DriverCall::Disconnect(old_peer)));
@@ -2608,7 +2634,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[(p, true)], &["stun:a"]))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         drain(&mut mesh, 12).await;
         assert_eq!(
             count_calls(
@@ -2637,7 +2663,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         drain(&mut mesh, 12).await;
         assert_eq!(
             count_calls(
@@ -2675,7 +2701,7 @@ mod tests {
             Some(Ok(session_plan(p, false))),
             Some(Ok(session_plan(p, true))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         let flipped = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(p, true))
         })
@@ -2723,7 +2749,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, false))),
             Some(Ok(new_peer_msg(p, true))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         let flipped = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(p, true))
         })
@@ -2759,7 +2785,7 @@ mod tests {
             Some(Ok(session_plan(p, true))),
             Some(Ok(signal_from(p, serde_json::json!({ "Answer": "r" })))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
 
         // Drive the handshake to an open channel (reports TransportStatus(true)).
         tokio::time::timeout(
@@ -2823,7 +2849,7 @@ mod tests {
                 &["stun:2"],
             ))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         pump_until(&mut mesh, &driver, |calls| {
             calls.contains(&DriverCall::Connect(c, false))
         })
@@ -2888,7 +2914,7 @@ mod tests {
             Some(Ok(signal_from(p, serde_json::json!({ "Bogus": "x" })))),
             Some(Ok(signal_from(p, serde_json::json!({ "Offer": "ok" })))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::OnSignal(p, PeerSignal::Offer("ok".into())))
         })
@@ -2916,7 +2942,7 @@ mod tests {
             Some(Ok(session_plan_multi(&[(p, false)], &["stun:real"]))),
             Some(Ok(session_plan_multi(&[(p, false), (q, false)], &[]))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(q, false))
         })
@@ -2948,7 +2974,7 @@ mod tests {
             Some(Ok(new_peer_msg(p, true))),
             Some(Ok(session_plan_multi(&[(q, true)], &["stun:a"]))),
         ]);
-        let mut mesh = start_in_scripted_room(transport, driver.clone());
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
         let ok = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(q, true))
         })
@@ -3001,9 +3027,10 @@ mod tests {
         ]);
         let mut mesh =
             MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        wait_for_authenticated(&mut mesh).await;
         mesh.client_mut()
             .reconnect(uuid(0), uuid(0), "submitted-token".into())
-            .unwrap();
+            .expect("reconnect must be admitted once authenticated");
         let ok = pump_until(&mut mesh, &driver, |c| {
             c.contains(&DriverCall::Connect(a, true)) && c.contains(&DriverCall::Connect(b, false))
         })
@@ -3097,6 +3124,7 @@ mod tests {
             Some(Ok(session_plan(uuid(1), false))),
         ]);
         let mut mesh = start_in_scripted_room(transport, driver.clone())
+            .await
             .with_pump_interval(std::time::Duration::from_secs(30));
 
         // Drain the initial signaling events so the next recv() genuinely parks.

@@ -30,6 +30,7 @@ exhaustive public enum:
 | `TokenBinding` | `TokenBindingFailure` | Native WebSocket token-binding negotiation, challenge validation, key derivation, canonicalization, encoding, or sequence handling failed. Reasons are typed and contain no key, nonce, proof, signature, fingerprint, URL credential, or payload material. See [WebSocket Token Binding](token-binding.md). |
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
+| `NotAuthenticated` | — | Attempted a directed room operation (`join_room`, `leave_room`, `reconnect`, `join_as_spectator`, or `leave_spectator`) before the server confirmed authentication. The command was **not** queued; retry once the `Authenticated` event arrives. Non-room commands keep their pre-authentication behavior. |
 | `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `AlreadyInRoom` | — | Attempted to join as a player/spectator or reconnect while already in a room. |
@@ -44,9 +45,10 @@ exhaustive public enum:
 | `Timeout` | — | An operation timed out. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 
-Local validation has stable precedence: connection state, an admitted pending
-room transition, membership/role, authority, protocol version, format/session
-plan, and then bounded-queue capacity. Invalid state therefore does not consume
+Local validation has stable precedence: connection state, server-confirmed
+authentication for directed room operations, an admitted pending room
+transition, membership/role, authority, protocol version, format/session plan,
+and then bounded-queue capacity. Invalid state therefore does not consume
 queue capacity and is not hidden by `SendBufferFull`.
 
 ### Handling errors from client methods

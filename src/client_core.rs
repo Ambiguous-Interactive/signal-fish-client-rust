@@ -344,6 +344,22 @@ impl ClientCore {
         if !self.is_connected() {
             return Err(crate::SignalFishError::NotConnected);
         }
+        if matches!(
+            operation,
+            ClientOperation::JoinRoom(_)
+                | ClientOperation::LeaveRoom
+                | ClientOperation::Reconnect(..)
+                | ClientOperation::JoinAsSpectator(..)
+                | ClientOperation::LeaveSpectator
+        ) && !self.snapshot.authenticated
+        {
+            // The inbound lifecycle gates require `authenticated` for every
+            // room response, so admitting an outbound room operation before
+            // authentication would arm its fence against responses the SDK
+            // itself classifies as violations — poisoning every later room
+            // operation with `RoomOperationPending` until teardown.
+            return Err(crate::SignalFishError::NotAuthenticated);
+        }
         if self.pending_room_operation.is_some() && !matches!(operation, ClientOperation::Ping) {
             return Err(crate::SignalFishError::RoomOperationPending);
         }
@@ -935,6 +951,36 @@ impl ClientCore {
             self.pending_reconnects.pop_front();
         }
         self.pending_room_operation = None;
+    }
+
+    /// Release the operation fence when a command that armed it at queue
+    /// admission fails to serialize at dequeue time.
+    ///
+    /// Unreachable while every `ClientMessage` field serializes infallibly,
+    /// but one fallible field away from a permanent `RoomOperationPending` in
+    /// both drivers, so the fence is released instead of asserted away.
+    pub(crate) fn dequeue_serialization_failed(&mut self, message: &ClientMessage) {
+        let kind = match message {
+            ClientMessage::JoinRoom { .. } => PendingRoomOperation::JoinPlayer,
+            ClientMessage::LeaveRoom => PendingRoomOperation::LeavePlayer,
+            ClientMessage::Reconnect { .. } => PendingRoomOperation::ReconnectPlayer,
+            ClientMessage::JoinAsSpectator { .. } => PendingRoomOperation::JoinSpectator,
+            ClientMessage::LeaveSpectator => PendingRoomOperation::LeaveSpectator,
+            _ => return,
+        };
+        if self
+            .pending_room_operation
+            .as_ref()
+            .is_some_and(|pending| pending.kind == kind)
+        {
+            if kind == PendingRoomOperation::ReconnectPlayer {
+                self.pending_reconnects.pop_front();
+            }
+            self.pending_room_operation = None;
+            tracing::warn!(
+                "dequeued room operation failed to serialize; released its admission fence"
+            );
+        }
     }
 
     fn process_binary(&mut self, bytes: Vec<u8>) -> FrameOutcome {
@@ -3188,10 +3234,17 @@ mod tests {
     #[test]
     fn operation_membership_matrix_is_exhaustive_and_role_specific() {
         for (name, operation, outside, player, spectator) in operation_matrix() {
-            let outside_core = ClientCore::new(
+            let mut outside_core = ClientCore::new(
                 Some(GameDataEncoding::Json),
                 ProtocolViolationPolicy::Observe,
                 true,
+            );
+            assert_eq!(process(&mut outside_core, authenticated()).events.len(), 1);
+            assert_eq!(
+                process(&mut outside_core, protocol_info(Some(3)))
+                    .events
+                    .len(),
+                1
             );
             assert_eq!(
                 membership_error(outside_core.validate(&operation)),
@@ -3213,6 +3266,78 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn unauthenticated_core_rejects_fencing_room_operations_before_admission() {
+        let fencing_operations = [
+            (
+                "join room",
+                ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+            ),
+            ("leave room", ClientOperation::LeaveRoom),
+            (
+                "reconnect",
+                ClientOperation::Reconnect(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "token".into(),
+                ),
+            ),
+            (
+                "join spectator",
+                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ),
+            ("leave spectator", ClientOperation::LeaveSpectator),
+        ];
+        for (name, operation) in fencing_operations {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            assert!(
+                matches!(
+                    core.validate(&operation),
+                    Err(crate::SignalFishError::NotAuthenticated)
+                ),
+                "{name} must be refused before authentication"
+            );
+            assert_eq!(
+                core.pending_room_operation, None,
+                "{name} must not arm its admission fence while unauthenticated"
+            );
+
+            assert_eq!(process(&mut core, authenticated()).events.len(), 1);
+            if matches!(
+                operation,
+                ClientOperation::JoinRoom(_)
+                    | ClientOperation::Reconnect(..)
+                    | ClientOperation::JoinAsSpectator(..)
+            ) {
+                core.validate(&operation).unwrap_or_else(|error| {
+                    panic!("{name} must validate after authentication: {error:?}")
+                });
+            }
+        }
+
+        let core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        core.validate(&ClientOperation::Ping)
+            .expect("ping remains valid before authentication");
+        assert!(
+            matches!(
+                core.validate(&ClientOperation::GameData(
+                    serde_json::json!({"value": 1}),
+                    GameDataDelivery::Reliable,
+                )),
+                Err(crate::SignalFishError::NotInRoom)
+            ),
+            "non-fencing operations keep their existing pre-authentication behavior"
+        );
     }
 
     #[test]
@@ -5051,5 +5176,89 @@ mod tests {
             outcome.events.as_slice(),
             [SignalFishEvent::AuthorityResponse { granted: false, .. }]
         ));
+    }
+
+    #[test]
+    fn dequeue_serialization_failure_releases_only_the_matching_fence() {
+        let cases: [(&str, ClientOperation, ClientMessage); 5] = [
+            (
+                "join",
+                ClientOperation::JoinRoom(JoinRoomParams::new("game", "local")),
+                ClientMessage::JoinRoom {
+                    game_name: "game".into(),
+                    player_name: "local".into(),
+                    room_code: None,
+                    max_players: None,
+                    supports_authority: None,
+                    relay_transport: None,
+                },
+            ),
+            (
+                "leave",
+                ClientOperation::LeaveRoom,
+                ClientMessage::LeaveRoom,
+            ),
+            (
+                "reconnect",
+                ClientOperation::Reconnect(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "token".into(),
+                ),
+                ClientMessage::Reconnect {
+                    player_id: PlayerId::from_u128(LOCAL),
+                    room_id: RoomId::from_u128(10),
+                    auth_token: "token".into(),
+                },
+            ),
+            (
+                "spectator join",
+                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                ClientMessage::JoinAsSpectator {
+                    game_name: "game".into(),
+                    room_code: "ROOM".into(),
+                    spectator_name: "viewer".into(),
+                },
+            ),
+            (
+                "spectator leave",
+                ClientOperation::LeaveSpectator,
+                ClientMessage::LeaveSpectator,
+            ),
+        ];
+
+        for (name, operation, message) in cases {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            core.record_admission(ClientCore::admission_for(&operation));
+            assert!(
+                core.pending_room_operation.is_some(),
+                "{name}: admission must arm the fence"
+            );
+            if matches!(operation, ClientOperation::Reconnect(..)) {
+                assert_eq!(core.pending_reconnects.len(), 1);
+            }
+
+            core.dequeue_serialization_failed(&message);
+            assert!(
+                core.pending_room_operation.is_none(),
+                "{name}: dequeue failure must release the fence"
+            );
+            assert!(
+                core.pending_reconnects.is_empty(),
+                "{name}: reconnect bookkeeping must be released with the fence"
+            );
+            // A mismatched message kind must never release someone else's
+            // fence.
+            core.record_admission(ClientCore::admission_for(&operation));
+            core.dequeue_serialization_failed(&ClientMessage::Ping);
+            assert!(
+                core.pending_room_operation.is_some(),
+                "{name}: an unrelated message must not release the fence"
+            );
+        }
     }
 }

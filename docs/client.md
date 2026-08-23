@@ -646,16 +646,19 @@ connection continues with the legacy Server 0.7 wire behavior. Operations
 admitted before the first `ProtocolInfo` also remain legacy for their complete
 request/response lifetime, even if negotiation finishes while one is pending.
 
-Room command admission is role-specific:
+Room command admission is role-specific, and the five directed room operations
+additionally require server-confirmed authentication:
 
 | Local state | Allowed room operations |
 |---|---|
-| Outside a room | `join_room`, `join_as_spectator`, or `reconnect` |
+| Unauthenticated connection | None of them — they return `NotAuthenticated` (wait for the `Authenticated` event) |
+| Authenticated, outside a room | `join_room`, `join_as_spectator`, or `reconnect` |
 | `RoomRole::Player` | leave, game-data, readiness/game-start, authority, connection-info, signaling, and transport-status operations |
 | `RoomRole::Spectator` | `leave_spectator` |
 | Any nonterminal connection | `ping` |
 
 Wrong-state errors are deterministic: `NotConnected` wins first, then
+`NotAuthenticated` for the five directed room operations, then
 `RoomOperationPending`, membership/role and authority errors, protocol/format
 or session-plan errors, and finally `SendBufferFull` at queue admission.
 

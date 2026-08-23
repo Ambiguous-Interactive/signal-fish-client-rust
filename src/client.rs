@@ -18,10 +18,12 @@
 //!   only be missed when the loop stops delivering entirely: the receiver was
 //!   dropped, the client handle was dropped without calling
 //!   [`shutdown`](SignalFishClient::shutdown) (which aborts immediately), or
-//!   `shutdown` was requested — a shutdown abandons at most the one event
-//!   delivery it interrupted, closes the transport gracefully, and delivers
-//!   the terminal `Disconnected` best-effort (a receiver that outlives the
-//!   loop also observes the event channel closing).
+//!   delivery was preempted — `shutdown`, or a terminal disconnect facing a
+//!   consumer that never drains, abandon at most the one event delivery they
+//!   interrupt (remaining batch events get one nonblocking attempt), close
+//!   the transport gracefully under [`shutdown_timeout`](SignalFishConfig::shutdown_timeout),
+//!   and deliver the terminal `Disconnected` best-effort (a receiver that
+//!   outlives the loop also observes the event channel closing).
 //! - **Commands** go through a bounded queue and queue admission is never
 //!   silent: the synchronous send methods fail fast with
 //!   [`SignalFishError::SendBufferFull`] when it is full, and the
@@ -219,8 +221,11 @@ pub struct SignalFishConfig {
     /// the consumer gets before that backpressure kicks in. An event can only
     /// be missed when delivery stops entirely: the receiver is dropped, the
     /// client handle is dropped without calling [`SignalFishClient::shutdown`],
-    /// or on `shutdown` — which abandons at most one in-flight event and
-    /// delivers the terminal `Disconnected` best-effort.
+    /// or delivery was preempted — by `shutdown`, or by a terminal disconnect
+    /// facing a consumer that never drains, which abandons at most one
+    /// in-flight event (remaining events of the same frame get one
+    /// nonblocking attempt) after [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
+    /// and delivers the terminal `Disconnected` best-effort.
     ///
     /// Defaults to **256**. Values below 1 are clamped to 1.
     pub event_channel_capacity: usize,
@@ -869,7 +874,10 @@ impl SignalFishClient {
     /// remains pending), the transport is aborted and the loop normally
     /// returns. A later watchdog cancels the task if it still does not stop.
     /// Task cancellation and handle drop also invoke the transport's required
-    /// abort fallback. After shutdown completes, the event
+    /// abort fallback. The same budget bounds a terminal disconnect when
+    /// `shutdown` is never called: a consumer that wedges permanently cannot
+    /// keep the loop (and every waiting reliable sender) alive past it.
+    /// After shutdown completes, the event
     /// receiver yields the remaining buffered events and then `None` — treat
     /// the channel closing as the authoritative end-of-stream signal.
     pub async fn shutdown(&mut self) {
@@ -915,8 +923,10 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -928,7 +938,8 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a spectator,
     /// [`SignalFishError::RoomOperationPending`] during another room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
@@ -994,6 +1005,11 @@ impl SignalFishClient {
     /// task rather than strictly sequentially. (Do **not** race this send
     /// against the event receiver in a `tokio::select!`: if the event arm
     /// wins, the cancelled send future discards the payload.)
+    ///
+    /// Apart from that racing pattern this method is cancel-safe: dropping
+    /// the returned future while it waits for queue capacity neither queues
+    /// the command nor mutates any state, and the operation is admitted at
+    /// most once per awaited completion.
     ///
     /// # Errors
     ///
@@ -1093,8 +1109,10 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -1111,8 +1129,10 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::AlreadyInRoom`] when membership already
-    /// exists, [`SignalFishError::RoomOperationPending`] during another room
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::AlreadyInRoom`] when
+    /// membership already exists,
+    /// [`SignalFishError::RoomOperationPending`] during another room
     /// transition, [`SignalFishError::NotConnected`] if the transport has closed,
     /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
     /// is full (the message is **not** queued; nothing is silently dropped).
@@ -1133,7 +1153,8 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::NotInRoom`] outside a room,
+    /// Returns [`SignalFishError::NotAuthenticated`] before the server
+    /// confirms authentication, [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a player,
     /// [`SignalFishError::RoomOperationPending`] during another room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
@@ -1802,22 +1823,73 @@ async fn emit_core_disconnected_or_shutdown(
     reason: Option<String>,
     shutdown_timeout: Duration,
 ) {
+    // Peer-close delivery is bounded by the same budget as graceful
+    // termination: a wedged consumer must not leak the task holding the
+    // command receiver, which would park every waiting reliable sender
+    // forever. On expiry the terminal event falls back to a nonblocking
+    // attempt before the loop terminates.
+    // A timeout so large that its deadline cannot be represented yields
+    // `None`, which restores the historical unbounded wait — matching the
+    // documented behavior of an effectively-never-expiring budget.
+    let deadline = tokio::time::Instant::now().checked_add(shutdown_timeout);
     let event = lock_core(state).disconnect(reason);
     let deliver_event = async {
-        tokio::select! {
-            biased;
-            result = event_tx.send(event.clone()) => {
-                if result.is_err() {
-                    debug!("event channel closed, receiver dropped");
-                }
-            }
-            _ = &mut *shutdown_rx => {
-                let _ = event_tx.try_send(event);
-            }
+        if !emit_terminal_event(event_tx, shutdown_rx, deadline, event.clone()).await {
+            let _ = event_tx.try_send(event);
         }
     };
-    let close = finish_send_and_close_bounded(transport, pending_send, state, shutdown_timeout);
+    let close = finish_send_and_close_bounded(
+        transport,
+        pending_send,
+        state,
+        remaining_shutdown_budget(shutdown_timeout, deadline),
+    );
     let ((), ()) = tokio::join!(deliver_event, close);
+}
+
+/// The time left in a shutdown budget whose deadline was computed earlier.
+#[cfg(feature = "tokio-runtime")]
+fn remaining_shutdown_budget(
+    timeout: Duration,
+    deadline: Option<tokio::time::Instant>,
+) -> Duration {
+    deadline.map_or(timeout, |deadline| {
+        deadline.saturating_duration_since(tokio::time::Instant::now())
+    })
+}
+
+/// Deliver a frame's events, racing each wait against shutdown (and an
+/// optional terminal deadline).
+///
+/// Returns `true` when every event was handed to the channel. When a wait is
+/// preempted mid-batch, the remaining events are attempted through the
+/// nonblocking fallback before being abandoned, so a multi-event frame loses
+/// nothing that could still fit instead of everything after the interrupted
+/// delivery.
+#[cfg(feature = "tokio-runtime")]
+async fn emit_event_batch(
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    deadline: Option<tokio::time::Instant>,
+    events: Vec<SignalFishEvent>,
+) -> bool {
+    let mut iter = events.into_iter();
+    for event in iter.by_ref() {
+        let delivered = match deadline {
+            Some(_) => emit_terminal_event(event_tx, shutdown_rx, deadline, event).await,
+            None => !matches!(
+                emit_event_or_shutdown(event_tx, shutdown_rx, event).await,
+                EmitOutcome::ShutdownRequested
+            ),
+        };
+        if !delivered {
+            for remaining in iter {
+                let _ = event_tx.try_send(remaining);
+            }
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(feature = "tokio-runtime")]
@@ -2007,22 +2079,19 @@ async fn finish_send_failure(
 
         let outcome = lock_core(state).process_frame(frame);
         let protocol_stop = outcome.disconnect;
-        for event in outcome.events {
-            if !emit_terminal_event(event_tx, shutdown_rx, deadline, event).await {
-                delivery_preempted = true;
-                break;
-            }
+        delivery_preempted =
+            !emit_event_batch(event_tx, shutdown_rx, deadline, outcome.events).await;
+        if delivery_preempted {
+            debug!("terminal event delivery was preempted mid-batch after send failure");
+            break;
         }
-        if delivery_preempted || protocol_stop || budget_reached {
+        if protocol_stop || budget_reached {
             break;
         }
     }
 
     let reason = peer_close_reason(transport).or_else(|| Some(error.to_string()));
     let disconnected = lock_core(state).disconnect(reason);
-    let remaining = deadline.map_or(timeout, |deadline| {
-        deadline.saturating_duration_since(tokio::time::Instant::now())
-    });
     let deliver_disconnected = async {
         if delivery_preempted
             || !emit_terminal_event(event_tx, shutdown_rx, deadline, disconnected.clone()).await
@@ -2030,7 +2099,12 @@ async fn finish_send_failure(
             let _ = event_tx.try_send(disconnected);
         }
     };
-    let close = finish_send_and_close_bounded(transport, pending_send, state, remaining);
+    let close = finish_send_and_close_bounded(
+        transport,
+        pending_send,
+        state,
+        remaining_shutdown_budget(timeout, deadline),
+    );
     let ((), ()) = tokio::join!(deliver_disconnected, close);
 }
 
@@ -2095,6 +2169,7 @@ async fn transport_loop(
                         ),
                         Err(error) => {
                             error!("failed to serialize ClientMessage: {error}");
+                            lock_core(&state).dequeue_serialization_failed(&message);
                             (None, false)
                         }
                     },
@@ -2185,17 +2260,10 @@ async fn transport_loop(
                     TransportIo::Received(Some(Ok(frame))) => {
                         let outcome = lock_core(&state).process_frame(frame);
                         let disconnect = outcome.disconnect;
-                        let mut shutdown_requested = false;
-                        for event in outcome.events {
-                            if matches!(
-                                emit_event_or_shutdown(&event_tx, &mut shutdown_rx, event).await,
-                                EmitOutcome::ShutdownRequested
-                            ) {
-                                shutdown_requested = true;
-                                break;
-                            }
-                        }
-                        if shutdown_requested {
+                        let delivered =
+                            emit_event_batch(&event_tx, &mut shutdown_rx, None, outcome.events)
+                                .await;
+                        if !delivered {
                             finish_core_shutdown(
                                 &mut transport,
                                 &mut pending_send,
@@ -2269,7 +2337,9 @@ enum EmitOutcome {
 /// lets shutdown win. On [`EmitOutcome::ShutdownRequested`] exactly the one
 /// in-flight event is abandoned — the caller must then run
 /// [`finish_core_shutdown`] and exit the loop **without polling `shutdown_rx`
-/// again** (a completed `oneshot::Receiver` panics if re-polled).
+/// again** (a completed `oneshot::Receiver` panics if re-polled). Batch
+/// callers route through [`emit_event_batch`], which attempts the nonblocking
+/// fallback for the batch's remaining events before abandoning them.
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event_or_shutdown(
     event_tx: &mpsc::Sender<SignalFishEvent>,
@@ -2324,57 +2394,167 @@ mod tests {
     // ── Mock transport ──────────────────────────────────────────────
 
     /// A mock transport that records sent messages and replays scripted responses.
+    type SharedIncoming =
+        Arc<StdMutex<VecDeque<Option<std::result::Result<String, SignalFishError>>>>>;
+
+    /// Handles for steering a running [`MockTransport`] from a test.
+    struct IncomingControls {
+        incoming: SharedIncoming,
+        waker: Arc<StdMutex<Option<Waker>>>,
+    }
+
+    impl IncomingControls {
+        fn close_peer(&self) {
+            self.incoming.lock().unwrap().push_back(None);
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
     struct MockTransport {
         /// Messages that `poll_recv` will yield in order.
-        incoming: VecDeque<Option<std::result::Result<String, SignalFishError>>>,
+        incoming: SharedIncoming,
         /// Recorded outgoing messages.
         sent: Arc<StdMutex<Vec<String>>>,
         /// Whether `poll_close` was called.
         closed: Arc<AtomicBool>,
         delivered_room_responses: [usize; 5],
+        /// Waker registered whenever `poll_recv` has nothing scripted.
+        recv_waker: Arc<StdMutex<Option<Waker>>>,
+        /// When present, outbound sends block until these permits are
+        /// available, keeping queued commands stranded in the client.
+        send_gate: Option<Arc<tokio::sync::Semaphore>>,
+        held_frame: Option<TransportFrame>,
+        permit_wait:
+            Option<Pin<Box<dyn Future<Output = tokio::sync::OwnedSemaphorePermit> + Send>>>,
+        /// Count of outbound frames the gate has taken ownership of.
+        frames_taken: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl MockTransport {
         fn new(
             incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
         ) -> (Self, Arc<StdMutex<Vec<String>>>, Arc<AtomicBool>) {
+            let (transport, sent, closed, _controls) = Self::new_shared(incoming);
+            (transport, sent, closed)
+        }
+
+        #[allow(clippy::type_complexity)]
+        fn new_shared(
+            incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
+        ) -> (
+            Self,
+            Arc<StdMutex<Vec<String>>>,
+            Arc<AtomicBool>,
+            IncomingControls,
+        ) {
             let sent = Arc::new(StdMutex::new(Vec::new()));
             let closed = Arc::new(AtomicBool::new(false));
+            let incoming = Arc::new(StdMutex::new(VecDeque::from(incoming)));
+            let recv_waker = Arc::new(StdMutex::new(None));
             let transport = Self {
-                incoming: VecDeque::from(incoming),
+                incoming: Arc::clone(&incoming),
                 sent: Arc::clone(&sent),
                 closed: Arc::clone(&closed),
                 delivered_room_responses: [0; 5],
+                recv_waker: Arc::clone(&recv_waker),
+                send_gate: None,
+                held_frame: None,
+                permit_wait: None,
+                frames_taken: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
-            (transport, sent, closed)
+            (
+                transport,
+                sent,
+                closed,
+                IncomingControls {
+                    incoming,
+                    waker: recv_waker,
+                },
+            )
+        }
+
+        /// A mock whose outbound sends block on a semaphore after the given
+        /// number of initial permits are consumed.
+        #[allow(clippy::type_complexity)]
+        fn new_send_gated(
+            incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
+            initial_permits: usize,
+        ) -> (
+            Self,
+            Arc<StdMutex<Vec<String>>>,
+            Arc<AtomicBool>,
+            IncomingControls,
+            Arc<tokio::sync::Semaphore>,
+            Arc<std::sync::atomic::AtomicUsize>,
+        ) {
+            let (mut transport, sent, closed, controls) = Self::new_shared(incoming);
+            let gate = Arc::new(tokio::sync::Semaphore::new(initial_permits));
+            transport.send_gate = Some(Arc::clone(&gate));
+            let frames_taken = Arc::clone(&transport.frames_taken);
+            (transport, sent, closed, controls, gate, frames_taken)
         }
     }
 
     impl Transport for MockTransport {
-        fn abort(&mut self) {}
+        fn abort(&mut self) {
+            // Aborting is teardown too: tests observe either graceful close
+            // or abort through the same flag.
+            self.closed.store(true, Ordering::Relaxed);
+            self.held_frame = None;
+            self.permit_wait = None;
+        }
 
         fn poll_send(
             &mut self,
-            _cx: &mut Context<'_>,
+            cx: &mut Context<'_>,
             frame: &mut Option<TransportFrame>,
         ) -> Poll<std::result::Result<(), SignalFishError>> {
-            match frame.take() {
-                Some(TransportFrame::Text(message)) => {
-                    self.sent.lock().unwrap().push(message);
-                    Poll::Ready(Ok(()))
-                }
-                Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
-                    SignalFishError::TransportSend("mock expected a text frame".into()),
-                )),
-                None => Poll::Ready(Ok(())),
+            let Some(gate) = self.send_gate.as_ref() else {
+                return match frame.take() {
+                    Some(TransportFrame::Text(message)) => {
+                        self.sent.lock().unwrap().push(message);
+                        Poll::Ready(Ok(()))
+                    }
+                    Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
+                        SignalFishError::TransportSend("mock expected a text frame".into()),
+                    )),
+                    None => Poll::Ready(Ok(())),
+                };
+            };
+            if self.held_frame.is_none() {
+                let Some(accepted) = frame.take() else {
+                    return Poll::Ready(Ok(()));
+                };
+                self.held_frame = Some(accepted);
+                self.frames_taken.fetch_add(1, Ordering::Release);
+                let gate = Arc::clone(gate);
+                self.permit_wait = Some(Box::pin(async move {
+                    gate.acquire_owned().await.expect("send gate never closed")
+                }));
             }
+            let Some(permit_wait) = self.permit_wait.as_mut() else {
+                return Poll::Ready(Err(SignalFishError::TransportClosed));
+            };
+            let permit = match permit_wait.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(permit) => permit,
+            };
+            // Consume the permit permanently so later sends stay blocked.
+            permit.forget();
+            self.permit_wait = None;
+            if let Some(TransportFrame::Text(message)) = self.held_frame.take() {
+                self.sent.lock().unwrap().push(message);
+            }
+            Poll::Ready(Ok(()))
         }
 
         fn poll_recv(
             &mut self,
-            _cx: &mut Context<'_>,
+            cx: &mut Context<'_>,
         ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
-            let response_kind = self.incoming.front().and_then(|item| {
+            let response_kind = self.incoming.lock().unwrap().front().and_then(|item| {
                 let Some(Ok(json)) = item else {
                     return None;
                 };
@@ -2412,10 +2592,11 @@ mod tests {
                     })
                     .count();
                 if sent_count <= self.delivered_room_responses[kind] {
+                    *self.recv_waker.lock().unwrap() = Some(cx.waker().clone());
                     return Poll::Pending;
                 }
             }
-            if let Some(item) = self.incoming.pop_front() {
+            if let Some(item) = self.incoming.lock().unwrap().pop_front() {
                 if let Some(kind) = response_kind {
                     self.delivered_room_responses[kind] += 1;
                 }
@@ -2423,9 +2604,10 @@ mod tests {
                 // `Some(result)` delivers the scripted message or error.
                 Poll::Ready(item.map(|result| result.map(TransportFrame::Text)))
             } else {
-                // All scripted messages have been delivered. No waker is
-                // registered, preserving the old never-completing recv until
-                // shutdown aborts the transport loop.
+                // All scripted messages have been delivered. Register the
+                // waker so tests can push further frames (or a peer close)
+                // into the running queue.
+                *self.recv_waker.lock().unwrap() = Some(cx.waker().clone());
                 Poll::Pending
             }
         }
@@ -4185,6 +4367,77 @@ mod tests {
         assert_reliable_game_data_rejected_after_room_change(false, true).await;
     }
 
+    /// Pins the cancellation contract of the waiting sends: dropping a future
+    /// parked on queue capacity leaves no state mutation, no statistics
+    /// change, and no leaked queue permit, so an identical command still
+    /// completes afterwards.
+    #[tokio::test]
+    async fn dropping_a_parked_reliable_send_leaves_no_trace() {
+        let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
+        let config = SignalFishConfig::new("mb_test").with_command_channel_capacity(1);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+        prime_player_room(&client);
+
+        client
+            .send_game_data(serde_json::json!({ "fills": "queue" }))
+            .expect("capacity-1 queue should accept one filler command");
+        let client = Arc::new(client);
+        let sender = Arc::clone(&client);
+        let mut parked = Box::pin(async move {
+            sender
+                .send_game_data_reliable(serde_json::json!({ "cancelled": true }))
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), parked.as_mut())
+                .await
+                .is_err(),
+            "the reliable send should be parked on queue capacity"
+        );
+
+        // Drop mid-wait: nothing may change.
+        let stats_before = client.stats();
+        let snapshot_before = client.snapshot();
+        drop(parked);
+        assert_eq!(client.stats(), stats_before, "stats must not move");
+        assert_eq!(client.snapshot(), snapshot_before, "snapshot must not move");
+        assert_eq!(client.send_capacity(), 0, "the filler still owns the slot");
+
+        // The same command still works once capacity is available again.
+        permits.add_permits(16);
+        wait_for_sent_len(&sent, 2).await;
+        assert_eq!(
+            client.snapshot(),
+            snapshot_before,
+            "draining the filler must not disturb membership state"
+        );
+        client
+            .send_game_data_reliable(serde_json::json!({ "identical": true }))
+            .await
+            .expect("an identical reliable send must complete after cancellation");
+        wait_for_sent_len(&sent, 3).await;
+        {
+            let payloads = sent.lock().unwrap();
+            assert!(
+                !payloads.iter().any(|json| json.contains("\"cancelled\"")),
+                "the cancelled payload must not reach the wire: {payloads:?}"
+            );
+            assert!(
+                payloads.iter().any(|json| json.contains("\"identical\"")),
+                "the identical payload must reach the wire: {payloads:?}"
+            );
+        }
+
+        let mut client = Arc::into_inner(client).expect("all client clones should be dropped");
+        client.shutdown().await;
+    }
+
     #[tokio::test]
     async fn reliable_binary_game_data_does_not_cross_room_membership() {
         assert_reliable_game_data_rejected_after_room_change(true, true).await;
@@ -5464,6 +5717,49 @@ mod tests {
         client.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn room_operations_are_refused_before_authentication_completes() {
+        // The server never confirms authentication. A caller that skips the
+        // documented wait for `Authenticated` must get an immediate typed
+        // refusal instead of arming an operation fence that the inbound
+        // lifecycle gates would never release.
+        let (transport, sent, _closed) = MockTransport::new(vec![]);
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        let _ = events.recv().await; // Connected
+
+        let result = client.join_room(JoinRoomParams::new("test-game", "local"));
+        assert!(
+            matches!(result, Err(SignalFishError::NotAuthenticated)),
+            "expected NotAuthenticated, got {result:?}"
+        );
+        assert!(!client.is_authenticated());
+        assert_eq!(
+            client.send_capacity(),
+            client.max_send_capacity(),
+            "a refused room operation must not consume queue capacity"
+        );
+
+        // The fence stayed unarmed: once authentication completes, the same
+        // operation is admitted immediately.
+        {
+            let mut core = lock_core(&client.state);
+            let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
+        }
+        assert!(client.is_authenticated());
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("join must be admitted once authenticated");
+
+        // Exactly two commands reached the wire: Authenticate and JoinRoom.
+        wait_for_sent_len(&sent, 2).await;
+        let join_json = sent.lock().unwrap()[1].clone();
+        let join: serde_json::Value = serde_json::from_str(&join_json).unwrap();
+        assert_eq!(join["type"], "JoinRoom");
+
+        client.shutdown().await;
+    }
+
     /// Validates the documented best-effort delivery guarantee: deadline
     /// abandonment does not make the terminal `Disconnected` event mandatory.
     #[tokio::test]
@@ -5534,5 +5830,221 @@ mod tests {
         assert!(client.current_room_id().await.is_none());
         assert!(client.current_room_code().await.is_none());
         assert!(client.current_player_id().await.is_none());
+    }
+
+    // ── Bounded terminal delivery ───────────────────────────────────
+
+    /// A consumer that never drains must not keep the transport loop (and
+    /// every sender parked on the command queue) alive past the configured
+    /// shutdown budget when the peer closes the connection without any
+    /// `shutdown()` call.
+    #[tokio::test]
+    async fn peer_close_with_wedged_consumer_terminates_loop_and_releases_parked_senders() {
+        // Two permits let Authenticate and JoinRoom reach the wire so the
+        // gated room baseline is released; every later send stalls inside the
+        // transport while the command queue backs up behind it.
+        let (transport, _sent, closed, controls, _permits, frames_taken) =
+            MockTransport::new_send_gated(
+                vec![
+                    Some(Ok(authenticated_json())),
+                    Some(Ok(protocol_info_v2_json())),
+                    Some(Ok(room_joined_json())),
+                ],
+                2,
+            );
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(4)
+            .with_command_channel_capacity(1)
+            .with_shutdown_timeout(std::time::Duration::from_millis(100));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Reach membership without draining events: Connected..RoomJoined
+        // then exactly fill the capacity-4 channel, so the terminal
+        // Disconnected delivery wedges against a permanently full channel.
+        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !client.is_authenticated() {
+            assert!(
+                tokio::time::Instant::now() < give_up,
+                "the scripted handshake never authenticated"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("join must be admitted once authenticated");
+        while client.current_room_id().await.is_none() {
+            assert!(
+                tokio::time::Instant::now() < give_up,
+                "the scripted room baseline never landed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        // Strand one command inside the stalled transport, fill the single
+        // command queue slot behind it, then park a reliable sender on
+        // reserve.
+        client
+            .ping()
+            .expect("the first ping is taken by the stalled transport");
+        // Authenticate + JoinRoom + our first ping: three gated takes.
+        wait_until(|| frames_taken.load(Ordering::Acquire) >= 3).await;
+        client
+            .ping()
+            .expect("one command fits the capacity-1 queue");
+        let client = Arc::new(client);
+        let sender = Arc::clone(&client);
+        let mut parked = tokio::spawn(async move {
+            sender
+                .send_game_data_reliable(serde_json::json!({ "late": true }))
+                .await
+        });
+        match tokio::time::timeout(std::time::Duration::from_millis(50), &mut parked).await {
+            Err(_) => {}
+            Ok(outcome) => panic!(
+                "reliable send finished early: {outcome:?} (cap={}, role={:?})",
+                client.send_capacity(),
+                client.room_role(),
+            ),
+        }
+
+        // The peer closes now. Connected..RoomJoined hold every event slot,
+        // so the terminal Disconnected delivery also wedges until its budget
+        // expires while the loop stops servicing the command queue entirely.
+        controls.close_peer();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // The budget expires on the wedged Disconnected delivery; loop exit
+        // drops the command receiver and resolves the parked reserve.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), parked)
+            .await
+            .expect("loop termination must release parked reliable senders")
+            .expect("reliable sender task should not panic");
+        assert!(
+            matches!(result, Err(SignalFishError::NotConnected)),
+            "a reliable send interrupted by terminal close must fail cleanly: {result:?}"
+        );
+        assert!(
+            closed.load(Ordering::Relaxed),
+            "peer-close teardown must close or abort the transport"
+        );
+        {
+            let client = Arc::clone(&client);
+            assert!(!client.is_connected());
+        }
+
+        // Exactly the pre-close events were delivered, in order, and the
+        // loop's exit closes the stream.
+        let expected = ["Connected", "Authenticated", "ProtocolInfo", "RoomJoined"];
+        let mut observed = Vec::new();
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.recv()).await
+        {
+            observed.push(format!("{event:?}"));
+            if observed.len() == expected.len() {
+                break;
+            }
+        }
+        let names: Vec<String> = observed
+            .iter()
+            .map(|debug| {
+                debug
+                    .split(['{', '('])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(names, expected, "wedged delivery must preserve order");
+    }
+
+    /// A receive error wedges terminal delivery exactly like a clean close:
+    /// with no `shutdown()` and an uncompletable `poll_close`, teardown must
+    /// come from the budget-expiry abort, never hang the loop.
+    #[tokio::test]
+    async fn terminal_receive_error_aborts_only_after_the_shutdown_budget() {
+        // Connected and Authenticated fill the capacity-2 channel, so the
+        // terminal Disconnected delivery wedges with no `shutdown()` call.
+        // The transport's `poll_close` never completes, so graceful close is
+        // impossible: teardown can only come from the budget expiry aborting
+        // the transport. A regression that restores unbounded delivery keeps
+        // this spin alive forever instead of passing vacuously.
+        let (transport, _close_called, abort_called, _dropped) =
+            HangingCloseTransport::with_incoming(vec![
+                Some(Ok(authenticated_json())),
+                Some(Err(SignalFishError::TransportReceive(
+                    "network failure".into(),
+                ))),
+            ]);
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(2)
+            .with_shutdown_timeout(std::time::Duration::from_millis(100));
+        let (client, mut events) = SignalFishClient::start(transport, config);
+
+        let started = std::time::Instant::now();
+        while !abort_called.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "the wedged terminal delivery must abort at its budget without shutdown()"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(!client.is_connected());
+
+        // Loop exit drops the sender: draining surfaces the buffered prefix,
+        // then closes the stream authoritatively.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        let closed_stream =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv())
+                .await
+                .expect("the event stream must end promptly after teardown");
+        assert!(
+            closed_stream.is_none(),
+            "unexpected extra events after abort: {closed_stream:?}"
+        );
+    }
+
+    /// When a batch delivery is preempted, the remaining batch events get one
+    /// nonblocking attempt instead of being discarded sight unseen.
+    #[tokio::test]
+    async fn expired_budget_preempts_blocked_batch_delivers_without_corruption() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // A budget that expired before the call makes every blocked delivery
+        // deterministic. The channel starts full, so both batch events are
+        // preempted instead of delivered or queued.
+        for _ in 0..4 {
+            tx.try_send(SignalFishEvent::Pong).expect("filler fits");
+        }
+        let stale_deadline = tokio::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let batch = vec![SignalFishEvent::Connected, SignalFishEvent::Connected];
+        let delivered = emit_event_batch(&tx, &mut shutdown_rx, Some(stale_deadline), batch).await;
+        assert!(!delivered, "an expired budget must report preemption");
+
+        drop(tx);
+        let mut observed = Vec::new();
+        while let Some(event) = rx.recv().await {
+            observed.push(event);
+        }
+        assert_eq!(
+            observed.len(),
+            4,
+            "preemption must not corrupt buffered events: {observed:?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .all(|event| matches!(event, SignalFishEvent::Pong)),
+            "only the original buffered events remain: {observed:?}"
+        );
     }
 }
