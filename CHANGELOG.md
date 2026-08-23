@@ -99,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Directed room operations are now refused before the server
   confirms authentication. `join_room`, `leave_room`, `reconnect`,
   `join_as_spectator`, and `leave_spectator` return the new
-  `SignalFishError::NotAuthenticated` variant without queueing anything,
+  `SignalFishError::NotAuthenticated` variant without enqueuing it,
   in both drivers, instead of admitting a command whose admission fence the
   inbound lifecycle gates could never release (a permanent
   `RoomOperationPending` after any early server response). Exhaustive
