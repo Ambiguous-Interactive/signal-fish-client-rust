@@ -7,7 +7,7 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
 # Exact server commit the .jsonl bytes were copied from.
-commit = "2d7c3836edf64bb734482b7fbb2b3db3f88fea8b"
+commit = "d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
@@ -20,4 +20,4 @@ synced = "2026-08-22"
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
 "v2-server-messages.jsonl" = "b5aee60d2cbd410c1088da1bbd1142d88d89600bc600f00b2d1849586f1654cd"
 "v3-client-messages.jsonl" = "0e41d5696f06f9c1edfd4e09dc94b9cdc4d8cf91b9fb8bd1a347f3e8a9452204"
-"v3-server-messages.jsonl" = "a11886469ca25dc30b24d08b02047824902327b70cb5a001c9d42872e4a95a60"
+"v3-server-messages.jsonl" = "21ed576f61cc042eee9c463363bde5a4b38a9285d0560666423afd6c930588b2"

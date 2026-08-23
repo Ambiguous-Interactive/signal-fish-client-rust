@@ -1430,6 +1430,7 @@ fn pi_v3_payload() -> ProtocolInfoPayload {
         transports: Some(vec![
             signal_fish_client::protocol::MessageTransport::Websocket,
         ]),
+        max_outbound_message_size: Some(8 * 1024 * 1024),
     }
 }
 

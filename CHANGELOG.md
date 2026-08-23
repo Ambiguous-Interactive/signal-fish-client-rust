@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the negotiated outbound message-size contract to `ProtocolInfoPayload`
+  as the v3-only optional field `max_outbound_message_size`, pinned to server
+  commit `d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9`. The negotiated value
+  mirrors into the new `ClientSnapshot::server_max_outbound_message_size`
+  field: the maximum complete encoded application payload, in bytes, the
+  connected deployment sends in one WebSocket message (default 8 MiB,
+  configurable up to 64 MiB). A server-side delivery above its own limit is
+  rejected whole and closes that connection with RFC 6455 close code 1009
+  (`outbound_message_too_large`), which surfaces through the `Disconnected`
+  event's close reason. Frozen-v2 negotiations and servers
+  that omit the field leave both the wire and the snapshot unchanged.
 - Added negotiated room-operation correlation for protocol-v3 connections.
   `ClientMessage::Authenticate` gains the optional `requested_capabilities`
   field. Configurations that can negotiate v3 request `room_operation_ids`;
@@ -20,8 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RoomOperationResult`, `ClientMessage::RoomOperation`,
   `ServerMessage::RoomOperationResult`, and
   `SignalFishEvent::RoomOperationFailed`. Exact wire and MessagePack goldens
-  are pinned to post-0.7 server commit
-  `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`. The added fields and exhaustive
+  are pinned to the post-0.7 protocol authority recorded in
+  `tests/compatibility.toml`. The added fields and exhaustive
   enum variants are breaking API additions for the forthcoming 0.11 release;
   published 0.10 does not expose them.
 - Added opt-in native `signalfish.tokenbinding.v2` support through the

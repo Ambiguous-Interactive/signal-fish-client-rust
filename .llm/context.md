@@ -382,7 +382,7 @@ Emscripten SDK version are independent compatibility axes.
 Socket-owning transports disable Nagle (`TCP_NODELAY`) by default; `WebSocketTransport`
 callers override with `WebSocketConnectOptions::with_disable_nagle(false)`. Native
 connections cap frames and assembled messages at 8 MiB; `None` disables both and
-`from_stream` preserves caller policy. This is not a Server 0.7 maximum; signal-fish-server#399 tracks that contract.
+`from_stream` preserves caller policy. This is a client resource policy, not a protocol maximum: deployments advertise their own outbound bound through v3 `ProtocolInfo.max_outbound_message_size` (mirrored into `ClientSnapshot::server_max_outbound_message_size`), pre-connect `/client-config` endpoints, and the `x-signal-fish-max-outbound-message-size` upgrade header; an over-limit server delivery closes with RFC 6455 code 1009.
 Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors.
 
 ### Wire Compatibility
@@ -390,7 +390,7 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
 v2 JSON protocol. Server 0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the released runtime compatibility binding.
-The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension at commit `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`.
+The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension and the advertised outbound limit at commit `d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9`.
 Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
 ### Exhaustive Public Types

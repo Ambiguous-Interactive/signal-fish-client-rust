@@ -1698,6 +1698,7 @@ async fn protocol_info_event() {
             min_protocol_version: None,
             max_protocol_version: None,
             transports: None,
+            max_outbound_message_size: None,
         },
     ))
     .expect("serialize");

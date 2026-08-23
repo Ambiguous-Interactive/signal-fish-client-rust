@@ -2643,6 +2643,7 @@ mod tests {
             min_protocol_version: Some(2),
             max_protocol_version: Some(3),
             transports: Some(vec![crate::protocol::MessageTransport::Websocket]),
+            max_outbound_message_size: Some(8 * 1024 * 1024),
         }
     }
 
@@ -4523,6 +4524,7 @@ mod tests {
                 min_protocol_version: None,
                 max_protocol_version: None,
                 transports: None,
+                max_outbound_message_size: None,
             },
         ))
         .expect("ProtocolInfo ServerMessage must serialize to JSON");

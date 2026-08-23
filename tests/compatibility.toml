@@ -6,7 +6,7 @@ server_commit = "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333"
 synced = "2026-08-16"
 
 [protocol_authority]
-commit = "2d7c3836edf64bb734482b7fbb2b3db3f88fea8b"
+commit = "d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9"
 synced = "2026-08-22"
 
 [legacy_server]
@@ -23,7 +23,7 @@ generation = "omitted"
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
 "v2-server-messages.jsonl" = "b5aee60d2cbd410c1088da1bbd1142d88d89600bc600f00b2d1849586f1654cd"
 "v3-client-messages.jsonl" = "0e41d5696f06f9c1edfd4e09dc94b9cdc4d8cf91b9fb8bd1a347f3e8a9452204"
-"v3-server-messages.jsonl" = "a11886469ca25dc30b24d08b02047824902327b70cb5a001c9d42872e4a95a60"
+"v3-server-messages.jsonl" = "21ed576f61cc042eee9c463363bde5a4b38a9285d0560666423afd6c930588b2"
 
 [server_spec]
-"signal-fish-protocol.asyncapi.yaml" = "edbc917ccde8ade6023cab16edbb1bd44456b6ed763696a1fc78b1849bcb7b51"
+"signal-fish-protocol.asyncapi.yaml" = "cf9e954d965bd110bf8873a77e2fff1440f1f0fe0e607cc8d71e2d9e296729d7"

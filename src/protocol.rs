@@ -460,6 +460,20 @@ pub struct ProtocolInfoPayload {
         deserialize_with = "deserialize_present_optional"
     )]
     pub transports: Option<Vec<MessageTransport>>,
+    /// Maximum complete encoded WebSocket application payload, in bytes, that
+    /// this deployment sends to the client (protocol v3+ only).
+    ///
+    /// The server counts the value after Signal Fish protocol encoding and
+    /// before WebSocket framing. A delivery over this limit is rejected whole
+    /// and closes the connection with RFC 6455 close code 1009
+    /// (`outbound_message_too_large`). `None` preserves the frozen v2 wire
+    /// contract.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional"
+    )]
+    pub max_outbound_message_size: Option<usize>,
 }
 
 /// Describes the characters a deployment allows inside `player_name`.

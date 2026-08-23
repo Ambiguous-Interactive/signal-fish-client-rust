@@ -7,8 +7,10 @@
   `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`; Server 0.4
   generation-less signaling remains an explicit compatibility case.
 - Post-0.7 protocol wire/spec authority is pinned separately at server commit
-  `2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`, including negotiated
-  `room_operation_ids` support.
+  `d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9`, including negotiated
+  `room_operation_ids` support and the advertised
+  `max_outbound_message_size` deployment contract (the former
+  signal-fish-server#399 gap, now incorporated).
 - The async and polling clients share protocol behavior through `ClientCore`.
 - The lockstep Godot adapter supports native and official Godot 4.5 web
   exports, with blocking real-server gameplay coverage.
@@ -33,7 +35,8 @@
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
 - All 12 push workflows passed on `main` commit `4fc5f5c`, including merged PR
-  #133's negotiated room-operation identity. The separate live Repository Policy
+  #133's negotiated room-operation identity, and on every subsequent merged
+  audit PR through #138. The separate live Repository Policy
   audit remains red because of issue #90.
 
 Completed milestone history and verification evidence live in tracked files
@@ -86,13 +89,19 @@ measured evidence before accepting performance complexity:
    mismatched results cannot consume the current fence. Missing echoes and
    released Server 0.7 retain the legacy wire. Upstream goldens, both-driver
    backpressure races, and all violation policies cover the boundary. The
-   native WebSocket oversized-input slice is
-   complete: all built-in connect paths now bound individual frames and
-   fragmented-message assembly at a configurable 8 MiB default before
-   `ClientCore`, preserve caller-owned `from_stream` limits, and fuse capacity
-   errors. No finite value is a Server 0.7 compatibility guarantee, so
-   [signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399)
-   tracks a negotiated/enforced outbound contract. The disconnect-adjacent
+    native WebSocket oversized-input slice is
+    complete: all built-in connect paths now bound individual frames and
+    fragmented-message assembly at a configurable 8 MiB default before
+    `ClientCore`, preserve caller-owned `from_stream` limits, and fuse capacity
+    errors. The negotiated/enforced outbound contract that
+    [signal-fish-server#399](https://github.com/Ambiguous-Interactive/signal-fish-server/issues/399)
+    tracked has landed upstream (server PR #401) and is incorporated: v3
+    `ProtocolInfo.max_outbound_message_size` parses, mirrors into
+    `ClientSnapshot::server_max_outbound_message_size`, the authority pin and
+    vendored wire/spec evidence advanced to server commit `d5b3135`, and a
+    server-side over-limit delivery's close 1009
+    (`outbound_message_too_large`) surfaces through `Disconnected`.
+    The disconnect-adjacent
    send-failure slice is complete: both drivers freeze command admission,
    process bounded already-ready server frames through the shared core, retain
    farewell attribution and exact event order, and preserve the original send
@@ -109,8 +118,16 @@ measured evidence before accepting performance complexity:
    fields, selected path, peer authority, or mesh revision change.
    Current-generation duplicates, generation-less Server 0.4 plans, both
    drivers, every violation policy, and teardown boundaries are covered for
-   [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
-   The remaining inventory cells remain separate client audit slices.
+    [#135](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/135).
+    The negotiated outbound-size contract slice landed via
+    [#139](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/139).
+    The remaining inventory cells are tracked as narrowly scoped slices:
+    [#140](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/140)
+    (authentication-gated room admission),
+    [#141](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/141)
+    (bounded terminal disconnect delivery), and
+    [#142](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/issues/142)
+    (cancellation-safety pins and dequeue-failure fence release).
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
    gates. Evaluate focused Loom models and additional sanitizer or lint coverage
    only where target support and owned boundaries make them applicable; promote

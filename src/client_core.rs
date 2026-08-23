@@ -684,6 +684,7 @@ impl ClientCore {
         self.snapshot.authenticated = false;
         self.snapshot.negotiated_protocol_version = None;
         self.snapshot.effective_game_data_format = None;
+        self.snapshot.server_max_outbound_message_size = None;
         self.snapshot.player_id = None;
         self.snapshot.room_id = None;
         self.snapshot.room_code = None;
@@ -1635,6 +1636,7 @@ impl ClientCore {
                         self.requested_game_data_format(),
                         &payload.game_data_formats,
                     ));
+                self.snapshot.server_max_outbound_message_size = payload.max_outbound_message_size;
                 self.room_operation_ids = self.requested_room_operation_ids
                     && payload.protocol_version.is_some_and(|version| version >= 3)
                     && payload
@@ -2255,6 +2257,7 @@ mod tests {
             min_protocol_version: version.map(|_| 2),
             max_protocol_version: version,
             transports: version.map(|_| vec![MessageTransport::Websocket]),
+            max_outbound_message_size: version.map(|_| 8 * 1024 * 1024),
         })
     }
 
@@ -2496,6 +2499,46 @@ mod tests {
             [SignalFishEvent::ProtocolInfo(_)]
         ));
         assert!(!unknown_only.room_operation_ids);
+    }
+
+    #[test]
+    fn advertised_outbound_limit_follows_negotiation_and_teardown_lifecycle() {
+        let mut v3 = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        assert_eq!(v3.snapshot().server_max_outbound_message_size, None);
+        let _ = process(&mut v3, authenticated());
+        let _ = process(&mut v3, protocol_info(Some(3)));
+        assert_eq!(
+            v3.snapshot().server_max_outbound_message_size,
+            Some(8 * 1024 * 1024)
+        );
+        let _ = v3.disconnect(None);
+        assert_eq!(v3.snapshot().server_max_outbound_message_size, None);
+
+        let mut v2 = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut v2, authenticated());
+        let _ = process(&mut v2, protocol_info(None));
+        assert_eq!(v2.snapshot().server_max_outbound_message_size, None);
+
+        let mut omitted = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut omitted, authenticated());
+        let ServerMessage::ProtocolInfo(mut payload) = protocol_info(Some(3)) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        payload.max_outbound_message_size = None;
+        let _ = process(&mut omitted, ServerMessage::ProtocolInfo(payload));
+        assert_eq!(omitted.snapshot().server_max_outbound_message_size, None);
     }
 
     #[test]

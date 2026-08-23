@@ -124,3 +124,9 @@ reallocation counts. All 28 protocol digests were intentionally refreshed
 because v3 `Authenticate` bytes now request `room_operation_ids` and the event
 ledger gained the `RoomOperationFailed` slot; every semantic ledger check still
 passes.
+
+The negotiated outbound message-size contract then added
+`max_outbound_message_size` to the v3 `ProtocolInfo` fixture bytes, so all 28
+protocol digests were refreshed again. The fixture is constructed outside
+every measured region, so allocation and timing baselines are unchanged; all
+semantic ledger invariants still pass.

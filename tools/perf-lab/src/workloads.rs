@@ -1390,6 +1390,7 @@ fn protocol_info_message() -> ServerMessage {
         min_protocol_version: Some(2),
         max_protocol_version: Some(3),
         transports: Some(vec![MessageTransport::Websocket]),
+        max_outbound_message_size: Some(8 * 1024 * 1024),
     })
 }
 
