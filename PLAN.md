@@ -34,10 +34,16 @@
   package metadata; repository integration tests, other standalone wire
   fixtures, examples, progress records, and changelog history remain in the
   linked source repository.
-- All 12 push workflows passed on `main` through merged PR #139, and the
+- All 12 push workflows passed on `main` through merged PR #143, and the
   #126 audit's correctness slices (#128/#129, #132–#136, #139, #140, #141,
-  #142) are all incorporated. The separate live Repository Policy audit
+  #142, #143) are all incorporated. The separate live Repository Policy audit
   remains red because of issue #90.
+- The established deep-safety gates were re-run clean on 2026-08-23 (mandatory
+  workflow, no-panic, unused-deps, cargo-audit at the CI-pinned version,
+  Miri protocol tests on nightly, three 30-second fuzz targets, FFI safety,
+  and the Emscripten-only unsafe inventory), and all 28 perf-lab cells
+  reproduced their protocol ledgers and allocation ceilings in both profiles;
+  timing stayed diagnostic with no regression signal (`progress/session-050-`).
 
 Completed milestone history and verification evidence live in tracked files
 under `progress/`.
@@ -138,15 +144,19 @@ measured evidence before accepting performance complexity:
     the re-run of established unsafe-inventory, Miri, fuzz, dependency, and
     no-panic gates plus measured profiling against the 28-cell laboratory.
 4. Re-run established unsafe-inventory, Miri, fuzz, dependency, and no-panic
-   gates. Evaluate focused Loom models and additional sanitizer or lint coverage
-   only where target support and owned boundaries make them applicable; promote
-   only stable, actionable findings to warning-as-error policy. Turn every
+   gates. This re-run is complete and clean as of session 050; mutation
+   testing remains on its scheduled Deep Safety lane. Remaining: evaluate
+   focused Loom models and additional sanitizer or lint coverage only where
+   target support and owned boundaries make them applicable; promote only
+   stable, actionable findings to warning-as-error policy. Turn every
    confirmed gap into a minimal regression before changing production code.
 5. Profile representative signaling and 4 KiB burst paths before optimizing.
-   Compare allocation counts, queue age, throughput, and wire ledgers against
-   the existing 28-cell laboratory; accept batching, reuse, or pooling only
-   when the gain is repeatable and protocol behavior and API simplicity remain
-   unchanged.
+   Session 050 re-measured all 28 cells against the checked-in ledgers,
+   ceilings, and timing columns with no regression signal and no accepted
+   optimization. Future changes must compare allocation counts, queue age,
+   throughput, and wire ledgers against the existing 28-cell laboratory;
+   accept batching, reuse, or pooling only when the gain is repeatable and
+   protocol behavior and API simplicity remain unchanged.
 6. Record the audit matrix and evidence in `progress/`, open narrowly scoped
    follow-up issues for independent findings, and land one coherent green PR at
    a time in correctness, usability/safety, then measured-performance order.
