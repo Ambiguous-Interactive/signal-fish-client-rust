@@ -7,6 +7,7 @@
 #
 # Jobs:
 #   miri    — Miri undefined behavior detection (nightly, protocol tests)
+#   tsan    — ThreadSanitizer data-race detection (nightly, full workspace suite)
 #   fuzz    — Fuzz smoke tests for protocol parsing (nightly)
 #   mutants — Mutation testing on pure-logic modules (stable)
 #
@@ -26,14 +27,9 @@ on:
       - Cargo.toml
       - fuzz/**
       - scripts/cargo-retry.sh
-      - src/error.rs
-      - src/error_codes.rs
-      - src/lib.rs
-      - src/protocol.rs
-      - src/protocol/**
-      - src/signal.rs
-      - src/token_binding.rs
-      - src/transports/websocket.rs
+      # Every production source change re-runs the analyzers: the drivers and
+      # shared core are TSan/mutation subjects just as much as the wire codecs.
+      - src/**
       - tests/real_server_e2e.rs
       - tests/token-binding/**
       - tests/token_binding_conformance_tests.rs
@@ -85,6 +81,47 @@ jobs:
         run: cargo +nightly miri test --test protocol_tests --all-features
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
+
+  # ──────────────────────────────────────────────────────────────
+  # ThreadSanitizer — detect data races in real concurrent execution
+  #
+  # The client handle and the spawned driver task genuinely share
+  # `ClientCore` across threads through one coarse mutex plus tokio
+  # channels, so the whole workspace suite runs under TSan on the host
+  # target. `-Zbuild-std` is required because sanitizer instrumentation
+  # must cover std itself. Doctests are skipped: rustdoc cannot compile
+  # doctests with the sanitizer ABI.
+  # ──────────────────────────────────────────────────────────────
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Generate lockfile
+        run: bash scripts/cargo-retry.sh generate-lockfile
+
+      - name: Run workspace tests under ThreadSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+        run: |
+          set -euo pipefail
+          host=$(rustc +nightly -vV | sed -n 's/^host: //p')
+          if [ -z "$host" ]; then
+            printf 'Unable to determine the nightly Rust host target.\n' >&2
+            exit 1
+          fi
+          cargo +nightly test -Zbuild-std --target "$host" --workspace --all-features --tests
 
   # ──────────────────────────────────────────────────────────────
   # Fuzz — smoke test protocol parsers with random input
