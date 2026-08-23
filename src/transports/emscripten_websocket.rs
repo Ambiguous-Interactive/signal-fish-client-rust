@@ -559,6 +559,8 @@ extern "C" fn on_open_callback(
     _event: *const EmscriptenWebSocketOpenEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
+    // SAFETY: Per the callback contract above, `user_data` is the live
+    // `CallbackState` allocation for this synchronous invocation.
     let state = unsafe { &*(user_data as *const CallbackState) };
     let _ = state.tx.send(IncomingEvent::Open);
     1 // EM_TRUE
@@ -570,7 +572,11 @@ extern "C" fn on_message_callback(
     event: *const EmscriptenWebSocketMessageEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
+    // SAFETY: Per the callback contract above, `user_data` is the live
+    // `CallbackState` allocation for this synchronous invocation.
     let state = unsafe { &*(user_data as *const CallbackState) };
+    // SAFETY: Per the callback contract above, `event` is valid for the
+    // duration of this synchronous invocation and is not retained.
     let event = unsafe { &*event };
 
     if event.is_text != 0 {
@@ -615,6 +621,8 @@ extern "C" fn on_error_callback(
     _event: *const EmscriptenWebSocketErrorEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
+    // SAFETY: Per the callback contract above, `user_data` is the live
+    // `CallbackState` allocation for this synchronous invocation.
     let state = unsafe { &*(user_data as *const CallbackState) };
     let _ = state
         .tx
@@ -628,7 +636,11 @@ extern "C" fn on_close_callback(
     event: *const EmscriptenWebSocketCloseEvent,
     user_data: *mut c_void,
 ) -> EM_BOOL {
+    // SAFETY: Per the callback contract above, `user_data` is the live
+    // `CallbackState` allocation for this synchronous invocation.
     let state = unsafe { &*(user_data as *const CallbackState) };
+    // SAFETY: Per the callback contract above, `event` is valid for the
+    // duration of this synchronous invocation and is not retained.
     let event = unsafe { &*event };
     let reason_len = event
         .reason

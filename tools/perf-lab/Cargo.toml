@@ -52,6 +52,9 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
 
 [lints.rust]
 unsafe_code = "deny"

@@ -139,6 +139,15 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+# Stable restriction lints promoted from the 2026-08 deep-safety evaluation:
+# zero pre-existing findings across the workspace; each enforces an existing
+# written policy (no debug leftovers, no process exit from a library, no
+# `mem::forget` bypassing zeroization, and documented unsafe at the sole
+# Emscripten FFI exception).
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
 
 [lints.rust]
 # Production Rust is safe by default. The Emscripten transport has the only
