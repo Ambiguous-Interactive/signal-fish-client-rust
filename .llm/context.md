@@ -119,21 +119,10 @@ workspace. Hosted run 31969079956 proved clean root discovery.
 
 ### Transport Trait
 
-```rust,ignore
-pub trait Transport {
-    fn poll_send(&mut self, cx: &mut Context<'_>, frame: &mut Option<TransportFrame>)
-        -> Poll<Result<(), SignalFishError>>;
-    fn poll_recv(&mut self, cx: &mut Context<'_>)
-        -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
-    fn poll_close(&mut self, cx: &mut Context<'_>)
-        -> Poll<Result<(), SignalFishError>>;
-    fn begin_poll_cycle(&mut self) {}
-    fn abort(&mut self);
-    fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
-    fn is_ready(&self) -> bool { true }
-    fn close_info(&self) -> Option<TransportCloseInfo> { None }
-}
-```
+The object-safe surface is pinned verbatim in
+`skills/transport-abstraction/SKILL.md`. Required methods are `poll_send`,
+`poll_recv`, `poll_close`, and `abort`; `begin_poll_cycle`, `diagnostics`,
+`is_ready`, and `close_info` have defaults.
 
 The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`. Its boundary is one complete, ordered text/binary frame stream for one intended server, not raw bytes, datagrams, or server authentication.
 A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.7 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.
@@ -466,6 +455,14 @@ Agents discover skills from frontmatter and load a matching `SKILL.md` only when
 its description applies. Resolve links from its directory; directory and
 frontmatter names must match and use lowercase hyphen-case.
 
+## Progress Records
+
+Planning records are local-only working notes: session logs and evidence
+under `progress/` plus the `PLAN.md` roadmap are gitignored and never
+committed or force-added. Durable, reviewer-visible conclusions belong in
+`CHANGELOG.md`, docs, or tests instead. No file may be both tracked and
+ignored; `no_file_is_both_tracked_and_ignored` enforces that boundary.
+
 ## Documentation Rendering (MkDocs)
 
 MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
@@ -474,7 +471,7 @@ Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use
 pinned provenance and local OFL fonts preloaded via `overrides/main.html`, with
 no runtime provider. Both palettes retain AA contrast, visible focus,
 reduced-motion behavior, and responsive scrolling. `docs_brand_policy` pins
-these contracts; evidence lives under `progress/assets/`. CI runs strict MkDocs
+these contracts; evidence lives under local-only `progress/assets/`. CI runs strict MkDocs
 (`.github/workflows/docs-deploy.yml`) and 17 checks in
 `.github/workflows/docs-validation.yml`; see `skills/markdown-and-doc-validation/SKILL.md`.
 

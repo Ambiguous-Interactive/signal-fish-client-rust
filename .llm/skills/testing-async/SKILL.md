@@ -204,6 +204,23 @@ assert!(snapshot.room_code.is_none());
 This prevents regressions where aborted tasks skip the normal disconnect event
 path and leave stale authenticated/room/player state visible to callers.
 
+### Close-Path Tests Need a Pending-Close Mock
+
+Never observe close-deadline enforcement through `MockTransport::closed`. Its
+`poll_close` completes instantly, so when it runs concurrently with a wedged
+delivery inside `tokio::join!`, the flag flips within milliseconds regardless
+of deadline handling — such a test passes vacuously even on code that never
+enforces its budget.
+
+Observe loop termination through a transport whose `poll_close` pends forever
+and records lifecycle flags instead. Use the `HangingCloseTransport` pattern
+(`src/client.rs` tests and `tests/client_tests.rs`): `poll_close` stores
+`close_called` then returns `Poll::Pending`, `abort` stores `abort_called`,
+and `Drop` stores `dropped`. Teardown provably comes from the deadline-expiry
+abort path only when `abort_called` flips while `poll_close` never returned.
+Stream closure or the abort/drop flags are the observables; an instant-close
+mock is not a post-budget signal.
+
 ## Test Organization
 
 Public-API integration tests live in `tests/client_tests.rs`; their frame-aware
