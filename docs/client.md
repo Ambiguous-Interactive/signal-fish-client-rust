@@ -358,8 +358,9 @@ The backpressure-aware counterpart to [`send_game_data`](#send_game_data):
 instead of failing fast with `SendBufferFull`, it pauses until the transport
 drains a slot, pacing the caller to actual transport throughput. This is the
 recommended way to stream high-rate payloads (rollback input packets, state
-sync) without guessing at sleep durations. It only errors with
-`NotConnected` when the transport has closed.
+sync) without guessing at sleep durations. It returns the same membership
+errors as [`send_game_data`](#send_game_data) — checked synchronously before
+it waits — plus `NotConnected` if the transport closes while waiting.
 
 !!! warning "Keep draining events"
     The command queue only drains while the transport loop runs, and the
@@ -546,6 +547,30 @@ Reconnect is also a hard session-plan boundary. The old generation and peer
 set are fenced immediately, and Server 0.7 follows `Reconnected` with a fresh
 live `SessionPlan` for a finalized room. `ProtocolInfo`, `SessionPlan`, signals,
 and game data are not legal `missed_events` replay entries.
+
+##### End-to-end recovery policy
+
+The reconnect flow spans a disconnect and a fresh connection, so it is worth
+writing down as one procedure:
+
+1. **Persist after every `RoomJoined` / `Reconnected`:** `player_id`, `room_id`,
+   and `snapshot().reconnection_token` (a connection secret — never log it).
+2. **On an unexpected `Disconnected`:** build a fresh transport and client,
+   then wait for `Authenticated` before recovering (directed room operations
+   refuse until the server confirms authentication).
+3. **Call `reconnect(player_id, room_id, token)`** with the persisted triple.
+4. **On `Reconnected`:** fold `missed_events` into your game state, adopt the
+   fresh live `SessionPlan` that follows, and persist the rotated
+   `reconnection_token` from the new snapshot.
+5. **On `ReconnectionFailed`:** decide by `error_code`:
+   - `ReconnectionExpired` or `ReconnectionTokenInvalid` — the server no
+     longer knows this session: fall back to a normal `join_room`.
+   - `PlayerAlreadyConnected` — another live connection still holds the seat;
+     wait for it to exit (or drop it) before retrying.
+   - Anything else — retry with backoff while the room is worth rejoining.
+
+Peers stay fenced against your signals until the post-reconnect
+`SessionPlan` arrives, so gate mesh/relay work on it as on a first join.
 
 ---
 

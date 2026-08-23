@@ -1820,18 +1820,18 @@ async fn emit_core_disconnected_or_shutdown(
     event_tx: &mpsc::Sender<SignalFishEvent>,
     shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
     state: &Arc<Mutex<ClientCore>>,
-    reason: Option<String>,
-    shutdown_timeout: Duration,
+    teardown: TerminalTeardown,
 ) {
     // Peer-close delivery is bounded by the same budget as graceful
     // termination: a wedged consumer must not leak the task holding the
     // command receiver, which would park every waiting reliable sender
     // forever. On expiry the terminal event falls back to a nonblocking
     // attempt before the loop terminates.
-    // A timeout so large that its deadline cannot be represented yields
-    // `None`, which restores the historical unbounded wait — matching the
-    // documented behavior of an effectively-never-expiring budget.
-    let deadline = tokio::time::Instant::now().checked_add(shutdown_timeout);
+    let TerminalTeardown {
+        reason,
+        deadline,
+        timeout,
+    } = teardown;
     let event = lock_core(state).disconnect(reason);
     let deliver_event = async {
         if !emit_terminal_event(event_tx, shutdown_rx, deadline, event.clone()).await {
@@ -1842,9 +1842,37 @@ async fn emit_core_disconnected_or_shutdown(
         transport,
         pending_send,
         state,
-        remaining_shutdown_budget(shutdown_timeout, deadline),
+        remaining_shutdown_budget(timeout, deadline),
     );
     let ((), ()) = tokio::join!(deliver_event, close);
+}
+
+/// One terminal disconnect's attribution and shared shutdown budget: every
+/// delivery of the teardown races the same deadline so a wedged consumer
+/// cannot keep the loop alive past the configured total.
+#[cfg(feature = "tokio-runtime")]
+struct TerminalTeardown {
+    /// Attribution for the core-computed farewell event.
+    reason: Option<String>,
+    /// The configured budget total, kept so the close window can be derived
+    /// from what is actually left at use time instead of freezing it before
+    /// earlier deliveries consume their share.
+    timeout: Duration,
+    /// Shared budget start for every delivery of this teardown. `None` only
+    /// when the configured timeout is too large to represent its deadline,
+    /// which restores the documented effectively-never-expiring wait.
+    deadline: Option<tokio::time::Instant>,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl TerminalTeardown {
+    fn starting(timeout: Duration, reason: Option<String>) -> Self {
+        Self {
+            reason,
+            timeout,
+            deadline: tokio::time::Instant::now().checked_add(timeout),
+        }
+    }
 }
 
 /// The time left in a shutdown budget whose deadline was computed earlier.
@@ -2156,8 +2184,10 @@ async fn transport_loop(
                         &event_tx,
                         &mut shutdown_rx,
                         &state,
-                        Some("client shut down".into()),
-                        shutdown_timeout,
+                        TerminalTeardown::starting(
+                            shutdown_timeout,
+                            Some("client shut down".into()),
+                        ),
                     ).await;
                     break;
                 };
@@ -2232,8 +2262,10 @@ async fn transport_loop(
                         &event_tx,
                         &mut shutdown_rx,
                         &state,
-                        Some("transport received a protocol frame before readiness".into()),
-                        shutdown_timeout,
+                        TerminalTeardown::starting(
+                            shutdown_timeout,
+                            Some("transport received a protocol frame before readiness".into()),
+                        ),
                     ).await;
                     break;
                 }
@@ -2260,10 +2292,25 @@ async fn transport_loop(
                     TransportIo::Received(Some(Ok(frame))) => {
                         let outcome = lock_core(&state).process_frame(frame);
                         let disconnect = outcome.disconnect;
-                        let delivered =
-                            emit_event_batch(&event_tx, &mut shutdown_rx, None, outcome.events)
-                                .await;
-                        if !delivered {
+                        // A policy-driven disconnect terminates the session,
+                        // so its batch shares one shutdown budget with the
+                        // farewell delivery and close: a wedged consumer
+                        // cannot park reliable senders past the budget. This
+                        // mirrors the send-failure teardown; ordinary frames
+                        // keep unbounded backpressure.
+                        let violation_teardown = disconnect.then(|| {
+                            TerminalTeardown::starting(
+                                shutdown_timeout,
+                                Some("protocol violation".into()),
+                            )
+                        });
+                        let delivered = emit_event_batch(
+                            &event_tx,
+                            &mut shutdown_rx,
+                            violation_teardown.as_ref().and_then(|t| t.deadline),
+                            outcome.events,
+                        ).await;
+                        if !delivered && !disconnect {
                             finish_core_shutdown(
                                 &mut transport,
                                 &mut pending_send,
@@ -2273,16 +2320,39 @@ async fn transport_loop(
                             ).await;
                             break;
                         }
-                        if disconnect {
-                            emit_core_disconnected_or_shutdown(
+                        if let Some(teardown) = violation_teardown {
+                            // A preempted batch may have ended because
+                            // `shutdown` fired, and a completed oneshot
+                            // receiver panics if re-polled — so any
+                            // preemption skips the bounded farewell wait and
+                            // falls back to the nonblocking attempt, exactly
+                            // like the send-failure teardown.
+                            let TerminalTeardown {
+                                reason,
+                                deadline,
+                                timeout,
+                            } = teardown;
+                            let event = lock_core(&state).disconnect(reason);
+                            let deliver_farewell = async {
+                                if !delivered
+                                    || !emit_terminal_event(
+                                        &event_tx,
+                                        &mut shutdown_rx,
+                                        deadline,
+                                        event.clone(),
+                                    )
+                                    .await
+                                {
+                                    let _ = event_tx.try_send(event);
+                                }
+                            };
+                            let close = finish_send_and_close_bounded(
                                 &mut transport,
                                 &mut pending_send,
-                                &event_tx,
-                                &mut shutdown_rx,
                                 &state,
-                        Some("protocol violation".into()),
-                                shutdown_timeout,
-                            ).await;
+                                remaining_shutdown_budget(timeout, deadline),
+                            );
+                            let ((), ()) = tokio::join!(deliver_farewell, close);
                             break;
                         }
                     }
@@ -2293,8 +2363,7 @@ async fn transport_loop(
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
-                            Some(error.to_string()),
-                            shutdown_timeout,
+                            TerminalTeardown::starting(shutdown_timeout, Some(error.to_string())),
                         ).await;
                         break;
                     }
@@ -2306,8 +2375,7 @@ async fn transport_loop(
                             &event_tx,
                             &mut shutdown_rx,
                             &state,
-                            reason,
-                            shutdown_timeout,
+                            TerminalTeardown::starting(shutdown_timeout, reason),
                         ).await;
                         break;
                     }
@@ -6007,6 +6075,132 @@ mod tests {
         assert!(
             closed_stream.is_none(),
             "unexpected extra events after abort: {closed_stream:?}"
+        );
+    }
+
+    /// A policy-driven disconnect wedges on its violation batch exactly like
+    /// a peer close: with no `shutdown()` and a full channel, teardown must
+    /// come from the shared shutdown budget, never hang past it.
+    #[tokio::test]
+    async fn policy_disconnect_violation_batch_is_bounded_by_the_shutdown_budget() {
+        // Connected, Authenticated, and ProtocolInfo fill the capacity-3
+        // channel, so the violation batch that precedes the Disconnect-policy
+        // teardown wedges with no `shutdown()` call. The transport's
+        // `poll_close` never completes, so teardown can only come from the
+        // budget expiry aborting the transport. A regression that restores
+        // unbounded delivery keeps this spin alive forever instead of passing
+        // vacuously.
+        let room_left_json = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
+        let (transport, _close_called, abort_called, _dropped) =
+            HangingCloseTransport::with_incoming(vec![
+                Some(Ok(authenticated_json())),
+                Some(Ok(protocol_info_v2_json())),
+                Some(Ok(room_left_json)),
+            ]);
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(3)
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect)
+            .with_shutdown_timeout(std::time::Duration::from_millis(200));
+        let (client, mut events) = SignalFishClient::start(transport, config);
+
+        let started = std::time::Instant::now();
+        while !abort_called.load(Ordering::Acquire) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "the wedged policy-disconnect delivery must abort at its budget without shutdown()"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // The batch and the close share one budget: a regression that lets
+        // the close restart a fresh window after the batch consumed it
+        // observes roughly twice the configured timeout here.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "teardown took {elapsed:?}; the batch and close must share one budget"
+        );
+        assert!(!client.is_connected());
+
+        // Loop exit drops the sender: draining surfaces the buffered prefix
+        // (the wedged violation batch and farewell were abandoned by their
+        // nonblocking fallbacks), then closes the stream authoritatively.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        let closed_stream =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv())
+                .await
+                .expect("the event stream must end promptly after teardown");
+        assert!(
+            closed_stream.is_none(),
+            "unexpected extra events after abort: {closed_stream:?}"
+        );
+    }
+
+    /// `shutdown()` preempting a wedged policy-disconnect batch must not
+    /// re-poll the already-consumed shutdown signal: the farewell falls back
+    /// to a nonblocking attempt and the graceful close still runs.
+    #[tokio::test]
+    async fn shutdown_preempting_policy_disconnect_batch_skips_bounded_wait() {
+        let room_left_json = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
+        let (transport, close_called, _abort_called, _dropped) =
+            HangingCloseTransport::with_incoming(vec![
+                Some(Ok(authenticated_json())),
+                Some(Ok(protocol_info_v2_json())),
+                Some(Ok(room_left_json)),
+            ]);
+        // A long budget keeps the wedged batch blocked until the explicit
+        // `shutdown()` below preempts it; the hanging close then bounds how
+        // long `shutdown()` itself takes.
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(3)
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect)
+            .with_shutdown_timeout(std::time::Duration::from_millis(300));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // Let the loop wedge on the full channel before shutting down.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("shutdown must complete promptly");
+
+        // A regression that re-polled the consumed signal panicked the task
+        // before any close was attempted.
+        assert!(
+            close_called.load(Ordering::Acquire),
+            "shutdown must still attempt the graceful transport close"
+        );
+
+        // Loop exit drops the sender: draining surfaces the buffered prefix,
+        // then closes the stream authoritatively.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        let closed_stream =
+            tokio::time::timeout(std::time::Duration::from_millis(500), events.recv())
+                .await
+                .expect("the event stream must end promptly after teardown");
+        assert!(
+            closed_stream.is_none(),
+            "unexpected extra events after shutdown: {closed_stream:?}"
         );
     }
 

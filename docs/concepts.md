@@ -205,7 +205,7 @@ an event channel.
 
 ### Synthetic vs. Server Events
 
-Most events correspond 1:1 to a server message. Three **synthetic** events
+Most events correspond 1:1 to a server message. Four **synthetic** events
 are generated locally by the transport layer:
 
 | Event | Origin |
@@ -213,6 +213,7 @@ are generated locally by the transport layer:
 | `SignalFishEvent::Connected` | Emitted when the transport opens, before any server message. |
 | `SignalFishEvent::Disconnected { reason, .. }` | Emitted when the transport closes or errors. Last event (best-effort). |
 | `SignalFishEvent::DecodeFailed { .. }` | Emitted when an inbound frame fails to decode; the connection stays open. See [Events](events.md#decodefailed). |
+| `SignalFishEvent::ProtocolViolation { .. }` | Emitted when a decoded frame contradicts negotiated protocol state; your configured `protocol_violation_policy` decides what happens next. See [Events](events.md#decodefailed). |
 
 !!! note "Lossless delivery with backpressure"
     Events are **never dropped on overflow**. The event channel has a default capacity of

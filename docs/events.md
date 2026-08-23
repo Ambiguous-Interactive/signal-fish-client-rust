@@ -518,8 +518,8 @@ Carries the same room-state fields as `RoomJoined` plus:
 | Field | Type | Description |
 |-------|------|-------------|
 | `missed_events` | `Vec<SignalFishEvent>` | Events that occurred while the client was disconnected. |
-| `replay` | `Option<ReplayStatus>` | Whether the replayed control-event suffix is complete or truncated. |
-| `sender_watermarks` | `Vec<SenderWatermark>` | Authoritative per-sender epoch/sequence baselines for resumed delivery. |
+| `replay` | `Option<ReplayStatus>` | Completeness of the replayed control-event suffix: `Complete` (nothing was lost), `Truncated` (some history was dropped — reconcile from `sender_watermarks` and your own game state), or `Unavailable` (the server could not replay — do not rely on `missed_events`). `None` means the connected server predates replay reporting (pre-v3 negotiation). |
+| `sender_watermarks` | `Vec<SenderWatermark>` | Authoritative per-sender epoch/sequence baselines for resumed delivery. The SDK validates them against its accountability state; they also let you judge which remote inputs your simulation already applied before the gap. |
 | `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering. |
 | `reconnection_token` | `Option<String>` | Fresh secret replacing the consumed token; also stored in `ClientSnapshot`. |
 

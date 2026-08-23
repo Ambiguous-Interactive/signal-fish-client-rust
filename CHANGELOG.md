@@ -191,6 +191,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a `ProtocolViolationPolicy::Disconnect` teardown hanging past
+  [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) when the violating
+  frame's event batch meets a consumer that stopped draining and `shutdown`
+  is never called. The policy-disconnect batch now shares one shutdown budget
+  with the farewell delivery and transport close — the same bound the
+  send-failure teardown already applies — so the loop terminates and every
+  sender parked on the command queue resolves. The polling client was never
+  affected.
+- Corrected documentation drift found in review: `send_game_data_reliable`'s
+  documented error surface now matches its membership checks, the concepts
+  guide lists all four synthetic events including `ProtocolViolation`, the
+  errors guide states where `Timeout` originates, the reconnection events
+  describe all three `ReplayStatus` variants, and the client guide gains a
+  consolidated end-to-end reconnect recovery policy with per-error-code
+  fallbacks.
 - Fixed a terminal disconnect wedging the async transport loop forever when
   the event consumer stops draining and `shutdown` is never called. Terminal
   delivery is now bounded by [`shutdown_timeout`](SignalFishConfig::shutdown_timeout):
