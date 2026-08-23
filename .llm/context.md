@@ -457,11 +457,11 @@ frontmatter names must match and use lowercase hyphen-case.
 
 ## Progress Records
 
-Session logs and evidence under `progress/` are local-only working notes:
-the directory is gitignored and its files are never committed or
-force-added. Durable conclusions belong in `PLAN.md`, `CHANGELOG.md`,
-docs, or tests instead; `PLAN.md` is the sole tracked planning artifact,
-and `only_plan_md_is_both_tracked_and_ignored` enforces that boundary.
+Planning records are local-only working notes: session logs and evidence
+under `progress/` plus the `PLAN.md` roadmap are gitignored and never
+committed or force-added. Durable, reviewer-visible conclusions belong in
+`CHANGELOG.md`, docs, or tests instead. No file may be both tracked and
+ignored; `no_file_is_both_tracked_and_ignored` enforces that boundary.
 
 ## Documentation Rendering (MkDocs)
 
