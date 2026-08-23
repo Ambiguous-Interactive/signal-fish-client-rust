@@ -119,21 +119,10 @@ workspace. Hosted run 31969079956 proved clean root discovery.
 
 ### Transport Trait
 
-```rust,ignore
-pub trait Transport {
-    fn poll_send(&mut self, cx: &mut Context<'_>, frame: &mut Option<TransportFrame>)
-        -> Poll<Result<(), SignalFishError>>;
-    fn poll_recv(&mut self, cx: &mut Context<'_>)
-        -> Poll<Option<Result<TransportFrame, SignalFishError>>>;
-    fn poll_close(&mut self, cx: &mut Context<'_>)
-        -> Poll<Result<(), SignalFishError>>;
-    fn begin_poll_cycle(&mut self) {}
-    fn abort(&mut self);
-    fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
-    fn is_ready(&self) -> bool { true }
-    fn close_info(&self) -> Option<TransportCloseInfo> { None }
-}
-```
+The object-safe surface is pinned verbatim in
+`skills/transport-abstraction/SKILL.md`. Required methods are `poll_send`,
+`poll_recv`, `poll_close`, and `abort`; `begin_poll_cycle`, `diagnostics`,
+`is_ready`, and `close_info` have defaults.
 
 The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`. Its boundary is one complete, ordered text/binary frame stream for one intended server, not raw bytes, datagrams, or server authentication.
 A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.7 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.
