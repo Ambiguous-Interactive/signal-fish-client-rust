@@ -7305,16 +7305,19 @@ mod panic_script_cfg_handling {
         );
     }
 
-    /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
+    /// Safety net: verify that no scanned production source uses
+    /// `#[cfg(not(test))]` (or any cfg attribute containing `not(test)`).
     ///
     /// The grep pattern in `check-no-panics.sh`
     /// (`#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) would match
     /// `#[cfg(not(test))]`, incorrectly treating the code below it as
     /// "inside a test module" when it is actually production code. As long as
-    /// no source file uses this attribute, the false positive cannot occur.
+    /// no scanned production file uses this attribute, that blind spot cannot
+    /// occur. The net covers every root Phase 1 scans, so a member crate
+    /// cannot bypass it either.
     #[test]
-    fn no_src_file_uses_cfg_not_test() {
-        let src_dir = project_root().join("src");
+    fn no_production_source_uses_cfg_not_test() {
+        let root = project_root();
         let mut violations: Vec<(String, usize, String)> = Vec::new();
 
         fn scan_for_cfg_not_test(
@@ -7336,7 +7339,14 @@ mod panic_script_cfg_handling {
                                 .to_string();
                             for (i, line) in content.lines().enumerate() {
                                 let trimmed = line.trim();
-                                if trimmed.contains("#[cfg(not(test))]") {
+                                // Compound forms such as
+                                // `#[cfg(all(not(test), feature = "x"))]`
+                                // hit the script's boundary heuristic just
+                                // like the bare attribute, so flag any cfg
+                                // attribute containing `not(test)`.
+                                let is_cfg_attribute =
+                                    trimmed.starts_with("#[cfg(") || trimmed.starts_with("#![cfg(");
+                                if is_cfg_attribute && trimmed.contains("not(test)") {
                                     out.push((relative.clone(), i + 1, trimmed.to_string()));
                                 }
                             }
@@ -7346,11 +7356,27 @@ mod panic_script_cfg_handling {
             }
         }
 
-        scan_for_cfg_not_test(&src_dir, &project_root(), &mut violations);
+        // Mirror exactly the roots Phase 1 scans so the net can never lag
+        // behind the gate's coverage.
+        for directory in ["src", "examples"] {
+            scan_for_cfg_not_test(&root.join(directory), &root, &mut violations);
+        }
+        for members_root in ["crates", "tools"] {
+            let members = root.join(members_root);
+            let Ok(entries) = std::fs::read_dir(&members) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let member_sources = entry.path().join("src");
+                if member_sources.is_dir() {
+                    scan_for_cfg_not_test(&member_sources, &root, &mut violations);
+                }
+            }
+        }
 
         assert!(
             violations.is_empty(),
-            "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
+            "Found `#[cfg(not(test))]` in production sources. This attribute causes a false \
              positive in check-no-panics.sh (the grep pattern \
              `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)` matches it and \
              incorrectly treats the code as inside a test module). \

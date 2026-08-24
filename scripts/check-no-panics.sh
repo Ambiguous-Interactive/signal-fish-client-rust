@@ -93,9 +93,10 @@ for dir in "${PROD_DIRS[@]}"; do
             # LIMITATION: This pattern also matches `#[cfg(not(test))]`,
             # which would incorrectly treat the code below it as "inside a
             # test module" when it is actually the opposite. A safety-net
-            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling)
-            # verifies that no src/ file uses `#[cfg(not(test))]`, so this
-            # false positive cannot occur in practice.
+            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling,
+            # no_production_source_uses_cfg_not_test) verifies that none of
+            # the production roots scanned here uses `not(test)` in any cfg
+            # attribute, so this false positive cannot occur in practice.
             cfg_test_line=$(grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file" 2>/dev/null \
                 | tail -1 | cut -d: -f1 || true)
 
