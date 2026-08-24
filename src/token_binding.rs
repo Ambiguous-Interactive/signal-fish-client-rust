@@ -680,6 +680,26 @@ mod tests {
         }
     }
 
+    /// Object keys are ordered by UTF-16 code units (JCS order), matching the
+    /// server's canonicalizer byte-for-byte. UTF-8 byte order disagrees for
+    /// keys above U+E000 versus astral keys; this pin fails if the sort is
+    /// ever "simplified" to plain string ordering.
+    #[test]
+    fn canonical_json_orders_object_keys_by_utf16_code_units() {
+        let value = serde_json::from_str::<serde_json::Value>(r#"{"":1,"😀":2,"a":3}"#)
+            .expect("ordering fixture must parse");
+        let canonical = canonical_json(&value).expect("ordering fixture must canonicalize");
+        assert_eq!(
+            std::str::from_utf8(&canonical).expect("canonical output is UTF-8"),
+            r#"{"a":3,"😀":2,"":1}"#,
+        );
+        // serde_json's BTreeMap wire order genuinely differs, which is why
+        // proofs are computed over the canonical bytes rather than a
+        // re-serialization of the parsed map.
+        let wire_order = serde_json::to_string(&value).expect("re-serialization");
+        assert_ne!(wire_order, std::str::from_utf8(&canonical).unwrap());
+    }
+
     #[test]
     fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
         let vectors = golden_vectors();
