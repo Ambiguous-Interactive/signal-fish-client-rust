@@ -13,7 +13,8 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::unreachable
 )]
 
 use std::collections::VecDeque;

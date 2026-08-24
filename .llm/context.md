@@ -76,15 +76,15 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 
 Production Rust is safe by default. The core manifest denies `unsafe_code`, the
 Godot adapter forbids it, and the target-gated Emscripten WebSocket module is
-sole documented exception for the platform C API. Required WASM policy and 50
-checker self-tests enforce close-before-delete callback-state ownership;
+the sole documented exception for the platform C API. Required WASM policy and
+50 checker self-tests enforce close-before-delete callback-state ownership;
 terminal deletion failure intentionally leaks the small allocation instead of
-risking late-callback use-after-free.
-
-Change-scoped, scheduled, and manual Deep Safety runs Miri protocol tests,
-ThreadSanitizer, three raw-byte JSON/MessagePack fuzz targets, and focused
-mutation testing. Nightly/runtime variability keeps it non-required; required
-Clippy and WASM gates enforce compiler safety on every PR.
+risking late-callback use-after-free. Change-scoped, scheduled, and manual
+Deep Safety runs Miri protocol tests, ThreadSanitizer, three raw-byte
+JSON/MessagePack fuzz targets, and focused mutation testing; required Clippy
+and WASM gates enforce compiler safety on every PR. Every member denies
+`unwrap_used` through `indexing_slicing` (incl. `unreachable`) and the No
+Panics grep gate scans all member sources.
 
 Native ASan is deferred because owned unsafe is Emscripten-only; fuzz sanitizer
 instrumentation covers the parsers it drives. Blanket Clippy

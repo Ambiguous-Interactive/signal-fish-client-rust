@@ -3164,6 +3164,7 @@ mod safety_analysis_policy {
         "panic",
         "todo",
         "unimplemented",
+        "unreachable",
         "indexing_slicing",
         // Promoted by the 2026-08 deep-safety evaluation after a measured
         // zero-findings sweep across the workspace.
@@ -3205,6 +3206,62 @@ mod safety_analysis_policy {
         findings: Vec<&'static str>,
     }
 
+    /// Detects an `allow(unsafe_code)` / `expect(unsafe_code)` lint exception,
+    /// including when nested inside another attribute such as `cfg_attr`.
+    /// Strengthening declarations (`warn`/`deny`/`forbid(unsafe_code)`) are not
+    /// exceptions and must not be flagged.
+    fn token_stream_grants_unsafe_exception(tokens: proc_macro2::TokenStream) -> bool {
+        let mut previous_allows = false;
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Ident(identifier) => {
+                    previous_allows = matches!(identifier.to_string().as_str(), "allow" | "expect");
+                }
+                proc_macro2::TokenTree::Group(group) => {
+                    let stream = group.stream();
+                    if previous_allows && stream_has_ident(&stream, "unsafe_code") {
+                        return true;
+                    }
+                    if token_stream_grants_unsafe_exception(stream) {
+                        return true;
+                    }
+                    previous_allows = false;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn stream_has_ident(tokens: &proc_macro2::TokenStream, wanted: &str) -> bool {
+        tokens.clone().into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(identifier) => identifier == *wanted,
+            proc_macro2::TokenTree::Group(group) => stream_has_ident(&group.stream(), wanted),
+            proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
+        })
+    }
+
+    /// Attribute-token scan for assembly and linkage surfaces. Bare `unsafe`
+    /// and `unsafe_code` are intentionally absent here: an attribute path of
+    /// `unsafe` is caught by the path check, and `unsafe_code` is judged
+    /// separately by [`token_stream_grants_unsafe_exception`] so hardening
+    /// `deny`/`forbid` declarations never read as exceptions.
+    fn token_stream_contains_attribute_unsafe_policy(tokens: proc_macro2::TokenStream) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(identifier) => matches!(
+                identifier.to_string().as_str(),
+                "no_mangle" | "export_name" | "link_section" | "asm" | "global_asm" | "naked_asm"
+            ),
+            proc_macro2::TokenTree::Group(group) => {
+                token_stream_contains_attribute_unsafe_policy(group.stream())
+            }
+            proc_macro2::TokenTree::Punct(_) | proc_macro2::TokenTree::Literal(_) => false,
+        })
+    }
+
+    /// Verbatim (unparsed) token scan: every suspicious identifier counts,
+    /// because there is no attribute structure to separate a hardening lint
+    /// level from an exception or an unsafe surface.
     fn token_stream_contains_unsafe_policy(tokens: proc_macro2::TokenStream) -> bool {
         tokens.into_iter().any(|token| match token {
             proc_macro2::TokenTree::Ident(identifier) => matches!(
@@ -3251,12 +3308,26 @@ mod safety_analysis_policy {
             let unsafe_path = ["unsafe", "no_mangle", "export_name", "link_section"]
                 .iter()
                 .any(|name| attribute.path().is_ident(name));
-            let unsafe_nested_meta = match &attribute.meta {
-                syn::Meta::List(list) => token_stream_contains_unsafe_policy(list.tokens.clone()),
-                syn::Meta::Path(_) | syn::Meta::NameValue(_) => false,
-            };
-            if unsafe_path || unsafe_nested_meta {
-                self.findings.push("unsafe attribute or lint exception");
+            match &attribute.meta {
+                syn::Meta::List(list) => {
+                    let tokens = list.tokens.clone();
+                    let direct_exception =
+                        attribute.path().segments.last().is_some_and(|segment| {
+                            matches!(segment.ident.to_string().as_str(), "allow" | "expect")
+                        }) && stream_has_ident(&list.tokens, "unsafe_code");
+                    if unsafe_path
+                        || direct_exception
+                        || token_stream_contains_attribute_unsafe_policy(tokens.clone())
+                        || token_stream_grants_unsafe_exception(tokens)
+                    {
+                        self.findings.push("unsafe attribute or lint exception");
+                    }
+                }
+                syn::Meta::Path(_) | syn::Meta::NameValue(_) => {
+                    if unsafe_path {
+                        self.findings.push("unsafe attribute or lint exception");
+                    }
+                }
             }
             if let syn::Meta::NameValue(name_value) = &attribute.meta {
                 self.visit_expr(&name_value.value);
@@ -3398,6 +3469,7 @@ mod safety_analysis_policy {
             &root.join("crates/signal-fish-client-godot/src"),
             &mut sources,
         );
+        collect_rust_sources(&root.join("tools/perf-lab/src"), &mut sources);
 
         for source in sources {
             if source == allowed {
@@ -3428,6 +3500,15 @@ mod safety_analysis_policy {
         );
         assert_eq!(
             unsafe_syntax_findings("#![allow(unsafe_code)]"),
+            vec!["unsafe attribute or lint exception"]
+        );
+        // Hardening lint levels are not exceptions and must stay clean.
+        assert!(unsafe_syntax_findings("#![deny(unsafe_code)]").is_empty());
+        assert!(unsafe_syntax_findings("#![forbid(unsafe_code)]").is_empty());
+        assert!(unsafe_syntax_findings("#![warn(unsafe_code)]").is_empty());
+        // Exceptions remain detectable when nested in cfg_attr.
+        assert_eq!(
+            unsafe_syntax_findings("#![cfg_attr(target_os = \"none\", allow(unsafe_code))]"),
             vec!["unsafe attribute or lint exception"]
         );
         assert!(!unsafe_syntax_findings(
@@ -3507,6 +3588,43 @@ mod safety_analysis_policy {
                 clippy.get(*lint).and_then(toml::Value::as_str),
                 Some("deny"),
                 "Cargo.toml must deny clippy::{lint}"
+            );
+        }
+
+        // Every workspace member shares the panic-macro-family and
+        // indexing/slicing denials; the adapter additionally forbids unsafe
+        // outright, so the unsafe-documentation lint is intentionally absent.
+        for member_manifest in [
+            "crates/signal-fish-client-godot/Cargo.toml",
+            "tools/perf-lab/Cargo.toml",
+        ] {
+            let member = manifest(member_manifest);
+            let member_clippy = member["lints"]["clippy"]
+                .as_table()
+                .unwrap_or_else(|| panic!("{member_manifest} must define [lints.clippy]"));
+            for lint in [
+                "unwrap_used",
+                "expect_used",
+                "panic",
+                "todo",
+                "unimplemented",
+                "unreachable",
+                "indexing_slicing",
+            ] {
+                assert_eq!(
+                    member_clippy.get(lint).and_then(toml::Value::as_str),
+                    Some("deny"),
+                    "{member_manifest} must deny clippy::{lint}"
+                );
+            }
+            assert!(
+                matches!(
+                    member["lints"]["rust"]
+                        .get("unsafe_code")
+                        .and_then(toml::Value::as_str),
+                    Some("deny") | Some("forbid")
+                ),
+                "{member_manifest} must deny or forbid unsafe_code"
             );
         }
     }
@@ -7008,8 +7126,59 @@ mod panic_script_cfg_handling {
     fn check_no_panics_prunes_nested_cargo_target_directories() {
         let contents = read_project_file("scripts/check-no-panics.sh");
         assert!(
-            contents.contains("find tests -type d -name target -prune -o"),
+            contents.contains("-type d -name target -prune"),
             "generated Rust under nested Cargo target directories must not be scanned as repository tests"
+        );
+    }
+
+    /// The panic-free gate must cover every workspace member's sources, not
+    /// just the core crate: the published Godot adapter and the perf-lab tool
+    /// ship production Rust that must satisfy the same zero-panic policy.
+    ///
+    /// Pins the exact PROD_DIRS/TEST_DIRS declarations (core sources plus the
+    /// conventional member paths) and verifies the published members still
+    /// live at their conventional source roots, so a moved or new member
+    /// forces a conscious script update instead of a silent escape.
+    #[test]
+    fn check_no_panics_scans_all_workspace_member_sources() {
+        let contents = read_project_file("scripts/check-no-panics.sh");
+
+        // The exact directory declarations: core sources plus conventional
+        // member paths, so a future member cannot silently escape the gate.
+        assert!(
+            contents
+                .contains("PROD_DIRS=(src examples crates/*/src crates/*/examples tools/*/src)"),
+            "scripts/check-no-panics.sh Phase 1 must scan every workspace \
+             member's production sources"
+        );
+        assert!(
+            contents.contains("TEST_DIRS=(tests crates/*/tests tools/*/tests)"),
+            "scripts/check-no-panics.sh Phase 2 must cover every workspace \
+             member's test sources"
+        );
+
+        // The globs must actually resolve to real member sources today; if
+        // this fails, a member moved and the script needs its paths updated.
+        let root = project_root();
+        let godot_sources = root.join("crates/signal-fish-client-godot/src");
+        let perf_lab_sources = root.join("tools/perf-lab/src");
+        assert!(
+            godot_sources.is_dir() && perf_lab_sources.is_dir(),
+            "expected workspace members under crates/ and tools/; update \
+             PROD_DIRS/TEST_DIRS in scripts/check-no-panics.sh when members move"
+        );
+
+        // `unreachable!` is part of the forbidden panic-macro family
+        // (panic!/todo!/unimplemented!) and must stay in PATTERNS.
+        assert!(
+            contents.contains("'unreachable!("),
+            "scripts/check-no-panics.sh must forbid unreachable! alongside \
+             panic!, todo!, and unimplemented!"
+        );
+        assert!(
+            contents
+                .contains("clippy::(unwrap_used|expect_used|panic|todo|unimplemented|unreachable)"),
+            "Phase 2 opt-in detection must recognize clippy::unreachable"
         );
     }
 
@@ -7136,16 +7305,19 @@ mod panic_script_cfg_handling {
         );
     }
 
-    /// Safety net: verify that no `src/` file uses `#[cfg(not(test))]`.
+    /// Safety net: verify that no scanned production source uses
+    /// `#[cfg(not(test))]` (or any cfg attribute containing `not(test)`).
     ///
     /// The grep pattern in `check-no-panics.sh`
     /// (`#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`) would match
     /// `#[cfg(not(test))]`, incorrectly treating the code below it as
     /// "inside a test module" when it is actually production code. As long as
-    /// no source file uses this attribute, the false positive cannot occur.
+    /// no scanned production file uses this attribute, that blind spot cannot
+    /// occur. The net covers every root Phase 1 scans, so a member crate
+    /// cannot bypass it either.
     #[test]
-    fn no_src_file_uses_cfg_not_test() {
-        let src_dir = project_root().join("src");
+    fn no_production_source_uses_cfg_not_test() {
+        let root = project_root();
         let mut violations: Vec<(String, usize, String)> = Vec::new();
 
         fn scan_for_cfg_not_test(
@@ -7167,7 +7339,14 @@ mod panic_script_cfg_handling {
                                 .to_string();
                             for (i, line) in content.lines().enumerate() {
                                 let trimmed = line.trim();
-                                if trimmed.contains("#[cfg(not(test))]") {
+                                // Compound forms such as
+                                // `#[cfg(all(not(test), feature = "x"))]`
+                                // hit the script's boundary heuristic just
+                                // like the bare attribute, so flag any cfg
+                                // attribute containing `not(test)`.
+                                let is_cfg_attribute =
+                                    trimmed.starts_with("#[cfg(") || trimmed.starts_with("#![cfg(");
+                                if is_cfg_attribute && trimmed.contains("not(test)") {
                                     out.push((relative.clone(), i + 1, trimmed.to_string()));
                                 }
                             }
@@ -7177,11 +7356,27 @@ mod panic_script_cfg_handling {
             }
         }
 
-        scan_for_cfg_not_test(&src_dir, &project_root(), &mut violations);
+        // Mirror exactly the roots Phase 1 scans so the net can never lag
+        // behind the gate's coverage.
+        for directory in ["src", "examples"] {
+            scan_for_cfg_not_test(&root.join(directory), &root, &mut violations);
+        }
+        for members_root in ["crates", "tools"] {
+            let members = root.join(members_root);
+            let Ok(entries) = std::fs::read_dir(&members) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let member_sources = entry.path().join("src");
+                if member_sources.is_dir() {
+                    scan_for_cfg_not_test(&member_sources, &root, &mut violations);
+                }
+            }
+        }
 
         assert!(
             violations.is_empty(),
-            "Found `#[cfg(not(test))]` in src/ files. This attribute causes a false \
+            "Found `#[cfg(not(test))]` in production sources. This attribute causes a false \
              positive in check-no-panics.sh (the grep pattern \
              `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)` matches it and \
              incorrectly treats the code as inside a test module). \

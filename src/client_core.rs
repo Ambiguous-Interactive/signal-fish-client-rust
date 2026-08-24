@@ -2195,7 +2195,8 @@ fn direct_host_is_usable(host: &str) -> bool {
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    clippy::unwrap_used
+    clippy::unwrap_used,
+    clippy::unreachable
 )]
 mod tests {
     use super::*;

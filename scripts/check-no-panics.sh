@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # check-no-panics.sh — Guard script for the hard-fail panic policy.
 #
-# Scans src/, examples/, and tests/ for panic-prone patterns that should
-# not appear in production or example code. Test code is allowed to use
-# these patterns when explicitly opted in via #![allow(...)] or
-# #[allow(...)] attributes.
+# Scans every workspace member's production sources (src/, examples/,
+# crates/*/src, crates/*/examples, tools/*/src) for panic-prone patterns
+# that should not appear in production or example code, and verifies test
+# sources opt in explicitly via #![allow(...)] or #[allow(...)] attributes.
 #
-# Phase 1: grep-based scan of src/ and examples/ (~1-2 seconds)
+# Phase 1: grep-based scan of all member library/example sources (~1-2 seconds)
 # Phase 2: verify test files have explicit opt-in attributes
 #
 # NOTE: A previous Phase 3 (running cargo clippy with panic-free lints)
@@ -46,15 +46,23 @@ PATTERNS=(
     'panic!('
     'todo!('
     'unimplemented!('
+    'unreachable!('
 )
+
+# ── Production source directories ─────────────────────────────────────
+# Every workspace member's library/binary sources must be panic-free, not
+# just the core crate. The globs pick up all members under the conventional
+# paths so a future member cannot silently escape this gate.
+PROD_DIRS=(src examples crates/*/src crates/*/examples tools/*/src)
+TEST_DIRS=(tests crates/*/tests tools/*/tests)
 
 echo -e "${YELLOW}=== Panic-free policy check ===${NC}"
 echo ""
 
 # ── Phase 1: Scan library and example code (must be panic-free) ──────
-echo -e "${YELLOW}Phase 1: Scanning src/ and examples/ for forbidden patterns...${NC}"
+echo -e "${YELLOW}Phase 1: Scanning all workspace member sources for forbidden patterns...${NC}"
 
-for dir in src examples; do
+for dir in "${PROD_DIRS[@]}"; do
     if [ ! -d "$dir" ]; then
         continue
     fi
@@ -85,9 +93,10 @@ for dir in src examples; do
             # LIMITATION: This pattern also matches `#[cfg(not(test))]`,
             # which would incorrectly treat the code below it as "inside a
             # test module" when it is actually the opposite. A safety-net
-            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling)
-            # verifies that no src/ file uses `#[cfg(not(test))]`, so this
-            # false positive cannot occur in practice.
+            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling,
+            # no_production_source_uses_cfg_not_test) verifies that none of
+            # the production roots scanned here uses `not(test)` in any cfg
+            # attribute, so this false positive cannot occur in practice.
             cfg_test_line=$(grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file" 2>/dev/null \
                 | tail -1 | cut -d: -f1 || true)
 
@@ -103,21 +112,24 @@ for dir in src examples; do
 done
 
 if [ "$VIOLATIONS" -eq 0 ]; then
-    echo -e "${GREEN}Phase 1: PASS — no violations in src/ or examples/${NC}"
+    echo -e "${GREEN}Phase 1: PASS — no violations in any workspace member sources${NC}"
 fi
 echo ""
 
 # ── Phase 2: Scan test files for missing opt-in ──────────────────────
-# Test files in tests/ are allowed to use panic-prone patterns, but they
+# Test files under tests/ are allowed to use panic-prone patterns, but they
 # MUST contain a #![allow(...)] or #[allow(...)] attribute that
 # explicitly allows at least one panic-related Clippy lint (e.g.
 # clippy::unwrap_used). Files without this opt-in are flagged.
-echo -e "${YELLOW}Phase 2: Checking tests/ for panic-free opt-in...${NC}"
+echo -e "${YELLOW}Phase 2: Checking test sources for panic-free opt-in...${NC}"
 
 TESTS_VIOLATIONS=0
-if [ -d "tests" ]; then
-    # Recursively find repository-owned .rs files under tests/ while pruning
-    # nested Cargo build output (for example tests/godot-web-smoke/target/).
+for test_root in "${TEST_DIRS[@]}"; do
+    if [ ! -d "$test_root" ]; then
+        continue
+    fi
+    # Recursively find repository-owned .rs files while pruning nested Cargo
+    # build output (for example tests/godot-web-smoke/target/).
     while IFS= read -r test_file; do
         test_file="${test_file//$'\r'/}"
         # Check if the file has any panic-prone patterns at all.
@@ -135,14 +147,15 @@ if [ -d "tests" ]; then
 
         # File has panic-prone patterns — verify it explicitly opts in to at
         # least one panic-related Clippy lint.  The check is split into two
-        # grep passes so it handles multi-line #![allow( ... )] blocks.
-        if ! grep -qE '#!?\[allow\(' "$test_file" 2>/dev/null || \
-           ! grep -qE 'clippy::(unwrap_used|expect_used|panic|todo|unimplemented)' "$test_file" 2>/dev/null; then
+        # grep passes so it handles multi-line #![allow( ... )] blocks, and
+        # accepts both allow and expect opt-in forms.
+        if ! grep -qE '#!?\[(allow|expect)\(' "$test_file" 2>/dev/null || \
+           ! grep -qE 'clippy::(unwrap_used|expect_used|panic|todo|unimplemented|unreachable)' "$test_file" 2>/dev/null; then
             echo -e "${RED}VIOLATION:${NC} $test_file uses panic-prone patterns without allowing a panic-related lint (e.g. #![allow(clippy::unwrap_used)])"
             TESTS_VIOLATIONS=$((TESTS_VIOLATIONS + 1))
         fi
-    done < <(find tests -type d -name target -prune -o -name '*.rs' -type f -print)
-fi
+    done < <(find "$test_root" -type d -name target -prune -o -name '*.rs' -type f -print)
+done
 
 if [ "$TESTS_VIOLATIONS" -eq 0 ]; then
     echo -e "${GREEN}Phase 2: PASS — all test files have explicit opt-in${NC}"
