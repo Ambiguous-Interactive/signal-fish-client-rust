@@ -523,7 +523,8 @@ impl<'de> serde::de::Visitor<'de> for UniqueJsonVisitor {
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
 )]
 mod tests {
     use super::*;

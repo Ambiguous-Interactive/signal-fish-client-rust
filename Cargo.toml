@@ -140,6 +140,11 @@ todo = "deny"
 unimplemented = "deny"
 unreachable = "deny"
 indexing_slicing = "deny"
+# Promoted from the 2026-08 runtime-invariant sweep: raw integer arithmetic
+# must be `checked_`/`saturating_`/`wrapping_`-explicit or carry a scoped,
+# documented proof, so debug/release overflow semantics cannot diverge
+# silently on hostile input. Zero unguarded findings at promotion.
+arithmetic_side_effects = "deny"
 # Stable restriction lints promoted from the 2026-08 deep-safety evaluation:
 # zero pre-existing findings across the workspace; each enforces an existing
 # written policy (no debug leftovers, no process exit from a library, no
@@ -164,3 +169,9 @@ version = "0.10.0"
 
 [workspace.dependencies]
 signal-fish-client = { version = "=0.10.0", path = ".", default-features = false }
+
+# Release builds validate under the same arithmetic semantics as every debug
+# test, fuzz, and Miri run: integer overflow aborts loudly instead of wrapping
+# silently. Bench profiles inherit this through `release`.
+[profile.release]
+overflow-checks = true

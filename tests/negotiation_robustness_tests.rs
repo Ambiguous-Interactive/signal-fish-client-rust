@@ -4,6 +4,7 @@
 //! server messages). These pin behaviors that are easy to regress and would
 //! silently break mesh sessions after a network blip.
 #![cfg(feature = "tokio-runtime")]
+#![allow(clippy::arithmetic_side_effects)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

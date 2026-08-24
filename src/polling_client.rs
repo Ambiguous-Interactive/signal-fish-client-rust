@@ -1495,7 +1495,8 @@ impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingC
     clippy::todo,
     clippy::unimplemented,
     clippy::indexing_slicing,
-    clippy::unreachable
+    clippy::unreachable,
+    clippy::arithmetic_side_effects
 )]
 mod tests {
     use std::collections::VecDeque;

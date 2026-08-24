@@ -6,7 +6,8 @@
     clippy::todo,
     clippy::unimplemented,
     clippy::indexing_slicing,
-    clippy::unreachable
+    clippy::unreachable,
+    clippy::arithmetic_side_effects
 )]
 //! End-to-end tests against a **real** Signal Fish server.
 //!

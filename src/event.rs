@@ -662,7 +662,7 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
     }
     let mut end = max_bytes;
     while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
+        end = end.saturating_sub(1);
     }
     s.get(..end).unwrap_or_default()
 }

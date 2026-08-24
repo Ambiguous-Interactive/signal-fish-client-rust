@@ -83,8 +83,8 @@ risking late-callback use-after-free. Change-scoped, scheduled, and manual
 Deep Safety runs Miri protocol tests, ThreadSanitizer, three raw-byte
 JSON/MessagePack fuzz targets, and focused mutation testing; required Clippy
 and WASM gates enforce compiler safety on every PR. Every member denies
-`unwrap_used` through `indexing_slicing` (incl. `unreachable`) and the No
-Panics grep gate scans all member sources.
+`unwrap_used` through `indexing_slicing`/`unreachable`, plus `arithmetic_side_effects`; the No
+Panics grep gate scans all members; release builds enable `overflow-checks` (debug-equivalent arithmetic).
 
 Native ASan is deferred because owned unsafe is Emscripten-only; fuzz sanitizer
 instrumentation covers the parsers it drives. Blanket Clippy

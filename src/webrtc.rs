@@ -863,7 +863,8 @@ mod controller {
     clippy::todo,
     clippy::unimplemented,
     clippy::indexing_slicing,
-    clippy::type_complexity
+    clippy::type_complexity,
+    clippy::arithmetic_side_effects
 )]
 mod tests {
     use super::*;
