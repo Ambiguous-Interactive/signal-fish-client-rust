@@ -1818,7 +1818,7 @@ async fn emit_core_disconnected_or_shutdown(
     transport: &mut impl Transport,
     pending_send: &mut Option<PendingSend>,
     event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    shutdown: &mut ShutdownSignal,
     state: &Arc<Mutex<ClientCore>>,
     teardown: TerminalTeardown,
 ) {
@@ -1834,7 +1834,7 @@ async fn emit_core_disconnected_or_shutdown(
     } = teardown;
     let event = lock_core(state).disconnect(reason);
     let deliver_event = async {
-        if !emit_terminal_event(event_tx, shutdown_rx, deadline, event.clone()).await {
+        if !emit_terminal_event(event_tx, shutdown, deadline, event.clone()).await {
             let _ = event_tx.try_send(event);
         }
     };
@@ -1897,16 +1897,16 @@ fn remaining_shutdown_budget(
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event_batch(
     event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    shutdown: &mut ShutdownSignal,
     deadline: Option<tokio::time::Instant>,
     events: Vec<SignalFishEvent>,
 ) -> bool {
     let mut iter = events.into_iter();
     for event in iter.by_ref() {
         let delivered = match deadline {
-            Some(_) => emit_terminal_event(event_tx, shutdown_rx, deadline, event).await,
+            Some(_) => emit_terminal_event(event_tx, shutdown, deadline, event).await,
             None => !matches!(
-                emit_event_or_shutdown(event_tx, shutdown_rx, event).await,
+                emit_event_or_shutdown(event_tx, shutdown, event).await,
                 EmitOutcome::ShutdownRequested
             ),
         };
@@ -2048,7 +2048,7 @@ async fn wait_for_terminal_deadline(deadline: Option<tokio::time::Instant>) {
 #[cfg(feature = "tokio-runtime")]
 async fn emit_terminal_event(
     event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    shutdown: &mut ShutdownSignal,
     deadline: Option<tokio::time::Instant>,
     event: SignalFishEvent,
 ) -> bool {
@@ -2060,7 +2060,7 @@ async fn emit_terminal_event(
             }
             true
         }
-        _ = &mut *shutdown_rx => false,
+        _ = shutdown.fired() => false,
         () = wait_for_terminal_deadline(deadline) => false,
     }
 }
@@ -2070,7 +2070,7 @@ async fn finish_send_failure(
     transport: &mut impl Transport,
     pending_send: &mut Option<PendingSend>,
     event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    shutdown: &mut ShutdownSignal,
     state: &Arc<Mutex<ClientCore>>,
     error: SignalFishError,
     timeout: Duration,
@@ -2107,8 +2107,7 @@ async fn finish_send_failure(
 
         let outcome = lock_core(state).process_frame(frame);
         let protocol_stop = outcome.disconnect;
-        delivery_preempted =
-            !emit_event_batch(event_tx, shutdown_rx, deadline, outcome.events).await;
+        delivery_preempted = !emit_event_batch(event_tx, shutdown, deadline, outcome.events).await;
         if delivery_preempted {
             debug!("terminal event delivery was preempted mid-batch after send failure");
             break;
@@ -2122,7 +2121,7 @@ async fn finish_send_failure(
     let disconnected = lock_core(state).disconnect(reason);
     let deliver_disconnected = async {
         if delivery_preempted
-            || !emit_terminal_event(event_tx, shutdown_rx, deadline, disconnected.clone()).await
+            || !emit_terminal_event(event_tx, shutdown, deadline, disconnected.clone()).await
         {
             let _ = event_tx.try_send(disconnected);
         }
@@ -2148,20 +2147,20 @@ async fn transport_loop(
     mut cmd_rx: mpsc::Receiver<ClientCommand>,
     event_tx: mpsc::Sender<SignalFishEvent>,
     state: Arc<Mutex<ClientCore>>,
-    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     shutdown_timeout: Duration,
 ) {
     debug!("transport loop started");
 
     let mut pending_send = None;
     let mut connected_emitted = false;
+    let mut shutdown = ShutdownSignal::new(shutdown_rx);
 
     loop {
         if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
             connected_emitted = true;
             if matches!(
-                emit_event_or_shutdown(&event_tx, &mut shutdown_rx, SignalFishEvent::Connected)
-                    .await,
+                emit_event_or_shutdown(&event_tx, &mut shutdown, SignalFishEvent::Connected).await,
                 EmitOutcome::ShutdownRequested
             ) {
                 finish_core_shutdown(
@@ -2182,7 +2181,7 @@ async fn transport_loop(
                         &mut transport,
                         &mut pending_send,
                         &event_tx,
-                        &mut shutdown_rx,
+                        &mut shutdown,
                         &state,
                         TerminalTeardown::starting(
                             shutdown_timeout,
@@ -2214,7 +2213,7 @@ async fn transport_loop(
                     });
                 }
             }
-            _ = &mut shutdown_rx => {
+            _ = shutdown.fired() => {
                 finish_core_shutdown(
                     &mut transport,
                     &mut pending_send,
@@ -2236,11 +2235,8 @@ async fn transport_loop(
                 {
                     connected_emitted = true;
                     if matches!(
-                        emit_event_or_shutdown(
-                            &event_tx,
-                            &mut shutdown_rx,
-                            SignalFishEvent::Connected,
-                        ).await,
+                        emit_event_or_shutdown(&event_tx, &mut shutdown, SignalFishEvent::Connected)
+                            .await,
                         EmitOutcome::ShutdownRequested
                     ) {
                         finish_core_shutdown(
@@ -2260,7 +2256,7 @@ async fn transport_loop(
                         &mut transport,
                         &mut pending_send,
                         &event_tx,
-                        &mut shutdown_rx,
+                        &mut shutdown,
                         &state,
                         TerminalTeardown::starting(
                             shutdown_timeout,
@@ -2282,7 +2278,7 @@ async fn transport_loop(
                             &mut transport,
                             &mut pending_send,
                             &event_tx,
-                            &mut shutdown_rx,
+                            &mut shutdown,
                             &state,
                             error,
                             shutdown_timeout,
@@ -2306,7 +2302,7 @@ async fn transport_loop(
                         });
                         let delivered = emit_event_batch(
                             &event_tx,
-                            &mut shutdown_rx,
+                            &mut shutdown,
                             violation_teardown.as_ref().and_then(|t| t.deadline),
                             outcome.events,
                         ).await;
@@ -2321,11 +2317,10 @@ async fn transport_loop(
                             break;
                         }
                         if let Some(teardown) = violation_teardown {
-                            // A preempted batch may have ended because
-                            // `shutdown` fired, and a completed oneshot
-                            // receiver panics if re-polled — so any
-                            // preemption skips the bounded farewell wait and
-                            // falls back to the nonblocking attempt, exactly
+                            // If the batch was preempted, the shutdown signal
+                            // may already have been observed (its tracking is
+                            // sticky), so the farewell skips the bounded wait
+                            // and takes the nonblocking attempt — exactly
                             // like the send-failure teardown.
                             let TerminalTeardown {
                                 reason,
@@ -2337,7 +2332,7 @@ async fn transport_loop(
                                 if !delivered
                                     || !emit_terminal_event(
                                         &event_tx,
-                                        &mut shutdown_rx,
+                                        &mut shutdown,
                                         deadline,
                                         event.clone(),
                                     )
@@ -2361,7 +2356,7 @@ async fn transport_loop(
                             &mut transport,
                             &mut pending_send,
                             &event_tx,
-                            &mut shutdown_rx,
+                            &mut shutdown,
                             &state,
                             TerminalTeardown::starting(shutdown_timeout, Some(error.to_string())),
                         ).await;
@@ -2373,7 +2368,7 @@ async fn transport_loop(
                             &mut transport,
                             &mut pending_send,
                             &event_tx,
-                            &mut shutdown_rx,
+                            &mut shutdown,
                             &state,
                             TerminalTeardown::starting(shutdown_timeout, reason),
                         ).await;
@@ -2397,6 +2392,87 @@ enum EmitOutcome {
     ShutdownRequested,
 }
 
+/// Explicitly tracked terminal-shutdown signal (issue #148).
+///
+/// A completed [`tokio::sync::oneshot::Receiver`] **panics if re-polled**
+/// ("called after complete"). Racing the raw receiver is therefore safe only
+/// while every call site *infers* consumption from delivery outcomes — a
+/// fragile precondition: any future edit that delivers again after a
+/// shutdown-arm observation would panic the transport task mid-teardown,
+/// closing both channels and failing every parked reliable sender with
+/// `NotConnected` instead of completing graceful teardown. This wrapper
+/// removes the precondition instead of trusting it. Consumption is recorded
+/// once — fired or canceled sender — and every later poll consults the
+/// sticky flag without touching the receiver again, so a re-poll degrades to
+/// an immediate observation rather than a panic.
+///
+/// Callers keep their existing nonblocking fallbacks and budget semantics;
+/// documented contracts are unchanged.
+#[cfg(feature = "tokio-runtime")]
+struct ShutdownSignal {
+    rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    observed: bool,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl ShutdownSignal {
+    fn new(rx: tokio::sync::oneshot::Receiver<()>) -> Self {
+        Self {
+            rx: Some(rx),
+            observed: false,
+        }
+    }
+
+    /// Poll whether shutdown has been requested. Sticky: once observed,
+    /// later polls answer `true` without re-polling the receiver.
+    fn poll_fired(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        if !self.observed {
+            if let Some(rx) = self.rx.as_mut() {
+                match std::future::Future::poll(std::pin::Pin::new(rx), cx) {
+                    // Fired or canceled (sender dropped) both end the wait,
+                    // exactly like racing the raw receiver did.
+                    std::task::Poll::Ready(_) => {
+                        self.observed = true;
+                        self.rx = None;
+                    }
+                    std::task::Poll::Pending => {}
+                }
+            }
+        }
+        debug_assert_eq!(
+            self.rx.is_none(),
+            self.observed,
+            "ShutdownSignal state desynchronized"
+        );
+        self.observed
+    }
+
+    /// Future racing this signal inside `tokio::select!`.
+    fn fired(&mut self) -> ShutdownFired<'_> {
+        ShutdownFired(self)
+    }
+}
+
+/// Polls [`ShutdownSignal::poll_fired`] to completion.
+#[cfg(feature = "tokio-runtime")]
+struct ShutdownFired<'a>(&'a mut ShutdownSignal);
+
+#[cfg(feature = "tokio-runtime")]
+impl std::future::Future for ShutdownFired<'_> {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.0.poll_fired(cx) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
 /// Emit an event with backpressure, but let a shutdown request preempt the
 /// wait.
 ///
@@ -2404,14 +2480,15 @@ enum EmitOutcome {
 /// still delivered; only a genuinely blocked delivery (consumer not draining)
 /// lets shutdown win. On [`EmitOutcome::ShutdownRequested`] exactly the one
 /// in-flight event is abandoned — the caller must then run
-/// [`finish_core_shutdown`] and exit the loop **without polling `shutdown_rx`
-/// again** (a completed `oneshot::Receiver` panics if re-polled). Batch
-/// callers route through [`emit_event_batch`], which attempts the nonblocking
+/// [`finish_core_shutdown`] and exit the loop promptly. The shutdown signal's
+/// sticky tracking makes any later observation immediate instead of
+/// re-polling a completed `oneshot::Receiver` (which panics). Batch callers
+/// route through [`emit_event_batch`], which attempts the nonblocking
 /// fallback for the batch's remaining events before abandoning them.
 #[cfg(feature = "tokio-runtime")]
 async fn emit_event_or_shutdown(
     event_tx: &mpsc::Sender<SignalFishEvent>,
-    shutdown_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    shutdown: &mut ShutdownSignal,
     event: SignalFishEvent,
 ) -> EmitOutcome {
     tokio::select! {
@@ -2422,7 +2499,7 @@ async fn emit_event_or_shutdown(
             }
             EmitOutcome::Delivered
         }
-        _ = &mut *shutdown_rx => EmitOutcome::ShutdownRequested,
+        _ = shutdown.fired() => EmitOutcome::ShutdownRequested,
     }
 }
 
@@ -6209,7 +6286,8 @@ mod tests {
     #[tokio::test]
     async fn expired_budget_preempts_blocked_batch_delivers_without_corruption() {
         let (tx, mut rx) = mpsc::channel(4);
-        let (_shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut shutdown = ShutdownSignal::new(shutdown_rx);
 
         // A budget that expired before the call makes every blocked delivery
         // deterministic. The channel starts full, so both batch events are
@@ -6221,7 +6299,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let batch = vec![SignalFishEvent::Connected, SignalFishEvent::Connected];
-        let delivered = emit_event_batch(&tx, &mut shutdown_rx, Some(stale_deadline), batch).await;
+        let delivered = emit_event_batch(&tx, &mut shutdown, Some(stale_deadline), batch).await;
         assert!(!delivered, "an expired budget must report preemption");
 
         drop(tx);
@@ -6239,6 +6317,80 @@ mod tests {
                 .iter()
                 .all(|event| matches!(event, SignalFishEvent::Pong)),
             "only the original buffered events remain: {observed:?}"
+        );
+    }
+
+    /// Issue #148: once the shutdown signal is observed, its tracking must be
+    /// sticky — a later poll consults the flag instead of re-polling the
+    /// completed `oneshot::Receiver`, which would panic ("called after
+    /// complete").
+    #[test]
+    fn shutdown_signal_observation_is_sticky_across_polls() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let mut signal = ShutdownSignal::new(rx);
+
+        assert!(
+            !signal.poll_fired(&mut cx),
+            "an unfired signal must stay pending"
+        );
+
+        tx.send(()).expect("the receiver is still held");
+        assert!(signal.poll_fired(&mut cx), "firing must be observed");
+        // The exact re-poll that panicked before explicit tracking:
+        assert!(
+            signal.poll_fired(&mut cx),
+            "observation must stay sticky after consumption"
+        );
+    }
+
+    /// A signal whose sender was dropped without firing ends the wait the
+    /// same way a fired one does, and stays sticky afterwards.
+    #[test]
+    fn shutdown_signal_treats_sender_drop_as_fired() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let mut signal = ShutdownSignal::new(rx);
+        drop(tx);
+
+        assert!(
+            signal.poll_fired(&mut cx),
+            "a dropped sender must count as fired"
+        );
+        assert!(
+            signal.poll_fired(&mut cx),
+            "a canceled observation must also stay sticky"
+        );
+    }
+
+    /// Issue #148: after one delivery consumes the shutdown signal, later
+    /// deliveries on the same signal must observe it immediately instead of
+    /// re-polling the completed oneshot (which panics) or blocking forever.
+    #[tokio::test]
+    async fn deliveries_after_consumed_shutdown_stay_nonblocking() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(SignalFishEvent::Pong).expect("filler fits");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut shutdown = ShutdownSignal::new(shutdown_rx);
+        shutdown_tx.send(()).expect("the receiver is still held");
+
+        // The channel is full and shutdown has fired: the first delivery
+        // preempts and consumes the signal.
+        assert!(matches!(
+            emit_event_or_shutdown(&tx, &mut shutdown, SignalFishEvent::Connected).await,
+            EmitOutcome::ShutdownRequested
+        ));
+        // The second delivery on the SAME signal panicked before explicit
+        // tracking; now it observes the sticky flag.
+        assert!(matches!(
+            emit_event_or_shutdown(&tx, &mut shutdown, SignalFishEvent::Connected).await,
+            EmitOutcome::ShutdownRequested
+        ));
+        // The terminal variant must answer immediately too — with no deadline,
+        // only the consumed-signal observation can end the wait.
+        assert!(
+            !emit_terminal_event(&tx, &mut shutdown, None, SignalFishEvent::Connected).await,
+            "a consumed signal must preempt a terminal delivery"
         );
     }
 }
