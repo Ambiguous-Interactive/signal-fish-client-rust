@@ -145,7 +145,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.5
         with:
           tool: cargo-fuzz@0.13.1
 
@@ -218,7 +218,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.5
         with:
           tool: cargo-mutants@26.2.0
 
