@@ -207,6 +207,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now clears both immediately, matching the shared core's authority handling,
   so consumers cannot dial a dead endpoint in the re-planning gap; the
   replacement `SessionPlan` owns host re-election.
+- Documented two driver-contract boundaries that previously lived only in the
+  code: the polling client's post-send-failure ready-frame drain is bounded by
+  the configured receive budget against the standard 64 frames / 64 KiB — at
+  most `min(receive_frames, 64)` complete frames, stopping at the first frame
+  that reaches the byte bound — so frame-budgeted callers never see teardown
+  work beyond their per-poll frame bound (the async driver always drains the
+  standard budget), and the WebSocket transport's retryable `WriteBufferFull`
+  refusals apply to direct `Transport` operation while the built-in drivers
+  map any send error, including a restored refusal, to a terminal disconnect.
 - Fixed `MeshController` retaining a stale session and live peer-driver state
   when its signaling event stream ended without room for the best-effort
   `Disconnected` event. End-of-stream and explicit shutdown now disconnect
