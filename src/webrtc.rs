@@ -281,6 +281,9 @@ mod controller {
         /// reconnect/replan before this controller consumes its queued event;
         /// a revision mismatch therefore fences driver output first.
         observed_session_plan_revision: u64,
+        /// Sticky authoritative end-of-stream state. Once terminal, driver
+        /// output is never pumped or forwarded again.
+        terminated: bool,
     }
 
     impl<D: WebRtcDriver> MeshController<D> {
@@ -314,6 +317,7 @@ mod controller {
                 ready,
                 pending_signal: None,
                 observed_session_plan_revision: 0,
+                terminated: false,
             }
         }
 
@@ -332,12 +336,20 @@ mod controller {
         }
 
         /// Send application bytes to `peer` over its peer-to-peer data channel.
+        /// This is a no-op once the controller has entered its terminal state.
         pub fn send_to(&mut self, peer: PlayerId, data: &[u8]) {
-            self.driver.send(peer, data);
+            if !self.terminated {
+                self.driver.send(peer, data);
+            }
         }
 
         /// Receive the next high-level mesh event. Returns `None` once the
-        /// underlying transport closes.
+        /// underlying transport closes. At that boundary the controller clears
+        /// its session, disconnects every known driver peer, and becomes fused:
+        /// later calls also return `None` without pumping the driver. When this
+        /// method returns a signaling [`SignalFishEvent::Disconnected`], that
+        /// same teardown has already happened before the event reaches the
+        /// caller, and the next call returns `None`.
         ///
         /// # Cancel safety
         ///
@@ -348,6 +360,9 @@ mod controller {
         /// with `tokio::time::timeout` in a frame-budgeted game loop — never
         /// loses a signal.
         pub async fn recv(&mut self) -> Option<MeshEvent> {
+            if self.terminated {
+                return None;
+            }
             loop {
                 if self.observed_session_plan_revision != self.client.session_plan_revision() {
                     match self.events.recv().await {
@@ -355,7 +370,10 @@ mod controller {
                             self.handle_received_event(&event);
                             return Some(MeshEvent::Signaling(Box::new(event)));
                         }
-                        None => return None,
+                        None => {
+                            self.terminate();
+                            return None;
+                        }
                     }
                 }
                 // Surface any pending driver output first (relaying signals /
@@ -377,7 +395,10 @@ mod controller {
                                 self.handle_received_event(&event);
                                 return Some(MeshEvent::Signaling(Box::new(event)));
                             }
-                            None => return None,
+                            None => {
+                                self.terminate();
+                                return None;
+                            }
                         }
                     }
                     () = self.ready.notified() => {
@@ -514,13 +535,13 @@ mod controller {
                 // edge while retaining all driver cleanup.
                 SignalFishEvent::RoomLeft
                 | SignalFishEvent::SpectatorJoined { .. }
-                | SignalFishEvent::SpectatorLeft { .. }
-                | SignalFishEvent::Disconnected { .. } => {
+                | SignalFishEvent::SpectatorLeft { .. } => {
                     self.connected_peers.clear();
                     for peer in std::mem::take(&mut self.known_peers) {
                         self.disconnect_peer(peer.id);
                     }
                 }
+                SignalFishEvent::Disconnected { .. } => self.terminate(),
                 SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
                     self.driver.set_ice_servers(ice_servers);
                 }
@@ -554,6 +575,21 @@ mod controller {
                 self.pending_signal = None;
             }
             self.mark_disconnected(peer);
+        }
+
+        /// End the controller's data plane exactly once without emitting a
+        /// room-scoped transport-status edge after signaling has terminated.
+        fn terminate(&mut self) {
+            if self.terminated {
+                return;
+            }
+            self.terminated = true;
+            self.pending_signal = None;
+            self.connected_peers.clear();
+            self.session = MeshSession::new();
+            for peer in std::mem::take(&mut self.known_peers) {
+                self.driver.disconnect(peer.id);
+            }
         }
 
         /// Ensure the driver holds the server's current offerer role for `peer`.
@@ -809,8 +845,11 @@ mod controller {
             &mut self.client
         }
 
-        /// Gracefully shut down the controller and its client.
+        /// Disconnect every known driver peer, then gracefully shut down the
+        /// signaling client. Driver cleanup happens exactly once even if the
+        /// controller already observed a terminal signaling boundary.
         pub async fn shutdown(mut self) {
+            self.terminate();
             self.client.shutdown().await;
         }
     }
@@ -892,6 +931,7 @@ mod tests {
         OnSignalGeneration(PlayerId, Option<SessionGeneration>),
         Send(PlayerId, Vec<u8>),
         Disconnect(PlayerId),
+        Poll,
     }
 
     #[derive(Default)]
@@ -970,6 +1010,7 @@ mod tests {
             self.calls.push(DriverCall::Disconnect(peer));
         }
         fn poll(&mut self) -> Option<DriverEvent> {
+            self.calls.push(DriverCall::Poll);
             self.outputs.pop_front()
         }
     }
@@ -1040,6 +1081,39 @@ mod tests {
         incoming: VecDeque<Option<Result<String, crate::error::SignalFishError>>>,
         sent: Arc<Mutex<Vec<String>>>,
         closed: Arc<AtomicBool>,
+        recv_probe: Option<Arc<RecvProbe>>,
+    }
+
+    #[derive(Default)]
+    struct RecvProbe {
+        pong_polls: std::sync::atomic::AtomicUsize,
+        observed: tokio::sync::Notify,
+    }
+
+    impl RecvProbe {
+        fn record(&self, item: &Option<Result<String, crate::error::SignalFishError>>) {
+            if item.as_ref().is_some_and(|result| {
+                result.as_ref().is_ok_and(|json| {
+                    matches!(
+                        serde_json::from_str::<ServerMessage>(json),
+                        Ok(ServerMessage::Pong)
+                    )
+                })
+            }) {
+                self.pong_polls.fetch_add(1, Ordering::Relaxed);
+                self.observed.notify_waiters();
+            }
+        }
+
+        async fn wait_for_pong_polls(&self, expected: usize) {
+            loop {
+                let observed = self.observed.notified();
+                if self.pong_polls.load(Ordering::Relaxed) >= expected {
+                    return;
+                }
+                observed.await;
+            }
+        }
     }
 
     impl MockTransport {
@@ -1051,6 +1125,21 @@ mod tests {
 
         fn new_in_room(
             mut incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+        ) -> (Self, Arc<Mutex<Vec<String>>>) {
+            Self::new_in_room_impl(&mut incoming, None)
+        }
+
+        fn new_in_room_with_probe(
+            mut incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+        ) -> (Self, Arc<Mutex<Vec<String>>>, Arc<RecvProbe>) {
+            let probe = Arc::new(RecvProbe::default());
+            let (transport, sent) = Self::new_in_room_impl(&mut incoming, Some(Arc::clone(&probe)));
+            (transport, sent, probe)
+        }
+
+        fn new_in_room_impl(
+            incoming: &mut Vec<Option<Result<String, crate::error::SignalFishError>>>,
+            recv_probe: Option<Arc<RecvProbe>>,
         ) -> (Self, Arc<Mutex<Vec<String>>>) {
             let decoded = incoming
                 .iter()
@@ -1101,11 +1190,18 @@ mod tests {
                     .map_or(0, |index| index + 1);
                 incoming.insert(insert_at, Some(Ok(room_baseline_for(&peers))));
             }
-            Self::finish(incoming)
+            Self::finish_with_probe(std::mem::take(incoming), recv_probe)
         }
 
         fn finish(
             incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+        ) -> (Self, Arc<Mutex<Vec<String>>>) {
+            Self::finish_with_probe(incoming, None)
+        }
+
+        fn finish_with_probe(
+            incoming: Vec<Option<Result<String, crate::error::SignalFishError>>>,
+            recv_probe: Option<Arc<RecvProbe>>,
         ) -> (Self, Arc<Mutex<Vec<String>>>) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let closed = Arc::new(AtomicBool::new(false));
@@ -1114,6 +1210,7 @@ mod tests {
                     incoming: VecDeque::from(incoming),
                     sent: Arc::clone(&sent),
                     closed,
+                    recv_probe,
                 },
                 sent,
             )
@@ -1177,6 +1274,9 @@ mod tests {
                 return std::task::Poll::Pending;
             }
             if let Some(item) = self.incoming.pop_front() {
+                if let Some(probe) = &self.recv_probe {
+                    probe.record(&item);
+                }
                 std::task::Poll::Ready(
                     item.map(|result| result.map(crate::transport::TransportFrame::Text)),
                 )
@@ -3110,6 +3210,217 @@ mod tests {
             .contains(&DriverCall::ConnectGeneration(peer, Some(new_generation))));
         assert_eq!(mesh.session().generation(), Some(new_generation));
         mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn disconnected_event_is_immediately_terminal_before_the_next_recv() {
+        let peer = uuid(54);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new_in_room(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(peer, false))),
+            None,
+        ]);
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
+
+        let disconnected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = mesh
+                    .recv()
+                    .await
+                    .expect("Disconnected should be delivered before the scripted stream ends");
+                if matches!(
+                    event,
+                    MeshEvent::Signaling(ref event)
+                        if matches!(**event, SignalFishEvent::Disconnected { .. })
+                ) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("controller never surfaced the scripted Disconnected event");
+        assert!(matches!(
+            disconnected,
+            MeshEvent::Signaling(ref event)
+                if matches!(**event, SignalFishEvent::Disconnected { .. })
+        ));
+
+        // Returning Disconnected is itself the terminal boundary: callers do
+        // not need another recv() to trigger cleanup or suppress data-plane I/O.
+        assert!(mesh.session().peers().is_empty());
+        assert!(mesh.session().generation().is_none());
+        assert!(mesh.session().transport().is_none());
+        mesh.send_to(peer, b"stale-after-disconnected");
+        let polls_at_terminal = count_calls(&driver, |call| matches!(call, DriverCall::Poll));
+
+        driver.emit_and_wake(DriverEvent::Data {
+            peer,
+            generation: Some(uuid(12)),
+            data: vec![7],
+        });
+        assert!(mesh.recv().await.is_none());
+
+        let calls = driver.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, DriverCall::Disconnect(id) if *id == peer))
+                .count(),
+            1,
+            "Disconnected must tear down each known peer exactly once"
+        );
+        assert_eq!(
+            count_calls(&driver, |call| matches!(call, DriverCall::Poll)),
+            polls_at_terminal,
+            "a fused controller must not poll its driver after Disconnected"
+        );
+        assert!(
+            !calls.iter().any(|call| matches!(
+                call,
+                DriverCall::Send(id, data)
+                    if *id == peer && data == b"stale-after-disconnected"
+            )),
+            "send_to must not forward data after Disconnected"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_stream_end_tears_down_and_fuses_the_mesh_controller() {
+        let peer = uuid(55);
+        let driver = SharedDriver::default();
+        let pong = serde_json::to_string(&ServerMessage::Pong).unwrap();
+        let (transport, _sent, recv_probe) = MockTransport::new_in_room_with_probe(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan(peer, false))),
+            Some(Ok(pong.clone())),
+            Some(Ok(pong)),
+        ]);
+        let config = SignalFishConfig::new("app").with_event_channel_capacity(1);
+        let mut mesh = MeshController::start(transport, config, driver.clone());
+        wait_for_authenticated(&mut mesh).await;
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted room response must follow an admitted join");
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while mesh.session().peers().is_empty() {
+                assert!(
+                    mesh.recv().await.is_some(),
+                    "event stream ended before the WebRTC plan was observed"
+                );
+            }
+        })
+        .await
+        .expect("controller never observed the scripted WebRTC plan");
+
+        // Observe the transport loop polling both Pongs. On this current-thread
+        // runtime it then runs to its next pending point: the second Pong's
+        // event-channel send, blocked behind the first Pong in the capacity-one
+        // channel. Shutdown preempts that delivery, so its best-effort
+        // Disconnected cannot fit and channel closure becomes the controller's
+        // only authoritative terminal signal.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            recv_probe.wait_for_pong_polls(2),
+        )
+        .await
+        .expect("transport never polled both scripted Pong frames");
+        mesh.client_mut().shutdown().await;
+
+        let buffered = mesh.recv().await;
+        assert!(
+            matches!(
+                buffered,
+                Some(MeshEvent::Signaling(ref event)) if matches!(**event, SignalFishEvent::Pong)
+            ),
+            "the capacity-one channel should retain the first Pong, got {buffered:?}"
+        );
+
+        let first_end = mesh.recv().await.is_none();
+        let session_cleared = mesh.session().peers().is_empty()
+            && mesh.session().generation().is_none()
+            && mesh.session().transport().is_none();
+        let polls_at_terminal = count_calls(&driver, |call| matches!(call, DriverCall::Poll));
+
+        driver.emit_and_wake(DriverEvent::Data {
+            peer,
+            generation: Some(uuid(12)),
+            data: vec![7],
+        });
+        let repeated_end = mesh.recv().await.is_none();
+        mesh.send_to(peer, b"stale-after-end");
+
+        let calls = driver.calls();
+        assert!(first_end, "closed signaling stream must end mesh recv");
+        assert!(
+            session_cleared,
+            "authoritative stream end must clear the mesh view"
+        );
+        assert!(
+            repeated_end,
+            "mesh recv must remain fused after returning None"
+        );
+        assert_eq!(
+            count_calls(&driver, |call| matches!(call, DriverCall::Poll)),
+            polls_at_terminal,
+            "a fused controller must not poll its driver after stream end"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, DriverCall::Disconnect(id) if *id == peer))
+                .count(),
+            1,
+            "authoritative stream end must disconnect each known peer exactly once"
+        );
+        assert!(
+            !calls.iter().any(
+                |call| matches!(call, DriverCall::Send(id, data) if *id == peer && data == b"stale-after-end")
+            ),
+            "send_to must not forward data after authoritative stream end"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_disconnects_each_known_mesh_peer_once() {
+        let peers = [uuid(56), uuid(57)];
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new_in_room(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(session_plan_multi(
+                &[(peers[0], false), (peers[1], false)],
+                &[],
+            ))),
+        ]);
+        let mut mesh = start_in_scripted_room(transport, driver.clone()).await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while mesh.session().peers().len() != peers.len() {
+                assert!(
+                    mesh.recv().await.is_some(),
+                    "event stream ended before the WebRTC plan was observed"
+                );
+            }
+        })
+        .await
+        .expect("controller never observed the scripted WebRTC plan");
+
+        mesh.shutdown().await;
+
+        let calls = driver.calls();
+        for peer in peers {
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| matches!(call, DriverCall::Disconnect(id) if *id == peer))
+                    .count(),
+                1,
+                "shutdown must disconnect each known peer exactly once"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

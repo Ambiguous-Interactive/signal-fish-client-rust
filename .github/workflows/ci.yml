@@ -127,8 +127,8 @@ jobs:
         run: cargo test --workspace ${{ matrix.flags }}
 
   # ──────────────────────────────────────────────────────────────
-  # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh and
-  # reconnect behavior, and required token-binding security cases.
+  # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh,
+  # reconnect and liveness behavior, and required token-binding security cases.
   # ──────────────────────────────────────────────────────────────
   server-mesh-e2e:
     name: Server compatibility E2E (${{ matrix.server_version }})
@@ -148,6 +148,12 @@ jobs:
           - server_version: "0.7.0"
             server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
             test_name: e2e_reconnect_after_disconnect_uses_server_token
+          - server_version: "0.7.0"
+            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+            test_name: e2e_slow_consumer_eviction_is_observable
+          - server_version: "0.7.0"
+            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+            test_name: e2e_sender_ping_survives_own_game_data_flood
           - server_version: "0.7.0"
             server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
             test_name: e2e_server_070_required_token_binding_wss
@@ -191,6 +197,19 @@ jobs:
           set -euo pipefail
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
           chmod +x "${server_bin}"
+          listed_tests="$(
+            cargo test --all-features --test real_server_e2e \
+              "${SERVER_TEST}" \
+              -- --ignored --exact --list
+          )"
+          matching_tests="$(
+            printf '%s\n' "${listed_tests}" | grep -Fxc "${SERVER_TEST}: test" || true
+          )"
+          if [ "${matching_tests}" -ne 1 ]; then
+            printf 'Expected exactly one ignored test named %s, libtest listed:\n%s\n' \
+              "${SERVER_TEST}" "${listed_tests}" >&2
+            exit 1
+          fi
           SIGNAL_FISH_SERVER_BIN="${PWD}/${server_bin}" \
             cargo test --all-features --test real_server_e2e \
               "${SERVER_TEST}" \

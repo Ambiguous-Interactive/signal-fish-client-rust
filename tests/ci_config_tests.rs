@@ -1590,15 +1590,17 @@ mod ci_workflow_policy {
     }
 
     #[test]
-    fn ci_pins_live_mesh_compatibility_seams() {
+    fn ci_pins_live_server_compatibility_seams() {
         let contents = ci_contents();
+        let server_job = extract_job_block(&contents, "server-mesh-e2e")
+            .expect("CI must contain the pinned-server compatibility job");
         let compatibility: toml::Value =
             toml::from_str(&read_project_file("tests/compatibility.toml"))
                 .expect("compatibility manifest must parse");
         let release_artifacts = compatibility["server_release_artifacts"]
             .as_table()
             .expect("server_release_artifacts must be a table");
-        for (asset, version, test_name) in [
+        let pinned_seams = [
             (
                 "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.7.0",
@@ -1613,6 +1615,16 @@ mod ci_workflow_policy {
                 "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.7.0",
                 "e2e_reconnect_after_disconnect_uses_server_token",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_slow_consumer_eviction_is_observable",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_sender_ping_survives_own_game_data_flood",
             ),
             (
                 "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -1644,7 +1656,8 @@ mod ci_workflow_policy {
                 "0.4.0",
                 "e2e_server_040_generationless_mesh_signal",
             ),
-        ] {
+        ];
+        for &(asset, version, test_name) in &pinned_seams {
             let digest = release_artifacts[asset]
                 .as_str()
                 .unwrap_or_else(|| panic!("{asset} release digest must be a string"));
@@ -1652,15 +1665,91 @@ mod ci_workflow_policy {
                 "- server_version: \"{version}\"\n            server_sha256: \"{digest}\"\n            test_name: {test_name}"
             );
             assert!(
-                contents.contains(&matrix_row),
+                server_job.contains(&matrix_row),
                 "CI must bind {asset} digest {digest} to {test_name} in one matrix row"
             );
         }
         let checksum_command =
             "printf '%s  %s\\n' \"${SERVER_SHA256}\" \"${asset}\" | sha256sum --check";
         assert!(
-            contents.contains(checksum_command),
+            server_job.contains(checksum_command),
             "CI must verify the matrix-bound release digest"
+        );
+
+        let matrix_rows = server_job
+            .lines()
+            .filter(|line| line.trim_start().starts_with("- server_version: "))
+            .count();
+        let matrix_test_entries: Vec<_> = server_job
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("test_name: "))
+            .collect();
+        let matrix_test_names: std::collections::BTreeSet<_> =
+            matrix_test_entries.iter().copied().collect();
+        let pinned_test_names: std::collections::BTreeSet<_> = pinned_seams
+            .iter()
+            .map(|(_, _, test_name)| *test_name)
+            .collect();
+        assert_eq!(
+            matrix_test_entries.len(),
+            matrix_test_names.len(),
+            "the pinned-server matrix must not run the same test more than once"
+        );
+        assert_eq!(
+            pinned_seams.len(),
+            pinned_test_names.len(),
+            "the audited pinned-server inventory must contain unique test names"
+        );
+        assert_eq!(
+            matrix_rows,
+            pinned_seams.len(),
+            "the pinned-server matrix must have exactly one row per audited compatibility test"
+        );
+        assert_eq!(
+            matrix_test_entries.len(),
+            matrix_rows,
+            "every pinned-server matrix row must name exactly one test"
+        );
+        assert_eq!(
+            matrix_test_names, pinned_test_names,
+            "the pinned-server matrix must contain exactly the audited compatibility tests"
+        );
+
+        // Tie the complete ignored-test inventory to the matrix without trying
+        // to parse arbitrary Rust syntax: every audited name must be an ignored
+        // async test, names must be unique, and the number of ignored attributes
+        // must equal the number of matrix entries.
+        let e2e_source = read_project_file("tests/real_server_e2e.rs");
+        let ignored_attributes = e2e_source
+            .lines()
+            .filter(|line| line.trim_start().starts_with("#[ignore"))
+            .count();
+        assert_eq!(
+            ignored_attributes,
+            pinned_test_names.len(),
+            "every ignored real-server E2E must have one pinned-server matrix entry"
+        );
+        for test_name in &pinned_test_names {
+            let declaration = format!("async fn {test_name}()");
+            let declaration_offset = e2e_source
+                .find(&declaration)
+                .unwrap_or_else(|| panic!("{test_name} must remain an async real-server test"));
+            let preceding_line = e2e_source[..declaration_offset]
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .expect("an E2E test declaration must have attributes");
+            assert!(
+                preceding_line.trim_start().starts_with("#[ignore"),
+                "{test_name} must remain ignored by offline cargo test runs"
+            );
+        }
+
+        assert!(
+            server_job.contains("-- --ignored --exact --list")
+                && server_job.contains("grep -Fxc \"${SERVER_TEST}: test\"")
+                && server_job.contains("if [ \"${matching_tests}\" -ne 1 ]; then"),
+            "the pinned-server job must fail closed unless libtest lists exactly one requested ignored test"
         );
     }
 
