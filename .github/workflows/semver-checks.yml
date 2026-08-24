@@ -67,7 +67,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@v2.85.13
+        uses: taiki-e/install-action@v2.86.5
         with:
           tool: cargo-semver-checks@0.50.0
 
