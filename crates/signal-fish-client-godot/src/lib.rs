@@ -10,6 +10,17 @@
 //! godot-rust 0.4.5 through 0.5.x, and requires Rust 1.94. Applications should
 //! select one exact `godot` version in that range so their `Gd<WebSocketPeer>`
 //! has the same type identity as the adapter's public API.
+//!
+//! # Outbound frame bound
+//!
+//! Godot refuses to buffer an outbound message once the peer's outbound
+//! buffer would overflow, so a single frame larger than `outbound_buffer_size`
+//! (65,535 bytes by default) is never admitted on native builds — and one at
+//! or above that size on web exports. Such a frame parks as `Pending`,
+//! growing only the capacity diagnostics. SDK-created peers keep that legacy
+//! outbound default and raise only the inbound buffer; keep game payloads
+//! under ~64 KiB, or construct your own peer with a raised outbound buffer
+//! and wrap it with [`GodotWebSocketTransport::from_peer`].
 
 use std::fmt;
 use std::task::{Context, Poll};
@@ -358,8 +369,10 @@ impl GodotWebSocketTransport {
     /// The connection handshake advances when the transport is polled. For web
     /// exports, use `wss://` when the exported page is served over HTTPS. The
     /// SDK-created peer uses an 8 MiB Godot inbound buffer so valid aggregated
-    /// server messages are not constrained by Godot's much smaller default.
-    /// Use [`Self::from_peer`] when the application must choose another size.
+    /// server messages are not constrained by Godot's much smaller default,
+    /// while the outbound buffer keeps Godot's own default — see the crate
+    /// docs for how that bounds a single admitted frame. Use
+    /// [`Self::from_peer`] when the application must choose either size.
     ///
     /// # Errors
     ///
