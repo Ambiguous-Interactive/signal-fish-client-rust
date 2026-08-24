@@ -582,7 +582,7 @@ extern "C" fn on_message_callback(
     if event.is_text != 0 {
         // Text message — create String from UTF-8 bytes.
         // num_bytes includes the NUL terminator for text messages.
-        let len = usize::from(event.num_bytes.saturating_sub(1));
+        let len = event.num_bytes.saturating_sub(1) as usize;
         // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
         // points to `event.num_bytes` valid bytes for this callback. `len`
         // excludes the NUL terminator. Empty payloads do not dereference data.
