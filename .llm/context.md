@@ -50,7 +50,7 @@ rules that may drift, such a merge can suppress push CI on the resulting
 default-branch SHA. The fail-closed workflow policy therefore rejects any
 Dependabot-specific workflow, all automated-merge primitives, and write
 permissions outside the release/docs allowlist. Ruleset #14801090 live-enforces
-reviewed merges and all required checks; issue #90 awaits an end-to-end proof PR.
+reviewed merges and all required checks.
 
 ## GitHub Tool Order
 
