@@ -191,6 +191,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documented the Godot adapter's outbound frame bound: Godot refuses to buffer
+  an outbound message once the peer's outbound buffer would overflow, so a
+  single frame larger than `outbound_buffer_size` (65,535 bytes by default)
+  parks as `Pending` on native builds — at or above it on web exports — with
+  only capacity diagnostics growing. SDK-created peers keep that legacy
+  outbound default and raise only the inbound buffer; the crate guide now
+  explains how to admit larger frames with `from_peer`.
 - Hardened async-driver terminal teardown: observing the shutdown signal is
   now tracked explicitly by a sticky wrapper instead of being inferred from
   event-delivery outcomes, so no future call-site change can re-poll the

@@ -174,7 +174,7 @@ fresh nonce, derived key, and sequence space; replay/reordering/tamper fails.
 The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
-SDK-created Godot peers set an 8 MiB inbound buffer before connecting, which may reserve roughly 16 MiB in Godot; `from_peer` preserves caller settings. The
+SDK-created Godot peers set an 8 MiB inbound buffer before connecting, which may reserve roughly 16 MiB in Godot; `from_peer` preserves caller settings. Outbound keeps Godot's legacy 65,535-byte default: a single frame over that size on native (at or above it on web) parks as `Pending`, growing only capacity diagnostics. The
 blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
 3,600-frame soak jobs on Server 0.7 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
@@ -302,8 +302,9 @@ Decoded game-data receipt counts before suppression; counters are diagnostic bou
 `SignalFishPollingClient` shares the classified/binary sends, queue bound,
 capacity accessors, `stats()`, and coherent `snapshot()`. Its default per-poll
 work budget is 64 frames/64 KiB in each direction, and its default close policy
-abandons client-owned queued work. Adaptive backpressure and flush-on-close are
-explicit opt-ins. Use `polling_stats()` for scheduling/queue diagnostics and
+abandons client-owned queued work. Flush-on-close is an explicit opt-in;
+adaptive outbound admission lives on the Godot transport options, not the
+polling client. Use `polling_stats()` for scheduling/queue diagnostics and
 `queue_age_stats()` for sampled current/peak age of client-owned work; reset the
 age peak after authentication/setup when measuring gameplay. Backend acceptance
 ends queue age but is not peer delivery. Use `transport_diagnostics()` for
