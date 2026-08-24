@@ -13,6 +13,10 @@
 //! cargo run --example custom_transport
 //! ```
 
+// Demo counters and deadlines use plain arithmetic; this example is not
+// part of the panic-critical library surface.
+#![allow(clippy::arithmetic_side_effects)]
+
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
     SignalFishClient, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,

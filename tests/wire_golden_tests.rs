@@ -4,7 +4,8 @@
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
 )]
 //! Golden-wire conformance tests against the Signal Fish **server's** published
 //! protocol samples (vendored under `tests/wire-samples/`).

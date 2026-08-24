@@ -1455,6 +1455,7 @@ fn reconnect_message(players: usize) -> ServerMessage {
     }))
 }
 
+#[allow(clippy::arithmetic_side_effects)] // `index` starts at 1: subtraction cannot underflow
 fn players_fixture(players: usize) -> Vec<PlayerInfo> {
     (0..players)
         .map(|index| {

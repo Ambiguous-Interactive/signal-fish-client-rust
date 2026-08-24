@@ -1185,18 +1185,18 @@ where
                     if !self.send_failed {
                         self.control_flush_pending = true;
                     }
-                    skipped_control_frames += 1;
+                    skipped_control_frames = skipped_control_frames.saturating_add(1);
                 }
                 Message::Pong(_) => {
                     tracing::trace!("received WebSocket pong (ignored)");
-                    skipped_control_frames += 1;
+                    skipped_control_frames = skipped_control_frames.saturating_add(1);
                 }
                 Message::Frame(_) => {
                     // This variant is never produced by the read half of the stream;
                     // it exists only for exhaustiveness against future `Message`
                     // variants. We keep the arm to satisfy exhaustiveness checks.
                     tracing::trace!("received raw WebSocket frame, skipping");
-                    skipped_control_frames += 1;
+                    skipped_control_frames = skipped_control_frames.saturating_add(1);
                 }
             }
         }

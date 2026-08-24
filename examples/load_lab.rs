@@ -30,6 +30,10 @@
 //! instance). Timestamps ride inside the payload, so latency is measured on
 //! one process clock: run all roles from this single binary.
 
+// Measurement harness counters/deadlines use plain arithmetic; this is a
+// standalone lab tool, not the panic-critical library surface.
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::error::Error;
 use std::time::{Duration, Instant};
 

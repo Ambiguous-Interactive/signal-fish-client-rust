@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Measurement medians divide by a caller-checked positive operation count.
+#![allow(clippy::arithmetic_side_effects)]
 
 use std::time::Instant;
 
