@@ -4,7 +4,8 @@
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
 )]
 //! Shared test utilities for Signal Fish Client integration tests.
 //!

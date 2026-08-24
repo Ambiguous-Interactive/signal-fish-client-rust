@@ -2,7 +2,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
 )]
 //! CI configuration policy tests for Signal Fish Client.
 //!
@@ -3172,6 +3173,11 @@ mod safety_analysis_policy {
         "exit",
         "mem_forget",
         "undocumented_unsafe_blocks",
+        // Promoted by the 2026-08 runtime-invariant sweep: raw integer
+        // arithmetic must be checked/saturating/wrapping-explicit or carry a
+        // scoped proof, keeping debug/release overflow semantics aligned on
+        // hostile input. Zero unguarded production findings at promotion.
+        "arithmetic_side_effects",
     ];
 
     fn manifest(path: &str) -> toml::Value {
@@ -3610,6 +3616,7 @@ mod safety_analysis_policy {
                 "unimplemented",
                 "unreachable",
                 "indexing_slicing",
+                "arithmetic_side_effects",
             ] {
                 assert_eq!(
                     member_clippy.get(lint).and_then(toml::Value::as_str),
@@ -3627,6 +3634,18 @@ mod safety_analysis_policy {
                 "{member_manifest} must deny or forbid unsafe_code"
             );
         }
+
+        // Release builds must validate under the same arithmetic semantics as
+        // every debug test, fuzz, and Miri run: overflow aborts loudly instead
+        // of wrapping silently. Bench profiles inherit this through `release`.
+        let release = cargo["profile"]["release"]
+            .as_table()
+            .expect("Cargo.toml must define [profile.release]");
+        assert_eq!(
+            release.get("overflow-checks").and_then(toml::Value::as_bool),
+            Some(true),
+            "[profile.release] must enable overflow-checks so release arithmetic matches validated debug semantics"
+        );
     }
 
     #[test]

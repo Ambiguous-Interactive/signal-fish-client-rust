@@ -96,6 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Workspace release builds now enable `overflow-checks`, so integer overflow
+  aborts loudly instead of wrapping silently. Every supported configuration
+  (debug tests, release builds, fuzzing, and Miri) now validates the same
+  arithmetic semantics, and a promoted workspace-wide
+  `clippy::arithmetic_side_effects` denial keeps raw integer math on
+  server-controlled values checked/saturating/wrapping-explicit. Delivery
+  accountability gap/counter arithmetic is machine-checked accordingly;
+  observable protocol behavior and wire bytes are unchanged.
 - **Breaking:** Directed room operations are now refused before the server
   confirms authentication. `join_room`, `leave_room`, `reconnect`,
   `join_as_spectator`, and `leave_spectator` return the new

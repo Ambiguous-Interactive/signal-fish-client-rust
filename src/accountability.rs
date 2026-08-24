@@ -506,34 +506,43 @@ impl DeliveryAccountability {
             }
             ranges.push((gap.from_seq, gap.to_seq));
         }
-        let delta = |next: u64, prior: u64| next - prior;
-        let unsupported_delta = delta(
+        // `validate_monotonic_counters` already rejected backward movement, so
+        // these subtractions are total; `checked_sub` keeps that invariant
+        // machine-checked instead of relying on the adjacent validation.
+        let delta = |next: u64, prior: u64| {
+            next.checked_sub(prior).ok_or_else(|| {
+                "delivery accountability violation: cumulative per-class counters moved backward"
+                    .to_string()
+            })
+        };
+        let reliable_unsupported = delta(
             report.per_class.reliable.unsupported_format,
             previous.reliable.unsupported_format,
-        )
-        .checked_add(delta(
+        )?;
+        let latest_unsupported = delta(
             report.per_class.latest.unsupported_format,
             previous.latest.unsupported_format,
-        ))
-        .and_then(|sum| {
-            sum.checked_add(delta(
-                report.per_class.volatile.unsupported_format,
-                previous.volatile.unsupported_format,
-            ))
-        })
-        .ok_or_else(|| {
-            "delivery accountability violation: unsupported-format delta overflowed".to_string()
-        })?;
+        )?;
+        let volatile_unsupported = delta(
+            report.per_class.volatile.unsupported_format,
+            previous.volatile.unsupported_format,
+        )?;
+        let unsupported_delta = reliable_unsupported
+            .checked_add(latest_unsupported)
+            .and_then(|sum| sum.checked_add(volatile_unsupported))
+            .ok_or_else(|| {
+                "delivery accountability violation: unsupported-format delta overflowed".to_string()
+            })?;
         let counter_deltas = [
             delta(
                 report.per_class.latest.superseded,
                 previous.latest.superseded,
-            ),
+            )?,
             delta(
                 report.per_class.latest.dropped_full,
                 previous.latest.dropped_full,
-            ),
-            delta(report.per_class.volatile.dropped, previous.volatile.dropped),
+            )?,
+            delta(report.per_class.volatile.dropped, previous.volatile.dropped)?,
             unsupported_delta,
         ];
         if counter_deltas != causal_counts {
@@ -796,7 +805,7 @@ impl DeliveryAccountability {
 
         let mut next = expected;
         let mut consumed = 0usize;
-        for gap in gaps.iter() {
+        for (index, gap) in gaps.iter().enumerate() {
             if gap.from_seq != next || gap.to_seq >= received {
                 break;
             }
@@ -806,17 +815,19 @@ impl DeliveryAccountability {
                     key.0, key.1
                 )
             })?;
-            consumed += 1;
+            consumed = index.saturating_add(1);
             if next == received {
                 break;
             }
         }
         if next != received {
+            // Sequence stamps start at 1, so the last missing sequence is
+            // `received - 1`; saturation is unreachable for validated stamps.
             return Err(format!(
                 "delivery accountability violation: prior exact reports do not cover {} epoch {} gap {expected}..={}",
                 key.0,
                 key.1,
-                received - 1
+                received.saturating_sub(1)
             ));
         }
         gaps.drain(..consumed);
@@ -842,7 +853,13 @@ impl DeliveryAccountability {
                 self.retire_departed(player_id, epoch);
                 return Ok(());
             }
-            last_seq + 1
+            // Guarded above: last_seq < terminal.final_seq, so the successor
+            // still fits; `checked_add` keeps that invariant machine-checked.
+            last_seq.checked_add(1).ok_or_else(|| {
+                format!(
+                    "delivery accountability violation: sender {player_id} sequence overflow before PlayerLeft epoch {epoch}"
+                )
+            })?
         } else {
             return Err(format!(
                 "delivery accountability violation: sender {player_id} advanced beyond its unresolved PlayerLeft epoch {}",
@@ -858,19 +875,23 @@ impl DeliveryAccountability {
             .unwrap_or(&[]);
         let mut consumed = 0usize;
         let mut covered = terminal.final_seq == 0;
-        while next <= terminal.final_seq {
-            let Some(gap) = gaps.get(consumed) else {
-                return Ok(());
-            };
+        for (index, gap) in gaps.iter().enumerate() {
+            if next > terminal.final_seq {
+                break;
+            }
             if gap.from_seq != next || gap.to_seq > terminal.final_seq {
                 return Ok(());
             }
-            consumed += 1;
+            consumed = index.saturating_add(1);
             if gap.to_seq == terminal.final_seq {
                 covered = true;
                 break;
             }
-            next = gap.to_seq + 1;
+            next = gap.to_seq.checked_add(1).ok_or_else(|| {
+                format!(
+                    "delivery accountability violation: gap range overflow for {player_id} epoch {epoch}"
+                )
+            })?;
         }
         if !covered {
             return Ok(());
