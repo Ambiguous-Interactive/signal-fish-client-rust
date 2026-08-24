@@ -191,6 +191,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hardened async-driver terminal teardown: observing the shutdown signal is
+  now tracked explicitly by a sticky wrapper instead of being inferred from
+  event-delivery outcomes, so no future call-site change can re-poll the
+  completed `shutdown` oneshot — which would panic the transport task
+  mid-teardown, closing both channels and failing every parked reliable
+  sender with `NotConnected` instead of completing graceful teardown.
+  Documented event-delivery and budget contracts are unchanged. (The polling
+  client emits synchronously from `poll()` and was never affected.)
 - Fixed a `ProtocolViolationPolicy::Disconnect` teardown hanging past
   [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) when the violating
   frame's event batch meets a consumer that stopped draining and `shutdown`
