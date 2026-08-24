@@ -81,10 +81,10 @@ checker self-tests enforce close-before-delete callback-state ownership;
 terminal deletion failure intentionally leaks the small allocation instead of
 risking late-callback use-after-free.
 
-Change-scoped, scheduled, and manual Deep Safety runs Miri protocol tests, three
-raw-byte JSON/MessagePack fuzz targets with temporary corpora, and focused
-mutation testing. It is not required because of nightly/runtime variability;
-required Clippy and WASM gates enforce compiler safety on every PR.
+Change-scoped, scheduled, and manual Deep Safety runs Miri protocol tests,
+ThreadSanitizer, three raw-byte JSON/MessagePack fuzz targets, and focused
+mutation testing. Nightly/runtime variability keeps it non-required; required
+Clippy and WASM gates enforce compiler safety on every PR.
 
 Native ASan is deferred because owned unsafe is Emscripten-only; fuzz sanitizer
 instrumentation covers the parsers it drives. Blanket Clippy
@@ -218,6 +218,8 @@ Required second argument to `SignalFishClient::start`. Only `app_id` is required
 Opt into protocol v3 relay/accountability with `.enable_v3()`. Use
 `.enable_mesh()` only with a WebRTC driver. `MeshController::start` preserves
 compatible choices while ensuring v3, WebRTC, and a Host or Mesh topology.
+Once `recv` observes signaling end, or on shutdown, the controller clears its
+view, disconnects peers, fuses receive, and prevents later driver sends.
 
 ```rust,ignore
 pub struct SignalFishConfig {

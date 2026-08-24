@@ -158,6 +158,13 @@ retagged), reports `TransportStatus` on the 0↔1 connected boundary, tears
 down peers on re-election / `PlayerLeft` / `RoomLeft` / `Disconnected`, and
 surfaces a clean `MeshEvent` stream.
 
+`Disconnected` and signaling-stream closure are terminal controller boundaries.
+Before returning `MeshEvent::Signaling(Disconnected)`, or returning `None` for
+stream closure, the controller clears its session view and disconnects every
+known driver peer. It is then fused: later `recv()` calls return `None` without
+polling the driver, and `send_to` ignores data. Explicit `shutdown()` performs
+the same peer cleanup before gracefully stopping the signaling client.
+
 When integrating a driver without `MeshController`, relay its output with
 `send_signal_for_generation(peer, generation, signal)` (or the corresponding
 raw method). The client atomically refuses the send if a replacement plan has
@@ -197,11 +204,11 @@ mesh.shutdown().await;
 | API | Purpose |
 |-----|---------|
 | `MeshController::start(transport, config, driver)` | Build the controller; ensure v3, WebRTC, and a P2P topology while preserving compatible custom choices. |
-| `recv().await -> Option<MeshEvent>` | Drive the handshake and yield the next high-level event. `None` once the transport closes. |
-| `send_to(peer, &[u8])` | Send application bytes to a peer over its data channel. |
+| `recv().await -> Option<MeshEvent>` | Drive the handshake and yield the next high-level event. A returned `Disconnected` has already cleared the session and disconnected known peers; after it or stream closure, the controller is fused and returns `None` without polling the driver. |
+| `send_to(peer, &[u8])` | Send application bytes to a peer over its data channel; ignored after the controller becomes terminal. |
 | `with_pump_interval(Duration)` | Tune the periodic driver pump (default 20 ms). |
 | `join_room` / `set_ready` / `start_game` / `leave_room` / `client()` | Room-lifecycle delegations to the inner client. |
-| `shutdown().await` | Gracefully stop the controller and its client. |
+| `shutdown().await` | Disconnect every known driver peer, then gracefully stop the signaling client. |
 
 `MeshEvent` has four variants: `Signaling(Box<SignalFishEvent>)` (every
 underlying event, passed through verbatim), `PeerConnected(PlayerId)`,

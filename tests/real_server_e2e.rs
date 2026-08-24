@@ -1635,14 +1635,25 @@ async fn e2e_sender_ping_survives_own_game_data_flood() {
     .await;
 
     // Flood (room of one: relay fan-out is empty, but the inbound path and
-    // parse work are real) while pinging once per 250ms.
+    // parse work are real). Each synchronous burst puts a substantial batch in
+    // the client command queue ahead of its Ping without yielding to the
+    // transport task, so the measured Pong proves ordered control-plane
+    // progress behind real bulk traffic rather than after a pre-ping quiet
+    // interval.
+    const PING_ROUNDS: u32 = 8;
+    const BURST_FRAMES: u32 = 512;
     let payload = serde_json::json!({ "pad": "y".repeat(512) });
     let mut pongs = 0u32;
+    let mut accepted_game_data = 0u32;
     let mut worst_rtt = Duration::ZERO;
-    for _ in 0..8 {
-        let _ = a.send_game_data(payload.clone());
-        a.ping().expect("queue ping");
+    for _ in 0..PING_ROUNDS {
+        for _ in 0..BURST_FRAMES {
+            a.send_game_data(payload.clone())
+                .expect("the bounded pre-ping flood must be admitted");
+            accepted_game_data += 1;
+        }
         let sent_at = Instant::now();
+        a.ping().expect("queue ping");
         wait_for_event(&mut a_events, "Pong", Duration::from_secs(3), |e| {
             matches!(e, SignalFishEvent::Pong)
         })
@@ -1650,13 +1661,17 @@ async fn e2e_sender_ping_survives_own_game_data_flood() {
         let rtt = sent_at.elapsed();
         worst_rtt = worst_rtt.max(rtt);
         pongs += 1;
-        for _ in 0..50 {
-            let _ = a.send_game_data(payload.clone());
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    println!("E4 SMOKE DATA: {pongs} pongs, worst sender-side RTT {worst_rtt:?}");
-    assert_eq!(pongs, 8);
+    println!(
+        "E4 SMOKE DATA: {accepted_game_data} accepted GameData frames, \
+         {pongs} pongs, worst sender-side RTT {worst_rtt:?}"
+    );
+    assert_eq!(
+        accepted_game_data,
+        PING_ROUNDS * BURST_FRAMES,
+        "every substantial pre-ping flood batch must be accepted"
+    );
+    assert_eq!(pongs, PING_ROUNDS);
     assert!(
         worst_rtt < Duration::from_secs(2),
         "sender-side Pong RTT should stay low during its own flood; got {worst_rtt:?}"

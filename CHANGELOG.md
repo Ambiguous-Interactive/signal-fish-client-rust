@@ -191,6 +191,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `MeshController` retaining a stale session and live peer-driver state
+  when its signaling event stream ended without room for the best-effort
+  `Disconnected` event. End-of-stream and explicit shutdown now disconnect
+  every known peer exactly once, clear the mesh view, fuse `recv`, and prevent
+  post-termination `send_to` calls from reaching the WebRTC driver.
 - Documented the Godot adapter's outbound frame bound: Godot refuses to buffer
   an outbound message once the peer's outbound buffer would overflow, so a
   single frame larger than `outbound_buffer_size` (65,535 bytes by default)
