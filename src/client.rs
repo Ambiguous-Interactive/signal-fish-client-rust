@@ -2077,7 +2077,6 @@ async fn finish_send_failure(
 ) {
     let deadline = tokio::time::Instant::now().checked_add(timeout);
     let mut drain = ReadyFrameDrain::new(None, ReadyFrameDrainBudget::standard());
-    let mut delivery_preempted = false;
     loop {
         let polled = std::future::poll_fn(|cx| {
             std::task::Poll::Ready(drain.poll_next(
@@ -2107,8 +2106,7 @@ async fn finish_send_failure(
 
         let outcome = lock_core(state).process_frame(frame);
         let protocol_stop = outcome.disconnect;
-        delivery_preempted = !emit_event_batch(event_tx, shutdown, deadline, outcome.events).await;
-        if delivery_preempted {
+        if !emit_event_batch(event_tx, shutdown, deadline, outcome.events).await {
             debug!("terminal event delivery was preempted mid-batch after send failure");
             break;
         }
@@ -2119,10 +2117,11 @@ async fn finish_send_failure(
 
     let reason = peer_close_reason(transport).or_else(|| Some(error.to_string()));
     let disconnected = lock_core(state).disconnect(reason);
+    // A preempted batch means the sticky signal was observed or the shared
+    // deadline has passed, so this bounded wait always collapses within one
+    // poll instead of parking beside the already-spent budget.
     let deliver_disconnected = async {
-        if delivery_preempted
-            || !emit_terminal_event(event_tx, shutdown, deadline, disconnected.clone()).await
-        {
+        if !emit_terminal_event(event_tx, shutdown, deadline, disconnected.clone()).await {
             let _ = event_tx.try_send(disconnected);
         }
     };
@@ -2317,11 +2316,12 @@ async fn transport_loop(
                             break;
                         }
                         if let Some(teardown) = violation_teardown {
-                            // If the batch was preempted, the shutdown signal
-                            // may already have been observed (its tracking is
-                            // sticky), so the farewell skips the bounded wait
-                            // and takes the nonblocking attempt — exactly
-                            // like the send-failure teardown.
+                            // A preempted batch means the sticky shutdown
+                            // signal was observed or the shared deadline has
+                            // passed, so the farewell's bounded wait always
+                            // collapses within one poll — exactly like the
+                            // send-failure teardown — and never parks beside
+                            // the already-spent budget.
                             let TerminalTeardown {
                                 reason,
                                 deadline,
@@ -2329,14 +2329,13 @@ async fn transport_loop(
                             } = teardown;
                             let event = lock_core(&state).disconnect(reason);
                             let deliver_farewell = async {
-                                if !delivered
-                                    || !emit_terminal_event(
-                                        &event_tx,
-                                        &mut shutdown,
-                                        deadline,
-                                        event.clone(),
-                                    )
-                                    .await
+                                if !emit_terminal_event(
+                                    &event_tx,
+                                    &mut shutdown,
+                                    deadline,
+                                    event.clone(),
+                                )
+                                .await
                                 {
                                     let _ = event_tx.try_send(event);
                                 }
