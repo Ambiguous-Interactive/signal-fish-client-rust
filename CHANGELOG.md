@@ -202,6 +202,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `MeshSession` continuing to report a departed host through `host()`
+  and `direct_endpoint()` until the next plan arrived. A host's `PlayerLeft`
+  now clears both immediately, matching the shared core's authority handling,
+  so consumers cannot dial a dead endpoint in the re-planning gap; the
+  replacement `SessionPlan` owns host re-election.
 - Fixed `MeshController` retaining a stale session and live peer-driver state
   when its signaling event stream ended without room for the best-effort
   `Disconnected` event. End-of-stream and explicit shutdown now disconnect
