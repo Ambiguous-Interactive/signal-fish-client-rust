@@ -96,6 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The optional `token-binding` dependency `base64` moved from 0.22 to 0.23.
+  The STANDARD engine API used for token-binding proofs is unchanged; only
+  the version requirement advances.
 - Workspace release builds now enable `overflow-checks`, so integer overflow
   aborts loudly instead of wrapping silently. Every supported configuration
   (debug tests, release builds, fuzzing, and Miri) now validates the same
