@@ -30,6 +30,7 @@ expect_used = "deny"
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+unreachable = "deny"
 indexing_slicing = "deny"
 # Kept in lockstep with the core crate's stable restriction lints; `unsafe_code`
 # is already forbidden here, so the unsafe-documentation lint is moot.

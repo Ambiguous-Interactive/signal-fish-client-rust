@@ -5,7 +5,8 @@
     clippy::panic,
     clippy::todo,
     clippy::unimplemented,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::unreachable
 )]
 //! End-to-end tests against a **real** Signal Fish server.
 //!
