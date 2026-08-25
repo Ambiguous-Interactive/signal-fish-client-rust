@@ -788,14 +788,13 @@ impl ClientCore {
             return outcome;
         }
 
-        let duplicate_protocol_info =
-            matches!(server_msg, ServerMessage::ProtocolInfo(_)) && self.protocol_info_seen;
+        // `validate_inbound_message` rejects any second `ProtocolInfo` before
+        // this point, so the accountability swap below always runs on the one
+        // permitted negotiation frame.
         if let ServerMessage::ProtocolInfo(payload) = &server_msg {
-            if !duplicate_protocol_info {
-                self.accountability = DeliveryAccountability::new(
-                    payload.protocol_version.is_some_and(|version| version >= 3),
-                );
-            }
+            self.accountability = DeliveryAccountability::new(
+                payload.protocol_version.is_some_and(|version| version >= 3),
+            );
         }
 
         let authoritative_baseline = matches!(
@@ -805,18 +804,12 @@ impl ClientCore {
                 | ServerMessage::Reconnected(_)
         );
         let effective_game_data_format = self.effective_game_data_format().unwrap_or_default();
-        let validation = if duplicate_protocol_info {
-            self.accountability
-                .observe_server_message(false)
-                .map(|()| GameDataDisposition::Apply)
-        } else {
-            accountability::validate_server_frame(
-                &mut self.accountability,
-                &server_msg,
-                effective_game_data_format,
-                false,
-            )
-        };
+        let validation = accountability::validate_server_frame(
+            &mut self.accountability,
+            &server_msg,
+            effective_game_data_format,
+            false,
+        );
 
         let (disposition, validation_failed) = match validation {
             Ok(disposition) => {
@@ -857,9 +850,6 @@ impl ClientCore {
             && (authoritative_baseline
                 || self.violation_policy == ProtocolViolationPolicy::Quarantine)
         {
-            return outcome;
-        }
-        if duplicate_protocol_info {
             return outcome;
         }
         if let ServerMessage::Signal {

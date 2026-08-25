@@ -158,7 +158,16 @@ impl MeshSession {
             SignalFishEvent::PlayerLeft { player_id, .. } => {
                 let before = self.peers.len();
                 self.peers.retain(|p| p.player_id != *player_id);
-                self.peers.len() != before
+                let host_departed = self.host == Some(*player_id);
+                if host_departed {
+                    // The server elects and replans a replacement host on
+                    // departure, but the next SessionPlan owns that decision.
+                    // Until it lands, a departed host must not stay reachable
+                    // through host()/direct_endpoint().
+                    self.host = None;
+                    self.direct_endpoint = None;
+                }
+                self.peers.len() != before || host_departed
             }
             // ICE pre-gather: seed the ICE servers during the lobby wait. Do not
             // create peers here — a relay-floor room may never produce a plan.
@@ -707,6 +716,51 @@ mod tests {
             epoch: None,
             final_seq: None,
         }));
+    }
+
+    #[test]
+    fn player_left_clears_departed_host_and_endpoint() {
+        let mut s = MeshSession::new();
+        s.apply(&SignalFishEvent::SessionPlan {
+            generation: None,
+            topology: Topology::Host,
+            transport: TransportKind::Direct,
+            host: Some(uuid(1)),
+            direct_endpoint: Some(DirectEndpoint {
+                host: "203.0.113.8".into(),
+                port: 7000,
+            }),
+            peers: vec![],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        });
+        // A departed host must not stay reachable through host() or
+        // direct_endpoint(); the replacement SessionPlan owns re-election.
+        // The plan carries no peer rows, so `true` here reports exactly the
+        // host/endpoint view change.
+        assert!(s.apply(&SignalFishEvent::PlayerLeft {
+            player_id: uuid(1),
+            epoch: None,
+            final_seq: None,
+        }));
+        assert!(s.host().is_none());
+        assert!(s.direct_endpoint().is_none());
+        assert!(s.peers().is_empty());
+
+        // A non-host departure leaves the elected host untouched.
+        s.apply(&plan(
+            Topology::Host,
+            Some(uuid(3)),
+            vec![peer(3, false), peer(4, false)],
+            vec![],
+        ));
+        assert_eq!(s.host(), Some(uuid(3)));
+        assert!(s.apply(&SignalFishEvent::PlayerLeft {
+            player_id: uuid(4),
+            epoch: None,
+            final_seq: None,
+        }));
+        assert_eq!(s.host(), Some(uuid(3)));
     }
 
     #[test]

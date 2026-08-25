@@ -104,7 +104,9 @@ pub fn decode_v2_binary_game_data(wire: &[u8]) -> Result<V2BinaryGameDataFrame, 
 ///
 /// Unlike a derived Serde decoder, this validates the physical MessagePack
 /// representation: a map with string keys, binary UUID/payload fields, string
-/// encoding token, integer delivery stamps, and no trailing value.
+/// encoding token, integer delivery stamps, and no trailing value. Type-level
+/// shape is enforced, not minimal-length encoding: integer markers may use any
+/// width that carries the value, and map headers may use any size prefix.
 pub fn decode_v3_binary_game_data(wire: &[u8]) -> Result<V3BinaryGameDataFrame, String> {
     let mut remaining = wire;
     let field_count = read_map_len(&mut remaining)

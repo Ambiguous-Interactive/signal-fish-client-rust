@@ -45,6 +45,14 @@ const DEFAULT_POLL_FRAMES: usize = DEFAULT_DRIVER_WORK_FRAMES;
 const DEFAULT_POLL_BYTES: usize = DEFAULT_DRIVER_WORK_BYTES;
 
 /// Maximum send and receive work performed by one [`poll`](SignalFishPollingClient::poll).
+///
+/// These bounds also cap the bounded ready-frame drain that follows a terminal
+/// send failure inside the same poll: that drain processes at most
+/// `min(receive_frames, 64)` complete frames and stops at the first frame
+/// that reaches `min(receive_bytes, 64 KiB)`, so a frame-budgeted caller
+/// never sees teardown work beyond its configured per-poll frame bound. The
+/// async driver has no budget knob and always uses the 64-frame / 64-KiB
+/// standard drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollingWorkBudget {
     /// Maximum outbound ownership transfers per poll.
@@ -1108,6 +1116,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
         started_at: Instant,
         terminal_now: &mut impl FnMut() -> Instant,
     ) {
+        // The configured receive budget caps this teardown drain so a
+        // frame-budgeted caller never exceeds its per-poll frame bound (the
+        // byte-crossing frame itself is processed); the async driver, which
+        // has no budget knob, always drains the standard 64 frames / 64 KiB
+        // here.
         let standard = ReadyFrameDrainBudget::standard();
         let budget = ReadyFrameDrainBudget::new(
             self.options.work_budget.receive_frames.min(standard.frames),

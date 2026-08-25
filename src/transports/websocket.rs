@@ -514,7 +514,10 @@ impl WebSocketConnectOptions {
 /// still return already-buffered frames; the first backend `Pending`, receive
 /// failure, EOF, close, or abort then fully fuses the transport. Pre-acceptance
 /// token-binding errors and `WriteBufferFull` with exact frame restoration are
-/// retryable refusals instead.
+/// retryable refusals instead — for direct [`Transport`] operation. The
+/// built-in client drivers choose fail-fast semantics and map any send error,
+/// including a restored `WriteBufferFull`, to a terminal disconnect that drops
+/// the connection and its retained frame.
 pub struct WebSocketTransport {
     state: WebSocketState<WsStream>,
 }

@@ -38,7 +38,9 @@ use common::{
     game_data_json, new_peer_json, peer_transport_status_json, player_left_json, pong_json,
     protocol_info_json, reconnected_json, room_joined_json, room_left_json, session_plan_json,
     signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len, MockTransport,
+    RecordingCloseTransport,
 };
+use std::time::Duration;
 
 // ════════════════════════════════════════════════════════════════════
 // Helper: start a mock client with scripted responses
@@ -261,6 +263,45 @@ impl Transport for HangingCloseTransport {
 // ════════════════════════════════════════════════════════════════════
 // Auth flow lifecycle
 // ════════════════════════════════════════════════════════════════════
+
+/// A zero `shutdown_timeout` must collapse the teardown deadline to "now":
+/// the loop aborts the transport instead of attempting a graceful close that
+/// can never complete, and the farewell still reaches an idle consumer.
+#[tokio::test]
+async fn zero_shutdown_timeout_aborts_without_attempting_close() {
+    let transport = RecordingCloseTransport::default();
+    let config = SignalFishConfig::new("mb_test_integration").with_shutdown_timeout(Duration::ZERO);
+    let (mut client, mut events) = SignalFishClient::start(transport.clone(), config);
+
+    client.shutdown().await;
+
+    assert_eq!(
+        transport
+            .close_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a zero deadline must not attempt the graceful close handshake"
+    );
+    assert_eq!(
+        transport
+            .abort_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "a zero deadline must fall back to abort exactly once"
+    );
+    // The synthetic Connected event may or may not precede the farewell
+    // depending on loop scheduling; the farewell must reach an idle consumer.
+    loop {
+        match events.recv().await {
+            Some(SignalFishEvent::Connected) => continue,
+            other => assert!(
+                matches!(other, Some(SignalFishEvent::Disconnected { .. })),
+                "expected Disconnected, got {other:?}"
+            ),
+        }
+        break;
+    }
+}
 
 #[tokio::test]
 async fn auth_flow_connected_then_authenticated() {

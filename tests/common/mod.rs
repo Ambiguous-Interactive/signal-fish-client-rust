@@ -13,7 +13,7 @@
 //! constructing common server response JSON strings.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use signal_fish_client::protocol::SpectatorJoinedPayload;
@@ -544,4 +544,45 @@ pub fn peer_transport_status_json(peer_id: PlayerId, connected: bool) -> String 
         connected,
     })
     .expect("peer_transport_status_json serialization")
+}
+
+/// Transport whose graceful close never completes, with per-path call
+/// counters so tests can pin abort-vs-close teardown decisions.
+#[derive(Clone, Default)]
+pub struct RecordingCloseTransport {
+    /// Times the driver attempted the graceful `poll_close` handshake.
+    pub close_calls: Arc<AtomicUsize>,
+    /// Times the driver invoked the abort fallback.
+    pub abort_calls: Arc<AtomicUsize>,
+}
+
+impl Transport for RecordingCloseTransport {
+    fn abort(&mut self) {
+        self.abort_calls.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn poll_send(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        // Accept ownership and drop; teardown decisions are what is pinned.
+        let _accepted = frame.take();
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_recv(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), SignalFishError>> {
+        self.close_calls.fetch_add(1, Ordering::Relaxed);
+        std::task::Poll::Pending
+    }
 }
