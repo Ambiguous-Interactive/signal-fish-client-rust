@@ -1845,6 +1845,14 @@ async fn finish_core_shutdown(
     state: &Arc<Mutex<ClientCore>>,
     shutdown_timeout: Duration,
 ) {
+    // A single nonblocking attempt is deliberate here, not a uniformity gap
+    // with the bounded terminal-disconnect farewells: every caller reaches
+    // this function with the sticky shutdown signal already observed,
+    // including one arriving via a shutdown-preempted ordinary batch, so a
+    // bounded delivery would collapse within one poll to exactly this
+    // attempt. Starting a fresh budget instead would stack teardown time
+    // past `shutdown_timeout` — the hang class issues #141 and #149
+    // eliminated.
     let event = lock_core(state).disconnect(Some("client shut down".into()));
     let _ = event_tx.try_send(event);
     finish_send_and_close_bounded(transport, pending_send, state, shutdown_timeout).await;

@@ -931,6 +931,11 @@ impl DeliveryAccountability {
         if !has_terminal && !self.announced_epochs.contains_key(&player_id) {
             self.senders.remove(&player_id);
             self.stale_senders.remove(&player_id);
+            // Full retirement leaves no live incarnation: any pending range
+            // still keyed to this player belongs to a retired incarnation and
+            // must never explain or reject a future epoch-reuse incarnation.
+            self.pending_gaps
+                .retain(|(sender, _epoch), _gaps| *sender != player_id);
         }
     }
 }
@@ -1569,6 +1574,55 @@ mod tests {
         );
         assert!(state.senders.is_empty());
         assert!(state.departed_senders.is_empty());
+    }
+
+    /// Seat churn that ends in a full sender retirement (zero terminal at the
+    /// newest announced epoch) with a pending exact range from an older
+    /// incarnation. Returns the machine and the player id for reuse.
+    fn sender_with_orphaned_gap_from_retired_incarnation() -> (DeliveryAccountability, PlayerId) {
+        let sender = id(9);
+        let mut state = DeliveryAccountability::default();
+        state.note_player_joined(&player(sender, 1)).unwrap();
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(1),
+                gaps: vec![gap_at_epoch(sender, 1, 1, 1)],
+            })
+            .unwrap();
+        state.note_player_joined(&player(sender, 2)).unwrap();
+        state.note_player_left(sender, Some(2), Some(0)).unwrap();
+        assert!(state.senders.is_empty());
+        // Full retirement drops every range keyed to the departed sender.
+        assert!(state.pending_gaps.is_empty());
+        // The server reuses epoch value 1 for the rejoining incarnation.
+        state.note_player_joined(&player(sender, 1)).unwrap();
+        (state, sender)
+    }
+
+    #[test]
+    fn retired_incarnation_gaps_do_not_authorize_reused_epoch_data() {
+        let (mut state, sender) = sender_with_orphaned_gap_from_retired_incarnation();
+        let error = state
+            .record_game_data(sender, Some(2), Some(1), None, None)
+            .expect_err("a dead incarnation's gap must not explain a reused epoch's jump");
+        assert!(error.contains("unexplained gap"), "{error}");
+    }
+
+    #[test]
+    fn retired_incarnation_gaps_do_not_collide_with_reused_epoch_reports() {
+        let (mut state, sender) = sender_with_orphaned_gap_from_retired_incarnation();
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(3),
+                gaps: vec![gap_at_epoch(sender, 1, 1, 2)],
+            })
+            .expect("a fresh incarnation's causal report must not hit retired ranges");
+        assert_eq!(
+            state
+                .record_game_data(sender, Some(3), Some(1), None, None)
+                .unwrap(),
+            GameDataDisposition::Apply
+        );
     }
 
     #[test]

@@ -489,7 +489,13 @@ impl GodotWebSocketTransport {
             return;
         }
         let raw_code = self.backend.close_code();
-        let clean = raw_code != -1;
+        // -1 is Godot native's "no wire CLOSE frame" value. 1006 and 1015 are
+        // the codes engines synthesize for abnormal termination and TLS
+        // handshake failure; both are forbidden on the wire by RFC 6455
+        // section 7.4.1, so observing one means no clean CLOSE handshake
+        // occurred. 1005 stays clean: it reports a real CLOSE frame that
+        // merely carried no status code.
+        let clean = raw_code != -1 && raw_code != 1006 && raw_code != 1015;
         let code = u16::try_from(raw_code).ok();
         let reason = self.backend.close_reason();
         self.close_info = Some(TransportCloseInfo {
@@ -1618,6 +1624,36 @@ mod tests {
             Poll::Ready(Err(SignalFishError::TransportClosed))
         ));
         assert!(frame.is_some());
+    }
+
+    #[test]
+    fn observed_close_codes_classify_cleanliness_data_driven() {
+        let cases = [
+            // (-1): native reports no code for every abnormal termination.
+            (-1, None, Some(false)),
+            // 1006: engines synthesize it for abnormal termination and it is
+            // forbidden on the wire (RFC 6455 section 7.4.1).
+            (1006, Some(1006), Some(false)),
+            // 1015: reserved for local TLS-handshake failure reports; also
+            // never transmitted on the wire.
+            (1015, Some(1015), Some(false)),
+            (1000, Some(1000), Some(true)),
+            (4000, Some(4000), Some(true)),
+        ];
+        for (raw_code, expected_code, expected_clean) in cases {
+            let mut backend = FakeBackend::new(PeerState::Open);
+            backend.states.push_back(PeerState::Closed);
+            backend.close_code = raw_code;
+            let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+            assert!(matches!(
+                transport.poll_recv(&mut context()),
+                Poll::Ready(None)
+            ));
+            let info = transport.close_info().expect("close metadata recorded");
+            assert_eq!(info.code, expected_code, "code for raw {raw_code}");
+            assert_eq!(info.clean, expected_clean, "clean for raw {raw_code}");
+        }
     }
 
     #[test]
