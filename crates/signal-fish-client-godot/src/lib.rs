@@ -45,10 +45,12 @@ const DEFAULT_INBOUND_BUFFER_SIZE: i32 = 8 * 1024 * 1024;
 pub enum GodotBackpressurePolicy {
     /// Refuse a frame when it would exceed a fixed buffered-byte watermark.
     ///
-    /// A frame is always admitted while the backend buffer is empty (so a
-    /// watermark of **0** degenerates to strict stop-and-wait: at most one
-    /// frame in flight until Godot drains it), and refused once any bytes are
-    /// buffered beyond the watermark.
+    /// A frame within Godot's native outbound capacity is always admitted
+    /// while the backend buffer is empty (so a watermark of **0** degenerates
+    /// to strict stop-and-wait: at most one such frame in flight until Godot
+    /// drains it), and refused once any bytes are buffered beyond the
+    /// watermark. Native-capacity refusal takes precedence over the
+    /// watermark in every state.
     Fixed {
         /// Maximum normally admitted backend-buffered payload bytes.
         high_water_mark_bytes: usize,

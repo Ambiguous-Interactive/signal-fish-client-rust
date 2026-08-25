@@ -122,15 +122,15 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 /// tokio backs bounded mpsc channels with a semaphore that panics above its
 /// private `MAX_PERMITS` bound, mirrored here because tokio does not expose
 /// it. Clamping keeps an absurd-but-typeable capacity from deferring that
-/// panic to [`SignalFishClient::start`].
-#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+/// panic to [`SignalFishClient::start`]. The async driver's channels are the
+/// only consumers with that panic bound; the polling driver clamps too so
+/// both drivers report identical capacities for identical configurations.
 const MAX_CHANNEL_CAPACITY: usize = usize::MAX >> 3;
 
 /// Clamp a configured channel capacity into the range every driver accepts:
 /// at least 1 (tokio panics on 0) and at most
 /// [`MAX_CHANNEL_CAPACITY`] (tokio's semaphore panics above it).
-#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
-fn clamped_channel_capacity(capacity: usize) -> usize {
+pub(crate) fn clamped_channel_capacity(capacity: usize) -> usize {
     // MAX_CHANNEL_CAPACITY is a compile-time constant >= 1, so `clamp`
     // cannot panic.
     capacity.clamp(1, MAX_CHANNEL_CAPACITY)
