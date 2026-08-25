@@ -23,9 +23,11 @@
 //! (default 8 MiB, configurable through
 //! [`EmscriptenWebSocketConnectOptions::max_inbound_queue_bytes`]) before it
 //! copies any payload, so a server cannot grow this transport's heap without
-//! limit between polling ticks. The first over-limit frame or backlog fuses
-//! the transport with one terminal receive error; later flood frames drop
-//! silently. Drained frames release their capacity back to the ledger.
+//! limit between polling ticks; zero-length frames carry a conservative
+//! minimum charge so count-based floods hit the same bound. The first
+//! over-limit frame or backlog fuses the transport with one terminal receive
+//! error; later flood frames drop silently. Drained frames release their
+//! charge back to the ledger.
 //!
 //! # Compatibility
 //!
@@ -98,7 +100,7 @@ use std::sync::mpsc as std_mpsc;
 
 use super::emscripten_cleanup::{CleanupState, DeleteAuthorization, ReclaimAuthorization};
 use super::emscripten_inbound_queue::{
-    InboundQueueBound, QueueRefusal, DEFAULT_MAX_INBOUND_QUEUE_BYTES,
+    charged_frame_bytes, InboundQueueBound, QueueRefusal, DEFAULT_MAX_INBOUND_QUEUE_BYTES,
 };
 use crate::error::SignalFishError;
 use crate::transport::{poll_accept_frame, Transport, TransportCloseInfo, TransportFrame};
@@ -307,10 +309,12 @@ pub struct EmscriptenWebSocketConnectOptions {
     ///
     /// Callback-delivered frames queue here while the game loop is busy, so
     /// this bounds both any single frame and the total bytes waiting for
-    /// `poll_recv`. Exceeding it refuses the offending input and fuses the
-    /// transport with one terminal receive error — mirroring how the native
-    /// WebSocket transport surfaces over-limit inbound messages instead of
-    /// growing memory without limit between drains.
+    /// `poll_recv`; zero-length frames reserve a small minimum charge so a
+    /// count-based flood cannot bypass the bound. Exceeding it refuses the
+    /// offending input and fuses the transport with one terminal receive
+    /// error — mirroring how the native WebSocket transport surfaces
+    /// over-limit inbound messages instead of growing memory without limit
+    /// between drains.
     ///
     /// Defaults to 8 MiB, matching the native default. This is a protective
     /// client resource policy for memory-constrained browser tabs, not a
@@ -693,10 +697,11 @@ extern "C" fn on_open_callback(
 
 /// Release queue capacity for frames that left the buffer, whether drained
 /// by [`Transport::poll_recv`] or rejected after admission by UTF-8
-/// validation.
-fn release_queued_bytes(queue: &Cell<InboundQueueBound>, bytes: usize) {
+/// validation. Uses the same charge [`on_message_callback`] admitted so the
+/// ledger never drifts.
+fn release_queued_bytes(queue: &Cell<InboundQueueBound>, payload_len: usize) {
     let mut bound = queue.get();
-    bound.record_drained(bytes);
+    bound.record_drained(charged_frame_bytes(payload_len));
     queue.set(bound);
 }
 
@@ -724,11 +729,12 @@ extern "C" fn on_message_callback(
 
     // Bound buffered inbound input before copying payload memory so an
     // oversized or flooding server cannot grow this transport's heap between
-    // polling ticks. The first refusal enqueues exactly one terminal error
-    // event; afterwards messages drop silently because the ledger reports
-    // `AlreadyFused`.
+    // polling ticks. Empty frames carry the minimum charge, so a zero-length
+    // flood hits the same bound as payloads. The first refusal enqueues
+    // exactly one terminal error event; afterwards messages drop silently
+    // because the ledger reports `AlreadyFused`.
     let mut bound = state.inbound_queue.get();
-    let admission = bound.admit(content_len);
+    let admission = bound.admit(charged_frame_bytes(content_len));
     state.inbound_queue.set(bound);
     if let Err(refusal) = admission {
         if !matches!(refusal, QueueRefusal::AlreadyFused) {

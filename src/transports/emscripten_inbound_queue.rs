@@ -12,6 +12,24 @@
 /// native transport's 8 MiB client resource policy.
 pub(super) const DEFAULT_MAX_INBOUND_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Conservative per-frame minimum charge against the byte ledger.
+///
+/// Every admitted frame occupies queue-node and event-header storage
+/// regardless of payload length. Charging and releasing this minimum
+/// symmetrically keeps zero-length flood frames from bypassing the byte
+/// bound while never drifting from the drained amount.
+const MIN_FRAME_CHARGE_BYTES: usize = 64;
+
+/// Ledger units charged for one frame with `payload_len` content bytes,
+/// admitted and released symmetrically.
+pub(super) const fn charged_frame_bytes(payload_len: usize) -> usize {
+    if payload_len > MIN_FRAME_CHARGE_BYTES {
+        payload_len
+    } else {
+        MIN_FRAME_CHARGE_BYTES
+    }
+}
+
 /// Why [`InboundQueueBound::admit`] refused inbound input.
 ///
 /// Every hard refusal permanently fuses the queue;
@@ -80,8 +98,10 @@ impl InboundQueueBound {
         }
     }
 
-    /// Admits `frame_bytes` of inbound input, recording them against the
-    /// buffered total on success.
+    /// Admits one frame of `frame_bytes` charged units, recording them
+    /// against the buffered total on success. Callers must pass
+    /// [`charged_frame_bytes`] so empty payloads still reserve their queuing
+    /// overhead.
     ///
     /// The first over-limit input permanently fuses the queue; later calls
     /// report [`QueueRefusal::AlreadyFused`] regardless of size so callers
@@ -113,8 +133,8 @@ impl InboundQueueBound {
         Ok(())
     }
 
-    /// Releases capacity held by drained frames, saturating at zero so an
-    /// accounting bug fails closed toward refusals instead of unbounded
+    /// Releases the charged units of a drained frame. Saturates at zero so
+    /// an accounting bug fails closed toward refusals instead of unbounded
     /// buffering.
     pub(super) fn record_drained(&mut self, drained_bytes: usize) {
         self.queued_bytes = self.queued_bytes.saturating_sub(drained_bytes);
@@ -132,7 +152,9 @@ impl InboundQueueBound {
 mod tests {
     use super::*;
 
-    const LIMIT: usize = 8;
+    /// Comfortably above [`MIN_FRAME_CHARGE_BYTES`] so tests exercise
+    /// realistic payload sizes end to end.
+    const LIMIT: usize = 1024;
 
     #[test]
     fn default_limit_matches_native_eight_mib_policy() {
@@ -140,26 +162,44 @@ mod tests {
     }
 
     #[test]
+    fn zero_length_frames_carry_the_minimum_charge() {
+        assert_eq!(charged_frame_bytes(0), MIN_FRAME_CHARGE_BYTES);
+        assert_eq!(
+            charged_frame_bytes(MIN_FRAME_CHARGE_BYTES - 1),
+            MIN_FRAME_CHARGE_BYTES
+        );
+        assert_eq!(
+            charged_frame_bytes(MIN_FRAME_CHARGE_BYTES),
+            MIN_FRAME_CHARGE_BYTES
+        );
+        assert_eq!(
+            charged_frame_bytes(MIN_FRAME_CHARGE_BYTES + 1),
+            MIN_FRAME_CHARGE_BYTES + 1
+        );
+        assert_eq!(charged_frame_bytes(usize::MAX), usize::MAX);
+    }
+
+    #[test]
     fn admits_frames_up_to_the_inclusive_limit_and_released_capacity_is_reusable() {
         let mut bound = InboundQueueBound::new(Some(LIMIT));
-        bound.admit(3).unwrap();
+        bound.admit(charged_frame_bytes(300)).unwrap();
         // Exactly-at-limit totals are admitted, mirroring the native codec's
         // inclusive maximum.
-        bound.admit(LIMIT - 3).unwrap();
+        bound.admit(charged_frame_bytes(LIMIT - 300)).unwrap();
 
-        // Draining releases exactly the drained bytes...
-        bound.record_drained(5);
-        bound.record_drained(3);
+        // Draining releases exactly the charged bytes...
+        bound.record_drained(charged_frame_bytes(300));
+        bound.record_drained(charged_frame_bytes(LIMIT - 300));
 
         // ...and released capacity admits new work again.
-        bound.admit(LIMIT).unwrap();
+        bound.admit(charged_frame_bytes(LIMIT)).unwrap();
     }
 
     #[test]
     fn oversized_frames_refuse_and_fuse_permanently() {
         let mut bound = InboundQueueBound::new(Some(LIMIT));
         assert_eq!(
-            bound.admit(LIMIT + 1),
+            bound.admit(charged_frame_bytes(LIMIT + 1)),
             Err(QueueRefusal::FrameExceedsLimit {
                 frame_bytes: LIMIT + 1,
                 limit: LIMIT,
@@ -168,7 +208,10 @@ mod tests {
 
         // Even zero-byte input is refused once fused so callers drop flood
         // traffic uniformly without allocating.
-        assert_eq!(bound.admit(0), Err(QueueRefusal::AlreadyFused));
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::AlreadyFused)
+        );
 
         // Draining does not unfuse.
         bound.record_drained(usize::MAX);
@@ -182,13 +225,14 @@ mod tests {
     #[test]
     fn aggregate_backlog_refuses_before_exceeding_the_limit() {
         let mut bound = InboundQueueBound::new(Some(LIMIT));
-        bound.admit(6).unwrap();
-        // 6 queued + 3 incoming > 8 refuses even though either alone fits.
+        bound.admit(charged_frame_bytes(600)).unwrap();
+        // 600 queued + 500 incoming > 1024 refuses even though either alone
+        // fits.
         assert_eq!(
-            bound.admit(3),
+            bound.admit(charged_frame_bytes(500)),
             Err(QueueRefusal::QueueWouldExceedLimit {
-                queued_bytes: 6,
-                frame_bytes: 3,
+                queued_bytes: charged_frame_bytes(600),
+                frame_bytes: charged_frame_bytes(500),
                 limit: LIMIT,
             })
         );
@@ -196,22 +240,37 @@ mod tests {
     }
 
     #[test]
-    fn disabled_limit_never_refuses_or_fuses() {
-        let mut bound = InboundQueueBound::new(None);
-        bound.admit(usize::MAX).unwrap();
-        bound.admit(usize::MAX).unwrap();
-        bound.record_drained(7);
+    fn zero_length_flood_frames_cannot_bypass_the_bound() {
+        let mut bound = InboundQueueBound::new(Some(2 * MIN_FRAME_CHARGE_BYTES));
+        // Each empty frame reserves its queuing overhead...
+        bound.admit(charged_frame_bytes(0)).unwrap();
+        bound.admit(charged_frame_bytes(0)).unwrap();
+        // ...so the count flood hits the same aggregate refusal as payloads.
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::QueueWouldExceedLimit {
+                queued_bytes: 2 * MIN_FRAME_CHARGE_BYTES,
+                frame_bytes: MIN_FRAME_CHARGE_BYTES,
+                limit: 2 * MIN_FRAME_CHARGE_BYTES,
+            })
+        );
+
+        // Releasing a drained empty frame restores exactly its charge —
+        // pinned by the reusable-capacity test — while fusion here remains
+        // permanent even after a drain.
+        bound.record_drained(charged_frame_bytes(0));
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::AlreadyFused)
+        );
     }
 
     #[test]
-    fn empty_frames_stay_free_even_at_full_capacity() {
-        let mut bound = InboundQueueBound::new(Some(LIMIT));
-        bound.admit(LIMIT).unwrap();
-        // Zero-byte frames add nothing to the ledger, so they neither trip
-        // the aggregate bound nor disturb later admissions.
-        bound.admit(0).unwrap();
-        bound.record_drained(LIMIT);
-        bound.admit(LIMIT).unwrap();
+    fn disabled_limit_never_refuses_or_fuses() {
+        let mut bound = InboundQueueBound::new(None);
+        bound.admit(charged_frame_bytes(0)).unwrap();
+        bound.admit(usize::MAX).unwrap();
+        bound.record_drained(7);
     }
 
     #[test]
