@@ -202,6 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documented deterministic recovery from the VS Code Dev Containers rebuild
+  race where concurrent cleanup attempts report that container removal is
+  already in progress, allowing contributors to retry without deleting the
+  repository's named build caches.
 - Fixed `MeshSession` continuing to report a departed host through `host()`
   and `direct_endpoint()` until the next plan arrived. A host's `PlayerLeft`
   now clears both immediately, matching the shared core's authority handling,

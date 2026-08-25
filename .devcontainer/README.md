@@ -144,6 +144,25 @@ Run `cargo fetch` manually if you want strict verification.
 Cargo extension installs during image build are also best-effort. If a specific extension
 tool is missing, install it manually inside the container with `cargo install --locked <tool>`.
 
+### Rebuild Reports "removal is already in progress"
+
+VS Code can briefly race its own rebuild cleanup when Docker takes several
+seconds to remove the previous container. The Remote Containers log then ends
+before the image build with an error like:
+
+```text
+Error response from daemon: removal of container <id> is already in progress
+```
+
+This message is not a Dockerfile, mount, or lifecycle-hook failure. Wait for the
+first removal to finish, then select **Retry** or run **Dev Containers: Rebuild
+Container** once more. The repository's named Cargo and `target` volumes are not
+removed by this cleanup.
+
+If the same container ID is still listed after a minute, check its state with
+`docker ps -a` and restart Docker Desktop before retrying. Do not run concurrent
+rebuild commands for the same workspace.
+
 ### Slow Builds
 
 - The mold linker is pre-configured for faster linking
