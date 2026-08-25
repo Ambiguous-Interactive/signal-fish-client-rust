@@ -212,6 +212,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed delivery accountability accepting or wrongly rejecting game data after
+  a player fully departed and later rejoined reusing an epoch value. A zero
+  terminal (`final_seq = 0`) retired the sender while exact gap ranges from
+  that player's older incarnations stayed behind; those dead ranges could then
+  "explain" a new incarnation's sequence jump as already-reported loss
+  (silently delivering a gapped stream) or collide with its first genuine
+  report as an overlapping duplicate (tearing down the connection under the
+  `Disconnect` violation policy). Full sender retirement now drops every
+  remaining range keyed to that player, so only causal reports from the live
+  incarnation are honored.
+- Fixed the Godot adapter reporting web-export abnormal terminations — server
+  death, network drops, failed handshakes — with `clean: Some(true)` close
+  metadata. Godot's web build surfaces engine-synthesized close codes (1006
+  for abnormal termination, 1015 for TLS-handshake failure) that RFC 6455
+  forbids on the wire, while native reports no code at all, so the same
+  failure produced opposite `TransportCloseInfo::clean` values per platform.
+  Observed `-1`, `1006`, and `1015` codes now classify as unclean on both
+  platforms; real CLOSE-frame codes (1000, app-defined 4xxx) remain clean.
 - Fixed a deferred panic when absurdly large channel capacities were requested
   through `SignalFishConfig::with_event_channel_capacity` /
   `with_command_channel_capacity` (or assigned to the public fields directly):

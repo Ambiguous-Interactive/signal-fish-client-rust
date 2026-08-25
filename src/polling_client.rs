@@ -117,7 +117,8 @@ pub struct PollingStats {
     pub send_budget_exhaustions: u64,
     /// Polls that stopped because the receive frame or byte budget was exhausted.
     pub receive_budget_exhaustions: u64,
-    /// Commands abandoned by close policy or close-deadline expiry.
+    /// Commands abandoned by close policy or close-deadline expiry, plus
+    /// dequeue-time serialization failures.
     pub abandoned_commands: u64,
     /// Flush/close lifecycles aborted after the configured deadline.
     pub close_deadline_expirations: u64,
