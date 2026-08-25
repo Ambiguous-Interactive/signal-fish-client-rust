@@ -3436,23 +3436,6 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 .collect(),
             "SignalReceived",
         ),
-        (
-            "removed-by-replan-signal",
-            room_prefix
-                .iter()
-                .cloned()
-                .chain([
-                    text_server_frame(plan.clone()),
-                    text_server_frame(ServerMessage::SessionPlan(Box::new(replacement_plan))),
-                    text_server_frame(ServerMessage::Signal {
-                        from: peer,
-                        generation: Some(uuid::Uuid::from_u128(353)),
-                        signal: serde_json::json!({"Offer": "removed"}),
-                    }),
-                ])
-                .collect(),
-            "SignalReceived",
-        ),
     ];
 
     for policy in [
@@ -3534,6 +3517,43 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 !event.starts_with("SignalReceived") && !event.starts_with("ProtocolViolation")
             }),
             "generation-less late signal under {policy:?}: {events:?}"
+        );
+    }
+
+    // A same-generation signal from a peer the replacement plan dropped is a
+    // benign departure race, not an integrity violation: it is suppressed
+    // silently under every policy (mirrors the generation-less fence above).
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let events = assert_frame_trace_parity(
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(
+                        replacement_plan.clone(),
+                    ))),
+                    text_server_frame(ServerMessage::Signal {
+                        from: peer,
+                        generation: Some(uuid::Uuid::from_u128(353)),
+                        signal: serde_json::json!({"Offer": "removed"}),
+                    }),
+                ])
+                .collect(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(
+            events.iter().all(|event| {
+                !event.starts_with("SignalReceived") && !event.starts_with("ProtocolViolation")
+            }),
+            "removed-by-replan signal under {policy:?}: {events:?}"
         );
     }
 

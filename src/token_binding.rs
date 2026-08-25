@@ -705,6 +705,24 @@ mod tests {
         assert_ne!(wire_order, std::str::from_utf8(&canonical).unwrap());
     }
 
+    /// Pin string-value escaping to the ECMAScript/JCS set the server's
+    /// canonicalizer implements: short escapes for `\b\t\n\f\r`, lowercase
+    /// `\u00xx` for the remaining control characters below 0x20, and raw
+    /// UTF-8 for DEL and all non-ASCII scalar values. The golden vectors only
+    /// exercise ASCII values, so this test is the parity pin for the rest.
+    #[test]
+    fn canonical_json_escapes_control_and_non_ascii_values_like_the_server() {
+        let value = serde_json::json!({
+            "z": "\u{01}\u{1F600}",
+            "a": "q\"b\\c\u{08}\u{7F}",
+        });
+        let canonical = canonical_json(&value).expect("escaping fixture must canonicalize");
+        assert_eq!(
+            std::str::from_utf8(&canonical).expect("canonical output is UTF-8"),
+            "{\"a\":\"q\\\"b\\\\c\\b\u{7F}\",\"z\":\"\\u0001\u{1F600}\"}",
+        );
+    }
+
     #[test]
     fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
         let vectors = golden_vectors();
