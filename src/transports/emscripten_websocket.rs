@@ -19,6 +19,14 @@
 //! thread. A `std::sync::mpsc` channel bridges callback events into the
 //! transport's `poll_recv()` method.
 //!
+//! The message callback admits input against a shared inbound-byte ledger
+//! (default 8 MiB, configurable through
+//! [`EmscriptenWebSocketConnectOptions::max_inbound_queue_bytes`]) before it
+//! copies any payload, so a server cannot grow this transport's heap without
+//! limit between polling ticks. The first over-limit frame or backlog fuses
+//! the transport with one terminal receive error; later flood frames drop
+//! silently. Drained frames release their capacity back to the ledger.
+//!
 //! # Compatibility
 //!
 //! This transport is designed exclusively for use with
@@ -83,10 +91,15 @@ compile_error!(
      Remove this feature or compile with `--target wasm32-unknown-emscripten`."
 );
 
+use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
+use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 
 use super::emscripten_cleanup::{CleanupState, DeleteAuthorization, ReclaimAuthorization};
+use super::emscripten_inbound_queue::{
+    InboundQueueBound, QueueRefusal, DEFAULT_MAX_INBOUND_QUEUE_BYTES,
+};
 use crate::error::SignalFishError;
 use crate::transport::{poll_accept_frame, Transport, TransportCloseInfo, TransportFrame};
 
@@ -224,6 +237,10 @@ enum IncomingEvent {
 /// State shared with C callbacks via raw pointer (`Box::into_raw`).
 struct CallbackState {
     tx: std_mpsc::Sender<IncomingEvent>,
+    /// Shared admission ledger for buffered inbound frames. The owning
+    /// transport keeps an [`Rc`] clone so drained frames release capacity
+    /// without dereferencing this raw callback allocation.
+    inbound_queue: Rc<Cell<InboundQueueBound>>,
 }
 
 /// Owns callback state without freeing it in `Drop`. Reclamation requires the
@@ -233,8 +250,11 @@ struct CallbackState {
 struct RegisteredCallbackState(Option<std::ptr::NonNull<CallbackState>>);
 
 impl RegisteredCallbackState {
-    fn new(tx: std_mpsc::Sender<IncomingEvent>) -> Self {
-        let state = Box::new(CallbackState { tx });
+    fn new(
+        tx: std_mpsc::Sender<IncomingEvent>,
+        inbound_queue: Rc<Cell<InboundQueueBound>>,
+    ) -> Self {
+        let state = Box::new(CallbackState { tx, inbound_queue });
         Self(std::ptr::NonNull::new(Box::into_raw(state)))
     }
 
@@ -254,6 +274,76 @@ impl RegisteredCallbackState {
         // SAFETY: The non-forgeable authorization proves successful callback
         // unregistration, and `take` makes this the allocation's sole reclaim.
         unsafe { drop(Box::from_raw(state_ptr.as_ptr())) };
+    }
+}
+
+// ── Connect Options ─────────────────────────────────────────────────────────
+
+/// Options controlling how an [`EmscriptenWebSocketTransport`] connection is
+/// established.
+///
+/// Construct with [`new`](Self::new) (or [`Default`]) and adjust with the
+/// `with_*` builders:
+///
+/// ```rust,ignore
+/// use signal_fish_client::EmscriptenWebSocketConnectOptions;
+///
+/// // Raise the buffered-inbound bound for snapshot-heavy deployments.
+/// let options =
+///     EmscriptenWebSocketConnectOptions::new().with_max_inbound_queue_bytes(Some(16 << 20));
+/// let transport = EmscriptenWebSocketTransport::connect_with_options(
+///     "wss://server/v2/ws",
+///     options,
+/// )?;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(
+    since = "0.8.0",
+    note = "for standard Godot exports use GodotWebSocketTransport; this transport requires a custom Emscripten host that links the WebSocket library"
+)]
+pub struct EmscriptenWebSocketConnectOptions {
+    /// Maximum inbound WebSocket input buffered between polling ticks, in
+    /// bytes, inclusive.
+    ///
+    /// Callback-delivered frames queue here while the game loop is busy, so
+    /// this bounds both any single frame and the total bytes waiting for
+    /// `poll_recv`. Exceeding it refuses the offending input and fuses the
+    /// transport with one terminal receive error — mirroring how the native
+    /// WebSocket transport surfaces over-limit inbound messages instead of
+    /// growing memory without limit between drains.
+    ///
+    /// Defaults to 8 MiB, matching the native default. This is a protective
+    /// client resource policy for memory-constrained browser tabs, not a
+    /// protocol maximum: deployments with larger room snapshots must raise
+    /// it. Set it to `None` to restore the previous unbounded buffering.
+    /// `Some(0)` is invalid and makes connection setup fail before network
+    /// I/O.
+    pub max_inbound_queue_bytes: Option<usize>,
+}
+
+impl Default for EmscriptenWebSocketConnectOptions {
+    fn default() -> Self {
+        Self {
+            max_inbound_queue_bytes: Some(DEFAULT_MAX_INBOUND_QUEUE_BYTES),
+        }
+    }
+}
+
+impl EmscriptenWebSocketConnectOptions {
+    /// Create options with the default 8 MiB buffered-inbound bound.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_inbound_queue_bytes: Some(DEFAULT_MAX_INBOUND_QUEUE_BYTES),
+        }
+    }
+
+    /// Set the inclusive bound on buffered inbound WebSocket input; `None`
+    /// disables it.
+    #[must_use]
+    pub const fn with_max_inbound_queue_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.max_inbound_queue_bytes = max_bytes;
+        self
     }
 }
 
@@ -287,6 +377,9 @@ impl RegisteredCallbackState {
 pub struct EmscriptenWebSocketTransport {
     socket: EMSCRIPTEN_WEBSOCKET_T,
     incoming_rx: std_mpsc::Receiver<IncomingEvent>,
+    /// Shared with the registered callback state; admits callback-delivered
+    /// input and releases capacity as `poll_recv` drains frames.
+    inbound_queue: Rc<Cell<InboundQueueBound>>,
     /// Registered callback state while the browser may still dereference it.
     /// Successful socket deletion yields the authorization that reclaims it;
     /// a terminal deletion failure deliberately leaks it rather than exposing
@@ -310,7 +403,8 @@ pub struct EmscriptenWebSocketTransport {
 // ── Constructor ─────────────────────────────────────────────────────────────
 
 impl EmscriptenWebSocketTransport {
-    /// Create a new WebSocket connection to the given URL.
+    /// Create a new WebSocket connection to the given URL with the default
+    /// 8 MiB buffered-inbound bound.
     ///
     /// This function is synchronous — the WebSocket is created immediately,
     /// but the connection handshake completes asynchronously. The transport
@@ -322,11 +416,41 @@ impl EmscriptenWebSocketTransport {
     /// Returns [`SignalFishError::Io`] if the URL contains interior NUL bytes
     /// or if `emscripten_websocket_new` fails.
     pub fn connect(url: &str) -> Result<Self, SignalFishError> {
+        Self::connect_with_options(url, EmscriptenWebSocketConnectOptions::default())
+    }
+
+    /// Create a new WebSocket connection to the given URL with explicit
+    /// options.
+    ///
+    /// This function is synchronous — the WebSocket is created immediately,
+    /// but the connection handshake completes asynchronously. The transport
+    /// retains caller-owned messages until the browser reports that the
+    /// connection is open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignalFishError::Io`] if the URL contains interior NUL bytes,
+    /// if `max_inbound_queue_bytes` is `Some(0)`, or if
+    /// `emscripten_websocket_new` fails.
+    pub fn connect_with_options(
+        url: &str,
+        options: EmscriptenWebSocketConnectOptions,
+    ) -> Result<Self, SignalFishError> {
+        if options.max_inbound_queue_bytes == Some(0) {
+            return Err(SignalFishError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Emscripten max_inbound_queue_bytes must be greater than zero or None",
+            )));
+        }
+
         let c_url = std::ffi::CString::new(url).map_err(|e| {
             SignalFishError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
         })?;
 
         let (tx, rx) = std_mpsc::channel();
+        let inbound_queue = Rc::new(Cell::new(InboundQueueBound::new(
+            options.max_inbound_queue_bytes,
+        )));
 
         let attrs = EmscriptenWebSocketCreateAttributes {
             url: c_url.as_ptr(),
@@ -344,7 +468,7 @@ impl EmscriptenWebSocketTransport {
             )));
         }
 
-        let mut callback_state = RegisteredCallbackState::new(tx);
+        let mut callback_state = RegisteredCallbackState::new(tx, Rc::clone(&inbound_queue));
         let state_ptr = callback_state.as_ptr();
         let mut cleanup = CleanupState::new();
 
@@ -444,6 +568,7 @@ impl EmscriptenWebSocketTransport {
         Ok(Self {
             socket,
             incoming_rx: rx,
+            inbound_queue,
             callback_state,
             closed: false,
             opened: false,
@@ -566,6 +691,15 @@ extern "C" fn on_open_callback(
     1 // EM_TRUE
 }
 
+/// Release queue capacity for frames that left the buffer, whether drained
+/// by [`Transport::poll_recv`] or rejected after admission by UTF-8
+/// validation.
+fn release_queued_bytes(queue: &Cell<InboundQueueBound>, bytes: usize) {
+    let mut bound = queue.get();
+    bound.record_drained(bytes);
+    queue.set(bound);
+}
+
 // SAFETY: See the callback SAFETY block comment above for pointer guarantees.
 extern "C" fn on_message_callback(
     _event_type: c_int,
@@ -579,14 +713,37 @@ extern "C" fn on_message_callback(
     // duration of this synchronous invocation and is not retained.
     let event = unsafe { &*event };
 
-    if event.is_text != 0 {
+    let is_text = event.is_text != 0;
+    // Text payloads include a trailing NUL terminator that is not part of
+    // the message content.
+    let content_len = if is_text {
+        event.num_bytes.saturating_sub(1)
+    } else {
+        event.num_bytes
+    } as usize;
+
+    // Bound buffered inbound input before copying payload memory so an
+    // oversized or flooding server cannot grow this transport's heap between
+    // polling ticks. The first refusal enqueues exactly one terminal error
+    // event; afterwards messages drop silently because the ledger reports
+    // `AlreadyFused`.
+    let mut bound = state.inbound_queue.get();
+    let admission = bound.admit(content_len);
+    state.inbound_queue.set(bound);
+    if let Err(refusal) = admission {
+        if !matches!(refusal, QueueRefusal::AlreadyFused) {
+            let _ = state.tx.send(IncomingEvent::Error(refusal.message()));
+        }
+        return 1; // EM_TRUE
+    }
+
+    if is_text {
         // Text message — create String from UTF-8 bytes.
-        // num_bytes includes the NUL terminator for text messages.
-        let len = event.num_bytes.saturating_sub(1) as usize;
         // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
-        // points to `event.num_bytes` valid bytes for this callback. `len`
-        // excludes the NUL terminator. Empty payloads do not dereference data.
-        let bytes = unsafe { copy_event_payload(event.data, len) };
+        // points to `event.num_bytes` valid bytes for this callback.
+        // `content_len` excludes the NUL terminator. Empty payloads do not
+        // dereference data.
+        let bytes = unsafe { copy_event_payload(event.data, content_len) };
         match std::str::from_utf8(&bytes) {
             Ok(s) => {
                 let _ = state
@@ -595,15 +752,15 @@ extern "C" fn on_message_callback(
             }
             Err(e) => {
                 tracing::warn!("received non-UTF-8 text message: {e}");
+                release_queued_bytes(&state.inbound_queue, content_len);
             }
         }
     } else {
-        let len = event.num_bytes as usize;
         // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
         // points to `event.num_bytes` valid bytes for this callback. Empty
         // binary frames may carry a null data pointer and are copied directly
         // to an empty Vec without constructing a slice.
-        let bytes = unsafe { copy_event_payload(event.data, len) };
+        let bytes = unsafe { copy_event_payload(event.data, content_len) };
         let _ = state
             .tx
             .send(IncomingEvent::Message(TransportFrame::Binary(bytes)));
@@ -727,6 +884,11 @@ impl Transport for EmscriptenWebSocketTransport {
         loop {
             match self.incoming_rx.try_recv() {
                 Ok(IncomingEvent::Message(frame)) => {
+                    let drained = match &frame {
+                        TransportFrame::Text(message) => message.len(),
+                        TransportFrame::Binary(payload) => payload.len(),
+                    };
+                    release_queued_bytes(&self.inbound_queue, drained);
                     return std::task::Poll::Ready(Some(Ok(frame)));
                 }
                 Ok(IncomingEvent::Open) => {
