@@ -117,6 +117,25 @@ const DEFAULT_COMMAND_CHANNEL_CAPACITY: usize = 1024;
 /// Default timeout for the graceful shutdown.
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Upper clamp for bounded channel capacities.
+///
+/// tokio backs bounded mpsc channels with a semaphore that panics above its
+/// private `MAX_PERMITS` bound, mirrored here because tokio does not expose
+/// it. Clamping keeps an absurd-but-typeable capacity from deferring that
+/// panic to [`SignalFishClient::start`].
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+const MAX_CHANNEL_CAPACITY: usize = usize::MAX >> 3;
+
+/// Clamp a configured channel capacity into the range every driver accepts:
+/// at least 1 (tokio panics on 0) and at most
+/// [`MAX_CHANNEL_CAPACITY`] (tokio's semaphore panics above it).
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+fn clamped_channel_capacity(capacity: usize) -> usize {
+    // MAX_CHANNEL_CAPACITY is a compile-time constant >= 1, so `clamp`
+    // cannot panic.
+    capacity.clamp(1, MAX_CHANNEL_CAPACITY)
+}
+
 /// Scheduling grace for the task watchdog after the transport loop's own
 /// close deadline. This lets the loop invoke `Transport::abort` first.
 #[cfg(feature = "tokio-runtime")]
@@ -227,7 +246,9 @@ pub struct SignalFishConfig {
     /// nonblocking attempt) after [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
     /// and delivers the terminal `Disconnected` best-effort.
     ///
-    /// Defaults to **256**. Values below 1 are clamped to 1.
+    /// Defaults to **256**. Values below 1 are clamped to 1; values above
+    /// tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to
+    /// that ceiling.
     pub event_channel_capacity: usize,
     /// Capacity of the bounded outgoing command queue.
     ///
@@ -240,7 +261,9 @@ pub struct SignalFishConfig {
     /// queued when the connection ends are discarded with it (surfaced by
     /// the `Disconnected` event); *queued* is not *delivered*.
     ///
-    /// Defaults to **1024**. Values below 1 are clamped to 1.
+    /// Defaults to **1024**. Values below 1 are clamped to 1; values above
+    /// tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to
+    /// that ceiling.
     pub command_channel_capacity: usize,
     /// Deadline for graceful async shutdown and polling-client close.
     ///
@@ -287,10 +310,11 @@ impl SignalFishConfig {
 
     /// Set the capacity of the bounded event channel.
     ///
-    /// Defaults to **256**. Values below 1 are clamped to 1.
+    /// Defaults to **256**. Values below 1 are clamped to 1; absurdly large
+    /// values are clamped to tokio's semaphore permit ceiling.
     #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
-        self.event_channel_capacity = capacity.max(1);
+        self.event_channel_capacity = clamped_channel_capacity(capacity);
         self
     }
 
@@ -299,10 +323,11 @@ impl SignalFishConfig {
     /// See [`command_channel_capacity`](Self::command_channel_capacity) for
     /// the backpressure semantics.
     ///
-    /// Defaults to **1024**. Values below 1 are clamped to 1.
+    /// Defaults to **1024**. Values below 1 are clamped to 1; absurdly large
+    /// values are clamped to tokio's semaphore permit ceiling.
     #[must_use]
     pub fn with_command_channel_capacity(mut self, capacity: usize) -> Self {
-        self.command_channel_capacity = capacity.max(1);
+        self.command_channel_capacity = clamped_channel_capacity(capacity);
         self
     }
 
@@ -341,6 +366,12 @@ impl SignalFishConfig {
     /// (and the pre-gathered `ice_servers` on `RoomJoined`/`Reconnected`) into
     /// your peer connection's STUN/TURN configuration, or NAT traversal will
     /// silently fail.
+    ///
+    /// Builder order matters: this resets the advertised transports and
+    /// topologies to the mesh-with-relay defaults, so call it **after**
+    /// [`enable_v3`](Self::enable_v3), not before (or use
+    /// [`with_transports`](Self::with_transports)/[`with_topologies`](Self::with_topologies)
+    /// last for custom lists).
     #[must_use]
     pub fn enable_mesh(mut self) -> Self {
         self = self.enable_v3();
@@ -408,7 +439,10 @@ impl SignalFishConfig {
     ///
     /// This enables delivery classes, accountability, reconnect snapshots, and
     /// binary relay while keeping both transport and topology on the universal
-    /// server-relay floor.
+    /// server-relay floor. It also resets the advertised transports and
+    /// topologies to relay-only: a prior [`enable_mesh`](Self::enable_mesh)
+    /// call is overwritten (mesh capability disappears from negotiation), so
+    /// call `enable_v3` first when combining them.
     #[must_use]
     pub fn enable_v3(mut self) -> Self {
         self.protocol_version = Some(crate::PROTOCOL_VERSION);
@@ -422,6 +456,8 @@ impl SignalFishConfig {
     /// Power-user escape hatch; most consumers want [`enable_mesh`](Self::enable_mesh)
     /// instead. Setting a version without also setting transports/topologies keeps
     /// the room on the relay floor (the server requires both to form a session).
+    /// Any `u16` is accepted here; an unknown version surfaces as the server's
+    /// own negotiation or error response.
     #[must_use]
     pub fn with_protocol_version(mut self, version: u16) -> Self {
         self.protocol_version = Some(version);
@@ -816,10 +852,11 @@ impl SignalFishClient {
         transport: impl Transport + Send + 'static,
         config: SignalFishConfig,
     ) -> (Self, mpsc::Receiver<SignalFishEvent>) {
-        // Clamp capacities to at least 1 (tokio panics on 0).
-        let cmd_capacity = config.command_channel_capacity.max(1);
+        // Clamp capacities into the range both channel backends accept
+        // (public fields can bypass the builder setters).
+        let cmd_capacity = clamped_channel_capacity(config.command_channel_capacity);
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCommand>(cmd_capacity);
-        let capacity = config.event_channel_capacity.max(1);
+        let capacity = clamped_channel_capacity(config.event_channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<SignalFishEvent>(capacity);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -3747,6 +3784,29 @@ mod tests {
         let event = events.recv().await.unwrap();
         assert!(matches!(event, SignalFishEvent::Connected));
 
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn huge_channel_capacities_do_not_panic_at_start() {
+        // tokio's bounded mpsc channels are backed by a semaphore that panics
+        // above its private MAX_PERMITS bound (`usize::MAX >> 3`). A
+        // typeable-but-absurd capacity used to defer that panic to `start`.
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(usize::MAX)
+            .with_command_channel_capacity(usize::MAX)
+            .with_shutdown_timeout(std::time::Duration::from_millis(50));
+
+        // Direct public-field assignment bypasses the setters too.
+        let config = SignalFishConfig {
+            event_channel_capacity: usize::MAX,
+            command_channel_capacity: usize::MAX,
+            ..config
+        };
+
+        let (transport, _sent, _closed) = MockTransport::new(vec![]);
+        let (mut client, _events) = SignalFishClient::start(transport, config);
+        assert_eq!(client.max_send_capacity(), usize::MAX >> 3);
         client.shutdown().await;
     }
 
