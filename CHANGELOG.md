@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bounded the Emscripten WebSocket transport's callback-bridged inbound queue
+  at 8 MiB by default through the new
+  `EmscriptenWebSocketConnectOptions::max_inbound_queue_bytes` option and the
+  matching `connect_with_options` constructor. Callback-delivered frames that
+  exceed the bound — individually, in buffered aggregate, or as a
+  zero-length-frame flood (which reserves a small minimum charge) — are
+  refused before any payload copy and fuse the transport with one terminal
+  receive error, mirroring the native transport's inbound-size policy instead
+  of growing memory without limit between game-loop polls. `None` restores
+  the previous unbounded buffering.
 - Added the negotiated outbound message-size contract to `ProtocolInfoPayload`
   as the v3-only optional field `max_outbound_message_size`, pinned to server
   commit `d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9`. The negotiated value
@@ -202,6 +212,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documented deterministic recovery from the VS Code Dev Containers rebuild
+  race where concurrent cleanup attempts report that container removal is
+  already in progress, allowing contributors to retry without deleting the
+  repository's named build caches.
 - Fixed `MeshSession` continuing to report a departed host through `host()`
   and `direct_endpoint()` until the next plan arrived. A host's `PlayerLeft`
   now clears both immediately, matching the shared core's authority handling,

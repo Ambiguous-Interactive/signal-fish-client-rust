@@ -1333,13 +1333,16 @@ mod docsrs_policy {
         //
         // If new target-gated types are introduced, add their names here.
         //
-        // The pattern omits the trailing `]` to also catch method-level
+        // The patterns omit the trailing `]` to also catch method-level
         // links like [`EmscriptenWebSocketTransport::connect`].
-        let forbidden = "[`EmscriptenWebSocketTransport";
+        let forbidden = [
+            "[`EmscriptenWebSocketTransport",
+            "[`EmscriptenWebSocketConnectOptions",
+        ];
         let src_dir = project_root().join("src");
         let mut violations = Vec::new();
 
-        fn visit_rs_files(dir: &std::path::Path, forbidden: &str, violations: &mut Vec<String>) {
+        fn visit_rs_files(dir: &std::path::Path, forbidden: &[&str], violations: &mut Vec<String>) {
             // Tolerant traversal: concurrent processes (rust-analyzer, builds)
             // may make listed entries vanish mid-walk; skipping them keeps the
             // scanner deterministic on stable trees without racing.
@@ -1373,7 +1376,7 @@ mod docsrs_policy {
                         continue;
                     };
                     for (i, line) in contents.lines().enumerate() {
-                        if line.contains(forbidden) {
+                        if forbidden.iter().any(|pattern| line.contains(pattern)) {
                             violations.push(format!("{}:{}: {line}", path.display(), i + 1));
                         }
                     }
@@ -1381,7 +1384,7 @@ mod docsrs_policy {
             }
         }
 
-        visit_rs_files(&src_dir, forbidden, &mut violations);
+        visit_rs_files(&src_dir, &forbidden, &mut violations);
 
         assert!(
             violations.is_empty(),
@@ -7921,7 +7924,7 @@ mod ffi_safety_documentation {
             .find("if socket <= 0 {")
             .expect("socket creation failure must be handled");
         let owner_creation = contents
-            .find("RegisteredCallbackState::new(tx)")
+            .find("RegisteredCallbackState::new(")
             .expect("callback allocation must use its owner");
         assert!(
             socket_failure < owner_creation,

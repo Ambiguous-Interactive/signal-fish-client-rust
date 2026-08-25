@@ -40,6 +40,12 @@ pub use websocket::{WebSocketConnectOptions, WebSocketTransport};
 ))]
 mod emscripten_cleanup;
 
+#[cfg(all(
+    feature = "transport-websocket-emscripten",
+    any(target_os = "emscripten", test)
+))]
+mod emscripten_inbound_queue;
+
 // Gated on both feature and target: this module uses Emscripten's C WebSocket API,
 // which only exists on wasm32-unknown-emscripten. The dual gate keeps `--all-features`
 // working on non-Emscripten hosts (features must be additive per Cargo convention).
@@ -49,4 +55,4 @@ pub mod emscripten_websocket;
 
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
 #[allow(deprecated)]
-pub use emscripten_websocket::EmscriptenWebSocketTransport;
+pub use emscripten_websocket::{EmscriptenWebSocketConnectOptions, EmscriptenWebSocketTransport};
