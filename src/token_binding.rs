@@ -353,6 +353,11 @@ pub(crate) fn parse_challenge(text: &str) -> Result<TokenBindingChallenge, Signa
 
 #[cfg(feature = "token-binding")]
 fn canonical_json(value: &serde_json::Value) -> Result<Vec<u8>, SignalFishError> {
+    // Recursion depth is bounded transitively: every `Value` reaching here is
+    // parsed by serde_json's default 128-level recursion limit (the
+    // `unbounded_depth` feature is not enabled anywhere), so `write` cannot
+    // drive the stack to exhaustion regardless of input size. Keep that true:
+    // never feed hand-built deeply nested `Value`s into this function.
     fn write(value: &serde_json::Value, output: &mut Vec<u8>) -> serde_json::Result<()> {
         use serde::ser::Error as _;
         use serde_json::Value;
