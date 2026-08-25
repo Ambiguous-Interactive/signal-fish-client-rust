@@ -319,9 +319,12 @@ pub struct EmscriptenWebSocketConnectOptions {
     /// Defaults to 8 MiB, matching the native default. This is a protective
     /// client resource policy for memory-constrained browser tabs, not a
     /// protocol maximum: deployments with larger room snapshots must raise
-    /// it. Set it to `None` to restore the previous unbounded buffering.
-    /// `Some(0)` is invalid and makes connection setup fail before network
-    /// I/O.
+    /// it. Every admitted frame reserves a 64-byte minimum charge
+    /// approximating its queuing overhead, so bounds below that minimum
+    /// cannot admit even an empty frame and fuse on first input — realistic
+    /// limits are orders of magnitude larger. Set it to `None` to restore
+    /// the previous unbounded buffering. `Some(0)` is invalid and makes
+    /// connection setup fail before network I/O.
     pub max_inbound_queue_bytes: Option<usize>,
 }
 
