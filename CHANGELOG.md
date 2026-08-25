@@ -212,6 +212,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a deferred panic when absurdly large channel capacities were requested
+  through `SignalFishConfig::with_event_channel_capacity` /
+  `with_command_channel_capacity` (or assigned to the public fields directly):
+  values above tokio's internal semaphore permit ceiling (`usize::MAX >> 3`)
+  previously panicked inside `SignalFishClient::start`, while the polling
+  client accepted the same configuration silently. Capacities are now clamped
+  to that ceiling everywhere, alongside the existing sub-1 clamp, and the
+  field documentation states both bounds.
+- Documented the Godot adapter's `GodotBackpressurePolicy` edge values: a
+  `Fixed` watermark of 0 degenerates to strict stop-and-wait (one frame in
+  flight until Godot drains it), zero `Adaptive::latency_target` drops the
+  latency term, and a floor above the ceiling pins the watermark to the
+  ceiling (behavior unchanged, previously undocumented).
+- Documented that `SignalFishConfig::enable_v3` resets advertised transports
+  and topologies to relay-only — overwriting a prior `enable_mesh` call — and
+  that `with_protocol_version` defers unknown-version handling to the server,
+  so mesh configurations call `enable_mesh` last (or use the power-user list
+  builders after it).
+- Corrected the published model-context page (`llms.txt`) to advertise the
+  current release instead of 0.8.0 and dropped its stale issue reference;
+  fixed the delivery guide's shutdown-preemption version anchor (client 0.8.0,
+  not 0.7.0); documented the Emscripten transport's
+  `connect_with_options` / inbound-queue bound on the wasm docs page; and
+  completed `concepts.md`'s `SignalFishError` table with the four missing
+  variants (`NotAuthenticated`, `SessionPlanUnavailable`,
+  `StaleSessionGeneration`, `TokenBinding`).
 - Documented deterministic recovery from the VS Code Dev Containers rebuild
   race where concurrent cleanup attempts report that container removal is
   already in progress, allowing contributors to retry without deleting the
