@@ -877,3 +877,62 @@ mod tests {
         ));
     }
 }
+
+/// Internal entry points for the repository's `fuzz_token_binding` cargo-fuzz
+/// target.
+///
+/// This module is `#[doc(hidden)]`, gated behind the non-default
+/// `internal-fuzz-facade` feature (which itself requires `token-binding`),
+/// and is explicitly **not part of the public API**: no semver guarantee
+/// covers anything here, the surface may change or vanish at any time, and
+/// production code must never enable the feature. It exists so the fuzz
+/// target can drive `pub(crate)` parsing/profiling paths without widening
+/// the supported API (issue #163).
+#[cfg(all(feature = "token-binding", feature = "internal-fuzz-facade"))]
+#[doc(hidden)]
+pub mod __internal_fuzz_facade {
+    use super::{
+        canonical_json as internal_canonical_json, parse_challenge as internal_parse_challenge,
+        SignalFishError, TokenBindingChallenge, TokenBindingSession,
+    };
+    use crate::transport::TransportFrame;
+
+    /// Parse raw challenge text through the strict internal validator.
+    pub fn parse_challenge(text: &str) -> Result<TokenBindingChallenge, SignalFishError> {
+        internal_parse_challenge(text)
+    }
+
+    /// Render already-parsed JSON through the internal canonicalizer.
+    pub fn canonical_json(value: &serde_json::Value) -> Result<Vec<u8>, SignalFishError> {
+        internal_canonical_json(value)
+    }
+
+    /// Opaque handle driving a secret-bearing session's prepare/commit cycle.
+    pub struct FuzzSession(TokenBindingSession);
+
+    impl FuzzSession {
+        /// Build a session exactly as the transport would after selection.
+        pub fn from_challenge(
+            handshake_key: &str,
+            challenge: TokenBindingChallenge,
+            client_fingerprint: Option<&str>,
+        ) -> Result<Self, SignalFishError> {
+            TokenBindingSession::from_challenge(
+                handshake_key,
+                challenge,
+                client_fingerprint.map(std::borrow::ToOwned::to_owned),
+            )
+            .map(Self)
+        }
+
+        /// Protect one frame with the current sequence without committing it.
+        pub fn prepare(&self, frame: &TransportFrame) -> Result<TransportFrame, SignalFishError> {
+            self.0.prepare(frame)
+        }
+
+        /// Advance the sequence exactly as a successful send would.
+        pub fn commit(&mut self) -> Result<(), SignalFishError> {
+            self.0.commit()
+        }
+    }
+}

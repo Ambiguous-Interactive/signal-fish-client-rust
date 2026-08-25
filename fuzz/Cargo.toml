@@ -14,6 +14,7 @@ serde_json = "1.0"
 [dependencies.signal-fish-client]
 path = ".."
 default-features = false
+features = ["token-binding", "internal-fuzz-facade"]
 
 # Prevent this from interfering with workspace members.
 [workspace]
@@ -32,4 +33,9 @@ doc = false
 [[bin]]
 name = "fuzz_binary_game_data"
 path = "fuzz_targets/fuzz_binary_game_data.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_token_binding"
+path = "fuzz_targets/fuzz_token_binding.rs"
 doc = false

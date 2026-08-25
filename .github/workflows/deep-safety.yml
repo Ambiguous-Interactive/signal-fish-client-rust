@@ -168,7 +168,7 @@ jobs:
           fuzz_corpus=$(mktemp -d)
           trap 'rm -rf "$fuzz_corpus"' EXIT
           status=0
-          for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data; do
+          for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data fuzz_token_binding; do
             corpus="$fuzz_corpus/$target"
             mkdir -p "$corpus"
             seed_args=()
