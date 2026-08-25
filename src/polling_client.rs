@@ -258,7 +258,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
         let mut client = Self {
             transport,
             cmd_queue,
-            command_capacity: config.command_channel_capacity.max(1),
+            command_capacity: crate::client::clamped_channel_capacity(
+                config.command_channel_capacity,
+            ),
             core: ClientCore::new_with_room_operation_ids(
                 config.game_data_format,
                 config.protocol_violation_policy,
@@ -4745,7 +4747,6 @@ mod tests {
         // Authenticate occupies one of the three slots.
         assert_eq!(client.max_send_capacity(), 3);
         assert_eq!(client.send_capacity(), 2);
-
         client
             .send_game_data(serde_json::json!({ "seq": 0 }))
             .unwrap();
@@ -4779,6 +4780,21 @@ mod tests {
         client
             .send_game_data(serde_json::json!({ "seq": 3 }))
             .unwrap();
+    }
+
+    #[test]
+    fn huge_command_capacity_matches_the_async_driver_clamp() {
+        // The polling queue never allocates upfront, but both drivers must
+        // report the same capacity for the same configuration: clamped to
+        // tokio's semaphore ceiling, not the raw usize::MAX.
+        let mut config = default_config();
+        config.command_channel_capacity = usize::MAX;
+        let client = SignalFishPollingClient::new(MockTransport::new(), config);
+        assert_eq!(
+            client.max_send_capacity(),
+            crate::client::clamped_channel_capacity(usize::MAX)
+        );
+        assert_eq!(client.max_send_capacity(), usize::MAX >> 3);
     }
 
     #[test]

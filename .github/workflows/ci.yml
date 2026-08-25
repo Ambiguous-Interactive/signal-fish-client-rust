@@ -84,6 +84,10 @@ jobs:
             flags: "--no-default-features --features token-binding"
           - name: no-default-features
             flags: "--no-default-features"
+          - name: polling-client-only
+            flags: "--no-default-features --features polling-client"
+          - name: mesh-only
+            flags: "--no-default-features --features mesh"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -116,6 +120,10 @@ jobs:
             flags: "--no-default-features --features token-binding"
           - name: no-default-features
             flags: "--no-default-features"
+          - name: polling-client-only
+            flags: "--no-default-features --features polling-client"
+          - name: mesh-only
+            flags: "--no-default-features --features mesh"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1

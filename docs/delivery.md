@@ -158,7 +158,7 @@ If your event consumer stops draining **forever**, the transport loop
 blocks delivering the next event, stops reading the socket, and the server
 eventually evicts you (`SLOW_CONSUMER`) — but the wedged client cannot
 observe the eviction (it is not reading), so from the inside the session
-just goes quiet. As of 0.7.0, [`shutdown()`](client.md#shutdown) preempts
+just goes quiet. Since client 0.8.0, [`shutdown()`](client.md#shutdown) preempts
 the wedge: it abandons at most the one in-flight event delivery and progresses
 graceful transport close without waiting for event-channel capacity. A close
 error or the configured close deadline invokes `Transport::abort` before the

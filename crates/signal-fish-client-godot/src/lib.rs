@@ -44,11 +44,24 @@ const DEFAULT_INBOUND_BUFFER_SIZE: i32 = 8 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GodotBackpressurePolicy {
     /// Refuse a frame when it would exceed a fixed buffered-byte watermark.
+    ///
+    /// A frame within Godot's native outbound capacity is always admitted
+    /// while the backend buffer is empty (so a watermark of **0** degenerates
+    /// to strict stop-and-wait: at most one such frame in flight until Godot
+    /// drains it), and refused once any bytes are buffered beyond the
+    /// watermark. Native-capacity refusal takes precedence over the
+    /// watermark in every state.
     Fixed {
         /// Maximum normally admitted backend-buffered payload bytes.
         high_water_mark_bytes: usize,
     },
     /// Adapt the watermark to the observed accepted burst and drain rate.
+    ///
+    /// Edge values are safe by construction: a zero [`latency_target`](Self::Adaptive::latency_target)
+    /// drops the latency term (the watermark then tracks the burst estimate
+    /// alone), a [`floor_bytes`](Self::Adaptive::floor_bytes) above
+    /// [`ceiling_bytes`](Self::Adaptive::ceiling_bytes) pins the watermark to
+    /// the ceiling, and huge targets saturate without overflow.
     Adaptive {
         /// Target time for draining backend-owned buffered bytes.
         latency_target: Duration,

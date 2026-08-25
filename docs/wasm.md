@@ -185,6 +185,33 @@ queued command until Emscripten can accept it.
 Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. On failure the
 error is `SignalFishError::Io` (e.g., invalid URL or Emscripten API failure).
 
+For explicit control, pass `EmscriptenWebSocketConnectOptions` via
+`connect_with_options`:
+
+```rust,ignore
+use signal_fish_client::{
+    EmscriptenWebSocketConnectOptions, EmscriptenWebSocketTransport,
+};
+
+// Default: an 8 MiB bound on inbound bytes buffered between polls.
+let transport = EmscriptenWebSocketTransport::connect_with_options(
+    "wss://example.com/v2/ws",
+    EmscriptenWebSocketConnectOptions::new(),
+)?;
+
+// Raise the bound for deployments with larger room snapshots.
+let options = EmscriptenWebSocketConnectOptions::new()
+    .with_max_inbound_queue_bytes(Some(16 * 1024 * 1024));
+```
+
+The bound covers every byte callback-delivered input queues while the game
+loop is busy (including a small minimum charge per frame, so zero-length
+floods cannot bypass it) and releases as your loop drains `poll_recv`.
+Exceeding it fuses the transport with one terminal receive error instead of
+growing memory without limit — mirroring the native WebSocket transport.
+`None` restores fully unbounded buffering; `Some(0)` fails connection setup
+before any network I/O.
+
 ### How it works
 
 ```mermaid

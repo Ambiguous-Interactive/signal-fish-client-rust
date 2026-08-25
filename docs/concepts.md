@@ -475,9 +475,13 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `RoomOperationPending` | A prior admitted join, leave, or reconnect still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. |
 | `WrongRoomRole { required, actual }` | The operation requires player or spectator membership of a different kind. |
 | `AuthorityRequired` | The current player is not authorized for an authority-only command. |
+| `NotAuthenticated` | A directed room operation was attempted before the server confirmed authentication; wait for the `Authenticated` event first. |
 | `ServerError { message, error_code }` | The server returned an error; `error_code` is `Option<ErrorCode>` and may be absent. |
 | `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning and topology](#protocol-versioning-and-topology). |
+| `SessionPlanUnavailable` | A WebRTC signal was attempted but no authoritative session plan currently authorizes it (before a plan, or targeting self, unknown, or departed players). |
+| `StaleSessionGeneration { .. }` | A WebRTC signal was produced under an already-replaced session-plan generation; the newer plan remains authoritative. |
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
+| `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
 | `Timeout` | An operation exceeded its time limit. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 

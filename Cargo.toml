@@ -45,7 +45,7 @@ tls = [
     "dep:rustls",
     "tokio-tungstenite/rustls-tls-webpki-roots",
 ]
-# Requires --target wasm32-unknown-emscripten; compile_error!() fires on other targets.
+# Only takes effect on wasm32-unknown-emscripten (the module itself is target-gated; elsewhere the feature enables polling-client only).
 transport-websocket-emscripten = ["polling-client"]
 polling-client = []
 tokio-runtime = ["tokio/rt", "tokio/time"]
