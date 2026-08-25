@@ -10,9 +10,9 @@ the raw Emscripten transport is only for custom hosts
 that explicitly link Emscripten's WebSocket library.
 
 The GitHub Pages documentation tracks the unreleased `main` branch. Install
-`signal-fish-client = "0.8.0"` for the current crates.io release; use the
-repository git dependency when evaluating APIs and issue #61 fixes listed
-under `Unreleased` until the next crate version is published.
+`signal-fish-client = "0.10.0"` for the current crates.io release; use the
+repository git dependency when evaluating APIs and fixes listed under
+`Unreleased` until the next crate version is published.
 
 ## Documentation
 
