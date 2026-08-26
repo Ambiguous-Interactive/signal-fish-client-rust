@@ -134,7 +134,14 @@ pub(crate) struct ClientCore {
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
     retired_session_generations: HashSet<SessionGeneration>,
-    retired_generationless_signal_peers: HashSet<PlayerId>,
+    // Peers the authoritative plan dropped (via `PlayerLeft` or a plan
+    // replacement) whose final in-flight signals may still arrive stamped
+    // with the still-current generation. Their late signals are benign
+    // races to suppress, not integrity violations. Cleared whenever an
+    // authoritative baseline rebuilds the room/session; within one room the
+    // bound is O(distinct departed peers between generation bumps), because
+    // Server 0.7 re-plans on membership churn.
+    retired_signal_peers: HashSet<PlayerId>,
     pending_room_operation: Option<PendingRoomOperationState>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
@@ -238,7 +245,7 @@ impl ClientCore {
             session_plan_seen: false,
             session_peers: HashSet::new(),
             retired_session_generations: HashSet::new(),
-            retired_generationless_signal_peers: HashSet::new(),
+            retired_signal_peers: HashSet::new(),
             pending_room_operation: None,
             pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
@@ -718,7 +725,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();
-        self.retired_generationless_signal_peers.clear();
+        self.retired_signal_peers.clear();
         self.pending_room_operation = None;
         self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
@@ -1518,14 +1525,30 @@ impl ClientCore {
         from: PlayerId,
         generation: Option<SessionGeneration>,
     ) -> bool {
-        generation != self.snapshot.session_generation
+        if generation != self.snapshot.session_generation {
+            return true;
+        }
+        match self.snapshot.session_generation {
             // Server 0.4 omitted generations. Retained peer identity is the
-            // only fence for a signal racing a generation-less re-plan.
-            || (generation.is_none()
-                && self.snapshot.session_generation.is_none()
-                && self.retired_generationless_signal_peers.contains(&from)
-                && !(self.snapshot.session_transport == Some(TransportKind::WebRtc)
-                    && self.session_peers.contains(&from)))
+            // only fence for a signal racing a generation-less re-plan, so
+            // retirement persists for the whole room session.
+            None => {
+                self.retired_signal_peers.contains(&from)
+                    && !(self.snapshot.session_transport == Some(TransportKind::WebRtc)
+                        && self.session_peers.contains(&from))
+            }
+            // Generation-carrying sessions bound retirement to the live
+            // generation: a departed or re-planned-out peer's final signals
+            // were valid when the server relayed them and merely raced this
+            // client's view of the departure, whatever transport now carries
+            // the stream — gating on the current transport would re-open the
+            // relay-fallback race this fence closes. The window extends
+            // through a roster rejoin until the peer is re-paired by a plan
+            // or compatibility `NewPeer`.
+            Some(_) => {
+                self.retired_signal_peers.contains(&from) && !self.session_peers.contains(&from)
+            }
+        }
     }
 
     fn validate_reconnect_replay(
@@ -1782,21 +1805,16 @@ impl ClientCore {
             }
             ServerMessage::NewPeer { peer_id, .. } => {
                 self.session_peers.insert(*peer_id);
-                if self.snapshot.session_generation.is_none()
-                    && self.snapshot.session_transport == Some(TransportKind::WebRtc)
-                {
-                    self.retired_generationless_signal_peers.remove(peer_id);
-                }
+                self.retired_signal_peers.remove(peer_id);
             }
             ServerMessage::PlayerLeft { player_id, .. } => {
                 if self.authority_player == Some(*player_id) {
                     self.authority_player = None;
                 }
-                if self.snapshot.session_generation.is_none()
-                    && self.snapshot.session_transport == Some(TransportKind::WebRtc)
+                if self.snapshot.session_transport == Some(TransportKind::WebRtc)
                     && self.session_peers.contains(player_id)
                 {
-                    self.retired_generationless_signal_peers.insert(*player_id);
+                    self.retired_signal_peers.insert(*player_id);
                 }
                 self.session_peers.remove(player_id);
                 self.room_players.remove(player_id);
@@ -1838,7 +1856,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();
-        self.retired_generationless_signal_peers.clear();
+        self.retired_signal_peers.clear();
         self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
@@ -1861,7 +1879,7 @@ impl ClientCore {
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();
-        self.retired_generationless_signal_peers.clear();
+        self.retired_signal_peers.clear();
         self.pending_room_operation = None;
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
@@ -1878,19 +1896,33 @@ impl ClientCore {
             if let Some(current) = self.snapshot.session_generation {
                 self.retired_session_generations.insert(current);
             }
-        }
-        if self.session_plan_seen
-            && self.snapshot.session_generation.is_none()
-            && self.snapshot.session_transport == Some(TransportKind::WebRtc)
-        {
-            self.retired_generationless_signal_peers
-                .extend(self.session_peers.iter().copied());
+            // Peer retirements were scoped to the superseded generation;
+            // its signals now die in the generation check alone.
+            self.retired_signal_peers.clear();
         }
         let peers: HashSet<_> = peers.into_iter().collect();
-        if generation.is_none() && transport == TransportKind::WebRtc {
-            self.retired_generationless_signal_peers
-                .retain(|peer| !peers.contains(peer));
+        if self.session_plan_seen
+            && self.snapshot.session_generation == generation
+            && self.snapshot.session_transport == Some(TransportKind::WebRtc)
+        {
+            // Peers dropped by a same-generation replacement may still have
+            // signals in flight stamped with that still-live generation;
+            // retire them so those final frames stay benign races. A
+            // generation change must not carry retirement across: dropped
+            // peers never held authority under the new generation, so their
+            // current-generation signals are genuine violations while their
+            // superseded-generation frames already die in the generation
+            // check.
+            self.retired_signal_peers.extend(
+                self.session_peers
+                    .iter()
+                    .filter(|peer| !peers.contains(*peer))
+                    .copied(),
+            );
         }
+        // Every peer named by the new plan is live again.
+        self.retired_signal_peers
+            .retain(|peer| !peers.contains(peer));
         self.snapshot.session_generation = generation;
         self.snapshot.session_topology = Some(topology);
         self.snapshot.session_transport = Some(transport);
@@ -4738,7 +4770,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_reconnect_accountability_never_resets_the_existing_frontier() {
+    fn in_room_reconnect_violation_preserves_the_existing_frontier() {
         for policy in [
             ProtocolViolationPolicy::Quarantine,
             ProtocolViolationPolicy::Disconnect,
@@ -4951,6 +4983,314 @@ mod tests {
     }
 
     #[test]
+    fn departed_peer_inflight_signal_is_a_suppressed_race_under_every_policy() {
+        const LIVE_PEER: u128 = 4;
+        let player_left = ServerMessage::PlayerLeft {
+            player_id: PlayerId::from_u128(PEER),
+            epoch: Some(1),
+            final_seq: Some(1),
+        };
+        let departed_signal = ServerMessage::Signal {
+            from: PlayerId::from_u128(PEER),
+            generation: Some(SessionGeneration::from_u128(GENERATION)),
+            signal: serde_json::json!({"Answer": "queued-before-departure"}),
+        };
+        let live_signal = || ServerMessage::Signal {
+            from: PlayerId::from_u128(LIVE_PEER),
+            generation: Some(SessionGeneration::from_u128(GENERATION)),
+            signal: serde_json::json!({"Offer": "still-live"}),
+        };
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            for player_left_first in [true, false] {
+                let mut core = v3_room(policy);
+                let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+                webrtc.peers.push(peer(LIVE_PEER));
+                let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+                // PEER was an active sender whose final frames raced our
+                // view of its departure.
+                let _ = process(
+                    &mut core,
+                    ServerMessage::GameData {
+                        from_player: PlayerId::from_u128(PEER),
+                        data: serde_json::json!({"seq": 1}),
+                        seq: Some(1),
+                        epoch: Some(1),
+                        class: Some(DeliveryClass::Reliable),
+                        key: None,
+                    },
+                );
+
+                if player_left_first {
+                    let _ = process(&mut core, player_left.clone());
+                    assert!(core
+                        .retired_signal_peers
+                        .contains(&PlayerId::from_u128(PEER)));
+                    let outcome = process(&mut core, departed_signal.clone());
+                    assert!(
+                        outcome.events.is_empty(),
+                        "{policy:?}: {:#?}",
+                        outcome.events
+                    );
+                    assert!(!outcome.disconnect, "{policy:?}");
+                    assert!(!core.snapshot().quarantined, "{policy:?}");
+                } else {
+                    let outcome = process(&mut core, departed_signal.clone());
+                    assert!(
+                        matches!(
+                            outcome.events.as_slice(),
+                            [SignalFishEvent::SignalReceived { .. }]
+                        ),
+                        "{policy:?}: {:#?}",
+                        outcome.events
+                    );
+                    let _ = process(&mut core, player_left.clone());
+                }
+
+                // The session stays healthy either way: a current-generation
+                // signal from a still-rostered peer is delivered and no
+                // quarantine latched over the relay floor.
+                let outcome = process(&mut core, live_signal());
+                assert!(
+                    matches!(
+                        outcome.events.as_slice(),
+                        [SignalFishEvent::SignalReceived { .. }]
+                    ),
+                    "{policy:?}: {:#?}",
+                    outcome.events
+                );
+                assert!(!core.snapshot().quarantined, "{policy:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn same_generation_plan_replacement_suppresses_dropped_peer_signals() {
+        const LIVE_PEER: u128 = 4;
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = v3_room(policy);
+            let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
+            webrtc.peers.push(peer(LIVE_PEER));
+            let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
+
+            let mut replanned = plan(Topology::Mesh, TransportKind::WebRtc);
+            replanned.peers = vec![peer(LIVE_PEER)];
+            let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(replanned)));
+            assert!(core
+                .retired_signal_peers
+                .contains(&PlayerId::from_u128(PEER)));
+
+            let dropped = process(
+                &mut core,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(PEER),
+                    generation: Some(SessionGeneration::from_u128(GENERATION)),
+                    signal: serde_json::json!({"IceCandidate": "in-flight"}),
+                },
+            );
+            assert!(dropped.events.is_empty(), "{policy:?}");
+            assert!(!dropped.disconnect, "{policy:?}");
+            let retained = process(
+                &mut core,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(LIVE_PEER),
+                    generation: Some(SessionGeneration::from_u128(GENERATION)),
+                    signal: serde_json::json!({"Offer": "retained"}),
+                },
+            );
+            assert!(
+                matches!(
+                    retained.events.as_slice(),
+                    [SignalFishEvent::SignalReceived { .. }]
+                ),
+                "{policy:?}: {:#?}",
+                retained.events
+            );
+        }
+    }
+
+    #[test]
+    fn new_peer_reauthorization_clears_departure_retirement_for_current_generation() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+        );
+        let _ = process(
+            &mut core,
+            ServerMessage::GameData {
+                from_player: PlayerId::from_u128(PEER),
+                data: serde_json::json!({"seq": 1}),
+                seq: Some(1),
+                epoch: Some(1),
+                class: Some(DeliveryClass::Reliable),
+                key: None,
+            },
+        );
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: PlayerId::from_u128(PEER),
+                epoch: Some(1),
+                final_seq: Some(1),
+            },
+        );
+        assert!(core
+            .retired_signal_peers
+            .contains(&PlayerId::from_u128(PEER)));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerJoined {
+                player: PlayerInfo {
+                    id: PlayerId::from_u128(PEER),
+                    name: "peer".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(2),
+                    seq: Some(0),
+                },
+            },
+        );
+        let _ = process(
+            &mut core,
+            ServerMessage::NewPeer {
+                peer_id: PlayerId::from_u128(PEER),
+                you_initiate: true,
+            },
+        );
+        assert!(core.retired_signal_peers.is_empty());
+
+        let outcome = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: Some(SessionGeneration::from_u128(GENERATION)),
+                signal: serde_json::json!({"Offer": "rejoined"}),
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SignalReceived { .. }]
+        ));
+    }
+
+    /// A generation-changing plan must not carry peer retirement into the
+    /// new generation: dropped peers never held authority under it, so their
+    /// current-generation signals are genuine violations (their
+    /// superseded-generation frames still die in the generation check).
+    #[test]
+    fn generation_change_does_not_carry_retirement_to_the_new_generation() {
+        let mut core = v3_room(ProtocolViolationPolicy::Quarantine);
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+        );
+        assert!(core.retired_signal_peers.is_empty());
+
+        let mut replanned = plan(Topology::Mesh, TransportKind::WebRtc);
+        replanned.generation = Some(SessionGeneration::from_u128(GENERATION + 1));
+        replanned.peers.clear();
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(replanned)));
+        // The generation change clears retirements without re-retiring the
+        // dropped peer under the new generation.
+        assert!(core.retired_signal_peers.is_empty());
+
+        // A stale superseded-generation frame stays a benign race.
+        let stale = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: Some(SessionGeneration::from_u128(GENERATION)),
+                signal: serde_json::json!({"Offer": "superseded"}),
+            },
+        );
+        assert!(stale.events.is_empty(), "{:#?}", stale.events);
+
+        // A current-generation signal from a sender who never held this
+        // generation's authority is a violation, not silent suppression.
+        let outcome = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: Some(SessionGeneration::from_u128(GENERATION + 1)),
+                signal: serde_json::json!({"Offer": "never-authorized-here"}),
+            },
+        );
+        assert_lifecycle_violation(&outcome);
+        assert!(core.snapshot().quarantined);
+    }
+
+    #[test]
+    fn unknown_sender_signal_after_departure_remains_a_lifecycle_violation() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = v3_room(policy);
+            let _ = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+            );
+            let _ = process(
+                &mut core,
+                ServerMessage::GameData {
+                    from_player: PlayerId::from_u128(PEER),
+                    data: serde_json::json!({"seq": 1}),
+                    seq: Some(1),
+                    epoch: Some(1),
+                    class: Some(DeliveryClass::Reliable),
+                    key: None,
+                },
+            );
+            let _ = process(
+                &mut core,
+                ServerMessage::PlayerLeft {
+                    player_id: PlayerId::from_u128(PEER),
+                    epoch: Some(1),
+                    final_seq: Some(1),
+                },
+            );
+
+            let outcome = process(
+                &mut core,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(3),
+                    generation: Some(SessionGeneration::from_u128(GENERATION)),
+                    signal: serde_json::json!({"Offer": "never-authorized"}),
+                },
+            );
+            assert_lifecycle_violation_containing(
+                &outcome,
+                "not in the authoritative session peer set",
+            );
+            match policy {
+                ProtocolViolationPolicy::Quarantine => {
+                    assert!(core.snapshot().quarantined);
+                    assert!(!outcome.disconnect);
+                }
+                ProtocolViolationPolicy::Disconnect => {
+                    assert!(outcome.disconnect);
+                }
+                ProtocolViolationPolicy::Observe => {
+                    assert!(!core.snapshot().quarantined);
+                    assert!(!outcome.disconnect);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn generationless_webrtc_updates_reauthorize_a_retired_peer() {
         let mut core = v3_room(ProtocolViolationPolicy::Observe);
         let mut webrtc = plan(Topology::Mesh, TransportKind::WebRtc);
@@ -4982,7 +5322,7 @@ mod tests {
         webrtc.peers.clear();
         let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(webrtc)));
         assert!(core
-            .retired_generationless_signal_peers
+            .retired_signal_peers
             .contains(&PlayerId::from_u128(PEER)));
         let _ = process(
             &mut core,
@@ -5014,7 +5354,7 @@ mod tests {
         let mut relay = plan(Topology::Relay, TransportKind::Relay);
         relay.generation = None;
         let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
-        assert!(!core.retired_generationless_signal_peers.is_empty());
+        assert!(!core.retired_signal_peers.is_empty());
         assert_eq!(core.snapshot().session_topology, Some(Topology::Relay));
         assert_eq!(
             core.snapshot().session_transport,
@@ -5023,7 +5363,7 @@ mod tests {
 
         core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
         let _ = process(&mut core, ServerMessage::RoomLeft);
-        assert!(core.retired_generationless_signal_peers.is_empty());
+        assert!(core.retired_signal_peers.is_empty());
         assert!(core.snapshot().session_topology.is_none());
         assert!(core.snapshot().session_transport.is_none());
 

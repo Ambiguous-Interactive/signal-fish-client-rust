@@ -136,9 +136,9 @@ The async driver polls retained sends and receives with one runtime waker, so
 outbound backpressure cannot hide inbound work, peer close, or shutdown.
 Graceful termination finishes transport-owned sends before close under one
 deadline; expiry aborts. After terminal send failure both drivers freeze command
-admission and boundedly process immediately ready frames through `ClientCore`
-until `Pending`, terminal input, work bound, protocol stop, or deadline. A ready farewell precedes
-`Disconnected`; only peer-close metadata replaces the send cause; native WebSocket retains buffered read state.
+admission and boundedly process immediately ready frames through `ClientCore` until
+`Pending`, terminal input, work bound, protocol stop, or deadline (the polling driver clamps this drain to
+its caller-configured receive budget). A ready farewell precedes `Disconnected`; only peer-close metadata replaces the send cause; native WebSocket retains buffered read state.
 
 Public `Debug`/tracing form an ambient-log boundary:
 reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data,
@@ -282,9 +282,9 @@ client.shutdown().await      // async, graceful
 ```
 
 WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.7
-plans/signals carry a UUID generation; the shared core stamps outgoing signals,
-suppresses stale/unknown inbound generations, rejects self/off-plan/departed
-peers, and snapshots the generation plus selected topology/transport atomically.
+plans/signals carry a UUID generation; the core stamps outgoing signals, suppresses stale/unknown inbound
+generations plus departed/re-planned-out peers' late same-generation signals (benign races), rejects
+self/off-plan/unknown senders, and snapshots the generation plus selected topology/transport atomically.
 Accepted finalized-room, current-roster plans use one of four Server 0.7 topology/transport pairs and replace peer authority atomically; superseded non-null generations are rejected before authoritative plan fields, peers, or mesh revision change.
 Current-generation duplicates and generation-less Server 0.4 plans remain valid, while authoritative room/session teardown clears replay history.
 `supports_mesh()` reports negotiated WebRTC + Host/Mesh capability, not the

@@ -1,0 +1,1 @@
+{"type":"TokenBindingChallenge","data":{"version":1,"scheme":"server_nonce_hkdf_sha256","nonce":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","first_sequence":2}}

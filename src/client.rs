@@ -1048,6 +1048,14 @@ impl SignalFishClient {
     /// the command nor mutates any state, and the operation is admitted at
     /// most once per awaited completion.
     ///
+    /// # Multiple parked senders
+    ///
+    /// Several tasks may await reliable sends concurrently. Freed queue slots
+    /// are granted to parked senders first-in-first-out by park order, one
+    /// sender per slot, so no waiter starves while the loop runs. When the
+    /// transport loop exits, every still-parked sender resolves with
+    /// [`SignalFishError::NotConnected`] instead of hanging.
+    ///
     /// # Errors
     ///
     /// Returns the membership errors documented by
@@ -6168,6 +6176,179 @@ mod tests {
             })
             .collect();
         assert_eq!(names, expected, "wedged delivery must preserve order");
+    }
+
+    /// Several tasks may park on reliable sends at once. Freed queue capacity
+    /// must wake them first-in-first-out (exactly one grant per slot), and
+    /// `shutdown()` must resolve every still-parked sender with
+    /// [`SignalFishError::NotConnected`] instead of hanging any of them.
+    #[tokio::test]
+    async fn multiple_parked_reliable_senders_wake_in_order_and_release_on_shutdown() {
+        // Two permits let Authenticate and JoinRoom reach the wire; every
+        // later frame stalls inside the transport so the command queue stays
+        // saturated and reliable senders park on reserve.
+        let (transport, _sent, _closed, controls, gate, frames_taken) =
+            MockTransport::new_send_gated(
+                vec![
+                    Some(Ok(authenticated_json())),
+                    Some(Ok(protocol_info_v2_json())),
+                    Some(Ok(room_joined_json())),
+                ],
+                2,
+            );
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(16)
+            .with_command_channel_capacity(2)
+            .with_shutdown_timeout(std::time::Duration::from_millis(500));
+        let (mut client, _events) = SignalFishClient::start(transport, config);
+
+        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !client.is_authenticated() {
+            assert!(
+                tokio::time::Instant::now() < give_up,
+                "the scripted handshake never authenticated"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("join must be admitted once authenticated");
+        while client.current_room_id().await.is_none() {
+            assert!(
+                tokio::time::Instant::now() < give_up,
+                "the scripted room baseline never landed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        // Saturate the capacity-2 command queue behind the stalled transport:
+        // once the first ping is stranded inside the gated transport, the
+        // next two occupy both queue slots.
+        client
+            .ping()
+            .expect("first ping strands inside the stalled transport");
+        wait_until(|| frames_taken.load(Ordering::Acquire) >= 3).await;
+        client.ping().expect("queue slot one");
+        client.ping().expect("queue slot two");
+
+        let client = Arc::new(client);
+        let mut parked = Vec::new();
+        for tag in 1_usize..=3 {
+            let sender = Arc::clone(&client);
+            parked.push(tokio::spawn(async move {
+                let result = sender
+                    .send_game_data_reliable(serde_json::json!({ "tag": tag }))
+                    .await;
+                (tag, result)
+            }));
+        }
+        for task in parked.iter_mut() {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), task)
+                    .await
+                    .is_err(),
+                "no reliable sender may finish while the queue is saturated"
+            );
+        }
+
+        // One freed transport slot drains exactly one queued command, which
+        // frees exactly one queue slot: only the first-parked sender may
+        // complete.
+        gate.add_permits(1);
+        let mut granted_tags = Vec::new();
+        for task in parked.iter_mut() {
+            if let Ok(outcome) = tokio::time::timeout(std::time::Duration::from_secs(2), task).await
+            {
+                let (tag, result) = outcome.expect("granted sender task must not panic");
+                assert!(
+                    result.is_ok(),
+                    "the granted sender must succeed: {result:?}"
+                );
+                granted_tags.push(tag);
+            }
+        }
+        assert_eq!(
+            granted_tags,
+            vec![1_usize],
+            "the first-parked sender must receive the single freed slot; others stay parked"
+        );
+
+        // Terminal peer close drops the command receiver: every still-parked
+        // sender resolves with NotConnected instead of hanging.
+        controls.close_peer();
+        for tag in [2_usize, 3] {
+            let index = tag - 1;
+            let outcome =
+                tokio::time::timeout(std::time::Duration::from_secs(2), &mut parked[index])
+                    .await
+                    .expect("terminal close must release every parked sender")
+                    .expect("parked sender task should not panic");
+            let (resolved_tag, result) = outcome;
+            assert_eq!(resolved_tag, tag);
+            assert!(
+                matches!(result, Err(SignalFishError::NotConnected)),
+                "parked sender {tag} must fail cleanly on loop exit: {result:?}"
+            );
+        }
+    }
+
+    /// A dropped event receiver must not wedge or spin the transport loop:
+    /// scripted inbound traffic keeps landing and later commands keep flowing,
+    /// and a subsequent graceful shutdown completes cleanly.
+    #[tokio::test]
+    async fn dropped_event_receiver_keeps_the_loop_alive_until_shutdown() {
+        let (transport, sent, closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
+            Some(Ok(room_joined_json())),
+        ]);
+        let config = SignalFishConfig::new("mb_test")
+            .with_event_channel_capacity(8)
+            .with_shutdown_timeout(std::time::Duration::from_millis(500));
+        let (mut client, events) = SignalFishClient::start(transport, config);
+
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !client.is_authenticated() {
+            assert!(
+                give_up.elapsed() < std::time::Duration::from_secs(2),
+                "the scripted handshake never authenticated"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        drop(events);
+
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .expect("join must be admitted once authenticated");
+        while client.current_room_id().await.is_none() {
+            assert!(
+                give_up.elapsed() < std::time::Duration::from_secs(2),
+                "the loop stopped servicing inbound frames after the receiver was dropped"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        for _ in 0..2 {
+            client
+                .ping()
+                .expect("commands keep flowing without a receiver");
+        }
+        wait_until(|| {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .filter(|message| {
+                    serde_json::from_str::<ClientMessage>(message)
+                        .is_ok_and(|m| matches!(m, ClientMessage::Ping))
+                })
+                .count()
+                >= 2
+        })
+        .await;
+
+        client.shutdown().await;
+        assert!(!client.is_connected());
+        assert!(closed.load(Ordering::Relaxed));
     }
 
     /// A receive error wedges terminal delivery exactly like a clean close:

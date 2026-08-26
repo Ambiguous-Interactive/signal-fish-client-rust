@@ -3317,13 +3317,6 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
     noncanonical_plan.topology = Topology::Relay;
     noncanonical_plan.transport = TransportKind::Relay;
 
-    let mut replacement_plan = match plan.clone() {
-        ServerMessage::SessionPlan(plan) => *plan,
-        _ => unreachable!("plan fixture is a SessionPlan"),
-    };
-    replacement_plan.generation = Some(uuid::Uuid::from_u128(353));
-    replacement_plan.peers.clear();
-
     let invalid_cases = [
         (
             "pre-auth",
@@ -3436,23 +3429,6 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 .collect(),
             "SignalReceived",
         ),
-        (
-            "removed-by-replan-signal",
-            room_prefix
-                .iter()
-                .cloned()
-                .chain([
-                    text_server_frame(plan.clone()),
-                    text_server_frame(ServerMessage::SessionPlan(Box::new(replacement_plan))),
-                    text_server_frame(ServerMessage::Signal {
-                        from: peer,
-                        generation: Some(uuid::Uuid::from_u128(353)),
-                        signal: serde_json::json!({"Offer": "removed"}),
-                    }),
-                ])
-                .collect(),
-            "SignalReceived",
-        ),
     ];
 
     for policy in [
@@ -3534,6 +3510,96 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 !event.starts_with("SignalReceived") && !event.starts_with("ProtocolViolation")
             }),
             "generation-less late signal under {policy:?}: {events:?}"
+        );
+    }
+
+    // A same-generation signal from a peer the replacement plan dropped is a
+    // benign departure race, not an integrity violation: it is suppressed
+    // silently under every policy (mirrors the generation-less fence above).
+    // A generation-changing replacement instead scopes retirement away: the
+    // dropped peer never held authority under the new generation, so its
+    // current-generation signal is a lifecycle violation there.
+    let mut same_generation_replacement = match plan.clone() {
+        ServerMessage::SessionPlan(plan) => *plan,
+        _ => unreachable!("plan fixture is a SessionPlan"),
+    };
+    same_generation_replacement.peers.clear();
+    let mut next_generation_replacement = same_generation_replacement.clone();
+    next_generation_replacement.generation = Some(uuid::Uuid::from_u128(353));
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let events = assert_frame_trace_parity(
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(
+                        same_generation_replacement.clone(),
+                    ))),
+                    text_server_frame(ServerMessage::Signal {
+                        from: peer,
+                        generation: Some(generation),
+                        signal: serde_json::json!({"Offer": "removed"}),
+                    }),
+                ])
+                .collect(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(
+            events.iter().all(|event| {
+                !event.starts_with("SignalReceived") && !event.starts_with("ProtocolViolation")
+            }),
+            "removed-by-replan signal under {policy:?}: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SessionPlan"))
+                .count(),
+            2,
+            "both plans must be applied before the retired-peer signal under {policy:?}"
+        );
+
+        let events = assert_frame_trace_parity(
+            room_prefix
+                .iter()
+                .cloned()
+                .chain([
+                    text_server_frame(plan.clone()),
+                    text_server_frame(ServerMessage::SessionPlan(Box::new(
+                        next_generation_replacement.clone(),
+                    ))),
+                    text_server_frame(ServerMessage::Signal {
+                        from: peer,
+                        generation: Some(uuid::Uuid::from_u128(353)),
+                        signal: serde_json::json!({"Offer": "removed-next-generation"}),
+                    }),
+                ])
+                .collect(),
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("ProtocolViolation|Lifecycle|")),
+            "a next-generation signal from a peer the generation change dropped must be a \
+             violation under {policy:?}: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.starts_with("SignalReceived")),
+            "the unauthorized next-generation signal must not be delivered under {policy:?}: {events:?}"
         );
     }
 

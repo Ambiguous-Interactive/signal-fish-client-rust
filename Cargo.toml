@@ -52,6 +52,10 @@ tokio-runtime = ["tokio/rt", "tokio/time"]
 # Protocol v3 mesh orchestration helpers (MeshSession tracker + WebRtcDriver seam).
 # Pure-std, zero extra dependencies.
 mesh = []
+# Internal-only: exposes the doc(hidden) `token_binding::__internal_fuzz_facade`
+# module consumed by the repository's cargo-fuzz target. Not covered by semver;
+# production code must never enable it.
+internal-fuzz-facade = ["token-binding"]
 
 [dependencies]
 # Async

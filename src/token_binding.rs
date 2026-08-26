@@ -705,6 +705,24 @@ mod tests {
         assert_ne!(wire_order, std::str::from_utf8(&canonical).unwrap());
     }
 
+    /// Pin string-value escaping to the ECMAScript/JCS set the server's
+    /// canonicalizer implements: short escapes for `\b\t\n\f\r`, lowercase
+    /// `\u00xx` for the remaining control characters below 0x20, and raw
+    /// UTF-8 for DEL and all non-ASCII scalar values. The golden vectors only
+    /// exercise ASCII values, so this test is the parity pin for the rest.
+    #[test]
+    fn canonical_json_escapes_control_and_non_ascii_values_like_the_server() {
+        let value = serde_json::json!({
+            "z": "\u{01}\u{1F600}",
+            "a": "q\"b\\c\u{08}\u{7F}",
+        });
+        let canonical = canonical_json(&value).expect("escaping fixture must canonicalize");
+        assert_eq!(
+            std::str::from_utf8(&canonical).expect("canonical output is UTF-8"),
+            "{\"a\":\"q\\\"b\\\\c\\b\u{7F}\",\"z\":\"\\u0001\u{1F600}\"}",
+        );
+    }
+
     #[test]
     fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
         let vectors = golden_vectors();
@@ -875,5 +893,64 @@ mod tests {
                 TokenBindingFailure::SequenceExhausted
             ))
         ));
+    }
+}
+
+/// Internal entry points for the repository's `fuzz_token_binding` cargo-fuzz
+/// target.
+///
+/// This module is `#[doc(hidden)]`, gated behind the non-default
+/// `internal-fuzz-facade` feature (which itself requires `token-binding`),
+/// and is explicitly **not part of the public API**: no semver guarantee
+/// covers anything here, the surface may change or vanish at any time, and
+/// production code must never enable the feature. It exists so the fuzz
+/// target can drive `pub(crate)` parsing/profiling paths without widening
+/// the supported API (issue #163).
+#[cfg(all(feature = "token-binding", feature = "internal-fuzz-facade"))]
+#[doc(hidden)]
+pub mod __internal_fuzz_facade {
+    use super::{
+        canonical_json as internal_canonical_json, parse_challenge as internal_parse_challenge,
+        SignalFishError, TokenBindingChallenge, TokenBindingSession,
+    };
+    use crate::transport::TransportFrame;
+
+    /// Parse raw challenge text through the strict internal validator.
+    pub fn parse_challenge(text: &str) -> Result<TokenBindingChallenge, SignalFishError> {
+        internal_parse_challenge(text)
+    }
+
+    /// Render already-parsed JSON through the internal canonicalizer.
+    pub fn canonical_json(value: &serde_json::Value) -> Result<Vec<u8>, SignalFishError> {
+        internal_canonical_json(value)
+    }
+
+    /// Opaque handle driving a secret-bearing session's prepare/commit cycle.
+    pub struct FuzzSession(TokenBindingSession);
+
+    impl FuzzSession {
+        /// Build a session exactly as the transport would after selection.
+        pub fn from_challenge(
+            handshake_key: &str,
+            challenge: TokenBindingChallenge,
+            client_fingerprint: Option<&str>,
+        ) -> Result<Self, SignalFishError> {
+            TokenBindingSession::from_challenge(
+                handshake_key,
+                challenge,
+                client_fingerprint.map(std::borrow::ToOwned::to_owned),
+            )
+            .map(Self)
+        }
+
+        /// Protect one frame with the current sequence without committing it.
+        pub fn prepare(&self, frame: &TransportFrame) -> Result<TransportFrame, SignalFishError> {
+            self.0.prepare(frame)
+        }
+
+        /// Advance the sequence exactly as a successful send would.
+        pub fn commit(&mut self) -> Result<(), SignalFishError> {
+            self.0.commit()
+        }
     }
 }

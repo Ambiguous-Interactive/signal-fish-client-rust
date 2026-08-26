@@ -40,6 +40,13 @@ pub trait WebRtcDriver {
     /// emit it via [`poll`](Self::poll) as [`DriverEvent::Signal`]; otherwise
     /// wait for the remote offer. Obey `initiate` verbatim — it is the server's
     /// deterministic offerer assignment.
+    ///
+    /// Role assignments can flip within one session generation (a `NewPeer`
+    /// with a changed `you_initiate`). Because both sides' flips land
+    /// asynchronously, an implementor may still be handed the remote side's
+    /// Offer after being told to initiate; tolerate that glare the way
+    /// perfect-negotiation implementations do (treat the inbound Offer as the
+    /// winner or roll back the local offer) rather than erroring or wedging.
     fn connect(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, initiate: bool);
 
     /// Feed a remote signal (offer/answer/ICE candidate) received from `peer`.
@@ -58,6 +65,10 @@ pub trait WebRtcDriver {
 
     /// Drain the next driver output, or `None` when idle. The controller calls
     /// this in a loop until it returns `None`.
+    ///
+    /// Implementations must guarantee forward progress toward `None`: every
+    /// call must either return an event or retire it internally. Returning
+    /// stale events forever livelocks the controller's synchronous drain.
     fn poll(&mut self) -> Option<DriverEvent>;
 
     /// Register a [`MeshWaker`] the driver signals (via [`MeshWaker::wake`]) when
@@ -442,9 +453,11 @@ mod controller {
         }
 
         /// Drive the driver in response to a single signaling event. The mesh
-        /// session view is assumed to be already folded (by [`handle_event`], or
-        /// by the recursive `MeshSession::apply` for events replayed out of a
-        /// `Reconnected`'s `missed_events`).
+        /// session view is assumed to be already folded (by [`handle_event`]).
+        /// Replay membership inside a `Reconnected`'s `missed_events` is
+        /// deliberately *not* folded here or in `MeshSession::apply`: the core
+        /// fences peers until a fresh live plan, and this arm above tears the
+        /// known peers down on the `Reconnected` event itself.
         fn choreograph(&mut self, event: &SignalFishEvent) {
             match event {
                 SignalFishEvent::SessionPlan {

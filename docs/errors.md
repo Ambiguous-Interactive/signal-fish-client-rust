@@ -34,7 +34,7 @@ exhaustive public enum:
 | `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `AlreadyInRoom` | — | Attempted to join as a player/spectator or reconnect while already in a room. |
-| `RoomOperationPending` | — | A previously admitted join, leave, or reconnect still awaits a matching typed terminal response. `ping` remains available; generic errors and absent responses stay fenced until transport teardown, after which a new connection may retry. |
+| `RoomOperationPending` | — | A previously admitted join, leave, or reconnect still awaits a matching typed terminal response. `ping` remains available; generic errors and absent responses stay fenced until transport teardown, after which a new connection may retry. The fence applies to undecodable responses too: an unknown `error_code` string from a newer server makes the whole frame surface as a `DecodeFailed` event, so a correlated result never releases the pending operation. |
 | `WrongRoomRole` | `required: RoomRole`, `actual: RoomRole` | Attempted a player-only command as a spectator, or `leave_spectator` as a player. |
 | `AuthorityRequired` | — | Attempted `start_game` while another player is authority, or attempted to relinquish authority without currently holding it. |
 | `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |

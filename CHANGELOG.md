@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the opt-in `internal-fuzz-facade` feature (which builds on the
+  native token-binding support) exposing a `#[doc(hidden)]`, semver-exempt
+  module that lets the repository's new `fuzz_token_binding` cargo-fuzz
+  target drive the internal challenge parsing, canonicalization, and
+  proof-preparation paths without widening the supported public API. The
+  target is wired into the Deep Safety fuzz lane with seed inputs;
+  production builds are unaffected.
 - Bounded the Emscripten WebSocket transport's callback-bridged inbound queue
   at 8 MiB by default through the new
   `EmscriptenWebSocketConnectOptions::max_inbound_queue_bytes` option and the
@@ -212,6 +219,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a mesh-signaling availability defect where one routine departure race
+  blackholed game data for the rest of the room session. A `Signal` frame from
+  a peer the server had just dropped — via `PlayerLeft` or a same-generation
+  re-plan — could arrive after the departure was processed while still stamped
+  with the current session generation. The frame was valid when the server
+  relayed it, but the core classified it as a lifecycle integrity violation:
+  under the default `Quarantine` policy that latched quarantine and silently
+  suppressed every later game-data delivery until a reconnect, and under
+  `Disconnect` it tore the connection down entirely. Departed and
+  re-planned-out peers now join the same benign-race fence Server 0.4
+  generation-less signaling already used: their late same-generation signals
+  are suppressed silently, senders never authorized for the session remain
+  violations under every policy, and a peer named by a new plan (or a
+  compatibility `NewPeer`) is reauthorized immediately.
 - Fixed delivery accountability accepting or wrongly rejecting game data after
   a player fully departed and later rejoined reusing an epoch value. A zero
   terminal (`final_seq = 0`) retired the sender while exact gap ranges from

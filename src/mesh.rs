@@ -143,6 +143,12 @@ impl MeshSession {
                 }
                 // Only mutate liveness; never invent a peer the server's plan
                 // didn't include.
+                //
+                // `PeerTransportStatus` carries no generation, so a status
+                // relayed before a re-plan can land just after it and refresh
+                // a pre-handshake view. That is inherent last-known-liveness
+                // staleness, bounded by the next report; the controller's own
+                // driver-driven view stays generation-exact.
                 if let Some(p) = self.peers.iter_mut().find(|p| p.player_id == *peer_id) {
                     let changed = p.connected != *connected;
                     p.connected = *connected;

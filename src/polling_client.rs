@@ -950,6 +950,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// [`PollingClosePolicy`] either abandons client-owned work or flushes it
     /// under the normal work budget before starting the transport close.
     /// [`SignalFishConfig::shutdown_timeout`] bounds the complete operation.
+    ///
+    /// Unlike the async driver's `shutdown()`, `close` emits **no** terminal
+    /// `Disconnected` event and no application events at all: observe
+    /// completion through [`snapshot`](Self::snapshot) instead of waiting on
+    /// the event stream.
     pub fn close(&mut self) {
         self.close_at(Instant::now());
     }
