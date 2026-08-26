@@ -88,6 +88,8 @@ jobs:
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
             flags: "--no-default-features --features mesh"
+          - name: tls-only
+            flags: "--no-default-features --features tls"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -124,6 +126,8 @@ jobs:
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
             flags: "--no-default-features --features mesh"
+          - name: tls-only
+            flags: "--no-default-features --features tls"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
