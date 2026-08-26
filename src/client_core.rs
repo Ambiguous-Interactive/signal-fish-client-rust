@@ -1901,11 +1901,18 @@ impl ClientCore {
             self.retired_signal_peers.clear();
         }
         let peers: HashSet<_> = peers.into_iter().collect();
-        if self.session_plan_seen && self.snapshot.session_transport == Some(TransportKind::WebRtc)
+        if self.session_plan_seen
+            && self.snapshot.session_generation == generation
+            && self.snapshot.session_transport == Some(TransportKind::WebRtc)
         {
-            // Peers dropped by the replacement plan may still have signals in
-            // flight stamped with a still-live generation; retire them so
-            // those final frames stay benign races.
+            // Peers dropped by a same-generation replacement may still have
+            // signals in flight stamped with that still-live generation;
+            // retire them so those final frames stay benign races. A
+            // generation change must not carry retirement across: dropped
+            // peers never held authority under the new generation, so their
+            // current-generation signals are genuine violations while their
+            // superseded-generation frames already die in the generation
+            // check.
             self.retired_signal_peers.extend(
                 self.session_peers
                     .iter()
@@ -5175,6 +5182,52 @@ mod tests {
             outcome.events.as_slice(),
             [SignalFishEvent::SignalReceived { .. }]
         ));
+    }
+
+    /// A generation-changing plan must not carry peer retirement into the
+    /// new generation: dropped peers never held authority under it, so their
+    /// current-generation signals are genuine violations (their
+    /// superseded-generation frames still die in the generation check).
+    #[test]
+    fn generation_change_does_not_carry_retirement_to_the_new_generation() {
+        let mut core = v3_room(ProtocolViolationPolicy::Quarantine);
+        let _ = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+        );
+        assert!(core.retired_signal_peers.is_empty());
+
+        let mut replanned = plan(Topology::Mesh, TransportKind::WebRtc);
+        replanned.generation = Some(SessionGeneration::from_u128(GENERATION + 1));
+        replanned.peers.clear();
+        let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(replanned)));
+        // The generation change clears retirements without re-retiring the
+        // dropped peer under the new generation.
+        assert!(core.retired_signal_peers.is_empty());
+
+        // A stale superseded-generation frame stays a benign race.
+        let stale = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: Some(SessionGeneration::from_u128(GENERATION)),
+                signal: serde_json::json!({"Offer": "superseded"}),
+            },
+        );
+        assert!(stale.events.is_empty(), "{:#?}", stale.events);
+
+        // A current-generation signal from a sender who never held this
+        // generation's authority is a violation, not silent suppression.
+        let outcome = process(
+            &mut core,
+            ServerMessage::Signal {
+                from: PlayerId::from_u128(PEER),
+                generation: Some(SessionGeneration::from_u128(GENERATION + 1)),
+                signal: serde_json::json!({"Offer": "never-authorized-here"}),
+            },
+        );
+        assert_lifecycle_violation(&outcome);
+        assert!(core.snapshot().quarantined);
     }
 
     #[test]
