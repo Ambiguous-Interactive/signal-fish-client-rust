@@ -123,6 +123,12 @@ impl FrameOutcome {
 /// while bounding per-room memory under generation churn.
 const RETIRED_SESSION_GENERATION_FENCE: usize = 8;
 
+/// Absolute roster admission fallback for baselines that do not advertise a
+/// capacity (spectator joins). `max_players` is a `u8` on the wire, so no
+/// legitimate room can hold more distinct players than this; the fallback
+/// bounds `room_players` growth even when the exact ceiling is unknown.
+const ABSOLUTE_ROSTER_CAPACITY: usize = 256;
+
 /// Shared protocol state and behavior used by both public client drivers.
 pub(crate) struct ClientCore {
     snapshot: ClientSnapshot,
@@ -137,6 +143,12 @@ pub(crate) struct ClientCore {
     authority_player: Option<PlayerId>,
     room_finalized: bool,
     room_players: HashSet<PlayerId>,
+    // Player-slot capacity advertised by the latest authoritative baseline
+    // (`RoomJoined`/`Reconnected`). Spectator baselines omit the field on the
+    // wire, leaving the absolute [`ABSOLUTE_ROSTER_CAPACITY`] fallback as the
+    // admission ceiling. Incremental `PlayerJoined` inserts beyond the ceiling
+    // are lifecycle violations instead of unbounded roster growth (issue #166).
+    room_max_players: Option<u8>,
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
     // Recently superseded plan generations, fenced against replayed plans
@@ -176,6 +188,8 @@ struct RoomBaseline {
     authority_player: Option<PlayerId>,
     finalized: bool,
     players: HashSet<PlayerId>,
+    // Spectator baselines omit the wire field, so this is `None` there.
+    max_players: Option<u8>,
 }
 
 pub(crate) struct PendingReconnect {
@@ -257,6 +271,7 @@ impl ClientCore {
             authority_player: None,
             room_finalized: false,
             room_players: HashSet::new(),
+            room_max_players: None,
             session_plan_seen: false,
             session_peers: HashSet::new(),
             retired_session_generations: VecDeque::new(),
@@ -737,6 +752,7 @@ impl ClientCore {
         self.authority_player = None;
         self.room_finalized = false;
         self.room_players.clear();
+        self.room_max_players = None;
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();
@@ -1373,6 +1389,16 @@ impl ClientCore {
                         .into(),
                 )
             }
+            ServerMessage::PlayerJoined { player }
+                if !self.room_players.contains(&player.id)
+                    && self.room_players.len() >= self.roster_capacity() =>
+            {
+                Err(format!(
+                    "lifecycle violation: PlayerJoined {} exceeds the advertised room capacity of {} players",
+                    player.id,
+                    self.roster_capacity()
+                ))
+            }
             ServerMessage::AuthorityChanged {
                 authority_player,
                 you_are_authority,
@@ -1424,6 +1450,14 @@ impl ClientCore {
             ),
             _ => Ok(()),
         }
+    }
+
+    /// Effective player-roster admission ceiling: the advertised
+    /// `max_players`, or the wire-absolute fallback when the latest baseline
+    /// could not advertise one (spectator joins).
+    fn roster_capacity(&self) -> usize {
+        self.room_max_players
+            .map_or(ABSOLUTE_ROSTER_CAPACITY, usize::from)
     }
 
     fn validate_pending_room_response(
@@ -1737,6 +1771,7 @@ impl ClientCore {
                         .iter()
                         .map(|player| player.id)
                         .collect(),
+                    max_players: Some(payload.max_players),
                 });
             }
             ServerMessage::RoomJoinFailed { .. } => {
@@ -1768,6 +1803,7 @@ impl ClientCore {
                         .iter()
                         .map(|player| player.id)
                         .collect(),
+                    max_players: Some(payload.max_players),
                 });
             }
             ServerMessage::SpectatorJoined(payload) => {
@@ -1788,6 +1824,7 @@ impl ClientCore {
                         .iter()
                         .map(|player| player.id)
                         .collect(),
+                    max_players: None,
                 });
             }
             ServerMessage::SpectatorJoinFailed { .. } => {
@@ -1868,6 +1905,7 @@ impl ClientCore {
         self.authority_player = baseline.authority_player;
         self.room_finalized = baseline.finalized;
         self.room_players = baseline.players;
+        self.room_max_players = baseline.max_players;
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();
@@ -1891,6 +1929,7 @@ impl ClientCore {
         self.authority_player = None;
         self.room_finalized = false;
         self.room_players.clear();
+        self.room_max_players = None;
         self.session_plan_seen = false;
         self.session_peers.clear();
         self.retired_session_generations.clear();

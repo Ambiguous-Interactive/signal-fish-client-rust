@@ -1837,6 +1837,63 @@ mod tests {
         finish_mock_server(server_task).await;
     }
 
+    /// Pins connect-future cancellation for required token binding: dropping
+    /// the future while it waits for the server challenge must tear down the
+    /// selected socket promptly instead of leaking a half-open connection.
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn dropping_required_connect_mid_challenge_closes_the_socket() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mid-challenge listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("mid-challenge listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("selected handshake must succeed");
+            // The client never receives its challenge: dropping the connect
+            // future must end this stream within the timeout below.
+            match tokio::time::timeout(std::time::Duration::from_secs(1), ws.next()).await {
+                Ok(None | Some(Err(_))) => {}
+                Ok(Some(Ok(message))) => {
+                    panic!("dropped connect future must not send frames: {message:?}")
+                }
+                Err(_) => panic!("the socket stayed open after the connect future was dropped"),
+            }
+        });
+
+        let url = format!("ws://{addr}");
+        let mut connect = Box::pin(WebSocketTransport::connect_with_options(
+            &url,
+            required_token_binding_options(),
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), connect.as_mut())
+                .await
+                .is_err(),
+            "connect must stay parked awaiting the challenge"
+        );
+        drop(connect);
+        finish_mock_server(server_task).await;
+    }
+
     #[cfg(feature = "token-binding")]
     #[tokio::test]
     async fn selected_mode_times_out_waiting_for_the_first_challenge() {

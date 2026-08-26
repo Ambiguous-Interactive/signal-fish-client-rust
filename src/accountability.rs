@@ -13,6 +13,30 @@ use crate::protocol::{
 };
 use crate::{ErrorCode, ServerMessage};
 
+// Resource bounds for long sessions fed by a hostile or pathologically
+// churning server (issue #166). Every bound classifies overflow as server
+// misbehavior through the ordinary delivery-accountability diagnostics, and
+// every enforcing site validates before mutating state, so a refused frame
+// leaves the machine untouched.
+
+/// Maximum simultaneously unresolved incarnation announcements tracked for
+/// one sender. Legitimate reconnect churn retires instantly (`final_seq == 0`)
+/// or advances watermarks, pruning announcements; only churn that never
+/// delivers data and never completes retirement accumulates toward this bound.
+const MAX_ANNOUNCED_EPOCHS_PER_SENDER: usize = 16;
+
+/// Maximum simultaneously uncovered departed incarnations retained for one
+/// sender. Retirement completes whenever terminal coverage is explainable;
+/// retaining more than this many uncovered terminals per sender means the
+/// server keeps leaving incarnations whose tails it never explains.
+const MAX_DEPARTED_SENDERS_PER_PLAYER: usize = 16;
+
+/// Maximum total exact gap ranges retained across all senders while awaiting
+/// matching data, retirement, or a room reset. One report carries at most
+/// [`DELIVERY_REPORT_MAX_GAPS`] ranges, so legitimate loss patterns drain far
+/// below this ceiling between reports.
+const MAX_TOTAL_PENDING_GAPS: usize = 1024;
+
 #[derive(Debug, Clone, Copy)]
 struct SenderProgress {
     epoch: u32,
@@ -311,10 +335,24 @@ impl DeliveryAccountability {
                 "delivery accountability violation: gap report for {player_id} extends beyond PlayerLeft final_seq {final_seq}"
             ));
         }
+        if !self.departed_senders.contains_key(&(player_id, epoch))
+            && self.departed_count(player_id) >= MAX_DEPARTED_SENDERS_PER_PLAYER
+        {
+            return Err(format!(
+                "delivery accountability violation: PlayerLeft terminal epoch {epoch} for {player_id} exceeds the {MAX_DEPARTED_SENDERS_PER_PLAYER} uncovered departure bound"
+            ));
+        }
         self.departed_senders
             .insert((player_id, epoch), DepartedSender { final_seq });
         self.stale_senders.insert(player_id);
         self.try_retire_departed(player_id, epoch)
+    }
+
+    /// Number of unresolved departed incarnations retained for one player.
+    fn departed_count(&self, player_id: PlayerId) -> usize {
+        self.departed_senders
+            .range((player_id, u32::MIN)..=(player_id, u32::MAX))
+            .count()
     }
 
     /// Accept an optional rate-limited unsupported-format advisory only after
@@ -436,6 +474,11 @@ impl DeliveryAccountability {
                 "delivery accountability violation: {source} epoch {epoch} for {player_id} is not newer than announced epochs {announced:?}"
             ));
         }
+        if announced.len() >= MAX_ANNOUNCED_EPOCHS_PER_SENDER {
+            return Err(format!(
+                "delivery accountability violation: {source} epoch {epoch} for {player_id} exceeds the {MAX_ANNOUNCED_EPOCHS_PER_SENDER} unresolved announcement bound"
+            ));
+        }
         announced.insert(epoch);
         self.stale_senders.insert(player_id);
         Ok(())
@@ -452,6 +495,16 @@ impl DeliveryAccountability {
         if report.gaps.len() > DELIVERY_REPORT_MAX_GAPS {
             return Err(format!(
                 "delivery accountability violation: DeliveryReport contains {} gap ranges, limit is {DELIVERY_REPORT_MAX_GAPS}",
+                report.gaps.len()
+            ));
+        }
+        let outstanding_gaps = self
+            .pending_gaps
+            .values()
+            .fold(0usize, |total, gaps| total.saturating_add(gaps.len()));
+        if outstanding_gaps.saturating_add(report.gaps.len()) > MAX_TOTAL_PENDING_GAPS {
+            return Err(format!(
+                "delivery accountability violation: DeliveryReport would exceed the {MAX_TOTAL_PENDING_GAPS} exact-gap retention bound ({outstanding_gaps} outstanding plus {} new)",
                 report.gaps.len()
             ));
         }
@@ -1983,5 +2036,180 @@ mod tests {
 
         valid.reset_connection();
         valid.record_relay_stats(2_000, 0, 0, 0).unwrap();
+    }
+
+    #[test]
+    fn reconnect_epoch_flood_hits_the_announcement_bound() {
+        let sender = id(1);
+        let mut state = DeliveryAccountability::default();
+        state.rebaseline_snapshot(&[player(sender, 1)]).unwrap();
+
+        // Exactly the bound's worth of newer announcements is accepted. The
+        // literals pin the shipped threshold: retuning the constant must
+        // consciously update this evidence.
+        assert_eq!(MAX_ANNOUNCED_EPOCHS_PER_SENDER, 16);
+        for epoch in 2..=17u32 {
+            state.note_player_reconnected(sender, Some(epoch)).unwrap();
+        }
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_ANNOUNCED_EPOCHS_PER_SENDER)
+        );
+
+        // The next announcement is refused as server misbehavior and the
+        // refused frame leaves the machine untouched.
+        let error = state.note_player_reconnected(sender, Some(18)).unwrap_err();
+        assert!(error.contains("unresolved announcement"), "{error}");
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_ANNOUNCED_EPOCHS_PER_SENDER)
+        );
+    }
+
+    #[test]
+    fn uncoverable_departure_flood_stays_bounded() {
+        let sender = id(3);
+        let mut state = DeliveryAccountability::default();
+        state
+            .rebaseline_snapshot(&[player_at(sender, 1, 0)])
+            .unwrap();
+
+        // Each churn cycle announces a newer epoch and departs it with a
+        // terminal watermark retirement can never cover (the issue #166
+        // pathology), so both per-sender sets would grow monotonically.
+        for epoch in 2..=17u32 {
+            state.note_player_reconnected(sender, Some(epoch)).unwrap();
+            state
+                .note_player_left(sender, Some(epoch), Some(u64::MAX))
+                .unwrap();
+        }
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_ANNOUNCED_EPOCHS_PER_SENDER)
+        );
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+
+        // The next cycle is refused at the announcement bound before either
+        // structure can grow further.
+        let error = state.note_player_reconnected(sender, Some(18)).unwrap_err();
+        assert!(error.contains("unresolved announcement"), "{error}");
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+    }
+
+    #[test]
+    fn healthy_reconnect_churn_never_accumulates_toward_the_bounds() {
+        let sender = id(5);
+        let mut state = DeliveryAccountability::default();
+        state
+            .rebaseline_snapshot(&[player_at(sender, 1, 0)])
+            .unwrap();
+
+        // Legitimate flapping retires instantly: an idle departure carries
+        // final_seq == 0, so every churn cycle prunes both structures.
+        for epoch in 2..=64u32 {
+            state.note_player_reconnected(sender, Some(epoch)).unwrap();
+            state
+                .note_player_left(sender, Some(epoch), Some(0))
+                .unwrap();
+        }
+        assert!(state.announced_epochs.is_empty());
+        assert!(state.departed_senders.is_empty());
+        assert!(state.senders.is_empty());
+    }
+
+    #[test]
+    fn disjoint_gap_flood_hits_the_retention_ceiling() {
+        let sender = id(4);
+        let mut state = DeliveryAccountability::default();
+        state
+            .rebaseline_snapshot(&[player_at(sender, 1, 0)])
+            .unwrap();
+
+        // Four full reports of 256 singleton exact ranges saturate the bound;
+        // counter deltas match the causal gap units exactly throughout.
+        let batch_size = u64::try_from(DELIVERY_REPORT_MAX_GAPS).unwrap();
+        for batch in 1..=4u64 {
+            let gaps: Vec<DeliveryGap> = (0..DELIVERY_REPORT_MAX_GAPS as u64)
+                .map(|index| {
+                    let seq = (batch - 1) * batch_size + index + 1;
+                    gap(sender, seq, seq)
+                })
+                .collect();
+            let report = DeliveryReportPayload {
+                gaps,
+                per_class: counters_with_superseded(batch * batch_size),
+            };
+            state.record_report(&report).unwrap();
+        }
+        fn outstanding(state: &DeliveryAccountability) -> usize {
+            state
+                .pending_gaps
+                .values()
+                .map(Vec::len)
+                .fold(0usize, usize::saturating_add)
+        }
+        assert_eq!(outstanding(&state), MAX_TOTAL_PENDING_GAPS);
+
+        // One more exact range — even a single sequence — exceeds the ceiling,
+        // and the refused report does not mutate pending state.
+        let overflow = DeliveryReportPayload {
+            gaps: vec![gap(sender, 4 * batch_size + 1, 4 * batch_size + 1)],
+            per_class: counters_with_superseded(4 * batch_size + 1),
+        };
+        let error = state.record_report(&overflow).unwrap_err();
+        assert!(error.contains("retention bound"), "{error}");
+        assert_eq!(outstanding(&state), MAX_TOTAL_PENDING_GAPS);
+    }
+
+    #[test]
+    fn departure_bound_refuses_the_next_uncoverable_leave() {
+        let sender = id(6);
+        let mut state = DeliveryAccountability::default();
+        state
+            .rebaseline_snapshot(&[player_at(sender, 1, 0)])
+            .unwrap();
+
+        // One uncovered departure at the current epoch needs no announcement,
+        // so the departure count runs one ahead of the announcements.
+        state
+            .note_player_left(sender, Some(1), Some(u64::MAX))
+            .unwrap();
+        for epoch in 2..=16u32 {
+            state.note_player_reconnected(sender, Some(epoch)).unwrap();
+            state
+                .note_player_left(sender, Some(epoch), Some(u64::MAX))
+                .unwrap();
+        }
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_DEPARTED_SENDERS_PER_PLAYER - 1)
+        );
+
+        // The next announcement still fits under the announcement bound, but
+        // its uncoverable leave is refused by the departure bound — proving
+        // the two bounds are independent. The refused leave mutates nothing.
+        state.note_player_reconnected(sender, Some(17)).unwrap();
+        let error = state
+            .note_player_left(sender, Some(17), Some(u64::MAX))
+            .unwrap_err();
+        assert!(error.contains("uncovered departure"), "{error}");
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_DEPARTED_SENDERS_PER_PLAYER)
+        );
     }
 }

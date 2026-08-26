@@ -4114,9 +4114,13 @@ mod tests {
                     self.sent.lock().unwrap().push(message);
                     Poll::Ready(Ok(()))
                 }
-                Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
-                    SignalFishError::TransportSend("gated mock expected a text frame".into()),
-                )),
+                Some(TransportFrame::Binary(bytes)) => {
+                    self.sent
+                        .lock()
+                        .unwrap()
+                        .push(format!("<binary:{} bytes>", bytes.len()));
+                    Poll::Ready(Ok(()))
+                }
                 None => Poll::Ready(Ok(())),
             }
         }
@@ -4664,6 +4668,322 @@ mod tests {
 
         let mut client = Arc::into_inner(client).expect("all client clones should be dropped");
         client.shutdown().await;
+    }
+
+    /// Pins the cancellation contract for the remaining waiting-send entry
+    /// points: dropping `send_binary_game_data_reliable` or
+    /// `send_signal_reliable` while parked on queue capacity leaves no state
+    /// mutation, no statistics change, and no leaked queue permit, so an
+    /// identical command still completes afterwards.
+    #[tokio::test]
+    async fn dropping_parked_binary_and_signal_reliable_sends_leaves_no_trace() {
+        let peer = uuid::Uuid::from_u128(7);
+        let (transport, entered_send, permits, sent) = GatedSendTransport::new(0);
+        let mut config = SignalFishConfig::new("mb_test")
+            .enable_v3()
+            .with_command_channel_capacity(1);
+        config.game_data_format = Some(GameDataEncoding::MessagePack);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+
+        // Script a v3 room plus WebRTC plan directly into the shared core:
+        // binary sends need a negotiated MessagePack format and signals need
+        // an authoritative plan naming the peer.
+        {
+            let mut core = lock_core(&client.state);
+            let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
+            let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("test-game", "local"),
+            )));
+            let _ = core.process_frame(TransportFrame::Text(finalized_room_v3_json(peer)));
+            let plan = session_plan_v3_json(peer);
+            let _ = core.process_frame(TransportFrame::Text(plan));
+        }
+
+        client
+            .send_game_data(serde_json::json!({ "fills": "queue" }))
+            .expect("capacity-1 queue should accept one filler command");
+        let client = Arc::new(client);
+
+        // Park and drop each waiting send in turn; nothing may change.
+        let stats_before = client.stats();
+        let snapshot_before = client.snapshot();
+
+        let binary_sender = Arc::clone(&client);
+        let mut parked_binary = Box::pin(async move {
+            binary_sender
+                .send_binary_game_data_reliable(vec![0xDE, 0xAD])
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), parked_binary.as_mut())
+                .await
+                .is_err(),
+            "binary reliable send should be parked on queue capacity"
+        );
+        drop(parked_binary);
+
+        let signal_sender = Arc::clone(&client);
+        let mut parked_signal = Box::pin(async move {
+            signal_sender
+                .send_signal_reliable(peer, PeerSignal::Offer("cancelled-sdp".into()))
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), parked_signal.as_mut())
+                .await
+                .is_err(),
+            "signal reliable send should be parked on queue capacity"
+        );
+        drop(parked_signal);
+
+        assert_eq!(client.stats(), stats_before, "stats must not move");
+        assert_eq!(client.snapshot(), snapshot_before, "snapshot must not move");
+        assert_eq!(client.send_capacity(), 0, "the filler still owns the slot");
+
+        // Capacity restored: identical commands complete; the cancelled
+        // payloads must never appear on the wire. The gated mock records text
+        // frames verbatim and binary frames as length markers, so both
+        // completions and both cancelled payloads are observable.
+        permits.add_permits(16);
+        client
+            .send_binary_game_data_reliable(vec![1, 2, 3])
+            .await
+            .expect("an identical binary reliable send must complete after cancellation");
+        client
+            .send_signal_reliable(peer, PeerSignal::Offer("fresh-sdp".into()))
+            .await
+            .expect("an identical signal reliable send must complete after cancellation");
+        wait_until(|| {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .any(|json| json.contains("fresh-sdp"))
+        })
+        .await;
+        {
+            let payloads = sent.lock().unwrap();
+            assert!(
+                !payloads.iter().any(|json| json.contains("cancelled")),
+                "cancelled payloads must not reach the wire: {payloads:?}"
+            );
+            assert!(
+                !payloads
+                    .iter()
+                    .any(|json| json.contains("<binary:2 bytes>")),
+                "the cancelled 2-byte payload must not reach the wire: {payloads:?}"
+            );
+            assert!(
+                payloads
+                    .iter()
+                    .any(|json| json.contains("<binary:3 bytes>")),
+                "the identical binary payload must reach the wire: {payloads:?}"
+            );
+            assert!(
+                payloads.iter().any(|json| json.contains("fresh-sdp")),
+                "the identical signal must reach the wire: {payloads:?}"
+            );
+            assert_eq!(client.stats().game_data_sent, 2);
+        }
+
+        let mut client = Arc::into_inner(client).expect("all client clones should be dropped");
+        client.shutdown().await;
+    }
+
+    /// beyond the advertised capacity are lifecycle violations, while
+    /// duplicates, freed slots, and fresh baselines keep working. Spectator
+    /// baselines carry no capacity on the wire and fall back to the
+    /// protocol-absolute `u8` ceiling.
+    #[tokio::test]
+    async fn over_capacity_player_joins_violate_roster_admission() {
+        let (transport, entered_send, _permits, _sent) = GatedSendTransport::new(0);
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_test").enable_v3());
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        wait_until(|| entered_send.load(Ordering::Acquire)).await;
+
+        let local = uuid::Uuid::from_u128(42);
+        let room_id = uuid::Uuid::from_u128(41);
+        fn joiner(id: u128) -> ServerMessage {
+            ServerMessage::PlayerJoined {
+                player: crate::protocol::PlayerInfo {
+                    id: uuid::Uuid::from_u128(id),
+                    name: "joiner".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                },
+            }
+        }
+        let feed = |client: &SignalFishClient, message: &ServerMessage| {
+            let frame = TransportFrame::Text(serde_json::to_string(message).unwrap());
+            lock_core(&client.state).process_frame(frame).events
+        };
+        let baseline = |max_players: u8, players: &[u128]| {
+            ServerMessage::RoomJoined(Box::new(RoomJoinedPayload {
+                room_id,
+                room_code: "ROOM".into(),
+                player_id: local,
+                game_name: "game".into(),
+                max_players,
+                supports_authority: true,
+                current_players: players
+                    .iter()
+                    .map(|id| crate::protocol::PlayerInfo {
+                        id: uuid::Uuid::from_u128(*id),
+                        name: "member".into(),
+                        is_authority: *id == 42,
+                        is_ready: false,
+                        connected_at: "2026-01-01T00:00:00Z".into(),
+                        connection_info: None,
+                        epoch: Some(1),
+                        seq: Some(0),
+                    })
+                    .collect(),
+                is_authority: true,
+                lobby_state: LobbyState::Waiting,
+                ready_players: vec![],
+                relay_type: "websocket".into(),
+                current_spectators: vec![],
+                ice_servers: vec![],
+                reconnection_token: None,
+            }))
+        };
+
+        {
+            let mut core = lock_core(&client.state);
+            let _ = core.process_frame(TransportFrame::Text(authenticated_json()));
+            let _ = core.process_frame(TransportFrame::Text(protocol_info_v3_json()));
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("game", "local"),
+            )));
+        }
+        assert!(feed(&client, &baseline(3, &[42, 7]))
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::RoomJoined { .. })));
+
+        // The final advertised slot is admitted normally.
+        let events = feed(&client, &joiner(8));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SignalFishEvent::PlayerJoined { .. }))
+                .count(),
+            1
+        );
+        // The roster is full: another distinct join violates instead of growing it.
+        let events = feed(&client, &joiner(9));
+        let violation = events.iter().find_map(|event| match event {
+            SignalFishEvent::ProtocolViolation { diagnostic, .. } => Some(diagnostic),
+            _ => None,
+        });
+        assert!(
+            violation.is_some_and(|diagnostic| diagnostic.contains("capacity")),
+            "expected a capacity violation: {events:?}"
+        );
+        assert!(client.snapshot().quarantined);
+        // Duplicates of an existing member stay idempotent echoes, not violations.
+        assert!(feed(&client, &joiner(8))
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::PlayerJoined { .. })));
+
+        // A tighter baseline lowers the ceiling; a departure frees its slot
+        // again. Leaving first because baselines require absent membership.
+        core_leave_room(&client);
+        {
+            let mut core = lock_core(&client.state);
+            core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("game", "local"),
+            )));
+        }
+        assert!(feed(&client, &baseline(2, &[42, 7]))
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::RoomJoined { .. })));
+        let left = ServerMessage::PlayerLeft {
+            player_id: uuid::Uuid::from_u128(7),
+            epoch: Some(1),
+            final_seq: Some(0),
+        };
+        assert_eq!(
+            feed(&client, &left)
+                .iter()
+                .filter(|event| matches!(event, SignalFishEvent::PlayerLeft { .. }))
+                .count(),
+            1
+        );
+        assert!(feed(&client, &joiner(10))
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::PlayerJoined { .. })));
+
+        // Spectator baselines omit `max_players`, so the wire-absolute
+        // fallback becomes the ceiling: the 256th distinct join violates on
+        // a roster already holding one baseline member, everything before
+        // stays admitted.
+        core_record_spectator_join(&client);
+        let spectator =
+            ServerMessage::SpectatorJoined(Box::new(crate::protocol::SpectatorJoinedPayload {
+                room_id,
+                room_code: "ROOM".into(),
+                spectator_id: local,
+                game_name: "game".into(),
+                current_players: vec![crate::protocol::PlayerInfo {
+                    id: uuid::Uuid::from_u128(42),
+                    name: "local".into(),
+                    is_authority: false,
+                    is_ready: false,
+                    connected_at: "2026-01-01T00:00:00Z".into(),
+                    connection_info: None,
+                    epoch: Some(1),
+                    seq: Some(0),
+                }],
+                current_spectators: vec![],
+                lobby_state: LobbyState::Waiting,
+                reason: None,
+            }));
+        assert!(feed(&client, &spectator)
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::SpectatorJoined { .. })));
+        let first_violation = (1u64..=300)
+            .find(|ordinal| {
+                feed(&client, &joiner(u128::from(*ordinal) + 1000))
+                    .iter()
+                    .any(|event| matches!(event, SignalFishEvent::ProtocolViolation { .. }))
+            })
+            .unwrap_or_else(|| panic!("the absolute fallback must eventually reject joins"));
+        assert_eq!(
+            first_violation, 256,
+            "256 slots total including the baseline member"
+        );
+        client.shutdown().await;
+    }
+
+    /// Admits and confirms a voluntary room leave.
+    fn core_leave_room(client: &SignalFishClient) {
+        let mut core = lock_core(&client.state);
+        core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+        let _ = core.process_frame(TransportFrame::Text(r#"{"type":"RoomLeft"}"#.into()));
+    }
+
+    /// Admits the voluntary leave that precedes the spectator baseline in the
+    /// roster-capacity pin above.
+    fn core_record_spectator_join(client: &SignalFishClient) {
+        core_leave_room(client);
+        let mut core = lock_core(&client.state);
+        core.record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "local".into()),
+        ));
     }
 
     #[tokio::test]
