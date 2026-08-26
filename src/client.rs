@@ -4964,7 +4964,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the absolute fallback must eventually reject joins"));
         assert_eq!(
             first_violation, 256,
-            "u8::MAX slots minus the baseline member"
+            "256 slots total including the baseline member"
         );
         client.shutdown().await;
     }

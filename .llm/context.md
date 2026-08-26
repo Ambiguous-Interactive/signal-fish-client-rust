@@ -399,7 +399,9 @@ mutating state: more than 16 unresolved incarnation announcements or
 uncovered departed incarnations per sender; more than 1024 total retained
 exact gap ranges; roster inserts beyond the advertised `max_players`
 (wire-absolute `u8::MAX + 1` fallback when the latest baseline cannot
-advertise one). Unknown-player `PlayerReconnected` sender cursors remain the
+advertise one) — servers swapping players on a full room must order the
+departure before the replacement join. Unknown-player `PlayerReconnected`
+sender cursors remain the
 one documented trusted-server envelope: containment gates would reject
 legitimate reconnects of players absent from the local roster snapshot.
 

@@ -2166,4 +2166,50 @@ mod tests {
         assert!(error.contains("retention bound"), "{error}");
         assert_eq!(outstanding(&state), MAX_TOTAL_PENDING_GAPS);
     }
+
+    #[test]
+    fn departure_bound_refuses_the_next_uncoverable_leave() {
+        let sender = id(6);
+        let mut state = DeliveryAccountability::default();
+        state
+            .rebaseline_snapshot(&[player_at(sender, 1, 0)])
+            .unwrap();
+
+        // One uncovered departure at the current epoch needs no announcement,
+        // so the departure count runs one ahead of the announcements.
+        state
+            .note_player_left(sender, Some(1), Some(u64::MAX))
+            .unwrap();
+        for epoch in 2..=16u32 {
+            state.note_player_reconnected(sender, Some(epoch)).unwrap();
+            state
+                .note_player_left(sender, Some(epoch), Some(u64::MAX))
+                .unwrap();
+        }
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_DEPARTED_SENDERS_PER_PLAYER - 1)
+        );
+
+        // The next announcement still fits under the announcement bound, but
+        // its uncoverable leave is refused by the departure bound — proving
+        // the two bounds are independent. The refused leave mutates nothing.
+        state.note_player_reconnected(sender, Some(17)).unwrap();
+        let error = state
+            .note_player_left(sender, Some(17), Some(u64::MAX))
+            .unwrap_err();
+        assert!(error.contains("uncovered departure"), "{error}");
+        assert_eq!(
+            state.departed_count(sender),
+            MAX_DEPARTED_SENDERS_PER_PLAYER
+        );
+        assert_eq!(
+            state.announced_epochs.get(&sender).map(BTreeSet::len),
+            Some(MAX_DEPARTED_SENDERS_PER_PLAYER)
+        );
+    }
 }
