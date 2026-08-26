@@ -152,11 +152,16 @@ signal it feeds `on_signal`; it
 relays the driver's outbound signals via the client (a signal the command
 queue refuses is buffered and retried, in order, until the queue accepts it —
 congestion never drops a signal, and a buffered signal survives `recv()`
-cancellation; it is discarded only if the connection ends or its target
-peer's handshake is torn down or its generation changes, so nothing stale is
-retagged), reports `TransportStatus` on the 0↔1 connected boundary, tears
+cancellation; queue congestion or a pending directed room operation retains it
+until admission can resume, and it is discarded only if the connection ends or
+its target peer's handshake is torn down or its generation changes, so nothing
+stale is retagged), reports `TransportStatus` on the 0↔1 connected boundary, tears
 down peers on re-election / `PlayerLeft` / `RoomLeft` / `Disconnected`, and
-surfaces a clean `MeshEvent` stream.
+surfaces a clean `MeshEvent` stream. If the bounded client command queue is
+full—or a directed room operation temporarily fences room-scoped commands—at
+a transport-status boundary, the controller retains one coalescing latest-state
+report and retries it on later pumps; this never blocks signaling events or
+driver data, and room/connection teardown discards obsolete status.
 
 `Disconnected` and signaling-stream closure are terminal controller boundaries.
 Before returning `MeshEvent::Signaling(Disconnected)`, or returning `None` for

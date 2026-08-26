@@ -239,6 +239,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MeshController` now retries outbound WebRTC handshake signals and
+  `TransportStatus` up/down reports that queue congestion or a pending directed
+  room operation temporarily refuses. Previously a refused signal could stall
+  a handshake after a failed room operation, while a refused status edge was
+  permanently suppressed by the already-committed local 0↔1 peer boundary and
+  could leave remote fallback/liveness state stale. Signals fence later driver
+  output to retain wire order while signaling events remain drainable; status
+  coalesces to its latest state without fencing driver data. Authoritative
+  teardown discards obsolete pending work.
 - Absorbed one benign wire race around voluntary spectator leaves. When an
   authoritative spectator exit (`Disconnected`, `Removed`, or `RoomClosed`)
   tore down the room before the server's mandatory reply to an admitted
