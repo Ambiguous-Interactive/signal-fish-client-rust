@@ -253,6 +253,37 @@ assert_exit "Repo with no tracked Rust files should PASS" 0
 assert_path_reported "Untracked garbage never scanned" "gone.rs" absent
 
 echo ""
+echo "=== Environment-error tests ==="
+
+# -- Should FAIL(2): invocation outside a git repository must not pass green --
+# A swallowed git failure would turn every environment error into a clean scan.
+NONREPO="$(mktemp -d "$TMPDIR_ROOT/nonrepo-XXXXXX")"
+mkdir -p "$NONREPO/scripts" "$NONREPO/tests"
+cp "$CHECK_SCRIPT" "$NONREPO/scripts/check-test-io-unwrap.sh"
+cat > "$NONREPO/tests/violation_outside_repo.rs" << 'RUST'
+fn violation() {
+    std::fs::File::open("x").unwrap();
+}
+RUST
+TESTS_RUN=$((TESTS_RUN + 1))
+NONREPO_EXIT=0
+# Run from outside any repository; capture the checker's own exit code.
+NONREPO_OUTPUT="$(
+    cd / && bash "$NONREPO/scripts/check-test-io-unwrap.sh" 2>&1
+)" || NONREPO_EXIT=$?
+if [ "$NONREPO_EXIT" -eq 2 ] && ! printf '%s\n' "$NONREPO_OUTPUT" |
+    grep -q "VIOLATION"; then
+    echo "  PASS: Outside a git repository exits 2 without scanning"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo "  FAIL: Outside a git repository (expected exit 2, got $NONREPO_EXIT)"
+    echo "  --- output ---"
+    echo "$NONREPO_OUTPUT"
+    echo "  --- end output ---"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+echo ""
 echo "=== Results ==="
 echo "Tests run:    $TESTS_RUN"
 echo "Tests passed: $TESTS_PASSED"

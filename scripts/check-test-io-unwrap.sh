@@ -19,11 +19,13 @@
 # index instead of walking the filesystem so generated/ignored nested Cargo
 # target trees (e.g., tests/godot-web-smoke/target after a web build) are
 # pruned without excluding tracked fixture sources anywhere under tests/.
+# Untracked files are out of scope by definition; anything being committed is
+# already staged when hooks run.
 #
 # Exit codes:
 #   0 — no violations found
 #   1 — one or more violations detected
-#   2 — environment error (git unavailable or no repository)
+#   2 — environment error (git unavailable or ls-files failed)
 #
 # Usage:
 #   bash scripts/check-test-io-unwrap.sh
@@ -75,9 +77,19 @@ IO_CALL_STARTERS=(
 
 # Collect tracked Rust files under tests/ via the git index. Pruning follows
 # ignore rules instead of path names, so generated target trees are never
-# walked while tracked fixture sources stay in scope wherever they live.
+# walked while tracked fixture sources stay in scope wherever they live. The
+# listing goes through a temp file so a git failure is caught loudly instead
+# of masquerading as an empty scan.
 if ! command -v git >/dev/null 2>&1; then
     echo "ERROR: git is required to resolve this repository's test sources." >&2
+    exit 2
+fi
+
+listing_tmp="$(mktemp "${TMPDIR:-/tmp}/test-io-unwrap.ls.XXXXXX")"
+trap 'rm -rf "$listing_tmp"' EXIT
+
+if ! git ls-files -z -- tests >"$listing_tmp" 2>/dev/null; then
+    echo "ERROR: git ls-files failed; refusing to guess the test-source scope." >&2
     exit 2
 fi
 
@@ -91,7 +103,7 @@ while IFS= read -r -d '' f; do
             fi
             ;;
     esac
-done < <(git ls-files -z -- tests)
+done <"$listing_tmp"
 
 if [ "${#RS_FILES[@]}" -eq 0 ]; then
     echo -e "${GREEN}No Rust files found to check.${NC}"
@@ -131,7 +143,11 @@ for file in "${RS_FILES[@]}"; do
     # This reduces ~1.5M iterations to just the few matching lines.
     unwrap_raw=$(grep -nE '^[[:space:]]*\.unwrap\(\)' "$file" 2>/dev/null || true)
     if [ -n "$unwrap_raw" ]; then
-        mapfile -t file_lines < "$file"
+        # Read the whole file into an array portably (mapfile needs bash 4+).
+        file_lines=()
+        while IFS= read -r file_line || [ -n "$file_line" ]; do
+            file_lines+=("$file_line")
+        done <"$file"
         while IFS= read -r match; do
             lineno="${match%%:*}"
             i=$((lineno - 1))  # convert to 0-indexed

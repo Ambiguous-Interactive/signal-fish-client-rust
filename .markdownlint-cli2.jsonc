@@ -4,14 +4,18 @@
 // Rule configuration lives in .markdownlint.json (auto-discovered by
 // markdownlint-cli2 when present in the same directory).
 {
-  // Directories to exclude from linting
+  // Directories to exclude from linting. "**/target/**" also prunes the
+  // ignored nested Cargo trees built by repository test fixtures (e.g.
+  // tests/godot-web-smoke/target).
   "ignores": [
-    "target/**",
+    "**/target/**",
     "site/**",
     ".git/**",
     ".venv/**",
     "node_modules/**",
     "progress/**",
+    "mutants.out*/**",
+    "logs/**",
     "PLAN.md"
   ]
 }

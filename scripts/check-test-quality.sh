@@ -65,9 +65,37 @@ CHECK1_VIOLATIONS=0
 # like `&mut true_count` or `&mut 100`.
 PATTERN='&mut[[:space:]]+(false|true|0|1)([^A-Za-z0-9_]|$)'
 
-MATCHES=$(grep -rnE "$PATTERN" src/ tests/ 2>/dev/null \
-    | grep -E '\.rs:' \
-    || true)
+# Resolve tracked Rust sources through the git index instead of walking the
+# filesystem, so generated/ignored nested Cargo target trees are pruned
+# (issue #170 class) while tracked sources stay in scope wherever they live.
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to resolve this repository's Rust sources." >&2
+    exit 2
+fi
+
+quality_ls_tmp="$(mktemp "${TMPDIR:-/tmp}/test-quality.ls.XXXXXX")"
+trap 'rm -rf "$quality_ls_tmp"' EXIT
+
+if ! git ls-files -z -- src tests >"$quality_ls_tmp" 2>/dev/null; then
+    echo "ERROR: git ls-files failed; refusing to guess the scan scope." >&2
+    exit 2
+fi
+
+MATCHES=""
+while IFS= read -r -d '' f; do
+    case "$f" in
+        *.rs)
+            # Skip indexed paths missing from the worktree.
+            [ -f "$f" ] || continue
+            file_matches=$(grep -nE "$PATTERN" "$f" 2>/dev/null || true)
+            if [ -n "$file_matches" ]; then
+                while IFS= read -r raw_match; do
+                    MATCHES+="$f:$raw_match"$'\n'
+                done <<< "$file_matches"
+            fi
+            ;;
+    esac
+done <"$quality_ls_tmp"
 
 if [ -z "$MATCHES" ]; then
     echo -e "${GREEN}  Check 1: PASS — no mutable references to temporaries found.${NC}"

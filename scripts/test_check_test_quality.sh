@@ -43,6 +43,8 @@ setup_fake_repo() {
     cp "$CHECK_SCRIPT" "$FAKE_REPO/scripts/check-test-quality.sh"
     chmod +x "$FAKE_REPO/scripts/check-test-quality.sh"
     FAKE_SCRIPT="$FAKE_REPO/scripts/check-test-quality.sh"
+    # The checker resolves tracked sources through the git index.
+    git init --quiet "$FAKE_REPO"
 }
 
 # Run check-test-quality.sh inside the fake repo and capture the exit code.
@@ -51,6 +53,8 @@ setup_fake_repo() {
 run_check() {
     RUN_OUTPUT=""
     RUN_EXIT=0
+    # Stage every fixture so the git-index-based scan sees it as tracked.
+    git -C "$FAKE_REPO" add -A
     RUN_OUTPUT=$("$FAKE_SCRIPT" 2>&1) || RUN_EXIT=$?
 }
 

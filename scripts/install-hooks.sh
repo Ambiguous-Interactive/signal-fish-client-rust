@@ -136,16 +136,15 @@ else
 fi
 
 # ── 3. Markdown lint (optional) ──────────────────────────────────────
+# Only markdownlint-cli2 is supported: it honors .markdownlint-cli2.jsonc
+# "ignores" and keeps generated target trees out of the scan. The legacy v1
+# CLI ignores that config, so using it would walk gigabytes of build output.
 if command -v markdownlint-cli2 &>/dev/null; then
     run_check "markdownlint" "03-mdlint" \
         markdownlint-cli2 "**/*.md" &
     PIDS+=($!)
-elif command -v markdownlint &>/dev/null; then
-    run_check "markdownlint" "03-mdlint" \
-        markdownlint "**/*.md" &
-    PIDS+=($!)
 else
-    printf 'SKIP 0.0 markdownlint (not installed)\n' > "$CHECK_TMPDIR/03-mdlint.result"
+    printf 'SKIP 0.0 markdownlint-cli2 (not installed)\n' > "$CHECK_TMPDIR/03-mdlint.result"
 fi
 
 # ── 4. Shell lint (optional) ─────────────────────────────────────────
