@@ -90,7 +90,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
 | `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 53 variants from server (47 emitted by 0.7, 6 compatibility-only) |
+| `src/error_codes.rs` | `ErrorCode` enum — 54 variants from server (48 in the post-0.7 authority, 6 compatibility-only) |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |
@@ -365,7 +365,7 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
 v2 JSON protocol. Server 0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the released runtime compatibility binding.
-The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension and the advertised outbound limit at commit `d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9`.
+The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension, advertised outbound limit, and room-session incompatibility error at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3`.
 Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
 ### Exhaustive Public Types

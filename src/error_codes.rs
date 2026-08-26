@@ -74,6 +74,9 @@ pub enum ErrorCode {
     // Game-start errors (protocol v2)
     GameStartNotReady,
     GameStartForbidden,
+    /// The room already finalized a peer-to-peer session whose sticky
+    /// topology and transport were not negotiated by this connection.
+    RoomSessionIncompatible,
 
     // Signaling errors (protocol v3)
     CrossRoomSignal,
@@ -268,6 +271,9 @@ impl ErrorCode {
             }
             Self::GameStartForbidden => {
                 "You are not permitted to start the game. Only the room's authority may start it."
+            }
+            Self::RoomSessionIncompatible => {
+                "This room already started a peer-to-peer session with a topology or transport this client did not negotiate. Reconnect with compatible capabilities or join another room."
             }
 
             // Signaling errors (protocol v3)

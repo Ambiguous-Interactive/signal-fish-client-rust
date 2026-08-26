@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `ErrorCode::RoomSessionIncompatible` (wire
+  `ROOM_SESSION_INCOMPATIBLE`) for the post-0.7 server response used when a
+  running room's sticky peer-to-peer topology/transport pair is incompatible
+  with the joining connection's negotiated capabilities. The vendored
+  AsyncAPI authority advances to server commit
+  `5de9105e4c269a29919ae29880f5b67fc8d630c3`; released Server 0.7.0 runtime
+  compatibility remains unchanged.
 - Added the opt-in `internal-fuzz-facade` feature (which builds on the
   native token-binding support) exposing a `#[doc(hidden)]`, semver-exempt
   module that lets the repository's new `fuzz_token_binding` cargo-fuzz

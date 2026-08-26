@@ -130,12 +130,13 @@ fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-Server 0.7 declares 47 emitted tokens. The public client enum has 53 variants:
-`UnsupportedProtocolVersion` is current, while the six values in
-`ErrorCode::NON_EMITTED` are retained for older-server decoding. Conformance
-must use that explicit compatibility set rather than removing public variants.
+The post-0.7 protocol authority declares 48 emitted tokens. The public client
+enum has 54 variants: `RoomSessionIncompatible` is current, while the six
+values in `ErrorCode::NON_EMITTED` are retained for older-server decoding.
+Conformance must use that explicit compatibility set rather than removing
+public variants.
 
-Defined in `src/error_codes.rs`. This enum is exhaustive. 53 variants:
+Defined in `src/error_codes.rs`. This enum is exhaustive. 54 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,8 +171,8 @@ pub enum ErrorCode {
     // Server (3)
     InternalError, StorageError, ServiceUnavailable,
 
-    // Game start, protocol v2 (2)
-    GameStartNotReady, GameStartForbidden,
+    // Game start and finalized room sessions (3)
+    GameStartNotReady, GameStartForbidden, RoomSessionIncompatible,
 
     // Signaling, protocol v3 (5)
     CrossRoomSignal, UnsupportedTransport, SignalTargetNotFound,
@@ -180,8 +181,9 @@ pub enum ErrorCode {
     // Connection lifecycle, protocol v3 (1)
     ConnectionIdleTimeout,
 
-    // Delivery & liveness (2)
-    SlowConsumer, ActivityTimeout,
+    // Delivery & liveness (5)
+    SlowConsumer, ActivityTimeout, ServerDraining, InvalidDeliveryClass,
+    UnsupportedProtocolVersion,
 }
 ```
 

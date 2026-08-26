@@ -87,10 +87,10 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **53 variants** representing
-structured error codes returned by compatible Signal Fish servers. Server 0.7
-currently emits 47 of them; six variants remain decodable for older servers and
-are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
+`ErrorCode` is a protocol-level enum with **54 variants** representing
+structured error codes returned by compatible Signal Fish servers. The
+post-0.7 protocol authority declares 48 of them; six variants remain decodable
+for older servers and are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
 - Serializes as **`SCREAMING_SNAKE_CASE`** (e.g., `"ROOM_NOT_FOUND"`) to match
@@ -197,6 +197,12 @@ Applications migrating from readiness-based auto-start must call it after an
 |---------|-------------|
 | `GameStartNotReady` | Cannot start the game: not every player in the room is ready yet. |
 | `GameStartForbidden` | You are not permitted to start the game. Only the room's authority may start it. |
+
+### Finalized Room Sessions (1)
+
+| Variant | Description |
+|---------|-------------|
+| `RoomSessionIncompatible` | The room already finalized a peer-to-peer session whose sticky topology/transport pair was not negotiated by this connection. Reconnect with compatible capabilities or join another room. |
 
 ### Signaling — protocol v3 (5)
 

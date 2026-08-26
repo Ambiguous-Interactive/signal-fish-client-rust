@@ -83,7 +83,7 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     let protocol_commit = manifest["protocol_authority"]["commit"]
         .as_str()
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
-    assert_eq!(protocol_commit, "d5b3135fda53a2a7de69c5ea54faefa95ca9a5b9");
+    assert_eq!(protocol_commit, "5de9105e4c269a29919ae29880f5b67fc8d630c3");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)
