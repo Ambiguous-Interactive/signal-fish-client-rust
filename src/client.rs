@@ -917,6 +917,13 @@ impl SignalFishClient {
     /// After shutdown completes, the event
     /// receiver yields the remaining buffered events and then `None` — treat
     /// the channel closing as the authoritative end-of-stream signal.
+    ///
+    /// Dropping this future mid-await does not cancel the teardown: the
+    /// shutdown signal was already delivered and the loop still finishes
+    /// within its own [`shutdown_timeout`](SignalFishConfig::shutdown_timeout)
+    /// budget. A later `shutdown` call returns immediately and never hangs;
+    /// at most one [`Disconnected`](SignalFishEvent::Disconnected) event is
+    /// emitted.
     pub async fn shutdown(&mut self) {
         debug!("SignalFishClient: shutdown requested");
 
@@ -5412,6 +5419,58 @@ mod tests {
             "deadline-aborted shutdown must drop the transport when its loop returns"
         );
         assert!(!client.is_connected());
+    }
+
+    #[tokio::test]
+    async fn cancelling_shutdown_mid_await_leaves_a_self_bounded_teardown() {
+        // Dropping the shutdown future forfeits only the outer watchdog; the
+        // detached loop must still finish teardown within its own budget.
+        // This pins the loop-internal close deadline and the armed abort
+        // fallback against refactors that move the only bound into the
+        // (now-cancelled) caller future.
+        let (transport, close_called, abort_called, dropped) = HangingCloseTransport::new();
+        let config =
+            SignalFishConfig::new("mb_test").with_shutdown_timeout(Duration::from_millis(100));
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+
+        // Park the shutdown future on its watchdog, then cancel mid-await.
+        // Graceful teardown cannot finish before the 100 ms close deadline,
+        // so the 50 ms park below always cancels in-flight work.
+        let mut shutdown = Box::pin(client.shutdown());
+        let parked = tokio::time::timeout(Duration::from_millis(50), shutdown.as_mut()).await;
+        assert!(
+            parked.is_err(),
+            "shutdown must still be in flight to cancel"
+        );
+        drop(shutdown);
+
+        let mut disconnects = 0;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                if matches!(event, SignalFishEvent::Disconnected { .. }) {
+                    disconnects += 1;
+                }
+            }
+        })
+        .await
+        .expect("detached loop must self-bound its teardown and close the event channel");
+        assert_eq!(
+            disconnects, 1,
+            "exactly one Disconnected must survive a cancelled shutdown"
+        );
+        assert!(close_called.load(Ordering::Acquire));
+        assert!(abort_called.load(Ordering::Acquire));
+        assert!(dropped.load(Ordering::Acquire));
+
+        // A later shutdown call after a cancelled one returns promptly.
+        tokio::time::timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("second shutdown after cancellation must not hang");
     }
 
     #[tokio::test]
