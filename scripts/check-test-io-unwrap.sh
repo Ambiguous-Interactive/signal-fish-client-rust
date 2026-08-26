@@ -169,10 +169,10 @@ for file in "${RS_FILES[@]}"; do
                         if ! printf '%s\n' "$prev" | grep -qE '\.unwrap\(\)'; then
                             echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation (multiline)"
                             echo "  $prev_stripped"
-                            printf '  %s\n' "$(
-                                printf '%s\n' "${file_lines[$i]}" |
-                                    sed -e 's/^[[:space:]]*//' -e 's/\r$//'
-                            )"
+                            continuation="${file_lines[$i]}"
+                            continuation="${continuation//$'\r'/}"
+                            printf '  %s\n' \
+                                "${continuation#"${continuation%%[![:space:]]*}"}"
                             file_violations=$((file_violations + 1))
                         fi
                     fi

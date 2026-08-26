@@ -296,8 +296,11 @@ fn example() {
 RUST
 TESTS_RUN=$((TESTS_RUN + 1))
 NONREPO_EXIT=0
+# GIT_CEILING_DIRECTORIES keeps git discovery from escaping the temp tree,
+# so the exit-2 assertion holds even if TMPDIR sits inside some repository.
 NONREPO_OUTPUT="$(
-    cd / && bash "$NONREPO/scripts/check-test-quality.sh" 2>&1
+    GIT_CEILING_DIRECTORIES="$TMPDIR_ROOT" \
+        bash "$NONREPO/scripts/check-test-quality.sh" 2>&1
 )" || NONREPO_EXIT=$?
 if [ "$NONREPO_EXIT" -eq 2 ] && ! printf '%s\n' "$NONREPO_OUTPUT" |
     grep -q "VIOLATION"; then
