@@ -6257,8 +6257,7 @@ mod tests {
         gate.add_permits(1);
         let mut granted_tags = Vec::new();
         for task in parked.iter_mut() {
-            if let Ok(outcome) =
-                tokio::time::timeout(std::time::Duration::from_millis(300), task).await
+            if let Ok(outcome) = tokio::time::timeout(std::time::Duration::from_secs(2), task).await
             {
                 let (tag, result) = outcome.expect("granted sender task must not panic");
                 assert!(

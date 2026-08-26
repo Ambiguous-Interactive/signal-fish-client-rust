@@ -1541,8 +1541,10 @@ impl ClientCore {
             // generation: a departed or re-planned-out peer's final signals
             // were valid when the server relayed them and merely raced this
             // client's view of the departure, whatever transport now carries
-            // the stream. The window extends through a roster rejoin until
-            // the peer is re-paired by a plan or compatibility `NewPeer`.
+            // the stream — gating on the current transport would re-open the
+            // relay-fallback race this fence closes. The window extends
+            // through a roster rejoin until the peer is re-paired by a plan
+            // or compatibility `NewPeer`.
             Some(_) => {
                 self.retired_signal_peers.contains(&from) && !self.session_peers.contains(&from)
             }

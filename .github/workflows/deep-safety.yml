@@ -8,7 +8,7 @@
 # Jobs:
 #   miri    — Miri undefined behavior detection (nightly, protocol tests)
 #   tsan    — ThreadSanitizer data-race detection (nightly, full workspace suite)
-#   fuzz    — Fuzz smoke tests for protocol parsing (nightly)
+#   fuzz    — Fuzz smoke tests for protocol and token-binding parsing (nightly)
 #   mutants — Mutation testing on pure-logic modules (stable)
 #
 # Schedule: Weekdays at 04:00 UTC — staggered from unused-deps (05:00)
@@ -124,14 +124,16 @@ jobs:
           cargo +nightly test -Zbuild-std --target "$host" --workspace --all-features --tests
 
   # ──────────────────────────────────────────────────────────────
-  # Fuzz — smoke test protocol parsers with random input
+  # Fuzz — smoke test protocol and token-binding parsers with random input
   #
   # Runs each fuzz target for 30 seconds to catch obvious panics
-  # or crashes in the JSON deserialization paths. This is a smoke
+  # or crashes in the deserialization paths. This is a smoke
   # test, not a deep fuzzing campaign.
   #
   # JSON targets exercise both UTF-8 and raw-byte deserialization. The binary
-  # target exercises the strict physical MessagePack envelope decoder.
+  # target exercises the strict physical MessagePack envelope decoder. The
+  # token-binding target drives challenge validation, canonicalization, and
+  # proof preparation through the internal-fuzz-facade feature.
   # ──────────────────────────────────────────────────────────────
   fuzz:
     name: Fuzz smoke tests
