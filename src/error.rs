@@ -223,8 +223,11 @@ pub enum SignalFishError {
     #[error("token binding error: {0}")]
     TokenBinding(TokenBindingFailure),
 
-    /// An operation timed out.
-    #[error("operation timed out")]
+    /// The WebSocket handshake did not complete within the deadline given to
+    /// `WebSocketTransport::connect_with_timeout`.
+    #[error(
+        "the WebSocket handshake did not complete within its deadline; retry or raise the connect_with_timeout duration"
+    )]
     Timeout,
 
     /// An I/O error occurred.

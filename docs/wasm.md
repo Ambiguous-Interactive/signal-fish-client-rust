@@ -169,6 +169,12 @@ A `Transport` implementation backed by Emscripten's built-in
 WebSocket and a `std::sync::mpsc` channel to bridge asynchronous C callbacks
 into the transport's `poll_recv()` method.
 
+!!! note "Deliberate deprecation gate"
+    These symbols are formally `#[deprecated]` so custom-host integrators get
+    an explicit compiler prompt to prefer the supported
+    `GodotWebSocketTransport` path. The warning is expected; the API remains
+    fully functional for link-enabled hosts.
+
 ### Construction
 
 ```rust,ignore
@@ -689,6 +695,8 @@ for the full workflow. Key steps:
 | `transport-websocket` | Yes | WebSocket transport via `tokio-tungstenite` (TCP sockets) | No | No |
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
 | `token-binding` | No | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2` | No | No |
+| `tls` | No | `wss://` TLS for the built-in native WebSocket transport (rustls) | No | No |
+| `mesh` | No | Protocol v3 mesh tracker plus the `WebRtcDriver` seam / `MeshController`; bundles no WebRTC stack | Yes | Yes |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
