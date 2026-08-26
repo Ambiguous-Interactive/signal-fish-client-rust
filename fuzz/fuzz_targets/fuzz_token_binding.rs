@@ -47,8 +47,9 @@ fn exercise_session(challenge_text: &str, payload: &[u8], fingerprint: Option<&s
         if session.prepare(&frame).is_ok() {
             let _ = session.commit();
         }
-        // A Pending or failed send must leave the sequence untouched; both
-        // retries here reuse the same sequence by construction.
+        // A failed or pending prepare leaves the sequence untouched, so this
+        // retry reuses it; after a successful commit the retry exercises the
+        // next sequence instead.
         let _ = session.prepare(&frame);
     }
 }

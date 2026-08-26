@@ -3555,6 +3555,14 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
             }),
             "removed-by-replan signal under {policy:?}: {events:?}"
         );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SessionPlan"))
+                .count(),
+            2,
+            "both plans must be applied before the retired-peer signal under {policy:?}"
+        );
     }
 
     let mut valid = room_prefix;

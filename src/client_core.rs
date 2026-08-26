@@ -138,7 +138,9 @@ pub(crate) struct ClientCore {
     // replacement) whose final in-flight signals may still arrive stamped
     // with the still-current generation. Their late signals are benign
     // races to suppress, not integrity violations. Cleared whenever an
-    // authoritative baseline rebuilds the room/session.
+    // authoritative baseline rebuilds the room/session; within one room the
+    // bound is O(distinct departed peers between generation bumps), because
+    // Server 0.7 re-plans on membership churn.
     retired_signal_peers: HashSet<PlayerId>,
     pending_room_operation: Option<PendingRoomOperationState>,
     pending_reconnects: VecDeque<PendingReconnect>,
@@ -1539,7 +1541,8 @@ impl ClientCore {
             // generation: a departed or re-planned-out peer's final signals
             // were valid when the server relayed them and merely raced this
             // client's view of the departure, whatever transport now carries
-            // the stream.
+            // the stream. The window extends through a roster rejoin until
+            // the peer is re-paired by a plan or compatibility `NewPeer`.
             Some(_) => {
                 self.retired_signal_peers.contains(&from) && !self.session_peers.contains(&from)
             }
