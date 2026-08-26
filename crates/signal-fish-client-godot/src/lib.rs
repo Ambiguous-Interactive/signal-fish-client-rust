@@ -21,6 +21,32 @@
 //! outbound default and raise only the inbound buffer; keep game payloads
 //! under ~64 KiB, or construct your own peer with a raised outbound buffer
 //! and wrap it with [`GodotWebSocketTransport::from_peer`].
+//!
+//! # Inbound queue bounds and platform divergence
+//!
+//! Godot bounds its inbound queue by both bytes (`inbound_buffer_size`) and
+//! packet count (`max_queued_packets`, engine default 4,096). Godot's native
+//! and web backends can **silently drop** newly arriving frames once either
+//! bound is hit; the adapter receives no error it could surface. SDK-created
+//! peers therefore raise the packet cap from 4,096 to 65,536 alongside the
+//! 8 MiB inbound byte buffer. The limits remain independent: enough very small
+//! frames can still reach the packet cap first.
+//! [`GodotWebSocketTransport::from_peer`] preserves whatever the application
+//! configured — raise `max_queued_packets` yourself if a caller-owned peer
+//! must absorb large inbound bursts on web.
+//!
+//! Two further engine-imposed limits cannot be worked around adapter-side:
+//!
+//! - **Native tail frames:** Godot's native build makes buffered packets
+//!   inaccessible the moment the peer leaves the `OPEN` state, so final
+//!   application frames that arrived just before the peer's CLOSE are
+//!   delivered by web exports but discarded natively.
+//! - **Synthesized close codes:** when the engine terminates the connection
+//!   itself (protocol error, oversized message), it reports a locally
+//!   synthesized status code (for example 1002/1007/1009) as if it were a
+//!   wire close frame; the JS `wasClean` flag is discarded on web. Close
+//!   metadata in [`Transport::close_info`] therefore cannot perfectly
+//!   distinguish a genuine peer close from a locally synthesized one.
 
 use std::fmt;
 use std::task::{Context, Poll};
@@ -39,6 +65,12 @@ const DEFAULT_ADAPTIVE_FLOOR: usize = 4 * 1024;
 const DEFAULT_ADAPTIVE_CEILING: usize = 32 * 1024;
 const DEFAULT_ADAPTIVE_LATENCY: Duration = Duration::from_millis(50);
 const DEFAULT_INBOUND_BUFFER_SIZE: i32 = 8 * 1024 * 1024;
+// Godot bounds its inbound queue by packet count as well as bytes, and its
+// native and web backends can silently drop frames once either bound is hit. The engine
+// default of 4,096 packets would silently discard legitimate traffic long
+// before an 8 MiB byte buffer filled (frames averaging under ~2 KiB), so
+// SDK-created peers raise the cap while retaining a finite metadata bound.
+const DEFAULT_MAX_QUEUED_PACKETS: i32 = 65_536;
 
 /// Godot outbound admission strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +211,7 @@ fn admission_decision(
 
 trait GodotWebSocketBackend {
     fn set_inbound_buffer_size(&mut self, bytes: i32);
+    fn set_max_queued_packets(&mut self, packets: i32);
     fn connect_to_url(&mut self, url: &str) -> Result<(), String>;
     fn poll(&mut self);
     fn state(&self) -> PeerState;
@@ -198,6 +231,10 @@ trait GodotWebSocketBackend {
 impl GodotWebSocketBackend for Gd<WebSocketPeer> {
     fn set_inbound_buffer_size(&mut self, bytes: i32) {
         std::ops::DerefMut::deref_mut(self).set_inbound_buffer_size(bytes);
+    }
+
+    fn set_max_queued_packets(&mut self, packets: i32) {
+        std::ops::DerefMut::deref_mut(self).set_max_queued_packets(packets);
     }
 
     fn connect_to_url(&mut self, url: &str) -> Result<(), String> {
@@ -381,11 +418,12 @@ impl GodotWebSocketTransport {
     ///
     /// The connection handshake advances when the transport is polled. For web
     /// exports, use `wss://` when the exported page is served over HTTPS. The
-    /// SDK-created peer uses an 8 MiB Godot inbound buffer so valid aggregated
-    /// server messages are not constrained by Godot's much smaller default,
-    /// while the outbound buffer keeps Godot's own default — see the crate
-    /// docs for how that bounds a single admitted frame. Use
-    /// [`Self::from_peer`] when the application must choose either size.
+    /// SDK-created peer uses an 8 MiB Godot inbound buffer and raises the
+    /// queued-packet cap from 4,096 to 65,536, because Godot can silently drop
+    /// inbound frames when either independent bound fills.
+    /// The outbound buffer keeps Godot's own default — see the crate docs for
+    /// how that bounds a single admitted frame. Use [`Self::from_peer`] when
+    /// the application must choose any of these settings.
     ///
     /// # Errors
     ///
@@ -398,8 +436,9 @@ impl GodotWebSocketTransport {
     /// Create a Godot `WebSocketPeer` with explicit backpressure options.
     ///
     /// These options control outbound admission. The SDK-created peer uses the
-    /// same 8 MiB inbound buffer as [`Self::connect`]; use
-    /// [`Self::from_peer_with_options`] to preserve a caller-configured peer.
+    /// same 8 MiB inbound buffer and 65,536-packet cap as [`Self::connect`];
+    /// use [`Self::from_peer_with_options`] to preserve a caller-configured
+    /// peer.
     ///
     /// # Errors
     ///
@@ -437,6 +476,7 @@ impl GodotWebSocketTransport {
         options: GodotWebSocketOptions,
     ) -> Result<Self, SignalFishError> {
         backend.set_inbound_buffer_size(inbound_buffer_size);
+        backend.set_max_queued_packets(DEFAULT_MAX_QUEUED_PACKETS);
         backend
             .connect_to_url(url)
             .map_err(|error| SignalFishError::Io(std::io::Error::other(error)))?;
@@ -884,6 +924,7 @@ mod tests {
         close_codes_after_poll: VecDeque<i32>,
         close_reason: String,
         configured_inbound_buffer_size: Rc<Cell<i32>>,
+        configured_max_queued_packets: Rc<Cell<i32>>,
         connection_steps: Rc<RefCell<Vec<&'static str>>>,
         connect_error: Option<String>,
     }
@@ -907,6 +948,7 @@ mod tests {
                 close_codes_after_poll: VecDeque::new(),
                 close_reason: String::new(),
                 configured_inbound_buffer_size: Rc::new(Cell::new(0)),
+                configured_max_queued_packets: Rc::new(Cell::new(0)),
                 connection_steps: Rc::new(RefCell::new(Vec::new())),
                 connect_error: None,
             }
@@ -916,7 +958,12 @@ mod tests {
     impl GodotWebSocketBackend for FakeBackend {
         fn set_inbound_buffer_size(&mut self, bytes: i32) {
             self.configured_inbound_buffer_size.set(bytes);
-            self.connection_steps.borrow_mut().push("configure");
+            self.connection_steps.borrow_mut().push("configure_inbound");
+        }
+
+        fn set_max_queued_packets(&mut self, packets: i32) {
+            self.configured_max_queued_packets.set(packets);
+            self.connection_steps.borrow_mut().push("configure_packets");
         }
 
         fn connect_to_url(&mut self, _url: &str) -> Result<(), String> {
@@ -1288,9 +1335,10 @@ mod tests {
     }
 
     #[test]
-    fn sdk_created_peer_configures_inbound_buffer_before_connect() {
+    fn sdk_created_peer_configures_inbound_limits_before_connect() {
         let backend = FakeBackend::new(PeerState::Connecting);
         let observed_size = Rc::clone(&backend.configured_inbound_buffer_size);
+        let observed_packets = Rc::clone(&backend.configured_max_queued_packets);
         let observed_steps = Rc::clone(&backend.connection_steps);
 
         let transport = GodotWebSocketTransport::connect_backend_with_options(
@@ -1302,7 +1350,18 @@ mod tests {
         .expect("fake connection setup should succeed");
 
         assert_eq!(observed_size.get(), DEFAULT_INBOUND_BUFFER_SIZE);
-        assert_eq!(&*observed_steps.borrow(), &["configure", "connect"]);
+        // The queued-packet cap must be raised with the byte buffer: Godot's
+        // native and web backends can silently drop inbound frames once the
+        // engine default of 4,096 packets fills, even with bytes to spare.
+        assert_eq!(
+            observed_packets.get(),
+            DEFAULT_MAX_QUEUED_PACKETS,
+            "SDK-created peers must keep the packet-count bound from becoming the effective inbound limit"
+        );
+        assert_eq!(
+            &*observed_steps.borrow(),
+            &["configure_inbound", "configure_packets", "connect"]
+        );
         assert!(!transport.is_ready());
     }
 
@@ -1321,22 +1380,35 @@ mod tests {
         .expect_err("scripted setup failure must surface");
 
         assert!(matches!(error, SignalFishError::Io(_)));
-        assert_eq!(&*observed_steps.borrow(), &["configure", "connect"]);
+        assert_eq!(
+            &*observed_steps.borrow(),
+            &["configure_inbound", "configure_packets", "connect"]
+        );
     }
 
     #[test]
     fn wrapping_existing_backend_preserves_connection_configuration() {
         const CALLER_INBOUND_BUFFER_SIZE: i32 = 2 * 1024 * 1024 + 17;
+        const CALLER_MAX_QUEUED_PACKETS: i32 = 12_345;
         let backend = FakeBackend::new(PeerState::Open);
         backend
             .configured_inbound_buffer_size
             .set(CALLER_INBOUND_BUFFER_SIZE);
+        backend
+            .configured_max_queued_packets
+            .set(CALLER_MAX_QUEUED_PACKETS);
         let observed_size = Rc::clone(&backend.configured_inbound_buffer_size);
+        let observed_packets = Rc::clone(&backend.configured_max_queued_packets);
         let observed_steps = Rc::clone(&backend.connection_steps);
 
         let transport = GodotWebSocketTransport::from_backend(Box::new(backend));
 
         assert_eq!(observed_size.get(), CALLER_INBOUND_BUFFER_SIZE);
+        assert_eq!(
+            observed_packets.get(),
+            CALLER_MAX_QUEUED_PACKETS,
+            "from_peer must preserve caller configuration untouched"
+        );
         assert!(observed_steps.borrow().is_empty());
         assert!(transport.is_ready());
     }

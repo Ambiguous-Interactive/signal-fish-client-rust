@@ -1025,6 +1025,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
             let mut no_frame = None;
             match self.transport.poll_send(cx, &mut no_frame) {
                 std::task::Poll::Ready(Ok(())) => {
+                    if no_frame.is_some() {
+                        self.send_in_flight = false;
+                        return Err(SignalFishError::TransportSend(
+                            "transport reported send completion with a nonempty caller frame slot"
+                                .into(),
+                        ));
+                    }
                     self.send_in_flight = false;
                 }
                 std::task::Poll::Ready(Err(error)) => {
@@ -1094,7 +1101,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
             match result {
                 std::task::Poll::Ready(Ok(())) => {
                     if !transferred {
-                        break;
+                        // The backend reported success while leaving the
+                        // caller's frame in the slot — an ownership-contract
+                        // breach that would silently drop the frame if treated
+                        // as completion. Fail fast exactly like the async
+                        // driver instead of retrying forever.
+                        return Err(SignalFishError::TransportSend(
+                            "transport reported send completion with a nonempty caller frame slot"
+                                .into(),
+                        ));
                     }
                 }
                 std::task::Poll::Ready(Err(error)) => return Err(error),

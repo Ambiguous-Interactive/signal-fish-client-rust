@@ -2012,7 +2012,22 @@ async fn assert_frame_trace_parity(
     frames: Vec<TransportFrame>,
     config: SignalFishConfig,
 ) -> Vec<String> {
-    assert_frame_trace_parity_with_stats(frames, config, false, None).await
+    assert_frame_trace_parity_with_stats_and_barrier(frames, config, false, None, None).await
+}
+
+async fn assert_frame_trace_parity_after_command(
+    frames: Vec<TransportFrame>,
+    config: SignalFishConfig,
+    hold_until_command: (usize, RoomResponseKind),
+) -> Vec<String> {
+    assert_frame_trace_parity_with_stats_and_barrier(
+        frames,
+        config,
+        false,
+        None,
+        Some(hold_until_command),
+    )
+    .await
 }
 
 async fn assert_frame_trace_parity_with_reconnect(
@@ -2020,7 +2035,8 @@ async fn assert_frame_trace_parity_with_reconnect(
     config: SignalFishConfig,
     admit_reconnect: bool,
 ) -> Vec<String> {
-    assert_frame_trace_parity_with_stats(frames, config, admit_reconnect, None).await
+    assert_frame_trace_parity_with_stats_and_barrier(frames, config, admit_reconnect, None, None)
+        .await
 }
 
 async fn assert_frame_trace_parity_with_stats(
@@ -2028,6 +2044,23 @@ async fn assert_frame_trace_parity_with_stats(
     config: SignalFishConfig,
     admit_reconnect: bool,
     expected_stats: Option<ClientStats>,
+) -> Vec<String> {
+    assert_frame_trace_parity_with_stats_and_barrier(
+        frames,
+        config,
+        admit_reconnect,
+        expected_stats,
+        None,
+    )
+    .await
+}
+
+async fn assert_frame_trace_parity_with_stats_and_barrier(
+    frames: Vec<TransportFrame>,
+    config: SignalFishConfig,
+    admit_reconnect: bool,
+    expected_stats: Option<ClientStats>,
+    explicit_hold_until_command: Option<(usize, RoomResponseKind)>,
 ) -> Vec<String> {
     let initial_room_operation = initial_room_operation(&frames);
     let response_counts = room_response_counts(&frames);
@@ -2053,22 +2086,24 @@ async fn assert_frame_trace_parity_with_stats(
     };
     let frames = preamble.into_iter().chain(frames).collect::<Vec<_>>();
     let scripts_authentication = needs_handshake_preamble || auth_frame_index.is_some();
-    let hold_until_command = (initial_room_operation.is_some() && scripts_authentication).then({
-        move || {
-            let kind = match initial_room_operation.expect("admission checked above") {
-                InitialRoomOperation::JoinPlayer => RoomResponseKind::JoinPlayer,
-                InitialRoomOperation::JoinSpectator => RoomResponseKind::JoinSpectator,
-            };
-            if needs_handshake_preamble {
-                (2, kind)
-            } else {
-                (
-                    auth_frame_index.expect("authenticated frame index") + 1,
-                    kind,
-                )
+    let initial_hold_until_command = (initial_room_operation.is_some() && scripts_authentication)
+        .then({
+            move || {
+                let kind = match initial_room_operation.expect("admission checked above") {
+                    InitialRoomOperation::JoinPlayer => RoomResponseKind::JoinPlayer,
+                    InitialRoomOperation::JoinSpectator => RoomResponseKind::JoinSpectator,
+                };
+                if needs_handshake_preamble {
+                    (2, kind)
+                } else {
+                    (
+                        auth_frame_index.expect("authenticated frame index") + 1,
+                        kind,
+                    )
+                }
             }
-        }
-    });
+        });
+    let hold_until_command = explicit_hold_until_command.or(initial_hold_until_command);
     let make_mock =
         move || TraceMock::with_join_barrier(frames.clone(), admit_reconnect, hold_until_command);
 
@@ -3172,7 +3207,7 @@ async fn delayed_duplicate_exit_does_not_consume_rejoin_fence_in_either_driver()
 }
 
 #[tokio::test]
-async fn authoritative_room_closed_spectator_exit_has_driver_parity() {
+async fn authoritative_spectator_exit_absorbs_overtaken_leave_with_driver_parity() {
     let mut frames = spectator_accountability_prefix(uuid::Uuid::from_u128(365));
     frames.push(text_server_frame(ServerMessage::SpectatorLeft {
         room_id: Some(uuid::Uuid::from_u128(201)),
@@ -3180,21 +3215,33 @@ async fn authoritative_room_closed_spectator_exit_has_driver_parity() {
         reason: Some(signal_fish_client::protocol::SpectatorStateChangeReason::RoomClosed),
         current_spectators: vec![],
     }));
+    frames.push(text_server_frame(ServerMessage::SpectatorLeft {
+        room_id: Some(uuid::Uuid::from_u128(201)),
+        room_code: Some("SPECTATOR".into()),
+        reason: Some(signal_fish_client::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+        current_spectators: vec![],
+    }));
     for policy in [
         ProtocolViolationPolicy::Observe,
         ProtocolViolationPolicy::Quarantine,
         ProtocolViolationPolicy::Disconnect,
     ] {
-        let events = assert_frame_trace_parity(
+        let events = assert_frame_trace_parity_after_command(
             frames.clone(),
             SignalFishConfig::new("app")
                 .enable_v3()
                 .with_protocol_violation_policy(policy),
+            (3, RoomResponseKind::LeaveSpectator),
         )
         .await;
-        assert!(events
-            .iter()
-            .any(|event| event.starts_with("SpectatorLeft")));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SpectatorLeft"))
+                .count(),
+            1,
+            "the authoritative exit must surface once and its overtaken reply must be silent: {events:?}"
+        );
         assert!(events
             .iter()
             .all(|event| !event.starts_with("ProtocolViolation")));

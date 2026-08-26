@@ -101,7 +101,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
 | `src/token_binding.rs` | Native WebSocket token-binding-v2 types, validation, canonicalization, and proof state (feature: `token-binding`) |
-| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 38 fake-backend tests |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 39 fake-backend tests |
 
 ### Transport Trait
 
@@ -117,6 +117,7 @@ A backend owns framing, trust/source binding, and loss/duplicate/reorder policy.
 idempotent; on error, logical I/O terminates and fallible cleanup remains safe for the abort fallback. `abort` is a required,
 prompt, nonblocking, non-panicking, idempotent fallback that releases or safely detaches backend resources,
 discards retained sends, and ends driver polling; completed cleanup is not repeated, while failed cleanup may retry safely. See `skills/transport-abstraction/SKILL.md`.
+`begin_poll_cycle` marks one driver scheduling cycle: once per public polling-client `poll()` call, or once per async transport-loop iteration. It is not necessarily a rendered frame or fixed wall-clock interval.
 
 The async driver polls retained sends and receives with one runtime waker, so
 outbound backpressure cannot hide inbound work, peer close, or shutdown.
@@ -155,7 +156,7 @@ fresh nonce, derived key, and sequence space; replay/reordering/tamper fails.
 The lockstep `signal-fish-client-godot` adapter defaults to adaptive outbound admission: a 50 ms latency target with a
 4 KiB floor, 32 KiB ceiling, and a further native-capacity clamp. A successful Godot send
 transfers ownership immediately; browser buffering is observed separately.
-SDK-created Godot peers set an 8 MiB inbound buffer before connecting, which may reserve roughly 16 MiB in Godot; `from_peer` preserves caller settings. Outbound keeps Godot's legacy 65,535-byte default: a single frame over that size on native (at or above it on web) parks as `Pending`, growing only capacity diagnostics. The
+SDK-created Godot peers set an 8 MiB inbound buffer and raise the independent queued-packet cap from 4,096 to 65,536 before connecting; the byte storage may reserve roughly 16 MiB in Godot, plus packet metadata. Godot's native and web backends can silently drop newly arriving frames when either inbound limit fills, so enough unusually small frames can still reach the finite packet cap first; `from_peer` preserves caller settings. Outbound keeps Godot's legacy 65,535-byte default: a single frame over that size on native (at or above it on web) parks as `Pending`, growing only capacity diagnostics. The
 blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
 3,600-frame soak jobs on Server 0.7 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
@@ -276,7 +277,7 @@ Membership pairs `room_role` with room/participant IDs. Commands validate connec
 operations refuse with `NotAuthenticated` before the server confirms it), transition, role, authority, protocol/session, then queue capacity.
 Admitted joins/leaves/reconnects fence later work until a matching typed terminal response; generic errors/absence stay fenced until teardown.
 A v3-capable config requests `room_operation_ids`; after an exact echo, the core records one fresh UUID at successful queue admission for all five room operations, and only the matching ID/result kind releases it.
-Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle; authoritative spectator removal, disconnect, and room-close need no voluntary leave. Events are never dropped: a full event channel backpressures; undecodable frames surface as `DecodeFailed`;
+Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle, except that an authoritative spectator removal, disconnect, or room-close may overtake an already-admitted voluntary leave: exactly one matching late reply for the prior room is absorbed without disturbing a newly admitted join, while wrong-room, duplicate, and unrelated results still violate. Authoritative spectator exits need no voluntary leave. Events are never dropped: a full event channel backpressures; undecodable frames surface as `DecodeFailed`;
 events are missed only on receiver/handle drop or preempted delivery — `shutdown`, or an async terminal disconnect facing a
 non-draining consumer, abandons at most the one in-flight delivery (remaining batch events get one nonblocking attempt) after
 `shutdown_timeout` and terminates the loop so parked reliable senders resolve; the polling driver emits synchronously from `poll()`.

@@ -130,3 +130,10 @@ The negotiated outbound message-size contract then added
 protocol digests were refreshed again. The fixture is constructed outside
 every measured region, so allocation and timing baselines are unchanged; all
 semantic ledger invariants still pass.
+
+The `JoinRoom` omission fix subsequently removed explicit `null` values for
+unset optional members from every workload's setup wire. All affected protocol
+digests were intentionally refreshed; reconnect-only cells without a join
+remain unchanged. Fixture construction is still outside the measured regions,
+all semantic ledger invariants pass, and both debug and release allocation
+ceilings remain unchanged.

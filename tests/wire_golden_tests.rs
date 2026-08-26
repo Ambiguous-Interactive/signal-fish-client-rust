@@ -27,7 +27,7 @@
 //! the server protocol changes.
 
 use serde::{de::DeserializeOwned, Serialize};
-use signal_fish_client::protocol::{ClientMessage, ServerMessage};
+use signal_fish_client::protocol::{ClientMessage, RoomOperationRequest, ServerMessage};
 
 const V2_CLIENT: &str = include_str!("wire-samples/v2-client-messages.jsonl");
 const V2_SERVER: &str = include_str!("wire-samples/v2-server-messages.jsonl");
@@ -160,6 +160,78 @@ fn v2_authenticate_sample_carries_no_v3_fields() {
         return;
     }
     panic!("expected an Authenticate line in the v2 client samples");
+}
+
+#[test]
+fn v2_join_room_sample_omission_convention_is_preserved() {
+    // The schema marks room_code/max_players/supports_authority/relay_transport
+    // as optional members that are OMITTED when unset ("Omit to create a new
+    // room"), and the real server sample carries only the set ones. Our
+    // round-trip must preserve that omission convention instead of emitting
+    // explicit nulls, which fail strict JSON-Schema type validation of these
+    // properties.
+    for raw in V2_CLIENT.lines() {
+        let line = raw.trim();
+        if !line.contains("\"JoinRoom\"") {
+            continue;
+        }
+        let typed: ClientMessage = serde_json::from_str(line).expect("v2 JoinRoom deserializes");
+        let json = serde_json::to_string(&typed).expect("serialize");
+        assert!(
+            !json.contains("max_players"),
+            "round-trip injected an unset-optional member: {json}"
+        );
+        assert!(!json.contains("supports_authority"), "{json}");
+        assert!(!json.contains("relay_transport"), "{json}");
+        return;
+    }
+    panic!("expected a JoinRoom line in the v2 client samples");
+}
+
+#[test]
+fn quick_match_join_room_omits_every_unset_optional_member() {
+    // Quick match (no builder options) must produce exactly the
+    // schema-required members in both the legacy and negotiated forms.
+    let plain = ClientMessage::JoinRoom {
+        game_name: "game".to_string(),
+        room_code: None,
+        player_name: "Alice".to_string(),
+        max_players: None,
+        supports_authority: None,
+        relay_transport: None,
+    };
+    let value = serde_json::to_value(&plain).expect("plain join serializes");
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_object)
+        .expect("adjacent tagging keeps members under data");
+    assert_eq!(
+        data.keys().collect::<Vec<_>>(),
+        ["game_name", "player_name"],
+        "unset optionals must be omitted, not null: {value}"
+    );
+
+    let negotiated = ClientMessage::RoomOperation {
+        operation_id: uuid::Uuid::from_u128(0xaaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa),
+        operation: Box::new(RoomOperationRequest::JoinRoom {
+            game_name: "game".to_string(),
+            room_code: None,
+            player_name: "Alice".to_string(),
+            max_players: None,
+            supports_authority: None,
+            relay_transport: None,
+        }),
+    };
+    let value = serde_json::to_value(&negotiated).expect("negotiated join serializes");
+    let operation = value
+        .pointer("/data/operation/data")
+        .and_then(serde_json::Value::as_object)
+        .expect("nested join keeps members under data/operation/data");
+    assert_eq!(
+        operation.keys().collect::<Vec<_>>(),
+        ["game_name", "player_name"],
+        "unset optionals must be omitted inside the envelope too: {value}"
+    );
 }
 
 #[test]

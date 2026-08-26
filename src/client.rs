@@ -2044,6 +2044,15 @@ fn poll_pending_send(
         lock_core(state).record_game_data_sent();
         pending.is_game_data = false;
     }
+    if pending.frame.is_some() && matches!(result, std::task::Poll::Ready(Ok(()))) {
+        // Every successful completion must leave the caller's slot empty,
+        // including continuation polls after the transport previously took
+        // ownership. Otherwise the driver would silently drop whichever frame
+        // the backend left or put back into the slot.
+        return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+            "transport reported send completion with a nonempty caller frame slot".into(),
+        )));
+    }
     result
 }
 
@@ -2216,6 +2225,9 @@ async fn transport_loop(
     let mut shutdown = ShutdownSignal::new(shutdown_rx);
 
     loop {
+        // One driver scheduling cycle per loop iteration, mirroring each
+        // polling-client `poll` call: backends may sample once per cycle.
+        transport.begin_poll_cycle();
         if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
             connected_emitted = true;
             if matches!(
@@ -3345,6 +3357,64 @@ mod tests {
                 "take_before_error={take_before_error}"
             );
             client.shutdown().await;
+        }
+    }
+
+    #[test]
+    fn lying_send_completion_rejects_text_and_binary_without_counting_transfer() {
+        struct LyingTransport;
+
+        impl Transport for LyingTransport {
+            fn poll_send(
+                &mut self,
+                _cx: &mut Context<'_>,
+                _frame: &mut Option<TransportFrame>,
+            ) -> Poll<std::result::Result<(), SignalFishError>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_recv(
+                &mut self,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+                Poll::Pending
+            }
+
+            fn poll_close(
+                &mut self,
+                _cx: &mut Context<'_>,
+            ) -> Poll<std::result::Result<(), SignalFishError>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn abort(&mut self) {}
+        }
+
+        for frame in [
+            TransportFrame::Text("text".into()),
+            TransportFrame::Binary(vec![1, 2, 3]),
+        ] {
+            let state = Arc::new(Mutex::new(ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Quarantine,
+                false,
+            )));
+            let mut pending = PendingSend {
+                frame: Some(frame),
+                is_game_data: true,
+            };
+            let mut transport = LyingTransport;
+            let mut cx = Context::from_waker(Waker::noop());
+
+            let result = poll_pending_send(&mut transport, &mut pending, &state, &mut cx);
+            assert!(matches!(
+                result,
+                Poll::Ready(Err(SignalFishError::TransportSend(ref diagnostic)))
+                    if diagnostic.contains("nonempty caller frame slot")
+            ));
+            assert!(pending.frame.is_some(), "the caller must retain ownership");
+            assert!(pending.is_game_data, "no transfer may be recorded");
+            assert_eq!(lock_core(&state).stats().game_data_sent, 0);
         }
     }
 

@@ -170,6 +170,15 @@ pub(crate) struct ClientCore {
     // Server 0.7 re-plans on membership churn.
     retired_signal_peers: HashSet<PlayerId>,
     pending_room_operation: Option<PendingRoomOperationState>,
+    // The reply to an admitted voluntary spectator leave may legally arrive
+    // after an authoritative exit (`Disconnected`/`Removed`/`RoomClosed`)
+    // already tore down the room: the server must still answer the request it
+    // accepted, but its effect is superseded. At most one matching terminal
+    // reply is absorbed as this benign race instead of a lifecycle violation;
+    // nonmatching frames continue through normal validation without consuming
+    // the allowance. A matching reply consumes it once, and a fresh baseline
+    // clears it; later duplicates therefore violate normally.
+    absorbed_spectator_leave: Option<OvertakenSpectatorLeave>,
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
     admission_frozen: bool,
@@ -211,6 +220,13 @@ pub(crate) enum PendingRoomOperation {
 pub(crate) struct PendingRoomOperationState {
     kind: PendingRoomOperation,
     operation_id: Option<RoomOperationId>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OvertakenSpectatorLeave {
+    pending: PendingRoomOperationState,
+    room_id: Option<RoomId>,
+    room_code: Option<String>,
 }
 
 pub(crate) struct ClientOperationAdmission {
@@ -277,6 +293,7 @@ impl ClientCore {
             retired_session_generations: VecDeque::new(),
             retired_signal_peers: HashSet::new(),
             pending_room_operation: None,
+            absorbed_spectator_leave: None,
             pending_reconnects: VecDeque::new(),
             #[cfg(feature = "tokio-runtime")]
             admission_frozen: false,
@@ -758,6 +775,7 @@ impl ClientCore {
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
         self.pending_room_operation = None;
+        self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_session_plan_revision();
@@ -799,6 +817,9 @@ impl ClientCore {
                 return outcome;
             }
         };
+        if self.absorb_overtaken_terminal_reply(&server_msg) {
+            return outcome;
+        }
         let server_msg = match self.normalize_room_operation_result(server_msg) {
             Ok(Ok(message)) => message,
             Ok(Err((reason, error_code))) => {
@@ -918,6 +939,72 @@ impl ClientCore {
         self.update_state(&server_msg);
         outcome.events.push(SignalFishEvent::from(server_msg));
         outcome
+    }
+
+    /// Consume the one terminal reply an authoritative spectator exit
+    /// overtook, if this frame is exactly that reply.
+    ///
+    /// The voluntary-leave request was acknowledged by queue admission and
+    /// reached the server, so a conforming server still answers it even after
+    /// its own authoritative exit (`Disconnected`/`Removed`/`RoomClosed`)
+    /// removed the spectator first. Absorbing that superseded reply keeps the
+    /// benign wire race from latching quarantine — or tearing down under
+    /// [`ProtocolViolationPolicy::Disconnect`] — while every other shape,
+    /// duplicate reply, or uncorrelated id still violates below.
+    fn absorb_overtaken_terminal_reply(&mut self, message: &ServerMessage) -> bool {
+        let Some(absorbed) = self.absorbed_spectator_leave.as_ref() else {
+            return false;
+        };
+        let consumed = match message {
+            ServerMessage::RoomOperationResult {
+                operation_id,
+                result,
+            } => {
+                self.pending_room_operation
+                    .as_ref()
+                    .is_none_or(|pending| pending.operation_id != Some(*operation_id))
+                    && absorbed.pending.operation_id == Some(*operation_id)
+                    && room_operation_result_matches(absorbed.pending.kind, result)
+                    && match result.as_ref() {
+                        RoomOperationResult::SpectatorLeft {
+                            room_id, room_code, ..
+                        } => room_identity_matches(
+                            absorbed.room_id,
+                            absorbed.room_code.as_ref(),
+                            *room_id,
+                            room_code.as_ref(),
+                        ),
+                        _ => true,
+                    }
+            }
+            ServerMessage::SpectatorLeft {
+                room_id,
+                room_code,
+                reason,
+                ..
+            } => {
+                !self.pending_room_operation.as_ref().is_some_and(|pending| {
+                    pending.kind == PendingRoomOperation::LeaveSpectator
+                        && pending.operation_id.is_none()
+                }) && absorbed.pending.operation_id.is_none()
+                    && matches!(
+                        reason,
+                        None | Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave)
+                    )
+                    && room_identity_matches(
+                        absorbed.room_id,
+                        absorbed.room_code.as_ref(),
+                        *room_id,
+                        room_code.as_ref(),
+                    )
+            }
+            _ => false,
+        };
+        if consumed {
+            self.absorbed_spectator_leave = None;
+            tracing::debug!("absorbed terminal reply overtaken by an authoritative spectator exit");
+        }
+        consumed
     }
 
     fn normalize_room_operation_result(
@@ -1836,7 +1923,34 @@ impl ClientCore {
                     self.pending_room_operation = None;
                 }
             }
-            ServerMessage::SpectatorLeft { .. } => self.clear_room(),
+            ServerMessage::SpectatorLeft { reason, .. } => {
+                let authoritative_exit = matches!(
+                    reason,
+                    Some(
+                        crate::protocol::SpectatorStateChangeReason::Disconnected
+                            | crate::protocol::SpectatorStateChangeReason::Removed
+                            | crate::protocol::SpectatorStateChangeReason::RoomClosed
+                    )
+                );
+                let mut overtaken_leave = None;
+                if authoritative_exit
+                    && self
+                        .pending_room_operation
+                        .as_ref()
+                        .is_some_and(|pending| pending.kind == PendingRoomOperation::LeaveSpectator)
+                {
+                    overtaken_leave =
+                        self.pending_room_operation
+                            .take()
+                            .map(|pending| OvertakenSpectatorLeave {
+                                pending,
+                                room_id: self.snapshot.room_id,
+                                room_code: self.snapshot.room_code.clone(),
+                            });
+                }
+                self.clear_room();
+                self.absorbed_spectator_leave = overtaken_leave;
+            }
             ServerMessage::ReconnectionFailed { .. } => {
                 self.pending_reconnects.pop_front();
                 if self
@@ -1911,6 +2025,7 @@ impl ClientCore {
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
         self.pending_room_operation = None;
+        self.absorbed_spectator_leave = None;
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -2099,6 +2214,16 @@ fn room_operation_result_matches(
         ),
         _ => false,
     }
+}
+
+fn room_identity_matches(
+    expected_id: Option<RoomId>,
+    expected_code: Option<&String>,
+    actual_id: Option<RoomId>,
+    actual_code: Option<&String>,
+) -> bool {
+    actual_id.is_none_or(|room_id| Some(room_id) == expected_id)
+        && actual_code.is_none_or(|room_code| Some(room_code) == expected_code)
 }
 
 fn room_operation_result_name(result: &RoomOperationResult) -> &'static str {
@@ -2966,6 +3091,424 @@ mod tests {
         ));
         assert_eq!(core.room_role(), None);
         assert!(core.pending_room_operation.is_none());
+    }
+
+    #[test]
+    fn authoritative_exit_absorbs_the_one_overtaken_leave_reply_under_every_policy() {
+        for policy in [
+            ProtocolViolationPolicy::Observe,
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+        ] {
+            for late_reply in [
+                RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                    current_spectators: vec![],
+                },
+                RoomOperationResult::OperationFailed {
+                    reason: "leave rejected after removal".into(),
+                    error_code: None,
+                },
+            ] {
+                let mut core = correlated_outside(policy);
+                let (_, join_id) = prepare_and_admit(
+                    &mut core,
+                    ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                );
+                let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+                    unreachable!("spectator_joined helper always returns SpectatorJoined")
+                };
+                let joined = process(
+                    &mut core,
+                    correlated_result(join_id, RoomOperationResult::SpectatorJoined(payload)),
+                );
+                assert!(matches!(
+                    joined.events.as_slice(),
+                    [SignalFishEvent::SpectatorJoined { .. }]
+                ));
+
+                let (_, leave_id) = prepare_and_admit(&mut core, ClientOperation::LeaveSpectator);
+
+                // The authoritative exit wins the wire race against the
+                // server's mandated reply to the voluntary leave.
+                let removed = process(
+                    &mut core,
+                    ServerMessage::SpectatorLeft {
+                        room_id: Some(RoomId::from_u128(10)),
+                        room_code: Some("ROOM".into()),
+                        reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                        current_spectators: vec![],
+                    },
+                );
+                assert!(matches!(
+                    removed.events.as_slice(),
+                    [SignalFishEvent::SpectatorLeft { .. }]
+                ));
+                assert_eq!(core.room_role(), None);
+                assert_eq!(
+                    core.absorbed_spectator_leave
+                        .as_ref()
+                        .and_then(|absorbed| absorbed.pending.operation_id),
+                    Some(leave_id),
+                    "the acknowledged leave reply must be awaited exactly once"
+                );
+
+                let absorbed_reply =
+                    process(&mut core, correlated_result(leave_id, late_reply.clone()));
+                assert!(
+                    absorbed_reply.events.is_empty(),
+                    "the superseded reply must be silent under {policy:?}"
+                );
+                assert!(!absorbed_reply.disconnect);
+                assert!(core.absorbed_spectator_leave.is_none());
+
+                // A duplicate of the same reply is no longer expected and
+                // keeps violating.
+                let duplicate = process(&mut core, correlated_result(leave_id, late_reply));
+                assert_lifecycle_violation_containing(
+                    &duplicate,
+                    "without a pending room operation",
+                );
+                assert_eq!(
+                    duplicate.disconnect,
+                    policy == ProtocolViolationPolicy::Disconnect
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overtaken_correlated_leave_reply_preserves_a_fresh_join_fence() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Disconnect);
+        let (_, initial_join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let ServerMessage::SpectatorJoined(initial_payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        let _ = process(
+            &mut core,
+            correlated_result(
+                initial_join_id,
+                RoomOperationResult::SpectatorJoined(initial_payload),
+            ),
+        );
+        let (_, leave_id) = prepare_and_admit(&mut core, ClientOperation::LeaveSpectator);
+        let _ = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                current_spectators: vec![],
+            },
+        );
+
+        let (_, fresh_join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let absorbed = process(
+            &mut core,
+            correlated_result(
+                leave_id,
+                RoomOperationResult::OperationFailed {
+                    reason: "leave was superseded by removal".into(),
+                    error_code: None,
+                },
+            ),
+        );
+        assert!(absorbed.events.is_empty());
+        assert!(!absorbed.disconnect);
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .and_then(|pending| pending.operation_id),
+            Some(fresh_join_id),
+            "the old terminal reply must not consume the fresh join fence"
+        );
+
+        let ServerMessage::SpectatorJoined(fresh_payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        let joined = process(
+            &mut core,
+            correlated_result(
+                fresh_join_id,
+                RoomOperationResult::SpectatorJoined(fresh_payload),
+            ),
+        );
+        assert!(matches!(
+            joined.events.as_slice(),
+            [SignalFishEvent::SpectatorJoined { .. }]
+        ));
+        assert!(!joined.disconnect);
+    }
+
+    #[test]
+    fn overtaken_leave_reply_requires_the_prior_room_identity() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let (_, join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        let _ = process(
+            &mut core,
+            correlated_result(join_id, RoomOperationResult::SpectatorJoined(payload)),
+        );
+        let (_, leave_id) = prepare_and_admit(&mut core, ClientOperation::LeaveSpectator);
+        let _ = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
+                current_spectators: vec![],
+            },
+        );
+
+        for wrong_identity in [
+            RoomOperationResult::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(999)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                current_spectators: vec![],
+            },
+            RoomOperationResult::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("OTHER".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                current_spectators: vec![],
+            },
+        ] {
+            let rejected = process(&mut core, correlated_result(leave_id, wrong_identity));
+            assert_lifecycle_violation_containing(&rejected, "without a pending room operation");
+            assert!(
+                core.absorbed_spectator_leave.is_some(),
+                "wrong-room replies must not consume the one valid allowance"
+            );
+        }
+
+        let absorbed = process(
+            &mut core,
+            correlated_result(
+                leave_id,
+                RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                    current_spectators: vec![],
+                },
+            ),
+        );
+        assert!(absorbed.events.is_empty());
+        assert!(core.absorbed_spectator_leave.is_none());
+    }
+
+    #[test]
+    fn authoritative_exit_absorbs_the_late_uncorrelated_leave_reply() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Disconnect,
+            true,
+        );
+        assert_eq!(process(&mut core, authenticated()).events.len(), 1);
+        assert_eq!(process(&mut core, protocol_info(None)).events.len(), 1);
+
+        let (command, admission) = core
+            .prepare_with_admission(ClientOperation::JoinAsSpectator(
+                "game".into(),
+                "ROOM".into(),
+                "viewer".into(),
+            ))
+            .expect("spectator join should prepare");
+        assert!(matches!(
+            command,
+            CoreCommand::Message(ClientMessage::JoinAsSpectator { .. })
+        ));
+        core.record_admission(admission);
+        // Strip the v3 delivery stamps: a legacy v2 connection must not see
+        // epoch/seq baselines on authoritative snapshots.
+        let ServerMessage::SpectatorJoined(mut payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        for member in &mut payload.current_players {
+            member.epoch = None;
+            member.seq = None;
+        }
+        let joined_outcome = process(&mut core, ServerMessage::SpectatorJoined(payload));
+        for event in &joined_outcome.events {
+            if let SignalFishEvent::ProtocolViolation { diagnostic, .. } = event {
+                panic!("uncorrelated join violated: {diagnostic}");
+            }
+        }
+        assert!(matches!(
+            joined_outcome.events.as_slice(),
+            [SignalFishEvent::SpectatorJoined { .. }]
+        ));
+
+        let (command, admission) = core
+            .prepare_with_admission(ClientOperation::LeaveSpectator)
+            .expect("spectator leave should prepare");
+        assert!(matches!(
+            command,
+            CoreCommand::Message(ClientMessage::LeaveSpectator)
+        ));
+        core.record_admission(admission);
+
+        let removed = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
+                current_spectators: vec![],
+            },
+        );
+        assert!(matches!(
+            removed.events.as_slice(),
+            [SignalFishEvent::SpectatorLeft { .. }]
+        ));
+        assert_eq!(
+            core.absorbed_spectator_leave
+                .as_ref()
+                .map(|absorbed| absorbed.pending.kind),
+            Some(PendingRoomOperation::LeaveSpectator)
+        );
+
+        let (command, admission) = core
+            .prepare_with_admission(ClientOperation::JoinAsSpectator(
+                "game".into(),
+                "ROOM".into(),
+                "viewer".into(),
+            ))
+            .expect("a fresh spectator join should prepare");
+        assert!(matches!(
+            command,
+            CoreCommand::Message(ClientMessage::JoinAsSpectator { .. })
+        ));
+        core.record_admission(admission);
+
+        let wrong_room_reply = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(999)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                current_spectators: vec![],
+            },
+        );
+        assert_lifecycle_violation_containing(
+            &wrong_room_reply,
+            "is invalid while authenticated=true and membership=None",
+        );
+        assert!(core.absorbed_spectator_leave.is_some());
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .map(|pending| pending.kind),
+            Some(PendingRoomOperation::JoinSpectator)
+        );
+
+        let absorbed_reply = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                current_spectators: vec![],
+            },
+        );
+        assert!(absorbed_reply.events.is_empty());
+        assert!(!absorbed_reply.disconnect);
+        assert!(core.absorbed_spectator_leave.is_none());
+        assert_eq!(
+            core.pending_room_operation
+                .as_ref()
+                .map(|pending| pending.kind),
+            Some(PendingRoomOperation::JoinSpectator),
+            "the old leave reply must not disturb the fresh join fence"
+        );
+
+        let ServerMessage::SpectatorJoined(mut fresh_payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        for member in &mut fresh_payload.current_players {
+            member.epoch = None;
+            member.seq = None;
+        }
+        let fresh_join = process(&mut core, ServerMessage::SpectatorJoined(fresh_payload));
+        assert!(matches!(
+            fresh_join.events.as_slice(),
+            [SignalFishEvent::SpectatorJoined { .. }]
+        ));
+
+        let duplicate = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                current_spectators: vec![],
+            },
+        );
+        assert_lifecycle_violation_containing(
+            &duplicate,
+            "arrived without an admitted LeaveSpectator operation",
+        );
+        assert!(duplicate.disconnect);
+    }
+
+    #[test]
+    fn authoritative_exit_without_a_pending_leave_still_violates_on_late_results() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Quarantine);
+        let (_, join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        let _ = process(
+            &mut core,
+            correlated_result(join_id, RoomOperationResult::SpectatorJoined(payload)),
+        );
+
+        let removed = process(
+            &mut core,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(10)),
+                room_code: Some("ROOM".into()),
+                reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                current_spectators: vec![],
+            },
+        );
+        assert!(matches!(
+            removed.events.as_slice(),
+            [SignalFishEvent::SpectatorLeft { .. }]
+        ));
+        assert_eq!(core.room_role(), None);
+        assert!(core.absorbed_spectator_leave.is_none());
+
+        let spurious = process(
+            &mut core,
+            correlated_result(
+                RoomOperationId::from_u128(0xaaaa),
+                RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+                    current_spectators: vec![],
+                },
+            ),
+        );
+        assert_lifecycle_violation_containing(&spurious, "without a pending room operation");
     }
 
     #[test]

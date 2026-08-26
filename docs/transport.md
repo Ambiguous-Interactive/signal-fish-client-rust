@@ -124,7 +124,9 @@ and transport:
 4. If it then returns `Pending`, it must retain the accepted frame/write state
    internally and continue it on the next poll.
 5. It may return `Ready(Ok(()))` as soon as the backend accepts ownership.
-   This does not mean peer delivery or that socket-wide buffering is empty.
+   Every successful completion must leave the slot empty, including a
+   continuation poll after an earlier `Pending`. This does not mean peer
+   delivery or that socket-wide buffering is empty.
 
 Never take a frame, forget it on `Pending`, and ask the caller to retry. Never
 repeat a partially completed write: either mistake can lose or duplicate an
@@ -134,7 +136,9 @@ While `is_ready()` is false, `poll_send` must return `Pending` without taking
 the frame. This lets both clients admit FIFO commands during an asynchronous
 handshake without transferring them prematurely.
 
-`begin_poll_cycle` lets adaptive transports sample once per application tick.
+`begin_poll_cycle` lets adaptive transports sample once per driver scheduling
+cycle: once per `SignalFishPollingClient::poll` call in the polling driver and
+once per outer transport-loop iteration in the async driver.
 `diagnostics` distinguishes backend-owned buffering/admission from the client
 queue. `abort` is required and is invoked when graceful close errors, either
 client's close deadline expires, or an owner is dropped before close completes.
