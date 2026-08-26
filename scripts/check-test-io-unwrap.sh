@@ -118,8 +118,9 @@ for file in "${RS_FILES[@]}"; do
     file_violations=0
 
     # ── Single-line check ────────────────────────────────────────────
-    # Use whole-file grep -nE per pattern instead of per-line iteration.
-    # This reduces ~52,000 subprocess spawns to ~24 (6 patterns × 4 files).
+    # Use whole-file grep -nE per pattern instead of per-line iteration,
+    # keeping the spawn count proportional to the pattern list rather than
+    # to every line of every scanned file.
     for pattern in "${IO_PATTERNS[@]}"; do
         raw=$(grep -nE "$pattern" "$file" 2>/dev/null || true)
         [ -z "$raw" ] && continue
@@ -168,7 +169,10 @@ for file in "${RS_FILES[@]}"; do
                         if ! printf '%s\n' "$prev" | grep -qE '\.unwrap\(\)'; then
                             echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation (multiline)"
                             echo "  $prev_stripped"
-                            printf '  %s\n' "$(printf '%s\n' "${file_lines[$i]}" | sed 's/^[[:space:]]*//')"
+                            printf '  %s\n' "$(
+                                printf '%s\n' "${file_lines[$i]}" |
+                                    sed -e 's/^[[:space:]]*//' -e 's/\r$//'
+                            )"
                             file_violations=$((file_violations + 1))
                         fi
                     fi

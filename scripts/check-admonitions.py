@@ -114,7 +114,9 @@ def iter_markdown_files(roots: List[Path]) -> List[Path]:
 
     Directory traversal prunes ``SKIP_DIRS`` at descent time so generated
     trees (nested Cargo target builds, sites, caches) are never walked,
-    regardless of how wide the requested roots are.
+    regardless of how wide the requested roots are. Each root's matches are
+    sorted lexicographically, matching the previous ``sorted(rglob)``
+    ordering.
     """
     files: List[Path] = []
     seen: Set[Path] = set()
@@ -129,6 +131,7 @@ def iter_markdown_files(roots: List[Path]) -> List[Path]:
                 for name in sorted(filenames):
                     if name.endswith(".md"):
                         candidates.append(Path(base) / name)
+            candidates.sort()
         else:
             print(f"warning: path not found, skipping: {root}", file=sys.stderr)
             candidates = []

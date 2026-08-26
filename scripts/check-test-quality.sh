@@ -16,6 +16,7 @@
 # Exit codes:
 #   0 — no violations found
 #   1 — one or more violations detected
+#   2 — environment error (git unavailable or ls-files failed)
 #
 # Usage:
 #   bash scripts/check-test-quality.sh

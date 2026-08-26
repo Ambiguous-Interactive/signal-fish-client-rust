@@ -249,18 +249,15 @@ else
 fi
 
 # ── Check 8: markdownlint on *.md ──────────────────────────────────
-section_header 8 "Markdown lint (markdownlint **/*.md)"
+# Only markdownlint-cli2 is supported: it honors .markdownlint-cli2.jsonc
+# "ignores" and keeps generated target trees out of the scan. The legacy v1
+# CLI ignores that config, so using it would walk gigabytes of build output.
+section_header 8 "Markdown lint (markdownlint-cli2 **/*.md)"
 
-if ! command -v markdownlint-cli2 &>/dev/null && ! command -v markdownlint &>/dev/null; then
-    skip "markdownlint" "markdownlint is not installed (install: npm install -g markdownlint-cli2)"
+if ! command -v markdownlint-cli2 &>/dev/null; then
+    skip "markdownlint" "markdownlint-cli2 is not installed (install: npm install -g markdownlint-cli2)"
 else
-    MDL_CMD=""
-    if command -v markdownlint-cli2 &>/dev/null; then
-        MDL_CMD="markdownlint-cli2"
-    else
-        MDL_CMD="markdownlint"
-    fi
-    if $MDL_CMD "**/*.md" 2>&1; then
+    if markdownlint-cli2 "**/*.md" 2>&1; then
         pass "All Markdown files pass markdownlint"
     else
         fail "markdownlint reported issues in *.md files"

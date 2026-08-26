@@ -119,8 +119,9 @@ assert_path_reported() {
             fi
             ;;
         *)
+            # Unreachable: both call sites pass a fixed mode; fail loudly if
+            # that ever drifts.
             echo "  FAIL: $test_name (unknown mode '$mode')" >&2
-            TESTS_RUN=$((TESTS_RUN + 1))
             TESTS_FAILED=$((TESTS_FAILED + 1))
             ;;
     esac

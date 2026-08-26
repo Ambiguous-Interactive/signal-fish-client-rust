@@ -81,6 +81,9 @@ jobs:
       - name: Run test I/O unwrap checker unit tests
         run: bash scripts/test_check_test_io_unwrap.sh
 
+      - name: Run test quality checker unit tests
+        run: bash scripts/test_check_test_quality.sh
+
   # ──────────────────────────────────────────────────────────────
   # devcontainer-compat — validate cross-platform devcontainer behavior
   # ──────────────────────────────────────────────────────────────

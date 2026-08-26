@@ -247,9 +247,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reporting a clean scan, and the scan set stays bash-3.2 portable. Tracked
   fixture sources anywhere under `tests/` — including directories named
   `target` — remain fully checked; a portable regression suite pins both
-  sides, and every other repository walker of this class (release SBOM
-  discovery, markdown lint fallbacks, admonition scanning, link-check
-  excludes) received the same pruning.
+  sides. The same failure class was swept out of every unbounded repository
+  walker found: release SBOM discovery no longer descends into build trees,
+  markdown lint is pinned to markdownlint-cli2 (whose excludes cover nested
+  targets) in all five invocation sites, admonition scanning prunes skipped
+  directories at descent time, and link-check excludes match target trees at
+  any depth.
 - `ServerErrorInfo`'s derived `Debug` no longer prints the server-authored
   free-text message; it reports `message_len` plus the structured error code,
   matching the close-reason redaction on `TransportCloseInfo`. The message
