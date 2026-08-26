@@ -36,6 +36,7 @@ the only tree MkDocs renders. Pass explicit files or directories to scan others.
 Exit code 0 = clean, 1 = malformed titles found.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -109,7 +110,14 @@ def admonition_quote_errors(text: str, path: str) -> List[str]:
 
 
 def iter_markdown_files(roots: List[Path]) -> List[Path]:
-    """Expand `roots` (files or directories) into a sorted list of .md files."""
+    """Expand `roots` (files or directories) into a sorted list of .md files.
+
+    Directory traversal prunes ``SKIP_DIRS`` at descent time so generated
+    trees (nested Cargo target builds, sites, caches) are never walked,
+    regardless of how wide the requested roots are. Each root's matches are
+    sorted lexicographically, matching the previous ``sorted(rglob)``
+    ordering.
+    """
     files: List[Path] = []
     seen: Set[Path] = set()
     for root in roots:
@@ -117,7 +125,13 @@ def iter_markdown_files(roots: List[Path]) -> List[Path]:
         if root.is_file():
             candidates = [root] if root.suffix == ".md" else []
         elif root.is_dir():
-            candidates = sorted(root.rglob("*.md"))
+            candidates = []
+            for base, dirnames, filenames in os.walk(root):
+                dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+                for name in sorted(filenames):
+                    if name.endswith(".md"):
+                        candidates.append(Path(base) / name)
+            candidates.sort()
         else:
             print(f"warning: path not found, skipping: {root}", file=sys.stderr)
             candidates = []

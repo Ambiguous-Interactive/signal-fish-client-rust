@@ -330,18 +330,15 @@ PHASE9_FAILURES=0
 PHASE9_RAN=0
 
 # 9a: markdownlint
-if ! command -v markdownlint-cli2 &>/dev/null && ! command -v markdownlint &>/dev/null; then
+# Only markdownlint-cli2 is supported: it honors .markdownlint-cli2.jsonc
+# "ignores" and keeps generated target trees out of the scan. The legacy v1
+# CLI ignores that config, so using it would walk gigabytes of build output.
+if ! command -v markdownlint-cli2 &>/dev/null; then
     echo -e "${YELLOW}  SKIP: markdownlint-cli2 is not installed.${NC}"
     echo "    Install: npm install -g markdownlint-cli2"
 else
     PHASE9_RAN=$((PHASE9_RAN + 1))
-    MDL_CMD=""
-    if command -v markdownlint-cli2 &>/dev/null; then
-        MDL_CMD="markdownlint-cli2"
-    else
-        MDL_CMD="markdownlint"
-    fi
-    if $MDL_CMD "**/*.md" 2>&1; then
+    if markdownlint-cli2 "**/*.md" 2>&1; then
         echo -e "${GREEN}  markdownlint: PASS${NC}"
     else
         echo -e "${RED}  markdownlint: FAIL${NC}"

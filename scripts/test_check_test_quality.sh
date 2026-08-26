@@ -43,6 +43,8 @@ setup_fake_repo() {
     cp "$CHECK_SCRIPT" "$FAKE_REPO/scripts/check-test-quality.sh"
     chmod +x "$FAKE_REPO/scripts/check-test-quality.sh"
     FAKE_SCRIPT="$FAKE_REPO/scripts/check-test-quality.sh"
+    # The checker resolves tracked sources through the git index.
+    git init --quiet "$FAKE_REPO"
 }
 
 # Run check-test-quality.sh inside the fake repo and capture the exit code.
@@ -51,6 +53,8 @@ setup_fake_repo() {
 run_check() {
     RUN_OUTPUT=""
     RUN_EXIT=0
+    # Stage every fixture so the git-index-based scan sees it as tracked.
+    git -C "$FAKE_REPO" add -A
     RUN_OUTPUT=$("$FAKE_SCRIPT" 2>&1) || RUN_EXIT=$?
 }
 
@@ -258,6 +262,57 @@ assert_exit "Escaped-quote string then real &mut false should FAIL" 1
 setup_fake_repo
 run_check
 assert_exit "Empty src/ and tests/ should PASS" 0
+
+echo ""
+echo "=== Generated target-tree pruning tests ==="
+
+# -- Should PASS: violation inside an ignored nested Cargo target tree --
+# Mirrors the issue-170 scenario: generated sources under tests/**/target
+# must never be scanned because the tree is ignored.
+setup_fake_repo
+mkdir -p "$FAKE_REPO/tests/godot-web-smoke/target/debug/build"
+cat > "$FAKE_REPO/tests/godot-web-smoke/.gitignore" << 'EOF'
+/target/
+EOF
+cat > "$FAKE_REPO/tests/godot-web-smoke/target/debug/build/generated.rs" << 'RUST'
+fn example() {
+    some_fn(&mut false);
+}
+RUST
+run_check
+assert_exit "Ignored target-tree violation should PASS (pruned)" 0
+
+echo ""
+echo "=== Environment-error tests ==="
+
+# -- Should FAIL(2): invocation outside a git repository must not pass green --
+NONREPO="$(mktemp -d "$TMPDIR_ROOT/nonrepo-XXXXXX")"
+mkdir -p "$NONREPO/scripts" "$NONREPO/src"
+cp "$CHECK_SCRIPT" "$NONREPO/scripts/check-test-quality.sh"
+cat > "$NONREPO/src/violation_outside_repo.rs" << 'RUST'
+fn example() {
+    some_fn(&mut false);
+}
+RUST
+TESTS_RUN=$((TESTS_RUN + 1))
+NONREPO_EXIT=0
+# GIT_CEILING_DIRECTORIES keeps git discovery from escaping the temp tree,
+# so the exit-2 assertion holds even if TMPDIR sits inside some repository.
+NONREPO_OUTPUT="$(
+    GIT_CEILING_DIRECTORIES="$TMPDIR_ROOT" \
+        bash "$NONREPO/scripts/check-test-quality.sh" 2>&1
+)" || NONREPO_EXIT=$?
+if [ "$NONREPO_EXIT" -eq 2 ] && ! printf '%s\n' "$NONREPO_OUTPUT" |
+    grep -q "VIOLATION"; then
+    echo "  PASS: Outside a git repository exits 2 without scanning"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo "  FAIL: Outside a git repository (expected exit 2, got $NONREPO_EXIT)"
+    echo "  --- output ---"
+    echo "$NONREPO_OUTPUT"
+    echo "  --- end output ---"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
 
 echo ""
 echo "=== Results ==="

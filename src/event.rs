@@ -610,12 +610,26 @@ pub const DECODE_FAILED_RAW_PREFIX_MAX: usize = 512;
 ///
 /// Carried by [`SignalFishEvent::Disconnected::last_server_error`]: the most
 /// recent `Error` or `AuthenticationError` frame received on the connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` deliberately reports the message length rather than its contents:
+/// server-authored free text stays out of ambient logs, mirroring the
+/// close-reason redaction on [`TransportCloseInfo`](crate::transport::TransportCloseInfo).
+/// The full message remains available through the public field.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ServerErrorInfo {
     /// Human-readable error message from the server.
     pub message: String,
     /// Structured error code, if the server provided one.
     pub error_code: Option<ErrorCode>,
+}
+
+impl std::fmt::Debug for ServerErrorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerErrorInfo")
+            .field("message_len", &self.message.len())
+            .field("error_code", &self.error_code)
+            .finish()
+    }
 }
 
 impl SignalFishEvent {

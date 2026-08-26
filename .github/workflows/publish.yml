@@ -137,7 +137,12 @@ jobs:
               >> "$asset_dir/SHA256SUMS"
 
             mapfile -t sboms < <(
-              find . -type f -name "${package}.cdx.json" -not -path './target/*' -print
+              # Prune target/node_modules in place: -not -path suppresses
+              # printing but does not stop descent into multi-GB build
+              # trees, and a stray SBOM inside one would abort the release.
+              find . \( -name target -o -name node_modules \) \
+                -type d -prune -o \
+                -type f -name "${package}.cdx.json" -print
             )
             if [ "${#sboms[@]}" -ne 1 ]; then
               printf '::error::Expected one CycloneDX file for %s, found %s.\n' \

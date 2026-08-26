@@ -15,15 +15,17 @@
 # .unwrap() on I/O operations. This produces better error messages when
 # tests fail due to missing files or permission errors.
 #
-# Scope: files in tests/ only. While src/ files are collected, they are
-# skipped entirely because detecting #[cfg(test)] module boundaries
-# reliably in a shell script is complex (multi-line parsing, nested
-# modules, conditional compilation). The tests/ directory is the
-# primary target for this check.
+# Scope: tracked Rust files under tests/. Files are resolved through the git
+# index instead of walking the filesystem so generated/ignored nested Cargo
+# target trees (e.g., tests/godot-web-smoke/target after a web build) are
+# pruned without excluding tracked fixture sources anywhere under tests/.
+# Untracked files are out of scope by definition; anything being committed is
+# already staged when hooks run.
 #
 # Exit codes:
 #   0 — no violations found
 #   1 — one or more violations detected
+#   2 — environment error (git unavailable or ls-files failed)
 #
 # Usage:
 #   bash scripts/check-test-io-unwrap.sh
@@ -73,21 +75,35 @@ IO_CALL_STARTERS=(
     'OpenOptions::new\(\)'
 )
 
-# Collect Rust files to scan (tests/ directory only; src/ files are
-# skipped because detecting #[cfg(test)] boundaries in shell is complex).
+# Collect tracked Rust files under tests/ via the git index. Pruning follows
+# ignore rules instead of path names, so generated target trees are never
+# walked while tracked fixture sources stay in scope wherever they live. The
+# listing goes through a temp file so a git failure is caught loudly instead
+# of masquerading as an empty scan.
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to resolve this repository's test sources." >&2
+    exit 2
+fi
+
+listing_tmp="$(mktemp "${TMPDIR:-/tmp}/test-io-unwrap.ls.XXXXXX")"
+trap 'rm -rf "$listing_tmp"' EXIT
+
+if ! git ls-files -z -- tests >"$listing_tmp" 2>/dev/null; then
+    echo "ERROR: git ls-files failed; refusing to guess the test-source scope." >&2
+    exit 2
+fi
+
 RS_FILES=()
-
-if [ -d "$REPO_ROOT/tests" ]; then
-    while IFS= read -r -d '' f; do
-        RS_FILES+=("$f")
-    done < <(find "$REPO_ROOT/tests" -name '*.rs' -print0 2>/dev/null)
-fi
-
-if [ -d "$REPO_ROOT/src" ]; then
-    while IFS= read -r -d '' f; do
-        RS_FILES+=("$f")
-    done < <(find "$REPO_ROOT/src" -name '*.rs' -print0 2>/dev/null)
-fi
+while IFS= read -r -d '' f; do
+    case "$f" in
+        *.rs)
+            # Skip indexed paths missing from the worktree (staged deletions).
+            if [ -f "$f" ]; then
+                RS_FILES+=("$f")
+            fi
+            ;;
+    esac
+done <"$listing_tmp"
 
 if [ "${#RS_FILES[@]}" -eq 0 ]; then
     echo -e "${GREEN}No Rust files found to check.${NC}"
@@ -98,27 +114,13 @@ echo "Found ${#RS_FILES[@]} Rust file(s) to scan."
 echo ""
 
 for file in "${RS_FILES[@]}"; do
-    rel_path="${file#"$REPO_ROOT"/}"
-    is_test_file=false
-
-    # Files under tests/ are always test files.
-    case "$rel_path" in
-        tests/*) is_test_file=true ;;
-    esac
-
-    # For src/ files, only check lines inside #[cfg(test)] modules.
-    # For simplicity (and to avoid complex multi-line parsing), we skip
-    # src/ files entirely in this check. The tests/ directory is the
-    # primary target, and src/ test modules are typically small.
-    if [ "$is_test_file" = false ]; then
-        continue
-    fi
-
+    rel_path="$file"
     file_violations=0
 
     # ── Single-line check ────────────────────────────────────────────
-    # Use whole-file grep -nE per pattern instead of per-line iteration.
-    # This reduces ~52,000 subprocess spawns to ~24 (6 patterns × 4 files).
+    # Use whole-file grep -nE per pattern instead of per-line iteration,
+    # keeping the spawn count proportional to the pattern list rather than
+    # to every line of every scanned file.
     for pattern in "${IO_PATTERNS[@]}"; do
         raw=$(grep -nE "$pattern" "$file" 2>/dev/null || true)
         [ -z "$raw" ] && continue
@@ -142,7 +144,11 @@ for file in "${RS_FILES[@]}"; do
     # This reduces ~1.5M iterations to just the few matching lines.
     unwrap_raw=$(grep -nE '^[[:space:]]*\.unwrap\(\)' "$file" 2>/dev/null || true)
     if [ -n "$unwrap_raw" ]; then
-        mapfile -t file_lines < "$file"
+        # Read the whole file into an array portably (mapfile needs bash 4+).
+        file_lines=()
+        while IFS= read -r file_line || [ -n "$file_line" ]; do
+            file_lines+=("$file_line")
+        done <"$file"
         while IFS= read -r match; do
             lineno="${match%%:*}"
             i=$((lineno - 1))  # convert to 0-indexed
@@ -163,7 +169,10 @@ for file in "${RS_FILES[@]}"; do
                         if ! printf '%s\n' "$prev" | grep -qE '\.unwrap\(\)'; then
                             echo -e "${RED}VIOLATION:${NC} $rel_path:$lineno: bare .unwrap() on I/O operation (multiline)"
                             echo "  $prev_stripped"
-                            printf '  %s\n' "$(printf '%s\n' "${file_lines[$i]}" | sed 's/^[[:space:]]*//')"
+                            continuation="${file_lines[$i]}"
+                            continuation="${continuation//$'\r'/}"
+                            printf '  %s\n' \
+                                "${continuation#"${continuation%%[![:space:]]*}"}"
                             file_violations=$((file_violations + 1))
                         fi
                     fi

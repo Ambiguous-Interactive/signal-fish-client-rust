@@ -25,8 +25,11 @@ repos:
       - id: markdownlint-optional
         name: markdownlint (optional)
         language: system
+        # Only markdownlint-cli2 is supported: the legacy v1 CLI ignores
+        # .markdownlint-cli2.jsonc "ignores" and would walk generated
+        # target trees.
         entry: >-
-          bash -c 'if command -v markdownlint-cli2 >/dev/null 2>&1; then markdownlint-cli2 "**/*.md"; elif command -v markdownlint >/dev/null 2>&1; then markdownlint "**/*.md"; else echo "SKIP: markdownlint not installed."; fi'
+          bash -c 'if command -v markdownlint-cli2 >/dev/null 2>&1; then markdownlint-cli2 "**/*.md"; else echo "SKIP: markdownlint-cli2 not installed."; fi'
         pass_filenames: false
         types: [markdown]
         always_run: true

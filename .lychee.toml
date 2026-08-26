@@ -14,11 +14,11 @@ glob_ignore_case = true
 # Directories and paths to exclude from scanning
 # ─────────────────────────────────────────────────────────────
 exclude_path = [
-    "^target/",
-    "^site/",
+    "(^|/)target/",
+    "(^|/)site/",
     "^\\.git/",
-    "^\\.venv/",
-    "^node_modules/",
+    "(^|/)\\.venv/",
+    "(^|/)node_modules/",
 ]
 
 # ─────────────────────────────────────────────────────────────
