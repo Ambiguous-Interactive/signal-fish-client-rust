@@ -2391,33 +2391,31 @@ mod tests {
         // OperationFailed from its observed id. The next two send the retained
         // signal and down edge after that result releases the fence.
         permits.add_permits(3);
-        let saw_failure = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if matches!(
-                    mesh.recv().await,
-                    Some(MeshEvent::Signaling(event))
-                        if matches!(*event, SignalFishEvent::RoomOperationFailed { .. })
-                ) {
-                    break;
+        let (saw_failure, saw_disconnected) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let mut saw_failure = false;
+                let mut saw_disconnected = false;
+                while !saw_failure || !saw_disconnected {
+                    match mesh.recv().await {
+                        Some(MeshEvent::Signaling(event))
+                            if matches!(*event, SignalFishEvent::RoomOperationFailed { .. }) =>
+                        {
+                            saw_failure = true;
+                        }
+                        Some(MeshEvent::PeerDisconnected(id)) if id == peer => {
+                            saw_disconnected = true;
+                        }
+                        Some(_) => {}
+                        None => break,
+                    }
                 }
-            }
-        })
-        .await;
+                (saw_failure, saw_disconnected)
+            })
+            .await
+            .expect("failed leave did not surface both outcomes");
+        assert!(saw_failure, "correlated leave failure never surfaced");
         assert!(
-            saw_failure.is_ok(),
-            "correlated leave failure never surfaced"
-        );
-        let disconnected = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if matches!(mesh.recv().await, Some(MeshEvent::PeerDisconnected(id)) if id == peer)
-                {
-                    break;
-                }
-            }
-        })
-        .await;
-        assert!(
-            disconnected.is_ok(),
+            saw_disconnected,
             "driver disconnect never surfaced after the failed leave"
         );
         for _ in 0..8 {
