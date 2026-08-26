@@ -30,9 +30,7 @@ reproduce, attest, and publish every crates.io-publishable workspace member at
 the single `[workspace.package].version`. `scripts/release.py workspace-plan`
 discovers members with Cargo metadata and orders internal dependencies; Release
 has no version input and resumes only checksum-identical partial publication.
-Prepare Release derives its bump and breaking policy from `[Unreleased]`, so it
-also accepts no version, bump, breaking, or crate-selection input beyond its
-reversible dry-run switch.
+Prepare Release derives its bump and breaking policy from `[Unreleased]`; it accepts no version/bump/breaking/crate-selection input beyond a reversible dry-run switch.
 Release jobs pin Rust 1.96.1 and Ubuntu 24.04; crate archives contain library source, required unit-test data, manifest, license, and readme.
 Repository-only material stays in the linked source repository; see `skills/release-recovery/SKILL.md` and `docs/releasing.md`.
 
@@ -40,17 +38,7 @@ Every blocking workflow runs on PR and default-branch SHAs and ends in a
 uniquely named aggregate `Required` job. The names and desired rules live in
 `.github/required-checks.json`; the scheduled Repository Policy workflow audits
 GitHub for visible drift with its authenticated built-in `GITHUB_TOKEN`.
-GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify
-an empty bypass list in the ruleset UI. Prepare Release also uses only
-`GITHUB_TOKEN` and explicitly dispatches the required workflows on its generated
-branch because ordinary token-created pull-request events are suppressed.
-Path filters must not suppress a configured required gate. No checked-in
-`GITHUB_TOKEN` workflow may auto-merge Dependabot PRs: besides relying on live
-rules that may drift, such a merge can suppress push CI on the resulting
-default-branch SHA. The fail-closed workflow policy therefore rejects any
-Dependabot-specific workflow, all automated-merge primitives, and write
-permissions outside the release/docs allowlist. Ruleset #14801090 live-enforces
-reviewed merges and all required checks.
+GitHub hides ruleset bypass actors from workflow tokens, so maintainers verify an empty bypass list in the ruleset UI. Prepare Release uses only `GITHUB_TOKEN` and dispatches required workflows explicitly on its generated branch because token-created pull-request events are suppressed; path filters must not suppress a configured gate. No checked-in `GITHUB_TOKEN` workflow may auto-merge Dependabot PRs: such merges rely on drifting rules and can suppress push CI on the resulting SHA, so the fail-closed policy rejects Dependabot-specific workflows, automated-merge primitives, and write permissions outside the release/docs allowlist. Ruleset #14801090 live-enforces reviewed merges and all required checks.
 
 ## GitHub Tool Order
 
@@ -91,9 +79,7 @@ instrumentation covers the parsers it drives. Blanket Clippy
 pedantic/nursery/cargo groups remain deferred after a noisy inventory; add them
 only for stable, actionable defects.
 
-Dependabot uses one root-workspace updater; minimum/latest Godot fixtures remain
-standalone because combining incompatible godot-rust versions would break the
-workspace. Hosted run 31969079956 proved clean root discovery.
+Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay standalone because incompatible godot-rust versions would break the workspace (hosted run 31969079956 proved clean root discovery).
 
 ## Architecture — Core Modules
 
@@ -140,12 +126,7 @@ admission and boundedly process immediately ready frames through `ClientCore` un
 `Pending`, terminal input, work bound, protocol stop, or deadline (the polling driver clamps this drain to
 its caller-configured receive budget). A ready farewell precedes `Disconnected`; only peer-close metadata replaces the send cause; native WebSocket retains buffered read state.
 
-Public `Debug`/tracing form an ambient-log boundary:
-reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data,
-buffered protocol frames, peer close reasons, and URL userinfo/query values
-must never be formatted. Safe diagnostics expose only variants, state flags,
-identifiers where appropriate, and byte lengths. Wire serialization and
-explicit public-field access remain unchanged.
+Public `Debug`/tracing form an ambient-log boundary: reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data, buffered protocol frames, peer close reasons, and URL userinfo/query values are never formatted; safe diagnostics expose only variants, state flags, identifiers where appropriate, and byte lengths. Wire serialization and explicit public-field access remain unchanged.
 
 The Emscripten transport reports `Pending` while its browser WebSocket is still
 connecting and must not call `emscripten_websocket_send_*` or consume the
@@ -411,6 +392,17 @@ the first canonical Server 0.7 `ProtocolInfo`, with unsupported requests using
 JSON. V3 reconnects require replay, complete watermarks, and a rotated token;
 v2 exposes none. `Reconnected` fences peers until a fresh live `SessionPlan`.
 
+Per-room accountability metadata is bounded against hostile or pathologically
+churning servers (issue #166); overflow is an ordinary server-misbehavior
+diagnostic under the violation policy, and every bound validates before
+mutating state: more than 16 unresolved incarnation announcements or
+uncovered departed incarnations per sender; more than 1024 total retained
+exact gap ranges; roster inserts beyond the advertised `max_players`
+(wire-absolute `u8::MAX + 1` fallback when the latest baseline cannot
+advertise one). Unknown-player `PlayerReconnected` sender cursors remain the
+one documented trusted-server envelope: containment gates would reject
+legitimate reconnects of players absent from the local roster snapshot.
+
 ### No Heavy Dependencies
 
 No `chrono` (timestamps remain `String` from the server), no `bytes` (binary
@@ -460,21 +452,13 @@ frontmatter names must match and use lowercase hyphen-case.
 
 ## Progress Records
 
-Planning records are local-only working notes: session logs and evidence
-under `progress/` plus the `PLAN.md` roadmap are gitignored and never
-committed or force-added. Durable, reviewer-visible conclusions belong in
-`CHANGELOG.md`, docs, or tests instead. No file may be both tracked and
-ignored; `no_file_is_both_tracked_and_ignored` enforces that boundary.
+Planning records are local-only working notes: session logs/evidence under `progress/` and the `PLAN.md` roadmap are gitignored, never committed or force-added; durable conclusions belong in `CHANGELOG.md`, docs, or tests. No file may be both tracked and ignored (`no_file_is_both_tracked_and_ignored`).
 
 ## Documentation Rendering (MkDocs)
 
 MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
 rustdoc fence annotations for Pygments; `hooks/llms_txt.py` generates model text.
-Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use
-pinned provenance and local OFL fonts preloaded via `overrides/main.html`, with
-no runtime provider. Both palettes retain AA contrast, visible focus,
-reduced-motion behavior, and responsive scrolling. `docs_brand_policy` pins
-these contracts; evidence lives under local-only `progress/assets/`. CI runs strict MkDocs
+Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use pinned provenance and local OFL fonts preloaded via `overrides/main.html`; both palettes retain AA contrast, visible focus, reduced-motion behavior, and responsive scrolling (`docs_brand_policy` pins these contracts; evidence under local-only `progress/assets/`). CI runs strict MkDocs
 (`.github/workflows/docs-deploy.yml`) and 17 checks in
 `.github/workflows/docs-validation.yml`; see `skills/markdown-and-doc-validation/SKILL.md`.
 

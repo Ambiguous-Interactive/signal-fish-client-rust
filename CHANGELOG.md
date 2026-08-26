@@ -232,6 +232,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bounded per-room metadata growth fed by a hostile or pathologically
+  churning server. Delivery accountability now refuses, as ordinary
+  violation diagnostics, a sender that accumulates more than 16 unresolved
+  incarnation announcements or uncovered departures, and a delivery report
+  that would push total retained exact gap ranges past 1024 — previously all
+  three grew for the whole room stay under churn that never completes
+  retirement. Room rosters are now admission-bounded by the server-advertised
+  `max_players` (with a wire-absolute `u8` fallback when the latest baseline
+  cannot advertise one): an over-capacity `PlayerJoined` is a lifecycle
+  violation instead of unbounded roster growth, while duplicates and
+  slot-freed rejoins keep working.
 - Bounded the session-plan replay fence to the eight most recently superseded
   generations. Previously every generation change retained its superseded
   generation for the whole room stay, so a hostile or pathologically churning
