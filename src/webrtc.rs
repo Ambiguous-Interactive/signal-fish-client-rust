@@ -280,14 +280,22 @@ mod controller {
         /// Signaled by the driver (via its [`MeshWaker`]) when it has output
         /// ready, so `recv` pumps on demand instead of waiting for the timer.
         ready: std::sync::Arc<tokio::sync::Notify>,
-        /// An outbound signal the command queue refused (`SendBufferFull`),
-        /// held for retry so congestion never drops it. Driver output is not
-        /// popped past a pending signal, preserving signal order, and `recv`
-        /// stays cancel-safe because the signal lives here rather than in a
-        /// cancellable future. Cleared when the controller tears down the
-        /// target peer (see `disconnect_peer`) — an abandoned handshake's
-        /// signal must not be relayed stale.
+        /// An outbound signal transiently refused by command-queue congestion
+        /// or an in-flight room-operation fence, held for retry so neither
+        /// condition drops it. Driver output is not popped past a pending
+        /// signal, preserving signal order, and `recv` stays cancel-safe
+        /// because the signal lives here rather than in a cancellable future.
+        /// Cleared when the controller tears down the target peer (see
+        /// `disconnect_peer`) — an abandoned handshake's signal must not be
+        /// relayed stale.
         pending_signal: Option<(PlayerId, Option<SessionGeneration>, PeerSignal)>,
+        /// Latest aggregate WebRTC liveness edge that command-queue congestion
+        /// or an in-flight room-operation fence refused. Unlike signals,
+        /// transport status is coalescible: if the data path changes again
+        /// before admission resumes, only its newest state needs to reach the
+        /// server. Retrying stays synchronous so event draining cannot
+        /// deadlock behind the same transient refusal.
+        pending_transport_status: Option<bool>,
         /// Last core plan barrier folded into `session`. The core can process a
         /// reconnect/replan before this controller consumes its queued event;
         /// a revision mismatch therefore fences driver output first.
@@ -327,6 +335,7 @@ mod controller {
                 pump_interval: DEFAULT_PUMP_INTERVAL,
                 ready,
                 pending_signal: None,
+                pending_transport_status: None,
                 observed_session_plan_revision: 0,
                 terminated: false,
             }
@@ -365,11 +374,15 @@ mod controller {
         /// # Cancel safety
         ///
         /// This method is cancel-safe: it never holds a popped driver output
-        /// across an await point. An outbound signal the command queue cannot
-        /// accept yet is buffered in the controller and relayed on a later
-        /// iteration (or a later `recv` call), so cancelling `recv` — e.g.
-        /// with `tokio::time::timeout` in a frame-budgeted game loop — never
-        /// loses a signal.
+        /// across an await point. An outbound signal that command-queue
+        /// congestion or an in-flight room operation refuses is buffered and
+        /// relayed on a later iteration (or a later `recv` call), so cancelling
+        /// `recv` — e.g. with `tokio::time::timeout` in a frame-budgeted game
+        /// loop — never loses it. That signal deliberately fences later driver
+        /// output to preserve wire order, while signaling events remain
+        /// drainable. A refused transport-status edge is likewise retained,
+        /// coalesced to the latest state, and retried without fencing driver
+        /// output.
         pub async fn recv(&mut self) -> Option<MeshEvent> {
             if self.terminated {
                 return None;
@@ -549,6 +562,7 @@ mod controller {
                 SignalFishEvent::RoomLeft
                 | SignalFishEvent::SpectatorJoined { .. }
                 | SignalFishEvent::SpectatorLeft { .. } => {
+                    self.pending_transport_status = None;
                     self.connected_peers.clear();
                     for peer in std::mem::take(&mut self.known_peers) {
                         self.disconnect_peer(peer.id);
@@ -598,6 +612,7 @@ mod controller {
             }
             self.terminated = true;
             self.pending_signal = None;
+            self.pending_transport_status = None;
             self.connected_peers.clear();
             self.session = MeshSession::new();
             for peer in std::mem::take(&mut self.known_peers) {
@@ -666,9 +681,10 @@ mod controller {
         /// there was nothing to relay, or the refusal was terminal
         /// (`NotConnected` / `ProtocolUnsupported`, logged and discarded
         /// because retrying cannot succeed). Returns `false` when the
-        /// command queue is full and the signal must be retried later: a
-        /// lost offer/answer/ICE candidate stalls the WebRTC handshake, so
-        /// congestion buffers the signal instead of dropping it.
+        /// command queue is full or a room-operation fence is still pending
+        /// and the signal must be retried later: a lost offer/answer/ICE
+        /// candidate stalls the WebRTC handshake, so transient admission
+        /// refusals buffer the signal instead of dropping it.
         fn relay_pending_signal(&mut self) -> bool {
             let Some((peer, generation, signal)) = self.pending_signal.take() else {
                 return true;
@@ -687,7 +703,10 @@ mod controller {
                 .send_signal_for_generation(peer, generation, signal.clone())
             {
                 Ok(()) => true,
-                Err(crate::error::SignalFishError::SendBufferFull { .. }) => {
+                Err(
+                    crate::error::SignalFishError::SendBufferFull { .. }
+                    | crate::error::SignalFishError::RoomOperationPending,
+                ) => {
                     self.pending_signal = Some((peer, generation, signal));
                     false
                 }
@@ -714,6 +733,7 @@ mod controller {
                 if !self.relay_pending_signal() {
                     return None;
                 }
+                self.retry_pending_transport_status();
                 let driver_event = self.driver.poll()?;
                 match driver_event {
                     DriverEvent::Signal {
@@ -779,15 +799,8 @@ mod controller {
             let was_empty = self.connected_peers.is_empty();
             self.connected_peers.push(peer);
             if was_empty {
-                // First live P2P channel: tell the server WebRTC is up. The
-                // report is informational and idempotent, so a refusal (e.g.
-                // NotConnected during teardown) is logged, not retried.
-                if let Err(e) = self
-                    .client
-                    .report_transport_status(TransportKind::WebRtc, true)
-                {
-                    debug!("could not report WebRTC transport up: {e}");
-                }
+                // First live P2P channel: tell the server WebRTC is up.
+                self.queue_transport_status(true);
             }
         }
 
@@ -796,12 +809,41 @@ mod controller {
             self.connected_peers.retain(|p| *p != peer);
             if self.connected_peers.is_empty() && before > 0 {
                 // Last live P2P channel closed: we are back on the relay floor.
-                // Informational and idempotent — a refusal is logged, not retried.
-                if let Err(e) = self
-                    .client
-                    .report_transport_status(TransportKind::WebRtc, false)
-                {
-                    debug!("could not report WebRTC transport down: {e}");
+                self.queue_transport_status(false);
+            }
+        }
+
+        fn queue_transport_status(&mut self, connected: bool) {
+            self.pending_transport_status = Some(connected);
+            self.retry_pending_transport_status();
+        }
+
+        /// Retry the newest aggregate WebRTC liveness state without blocking
+        /// driver output. `TransportStatus` is informational and idempotent, so
+        /// opposite refused edges coalesce to the current state; an accepted
+        /// command is already ordered in the client's FIFO and is never
+        /// replaced. Terminal admission errors cannot recover in this session
+        /// and are logged once before discarding the pending state.
+        fn retry_pending_transport_status(&mut self) {
+            let Some(connected) = self.pending_transport_status.take() else {
+                return;
+            };
+            match self
+                .client
+                .report_transport_status(TransportKind::WebRtc, connected)
+            {
+                Ok(()) => {}
+                Err(
+                    crate::error::SignalFishError::SendBufferFull { .. }
+                    | crate::error::SignalFishError::RoomOperationPending,
+                ) => {
+                    self.pending_transport_status = Some(connected);
+                }
+                Err(error) => {
+                    debug!(
+                        connected,
+                        "could not report WebRTC transport status: {error}"
+                    );
                 }
             }
         }
@@ -1332,6 +1374,10 @@ mod tests {
         r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#.to_string()
     }
 
+    fn protocol_info_v3_with_room_operation_ids() -> String {
+        r#"{"type":"ProtocolInfo","data":{"capabilities":["room_operation_ids"],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#.to_string()
+    }
+
     fn session_plan(peer: PlayerId, initiate: bool) -> String {
         session_plan_with_generation(peer, initiate, uuid(12))
     }
@@ -1717,6 +1763,8 @@ mod tests {
                 >,
             >,
         >,
+        fail_correlated_leave: bool,
+        leave_failure_emitted: bool,
     }
 
     impl Transport for GatedTransport {
@@ -1777,18 +1825,92 @@ mod tests {
                 )
             });
             let join_was_sent = self.sent.lock().unwrap().iter().any(|json| {
-                matches!(
-                    serde_json::from_str::<ClientMessage>(json),
-                    Ok(ClientMessage::JoinRoom { .. })
-                )
+                match serde_json::from_str::<ClientMessage>(json) {
+                    Ok(ClientMessage::JoinRoom { .. }) => true,
+                    Ok(ClientMessage::RoomOperation { operation, .. }) => matches!(
+                        *operation,
+                        crate::protocol::RoomOperationRequest::JoinRoom { .. }
+                    ),
+                    _ => false,
+                }
             });
             if room_joined_is_waiting && !join_was_sent {
                 return std::task::Poll::Pending;
             }
             if let Some(item) = self.incoming.pop_front() {
+                let item = item.map(|result| {
+                    result.and_then(|json| {
+                        let Ok(ServerMessage::RoomJoined(payload)) =
+                            serde_json::from_str::<ServerMessage>(&json)
+                        else {
+                            return Ok(json);
+                        };
+                        let operation_id = self.sent.lock().unwrap().iter().find_map(|sent| {
+                            match serde_json::from_str::<ClientMessage>(sent).ok()? {
+                                ClientMessage::RoomOperation {
+                                    operation_id,
+                                    operation,
+                                } if matches!(
+                                    *operation,
+                                    crate::protocol::RoomOperationRequest::JoinRoom { .. }
+                                ) =>
+                                {
+                                    Some(operation_id)
+                                }
+                                _ => None,
+                            }
+                        });
+                        let Some(operation_id) = operation_id else {
+                            return Ok(json);
+                        };
+                        serde_json::to_string(&ServerMessage::RoomOperationResult {
+                            operation_id,
+                            result: Box::new(crate::protocol::RoomOperationResult::RoomJoined(
+                                payload,
+                            )),
+                        })
+                        .map_err(crate::error::SignalFishError::Serialization)
+                    })
+                });
                 std::task::Poll::Ready(
                     item.map(|result| result.map(crate::transport::TransportFrame::Text)),
                 )
+            } else if self.fail_correlated_leave && !self.leave_failure_emitted {
+                let operation_id =
+                    self.sent
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find_map(|json| {
+                            match serde_json::from_str::<ClientMessage>(json).ok()? {
+                                ClientMessage::RoomOperation {
+                                    operation_id,
+                                    operation,
+                                } if matches!(
+                                    *operation,
+                                    crate::protocol::RoomOperationRequest::LeaveRoom
+                                ) =>
+                                {
+                                    Some(operation_id)
+                                }
+                                _ => None,
+                            }
+                        });
+                let Some(operation_id) = operation_id else {
+                    return std::task::Poll::Pending;
+                };
+                self.leave_failure_emitted = true;
+                let message = ServerMessage::RoomOperationResult {
+                    operation_id,
+                    result: Box::new(crate::protocol::RoomOperationResult::OperationFailed {
+                        reason: "leave refused".into(),
+                        error_code: None,
+                    }),
+                };
+                std::task::Poll::Ready(Some(Ok(crate::transport::TransportFrame::Text(
+                    serde_json::to_string(&message)
+                        .expect("correlated leave failure should serialize"),
+                ))))
             } else {
                 std::task::Poll::Pending
             }
@@ -1798,6 +1920,62 @@ mod tests {
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
             std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct GatedAnswerer {
+        mesh: MeshController<SharedDriver>,
+        driver: SharedDriver,
+        permits: Arc<tokio::sync::Semaphore>,
+        entered: Arc<std::sync::atomic::AtomicUsize>,
+        sent: Arc<Mutex<Vec<String>>>,
+        generation: Option<SessionGeneration>,
+    }
+
+    async fn start_gated_answerer(
+        peer: PlayerId,
+        setup_permits: usize,
+        protocol_info: String,
+        fail_correlated_leave: bool,
+    ) -> GatedAnswerer {
+        let permits = Arc::new(tokio::sync::Semaphore::new(setup_permits));
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = GatedTransport {
+            incoming: VecDeque::from(vec![
+                Some(Ok(authed())),
+                Some(Ok(protocol_info)),
+                Some(Ok(room_baseline(peer))),
+                Some(Ok(session_plan(peer, false))),
+            ]),
+            sent: Arc::clone(&sent),
+            permits: Arc::clone(&permits),
+            entered: Arc::clone(&entered),
+            pending_acquire: None,
+            fail_correlated_leave,
+            leave_failure_emitted: false,
+        };
+        let driver = SharedDriver::default();
+        let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
+        let mut mesh = MeshController::start(transport, config, driver.clone());
+        wait_for_sent_count(&sent, &[r#""type":"Authenticate""#], 1).await;
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted RoomJoined must follow an admitted join");
+        assert!(
+            pump_until(&mut mesh, &driver, |calls| calls.iter().any(
+                |call| matches!(call, DriverCall::Connect(id, false) if *id == peer)
+            ))
+            .await,
+            "driver never received the answerer plan"
+        );
+        let generation = mesh.session().generation();
+        GatedAnswerer {
+            mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
         }
     }
 
@@ -1823,6 +2001,8 @@ mod tests {
             permits: Arc::clone(&permits),
             entered: Arc::clone(&entered),
             pending_acquire: None,
+            fail_correlated_leave: false,
+            leave_failure_emitted: false,
         };
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
@@ -1895,6 +2075,375 @@ mod tests {
         mesh.shutdown().await;
     }
 
+    /// A transport-status edge refused by the bounded command queue must be
+    /// retried after capacity returns. Otherwise the controller's local
+    /// `connected_peers` transition suppresses every duplicate driver event
+    /// while the server retains stale WebRTC liveness for the whole interval.
+    #[tokio::test]
+    async fn congestion_retries_transport_status_edges_exactly_once() {
+        let peer = uuid(9);
+        // Authenticate + JoinRoom consume the two setup permits. Using the
+        // answerer role leaves no pending offer ahead of the status edges.
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 2, protocol_info_v3(), false).await;
+
+        // Park one filler in the transport and one in the capacity-1 command
+        // queue, then cross the 0->1 driver boundary while admission is full.
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .expect("first filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the first congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .expect("second filler should occupy the command queue");
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            0,
+            "the up edge cannot reach the wire while admission is full"
+        );
+
+        // Exactly three permits drain both fillers and the one retried edge.
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "true"]) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            1,
+            "the refused up edge must be retried exactly once"
+        );
+
+        // Repeat for 1->0 after the first status is known to have reached the
+        // transport. The retry state must be symmetric and remain bounded.
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 3 }))
+            .expect("third filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 6 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the second congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 4 }))
+            .expect("fourth filler should occupy the command queue");
+        driver.emit_and_wake(DriverEvent::Disconnected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerDisconnected(id))) if id == peer
+        ));
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            0,
+            "the down edge cannot reach the wire while admission is full"
+        );
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "false"]) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "the refused down edge must be retried exactly once"
+        );
+
+        permits.add_permits(8);
+        mesh.shutdown().await;
+    }
+
+    /// Informational status updates are snapshots, not an ordered event log.
+    /// While admission is full, opposite refused values must collapse to the
+    /// newest aggregate state in both directions.
+    #[tokio::test]
+    async fn congestion_coalesces_transport_status_to_latest_state() {
+        let peer = uuid(10);
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 2, protocol_info_v3(), false).await;
+
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .expect("first filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the first congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .expect("second filler should occupy the command queue");
+
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+        driver.emit_and_wake(DriverEvent::Disconnected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerDisconnected(id))) if id == peer
+        ));
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "false"]) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            0,
+            "true->false must suppress the refused intermediate true snapshot"
+        );
+
+        // Establish an accepted true baseline, then hold admission full across
+        // the reverse false->true flap.
+        permits.add_permits(1);
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 1).await;
+
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 3 }))
+            .expect("third filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 7 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the second congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 4 }))
+            .expect("fourth filler should occupy the command queue");
+        driver.emit_and_wake(DriverEvent::Disconnected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerDisconnected(id))) if id == peer
+        ));
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "true"]) == 2 {
+                break;
+            }
+        }
+
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "true->false must send only the latest false snapshot"
+        );
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            2,
+            "false->true must add only the latest true snapshot to the accepted baseline"
+        );
+
+        permits.add_permits(8);
+        mesh.shutdown().await;
+    }
+
+    /// An authoritative room exit invalidates a refused room-scoped status.
+    /// Releasing queue capacity afterward must never leak that stale snapshot.
+    #[tokio::test]
+    async fn room_exit_discards_congested_transport_status() {
+        let peer = uuid(11);
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 2, protocol_info_v3(), false).await;
+
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .expect("first filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("transport loop never parked in the congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .expect("second filler should occupy the command queue");
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+
+        mesh.handle_event(&SignalFishEvent::RoomLeft);
+        assert!(driver.calls().contains(&DriverCall::Disconnect(peer)));
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            0,
+            "a status refused before RoomLeft must not reach the wire afterward"
+        );
+
+        permits.add_permits(8);
+        mesh.shutdown().await;
+    }
+
+    /// A leave fence is also transient when the correlated operation later
+    /// fails. The last-channel down edge must survive `RoomOperationPending`
+    /// and be reported after the failure leaves this client in the room.
+    #[tokio::test]
+    async fn failed_leave_retries_transport_status_after_operation_fence_clears() {
+        let peer = uuid(10);
+        // Authenticate, JoinRoom, and the initial up status consume these
+        // permits. LeaveRoom then parks until the driver down edge has met the
+        // already-armed operation fence.
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 3, protocol_info_v3_with_room_operation_ids(), true).await;
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+        wait_for_sent_count(&sent, &["TransportStatus", "webrtc", "true"], 1).await;
+
+        mesh.leave_room()
+            .expect("leave should arm the negotiated room-operation fence");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while entered.load(std::sync::atomic::Ordering::Acquire) < 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("LeaveRoom never parked in the gated transport");
+        driver.emit_and_wake(DriverEvent::Signal {
+            peer,
+            generation,
+            signal: PeerSignal::IceCandidate("late-candidate".into()),
+        });
+        driver.emit_and_wake(DriverEvent::Disconnected { peer, generation });
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(50), mesh.recv()).await;
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#, "late-candidate"]),
+            0,
+            "the operation fence must initially refuse the driver signal"
+        );
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            0,
+            "the operation fence must initially refuse the down report"
+        );
+
+        // One permit sends LeaveRoom; the transport synthesizes a correlated
+        // OperationFailed from its observed id. The next two send the retained
+        // signal and down edge after that result releases the fence.
+        permits.add_permits(3);
+        let saw_failure = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    mesh.recv().await,
+                    Some(MeshEvent::Signaling(event))
+                        if matches!(*event, SignalFishEvent::RoomOperationFailed { .. })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            saw_failure.is_ok(),
+            "correlated leave failure never surfaced"
+        );
+        let disconnected = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(mesh.recv().await, Some(MeshEvent::PeerDisconnected(id)) if id == peer)
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            disconnected.is_ok(),
+            "driver disconnect never surfaced after the failed leave"
+        );
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "false"]) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            1,
+            "the down edge must retry once the failed leave clears its fence"
+        );
+        assert_eq!(
+            sent_count(&sent, &[r#""type":"Signal""#, "late-candidate"]),
+            1,
+            "the signal must retry once the failed leave clears its fence"
+        );
+        assert_eq!(
+            mesh.client().room_role(),
+            Some(crate::client::RoomRole::Player)
+        );
+
+        mesh.shutdown().await;
+    }
+
     /// A buffered signal from an old generation must be discarded on re-plan,
     /// not retagged as current after command-queue congestion clears.
     #[tokio::test]
@@ -1918,6 +2467,8 @@ mod tests {
             permits: Arc::clone(&permits),
             entered: Arc::clone(&entered),
             pending_acquire: None,
+            fail_correlated_leave: false,
+            leave_failure_emitted: false,
         };
         let driver = SharedDriver::default();
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);

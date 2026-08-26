@@ -201,7 +201,12 @@ Opt into protocol v3 relay/accountability with `.enable_v3()`. Use
 `.enable_mesh()` only with a WebRTC driver. `MeshController::start` preserves
 compatible choices while ensuring v3, WebRTC, and a Host or Mesh topology.
 Once `recv` observes signaling end, or on shutdown, the controller clears its
-view, disconnects peers, fuses receive, and prevents later driver sends.
+view, disconnects peers, fuses receive, and prevents later driver sends. A
+WebRTC transport-status edge refused by the bounded client command queue or a
+pending directed room operation is retained in one coalescing latest-state
+slot and retried without blocking driver data or signaling-event delivery.
+Outbound handshake signals are likewise retried across either transient
+refusal. Authoritative room/connection teardown discards obsolete work.
 
 ```rust,ignore
 pub struct SignalFishConfig {
