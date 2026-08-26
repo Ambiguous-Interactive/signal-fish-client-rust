@@ -15,15 +15,15 @@
 # .unwrap() on I/O operations. This produces better error messages when
 # tests fail due to missing files or permission errors.
 #
-# Scope: files in tests/ only. While src/ files are collected, they are
-# skipped entirely because detecting #[cfg(test)] module boundaries
-# reliably in a shell script is complex (multi-line parsing, nested
-# modules, conditional compilation). The tests/ directory is the
-# primary target for this check.
+# Scope: tracked Rust files under tests/. Files are resolved through the git
+# index instead of walking the filesystem so generated/ignored nested Cargo
+# target trees (e.g., tests/godot-web-smoke/target after a web build) are
+# pruned without excluding tracked fixture sources anywhere under tests/.
 #
 # Exit codes:
 #   0 — no violations found
 #   1 — one or more violations detected
+#   2 — environment error (git unavailable or no repository)
 #
 # Usage:
 #   bash scripts/check-test-io-unwrap.sh
@@ -73,21 +73,25 @@ IO_CALL_STARTERS=(
     'OpenOptions::new\(\)'
 )
 
-# Collect Rust files to scan (tests/ directory only; src/ files are
-# skipped because detecting #[cfg(test)] boundaries in shell is complex).
+# Collect tracked Rust files under tests/ via the git index. Pruning follows
+# ignore rules instead of path names, so generated target trees are never
+# walked while tracked fixture sources stay in scope wherever they live.
+if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required to resolve this repository's test sources." >&2
+    exit 2
+fi
+
 RS_FILES=()
-
-if [ -d "$REPO_ROOT/tests" ]; then
-    while IFS= read -r -d '' f; do
-        RS_FILES+=("$f")
-    done < <(find "$REPO_ROOT/tests" -name '*.rs' -print0 2>/dev/null)
-fi
-
-if [ -d "$REPO_ROOT/src" ]; then
-    while IFS= read -r -d '' f; do
-        RS_FILES+=("$f")
-    done < <(find "$REPO_ROOT/src" -name '*.rs' -print0 2>/dev/null)
-fi
+while IFS= read -r -d '' f; do
+    case "$f" in
+        *.rs)
+            # Skip indexed paths missing from the worktree (staged deletions).
+            if [ -f "$f" ]; then
+                RS_FILES+=("$f")
+            fi
+            ;;
+    esac
+done < <(git ls-files -z -- tests)
 
 if [ "${#RS_FILES[@]}" -eq 0 ]; then
     echo -e "${GREEN}No Rust files found to check.${NC}"
@@ -98,22 +102,7 @@ echo "Found ${#RS_FILES[@]} Rust file(s) to scan."
 echo ""
 
 for file in "${RS_FILES[@]}"; do
-    rel_path="${file#"$REPO_ROOT"/}"
-    is_test_file=false
-
-    # Files under tests/ are always test files.
-    case "$rel_path" in
-        tests/*) is_test_file=true ;;
-    esac
-
-    # For src/ files, only check lines inside #[cfg(test)] modules.
-    # For simplicity (and to avoid complex multi-line parsing), we skip
-    # src/ files entirely in this check. The tests/ directory is the
-    # primary target, and src/ test modules are typically small.
-    if [ "$is_test_file" = false ]; then
-        continue
-    fi
-
+    rel_path="$file"
     file_violations=0
 
     # ── Single-line check ────────────────────────────────────────────

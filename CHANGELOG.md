@@ -239,6 +239,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The pre-commit Rust test I/O unwrap checker now resolves its scan set
+  through the git index instead of walking `tests/` on the filesystem, so
+  generated and ignored nested Cargo target trees (such as the 2.1 GB
+  `tests/godot-web-smoke/target` produced by Godot web builds) are pruned and
+  commits stop spending minutes grepping thousands of build outputs. Tracked
+  fixture sources anywhere under `tests/` — including directories named
+  `target` — remain fully checked; a portable regression suite pins both
+  sides.
 - `MeshController` now retries outbound WebRTC handshake signals and
   `TransportStatus` up/down reports that queue congestion or a pending directed
   room operation temporarily refuses. Previously a refused signal could stall

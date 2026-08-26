@@ -78,6 +78,9 @@ jobs:
       - name: Run shellcheck
         run: shellcheck scripts/*.sh .devcontainer/scripts/*.sh
 
+      - name: Run test I/O unwrap checker unit tests
+        run: bash scripts/test_check_test_io_unwrap.sh
+
   # ──────────────────────────────────────────────────────────────
   # devcontainer-compat — validate cross-platform devcontainer behavior
   # ──────────────────────────────────────────────────────────────
