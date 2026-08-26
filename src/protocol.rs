@@ -718,16 +718,21 @@ pub enum ClientMessage {
     /// Join or create a room for a specific game.
     JoinRoom {
         game_name: String,
+        /// Omitted on the wire when unset so quick-match joins match the
+        /// schema's omission convention instead of sending explicit nulls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         room_code: Option<String>,
         player_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         max_players: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         supports_authority: Option<bool>,
         /// Optional legacy relay data-path descriptor.
         ///
         /// This wire value does not change the signaling [`Transport`](crate::Transport)
         /// or make the client consume raw datagrams. Signal Fish Server 0.7
         /// accepts but ignores it.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,
     },
     /// Leave the current room.
@@ -854,11 +859,14 @@ impl std::fmt::Debug for ClientMessage {
 pub enum RoomOperationRequest {
     JoinRoom {
         game_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         room_code: Option<String>,
         player_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         max_players: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         supports_authority: Option<bool>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,
     },
     LeaveRoom,

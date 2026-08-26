@@ -34,8 +34,9 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus currently pins post-0.7 protocol-authority commit
-`2d7c3836edf64bb734482b7fbb2b3db3f88fea8b`, including negotiated room-operation
-correlation. Released runtime compatibility remains separately bound to Server
+`5de9105e4c269a29919ae29880f5b67fc8d630c3`, including negotiated room-operation
+correlation and the room-session incompatibility error. Released runtime
+compatibility remains separately bound to Server
 0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` in
 `tests/compatibility.toml`. The client retains six legacy
 `ErrorCode::NON_EMITTED` variants outside the 0.7 emitted-token set; conformance

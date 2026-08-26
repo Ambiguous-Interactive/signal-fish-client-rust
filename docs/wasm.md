@@ -328,18 +328,22 @@ let mut client = SignalFishPollingClient::new(transport, config);
 ```
 
 The standard `connect` and `connect_with_options` paths configure Godot's
-`inbound_buffer_size` to 8 MiB before starting the connection. This is a
-protective client default sized above the roughly 6.25 MiB aggregate snapshots
-that a default Server 0.7 deployment can legally produce, not a protocol
-maximum or a guarantee that every larger message is rejected at exactly that
-boundary. Godot may reserve roughly twice that amount per peer across its
-receive ring and packet buffer.
+`inbound_buffer_size` to 8 MiB and raise its independent
+`max_queued_packets` cap from 4,096 to 65,536 before starting the connection.
+The byte buffer is a protective client default sized above the roughly
+6.25 MiB aggregate snapshots that a default Server 0.7 deployment can legally
+produce, not a protocol maximum or a guarantee that every larger message is
+rejected at exactly that boundary. Godot may reserve roughly twice that amount
+per peer across its receive ring and packet buffer, plus packet metadata.
+Godot's native and web backends can silently drop newly arriving frames when
+either inbound limit fills, so enough unusually small frames can still reach
+the packet cap first.
 
 Applications with a different trusted size contract can create and configure a
 Godot `WebSocketPeer`, call `connect_to_url`, and pass it through `from_peer` or
 `from_peer_with_options`. Those advanced constructors preserve the caller's
-buffer choices. Browser and engine implementations still own frame/message
-assembly before the SDK receives a complete packet.
+byte-buffer and packet-cap choices. Browser and engine implementations still
+own frame/message assembly before the SDK receives a complete packet.
 
 !!! warning "Allow the browser's exact Origin on Server 0.7"
     Browsers attach an `Origin` header to the WebSocket upgrade, and Signal Fish

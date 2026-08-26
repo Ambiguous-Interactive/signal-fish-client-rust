@@ -115,8 +115,8 @@ fn correlated_client_operations_have_exact_nested_shapes() {
                     relay_transport: None,
                 }),
             },
-            json!({"type":"RoomOperation","data":{"operation_id":OPERATION_ID_STR,"operation":{"type":"JoinRoom","data":{"game_name":"game","room_code":"ABC123","player_name":"Alice","max_players":4,"supports_authority":true,"relay_transport":null}}}}),
-            "82a474797065ad526f6f6d4f7065726174696f6ea46461746182ac6f7065726174696f6e5f6964c410aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa96f7065726174696f6e82a474797065a84a6f696e526f6f6da46461746186a967616d655f6e616d65a467616d65a9726f6f6d5f636f6465a6414243313233ab706c617965725f6e616d65a5416c696365ab6d61785f706c617965727304b2737570706f7274735f617574686f72697479c3af72656c61795f7472616e73706f7274c0",
+            json!({"type":"RoomOperation","data":{"operation_id":OPERATION_ID_STR,"operation":{"type":"JoinRoom","data":{"game_name":"game","room_code":"ABC123","player_name":"Alice","max_players":4,"supports_authority":true}}}}),
+            "82a474797065ad526f6f6d4f7065726174696f6ea46461746182ac6f7065726174696f6e5f6964c410aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa96f7065726174696f6e82a474797065a84a6f696e526f6f6da46461746185a967616d655f6e616d65a467616d65a9726f6f6d5f636f6465a6414243313233ab706c617965725f6e616d65a5416c696365ab6d61785f706c617965727304b2737570706f7274735f617574686f72697479c3",
         ),
         (
             "leave_room",

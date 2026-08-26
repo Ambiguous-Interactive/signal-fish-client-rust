@@ -112,7 +112,9 @@ pub struct TransportDiagnostics {
 /// accepted responsibility for the frame. A transport that needs more work may
 /// return `Pending` after taking it, but must retain all required state and must
 /// not accept a replacement until that operation returns `Ready`. Completion
-/// does not imply peer delivery or that all socket-wide buffering reached zero.
+/// must leave the caller's slot empty, including on continuation polls.
+/// Completion does not imply peer delivery or that all socket-wide buffering
+/// reached zero.
 ///
 /// # Close
 ///
@@ -130,9 +132,13 @@ pub struct TransportDiagnostics {
 /// only repeated `abort`, `is_ready`, `close_info`, `diagnostics`, and drop are
 /// allowed.
 pub trait Transport {
-    /// Mark the start of one caller-driven polling cycle.
+    /// Mark the start of one driver scheduling cycle.
     ///
-    /// Transports may use this to sample buffering once per rendered frame.
+    /// The polling client calls this once per `SignalFishPollingClient::poll`
+    /// invocation; the async client calls it once per outer transport-loop
+    /// iteration. Transports may use the hook to sample buffering once per
+    /// scheduling cycle, but must not assume it represents a rendered frame or
+    /// a fixed wall-clock interval.
     fn begin_poll_cycle(&mut self) {}
 
     /// Advance one outbound frame.

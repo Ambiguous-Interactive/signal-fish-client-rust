@@ -132,6 +132,7 @@ fn all_client_error_codes() -> Vec<ErrorCode> {
         ErrorCode::ServiceUnavailable,
         ErrorCode::GameStartNotReady,
         ErrorCode::GameStartForbidden,
+        ErrorCode::RoomSessionIncompatible,
         ErrorCode::CrossRoomSignal,
         ErrorCode::UnsupportedTransport,
         ErrorCode::SignalTargetNotFound,
@@ -194,6 +195,7 @@ fn exhaustiveness_guard(code: &ErrorCode) {
         | ErrorCode::ServiceUnavailable
         | ErrorCode::GameStartNotReady
         | ErrorCode::GameStartForbidden
+        | ErrorCode::RoomSessionIncompatible
         | ErrorCode::CrossRoomSignal
         | ErrorCode::UnsupportedTransport
         | ErrorCode::SignalTargetNotFound
@@ -219,6 +221,14 @@ fn delivery_error_codes_use_the_expected_wire_tokens() {
     assert_eq!(
         wire_token(&ErrorCode::InvalidDeliveryClass),
         "INVALID_DELIVERY_CLASS"
+    );
+}
+
+#[test]
+fn room_session_incompatible_uses_the_upstream_wire_token() {
+    assert_eq!(
+        wire_token(&ErrorCode::RoomSessionIncompatible),
+        "ROOM_SESSION_INCOMPATIBLE"
     );
 }
 

@@ -20,6 +20,7 @@ enum HangPoint {
 
 #[derive(Default)]
 struct AbortEvidence {
+    poll_cycles: AtomicUsize,
     accepted_sends: AtomicUsize,
     completed_sends: AtomicUsize,
     close_polls: AtomicUsize,
@@ -63,6 +64,7 @@ impl Drop for HangingResourceTransport {
 
 impl Transport for HangingResourceTransport {
     fn begin_poll_cycle(&mut self) {
+        self.evidence.poll_cycles.fetch_add(1, Ordering::AcqRel);
         if self.aborted {
             self.evidence
                 .post_abort_polls
@@ -209,6 +211,10 @@ async fn async_deadline_abandons_accepted_send_and_hanging_close() {
         assert_eq!(evidence.accepted_sends.load(Ordering::Acquire), 1);
         client.shutdown().await;
 
+        assert!(
+            evidence.poll_cycles.load(Ordering::Acquire) > 0,
+            "the async driver must mark at least one live transport polling cycle"
+        );
         assert_abandoned(&evidence, hang_point, 1);
         assert!(
             evidence.dropped.load(Ordering::Acquire),
@@ -323,4 +329,212 @@ async fn dropping_either_client_aborts_its_owned_transport() {
     drop(polling_client);
     assert_abandoned(&polling_evidence, HangPoint::AcceptedSend, 1);
     assert!(polling_evidence.dropped.load(Ordering::Acquire));
+}
+
+/// A backend that reports `Ready(Ok)` while leaving the caller-owned frame in
+/// its slot — a direct breach of the `poll_send` ownership contract that would
+/// silently drop the frame if drivers treated it as completion.
+struct LyingCompletionTransport {
+    send_polls_with_frame: Arc<AtomicUsize>,
+}
+
+impl LyingCompletionTransport {
+    fn new() -> (Self, Arc<AtomicUsize>) {
+        let send_polls_with_frame = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                send_polls_with_frame: Arc::clone(&send_polls_with_frame),
+            },
+            send_polls_with_frame,
+        )
+    }
+}
+
+impl Transport for LyingCompletionTransport {
+    fn poll_send(
+        &mut self,
+        _cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        if frame.is_some() {
+            self.send_polls_with_frame.fetch_add(1, Ordering::AcqRel);
+            // The breach: success without taking ownership of the frame.
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    }
+
+    fn poll_recv(
+        &mut self,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        Poll::Pending
+    }
+
+    fn poll_close(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {}
+}
+
+#[tokio::test]
+async fn async_driver_fails_fast_when_a_send_completes_without_ownership_transfer() {
+    let (transport, send_polls) = LyingCompletionTransport::new();
+    let (client, mut events) =
+        SignalFishClient::start(transport, SignalFishConfig::new("lying-async"));
+
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    let terminal = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .ok()
+        .flatten();
+    assert!(
+        matches!(
+            terminal.as_ref(),
+            Some(SignalFishEvent::Disconnected {
+                reason: Some(reason),
+                ..
+            }) if reason.contains("nonempty caller frame slot")
+        ),
+        "expected Disconnected from the failed send, got {terminal:?}"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(client.stats().game_data_sent, 0);
+    drop(client);
+
+    // Exactly one attempt observed the frame: no silent retry loop and no
+    // silent drop-as-success.
+    assert_eq!(send_polls.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn polling_driver_fails_fast_when_a_send_completes_without_ownership_transfer() {
+    let (transport, send_polls) = LyingCompletionTransport::new();
+    let mut client =
+        SignalFishPollingClient::new(transport, SignalFishConfig::new("lying-polling"));
+
+    let events = client.poll();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, SignalFishEvent::Connected)));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SignalFishEvent::Disconnected {
+            reason: Some(reason),
+            ..
+        } if reason.contains("nonempty caller frame slot")
+    )));
+    assert_eq!(send_polls.load(Ordering::Acquire), 1);
+    assert!(!client.is_connected());
+    assert_eq!(client.stats().game_data_sent, 0);
+    assert!(!client.is_closing());
+    assert!(client.poll().is_empty());
+    drop(client);
+}
+
+/// A backend that accepts a send as pending, then refills the continuation
+/// slot while reporting success. The original frame did transfer, but the
+/// successful completion still violates the empty-slot invariant.
+struct RefilledCompletionTransport {
+    send_polls: Arc<AtomicUsize>,
+}
+
+impl RefilledCompletionTransport {
+    fn new() -> (Self, Arc<AtomicUsize>) {
+        let send_polls = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                send_polls: Arc::clone(&send_polls),
+            },
+            send_polls,
+        )
+    }
+}
+
+impl Transport for RefilledCompletionTransport {
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        match self.send_polls.fetch_add(1, Ordering::AcqRel) {
+            0 => {
+                assert!(frame.take().is_some(), "the initial poll must own a frame");
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            1 => {
+                assert!(frame.is_none(), "continuation polls must start empty");
+                *frame = Some(TransportFrame::Text("backend-refilled".into()));
+                Poll::Ready(Ok(()))
+            }
+            _ => Poll::Pending,
+        }
+    }
+
+    fn poll_recv(
+        &mut self,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        Poll::Pending
+    }
+
+    fn poll_close(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn abort(&mut self) {}
+}
+
+#[tokio::test]
+async fn async_driver_rejects_a_refilled_slot_on_pending_send_completion() {
+    let (transport, send_polls) = RefilledCompletionTransport::new();
+    let (client, mut events) =
+        SignalFishClient::start(transport, SignalFishConfig::new("refilled-async"));
+
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::Connected)
+    ));
+    let terminal = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .ok()
+        .flatten();
+    assert!(matches!(
+        terminal.as_ref(),
+        Some(SignalFishEvent::Disconnected {
+            reason: Some(reason),
+            ..
+        }) if reason.contains("nonempty caller frame slot")
+    ));
+    assert_eq!(send_polls.load(Ordering::Acquire), 2);
+    assert!(!client.is_connected());
+    assert_eq!(client.stats().game_data_sent, 0);
+}
+
+#[test]
+fn polling_driver_rejects_a_refilled_slot_on_pending_send_completion() {
+    let (transport, send_polls) = RefilledCompletionTransport::new();
+    let mut client =
+        SignalFishPollingClient::new(transport, SignalFishConfig::new("refilled-polling"));
+
+    assert!(client
+        .poll()
+        .iter()
+        .any(|event| matches!(event, SignalFishEvent::Connected)));
+    let terminal = client.poll();
+    assert!(terminal.iter().any(|event| matches!(
+        event,
+        SignalFishEvent::Disconnected {
+            reason: Some(reason),
+            ..
+        } if reason.contains("nonempty caller frame slot")
+    )));
+    assert_eq!(send_polls.load(Ordering::Acquire), 2);
+    assert!(!client.is_connected());
+    assert_eq!(client.stats().game_data_sent, 0);
 }

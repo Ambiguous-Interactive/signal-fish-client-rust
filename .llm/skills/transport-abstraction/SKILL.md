@@ -87,7 +87,9 @@ The caller owns `frame: Option<TransportFrame>` until the transport takes it.
   refusal that leaves the slot intact must preserve the frame's original
   enqueue timestamp along with its FIFO identity.
 - A transport may return `Ready(Ok(()))` immediately after backend acceptance.
-  Never use a socket-wide buffered amount reaching zero as per-frame completion.
+  Every successful completion must leave the caller's slot empty, including on
+  continuation polls. Never use a socket-wide buffered amount reaching zero as
+  per-frame completion.
 - If a transport returns `Pending` after taking a frame, it must retain all
   state needed to finish that exact accepted operation across later polls.
 - Repeated polls while that send is pending must not accept a replacement frame,
@@ -181,6 +183,12 @@ whose constructor completes the handshake. Async-handshake transports return
 Once true, readiness remains true for that physical connection. If readiness
 changes while the async driver is blocked, wake a waker registered by
 `poll_send` or `poll_recv`, because `is_ready()` cannot register one itself.
+
+`begin_poll_cycle()` marks a driver scheduling cycle, not necessarily a
+rendered frame. The polling client calls it once per public `poll()` invocation;
+the async client calls it once per outer transport-loop iteration. Backends may
+sample buffering or capacity once at this boundary, but must not infer a fixed
+wall-clock cadence from it.
 
 ## Minimal Channel Transport
 

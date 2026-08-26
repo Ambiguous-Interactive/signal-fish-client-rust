@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `ErrorCode::RoomSessionIncompatible` (wire
+  `ROOM_SESSION_INCOMPATIBLE`) for the post-0.7 server response used when a
+  running room's sticky peer-to-peer topology/transport pair is incompatible
+  with the joining connection's negotiated capabilities. The vendored
+  AsyncAPI authority advances to server commit
+  `5de9105e4c269a29919ae29880f5b67fc8d630c3`; released Server 0.7.0 runtime
+  compatibility remains unchanged.
 - Added the opt-in `internal-fuzz-facade` feature (which builds on the
   native token-binding support) exposing a `#[doc(hidden)]`, semver-exempt
   module that lets the repository's new `fuzz_token_binding` cargo-fuzz
@@ -232,6 +239,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Absorbed one benign wire race around voluntary spectator leaves. When an
+  authoritative spectator exit (`Disconnected`, `Removed`, or `RoomClosed`)
+  tore down the room before the server's mandatory reply to an admitted
+  `leave_spectator` arrived, that superseded reply was misclassified as a
+  lifecycle violation — latching quarantine under the default policy, or
+  tearing down a healthy connection under `Disconnect`. Exactly one matching
+  late reply (correlated result or plain `SpectatorLeft`) is now silently
+  consumed; duplicates, mismatched ids, and unrelated frames still violate.
+- `JoinRoom` commands now omit unset optional members (`room_code`,
+  `max_players`, `supports_authority`, `relay_transport`) on the wire in both
+  the legacy and negotiated-envelope forms, matching the protocol schema's
+  omission convention and the server's own client samples. They were
+  previously serialized as explicit JSON `null`s, which strict JSON-Schema
+  validators reject even though the reference server tolerated them.
+- Both drivers now fail fast when a custom transport reports send success with
+  a nonempty caller frame slot, whether it retained the initial frame or put a
+  frame back during a continuation poll. The async driver previously treated
+  such a contract breach as a completed send and silently dropped the payload;
+  the polling driver
+  either retried it once per poll without bound or dropped a refilled
+  continuation slot. Both now terminate the connection with a terminal send
+  error naming the breach, mirroring their existing handling of genuine send
+  failures.
+- The async client now calls `Transport::begin_poll_cycle` once per loop
+  iteration like the polling driver, so backends that sample buffering per
+  cycle see the documented callback when driven asynchronously, and the
+  never-poll-after-abort guarantee is enforced against real observations
+  rather than passing vacuously.
+- SDK-created Godot peers now raise Godot's queued-packet cap to 65,536
+  alongside the 8 MiB inbound byte buffer. Godot bounds its inbound queue by
+  packet count too (engine default 4,096), and its native and web backends can
+  silently drop newly arriving frames once either bound fills — so the default
+  could silently discard legitimate inbound traffic long before the raised
+  byte buffer mattered. Caller-owned peers (`from_peer`) keep their own
+  configuration; the crate docs now also record two further engine-imposed
+  limits: native builds make pre-CLOSE tail frames inaccessible, and locally
+  synthesized close codes cannot be perfectly distinguished from genuine
+  peer closes.
 - Bounded per-room metadata growth fed by a hostile or pathologically
   churning server. Delivery accountability now refuses, as ordinary
   violation diagnostics, a sender that accumulates more than 16 unresolved

@@ -487,9 +487,10 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 53-variant enum that arrives inside events. Server 0.7 emits
-47 variants; six compatibility variants remain decodable for older servers.
-The wire uses `SCREAMING_SNAKE_CASE` strings (e.g., `"ROOM_NOT_FOUND"`).
+`ErrorCode` is a 54-variant enum that arrives inside events. The post-0.7
+protocol authority declares 48 variants; six compatibility variants remain
+decodable for older servers. The wire uses `SCREAMING_SNAKE_CASE` strings
+(e.g., `"ROOM_NOT_FOUND"`).
 
 ```rust,ignore
 match event {
