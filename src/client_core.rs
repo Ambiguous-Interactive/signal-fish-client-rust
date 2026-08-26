@@ -117,6 +117,12 @@ impl FrameOutcome {
     }
 }
 
+/// How many recently superseded plan generations stay fenced against
+/// replay. The realistic duplicate/replay window is adjacent in time on the
+/// single ordered transport stream, so a small fence preserves the guard
+/// while bounding per-room memory under generation churn.
+const RETIRED_SESSION_GENERATION_FENCE: usize = 8;
+
 /// Shared protocol state and behavior used by both public client drivers.
 pub(crate) struct ClientCore {
     snapshot: ClientSnapshot,
@@ -133,7 +139,16 @@ pub(crate) struct ClientCore {
     room_players: HashSet<PlayerId>,
     session_plan_seen: bool,
     session_peers: HashSet<PlayerId>,
-    retired_session_generations: HashSet<SessionGeneration>,
+    // Recently superseded plan generations, fenced against replayed plans
+    // re-asserting an already-superseded authoritative view. Bounded to the
+    // most recent [`RETIRED_SESSION_GENERATION_FENCE`] entries: the realistic
+    // duplicate/replay window is adjacent in time (one ordered transport
+    // stream), while an unbounded set let generation-churn grow memory for
+    // the whole room stay. Replays older than the fence degrade to a fresh
+    // authoritative plan, which a hostile connected server can already send
+    // verbatim; cleared whenever an authoritative baseline rebuilds the
+    // room/session.
+    retired_session_generations: VecDeque<SessionGeneration>,
     // Peers the authoritative plan dropped (via `PlayerLeft` or a plan
     // replacement) whose final in-flight signals may still arrive stamped
     // with the still-current generation. Their late signals are benign
@@ -244,7 +259,7 @@ impl ClientCore {
             room_players: HashSet::new(),
             session_plan_seen: false,
             session_peers: HashSet::new(),
-            retired_session_generations: HashSet::new(),
+            retired_session_generations: VecDeque::new(),
             retired_signal_peers: HashSet::new(),
             pending_room_operation: None,
             pending_reconnects: VecDeque::new(),
@@ -1894,7 +1909,10 @@ impl ClientCore {
     ) {
         if self.snapshot.session_generation != generation {
             if let Some(current) = self.snapshot.session_generation {
-                self.retired_session_generations.insert(current);
+                self.retired_session_generations.push_back(current);
+                while self.retired_session_generations.len() > RETIRED_SESSION_GENERATION_FENCE {
+                    self.retired_session_generations.pop_front();
+                }
             }
             // Peer retirements were scoped to the superseded generation;
             // its signals now die in the generation check alone.
@@ -4278,6 +4296,58 @@ mod tests {
     }
 
     #[test]
+    fn retired_session_generation_fence_bounds_churn_and_keeps_recent_replays_fenced() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let mut plan = plan(Topology::Mesh, TransportKind::WebRtc);
+        // Generation churn well past the fence: the retained set stays
+        // bounded while every recent-generation replay stays fenced.
+        for generation in 10..(10 + RETIRED_SESSION_GENERATION_FENCE as u128 * 3) {
+            plan.generation = Some(SessionGeneration::from_u128(generation));
+            let outcome = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan.clone())),
+            );
+            assert!(matches!(
+                outcome.events.as_slice(),
+                [SignalFishEvent::SessionPlan { .. }]
+            ));
+            assert!(core.retired_session_generations.len() <= RETIRED_SESSION_GENERATION_FENCE);
+        }
+        assert_eq!(
+            core.retired_session_generations.len(),
+            RETIRED_SESSION_GENERATION_FENCE
+        );
+        // The newest retired generation is still fenced.
+        let latest = core.snapshot().session_generation;
+        let newest_retired =
+            SessionGeneration::from_u128(10 + RETIRED_SESSION_GENERATION_FENCE as u128 * 3 - 2);
+        assert_ne!(Some(newest_retired), latest);
+        plan.generation = Some(newest_retired);
+        let outcome = process(
+            &mut core,
+            ServerMessage::SessionPlan(Box::new(plan.clone())),
+        );
+        assert_lifecycle_violation_containing(&outcome, "already superseded");
+        assert_eq!(core.snapshot().session_generation, latest);
+
+        // A replay older than the fence degrades to a fresh authoritative
+        // plan instead of staying fenced forever (documented contract).
+        let evicted_head = SessionGeneration::from_u128(
+            10 + RETIRED_SESSION_GENERATION_FENCE as u128 * 3
+                - RETIRED_SESSION_GENERATION_FENCE as u128
+                - 2,
+        );
+        assert!(!core.retired_session_generations.contains(&evicted_head));
+        plan.generation = Some(evicted_head);
+        let outcome = process(&mut core, ServerMessage::SessionPlan(Box::new(plan)));
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SessionPlan { .. }]
+        ));
+        assert_eq!(core.snapshot().session_generation, Some(evicted_head));
+    }
+
+    #[test]
     fn signal_peer_membership_is_shared_by_inbound_and_outbound_paths() {
         let mut core = v3_room(ProtocolViolationPolicy::Observe);
         let valid_plan = plan(Topology::Mesh, TransportKind::WebRtc);
@@ -4429,7 +4499,7 @@ mod tests {
             );
             let _ = process(&mut core, authenticated());
             let _ = process(&mut core, protocol_info(Some(3)));
-            core.retired_session_generations.insert(retired);
+            core.retired_session_generations.push_back(retired);
             core.record_reconnect_admitted(
                 PlayerId::from_u128(LOCAL),
                 RoomId::from_u128(10),

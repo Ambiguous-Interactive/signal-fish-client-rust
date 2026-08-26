@@ -21,6 +21,22 @@
 //!   bounded with explicit congestion signals (see
 //!   [Delivery guarantees](client#delivery-guarantees))
 //!
+//! ## Cargo features
+//!
+//! | Feature | Default | Purpose |
+//! |---------|---------|---------|
+//! | `transport-websocket` | on | Built-in `WebSocketTransport` via `tokio-tungstenite` |
+//! | `token-binding` | off | Native `signalfish.tokenbinding.v2` negotiation and outbound proofs |
+//! | `tls` | off | `wss://` TLS for the built-in WebSocket transport (opt-in so the default build pulls no crypto stack) |
+//! | `transport-websocket-emscripten` | off | Emscripten WebSocket transport (implies `polling-client`) |
+//! | `polling-client` | off | Sync, polling-based `SignalFishPollingClient` for frame-driven engines and `wasm32` |
+//! | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features for the async client |
+//! | `mesh` | off | Protocol v3 mesh tracker plus the `WebRtcDriver` seam / `MeshController` |
+//!
+//! `tls` requires `transport-websocket`; the mesh feature requires you to
+//! supply a WebRTC implementation behind the `WebRtcDriver` seam — this
+//! crate bundles no WebRTC stack.
+//!
 //! ## Choosing a client
 //!
 //! The crate ships two clients with identical protocol behavior; pick by how
@@ -68,6 +84,12 @@
 //! version this SDK speaks is [`PROTOCOL_VERSION`].
 //!
 //! ## Quick Start
+//!
+//! The sketch below is not compile-checked because `WebSocketTransport`
+//! exists only with the default `transport-websocket` feature and doctests
+//! must build under every feature combination. The complete compiling
+//! counterpart lives in `examples/basic_lobby.rs`, which CI builds on every
+//! change.
 //!
 //! ```rust,ignore
 //! use signal_fish_client::{

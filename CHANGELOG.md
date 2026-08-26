@@ -113,6 +113,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `SignalFishError::Timeout` now names its cause and remedy: the WebSocket
+  handshake did not complete within the deadline given to
+  `WebSocketTransport::connect_with_timeout`. The variant itself and its
+  matching/emission behavior are unchanged.
+- The crate-level documentation gained a cargo-feature reference table
+  (making the opt-in `tls` feature for `wss://` discoverable on docs.rs), a
+  pointer from the Quick Start to the compile-checked
+  `examples/basic_lobby.rs`, documented cancelled-`shutdown()`
+  semantics (dropping the future mid-teardown leaves the loop's own bounded
+  teardown in charge; a later call returns promptly), a Godot adapter README
+  with requirements and a working `_process` integration snippet, and
+  accuracy fixes across the guide's capacity-clamp, snapshot-field,
+  Emscripten-deprecation, and feature-flag coverage.
 - The optional `token-binding` dependency `base64` moved from 0.22 to 0.23.
   The STANDARD engine API used for token-binding proofs is unchanged; only
   the version requirement advances.
@@ -219,6 +232,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bounded the session-plan replay fence to the eight most recently superseded
+  generations. Previously every generation change retained its superseded
+  generation for the whole room stay, so a hostile or pathologically churning
+  server could grow client memory without limit during long sessions by
+  streaming fresh plan generations. Recent-generation replays — the realistic
+  duplicate window on one ordered transport stream — remain fenced; a replay
+  older than the fence now degrades to a fresh authoritative plan, which the
+  connected server can always send anyway. Authoritative room/session teardown
+  still clears the fence.
 - Fixed a mesh-signaling availability defect where one routine departure race
   blackholed game data for the rest of the room session. A `Signal` frame from
   a peer the server had just dropped — via `PlayerLeft` or a same-generation

@@ -40,8 +40,8 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `protocol_version` | `Option<u16>` | `None` | Highest signaling protocol version advertised. `None` preserves the v2 relay floor. Prefer `enable_v3()` or `enable_mesh()` over setting this alone. |
 | `supported_transports` | `Option<Vec<TransportKind>>` | `None` | Protocol-v3 data-path transports the application can actually fulfill. |
 | `supported_topologies` | `Option<Vec<Topology>>` | `None` | Protocol-v3 session topologies the application can participate in. |
-| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1. |
-| `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1. |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. |
+| `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. |
 | `shutdown_timeout` | `Duration` | `1 second` | Deadline for async shutdown and polling-client close (including optional queued-work flush). A zero timeout aborts immediately. |
 | `protocol_violation_policy` | `ProtocolViolationPolicy` | `Quarantine` | Response to invalid v3 delivery-accountability state: quarantine room data, disconnect, or observe. |
 
@@ -598,8 +598,9 @@ room code, the latest
 reconnection token, requested and effective game-data formats, negotiated
 protocol version, current session generation, and whether delivery is
 quarantined. It also carries the latest selected `session_topology` and
-`session_transport`. Prefer it whenever multiple fields must describe the same
-instant.
+`session_transport`, plus the negotiated server outbound-message cap
+(`server_max_outbound_message_size`). Prefer it whenever multiple fields must
+describe the same instant.
 
 Synchronous snapshot and negotiation accessors briefly lock the shared core;
 the async room-ID accessors acquire the same internal mutex.
@@ -716,6 +717,14 @@ Shutdown proceeds in four stages:
 4. Regardless of whether `Disconnected` is delivered, connection/session state
    is cleared (`is_connected() == false`, `is_transport_ready() == false`,
    `is_authenticated() == false`, and room/player accessors return `None`).
+
+!!! note "Cancelling `shutdown()` mid-await"
+    Dropping the `shutdown()` future before it completes forfeits only the
+    *outer* watchdog — the signal was already delivered and the background
+    loop still finishes its own teardown within the configured
+    `shutdown_timeout`. A later `shutdown()` call returns immediately (the
+    work is already in flight or done) and never hangs; at most one
+    `Disconnected` event is emitted.
 
 !!! warning "Drop fallback"
     If `shutdown()` is never called, the `Drop` implementation **aborts** the
