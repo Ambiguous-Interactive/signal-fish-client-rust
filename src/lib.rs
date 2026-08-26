@@ -85,7 +85,13 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! The sketch below is not compile-checked because `WebSocketTransport`
+//! exists only with the default `transport-websocket` feature and doctests
+//! must build under every feature combination. The complete compiling
+//! counterpart lives in `examples/basic_lobby.rs`, which CI builds on every
+//! change.
+//!
+//! ```rust,ignore
 //! use signal_fish_client::{
 //!     WebSocketTransport, SignalFishClient, SignalFishConfig,
 //!     JoinRoomParams, SignalFishEvent,

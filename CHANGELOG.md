@@ -119,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching/emission behavior are unchanged.
 - The crate-level documentation gained a cargo-feature reference table
   (making the opt-in `tls` feature for `wss://` discoverable on docs.rs), a
-  compile-checked Quick Start example, documented cancelled-`shutdown()`
+  pointer from the Quick Start to the compile-checked
+  `examples/basic_lobby.rs`, documented cancelled-`shutdown()`
   semantics (dropping the future mid-teardown leaves the loop's own bounded
   teardown in charge; a later call returns promptly), a Godot adapter README
   with requirements and a working `_process` integration snippet, and
