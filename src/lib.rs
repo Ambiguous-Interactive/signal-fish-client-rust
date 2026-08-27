@@ -178,11 +178,11 @@ pub use protocol::{
     decode_v3_binary_game_data, ClientMessage, ConnectionInfo, DeliveryClass,
     DeliveryCountersByClass, DeliveryGap, DeliveryGapReason, DeliveryReportPayload, DirectEndpoint,
     GameDataEncoding, IceServer, LatestDeliveryCounters, LobbyState, MessageTransport,
-    PeerConnectionInfo, PlayerInfo, RateLimitInfo, RelayTransport, ReliableDeliveryCounters,
-    ReplayStatus, RoomOperationId, RoomOperationRequest, RoomOperationResult, SenderWatermark,
-    ServerMessage, SessionGeneration, SessionPeer, SessionPlanPayload, SpectatorInfo,
-    SpectatorStateChangeReason, Topology, TransportKind, V3BinaryGameDataFrame,
-    VolatileDeliveryCounters, ROOM_OPERATION_IDS_CAPABILITY,
+    PeerConnectionInfo, PlayerId, PlayerInfo, RateLimitInfo, RelayTransport,
+    ReliableDeliveryCounters, ReplayStatus, RoomId, RoomOperationId, RoomOperationRequest,
+    RoomOperationResult, SenderWatermark, ServerMessage, SessionGeneration, SessionPeer,
+    SessionPlanPayload, SpectatorInfo, SpectatorStateChangeReason, Topology, TransportKind,
+    V3BinaryGameDataFrame, VolatileDeliveryCounters, ROOM_OPERATION_IDS_CAPABILITY,
 };
 pub use signal::PeerSignal;
 #[cfg(feature = "transport-websocket")]

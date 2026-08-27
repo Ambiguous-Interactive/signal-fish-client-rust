@@ -18,7 +18,7 @@
 //! SIGNAL_FISH_URL=ws://my-server:3536/v2/ws cargo run --example basic_lobby
 //! ```
 
-use signal_fish_client::protocol::LobbyState;
+use signal_fish_client::LobbyState;
 use signal_fish_client::{
     JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishEvent, WebSocketTransport,
 };

@@ -76,7 +76,7 @@ let config = SignalFishConfig::new("mb_app_abc123")
 Or using struct literal syntax with defaults:
 
 ```rust,ignore
-use signal_fish_client::{SignalFishConfig, protocol::GameDataEncoding};
+use signal_fish_client::{GameDataEncoding, SignalFishConfig};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
@@ -503,7 +503,7 @@ fn provide_connection_info(
 ```
 
 ```rust,ignore
-use signal_fish_client::protocol::ConnectionInfo;
+use signal_fish_client::ConnectionInfo;
 
 client.provide_connection_info(ConnectionInfo::Direct {
     host: "192.168.1.10".into(),
