@@ -1000,9 +1000,9 @@ impl SignalFishClient {
     /// [`send_game_data_reliable`](Self::send_game_data_reliable), which
     /// waits for queue capacity instead of failing fast under congestion.
     ///
-    /// Non-finite floats (`NaN`/`±Infinity`) serialize as `null` (standard
-    /// `serde_json` behavior), so peers receive `null` where a non-finite
-    /// value was sent.
+    /// Game data is a `serde_json::Value`, which cannot represent non-finite
+    /// floats: `NaN`/`±Infinity` become `null` at construction, so peers
+    /// receive `null` where a non-finite value was intended.
     ///
     /// # Errors
     ///

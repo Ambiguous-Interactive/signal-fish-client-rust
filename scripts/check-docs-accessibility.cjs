@@ -481,13 +481,25 @@ const checkSearchResize = async (page) => {
 
 const runBrowserChecks = async () => {
     await assertBuildFreshness();
-    activeServer = await startServer();
+    const server = await startServer();
+    if (timedOut) {
+        // The deadline won while startup was pending; cleanup already ran,
+        // so this resource would otherwise be orphaned.
+        await closeServer(server);
+        throw new Error("Documentation accessibility checks timed out");
+    }
+    activeServer = server;
     const browserErrors = [];
-    activeBrowser = await chromium.launch({
+    const browser = await chromium.launch({
         args: ["--disable-gpu"],
         headless: true,
     });
-    const context = await activeBrowser.newContext({
+    if (timedOut) {
+        await browser.close();
+        throw new Error("Documentation accessibility checks timed out");
+    }
+    activeBrowser = browser;
+    const context = await browser.newContext({
         reducedMotion: "reduce",
         viewport: { width: 1220, height: 800 },
     });
@@ -507,11 +519,23 @@ const runBrowserChecks = async () => {
 
 (async () => {
     const [deadline, releaseDeadline] = accessibilityDeadline();
+    let flowError;
     try {
         await Promise.race([runBrowserChecks(), deadline]);
+    } catch (error) {
+        flowError = error;
     } finally {
         releaseDeadline();
-        await cleanup();
+        try {
+            await cleanup();
+        } catch (cleanupError) {
+            // Never let cleanup noise mask the primary (timeout) error.
+            process.stderr.write(`Accessibility cleanup failed: ${cleanupError.message}\n`);
+            flowError = flowError || cleanupError;
+        }
+    }
+    if (flowError) {
+        throw flowError;
     }
 })().catch((error) => {
     process.stderr.write(`${error.stack || error.message}\n`);
