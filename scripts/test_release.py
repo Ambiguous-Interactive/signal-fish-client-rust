@@ -410,6 +410,42 @@ class PreparationTests(unittest.TestCase):
         self.assertFalse(intent["breaking"])
         self.assertEqual(intent["categories"], ["Added"])
 
+    def test_release_intent_ignores_fenced_version_heading_example(self) -> None:
+        # A fenced example whose quoted changelog heading sits at line start
+        # previously truncated the [Unreleased] section mid-fence (the naive
+        # `\n## [` boundary search matched it), failing downstream as an
+        # unterminated fence and bricking Prepare Release.
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```markdown\n"
+            "## [1.2.4] - 2026-01-01\n\n- Sample entry inside the example.\n"
+            "```\n\n"
+            "- Follow-up entry after the fenced example.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["bump"], "minor")
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_still_fails_closed_when_fence_bleeds_across_sections(
+        self,
+    ) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```markdown\n- example never closed here\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "unterminated fenced"):
+            release.release_intent(self.root)
+
     def test_release_intent_rejects_unterminated_fence(self) -> None:
         changelog = self.root / "CHANGELOG.md"
         changelog.write_text(
