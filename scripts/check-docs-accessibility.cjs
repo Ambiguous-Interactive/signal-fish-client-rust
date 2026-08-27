@@ -483,8 +483,9 @@ const runBrowserChecks = async () => {
     await assertBuildFreshness();
     const server = await startServer();
     if (timedOut) {
-        // The deadline won while startup was pending; cleanup already ran,
-        // so this resource would otherwise be orphaned.
+        // The deadline fired while startup was pending: cleanup has been
+        // initiated and this resource was never assigned to a global, so
+        // close it here or it is orphaned.
         await closeServer(server);
         throw new Error("Documentation accessibility checks timed out");
     }
