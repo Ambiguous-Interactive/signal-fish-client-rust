@@ -304,12 +304,7 @@ async fn connect_with_token_binding(
                 options.disable_nagle,
             )
             .await;
-            let (stream, _response) = fallback.map_err(|error| match error {
-                WebSocketError::Http(_) => {
-                    SignalFishError::TokenBinding(crate::TokenBindingFailure::NegotiationRejected)
-                }
-                error => map_connect_error(error),
-            })?;
+            let (stream, _response) = fallback.map_err(map_connect_error)?;
             if options.require_client_fingerprint {
                 // The unsigned fallback sends no proofs at all, so a locally
                 // required certificate binding cannot be honored: fail closed
@@ -333,11 +328,6 @@ async fn connect_with_token_binding(
         ))) => {
             return Err(SignalFishError::TokenBinding(
                 crate::TokenBindingFailure::UnexpectedSubprotocol,
-            ))
-        }
-        Err(WebSocketError::Http(_)) => {
-            return Err(SignalFishError::TokenBinding(
-                crate::TokenBindingFailure::NegotiationRejected,
             ))
         }
         Err(error) => return Err(map_connect_error(error)),
@@ -462,12 +452,18 @@ pub struct WebSocketConnectOptions {
     /// selected, and enforcement stays with the server's profile. When
     /// `true`, the connect fails with
     /// [`TokenBindingFailure::MissingClientFingerprint`](crate::TokenBindingFailure::MissingClientFingerprint)
-    /// — before any network I/O when the path cannot satisfy the policy, or
-    /// after the handshake when rustls completed it without selecting an
-    /// X.509 client signer — letting deployments enforce the stricter
-    /// contract locally instead of trusting the server to. Optional mode's
-    /// unsigned fallback connection produces no proofs at all and fails the
-    /// same way, so the policy can never be silently skipped.
+    /// — before any network I/O on every path that cannot observe a
+    /// certificate selection (every path except
+    /// [`WebSocketTransport::connect_with_tls_config`](crate::WebSocketTransport::connect_with_tls_config)
+    /// with token binding enabled, including built-in `wss://` connects,
+    /// which perform TLS but install no tracking resolver). On the
+    /// custom-TLS token-binding path the check runs after the handshake and
+    /// challenge, failing when rustls selected no X.509 client signer; on a
+    /// plain `ws://` URL the custom TLS configuration is not used at all, so
+    /// no certificate can ever be selected and the failure still surfaces
+    /// only after the challenge. Optional mode's unsigned fallback
+    /// connection produces no proofs at all and fails the same way, so the
+    /// policy can never be silently skipped.
     ///
     /// Only [`WebSocketTransport::connect_with_tls_config`] with token
     /// binding enabled can ever satisfy the policy; every other connect path
@@ -760,10 +756,13 @@ impl WebSocketTransport {
     /// Returns [`SignalFishError::Io`] if the URL is invalid or the connection
     /// cannot be established. When the underlying error is an I/O error its
     /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
-    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other). Optional or
-    /// required mode returns [`SignalFishError::TokenBinding`] when the feature
-    /// is disabled or negotiation, challenge validation, or key derivation
-    /// fails. A zero inbound size limit returns [`SignalFishError::Io`] with
+    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other) — including
+    /// HTTP upgrade rejections, which carry the underlying status in every
+    /// token-binding mode. Optional or required mode returns
+    /// [`SignalFishError::TokenBinding`] when the feature
+    /// is disabled or subprotocol negotiation, challenge validation, or key
+    /// derivation fails. A zero inbound size limit returns
+    /// [`SignalFishError::Io`] with
     /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) before URL
     /// parsing or network I/O. When token binding is requested without the
     /// `token-binding` feature, its feature-disabled error takes precedence.
@@ -853,8 +852,14 @@ impl WebSocketTransport {
     /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) for a zero
     /// inbound size limit. The `require_client_fingerprint` policy fails
     /// before network I/O when token binding is disabled (no proofs exist to
-    /// bind), and after the handshake when rustls selected no X.509 client
-    /// signer or Optional mode fell back to an unsigned connection.
+    /// bind), after the handshake and challenge when rustls selected no
+    /// X.509 client signer, and after the unsigned fallback handshake (no
+    /// challenge is consumed) when Optional mode fell back to an unsigned
+    /// connection. On a plain `ws://` URL the custom TLS configuration is
+    /// not used at all — tokio-tungstenite bypasses the connector, so no TLS
+    /// handshake or certificate selection runs and a warning is logged; with
+    /// token binding enabled the fingerprint policy still fails only after
+    /// the completed challenge.
     #[cfg(feature = "tls")]
     pub async fn connect_with_tls_config(
         url: &str,
@@ -879,8 +884,20 @@ impl WebSocketTransport {
 
         install_tls_provider();
         let connector = tokio_tungstenite::Connector::Rustls(tls_config.clone());
+        let secure = url.starts_with("wss://");
+        if !secure {
+            // tokio-tungstenite bypasses the connector for plain URLs, so the
+            // entire custom configuration — including mTLS client identity —
+            // is silently inert. Never inline the URL here.
+            tracing::warn!(
+                custom_tls = true,
+                secure,
+                "custom TLS configuration is ignored: no TLS handshake or certificate \
+                 selection runs on a plain URL"
+            );
+        }
         tracing::debug!(
-            secure = url.starts_with("wss://"),
+            secure,
             disable_nagle = options.disable_nagle,
             max_inbound_message_size = options.max_inbound_message_size,
             token_binding = ?options.token_binding,
@@ -1638,6 +1655,27 @@ mod tests {
         ));
     }
 
+    #[cfg(not(feature = "token-binding"))]
+    #[tokio::test]
+    async fn unavailable_token_binding_precedes_a_required_client_fingerprint() {
+        // `not-a-valid-url` proves the precedence without any network I/O:
+        // the feature-disabled fence must win over the fingerprint policy so
+        // callers see the actual capability gap first.
+        let result = WebSocketTransport::connect_with_options(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new()
+                .with_token_binding(TokenBindingMode::Required)
+                .with_require_client_fingerprint(true),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::FeatureDisabled
+            ))
+        ));
+    }
+
     #[tokio::test]
     async fn required_client_fingerprint_fails_before_io_on_plain_connect_paths() {
         // `not-a-valid-url` proves the rejection happens before URL parsing:
@@ -2103,10 +2141,18 @@ mod tests {
         )
         .await
         .expect_err("optional mode must preserve an HTTP rejection");
-        assert!(matches!(
-            error,
-            SignalFishError::TokenBinding(crate::TokenBindingFailure::NegotiationRejected)
-        ));
+        // An HTTP rejection says nothing about the offered subprotocol, so it
+        // surfaces through the same Io mapping as the disabled path and keeps
+        // the underlying status instead of a negotiation-specific label.
+        let message = error.to_string();
+        assert!(
+            matches!(error, SignalFishError::Io(_)),
+            "HTTP rejection must keep the generic I/O classification: {message}"
+        );
+        assert!(
+            message.contains("403"),
+            "HTTP rejection must preserve the server's status code: {message}"
+        );
         finish_mock_server(server_task).await;
     }
 
@@ -2164,6 +2210,57 @@ mod tests {
             "connect must stay parked awaiting the challenge"
         );
         drop(connect);
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn challengeless_control_flood_reports_no_valid_challenge() {
+        use futures_util::SinkExt as _;
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("control-flood listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("control-flood listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("selected handshake must succeed");
+            // One control frame over the skip budget without any application
+            // frame is a server that never speaks the challenge protocol.
+            for _ in 0..MAX_SKIPPED_CONTROL_FRAMES_PER_POLL {
+                if ws.send(Message::Pong(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let error = WebSocketTransport::connect_with_options(
+            &format!("ws://{addr}"),
+            required_token_binding_options(),
+        )
+        .await
+        .expect_err("a connection that never delivers a challenge must fail");
+        assert!(matches!(
+            error,
+            SignalFishError::TokenBinding(crate::TokenBindingFailure::MalformedChallenge)
+        ));
         finish_mock_server(server_task).await;
     }
 

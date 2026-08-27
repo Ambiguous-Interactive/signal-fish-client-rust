@@ -329,9 +329,12 @@ fn public_documentation_covers_every_error_code_variant_and_current_count() {
 
     for code in &codes {
         let variant = format!("{code:?}");
-        let table_cell = format!("| `{variant}` |");
+        // Each variant must open its own table row; an annotation may follow
+        // the name (e.g. the compatibility-only markers), so match the row
+        // prefix rather than the whole cell.
+        let row_prefix = format!("| `{variant}`");
         assert!(
-            errors.contains(&table_cell),
+            errors.lines().any(|line| line.starts_with(&row_prefix)),
             "docs/errors.md must document ErrorCode::{variant} in its variant tables"
         );
     }

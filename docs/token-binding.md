@@ -39,7 +39,7 @@ assert_eq!(transport.token_binding_status(), TokenBindingStatus::Active);
 |---|---|
 | `Disabled` | Default. Does not offer a subprotocol and preserves the old connection path exactly. |
 | `Optional` | Offers v2. If the server completes the upgrade without selecting a subprotocol, reconnects once without the offer and reports `NotNegotiated`. It never retries an HTTP rejection, malformed challenge, unexpected selection, network error, or TLS failure. |
-| `Required` | Fails with a typed `SignalFishError::TokenBinding` unless the server selects v2 and sends a valid first-message challenge before the configured deadline. |
+| `Required` | Fails with a typed `SignalFishError::TokenBinding` unless the server selects v2 and sends a valid first-message challenge before the configured deadline. HTTP upgrade rejections (404, 401, 500, ...) are not negotiation outcomes and surface as `Io` carrying the underlying status, exactly like `Disabled`. |
 
 Optional mode permits an explicit downgrade when the server accepts an
 unsigned upgrade. TLS authenticates the handshake and prevents an on-path
@@ -82,6 +82,9 @@ that clone so every offered physical connection performs a certificate
 selection that the proof signer can observe. In `Optional` mode this also
 applies to the unsigned fallback connection after the server omits the
 subprotocol. The caller's configuration and resumption cache are not mutated.
+A plain `ws://` URL bypasses the connector entirely — the custom configuration,
+including any mTLS client identity, is silently unused, and the transport logs
+a warning — so always use `wss://` with a custom configuration.
 Server 0.7 profiles with `require_client_fingerprint=true` additionally require
 built-in WSS, a trusted client CA, mTLS client authentication, and required
 token binding.
@@ -108,9 +111,14 @@ let transport = WebSocketTransport::connect_with_tls_config(
 ```
 
 When the policy is set, the connect fails with a typed
-`TokenBindingFailure::MissingClientFingerprint` — before any network I/O when
-the path cannot observe a certificate selection at all, and after the handshake
-when rustls completed it without selecting an X.509 client signer. Optional
+`TokenBindingFailure::MissingClientFingerprint` — before any network I/O on
+every path that cannot observe a certificate selection (every path except
+`connect_with_tls_config` with token binding enabled, including built-in
+`wss://` connects, which perform TLS but install no tracking resolver). On the
+custom-TLS token-binding path the check runs after the handshake and challenge,
+failing when rustls selected no X.509 client signer; on a plain `ws://` URL the
+custom TLS configuration is not used at all, so no certificate can ever be
+selected and the failure still surfaces only after the challenge. Optional
 mode's unsigned fallback connection produces no proofs at all and fails the
 same way, so the policy can never be silently skipped. Only
 `connect_with_tls_config` with token binding enabled can satisfy the policy;

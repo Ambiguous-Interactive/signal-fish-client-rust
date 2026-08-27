@@ -14,7 +14,14 @@ use thiserror::Error;
 pub enum TokenBindingFailure {
     /// The crate was built without the opt-in `token-binding` feature.
     FeatureDisabled,
-    /// The server rejected the WebSocket upgrade while token binding was offered.
+    /// Reserved for compatibility; no longer produced.
+    ///
+    /// Current SDK versions report HTTP upgrade rejections as
+    /// [`SignalFishError::Io`] carrying the
+    /// underlying HTTP error (including its status), whether or not token
+    /// binding was offered, so a misconfigured URL reports the same way in
+    /// every token-binding mode. Match on this variant only in exhaustive
+    /// arms.
     NegotiationRejected,
     /// Required mode completed an upgrade without selecting token-binding-v2.
     SubprotocolNotNegotiated,
@@ -24,7 +31,9 @@ pub enum TokenBindingFailure {
     MissingChallenge,
     /// The selected connection did not send its challenge before the deadline.
     ChallengeTimeout,
-    /// The first application frame was not a valid token-binding challenge.
+    /// The connection never produced a valid token-binding challenge: the
+    /// first application frame was not a valid challenge, or the server
+    /// exhausted the client's control-frame budget before sending one.
     MalformedChallenge,
     /// The challenge declared an unsupported protocol version.
     UnsupportedVersion,
@@ -66,7 +75,7 @@ impl std::fmt::Display for TokenBindingFailure {
             Self::UnexpectedSubprotocol => "the server selected an unexpected subprotocol",
             Self::MissingChallenge => "the server closed before the token-binding challenge",
             Self::ChallengeTimeout => "the server token-binding challenge timed out",
-            Self::MalformedChallenge => "the server sent a malformed token-binding challenge",
+            Self::MalformedChallenge => "the server did not send a valid token-binding challenge",
             Self::UnsupportedVersion => "the server selected an unsupported token-binding version",
             Self::UnsupportedScheme => "the server selected an unsupported token-binding scheme",
             Self::InvalidNonce => "the server challenge nonce is invalid",
@@ -115,12 +124,16 @@ pub enum SignalFishError {
     /// pace high-rate payloads with a waiting `*_reliable` variant
     /// ([`SignalFishClient::send_game_data_reliable`](crate::SignalFishClient::send_game_data_reliable),
     /// [`SignalFishClient::send_signal_reliable`](crate::SignalFishClient::send_signal_reliable)),
-    /// or raise
+    /// drain events promptly, or raise
     /// [`SignalFishConfig::command_channel_capacity`](crate::SignalFishConfig::command_channel_capacity).
+    /// Draining matters when the task awaiting a reliable send is also the
+    /// sole event consumer: a full event channel pauses the transport loop
+    /// that drains the command queue, so that task can deadlock against
+    /// itself (drain events from a separate task).
     #[error(
         "outgoing command queue full (capacity {capacity}): the transport cannot keep up; \
-         retry later, pace high-rate sends with a waiting *_reliable variant, or increase \
-         command_channel_capacity"
+         retry later, pace high-rate sends with a waiting *_reliable variant, drain events \
+         promptly, or increase command_channel_capacity"
     )]
     SendBufferFull {
         /// Configured capacity of the outgoing command queue.
@@ -173,6 +186,14 @@ pub enum SignalFishError {
     AuthorityRequired,
 
     /// The server returned an error message.
+    ///
+    /// Reserved for compatibility: no current server/SDK combination
+    /// constructs this variant. Server error messages surface as events
+    /// ([`SignalFishEvent::Error`](crate::SignalFishEvent::Error),
+    /// [`SignalFishEvent::AuthenticationError`](crate::SignalFishEvent::AuthenticationError),
+    /// [`SignalFishEvent::RoomJoinFailed`](crate::SignalFishEvent::RoomJoinFailed),
+    /// or [`SignalFishEvent::RoomOperationFailed`](crate::SignalFishEvent::RoomOperationFailed)),
+    /// so exhaustive matches should treat this arm as unreachable.
     #[error("server error: {message}")]
     ServerError {
         /// Human-readable error message from the server.
@@ -206,8 +227,9 @@ pub enum SignalFishError {
 
     /// No authoritative WebRTC session plan currently authorizes this signal.
     ///
-    /// This covers signaling before a plan and targeting self, an unknown or
-    /// departed player, or a peer removed by a replacement plan.
+    /// This covers signaling before a plan, targeting self, an unknown or
+    /// departed player, a peer removed by a replacement plan, and connections
+    /// whose negotiated session transport is not WebRTC (a relay plan).
     #[error("no authoritative SessionPlan authorizes this WebRTC signal")]
     SessionPlanUnavailable,
 
@@ -275,7 +297,10 @@ mod tests {
             (TokenBindingFailure::UnexpectedSubprotocol, "unexpected"),
             (TokenBindingFailure::MissingChallenge, "closed"),
             (TokenBindingFailure::ChallengeTimeout, "timed out"),
-            (TokenBindingFailure::MalformedChallenge, "malformed"),
+            (
+                TokenBindingFailure::MalformedChallenge,
+                "did not send a valid",
+            ),
             (TokenBindingFailure::UnsupportedVersion, "version"),
             (TokenBindingFailure::UnsupportedScheme, "scheme"),
             (TokenBindingFailure::InvalidNonce, "nonce"),

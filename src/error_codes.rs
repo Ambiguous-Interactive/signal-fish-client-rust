@@ -17,11 +17,26 @@ use std::fmt;
 pub enum ErrorCode {
     // Authentication errors
     Unauthorized,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     InvalidToken,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     AuthenticationRequired,
     InvalidAppId,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     AppIdExpired,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     AppIdRevoked,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     AppIdSuspended,
     MissingAppId,
     AuthenticationTimeout,
@@ -69,6 +84,9 @@ pub enum ErrorCode {
     // Server errors
     InternalError,
     StorageError,
+    /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
+    /// longer emitted by Server 0.7+; retained so older deployments stay
+    /// decodable.
     ServiceUnavailable,
 
     // Game-start errors (protocol v2)
