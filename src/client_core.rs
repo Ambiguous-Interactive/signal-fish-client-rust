@@ -1016,7 +1016,7 @@ impl ClientCore {
                     pending.kind == PendingRoomOperation::LeaveSpectator
                         && pending.operation_id.is_none()
                 }) && absorbed.pending.operation_id.is_none()
-                    && !spectator_exit_is_authoritative(reason.as_ref())
+                    && spectator_exit_answers_voluntary_leave(reason.as_ref())
                     && room_identity_matches(
                         absorbed.room_id,
                         absorbed.room_code.as_ref(),
@@ -2232,6 +2232,23 @@ fn spectator_exit_is_authoritative(
     )
 }
 
+/// Whether a `SpectatorLeft` reason answers an admitted voluntary leave:
+/// exactly the no-reason or voluntary-leave faces.
+///
+/// The reason space partitions in three, and the third face is not the
+/// complement of either side above: a malformed
+/// [`Joined`](crate::protocol::SpectatorStateChangeReason::Joined) reason
+/// belongs to no valid partition, so every classifier must exclude it
+/// explicitly instead of folding it into the voluntary face via negation.
+fn spectator_exit_answers_voluntary_leave(
+    reason: Option<&crate::protocol::SpectatorStateChangeReason>,
+) -> bool {
+    matches!(
+        reason,
+        None | Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave)
+    )
+}
+
 /// Whether an unwrapped server message is the typed terminal answer for a
 /// pending directed room operation (the uncorrelated face of
 /// [`ClientCore::retire_answered_room_operation`]).
@@ -2252,7 +2269,7 @@ fn terminal_message_matches(kind: PendingRoomOperation, message: &ServerMessage)
         ),
         PendingRoomOperation::LeaveSpectator => match message {
             ServerMessage::SpectatorLeft { reason, .. } => {
-                !spectator_exit_is_authoritative(reason.as_ref())
+                spectator_exit_answers_voluntary_leave(reason.as_ref())
             }
             _ => false,
         },
@@ -2282,7 +2299,7 @@ fn room_operation_result_matches(
         (
             PendingRoomOperation::LeaveSpectator,
             RoomOperationResult::SpectatorLeft { reason, .. },
-        ) => !spectator_exit_is_authoritative(reason.as_ref()),
+        ) => spectator_exit_answers_voluntary_leave(reason.as_ref()),
         _ => false,
     }
 }
@@ -3040,6 +3057,18 @@ mod tests {
                 },
             ));
         }
+        assert!(
+            !terminal_message_matches(
+                PendingRoomOperation::LeaveSpectator,
+                &ServerMessage::SpectatorLeft {
+                    room_id: None,
+                    room_code: None,
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::Joined),
+                    current_spectators: vec![],
+                },
+            ),
+            "a malformed joined reason belongs to no valid partition"
+        );
     }
 
     #[test]
@@ -3548,6 +3577,82 @@ mod tests {
         );
         assert!(absorbed.events.is_empty());
         assert!(core.absorbed_spectator_leave.is_none());
+    }
+
+    #[test]
+    fn malformed_joined_reason_never_consumes_the_overtaken_leave_allowance() {
+        let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
+        let (_, join_id) = prepare_and_admit(
+            &mut core,
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+        );
+        let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        assert!(matches!(
+            process(
+                &mut core,
+                correlated_result(join_id, RoomOperationResult::SpectatorJoined(payload))
+            )
+            .events
+            .as_slice(),
+            [SignalFishEvent::SpectatorJoined { .. }]
+        ));
+        let (_, leave_id) = prepare_and_admit(&mut core, ClientOperation::LeaveSpectator);
+        assert!(
+            process(
+                &mut core,
+                ServerMessage::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::Removed),
+                    current_spectators: vec![],
+                },
+            )
+            .events
+            .len()
+                == 1,
+            "the authoritative exit tears the spectator out and arms the allowance"
+        );
+
+        // A malformed joined-reason exit is not a voluntary-leave answer:
+        // the absorb seam must leave it alone, and with no pending operation
+        // left it violates at normalization instead of eating the awaited
+        // reply slot.
+        let malformed = process(
+            &mut core,
+            correlated_result(
+                leave_id,
+                RoomOperationResult::SpectatorLeft {
+                    room_id: Some(RoomId::from_u128(10)),
+                    room_code: Some("ROOM".into()),
+                    reason: Some(crate::protocol::SpectatorStateChangeReason::Joined),
+                    current_spectators: vec![],
+                },
+            ),
+        );
+        assert_lifecycle_violation_containing(&malformed, "without a pending room operation");
+        assert!(
+            core.absorbed_spectator_leave.is_some(),
+            "the allowance survives an unclassifiable exit frame"
+        );
+        assert_eq!(core.room_role(), None);
+
+        let true_reply = process(
+            &mut core,
+            correlated_result(leave_id, spectator_left_voluntary()),
+        );
+        assert!(true_reply.events.is_empty());
+        assert!(core.absorbed_spectator_leave.is_none());
+    }
+
+    fn spectator_left_voluntary() -> RoomOperationResult {
+        RoomOperationResult::SpectatorLeft {
+            room_id: Some(RoomId::from_u128(10)),
+            room_code: Some("ROOM".into()),
+            reason: Some(crate::protocol::SpectatorStateChangeReason::VoluntaryLeave),
+            current_spectators: vec![],
+        }
     }
 
     #[test]
