@@ -117,9 +117,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `ClientSnapshot::transport_ready` and matching async, polling, and
   `SignalFishClientApi` accessors so applications can distinguish a client-owned
   connecting transport from a completed handshake.
+- Added `SignalFishClient::transport_diagnostics()`, mirroring the polling
+  driver's accessor so tokio users can read backend buffering, watermark, and
+  capacity counters when tuning congested deployments instead of mistaking
+  them for command-queue saturation. The transport task samples once per
+  scheduling cycle.
+- Re-exported the everyday protocol value types the public API requires in
+  signatures and events from the crate root: `ConnectionInfo`,
+  `GameDataEncoding`, `RelayTransport`, `LobbyState`, `PlayerInfo`,
+  `SpectatorInfo`, `PeerConnectionInfo`, `RateLimitInfo`, and
+  `SpectatorStateChangeReason`.
+- Derived `PartialEq`/`Eq` for `SignalFishConfig` and `JoinRoomParams` so
+  applications can compare constructed configurations and parameters in
+  assertions.
 
 ### Changed
 
+- `SignalFishPollingClient::poll` is now `#[must_use]`; ignoring the returned
+  event list is a compile warning instead of silently discarding that poll
+  cycle's deliveries (the leading cause of "stuck in lobby" misuse reports).
 - `SignalFishError::Timeout` now names its cause and remedy: the WebSocket
   handshake did not complete within the deadline given to
   `WebSocketTransport::connect_with_timeout`. The variant itself and its
@@ -239,6 +255,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a release-automation defect that would make every future Prepare
+  Release run fail before writing anything: the version-inventory still
+  required `docs/examples.md` to mention the workspace version, but that page
+  dropped its version reference in the 0.10 documentation reorganization. The
+  stale inventory entry is removed, fenced code blocks in `[Unreleased]` can no
+  longer masquerade as changelog intent (an unterminated fence fails closed),
+  and a checkout-level parity test keeps the inventory aligned with reality.
 - The pre-commit Rust source checkers that scanned `tests/` no longer walk
   generated, ignored nested Cargo target trees (such as the 2.1 GB
   `tests/godot-web-smoke/target` produced by Godot web builds): both checkers

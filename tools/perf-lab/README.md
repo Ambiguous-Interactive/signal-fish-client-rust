@@ -43,12 +43,18 @@ CI runs on pinned Ubuntu 24.04 ARM64 and Rust 1.96.1. It treats timing as
 diagnostic, but gates the full deterministic ledger against
 `protocol-baselines.json` and all six allocation counters against
 `allocation-baselines.json`. Nonzero ceilings are the observed baseline plus
-10%, with a minimum margin of two operations or 256 bytes. The two single
-binary outbound cells are deliberate zero-allocation contracts and therefore
+10%, with a minimum margin of two operations or 256 bytes; a zero operation
+count carries a ceiling of one so any first allocation is caught. The two
+single binary outbound cells are deliberate zero-allocation contracts and
 have exact zero ceilings. Update a ceiling only with a reviewed explanation of
 the measured implementation change. `stats_alloc` is exact-pinned; compatible
 SDK serialization dependency updates remain inside the contract so an
 allocation regression is reviewed instead of silently hidden by a lockfile.
+The `toolchain` field in the allocation baseline JSON pins the compiler the
+ceilings were recorded on, and the allocation harness refuses a record whose
+field disagrees with its expectation so any intentional change is reviewed;
+the running compiler itself is enforced separately by CI's pinned-toolchain
+step.
 
 ## JSON allocation attribution
 
