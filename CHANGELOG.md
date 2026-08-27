@@ -120,8 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `SignalFishClient::transport_diagnostics()`, mirroring the polling
   driver's accessor so tokio users can read backend buffering, watermark, and
   capacity counters when tuning congested deployments instead of mistaking
-  them for command-queue saturation. The transport task samples once per
-  scheduling cycle.
+  them for command-queue saturation. The transport task refreshes its sample
+  at every scheduling step — loop-cycle start and each pending-send or receive
+  poll — so deferred admission hits are visible while backpressure is in
+  flight.
 - Re-exported the everyday protocol value types the public API requires in
   signatures and events from the crate root: `ConnectionInfo`,
   `GameDataEncoding`, `RelayTransport`, `LobbyState`, `PlayerInfo`,

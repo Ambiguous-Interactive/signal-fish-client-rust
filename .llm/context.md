@@ -302,8 +302,9 @@ polling client. Use `polling_stats()` for scheduling/queue diagnostics and
 age peak after authentication/setup when measuring gameplay. Backend acceptance
 ends queue age but is not peer delivery. Use `transport_diagnostics()` for
 backend buffering/admission diagnostics — available on both drivers (the async
-handle reads the loop's per-cycle sample; the polling driver reads its transport
-synchronously).
+handle reads the most recent per-I/O-step sample, refreshed at loop-cycle start
+and after each pending-send or receive poll; the polling driver reads its
+transport synchronously).
 Use the polling client's read-only `transport()` accessor for Godot's zero-expected
 `admission_watermark_violations()` and separately accounted
 `one_frame_escape_frames()` / `one_frame_escape_bytes()` diagnostics.

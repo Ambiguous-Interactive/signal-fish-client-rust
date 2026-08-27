@@ -1563,9 +1563,11 @@ impl SignalFishClient {
     /// Return the backend-owned transport buffering and admission diagnostics
     /// last observed by the driver loop (see [`TransportDiagnostics`]).
     ///
-    /// The transport task samples its backend once per scheduling cycle; the
-    /// value here is therefore as fresh as the most recent loop iteration.
-    /// This mirrors the polling driver's
+    /// The transport task refreshes its sample at every scheduling step —
+    /// loop-cycle start and each pending-send or receive poll — so a watermark
+    /// or capacity hit that parks an in-flight send is visible to this
+    /// accessor while backpressure is still in flight, not only at the next
+    /// wakeup. This mirrors the polling driver's
     /// [`transport_diagnostics`](crate::polling_client::SignalFishPollingClient::transport_diagnostics),
     /// which reads its caller-owned transport synchronously. Use these
     /// counters to tell command-queue congestion
@@ -2056,6 +2058,11 @@ fn poll_pending_send(
 ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
     let was_client_owned = pending.frame.is_some();
     let result = transport.poll_send(cx, &mut pending.frame);
+    // Resample after every send poll, not only at loop-cycle start: a
+    // watermark or capacity hit increments inside `poll_send` and then parks
+    // here until the backend wakes the task. Without this refresh, callers
+    // reading diagnostics mid-backpressure would see pre-deferral counters.
+    lock_core(state).record_transport_diagnostics(transport.diagnostics());
     if was_client_owned && pending.frame.is_none() && pending.is_game_data {
         lock_core(state).record_game_data_sent();
         pending.is_game_data = false;
@@ -2108,6 +2115,9 @@ async fn poll_transport_io(
         }
 
         let receive = transport.poll_recv(cx);
+        // Backend-owned buffering can also change on the receive path; keep
+        // the sampled view current without waiting for a task wakeup.
+        lock_core(state).record_transport_diagnostics(transport.diagnostics());
         match receive {
             std::task::Poll::Ready(incoming) => {
                 std::task::Poll::Ready(TransportIo::Received(incoming))
@@ -2771,6 +2781,21 @@ mod tests {
                 };
                 self.held_frame = Some(accepted);
                 self.frames_taken.fetch_add(1, Ordering::Release);
+                // Model a real admission-gating backend: ownership transfer at
+                // the watermark counts as acceptance, and the deferred
+                // completion path reports one watermark hit per parked send.
+                let payload_len = match &self.held_frame {
+                    Some(TransportFrame::Text(message)) => message.len(),
+                    Some(TransportFrame::Binary(payload)) => payload.len(),
+                    None => 0,
+                };
+                self.diagnostics.accepted_frames =
+                    self.diagnostics.accepted_frames.saturating_add(1);
+                self.diagnostics.accepted_bytes = self
+                    .diagnostics
+                    .accepted_bytes
+                    .saturating_add(payload_len as u64);
+                self.diagnostics.watermark_hits = self.diagnostics.watermark_hits.saturating_add(1);
                 let gate = Arc::clone(gate);
                 self.permit_wait = Some(Box::pin(async move {
                     gate.acquire_owned().await.expect("send gate never closed")
@@ -3329,6 +3354,36 @@ mod tests {
 
         wait_until(|| client.transport_diagnostics().accepted_frames == 3).await;
         assert_eq!(client.transport_diagnostics(), reported);
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_diagnostics_refresh_during_deferred_sends() {
+        // Zero permits: the initial Authenticate takes ownership, then parks
+        // on the gate. A real backend increments its watermark counter at
+        // deferral time — and the mock does the same — so this test fails if
+        // diagnostics are only sampled at loop-cycle start: during the whole
+        // parked window that start sample would keep reporting zeros.
+        let (transport, sent, _closed, _controls, gate, frames_taken) =
+            MockTransport::new_send_gated(vec![Some(Ok(authenticated_json()))], 0);
+
+        let config = SignalFishConfig::new("mb_defer");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        let _ = events.recv().await; // Connected
+
+        wait_until(|| frames_taken.load(Ordering::Acquire) == 1).await;
+        wait_until(|| client.transport_diagnostics().watermark_hits == 1).await;
+        assert_eq!(client.transport_diagnostics().accepted_frames, 1);
+        assert!(sent.lock().unwrap().is_empty(), "still parked behind gate");
+
+        gate.add_permits(1);
+        wait_until(|| !sent.lock().unwrap().is_empty()).await;
+        wait_until(|| {
+            let diagnostics = client.transport_diagnostics();
+            diagnostics.accepted_frames == 1 && diagnostics.accepted_bytes > 0
+        })
+        .await;
 
         client.shutdown().await;
     }

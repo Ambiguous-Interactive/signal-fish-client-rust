@@ -139,10 +139,13 @@ pub(crate) struct ClientCore {
     room_operation_ids: bool,
     mesh_capable: bool,
     stats: ClientStats,
-    // Latest backend-reported scheduling/buffering diagnostics, sampled by the
-    // async driver once per loop iteration (`begin_poll_cycle`). The polling
-    // driver reads its owned transport directly instead; this copy keeps the
-    // async handle's accessor lock-free relative to the transport task.
+    // Latest backend-reported scheduling/buffering diagnostics. The async
+    // driver refreshes the sample at loop-cycle start and after every
+    // pending-send or receive poll, so deferred watermark/capacity hits are
+    // visible while backpressure is in flight rather than only at the next
+    // wakeup. The polling driver reads its owned transport directly instead;
+    // this copy keeps the async handle's accessor lock-free relative to the
+    // transport task.
     #[cfg(feature = "tokio-runtime")]
     transport_diagnostics: TransportDiagnostics,
     last_server_error: Option<ServerErrorInfo>,
