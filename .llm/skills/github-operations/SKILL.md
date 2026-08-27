@@ -65,6 +65,7 @@ empty, fall back to preparing a complete handoff note (branch, title,
 body path, exact URL) instead of weakening auth.
 
 Session 070 proof: `gh auth status` was unauthenticated, yet the bridge
-opened this repository's session PR on the first attempt. If `git credential
-fill` yields nothing, do not weaken auth — prepare the full handoff note
-(branch, title, body file, URL) for an interactive session instead.
+opened [#173](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/pull/173)
+first attempt. If `git credential fill` yields nothing, do not weaken auth —
+prepare the full handoff note (branch, title, body file, URL) for an
+interactive session instead.
