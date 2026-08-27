@@ -538,7 +538,10 @@ pub struct SessionPeer {
 pub struct DirectEndpoint {
     /// Hostname or IP address to connect to.
     pub host: String,
-    /// Non-zero transport port.
+    /// Transport port. The protocol authority requires a non-zero port, and
+    /// the SDK enforces that during session-plan validation (a zero port is a
+    /// lifecycle violation); the wire field itself is not otherwise
+    /// re-validated.
     pub port: u16,
 }
 

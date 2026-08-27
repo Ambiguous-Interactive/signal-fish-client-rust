@@ -88,8 +88,13 @@ pub(crate) fn frame_payload_len(frame: &TransportFrame) -> usize {
 }
 
 fn format_close_reason(info: crate::transport::TransportCloseInfo) -> String {
+    let initiator = if info.initiated_by_peer {
+        "closed by server"
+    } else {
+        "closed by transport"
+    };
     format!(
-        "closed by server: code={:?}, reason={:?}",
+        "{initiator}: code={:?}, reason={:?}",
         info.code, info.reason
     )
 }
@@ -103,4 +108,39 @@ pub(crate) fn peer_close_reason<T: Transport + ?Sized>(transport: &T) -> Option<
         .close_info()
         .filter(|info| info.initiated_by_peer)
         .map(format_close_reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::TransportCloseInfo;
+
+    #[test]
+    fn close_reason_labels_match_the_reported_initiator() {
+        let cases = [
+            (
+                "peer-initiated close metadata keeps the established label",
+                TransportCloseInfo {
+                    code: Some(1000),
+                    reason: Some("normal closure".into()),
+                    clean: Some(true),
+                    initiated_by_peer: true,
+                },
+                "closed by server: code=Some(1000), reason=Some(\"normal closure\")",
+            ),
+            (
+                "locally-initiated metadata from a third-party transport is not mislabeled",
+                TransportCloseInfo {
+                    code: None,
+                    reason: None,
+                    clean: Some(false),
+                    initiated_by_peer: false,
+                },
+                "closed by transport: code=None, reason=None",
+            ),
+        ];
+        for (context, info, expected) in cases {
+            assert_eq!(format_close_reason(info), expected, "{context}");
+        }
+    }
 }

@@ -67,7 +67,13 @@ pub enum SignalFishEvent {
         ///
         /// When the transport captured a WebSocket Close frame with a reason
         /// (see [`Transport::close_info`](crate::Transport::close_info)),
-        /// it is included here as `"closed by server: …"`.
+        /// it is included here as `"closed by server: …"`; close metadata the
+        /// transport did **not** report as peer-initiated formats as
+        /// `"closed by transport: …"` instead. When a send failure ends the
+        /// connection, peer-close metadata replaces the send cause, and a
+        /// protocol stop during the farewell drain leaves the send/peer-close
+        /// cause in place — the [`ProtocolViolation`](Self::ProtocolViolation)
+        /// event precedes this one.
         reason: Option<String>,
         /// The most recent `Error`/`AuthenticationError` received on this
         /// connection, if any.
@@ -477,7 +483,7 @@ pub enum SignalFishEvent {
         room_code: Option<String>,
         /// Reason for leaving, if available.
         reason: Option<SpectatorStateChangeReason>,
-        /// Remaining spectators in the room.
+        /// Remaining spectators in the room, as reported by the server.
         current_spectators: Vec<SpectatorInfo>,
     },
 
@@ -485,7 +491,7 @@ pub enum SignalFishEvent {
     NewSpectatorJoined {
         /// Information about the new spectator.
         spectator: SpectatorInfo,
-        /// All spectators currently watching.
+        /// All spectators currently watching, as reported by the server.
         current_spectators: Vec<SpectatorInfo>,
         /// Reason for the state change, if available.
         reason: Option<SpectatorStateChangeReason>,
@@ -497,7 +503,7 @@ pub enum SignalFishEvent {
         spectator_id: PlayerId,
         /// Reason for disconnection, if available.
         reason: Option<SpectatorStateChangeReason>,
-        /// Remaining spectators in the room.
+        /// Remaining spectators in the room, as reported by the server.
         current_spectators: Vec<SpectatorInfo>,
     },
 

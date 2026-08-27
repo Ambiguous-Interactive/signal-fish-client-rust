@@ -1099,11 +1099,14 @@ impl ClientCore {
     ///
     /// Runs only when delivery accountability rejected the frame (the healthy
     /// path retires inside `update_state`), so suppression never strands the
-    /// fence. Frames that merely name a different or forged operation keep it
-    /// armed exactly as before: they violate and stay fenced by contract.
-    /// Correlated `OperationFailed` results never reach this helper — their
-    /// envelope unwraps to the dedicated failure path above before any
-    /// validation runs.
+    /// fence. Only the three authoritative baselines (`RoomJoined`,
+    /// `SpectatorJoined`, `Reconnected`) can be accountability-rejected, so in
+    /// practice this seam retires only join/spectator-join/reconnect fences;
+    /// the remaining classifier arms are shared-classifier symmetry. Frames
+    /// that merely name a different or forged operation keep it armed exactly
+    /// as before: they violate and stay fenced by contract. Correlated
+    /// `OperationFailed` results never reach this helper — their envelope
+    /// unwraps to the dedicated failure path above before any validation runs.
     fn retire_answered_room_operation(&mut self, message: &ServerMessage) {
         let Some(pending) = self.pending_room_operation.as_ref() else {
             return;

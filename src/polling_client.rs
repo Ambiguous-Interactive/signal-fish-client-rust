@@ -389,7 +389,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                         break;
                     }
                     std::task::Poll::Ready(None) => {
-                        debug!("transport closed by server");
+                        debug!("transport closed");
                         let reason = close_reason(&self.transport);
                         self.handle_disconnect_at(&mut events, reason, &mut cx, now);
                         break;
@@ -488,6 +488,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     /// Send game data to other players in the room.
+    ///
+    /// Game data is a `serde_json::Value`, which cannot represent non-finite
+    /// floats: `NaN`/`±Infinity` become `null` at construction, so peers
+    /// receive `null` where a non-finite value was intended.
     ///
     /// # Errors
     ///

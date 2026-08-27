@@ -269,6 +269,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `SignalFishEvent::Disconnected` reason mislabeling for custom
+  transports: close metadata that the transport did not report as
+  peer-initiated was formatted as `"closed by server: …"`; it now formats as
+  `"closed by transport: …"`. Peer-initiated close metadata (including every
+  built-in transport's WebSocket Close frames) keeps the established
+  `"closed by server: …"` format.
 - Fixed a liveness defect in protocol-v3 (and legacy-mode) room operations: a
   typed terminal answer whose payload was rejected by delivery accountability
   (for example, a drifting roster snapshot) left the operation's admission

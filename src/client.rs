@@ -1000,6 +1000,10 @@ impl SignalFishClient {
     /// [`send_game_data_reliable`](Self::send_game_data_reliable), which
     /// waits for queue capacity instead of failing fast under congestion.
     ///
+    /// Game data is a `serde_json::Value`, which cannot represent non-finite
+    /// floats: `NaN`/`±Infinity` become `null` at construction, so peers
+    /// receive `null` where a non-finite value was intended.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`] outside a room,
