@@ -110,6 +110,7 @@
 //!     let (mut client, mut event_rx) = SignalFishClient::start(transport, config);
 //!
 //!     // 4. Process events — wait for Authenticated before joining a room.
+//!     let mut start_requested = false;
 //!     while let Some(event) = event_rx.recv().await {
 //!         match event {
 //!             SignalFishEvent::Authenticated { app_name, .. } => {
@@ -122,7 +123,11 @@
 //!                 client.set_ready()?;
 //!             }
 //!             // Protocol v2: the game starts explicitly, not on readiness.
-//!             SignalFishEvent::LobbyStateChanged { all_ready: true, .. } => {
+//!             // Ready-state updates repeat — request the start only once.
+//!             SignalFishEvent::LobbyStateChanged { all_ready: true, .. }
+//!                 if !start_requested =>
+//!             {
+//!                 start_requested = true;
 //!                 client.start_game()?;
 //!             }
 //!             SignalFishEvent::Disconnected { .. } => break,
