@@ -175,11 +175,13 @@ pub use event::{
     ProtocolViolationKind, ServerErrorInfo, SignalFishEvent, DECODE_FAILED_RAW_PREFIX_MAX,
 };
 pub use protocol::{
-    decode_v3_binary_game_data, ClientMessage, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
-    DeliveryGapReason, DeliveryReportPayload, DirectEndpoint, IceServer, LatestDeliveryCounters,
-    MessageTransport, ReliableDeliveryCounters, ReplayStatus, RoomOperationId,
-    RoomOperationRequest, RoomOperationResult, SenderWatermark, ServerMessage, SessionGeneration,
-    SessionPeer, SessionPlanPayload, Topology, TransportKind, V3BinaryGameDataFrame,
+    decode_v3_binary_game_data, ClientMessage, ConnectionInfo, DeliveryClass,
+    DeliveryCountersByClass, DeliveryGap, DeliveryGapReason, DeliveryReportPayload, DirectEndpoint,
+    GameDataEncoding, IceServer, LatestDeliveryCounters, LobbyState, MessageTransport,
+    PeerConnectionInfo, PlayerInfo, RateLimitInfo, RelayTransport, ReliableDeliveryCounters,
+    ReplayStatus, RoomOperationId, RoomOperationRequest, RoomOperationResult, SenderWatermark,
+    ServerMessage, SessionGeneration, SessionPeer, SessionPlanPayload, SpectatorInfo,
+    SpectatorStateChangeReason, Topology, TransportKind, V3BinaryGameDataFrame,
     VolatileDeliveryCounters, ROOM_OPERATION_IDS_CAPABILITY,
 };
 pub use signal::PeerSignal;

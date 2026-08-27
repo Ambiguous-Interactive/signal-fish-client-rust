@@ -19,6 +19,8 @@ use crate::protocol::{
     SessionPlanPayload, Topology, TransportKind, ROOM_OPERATION_IDS_CAPABILITY,
 };
 use crate::signal::PeerSignal;
+#[cfg(feature = "tokio-runtime")]
+use crate::transport::TransportDiagnostics;
 use crate::transport::TransportFrame;
 
 /// Result of processing one physical server frame.
@@ -137,6 +139,12 @@ pub(crate) struct ClientCore {
     room_operation_ids: bool,
     mesh_capable: bool,
     stats: ClientStats,
+    // Latest backend-reported scheduling/buffering diagnostics, sampled by the
+    // async driver once per loop iteration (`begin_poll_cycle`). The polling
+    // driver reads its owned transport directly instead; this copy keeps the
+    // async handle's accessor lock-free relative to the transport task.
+    #[cfg(feature = "tokio-runtime")]
+    transport_diagnostics: TransportDiagnostics,
     last_server_error: Option<ServerErrorInfo>,
     violation_policy: ProtocolViolationPolicy,
     accountability: DeliveryAccountability,
@@ -281,6 +289,8 @@ impl ClientCore {
             room_operation_ids: false,
             mesh_capable,
             stats: ClientStats::default(),
+            #[cfg(feature = "tokio-runtime")]
+            transport_diagnostics: TransportDiagnostics::default(),
             last_server_error: None,
             violation_policy,
             accountability: DeliveryAccountability::new(false),
@@ -701,6 +711,16 @@ impl ClientCore {
 
     pub(crate) fn record_game_data_sent(&mut self) {
         self.stats.game_data_sent = self.stats.game_data_sent.saturating_add(1);
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn record_transport_diagnostics(&mut self, diagnostics: TransportDiagnostics) {
+        self.transport_diagnostics = diagnostics;
+    }
+
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn transport_diagnostics(&self) -> TransportDiagnostics {
+        self.transport_diagnostics
     }
 
     pub(crate) fn admission_for(operation: &ClientOperation) -> Option<ClientOperationAdmission> {

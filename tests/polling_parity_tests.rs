@@ -2451,7 +2451,7 @@ async fn parity_relay_floor_authenticate_is_byte_identical() {
     let poll_mock = SharedMock::new(vec![]);
     let mut poll_client =
         SignalFishPollingClient::new(poll_mock.clone(), SignalFishConfig::new("app"));
-    poll_client.poll();
+    let _ = poll_client.poll();
     let poll_sent = poll_mock.sent.lock().unwrap().clone();
 
     assert!(!async_sent.is_empty());
@@ -4769,7 +4769,7 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
         "polling fixture must authenticate before admission"
     );
     admit_initial_room_operation(&mut poll_client, Some(InitialRoomOperation::JoinPlayer));
-    poll_client.poll();
+    let _ = poll_client.poll();
     let poll_err = poll_client.send_offer(peer, "sdp").unwrap_err();
 
     assert!(matches!(
@@ -4796,7 +4796,7 @@ async fn parity_negotiated_version_after_v3() {
 
     let poll_mock = SharedMock::new(vec![AUTH, PI_V3]);
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
-    poll_client.poll();
+    let _ = poll_client.poll();
     assert_eq!(poll_client.negotiated_protocol_version(), Some(3));
     assert!(!poll_client.supports_mesh());
 }
@@ -4843,7 +4843,7 @@ async fn parity_reconnect_preserves_outer_v3_negotiation() {
             "submitted-token".into(),
         )
         .expect("polling reconnect must queue");
-    poll_client.poll();
+    let _ = poll_client.poll();
     assert_eq!(
         poll_client.negotiated_protocol_version(),
         Some(3),
@@ -4939,7 +4939,7 @@ async fn parity_enable_mesh_authenticate_is_byte_identical() {
         poll_mock.clone(),
         SignalFishConfig::new("app").enable_mesh(),
     );
-    poll_client.poll();
+    let _ = poll_client.poll();
     let poll_sent = poll_mock.sent.lock().unwrap().clone();
 
     assert_eq!(
@@ -5271,7 +5271,7 @@ async fn parity_disconnect_resets_negotiated_version() {
     let poll_mock = SharedMock::new(vec![AUTH, PI_V3]);
     let mut poll_client =
         SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app").enable_mesh());
-    poll_client.poll();
+    let _ = poll_client.poll();
     assert!(poll_client.supports_mesh());
     poll_client.close();
     assert_eq!(poll_client.negotiated_protocol_version(), None);

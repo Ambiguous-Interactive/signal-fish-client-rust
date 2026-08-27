@@ -106,7 +106,7 @@ use crate::terminal_drain::{
     close_reason, peer_close_reason, ReadyFrameDrain, ReadyFrameDrainBudget, ReadyFrameDrainPoll,
 };
 #[cfg(feature = "tokio-runtime")]
-use crate::transport::{close_transport, Transport, TransportFrame};
+use crate::transport::{close_transport, Transport, TransportDiagnostics, TransportFrame};
 
 /// Default capacity of the bounded event channel.
 const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -204,7 +204,7 @@ pub(crate) fn decode_binary_server_message(
 ///     .with_event_channel_capacity(512)
 ///     .with_shutdown_timeout(Duration::from_secs(5));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalFishConfig {
     /// Public App ID that identifies the game application.
     pub app_id: String,
@@ -559,7 +559,7 @@ impl std::fmt::Display for RoomRole {
 /// assert_eq!(params.game_name, "my-game");
 /// assert_eq!(params.max_players, Some(4));
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinRoomParams {
     /// Name of the game to join.
     pub game_name: String,
@@ -1560,6 +1560,21 @@ impl SignalFishClient {
         lock_core(&self.state).stats()
     }
 
+    /// Return the backend-owned transport buffering and admission diagnostics
+    /// last observed by the driver loop (see [`TransportDiagnostics`]).
+    ///
+    /// The transport task samples its backend once per scheduling cycle; the
+    /// value here is therefore as fresh as the most recent loop iteration.
+    /// This mirrors
+    /// [`SignalFishPollingClient::transport_diagnostics`], which reads its
+    /// caller-owned transport synchronously. Use these counters to tell
+    /// command-queue congestion ([`SendBufferFull`](crate::SignalFishError::SendBufferFull),
+    /// shrinking [`send_capacity`](Self::send_capacity)) apart from backend
+    /// watermark or capacity deferrals when tuning a deployment.
+    pub fn transport_diagnostics(&self) -> TransportDiagnostics {
+        lock_core(&self.state).transport_diagnostics()
+    }
+
     /// Return a coherent synchronous snapshot of connection and room state.
     pub fn snapshot(&self) -> ClientSnapshot {
         lock_core(&self.state).snapshot()
@@ -2228,6 +2243,8 @@ async fn transport_loop(
         // One driver scheduling cycle per loop iteration, mirroring each
         // polling-client `poll` call: backends may sample once per cycle.
         transport.begin_poll_cycle();
+        let diagnostics = transport.diagnostics();
+        lock_core(&state).record_transport_diagnostics(diagnostics);
         if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
             connected_emitted = true;
             if matches!(
@@ -2647,6 +2664,8 @@ mod tests {
             Option<Pin<Box<dyn Future<Output = tokio::sync::OwnedSemaphorePermit> + Send>>>,
         /// Count of outbound frames the gate has taken ownership of.
         frames_taken: Arc<std::sync::atomic::AtomicUsize>,
+        /// Diagnostics reported by the mocked backend.
+        diagnostics: crate::transport::TransportDiagnostics,
     }
 
     impl MockTransport {
@@ -2680,6 +2699,7 @@ mod tests {
                 held_frame: None,
                 permit_wait: None,
                 frames_taken: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                diagnostics: crate::transport::TransportDiagnostics::default(),
             };
             (
                 transport,
@@ -2715,6 +2735,10 @@ mod tests {
     }
 
     impl Transport for MockTransport {
+        fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
+            self.diagnostics
+        }
+
         fn abort(&mut self) {
             // Aborting is teardown too: tests observe either graceful close
             // or abort through the same flag.
@@ -3282,6 +3306,53 @@ mod tests {
         }
 
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_diagnostics_mirror_the_driver_loop_sample() {
+        let (mut transport, _sent, _closed) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let reported = crate::transport::TransportDiagnostics {
+            current_buffered_bytes: 11,
+            peak_buffered_bytes: 23,
+            effective_watermark_bytes: 4_096,
+            accepted_frames: 3,
+            accepted_bytes: 97,
+            watermark_hits: 1,
+            backend_capacity_hits: 2,
+        };
+        transport.diagnostics = reported;
+
+        let (mut client, _events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_diag"));
+
+        wait_until(|| client.transport_diagnostics().accepted_frames == 3).await;
+        assert_eq!(client.transport_diagnostics(), reported);
+
+        client.shutdown().await;
+    }
+
+    #[test]
+    fn config_and_join_params_support_equality() {
+        let config = SignalFishConfig::new("mb_eq")
+            .with_event_channel_capacity(512)
+            .with_command_channel_capacity(2048);
+        assert_eq!(config, config.clone());
+        assert_ne!(
+            config,
+            SignalFishConfig::new("mb_eq").with_event_channel_capacity(513)
+        );
+        assert_ne!(config, SignalFishConfig::new("mb_other"));
+
+        let params = JoinRoomParams::new("game", "Alice")
+            .with_room_code("ABC123")
+            .with_max_players(4);
+        assert_eq!(params, params.clone());
+        assert_ne!(params, JoinRoomParams::new("game", "Alice"));
+        assert_ne!(
+            params,
+            JoinRoomParams::new("game", "Bob").with_room_code("ABC123")
+        );
     }
 
     #[tokio::test]
