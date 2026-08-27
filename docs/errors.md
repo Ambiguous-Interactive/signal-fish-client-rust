@@ -27,7 +27,7 @@ exhaustive public enum:
 | `TransportSend` | `String` | Failed to send a message through the transport. |
 | `TransportReceive` | `String` | Failed to receive a message from the transport. |
 | `TransportClosed` | — | The transport connection was closed unexpectedly. |
-| `TokenBinding` | `TokenBindingFailure` | Native WebSocket token-binding negotiation, challenge validation, key derivation, canonicalization, encoding, or sequence handling failed. Reasons are typed and contain no key, nonce, proof, signature, fingerprint, URL credential, or payload material. See [WebSocket Token Binding](token-binding.md). |
+| `TokenBinding` | `TokenBindingFailure` | Native WebSocket token-binding negotiation, challenge validation, key derivation, canonicalization, encoding, or sequence handling failed. Reasons are typed and contain no key, nonce, proof, signature, fingerprint, URL credential, or payload material. Includes `MissingClientFingerprint`, raised by the opt-in `require_client_fingerprint` connect policy when no X.509 client signer is selected. See [WebSocket Token Binding](token-binding.md). |
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `NotAuthenticated` | — | Attempted a directed room operation (`join_room`, `leave_room`, `reconnect`, `join_as_spectator`, or `leave_spectator`) before the server confirmed authentication. The command was **not** queued; retry once the `Authenticated` event arrives. Non-room commands keep their pre-authentication behavior. |

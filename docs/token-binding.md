@@ -86,6 +86,37 @@ Server 0.7 profiles with `require_client_fingerprint=true` additionally require
 built-in WSS, a trusted client CA, mTLS client authentication, and required
 token binding.
 
+## Requiring a certificate-bound proof locally
+
+Server-side enforcement of the strictest profile is fail-closed, but a client
+whose server does not request a client certificate sends fingerprint-less
+proofs with no local signal. Deployments that want to enforce the stricter
+contract locally can set the opt-in `require_client_fingerprint` connect
+policy:
+
+```rust,ignore
+use signal_fish_client::{TokenBindingMode, WebSocketConnectOptions, WebSocketTransport};
+
+let options = WebSocketConnectOptions::new()
+    .with_token_binding(TokenBindingMode::Required)
+    .with_require_client_fingerprint(true);
+let transport = WebSocketTransport::connect_with_tls_config(
+    "wss://signal.example/v2/ws",
+    options,
+    tls_config, // your Arc<rustls::ClientConfig> with a client certificate
+).await?;
+```
+
+When the policy is set, the connect fails with a typed
+`TokenBindingFailure::MissingClientFingerprint` — before any network I/O when
+the path cannot observe a certificate selection at all, and after the handshake
+when rustls completed it without selecting an X.509 client signer. Optional
+mode's unsigned fallback connection produces no proofs at all and fails the
+same way, so the policy can never be silently skipped. Only
+`connect_with_tls_config` with token binding enabled can satisfy the policy;
+plain connects and token-binding-disabled custom-TLS connects reject it up
+front.
+
 ## Wire and failure contract
 
 The transport consumes the challenge before it can be passed to

@@ -40,7 +40,7 @@ use signal_fish_client::protocol::GameDataEncoding;
 use signal_fish_client::SignalFishPollingClient;
 use signal_fish_client::{
     ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
-    SignalFishEvent, WebSocketTransport,
+    SignalFishEvent, TokenBindingFailure, WebSocketTransport,
 };
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use signal_fish_client::{TokenBindingMode, TokenBindingStatus, WebSocketConnectOptions};
@@ -636,7 +636,9 @@ async fn e2e_server_070_required_client_fingerprint_token_binding_wss() {
         eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
         return;
     };
-    let options = WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Required);
+    let options = WebSocketConnectOptions::new()
+        .with_token_binding(TokenBindingMode::Required)
+        .with_require_client_fingerprint(true);
     let transport =
         WebSocketTransport::connect_with_tls_config(&url, options, tls.mtls_client_config())
             .await
@@ -684,6 +686,61 @@ async fn e2e_server_070_required_client_fingerprint_token_binding_wss() {
     client.shutdown().await;
 }
 
+/// Local enforcement of the strictest profile: against a server that requires
+/// token binding but never requests a client certificate, the opt-in policy
+/// must fail the connect locally after the unsigned-capable handshake instead
+/// of trusting the server to reject the fingerprint-less proof.
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+#[tokio::test]
+#[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
+async fn e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_less_signer() {
+    let tls = TlsFixture::generate();
+    let certificate = tls.certificate.to_string_lossy().into_owned();
+    let private_key = tls.private_key.to_string_lossy().into_owned();
+    let Some((_guard, url)) = spawn_server(&[
+        ("SIGNAL_FISH__SECURITY__TRANSPORT__TLS__ENABLED", "true"),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__CERTIFICATE_PATH",
+            certificate.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TLS__PRIVATE_KEY_PATH",
+            private_key.as_str(),
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__ENABLED",
+            "true",
+        ),
+        (
+            "SIGNAL_FISH__SECURITY__TRANSPORT__TOKEN_BINDING__REQUIRED",
+            "true",
+        ),
+    ])
+    .await
+    else {
+        eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
+        return;
+    };
+    let url = url.replacen("ws://127.0.0.1", "wss://localhost", 1);
+    let options = WebSocketConnectOptions::new()
+        .with_token_binding(TokenBindingMode::Required)
+        .with_require_client_fingerprint(true);
+    let error = WebSocketTransport::connect_with_tls_config(
+        &url,
+        options,
+        tls.client_config(), // trusted server roots, no client certificate
+    )
+    .await
+    .expect_err("fingerprint-less signer must fail the local requirement");
+    assert!(
+        matches!(
+            error,
+            SignalFishError::TokenBinding(TokenBindingFailure::MissingClientFingerprint)
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
 /// The caller-driven client uses the same fully connected native transport and
 /// fingerprint-bound signer as the Tokio background driver.
 #[cfg(all(feature = "tls", feature = "token-binding", feature = "polling-client"))]
@@ -695,7 +752,9 @@ async fn e2e_server_070_polling_client_fingerprint_token_binding_wss() {
         eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
         return;
     };
-    let options = WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Required);
+    let options = WebSocketConnectOptions::new()
+        .with_token_binding(TokenBindingMode::Required)
+        .with_require_client_fingerprint(true);
     let transport =
         WebSocketTransport::connect_with_tls_config(&url, options, tls.mtls_client_config())
             .await
