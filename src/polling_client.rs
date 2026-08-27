@@ -489,6 +489,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     /// Send game data to other players in the room.
     ///
+    /// Non-finite floats (`NaN`/`±Infinity`) serialize as `null` (standard
+    /// `serde_json` behavior), so peers receive `null` where a non-finite
+    /// value was sent.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`] outside a room,

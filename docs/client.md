@@ -672,6 +672,9 @@ without changing membership. If the server does not echo the capability, the
 connection continues with the legacy Server 0.7 wire behavior. Operations
 admitted before the first `ProtocolInfo` also remain legacy for their complete
 request/response lifetime, even if negotiation finishes while one is pending.
+Legacy results carry no correlation identity on the wire, so a duplicated
+kind-compatible legacy reply can consume the next same-kind operation's fence;
+correlated UUID results are individually identifiable and immune to this.
 
 Room command admission is role-specific, and the five directed room operations
 additionally require server-confirmed authentication:

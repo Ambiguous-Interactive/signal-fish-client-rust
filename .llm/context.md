@@ -435,8 +435,9 @@ TLS is opt-in: the default build pulls no crypto stack; `wss://` support
 3. Server responds with `ServerMessage::Authenticated` → `SignalFishEvent::Authenticated`.
 4. Client may then call `join_room`, etc.
 5. Both clients emit synthetic `SignalFishEvent::Connected` when their driver first observes `Transport::is_ready() == true`.
-   `SignalFishEvent::Disconnected` is emitted when the transport closes (best-effort; missed only if the receiver is dropped,
-   delivery was preempted as bounded above, or the handle is dropped without `shutdown()`).
+   The async driver emits `Disconnected` when the transport closes or `shutdown()` wins; polling `close()` deliberately
+   emits none. Both are best-effort: missed only if the receiver is dropped, delivery was preempted as bounded above, or
+   the handle is dropped without `shutdown()`.
 
 ## Protocol Overview
 

@@ -246,6 +246,23 @@ assert_eq!(value["data"]["game_name"], "my-game");
   helper. Omission remains `None` for legacy 0.4 traffic, while explicit `null`
   and invalid present UUID strings fail decoding as required by Server 0.7.
 
+### The per-direction explicit-null policy
+
+Explicit `null` handling is asymmetric **by direction**, and that asymmetry is
+deliberate:
+
+- **Client-bound server fields** absorb `null` as `None` for legacy `Option`s
+  (the v2 sample wire literally carries `"reason": null`), except the
+  presence-sensitive fields above, which reject `null` to distinguish
+  "absent" from "present-but-null".
+- **SDK-authored client fields** (`ClientMessage::GameData.class`/`.key`) reject
+  `null`: the SDK never emits explicit nulls for them (omission convention),
+  so a `null` can only be a local construction bug — fail loudly.
+- Unit variants tolerate `"data": null` and absent `data` interchangeably; a
+  map-valued `data` for a unit variant is rejected.
+
+New fields must pick a side explicitly and document it here.
+
 ### The v2-byte-identical rule
 
 Every NEW optional field on an EXISTING message/payload (`Authenticate`'s

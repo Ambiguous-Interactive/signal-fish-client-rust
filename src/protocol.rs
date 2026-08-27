@@ -538,7 +538,9 @@ pub struct SessionPeer {
 pub struct DirectEndpoint {
     /// Hostname or IP address to connect to.
     pub host: String,
-    /// Non-zero transport port.
+    /// Transport port. The protocol authority requires a non-zero port; the
+    /// SDK treats this self-declared trusted-server field as opaque and does
+    /// not re-validate it.
     pub port: u16,
 }
 
