@@ -1565,12 +1565,13 @@ impl SignalFishClient {
     ///
     /// The transport task samples its backend once per scheduling cycle; the
     /// value here is therefore as fresh as the most recent loop iteration.
-    /// This mirrors
-    /// [`SignalFishPollingClient::transport_diagnostics`], which reads its
-    /// caller-owned transport synchronously. Use these counters to tell
-    /// command-queue congestion ([`SendBufferFull`](crate::SignalFishError::SendBufferFull),
-    /// shrinking [`send_capacity`](Self::send_capacity)) apart from backend
-    /// watermark or capacity deferrals when tuning a deployment.
+    /// This mirrors the polling driver's
+    /// [`transport_diagnostics`](crate::polling_client::SignalFishPollingClient::transport_diagnostics),
+    /// which reads its caller-owned transport synchronously. Use these
+    /// counters to tell command-queue congestion
+    /// ([`SendBufferFull`](crate::SignalFishError::SendBufferFull), shrinking
+    /// [`send_capacity`](Self::send_capacity)) apart from backend watermark or
+    /// capacity deferrals when tuning a deployment.
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         lock_core(&self.state).transport_diagnostics()
     }
