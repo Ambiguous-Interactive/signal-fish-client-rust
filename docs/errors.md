@@ -31,15 +31,15 @@ exhaustive public enum:
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
 | `NotConnected` | — | Attempted an operation requiring an active connection but the client is not connected. |
 | `NotAuthenticated` | — | Attempted a directed room operation (`join_room`, `leave_room`, `reconnect`, `join_as_spectator`, or `leave_spectator`) before the server confirmed authentication. The command was **not** queued; retry once the `Authenticated` event arrives. Non-room commands keep their pre-authentication behavior. |
-| `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
+| `SendBufferFull` | `capacity: usize` | The bounded outgoing command queue is full — the caller is producing messages faster than the transport can drain them. The message was refused, **not** queued; nothing is silently dropped. Retry later, pace with a `*_reliable` variant, drain events promptly, or raise `command_channel_capacity`. See [Handling `SendBufferFull`](#handling-sendbufferfull). |
 | `NotInRoom` | — | Attempted a room operation but the client is not in a room. |
 | `AlreadyInRoom` | — | Attempted to join as a player/spectator or reconnect while already in a room. |
 | `RoomOperationPending` | — | A previously admitted join, leave, or reconnect still awaits a matching typed terminal response. `ping` remains available; generic errors and absent responses stay fenced until transport teardown, after which a new connection may retry. The fence applies to undecodable responses too: an unknown `error_code` string from a newer server makes the whole frame surface as a `DecodeFailed` event, so a correlated result never releases the pending operation. One benign wire race is absorbed rather than fenced: when an authoritative spectator exit (`Disconnected`, `Removed`, or `RoomClosed`) tears the room down before the server's mandatory reply to an admitted voluntary `leave_spectator`, that one superseded reply is silently consumed — any duplicate or unrelated late result still violates. |
 | `WrongRoomRole` | `required: RoomRole`, `actual: RoomRole` | Attempted a player-only command as a spectator, or `leave_spectator` as a player. |
 | `AuthorityRequired` | — | Attempted `start_game` while another player is authority, or attempted to relinquish authority without currently holding it. |
-| `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | The server returned an error message. |
+| `ServerError` | `message: String`, `error_code: Option<ErrorCode>` | Reserved for compatibility — no current server/SDK combination constructs this variant. Server error messages surface as `SignalFishEvent::Error`, `AuthenticationError`, `RoomJoinFailed`, or `RoomOperationFailed` instead. |
 | `ProtocolUnsupported` | `mode: &'static str` | A protocol-v3-only operation (classified latest/volatile JSON, binary game data, signaling, or transport-status reporting) was attempted before v3 was negotiated. `mode` is `"pre-negotiation"` (no `ProtocolInfo` yet — negotiation still in flight) or `"relay-only"` (a `ProtocolInfo` arrived but negotiated v2, the terminal relay floor). See [Protocol Versioning](protocol-versioning.md#the-fail-fast-guard). |
-| `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, or the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster. The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
+| `SessionPlanUnavailable` | — | No authoritative WebRTC plan currently authorizes the signal: no plan has arrived, the target is self, unknown, departed, or absent from the replace-on-plan peer set/current room roster, or the negotiated session transport is not WebRTC (a relay plan). The set may be extended by a valid compatibility `NewPeer`; the frame is refused locally. |
 | `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted after negotiation resolved to JSON. Request `MessagePack` and confirm `effective_game_data_format() == Some(MessagePack)`; unsupported requests resolve to JSON and are refused before transport admission. Before `ProtocolInfo`, v3-only sends return `ProtocolUnsupported` instead. |
 | `Timeout` | — | The WebSocket handshake did not complete within its deadline. Only `WebSocketTransport::connect_with_timeout` emits this variant, when the connection is not established within the duration it is given. |
@@ -111,12 +111,12 @@ println!("{}", code.description());
 | Variant | Description |
 |---------|-------------|
 | `Unauthorized` | Access denied. Authentication credentials are missing or invalid. |
-| `InvalidToken` | The authentication token is invalid, malformed, or has expired. |
-| `AuthenticationRequired` | This operation requires authentication. |
+| `InvalidToken` *(compatibility-only)* | The authentication token is invalid, malformed, or has expired. |
+| `AuthenticationRequired` *(compatibility-only)* | This operation requires authentication. |
 | `InvalidAppId` | The provided application ID is not recognized. |
-| `AppIdExpired` | The application ID has expired. |
-| `AppIdRevoked` | The application ID has been revoked. |
-| `AppIdSuspended` | The application ID has been suspended. |
+| `AppIdExpired` *(compatibility-only)* | The application ID has expired. |
+| `AppIdRevoked` *(compatibility-only)* | The application ID has been revoked. |
+| `AppIdSuspended` *(compatibility-only)* | The application ID has been suspended. |
 | `MissingAppId` | Application ID is required but was not provided. |
 | `AuthenticationTimeout` | Authentication took too long to complete. |
 | `SdkVersionUnsupported` | The SDK version you are using is no longer supported. |
@@ -184,7 +184,7 @@ println!("{}", code.description());
 |---------|-------------|
 | `InternalError` | An internal server error occurred. |
 | `StorageError` | A storage error occurred while processing your request. |
-| `ServiceUnavailable` | The service is temporarily unavailable. |
+| `ServiceUnavailable` *(compatibility-only)* | The service is temporarily unavailable. |
 
 ### Game Start — protocol v2 (2)
 
@@ -331,7 +331,7 @@ The synchronous send methods (`send_game_data`, `send_signal`, `join_room`, …)
 fail fast with `SignalFishError::SendBufferFull` when the bounded outgoing
 command queue (default **1024**, set via
 `SignalFishConfig::command_channel_capacity`) is full. The message is refused,
-not queued — congestion is surfaced, never hidden. Three remedies, in order of
+not queued — congestion is surfaced, never hidden. Four remedies, in order of
 preference:
 
 1. **Pace with the waiting variants.** `send_game_data_reliable` /
@@ -343,6 +343,12 @@ preference:
 3. **Raise the capacity.** `SignalFishConfig::with_command_channel_capacity(n)`
    buys more burst headroom, at the cost of more queued latency when the
    transport truly cannot keep up.
+4. **Drain events promptly.** The command queue only drains while the
+   transport loop runs, and the loop pauses whenever the *event* channel is
+   full (overflow pauses the loop instead of dropping the event). A task that
+   awaits a waiting variant while it is also the sole event consumer can
+   deadlock under simultaneous send + receive pressure — drain events from a
+   separate task.
 
 ```rust,ignore
 use signal_fish_client::{SignalFishClient, SignalFishError};

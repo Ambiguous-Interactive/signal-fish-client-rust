@@ -153,6 +153,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `SendBufferFull` now also names "drain events promptly" as a remedy: a task
+  awaiting a reliable send while it is the sole event consumer can deadlock
+  against a full event channel (which pauses the transport loop that drains
+  the command queue), and pacing or capacity changes alone do not fix that
+  case. The variant itself and its matching/emission behavior are unchanged.
 - Documented quick-start sketches (crate docs, `MeshController` docs, and the
   mesh guide) now request the protocol-v2 game start only once instead of on
   every repeated all-ready update, matching the guidance in the events guide
@@ -287,6 +292,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed misleading token-binding connect errors for HTTP upgrade rejections:
+  a non-101 response (404 wrong path, 401/403 rejected auth, 500, ...) on an
+  `Optional` or `Required` token-binding connect was reported as
+  `TokenBindingFailure::NegotiationRejected` ("the server rejected
+  token-binding negotiation"), hiding the actual HTTP status and suggesting a
+  server capability problem for what is usually a URL or credential
+  misconfiguration. HTTP upgrade rejections now surface as `Io` carrying the
+  underlying HTTP error — the same classification the `Disabled` mode already
+  used — so one misconfigured URL fails the same way in every mode.
+  `TokenBindingFailure::NegotiationRejected` remains in the exhaustive enum
+  as a reserved, no-longer-produced variant.
+- Fixed `TokenBindingFailure::MalformedChallenge` mislabeling the
+  control-flood case: a selected token-binding connection whose server sent
+  only control frames (and never any challenge) was reported as "the server
+  sent a malformed token-binding challenge" even though no challenge was
+  ever delivered. The variant now reads "the server did not send a valid
+  token-binding challenge" and its documentation covers both faces (an
+  invalid first application frame, or the control-frame budget exhausting
+  before any challenge).
+- `WebSocketTransport::connect_with_tls_config` now logs a warning when
+  called with a plain `ws://` URL: tokio-tungstenite bypasses the connector
+  for plain URLs, so the entire custom TLS configuration — including any
+  mTLS client identity — was silently unused.
+- Corrected published documentation: `SignalFishError::ServerError` is
+  reserved and no current server/SDK combination constructs it (server
+  errors surface as events); `SessionPlanUnavailable`'s trigger list now
+  includes relay (non-WebRTC) session transports; the six compatibility-only
+  `ErrorCode` variants are labeled at their definitions and in the docs
+  tables; and `require_client_fingerprint`'s failure timing is stated
+  precisely (pre-I/O on every path without a tracking resolver, after the
+  handshake and challenge on the custom-TLS token-binding path, including
+  the plain `ws://` case where no selection can ever be observed).
 - Fixed `SignalFishEvent::Disconnected` reason mislabeling for custom
   transports: close metadata that the transport did not report as
   peer-initiated was formatted as `"closed by server: …"`; it now formats as
