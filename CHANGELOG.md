@@ -136,9 +136,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Derived `PartialEq`/`Eq` for `SignalFishConfig` and `JoinRoomParams` so
   applications can compare constructed configurations and parameters in
   assertions.
+- Added the opt-in `require_client_fingerprint` connect option on
+  `WebSocketConnectOptions` (builder:
+  `with_require_client_fingerprint`). When set, a connect fails with a typed
+  error unless the transport observes rustls selecting a real X.509 client
+  certificate signer, letting deployments enforce the strictest mTLS
+  token-binding profile locally instead of trusting the server to reject
+  fingerprint-less proofs. The check happens before network I/O on paths that
+  cannot satisfy it (plain connects, custom-TLS connects without token
+  binding) and after the handshake when no signer was selected, including
+  Optional mode's unsigned fallback.
+  **Breaking:** `WebSocketConnectOptions` gains a public field and
+  `TokenBindingFailure` gains the `MissingClientFingerprint` variant, so
+  exhaustive struct literals and matches require updates; both are breaking
+  API additions for the forthcoming 0.11 release.
 
 ### Changed
 
+- Documented quick-start sketches (crate docs, `MeshController` docs, and the
+  mesh guide) now request the protocol-v2 game start only once instead of on
+  every repeated all-ready update, matching the guidance in the events guide
+  and the compiling `basic_lobby` example.
 - The shared diagnostic accessors on both drivers —
   `send_capacity`, `max_send_capacity`, `stats`, `snapshot`, and
   `transport_diagnostics`, plus the polling driver's `polling_stats` and

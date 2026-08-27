@@ -245,13 +245,19 @@ mod controller {
     ///
     /// ```rust,ignore
     /// let (mut mesh) = MeshController::start(transport, SignalFishConfig::new("app"), my_driver);
+    /// let mut start_requested = false;
     /// while let Some(event) = mesh.recv().await {
     ///     match event {
     ///         MeshEvent::Signaling(sig) => match *sig {
     ///             SignalFishEvent::Authenticated { .. } =>
     ///                 mesh.join_room(JoinRoomParams::new("game", "Alice"))?,
-    ///             SignalFishEvent::LobbyStateChanged { all_ready: true, .. } =>
-    ///                 mesh.start_game()?,
+    ///             // Ready-state updates repeat — request the start only once.
+    ///             SignalFishEvent::LobbyStateChanged { all_ready: true, .. }
+    ///                 if !start_requested =>
+    ///             {
+    ///                 start_requested = true;
+    ///                 mesh.start_game()?;
+    ///             }
     ///             _ => {}
     ///         },
     ///         MeshEvent::PeerConnected(peer) => { /* peer ready */ }

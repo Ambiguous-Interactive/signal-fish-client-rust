@@ -240,7 +240,45 @@ else
                     echo "$CI_MSRV_BLOCK"
                     VIOLATIONS=$((VIOLATIONS + 1))
                 else
-                    echo -e "${GREEN}Phase 5: PASS${NC}"
+                    # The Godot adapter declares its own rust-version because
+                    # godot-rust requires a newer compiler than the core crate;
+                    # its dedicated CI lane must track that declaration.
+                    ADAPTER_MSRV="$(awk -F'"' '/^rust-version[[:space:]]*=[[:space:]]*"/ {print $2; exit}' crates/signal-fish-client-godot/Cargo.toml | tr -d '\r')"
+                    ADAPTER_MSRV_BLOCK="$(awk '
+                        /^  adapter-msrv:/ {in_adapter=1}
+                        in_adapter && /^  [a-zA-Z0-9-]+:/ && $0 !~ /^  adapter-msrv:/ {exit}
+                        in_adapter {gsub(/\r/, ""); print}
+                    ' .github/workflows/ci.yml)"
+
+                    if [ -z "$ADAPTER_MSRV" ]; then
+                        echo -e "${RED}Phase 5: FAIL${NC}"
+                        echo "Could not read rust-version from crates/signal-fish-client-godot/Cargo.toml."
+                        echo "Action: Add a quoted rust-version (e.g., rust-version = \"1.94.0\") to the adapter manifest."
+                        VIOLATIONS=$((VIOLATIONS + 1))
+                    elif [ -z "$ADAPTER_MSRV_BLOCK" ]; then
+                        echo -e "${RED}Phase 5: FAIL${NC}"
+                        echo "Action: Add an 'adapter-msrv' job to .github/workflows/ci.yml testing the Godot adapter at its declared MSRV."
+                        VIOLATIONS=$((VIOLATIONS + 1))
+                    elif [[ "$ADAPTER_MSRV_BLOCK" != *"uses: dtolnay/rust-toolchain@stable"* ]]; then
+                        echo -e "${RED}Phase 5: FAIL${NC}"
+                        echo "The adapter-msrv job must use 'dtolnay/rust-toolchain@stable' with an explicit 'with.toolchain'."
+                        VIOLATIONS=$((VIOLATIONS + 1))
+                    else
+                        ADAPTER_CI_TOOLCHAIN="$(printf '%s\n' "$ADAPTER_MSRV_BLOCK" | awk '/toolchain:[[:space:]]*/ {sub(/.*toolchain:[[:space:]]*/, "", $0); gsub(/[[:space:]]+$/, "", $0); gsub(/\r/, ""); print; exit}')"
+                        ADAPTER_CI_TOOLCHAIN="${ADAPTER_CI_TOOLCHAIN%\"}"
+                        ADAPTER_CI_TOOLCHAIN="${ADAPTER_CI_TOOLCHAIN#\"}"
+                        ADAPTER_CI_TOOLCHAIN="${ADAPTER_CI_TOOLCHAIN%\'}"
+                        ADAPTER_CI_TOOLCHAIN="${ADAPTER_CI_TOOLCHAIN#\'}"
+
+                        if [ "$ADAPTER_CI_TOOLCHAIN" != "$ADAPTER_MSRV" ]; then
+                            echo -e "${RED}Phase 5: FAIL${NC}"
+                            echo "Adapter MSRV mismatch: crates/signal-fish-client-godot/Cargo.toml rust-version is '$ADAPTER_MSRV' but the ci.yml adapter-msrv toolchain is '$ADAPTER_CI_TOOLCHAIN'."
+                            echo "Action: Update .github/workflows/ci.yml adapter-msrv toolchain to match the adapter's rust-version."
+                            VIOLATIONS=$((VIOLATIONS + 1))
+                        else
+                            echo -e "${GREEN}Phase 5: PASS${NC}"
+                        fi
+                    fi
                 fi
             fi
         fi

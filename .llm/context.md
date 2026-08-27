@@ -141,7 +141,9 @@ the exact frame available to its caller.
 Native token binding belongs exclusively to `WebSocketTransport`. Disabled is
 the byte/dependency-compatible default; optional retries without the offer only
 after tungstenite's exact successful-upgrade/no-selection result; required
-fails closed. A selected connection consumes and validates the first challenge
+fails closed. The opt-in `require_client_fingerprint` connect option fails
+connects locally — pre-I/O on unsatisfiable paths, post-handshake when no X.509
+client signer is selected — with `TokenBindingFailure::MissingClientFingerprint`. A selected connection consumes and validates the first challenge
 before either client sees a ready transport, derives HKDF-SHA-256 from the exact
 RFC 6455 key plus server nonce, zeroizes retained key material, and protects all
 outbound JSON/binary frames with one sequence. Sequence commits only at backend
@@ -165,22 +167,18 @@ blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
 3,600-frame soak jobs on Server 0.7 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
 6.6.0 for seeded netem rather
-than relying on the runner's older `tc`. A 20-frame Fortress prediction window
-leaves recovery headroom. Simulated frames 1 through 60 form an explicit
-renderer/JIT warm-up phase bounded by that window; steady-state and final
-confirmation lag are capped at eight frames clean or 13 frames impaired/soak.
-The fixture uses a
-peer-independent fixed 18 Hz simulation cadence that preserves elapsed
-deadline debt and catches up by at most one frame per rendered callback, plus
-a one-time proposal/ack/commit startup barrier that maps a shared same-host
-wall-clock deadline to each browser's monotonic clock, preventing process-launch
-order from becoming frame advantage. A bounded causal relay hold and the polling-hitch
-oracle then require rollback and forward gameplay progress. These controls must prove
-rollback/resimulation, bounded confirmation lag with zero stalls (advisory
-frame-advantage wait recommendations are observed but not required to be zero —
-they fire inside the lag bound and the fixed cadence never acts on them), exact
-state checksum convergence, drained queue age/depth with a non-positive final
-eight-sample soak age slope, relay/server conservation, and v3 peer departure.
+than relying on the runner's older `tc`.
+The fixture uses a peer-independent fixed 18 Hz simulation cadence with a
+20-frame Fortress prediction window (60-frame renderer/JIT warm-up bounded by
+it; steady-state and final lag capped at eight frames clean or 13 impaired/soak),
+a one-time proposal/ack/commit startup barrier mapping a shared same-host
+wall-clock deadline to each browser's monotonic clock, and a bounded causal
+relay hold plus a polling-hitch oracle requiring rollback and forward gameplay
+progress. These controls must prove rollback/resimulation, bounded
+confirmation lag with zero stalls (advisory frame-advantage wait recommendations
+are observed, never acted on), exact state checksum convergence, drained queue
+age/depth with a non-positive final eight-sample soak age slope, relay/server
+conservation, and v3 peer departure.
 
 Delivery accountability accepts coalesced, mixed-reason
 `unsupported_format` gap ranges emitted by newer servers. Their inclusive

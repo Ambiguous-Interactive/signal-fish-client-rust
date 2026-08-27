@@ -1648,6 +1648,11 @@ mod ci_workflow_policy {
             (
                 "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.7.0",
+                "e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_less_signer",
+            ),
+            (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
                 "e2e_server_070_polling_client_fingerprint_token_binding_wss",
             ),
             (

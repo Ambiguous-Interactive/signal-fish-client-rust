@@ -44,6 +44,15 @@ pub enum TokenBindingFailure {
     MessageEncoding,
     /// The shared text/binary sequence space has been exhausted.
     SequenceExhausted,
+    /// A client-certificate fingerprint was required, but the connect path
+    /// could not observe an X.509 client signer.
+    ///
+    /// Raised only by the opt-in
+    /// [`require_client_fingerprint`](crate::WebSocketConnectOptions::with_require_client_fingerprint)
+    /// policy: either the connect path can never observe a certificate
+    /// selection (it is not a custom-rustls token-binding connection), or the
+    /// TLS handshake completed without the server selecting one.
+    MissingClientFingerprint,
 }
 
 impl std::fmt::Display for TokenBindingFailure {
@@ -67,6 +76,10 @@ impl std::fmt::Display for TokenBindingFailure {
             Self::UnsupportedJson => "the outbound JSON frame is not token-binding compatible",
             Self::MessageEncoding => "the token-bound frame could not be encoded",
             Self::SequenceExhausted => "the token-binding sequence space is exhausted",
+            Self::MissingClientFingerprint => {
+                "a client certificate fingerprint was required, but no X.509 client signer \
+                 was selected"
+            }
         })
     }
 }
@@ -272,6 +285,10 @@ mod tests {
             (TokenBindingFailure::UnsupportedJson, "JSON"),
             (TokenBindingFailure::MessageEncoding, "encoded"),
             (TokenBindingFailure::SequenceExhausted, "exhausted"),
+            (
+                TokenBindingFailure::MissingClientFingerprint,
+                "client certificate fingerprint",
+            ),
         ];
 
         for (failure, expected) in cases {

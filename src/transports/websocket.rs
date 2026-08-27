@@ -72,6 +72,21 @@ fn websocket_config(options: WebSocketConnectOptions) -> Result<WebSocketConfig,
         .max_message_size(options.max_inbound_message_size))
 }
 
+/// Reject a required client fingerprint on a connect path that can never
+/// observe a certificate selection: only a custom-rustls token-binding
+/// connection installs the tracking signer, so every other path fails before
+/// network I/O instead of silently dropping the policy.
+fn reject_unsatisfiable_client_fingerprint_requirement(
+    options: &WebSocketConnectOptions,
+) -> Result<(), SignalFishError> {
+    if options.require_client_fingerprint {
+        return Err(SignalFishError::TokenBinding(
+            crate::TokenBindingFailure::MissingClientFingerprint,
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "tls")]
 fn install_tls_provider() {
     use std::sync::Once;
@@ -295,6 +310,14 @@ async fn connect_with_token_binding(
                 }
                 error => map_connect_error(error),
             })?;
+            if options.require_client_fingerprint {
+                // The unsigned fallback sends no proofs at all, so a locally
+                // required certificate binding cannot be honored: fail closed
+                // instead of silently proceeding fingerprint-less.
+                return Err(SignalFishError::TokenBinding(
+                    crate::TokenBindingFailure::MissingClientFingerprint,
+                ));
+            }
             return Ok((stream, WebSocketTokenBinding::NotNegotiated));
         }
         Err(WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
@@ -326,13 +349,19 @@ async fn connect_with_token_binding(
     )
     .await
     .map_err(|_| SignalFishError::TokenBinding(crate::TokenBindingFailure::ChallengeTimeout))??;
+    #[cfg(feature = "tls")]
+    let selected_fingerprint = client_fingerprint.and_then(|tracker| tracker.fingerprint());
+    #[cfg(not(feature = "tls"))]
+    let selected_fingerprint = None;
+    if options.require_client_fingerprint && selected_fingerprint.is_none() {
+        return Err(SignalFishError::TokenBinding(
+            crate::TokenBindingFailure::MissingClientFingerprint,
+        ));
+    }
     let session = crate::token_binding::TokenBindingSession::from_challenge(
         handshake_key.as_str(),
         challenge,
-        #[cfg(feature = "tls")]
-        client_fingerprint.and_then(|tracker| tracker.fingerprint()),
-        #[cfg(not(feature = "tls"))]
-        None,
+        selected_fingerprint,
     )?;
     Ok((stream, WebSocketTokenBinding::Active(Some(session))))
 }
@@ -425,6 +454,25 @@ pub struct WebSocketConnectOptions {
     ///
     /// Defaults to 10 seconds and is ignored when token binding is not selected.
     pub token_binding_challenge_timeout: std::time::Duration,
+    /// Require that token-binding proofs bind to a real X.509 client
+    /// certificate (opt-in local enforcement of the strictest mTLS profile).
+    ///
+    /// Defaults to `false`, which mirrors the server-side contract: proofs
+    /// simply omit the fingerprint claim when no client certificate is
+    /// selected, and enforcement stays with the server's profile. When
+    /// `true`, the connect fails with
+    /// [`TokenBindingFailure::MissingClientFingerprint`](crate::TokenBindingFailure::MissingClientFingerprint)
+    /// — before any network I/O when the path cannot satisfy the policy, or
+    /// after the handshake when rustls completed it without selecting an
+    /// X.509 client signer — letting deployments enforce the stricter
+    /// contract locally instead of trusting the server to. Optional mode's
+    /// unsigned fallback connection produces no proofs at all and fails the
+    /// same way, so the policy can never be silently skipped.
+    ///
+    /// Only [`WebSocketTransport::connect_with_tls_config`] with token
+    /// binding enabled can ever satisfy the policy; every other connect path
+    /// rejects it up front.
+    pub require_client_fingerprint: bool,
 }
 
 impl Default for WebSocketConnectOptions {
@@ -435,6 +483,7 @@ impl Default for WebSocketConnectOptions {
             max_inbound_message_size: Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE),
             token_binding: TokenBindingMode::Disabled,
             token_binding_challenge_timeout: std::time::Duration::from_secs(10),
+            require_client_fingerprint: false,
         }
     }
 }
@@ -477,6 +526,17 @@ impl WebSocketConnectOptions {
     #[must_use]
     pub fn with_token_binding_challenge_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.token_binding_challenge_timeout = timeout;
+        self
+    }
+
+    /// Set whether token-binding proofs must bind to an X.509 client
+    /// certificate.
+    ///
+    /// See [`require_client_fingerprint`](Self::require_client_fingerprint).
+    /// Defaults to `false`.
+    #[must_use]
+    pub fn with_require_client_fingerprint(mut self, require: bool) -> Self {
+        self.require_client_fingerprint = require;
         self
     }
 }
@@ -707,6 +767,9 @@ impl WebSocketTransport {
     /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) before URL
     /// parsing or network I/O. When token binding is requested without the
     /// `token-binding` feature, its feature-disabled error takes precedence.
+    /// The `require_client_fingerprint` policy always fails before network
+    /// I/O here with [`SignalFishError::TokenBinding`], because this path can
+    /// never observe a certificate selection.
     pub async fn connect_with_options(
         url: &str,
         options: WebSocketConnectOptions,
@@ -717,6 +780,7 @@ impl WebSocketTransport {
                 crate::TokenBindingFailure::FeatureDisabled,
             ));
         }
+        reject_unsatisfiable_client_fingerprint_requirement(&options)?;
         let websocket_config = websocket_config(options)?;
 
         #[cfg(feature = "tls")]
@@ -787,7 +851,10 @@ impl WebSocketTransport {
     /// [`connect_with_options`](Self::connect_with_options), including
     /// [`SignalFishError::Io`] with
     /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) for a zero
-    /// inbound size limit.
+    /// inbound size limit. The `require_client_fingerprint` policy fails
+    /// before network I/O when token binding is disabled (no proofs exist to
+    /// bind), and after the handshake when rustls selected no X.509 client
+    /// signer or Optional mode fell back to an unsigned connection.
     #[cfg(feature = "tls")]
     pub async fn connect_with_tls_config(
         url: &str,
@@ -799,6 +866,14 @@ impl WebSocketTransport {
             return Err(SignalFishError::TokenBinding(
                 crate::TokenBindingFailure::FeatureDisabled,
             ));
+        }
+        #[cfg(not(feature = "token-binding"))]
+        reject_unsatisfiable_client_fingerprint_requirement(&options)?;
+        #[cfg(feature = "token-binding")]
+        if options.token_binding == TokenBindingMode::Disabled {
+            // A disabled connection produces no proofs, so a fingerprint
+            // requirement can never be observed or enforced.
+            reject_unsatisfiable_client_fingerprint_requirement(&options)?;
         }
         let websocket_config = websocket_config(options)?;
 
@@ -1563,6 +1638,74 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn required_client_fingerprint_fails_before_io_on_plain_connect_paths() {
+        // `not-a-valid-url` proves the rejection happens before URL parsing:
+        // no path without a custom-rustls token-binding connect can observe a
+        // certificate selection, so the policy must fail closed immediately.
+        let result = WebSocketTransport::connect_with_options(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new()
+                .with_require_client_fingerprint(true)
+                .with_max_inbound_message_size(Some(0)),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingClientFingerprint
+            ))
+        ));
+    }
+
+    #[cfg(all(feature = "tls", not(feature = "token-binding")))]
+    #[tokio::test]
+    async fn required_client_fingerprint_fails_closed_without_the_feature_on_custom_tls() {
+        let tls_config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let result = WebSocketTransport::connect_with_tls_config(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new().with_require_client_fingerprint(true),
+            tls_config,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingClientFingerprint
+            ))
+        ));
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[tokio::test]
+    async fn required_client_fingerprint_fails_fast_without_token_binding_on_custom_tls() {
+        // Disabled token binding produces no proofs, so the requirement is
+        // unsatisfiable and must be rejected before network I/O.
+        let tls_config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let result = WebSocketTransport::connect_with_tls_config(
+            "not-a-valid-url",
+            WebSocketConnectOptions::new()
+                .with_require_client_fingerprint(true)
+                .with_max_inbound_message_size(Some(0)),
+            tls_config,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingClientFingerprint
+            ))
+        ));
+    }
+
     // ── Mock-stream helpers ──────────────────────────────────────────────
 
     use tokio::net::TcpListener;
@@ -1732,6 +1875,136 @@ mod tests {
         assert!(matches!(
             crate::transport::recv_frame(&mut transport).await,
             Some(Err(SignalFishError::TransportReceive(_)))
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[tokio::test]
+    async fn required_client_fingerprint_fails_after_an_unobserved_certificate_selection() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fingerprint listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("fingerprint listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept");
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get(SEC_WEBSOCKET_PROTOCOL)
+                            .and_then(|value| value.to_str().ok()),
+                        Some(crate::token_binding::TOKEN_BINDING_SUBPROTOCOL)
+                    );
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("handshake must succeed");
+            ws.send(Message::Text(challenge_json().into()))
+                .await
+                .expect("server must send challenge");
+            // The client must reject the fingerprint-less selection and drop
+            // the connection instead of producing unsigned proofs.
+            let _dropped = ws.next().await;
+        });
+
+        let tls_config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let result = WebSocketTransport::connect_with_tls_config(
+            &format!("ws://{addr}"),
+            required_token_binding_options().with_require_client_fingerprint(true),
+            tls_config,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingClientFingerprint
+            ))
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(all(feature = "tls", feature = "token-binding"))]
+    #[tokio::test]
+    async fn required_client_fingerprint_fails_the_optional_unsigned_fallback() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fallback listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("fallback listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (first, _) = listener.accept().await.expect("server must accept offer");
+            // Complete the upgrade without selecting the offered subprotocol:
+            // the exact server behavior that permits an unsigned fallback.
+            let mut first = tokio_tungstenite::accept_hdr_async(
+                first,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert!(request.headers().get(SEC_WEBSOCKET_PROTOCOL).is_some());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("unsigned-capable first upgrade must succeed");
+            let _closed_first_attempt = first.next().await;
+
+            let (second, _) = listener
+                .accept()
+                .await
+                .expect("server must accept fallback");
+            let mut second = tokio_tungstenite::accept_hdr_async(
+                second,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert!(request.headers().get(SEC_WEBSOCKET_PROTOCOL).is_none());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("unsigned fallback handshake must succeed");
+            // The client must reject the fallback and drop the connection.
+            let _dropped = second.next().await;
+        });
+
+        let tls_config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let result = WebSocketTransport::connect_with_tls_config(
+            &format!("ws://{addr}"),
+            WebSocketConnectOptions::new()
+                .with_token_binding(TokenBindingMode::Optional)
+                .with_require_client_fingerprint(true),
+            tls_config,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SignalFishError::TokenBinding(
+                crate::TokenBindingFailure::MissingClientFingerprint
+            ))
         ));
         finish_mock_server(server_task).await;
     }
