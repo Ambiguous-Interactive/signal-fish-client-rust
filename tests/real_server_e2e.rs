@@ -38,9 +38,11 @@ use sha2::{Digest as _, Sha256};
 use signal_fish_client::protocol::GameDataEncoding;
 #[cfg(all(feature = "tls", feature = "token-binding", feature = "polling-client"))]
 use signal_fish_client::SignalFishPollingClient;
+#[cfg(all(feature = "tls", feature = "token-binding"))]
+use signal_fish_client::TokenBindingFailure;
 use signal_fish_client::{
     ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
-    SignalFishEvent, TokenBindingFailure, WebSocketTransport,
+    SignalFishEvent, WebSocketTransport,
 };
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use signal_fish_client::{TokenBindingMode, TokenBindingStatus, WebSocketConnectOptions};
