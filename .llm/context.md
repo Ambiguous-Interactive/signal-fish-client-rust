@@ -46,7 +46,11 @@ For every GitHub operation, follow
 `skills/github-operations/SKILL.md`: prefer the VS Code GitHub
 connector/extension first, use local `git` second, and use GitHub CLI (`gh`)
 only as the final fallback. Missing `gh` authentication does not block a
-connector- or `git`-capable workflow.
+connector- or `git`-capable workflow: the connector brokers HTTPS credentials
+to local tools via the registered `git credential helper`, which is the
+documented bridge for running otherwise-blocked `gh` commands (see the
+skill's "Concretely reaching each layer" section for detection commands and
+secret-handling rules verified in session 070).
 
 ## CI/CD Action Reference Policy
 
