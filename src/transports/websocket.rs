@@ -54,15 +54,17 @@ const DEFAULT_MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
 /// Classify post-request-construction connect failures.
 ///
-/// `Url` errors remaining at this point are value- or build-determined gaps —
-/// an unsupported scheme, no host, or `wss://` without the `tls` feature —
-/// never network outcomes, so they stay `InvalidConfig`. Every reachable
-/// `UrlError` formats as static text (the blocking-only `UnableToConnect`
-/// that embeds the URL is unreachable on these async paths), so echoing the
-/// message stays inside the ambient-log boundary. `HttpFormat` here means
-/// tungstenite could not parse the server's own handshake response after the
-/// connection was established — a runtime server fault, which keeps the
-/// generic `Io` mapping instead of blaming the caller's configuration.
+/// `validate_request_url` classifies every client-side request-construction
+/// failure before I/O, so a `Url` error reaching this function is a
+/// defense-in-depth catch (for example an exotic scheme rejected after the
+/// pre-check) and stays `InvalidConfig`: value- or build-determined, never a
+/// network outcome. Every reachable `UrlError` formats as static text (the
+/// blocking-only `UnableToConnect` that embeds the URL is unreachable on
+/// these async paths), so echoing the message stays inside the ambient-log
+/// boundary. `HttpFormat` here means tungstenite could not parse the
+/// server's own handshake response after the connection was established — a
+/// runtime server fault, which keeps the generic `Io` mapping instead of
+/// blaming the caller's configuration.
 fn map_connect_error(error: WebSocketError) -> SignalFishError {
     match &error {
         WebSocketError::Url(_) => SignalFishError::InvalidConfig {
@@ -90,8 +92,17 @@ fn map_request_config_error(error: WebSocketError) -> SignalFishError {
 /// Build the WebSocket handshake request from `url` to validate it before any
 /// network I/O, so unparseable URLs report `InvalidConfig` and post-connect
 /// `HttpFormat` server-response failures cannot be mislabeled as
-/// configuration errors.
+/// configuration errors. The `wss://` feature check mirrors tungstenite's
+/// lowercase-only scheme handling and moves the missing-`tls` failure before
+/// the TCP connect so the classification does not depend on network order.
 fn validate_request_url(url: &str) -> Result<(), SignalFishError> {
+    #[cfg(not(feature = "tls"))]
+    if url.starts_with("wss://") {
+        return Err(SignalFishError::InvalidConfig {
+            field: "url",
+            problem: "wss:// requires the opt-in `tls` feature".into(),
+        });
+    }
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     url.into_client_request()
         .map_err(map_request_config_error)?;
@@ -1492,7 +1503,7 @@ mod tests {
         .expect_err("zero must not create a degenerate WebSocket codec");
         assert_eq!(
             error.to_string(),
-            "invalid configuration: max_inbound_message_size must be greater than zero or None"
+            "invalid configuration: max_inbound_message_size: must be greater than zero or None"
         );
     }
 
@@ -1670,6 +1681,37 @@ mod tests {
             !err.to_string().contains("not-a-valid-url"),
             "URL parse failures must not echo the caller's URL: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn unparseable_url_is_invalid_config_from_the_pre_connect_check() {
+        // A space makes `Uri::from_str` fail, which tungstenite classifies as
+        // `HttpFormat` — post-connect that would be a server fault mapped to
+        // `Io`, so this pin holds only while the pre-connect request
+        // construction classifies it as caller configuration.
+        let error = WebSocketTransport::connect("ws://exa mple.invalid")
+            .await
+            .expect_err("a URL that cannot be parsed must fail before I/O");
+        assert!(matches!(
+            error,
+            SignalFishError::InvalidConfig { field: "url", .. }
+        ));
+        assert!(
+            !error.to_string().contains("exa mple.invalid"),
+            "URL parse failures must not echo the caller's URL: {error}"
+        );
+    }
+
+    #[cfg(not(feature = "tls"))]
+    #[tokio::test]
+    async fn wss_url_without_the_tls_feature_is_invalid_config_before_io() {
+        let error = WebSocketTransport::connect("wss://example.invalid")
+            .await
+            .expect_err("wss:// without the tls feature must fail before I/O");
+        assert!(matches!(
+            error,
+            SignalFishError::InvalidConfig { field: "url", .. }
+        ));
     }
 
     #[tokio::test]

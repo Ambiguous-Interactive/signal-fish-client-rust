@@ -19,10 +19,12 @@ use thiserror::Error;
 pub enum SignalFishError {
     /// Failed to send a message through the transport. The boxed cause is
     /// the backend's original error (`#[source]`): `Error::source()` reaches
-    /// the root cause for programmatic handling (for example downcasting to
-    /// `std::io::Error` to read its `ErrorKind`). Display keeps the cause's
-    /// own message. Construct from any `Error + Send + Sync + 'static`, or
-    /// from a string detail (`"refused".into()`).
+    /// it for programmatic handling. The built-in native WebSocket boxes the
+    /// backend's own `tungstenite::Error`, whose chain reaches the underlying
+    /// `std::io::Error` one hop down; custom transports box whatever error
+    /// they produce. Display keeps the cause's own message. Construct from
+    /// any `Error + Send + Sync + 'static`, or from a string detail
+    /// (`"refused".into()`).
     #[error("transport send error: {0}")]
     TransportSend(#[source] Box<dyn std::error::Error + Send + Sync>),
 
@@ -84,6 +86,15 @@ pub enum SignalFishError {
     /// An operation timed out.
     #[error("operation timed out")]
     Timeout,
+
+    /// A caller-supplied configuration value (or required build feature) was
+    /// rejected before any network I/O. `problem` is non-secret and safe for
+    /// ambient logs.
+    #[error("invalid configuration: {field}: {problem}")]
+    InvalidConfig {
+        field: &'static str,
+        problem: String,
+    },
 
     /// An I/O error occurred.
     #[error("I/O error: {0}")]

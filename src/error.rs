@@ -100,31 +100,25 @@ pub enum SignalFishError {
     ///
     /// The boxed cause is the transport backend's original error, so
     /// [`Error::source`](std::error::Error::source) reaches the root cause for
-    /// programmatic handling — for example
-    /// `error.source().downcast_ref::<std::io::Error>()` to read its
-    /// [`ErrorKind`](std::io::ErrorKind). The `Display` text is the cause's
-    /// own message; the variant is safe to format in ambient logs.
+    /// programmatic handling. The built-in native WebSocket transport boxes
+    /// the backend's own `tungstenite::Error`, whose `source()` chain then
+    /// reaches the underlying [`std::io::Error`] when there is one; custom
+    /// transports box whatever error they produce (an `io::Error`, a typed
+    /// backend error, or a plain string detail via `.into()`). The `Display`
+    /// text is the cause's own message; the variant is safe to format in
+    /// ambient logs.
     ///
-    /// Custom transport implementations construct this from any
-    /// `std::error::Error + Send + Sync + 'static` value; a plain string
-    /// detail also converts (`"refused".into()`). When a cause's own `Debug`
-    /// would embed application payload bytes (for example `std::ffi::NulError`
-    /// retains the whole input vector), box its `Display` text instead.
+    /// When a cause's own `Debug` would embed application payload bytes (for
+    /// example `std::ffi::NulError` retains the whole input vector), box its
+    /// `Display` text instead.
     #[error("transport send error: {0}")]
     TransportSend(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Failed to receive a message from the transport.
     ///
-    /// The boxed cause is the transport backend's original error, so
-    /// [`Error::source`](std::error::Error::source) reaches the root cause for
-    /// programmatic handling — for example
-    /// `error.source().downcast_ref::<std::io::Error>()` to read its
-    /// [`ErrorKind`](std::io::ErrorKind). The `Display` text is the cause's
-    /// own message; the variant is safe to format in ambient logs.
-    ///
-    /// Custom transport implementations construct this from any
-    /// `std::error::Error + Send + Sync + 'static` value; a plain string
-    /// detail also converts (`"reset".into()`).
+    /// The boxed cause follows the same structure as
+    /// [`TransportSend`](SignalFishError::TransportSend): `Error::source()`
+    /// reaches the backend's original error for programmatic handling.
     #[error("transport receive error: {0}")]
     TransportReceive(#[source] Box<dyn std::error::Error + Send + Sync>),
 
@@ -290,15 +284,16 @@ pub enum SignalFishError {
     Timeout,
 
     /// A caller-supplied configuration value was rejected because the value
-    /// itself is unusable.
+    /// itself is unusable, before any network I/O.
     ///
-    /// Raised when a URL, connect option, or transport setting is invalid on
-    /// its face — for example a zero inbound-size limit, a URL that cannot be
-    /// parsed into a WebSocket request, or a URL containing interior NUL
-    /// bytes. The failure is determined by the value (or by a missing build
-    /// feature), not by a network outcome: retrying without correcting the
-    /// value keeps failing.
-    #[error("invalid configuration: {field} {problem}")]
+    /// Raised when a URL, connect option, transport setting, or required
+    /// build feature is invalid on its face — for example a zero
+    /// inbound-size limit, a URL that cannot be parsed into a WebSocket
+    /// request, a URL containing interior NUL bytes, or `wss://` without the
+    /// opt-in `tls` feature. The failure is determined by the value or the
+    /// build, not by a network outcome: retrying without correcting it keeps
+    /// failing.
+    #[error("invalid configuration: {field}: {problem}")]
     InvalidConfig {
         /// The rejected configuration field, option, or parameter name.
         field: &'static str,
@@ -390,6 +385,8 @@ mod tests {
         use std::error::Error as _;
         use std::io::ErrorKind;
 
+        // Custom transports box the error they produce; a directly boxed
+        // `io::Error` is reachable in one `source()` hop.
         let send = SignalFishError::TransportSend(Box::new(std::io::Error::new(
             ErrorKind::ConnectionRefused,
             "refused by peer",
@@ -401,12 +398,35 @@ mod tests {
             .map(std::io::Error::kind);
         assert_eq!(kind, Some(ErrorKind::ConnectionRefused));
 
-        let receive = SignalFishError::TransportReceive("connection reset".to_string().into());
+        // The built-in native WebSocket boxes the backend's own error
+        // (`tungstenite::Error`), whose chain reaches the underlying
+        // `io::Error` one hop further down.
+        #[derive(Debug)]
+        struct BackendError(std::io::Error);
+        impl std::fmt::Display for BackendError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "backend io failure: {}", self.0)
+            }
+        }
+        impl std::error::Error for BackendError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let receive = SignalFishError::TransportReceive(Box::new(BackendError(
+            std::io::Error::new(ErrorKind::ConnectionReset, "connection reset"),
+        )));
         assert_eq!(
             receive.to_string(),
-            "transport receive error: connection reset"
+            "transport receive error: backend io failure: connection reset"
         );
-        assert!(receive.source().is_some());
+        let nested_kind = receive
+            .source()
+            .and_then(|backend| backend.source())
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind);
+        assert_eq!(nested_kind, Some(ErrorKind::ConnectionReset));
     }
 
     #[test]
@@ -417,7 +437,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "invalid configuration: max_inbound_message_size must be greater than zero or None"
+            "invalid configuration: max_inbound_message_size: must be greater than zero or None"
         );
     }
 }

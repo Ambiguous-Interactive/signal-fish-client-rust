@@ -157,17 +157,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignalFishError::TransportSend` and `TransportReceive` now carry the
   backend's boxed original error (as the `#[source]` cause) instead of a
   flattened `String`, so `std::error::Error::source()` reaches the root cause
-  and programmatic handling — for example distinguishing `ConnectionRefused`
-  from `Capacity` via `source().downcast_ref::<std::io::Error>()` — is
-  possible at runtime. `Display` text is unchanged, and custom transports
-  construct the variants from any `Error + Send + Sync` value or a plain
-  string detail as before.
+  for programmatic handling: the built-in native WebSocket boxes the
+  backend's own `tungstenite::Error` (whose chain reaches the underlying
+  `std::io::Error`), and custom transports box whatever error they produce.
+  `Display` text is unchanged; a plain string detail still converts via
+  `.into()`.
 - **Breaking:** Misconfiguration no longer wears an I/O costume. The new
   exhaustive `SignalFishError::InvalidConfig { field, problem }` variant
-  reports caller-supplied values rejected because they are unusable — a zero
+  reports caller-supplied values rejected before any network I/O — a zero
   `max_inbound_message_size`/`max_inbound_queue_bytes`, a URL that cannot be
   parsed into a WebSocket request (native; Godot's `ERR_INVALID_PARAMETER`),
-  or a URL containing interior NUL bytes (Emscripten) — instead of `Io` with
+  a URL containing interior NUL bytes (Emscripten), and `wss://` without the
+  opt-in `tls` feature — instead of `Io` with
   `ErrorKind::InvalidInput`/`Other`. Failures determined by the engine or the
   network (Godot's `ERR_UNAVAILABLE`/`FAILED`, malformed server handshake
   responses, HTTP upgrade rejections) keep the `Io` classification.

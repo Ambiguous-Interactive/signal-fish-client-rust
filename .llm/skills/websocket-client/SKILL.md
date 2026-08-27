@@ -27,10 +27,12 @@ to tungstenite's frame and assembled-message limits together. The default is
 an inclusive 8 MiB; `None` disables both and `Some(0)` is rejected before
 network I/O. This is a protective client policy, not a Server 0.7 protocol
 maximum; signal-fish-server#399 tracks the missing outbound contract.
-Connection failures map to `SignalFishError::Io`, preserving an underlying I/O
-error kind when possible. Configuration rejected on its face — an unparseable
-URL or a zero inbound-size limit — is the typed
-`SignalFishError::InvalidConfig { field, problem }` instead.
+Network-determined connection failures map to `SignalFishError::Io`,
+preserving an underlying I/O error kind when possible. Value- and
+build-determined rejections — an unparseable URL, a zero inbound-size limit,
+or `wss://` without the `tls` feature — are the typed
+`SignalFishError::InvalidConfig { field, problem }` instead, decided before
+any network I/O.
 
 The opt-in `token-binding` feature adds `TokenBindingMode` to
 `WebSocketConnectOptions`. Keep disabled mode on the exact old connect path.
