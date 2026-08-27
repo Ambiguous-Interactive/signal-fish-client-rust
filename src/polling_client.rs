@@ -318,6 +318,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// are offered on every `poll()` call regardless of readiness. A transport
     /// that is still connecting returns `Pending`, leaving the exact frame
     /// caller-owned for a later poll.
+    #[must_use = "dropping the returned events discards this poll cycle's deliveries"]
     pub fn poll(&mut self) -> Vec<SignalFishEvent> {
         self.poll_at(Instant::now())
     }
@@ -2328,7 +2329,7 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
-        client.poll();
+        let _ = client.poll();
 
         // The authenticate message should have been sent via the transport.
         assert!(
@@ -2351,7 +2352,7 @@ mod tests {
         let config = SignalFishConfig::new("mb_mesh").enable_mesh();
         let mut client = SignalFishPollingClient::new(transport, config);
 
-        client.poll();
+        let _ = client.poll();
 
         let sent_json: serde_json::Value = serde_json::from_str(&client.transport.sent[0])
             .expect("first sent message must be valid JSON");
@@ -2398,9 +2399,9 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll();
+        let _ = client.poll();
         client.start_game().expect("start_game");
-        client.poll();
+        let _ = client.poll();
         assert!(last_sent(&client)
             .iter()
             .any(|m| matches!(m, ClientMessage::StartGame)));
@@ -2411,7 +2412,7 @@ mod tests {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
-        client.poll();
+        let _ = client.poll();
         assert!(client.negotiated_protocol_version().is_none());
         assert!(!client.supports_mesh());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
@@ -2421,7 +2422,7 @@ mod tests {
             Err(SignalFishError::NotInRoom)
         ));
         // Nothing v3 reached the wire (the guard runs before enqueue).
-        client.poll();
+        let _ = client.poll();
         assert!(last_sent(&client)
             .iter()
             .all(|m| !matches!(m, ClientMessage::Signal { .. })));
@@ -2438,7 +2439,7 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
         prime_room(&mut client);
         assert!(client.negotiated_protocol_version().is_none());
         let peer: PlayerId = PEER_UUID.parse().unwrap();
@@ -2457,7 +2458,7 @@ mod tests {
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
-        client.poll();
+        let _ = client.poll();
         assert!(client.supports_mesh());
         client.close();
         assert!(client.negotiated_protocol_version().is_none());
@@ -2490,11 +2491,11 @@ mod tests {
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
         client.send_offer(peer, "the-sdp").expect("send_offer");
-        client.poll();
+        let _ = client.poll();
         let signal = last_sent(&client).into_iter().find_map(|m| match m {
             ClientMessage::Signal { to, signal, .. } if to == peer => Some(signal),
             _ => None,
@@ -2511,13 +2512,13 @@ mod tests {
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
         client.send_answer(peer, "ans").expect("send_answer");
         client.send_ice_candidate(peer, "cand").expect("send_ice");
         client
             .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
             .expect("send_raw_signal");
-        client.poll();
+        let _ = client.poll();
         let signals: Vec<serde_json::Value> = last_sent(&client)
             .into_iter()
             .filter_map(|m| match m {
@@ -2535,11 +2536,11 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_v3_room(&mut client);
-        client.poll();
+        let _ = client.poll();
         client
             .report_transport_status(TransportKind::WebRtc, true)
             .expect("report_transport_status");
-        client.poll();
+        let _ = client.poll();
         assert!(last_sent(&client).iter().any(|m| matches!(
             m,
             ClientMessage::TransportStatus {
@@ -2556,7 +2557,7 @@ mod tests {
             Some(Ok(PROTOCOL_INFO_V3.to_string())),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
-        client.poll();
+        let _ = client.poll();
         assert!(client.supports_mesh());
         client.close();
         assert_eq!(client.negotiated_protocol_version(), None);
@@ -2623,11 +2624,11 @@ mod tests {
             Some(Ok(reconnected)),
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
-        client.poll();
+        let _ = client.poll();
         client
             .reconnect(local, uuid::Uuid::from_u128(100), "submitted-token".into())
             .expect("reconnect must queue");
-        client.poll();
+        let _ = client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(3));
         assert!(client.supports_mesh());
         assert!(matches!(
@@ -2649,7 +2650,7 @@ mod tests {
         let transport = MockTransport::new().with_incoming(incoming);
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
         assert_eq!(client.negotiated_protocol_version(), Some(4));
         assert!(client.supports_mesh());
         client.send_offer(peer, "sdp").expect("v4 must enable mesh");
@@ -2741,7 +2742,7 @@ mod tests {
         ));
         let mut client = SignalFishPollingClient::new(transport, default_config().enable_mesh());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
         assert_eq!(client.snapshot().session_generation, Some(second));
 
         for result in [
@@ -2760,7 +2761,7 @@ mod tests {
                 }) if value == first && now == second
             ));
         }
-        client.poll();
+        let _ = client.poll();
         assert!(last_sent(&client)
             .iter()
             .all(|message| !matches!(message, ClientMessage::Signal { .. })));
@@ -2910,7 +2911,7 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
         assert!(!client.is_authenticated());
-        client.poll();
+        let _ = client.poll();
         assert!(client.is_authenticated());
     }
 
@@ -2929,7 +2930,7 @@ mod tests {
         assert!(client.current_room_id().is_none());
         assert!(client.current_room_code().is_none());
 
-        client.poll();
+        let _ = client.poll();
 
         let expected_room_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001"
             .parse()
@@ -2950,7 +2951,7 @@ mod tests {
 
         // First poll sends Authenticate, emits Connected, and consumes
         // Authenticated.
-        client.poll();
+        let _ = client.poll();
         assert!(client.is_authenticated());
 
         // Now join a room.
@@ -2959,7 +2960,7 @@ mod tests {
             .expect("join_room must succeed on an authenticated client");
 
         // Poll again to flush the join_room command.
-        client.poll();
+        let _ = client.poll();
 
         // The last sent message should be a JoinRoom command.
         let last_sent = client
@@ -2982,7 +2983,7 @@ mod tests {
         // lifecycle gates would never release.
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll(); // Connected + Authenticate flushed
+        let _ = client.poll(); // Connected + Authenticate flushed
 
         let result = client.join_room(JoinRoomParams::new("test-game", "Alice"));
         assert!(
@@ -3009,7 +3010,7 @@ mod tests {
         client
             .join_room(JoinRoomParams::new("test-game", "Alice"))
             .expect("join_room must be admitted once authenticated");
-        client.poll();
+        let _ = client.poll();
         let last_sent = client
             .transport
             .sent
@@ -3272,13 +3273,13 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         admit_player_join(&mut client);
 
-        client.poll();
+        let _ = client.poll();
         admit_player_leave(&mut client);
         client
             .transport
             .incoming
             .push_back(Some(Ok(TransportFrame::Text(room_left_json.to_string()))));
-        client.poll();
+        let _ = client.poll();
 
         assert!(client.current_room_id().is_none());
         assert!(client.current_room_code().is_none());
@@ -3297,7 +3298,7 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
 
-        client.poll();
+        let _ = client.poll();
         client
             .reconnect(
                 "00000000-0000-0000-0000-000000000003"
@@ -3342,7 +3343,7 @@ mod tests {
         let mut client = SignalFishPollingClient::new(transport, default_config());
         admit_spectator_join(&mut client);
 
-        client.poll();
+        let _ = client.poll();
 
         let expected_player_id: uuid::Uuid = "00000000-0000-0000-0000-000000000004"
             .parse()
@@ -3792,12 +3793,12 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .leave_room()
             .expect("leave_room must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3814,12 +3815,12 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .send_game_data(serde_json::json!({"score": 42}))
             .expect("send_game_data must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3837,12 +3838,12 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .set_ready()
             .expect("set_ready must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3859,12 +3860,12 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .request_authority(true)
             .expect("request_authority must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3882,7 +3883,7 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .provide_connection_info(ConnectionInfo::Direct {
@@ -3890,7 +3891,7 @@ mod tests {
                 port: 7777,
             })
             .expect("provide_connection_info must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3909,7 +3910,7 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .provide_connection_info(ConnectionInfo::Relay {
@@ -3921,7 +3922,7 @@ mod tests {
                 client_id: Some(7),
             })
             .expect("provide_connection_info (relay) must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3945,14 +3946,14 @@ mod tests {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         let player_id = uuid::Uuid::from_u128(1);
         let room_id = uuid::Uuid::from_u128(2);
         client
             .reconnect(player_id, room_id, "token123".into())
             .expect("reconnect must succeed on authenticated client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3972,12 +3973,12 @@ mod tests {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .join_as_spectator("my-game".into(), "ROOM1".into(), "Spectator1".into())
             .expect("join_as_spectator must succeed on authenticated client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -3997,12 +3998,12 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_spectator(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .leave_spectator()
             .expect("leave_spectator must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -4018,12 +4019,12 @@ mod tests {
     fn ping_queues_command() {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .ping()
             .expect("ping must succeed on connected client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -4040,7 +4041,7 @@ mod tests {
         let transport = MockTransport::new()
             .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         let params = JoinRoomParams::new("strategy-game", "Bob")
             .with_max_players(8)
@@ -4050,7 +4051,7 @@ mod tests {
         client
             .join_room(params)
             .expect("join_room must succeed on authenticated client");
-        client.poll();
+        let _ = client.poll();
 
         let last_sent = client
             .transport
@@ -4523,7 +4524,7 @@ mod tests {
 
         let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
         let mut client = SignalFishPollingClient::new(transport, default_config());
-        client.poll();
+        let _ = client.poll();
         client
             .reconnect(
                 uuid::Uuid::from_u128(20),
@@ -5930,7 +5931,7 @@ mod tests {
         let transport = MockTransport::new();
         let mut client = SignalFishPollingClient::new(transport, default_config());
         prime_room(&mut client);
-        client.poll(); // flush auth
+        let _ = client.poll(); // flush auth
 
         client
             .leave_room()
@@ -5943,7 +5944,7 @@ mod tests {
             .ping()
             .expect("ping must succeed on connected client");
 
-        client.poll();
+        let _ = client.poll();
 
         // Ping remains connection-scoped while the admitted leave fences all
         // further room operations until the server confirms the transition.
@@ -5986,7 +5987,7 @@ mod tests {
         ]);
         let mut client = SignalFishPollingClient::new(transport, default_config());
         admit_player_join(&mut client);
-        client.poll();
+        let _ = client.poll();
 
         // Verify state is populated.
         assert!(client.is_connected());
@@ -6048,7 +6049,7 @@ mod tests {
             .expect("ping must succeed on connected client");
 
         // Second poll: sends the ping.
-        client.poll();
+        let _ = client.poll();
 
         // Verify the Ping message was sent.
         let ping_sent = client.transport.sent.iter().any(|s| {

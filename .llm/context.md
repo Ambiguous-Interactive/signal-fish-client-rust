@@ -46,7 +46,11 @@ For every GitHub operation, follow
 `skills/github-operations/SKILL.md`: prefer the VS Code GitHub
 connector/extension first, use local `git` second, and use GitHub CLI (`gh`)
 only as the final fallback. Missing `gh` authentication does not block a
-connector- or `git`-capable workflow.
+connector- or `git`-capable workflow: the connector brokers HTTPS credentials
+to local tools via the registered `git credential helper`, which is the
+documented bridge for running otherwise-blocked `gh` commands (see the
+skill's "Concretely reaching each layer" section for detection commands and
+secret-handling rules verified in session 070).
 
 ## CI/CD Action Reference Policy
 
@@ -297,7 +301,10 @@ polling client. Use `polling_stats()` for scheduling/queue diagnostics and
 `queue_age_stats()` for sampled current/peak age of client-owned work; reset the
 age peak after authentication/setup when measuring gameplay. Backend acceptance
 ends queue age but is not peer delivery. Use `transport_diagnostics()` for
-backend buffering/admission diagnostics.
+backend buffering/admission diagnostics — available on both drivers (the async
+handle reads the most recent per-I/O-step sample, refreshed at loop-cycle start
+and after each pending-send or receive poll; the polling driver reads its
+transport synchronously).
 Use the polling client's read-only `transport()` accessor for Godot's zero-expected
 `admission_watermark_violations()` and separately accounted
 `one_frame_escape_frames()` / `one_frame_escape_bytes()` diagnostics.

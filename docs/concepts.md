@@ -332,6 +332,7 @@ simultaneous send + receive pressure.
 | `is_transport_ready()` | No | `bool` |
 | `is_authenticated()` | No | `bool` |
 | `snapshot()` | No | `ClientSnapshot` |
+| `transport_diagnostics()` | No | `TransportDiagnostics` |
 | `room_role()` | No | `Option<RoomRole>` |
 | `negotiated_protocol_version()` | No | `Option<u16>` |
 | `supports_mesh()` | No | `bool` (negotiated WebRTC + Host/Mesh capability) |

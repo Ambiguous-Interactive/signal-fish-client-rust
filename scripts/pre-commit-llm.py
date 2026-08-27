@@ -220,14 +220,6 @@ def sync_crate_version_references(crate_version: str) -> Tuple[List[str], List[P
                 rf"\g<1>{crate_version}\g<3>",
             )
         ],
-        REPO_ROOT / "docs" / "examples.md": [
-            (
-                re.compile(
-                    r'(signal-fish-client\s*=\s*\{[^}\n]*\bversion\s*=\s*")([^"]+)(")'
-                ),
-                rf"\g<1>{crate_version}\g<3>",
-            )
-        ],
         REPO_ROOT / "docs" / "client.md": [
             (
                 re.compile(r'(sdk_version:\s*Some\(")([^"]+)("\.into\(\)\),)'),

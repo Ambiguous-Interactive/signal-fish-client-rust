@@ -106,7 +106,7 @@ use crate::terminal_drain::{
     close_reason, peer_close_reason, ReadyFrameDrain, ReadyFrameDrainBudget, ReadyFrameDrainPoll,
 };
 #[cfg(feature = "tokio-runtime")]
-use crate::transport::{close_transport, Transport, TransportFrame};
+use crate::transport::{close_transport, Transport, TransportDiagnostics, TransportFrame};
 
 /// Default capacity of the bounded event channel.
 const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -204,7 +204,7 @@ pub(crate) fn decode_binary_server_message(
 ///     .with_event_channel_capacity(512)
 ///     .with_shutdown_timeout(Duration::from_secs(5));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalFishConfig {
     /// Public App ID that identifies the game application.
     pub app_id: String,
@@ -559,7 +559,7 @@ impl std::fmt::Display for RoomRole {
 /// assert_eq!(params.game_name, "my-game");
 /// assert_eq!(params.max_players, Some(4));
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinRoomParams {
     /// Name of the game to join.
     pub game_name: String,
@@ -1560,6 +1560,24 @@ impl SignalFishClient {
         lock_core(&self.state).stats()
     }
 
+    /// Return the backend-owned transport buffering and admission diagnostics
+    /// last observed by the driver loop (see [`TransportDiagnostics`]).
+    ///
+    /// The transport task refreshes its sample at every scheduling step —
+    /// loop-cycle start and each pending-send or receive poll — so a watermark
+    /// or capacity hit that parks an in-flight send is visible to this
+    /// accessor while backpressure is still in flight, not only at the next
+    /// wakeup. This mirrors the polling driver's
+    /// [`transport_diagnostics`](crate::polling_client::SignalFishPollingClient::transport_diagnostics),
+    /// which reads its caller-owned transport synchronously. Use these
+    /// counters to tell command-queue congestion
+    /// ([`SendBufferFull`](crate::SignalFishError::SendBufferFull), shrinking
+    /// [`send_capacity`](Self::send_capacity)) apart from backend watermark or
+    /// capacity deferrals when tuning a deployment.
+    pub fn transport_diagnostics(&self) -> TransportDiagnostics {
+        lock_core(&self.state).transport_diagnostics()
+    }
+
     /// Return a coherent synchronous snapshot of connection and room state.
     pub fn snapshot(&self) -> ClientSnapshot {
         lock_core(&self.state).snapshot()
@@ -2040,6 +2058,11 @@ fn poll_pending_send(
 ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
     let was_client_owned = pending.frame.is_some();
     let result = transport.poll_send(cx, &mut pending.frame);
+    // Resample after every send poll, not only at loop-cycle start: a
+    // watermark or capacity hit increments inside `poll_send` and then parks
+    // here until the backend wakes the task. Without this refresh, callers
+    // reading diagnostics mid-backpressure would see pre-deferral counters.
+    lock_core(state).record_transport_diagnostics(transport.diagnostics());
     if was_client_owned && pending.frame.is_none() && pending.is_game_data {
         lock_core(state).record_game_data_sent();
         pending.is_game_data = false;
@@ -2092,6 +2115,9 @@ async fn poll_transport_io(
         }
 
         let receive = transport.poll_recv(cx);
+        // Backend-owned buffering can also change on the receive path; keep
+        // the sampled view current without waiting for a task wakeup.
+        lock_core(state).record_transport_diagnostics(transport.diagnostics());
         match receive {
             std::task::Poll::Ready(incoming) => {
                 std::task::Poll::Ready(TransportIo::Received(incoming))
@@ -2228,6 +2254,8 @@ async fn transport_loop(
         // One driver scheduling cycle per loop iteration, mirroring each
         // polling-client `poll` call: backends may sample once per cycle.
         transport.begin_poll_cycle();
+        let diagnostics = transport.diagnostics();
+        lock_core(&state).record_transport_diagnostics(diagnostics);
         if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
             connected_emitted = true;
             if matches!(
@@ -2647,6 +2675,8 @@ mod tests {
             Option<Pin<Box<dyn Future<Output = tokio::sync::OwnedSemaphorePermit> + Send>>>,
         /// Count of outbound frames the gate has taken ownership of.
         frames_taken: Arc<std::sync::atomic::AtomicUsize>,
+        /// Diagnostics reported by the mocked backend.
+        diagnostics: crate::transport::TransportDiagnostics,
     }
 
     impl MockTransport {
@@ -2680,6 +2710,7 @@ mod tests {
                 held_frame: None,
                 permit_wait: None,
                 frames_taken: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                diagnostics: crate::transport::TransportDiagnostics::default(),
             };
             (
                 transport,
@@ -2715,6 +2746,10 @@ mod tests {
     }
 
     impl Transport for MockTransport {
+        fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
+            self.diagnostics
+        }
+
         fn abort(&mut self) {
             // Aborting is teardown too: tests observe either graceful close
             // or abort through the same flag.
@@ -2746,6 +2781,21 @@ mod tests {
                 };
                 self.held_frame = Some(accepted);
                 self.frames_taken.fetch_add(1, Ordering::Release);
+                // Model a real admission-gating backend: ownership transfer at
+                // the watermark counts as acceptance, and the deferred
+                // completion path reports one watermark hit per parked send.
+                let payload_len = match &self.held_frame {
+                    Some(TransportFrame::Text(message)) => message.len(),
+                    Some(TransportFrame::Binary(payload)) => payload.len(),
+                    None => 0,
+                };
+                self.diagnostics.accepted_frames =
+                    self.diagnostics.accepted_frames.saturating_add(1);
+                self.diagnostics.accepted_bytes = self
+                    .diagnostics
+                    .accepted_bytes
+                    .saturating_add(payload_len as u64);
+                self.diagnostics.watermark_hits = self.diagnostics.watermark_hits.saturating_add(1);
                 let gate = Arc::clone(gate);
                 self.permit_wait = Some(Box::pin(async move {
                     gate.acquire_owned().await.expect("send gate never closed")
@@ -3282,6 +3332,83 @@ mod tests {
         }
 
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_diagnostics_mirror_the_driver_loop_sample() {
+        let (mut transport, _sent, _closed) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let reported = crate::transport::TransportDiagnostics {
+            current_buffered_bytes: 11,
+            peak_buffered_bytes: 23,
+            effective_watermark_bytes: 4_096,
+            accepted_frames: 3,
+            accepted_bytes: 97,
+            watermark_hits: 1,
+            backend_capacity_hits: 2,
+        };
+        transport.diagnostics = reported;
+
+        let (mut client, _events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_diag"));
+
+        wait_until(|| client.transport_diagnostics().accepted_frames == 3).await;
+        assert_eq!(client.transport_diagnostics(), reported);
+
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn transport_diagnostics_refresh_during_deferred_sends() {
+        // Zero permits: the initial Authenticate takes ownership, then parks
+        // on the gate. A real backend increments its watermark counter at
+        // deferral time — and the mock does the same — so this test fails if
+        // diagnostics are only sampled at loop-cycle start: during the whole
+        // parked window that start sample would keep reporting zeros.
+        let (transport, sent, _closed, _controls, gate, frames_taken) =
+            MockTransport::new_send_gated(vec![Some(Ok(authenticated_json()))], 0);
+
+        let config = SignalFishConfig::new("mb_defer");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        let _ = events.recv().await; // Connected
+
+        wait_until(|| frames_taken.load(Ordering::Acquire) == 1).await;
+        wait_until(|| client.transport_diagnostics().watermark_hits == 1).await;
+        assert_eq!(client.transport_diagnostics().accepted_frames, 1);
+        assert!(sent.lock().unwrap().is_empty(), "still parked behind gate");
+
+        gate.add_permits(1);
+        wait_until(|| !sent.lock().unwrap().is_empty()).await;
+        wait_until(|| {
+            let diagnostics = client.transport_diagnostics();
+            diagnostics.accepted_frames == 1 && diagnostics.accepted_bytes > 0
+        })
+        .await;
+
+        client.shutdown().await;
+    }
+
+    #[test]
+    fn config_and_join_params_support_equality() {
+        let config = SignalFishConfig::new("mb_eq")
+            .with_event_channel_capacity(512)
+            .with_command_channel_capacity(2048);
+        assert_eq!(config, config.clone());
+        assert_ne!(
+            config,
+            SignalFishConfig::new("mb_eq").with_event_channel_capacity(513)
+        );
+        assert_ne!(config, SignalFishConfig::new("mb_other"));
+
+        let params = JoinRoomParams::new("game", "Alice")
+            .with_room_code("ABC123")
+            .with_max_players(4);
+        assert_eq!(params, params.clone());
+        assert_ne!(params, JoinRoomParams::new("game", "Alice"));
+        assert_ne!(
+            params,
+            JoinRoomParams::new("game", "Bob").with_room_code("ABC123")
+        );
     }
 
     #[tokio::test]

@@ -25,7 +25,6 @@ LOCKSTEP_LOCKFILES = (
 VERSION_FILES = (
     "README.md",
     "docs/client.md",
-    "docs/examples.md",
     "docs/getting-started.md",
     "docs/index.md",
     "docs/mesh-guide.md",
@@ -215,23 +214,98 @@ def previous_version(root: Path, version: str) -> str:
 
 
 def unreleased_changelog(root: Path) -> str:
-    """Return the complete Unreleased body without matching prefix headings."""
+    """Return the complete Unreleased body without matching prefix headings.
+
+    Section boundaries are identified with the same CommonMark fence tracking
+    `strip_fenced_blocks` applies, so a fenced example quoting a
+    ``## [version] - date`` heading cannot truncate the section mid-fence and
+    later fail as unterminated. A fence that is still open when the next real
+    section starts (or at end of file) keeps failing closed through the
+    downstream strip.
+    """
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    lines = changelog.splitlines()
     heading = "## [Unreleased]"
-    start = changelog.find(heading)
-    if start < 0:
+    start = next(
+        (index for index, line in enumerate(lines) if line.startswith(heading)),
+        None,
+    )
+    if start is None:
         raise ReleaseError("CHANGELOG.md has no [Unreleased] section")
-    content_start = start + len(heading)
-    end = changelog.find("\n## [", content_start)
-    if end < 0:
-        raise ReleaseError("CHANGELOG.md has no released section after [Unreleased]")
-    return changelog[content_start:end].strip()
+
+    body: list[str] = []
+    fence_char = ""
+    fence_len = 0
+    for line in lines[start + 1 :]:
+        if not fence_char:
+            if line.startswith("## ["):
+                return "\n".join(body).strip()
+            opened = FENCE_OPEN_RE.match(line)
+            if opened is not None:
+                fence_char = opened.group(1)[0]
+                fence_len = len(opened.group(1))
+        else:
+            candidate = line.strip()
+            if (
+                len(candidate) >= fence_len
+                and candidate
+                and set(candidate) == {fence_char}
+            ):
+                fence_char = ""
+        body.append(line)
+    if fence_char:
+        # The section never closed its fence; name the root cause rather than
+        # the missing successor heading.
+        raise ReleaseError(
+            f"{root / 'CHANGELOG.md'} [Unreleased] has an unterminated fenced code block"
+        )
+    raise ReleaseError("CHANGELOG.md has no released section after [Unreleased]")
+
+
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def strip_fenced_blocks(text: str, root: Path) -> str:
+    """Remove fenced code blocks so their contents never parse as changelog.
+
+    Follows CommonMark fence identification: a backtick or tilde fence opens
+    within three leading spaces, and closes only on a line holding solely at
+    least as many identical characters. A fenced snippet containing
+    `### Heading` or `- **Breaking:**` lines is documentation, not release
+    intent; without stripping, either could silently inflate the derived bump,
+    and a balanced stray pair could swallow a real bullet into a phantom fence
+    and silently deflate it. Unbalanced fences are therefore fail-closed too.
+    """
+    lines: list[str] = []
+    fence_char = ""
+    fence_len = 0
+    for line in text.splitlines():
+        if fence_char:
+            candidate = line.strip()
+            if (
+                len(candidate) >= fence_len
+                and candidate
+                and set(candidate) == {fence_char}
+            ):
+                fence_char = ""
+            continue
+        opened = FENCE_OPEN_RE.match(line)
+        if opened is None:
+            lines.append(line)
+            continue
+        fence_char = opened.group(1)[0]
+        fence_len = len(opened.group(1))
+    if fence_char:
+        raise ReleaseError(
+            f"{root / 'CHANGELOG.md'} [Unreleased] has an unterminated fenced code block"
+        )
+    return "\n".join(lines)
 
 
 def release_intent(root: Path) -> dict[str, Any]:
     """Derive the next lockstep release solely from the canonical changelog."""
-    body = unreleased_changelog(root)
-    if not body:
+    body = strip_fenced_blocks(unreleased_changelog(root), root)
+    if not body.strip():
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
     categories = re.findall(r"^### ([^\n]+)[ \t]*$", body, re.MULTILINE)
     if not categories:

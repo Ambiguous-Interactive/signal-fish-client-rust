@@ -341,6 +341,134 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "empty.*Fixed"):
             release.release_intent(self.root)
 
+    def test_release_intent_ignores_flush_left_fenced_changelog_syntax(self) -> None:
+        # The regression this guards: pre-fix parsing read fenced headings and
+        # bullets as release intent, silently inflating the derived bump.
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```text\n### Fixed\n\n- **Breaking:** fenced example text.\n```\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["bump"], "minor")
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_ignores_indented_list_item_fences(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.",
+                "- Good thing.\n\n"
+                "  ```markdown\n"
+                "  ### Surprise\n\n"
+                "  - **Breaking:** fenced snippet text.\n"
+                "  ```",
+            ),
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["bump"], "minor")
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_keeps_bullets_after_commonmark_nested_fence(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "````markdown\n### Fixed\n\n- Innocent sample.\n\n```rust\nlet x = 1;\n```\n"
+            "````\n\n- Fence-adjacent follow-up.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["bump"], "minor")
+        self.assertEqual(intent["semver_policy"], "minor")
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_ignores_tilde_fenced_changelog_syntax(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "~~~\n### Fixed\n\n- **Breaking:** fenced example text.\n~~~\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["bump"], "minor")
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_ignores_fenced_version_heading_example(self) -> None:
+        # A fenced example whose quoted changelog heading sits at line start
+        # previously truncated the [Unreleased] section mid-fence (the naive
+        # `\n## [` boundary search matched it), failing downstream as an
+        # unterminated fence and bricking Prepare Release.
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```markdown\n"
+            "## [1.2.4] - 2026-01-01\n\n- Sample entry inside the example.\n"
+            "```\n\n"
+            "- Follow-up entry after the fenced example.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        intent = release.release_intent(self.root)
+
+        self.assertEqual(intent["bump"], "minor")
+        self.assertFalse(intent["breaking"])
+        self.assertEqual(intent["categories"], ["Added"])
+
+    def test_release_intent_still_fails_closed_when_fence_bleeds_across_sections(
+        self,
+    ) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```markdown\n- example never closed here\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "unterminated fenced"):
+            release.release_intent(self.root)
+
+    def test_release_intent_rejects_unterminated_fence(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.",
+                "- Good thing.\n\n```markdown\n- **Breaking:** never closed.",
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "unterminated fenced"):
+            release.release_intent(self.root)
+
+    def test_release_intent_treats_fence_only_unreleased_as_empty(self) -> None:
+        (self.root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [Unreleased]\n\n```text\n- Looks like an entry.\n```\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(release.ReleaseError, "section is empty"):
+            release.release_intent(self.root)
+
     def test_current_semver_policy_prefers_unreleased_intent(self) -> None:
         changelog = self.root / "CHANGELOG.md"
         changelog.write_text(
@@ -713,6 +841,22 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("toolchain: ${{ env.RELEASE_RUST }}", publish_job)
         self.assertIn('cargo +"${RELEASE_RUST}" publish --dry-run', publish_job)
         self.assertIn('RELEASE_RUST: "1.96.1"', self.ci)
+
+    def test_version_file_inventory_matches_this_checkout(self) -> None:
+        # Guards the release-day inventory against documentation drift like
+        # docs/examples.md losing its version reference in 3f38367, which made
+        # every Prepare Release run fail before writing anything.
+        root = Path(__file__).resolve().parents[1]
+        version = release.package_version(root)
+        for relative in release.VERSION_FILES:
+            with self.subTest(file=relative):
+                path = root / relative
+                self.assertTrue(path.is_file(), f"{relative} is missing")
+                self.assertIn(
+                    version,
+                    path.read_text(encoding="utf-8"),
+                    f"{relative} does not mention workspace version {version}",
+                )
 
 
 if __name__ == "__main__":

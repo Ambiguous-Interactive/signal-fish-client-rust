@@ -428,6 +428,7 @@ Synchronous diagnostics for the outgoing command queue and game-data traffic:
 | `send_capacity()` | `fn send_capacity(&self) -> usize` | Messages that can currently be queued before the fail-fast sends return `SendBufferFull`. A shrinking value is the congestion signal; `0` means the next fail-fast send is refused. |
 | `max_send_capacity()` | `fn max_send_capacity(&self) -> usize` | Configured capacity of the outgoing command queue (`command_channel_capacity`). |
 | `stats()` | `fn stats(&self) -> ClientStats` | Cumulative game-data traffic counters. |
+| `transport_diagnostics()` | `fn transport_diagnostics(&self) -> TransportDiagnostics` | Backend acceptance, buffering, watermark, and capacity counters, as last sampled by the driver loop (the polling driver reads its transport synchronously). |
 
 `ClientStats` (re-exported at the crate root) carries `game_data_sent`
 (`GameData` messages counted when the transport takes frame ownership, even if

@@ -2145,7 +2145,6 @@ mod crate_version_consistency {
             "docs/getting-started.md",
             "docs/index.md",
             "docs/wasm.md",
-            "docs/examples.md",
         ];
 
         for path in files {
@@ -2248,7 +2247,6 @@ mod crate_version_consistency {
             "docs/getting-started.md",
             "docs/client.md",
             "docs/protocol.md",
-            "docs/examples.md",
             "docs/events.md",
             "docs/concepts.md",
             "docs/errors.md",
