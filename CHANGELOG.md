@@ -153,6 +153,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** Runtime transport failures keep their structure.
+  `SignalFishError::TransportSend` and `TransportReceive` now carry the
+  backend's boxed original error (as the `#[source]` cause) instead of a
+  flattened `String`, so `std::error::Error::source()` reaches the root cause
+  and programmatic handling — for example distinguishing `ConnectionRefused`
+  from `Capacity` via `source().downcast_ref::<std::io::Error>()` — is
+  possible at runtime. `Display` text is unchanged, and custom transports
+  construct the variants from any `Error + Send + Sync` value or a plain
+  string detail as before.
+- **Breaking:** Misconfiguration no longer wears an I/O costume. The new
+  exhaustive `SignalFishError::InvalidConfig { field, problem }` variant
+  reports caller-supplied values rejected because they are unusable — a zero
+  `max_inbound_message_size`/`max_inbound_queue_bytes`, a URL that cannot be
+  parsed into a WebSocket request (native; Godot's `ERR_INVALID_PARAMETER`),
+  or a URL containing interior NUL bytes (Emscripten) — instead of `Io` with
+  `ErrorKind::InvalidInput`/`Other`. Failures determined by the engine or the
+  network (Godot's `ERR_UNAVAILABLE`/`FAILED`, malformed server handshake
+  responses, HTTP upgrade rejections) keep the `Io` classification.
+  Exhaustive `SignalFishError` matches must handle the new variant. These are
+  breaking API additions for the forthcoming 0.11 release; published 0.10
+  does not expose them.
 - `SendBufferFull` now also names "drain events promptly" as a remedy: a task
   awaiting a reliable send while it is the sole event consumer can deadlock
   against a full event channel (which pauses the transport loop that drains

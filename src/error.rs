@@ -97,12 +97,36 @@ impl std::fmt::Display for TokenBindingFailure {
 #[derive(Debug, Error)]
 pub enum SignalFishError {
     /// Failed to send a message through the transport.
+    ///
+    /// The boxed cause is the transport backend's original error, so
+    /// [`Error::source`](std::error::Error::source) reaches the root cause for
+    /// programmatic handling — for example
+    /// `error.source().downcast_ref::<std::io::Error>()` to read its
+    /// [`ErrorKind`](std::io::ErrorKind). The `Display` text is the cause's
+    /// own message; the variant is safe to format in ambient logs.
+    ///
+    /// Custom transport implementations construct this from any
+    /// `std::error::Error + Send + Sync + 'static` value; a plain string
+    /// detail also converts (`"refused".into()`). When a cause's own `Debug`
+    /// would embed application payload bytes (for example `std::ffi::NulError`
+    /// retains the whole input vector), box its `Display` text instead.
     #[error("transport send error: {0}")]
-    TransportSend(String),
+    TransportSend(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Failed to receive a message from the transport.
+    ///
+    /// The boxed cause is the transport backend's original error, so
+    /// [`Error::source`](std::error::Error::source) reaches the root cause for
+    /// programmatic handling — for example
+    /// `error.source().downcast_ref::<std::io::Error>()` to read its
+    /// [`ErrorKind`](std::io::ErrorKind). The `Display` text is the cause's
+    /// own message; the variant is safe to format in ambient logs.
+    ///
+    /// Custom transport implementations construct this from any
+    /// `std::error::Error + Send + Sync + 'static` value; a plain string
+    /// detail also converts (`"reset".into()`).
     #[error("transport receive error: {0}")]
-    TransportReceive(String),
+    TransportReceive(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// The transport connection was closed unexpectedly.
     #[error("transport connection closed")]
@@ -265,6 +289,23 @@ pub enum SignalFishError {
     )]
     Timeout,
 
+    /// A caller-supplied configuration value was rejected because the value
+    /// itself is unusable.
+    ///
+    /// Raised when a URL, connect option, or transport setting is invalid on
+    /// its face — for example a zero inbound-size limit, a URL that cannot be
+    /// parsed into a WebSocket request, or a URL containing interior NUL
+    /// bytes. The failure is determined by the value (or by a missing build
+    /// feature), not by a network outcome: retrying without correcting the
+    /// value keeps failing.
+    #[error("invalid configuration: {field} {problem}")]
+    InvalidConfig {
+        /// The rejected configuration field, option, or parameter name.
+        field: &'static str,
+        /// Why the value was rejected; non-secret and safe for ambient logs.
+        problem: String,
+    },
+
     /// An I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -342,5 +383,41 @@ mod tests {
         } else {
             panic!("expected ServerError");
         }
+    }
+
+    #[test]
+    fn transport_send_and_receive_expose_the_boxed_cause_through_source() {
+        use std::error::Error as _;
+        use std::io::ErrorKind;
+
+        let send = SignalFishError::TransportSend(Box::new(std::io::Error::new(
+            ErrorKind::ConnectionRefused,
+            "refused by peer",
+        )));
+        assert_eq!(send.to_string(), "transport send error: refused by peer");
+        let kind = send
+            .source()
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind);
+        assert_eq!(kind, Some(ErrorKind::ConnectionRefused));
+
+        let receive = SignalFishError::TransportReceive("connection reset".to_string().into());
+        assert_eq!(
+            receive.to_string(),
+            "transport receive error: connection reset"
+        );
+        assert!(receive.source().is_some());
+    }
+
+    #[test]
+    fn invalid_config_display_names_field_and_problem() {
+        let error = SignalFishError::InvalidConfig {
+            field: "max_inbound_message_size",
+            problem: "must be greater than zero or None".into(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "invalid configuration: max_inbound_message_size must be greater than zero or None"
+        );
     }
 }

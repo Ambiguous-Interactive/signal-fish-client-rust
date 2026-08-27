@@ -188,8 +188,10 @@ but the connection handshake completes asynchronously in the browser. The
 transport returns `Pending` before `onopen`, so the polling client retains each
 queued command until Emscripten can accept it.
 
-Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. On failure the
-error is `SignalFishError::Io` (e.g., invalid URL or Emscripten API failure).
+Returns `Result<EmscriptenWebSocketTransport, SignalFishError>`. On failure
+the error is `SignalFishError::InvalidConfig` for an invalid URL or a zero
+`max_inbound_queue_bytes`, and `SignalFishError::Io` if
+`emscripten_websocket_new` fails.
 
 For explicit control, pass `EmscriptenWebSocketConnectOptions` via
 `connect_with_options`:

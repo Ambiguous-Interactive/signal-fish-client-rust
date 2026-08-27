@@ -52,20 +52,58 @@ pub type WsStream =
 const MAX_SKIPPED_CONTROL_FRAMES_PER_POLL: usize = 64;
 const DEFAULT_MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
+/// Classify post-request-construction connect failures.
+///
+/// `Url` errors remaining at this point are value- or build-determined gaps —
+/// an unsupported scheme, no host, or `wss://` without the `tls` feature —
+/// never network outcomes, so they stay `InvalidConfig`. Every reachable
+/// `UrlError` formats as static text (the blocking-only `UnableToConnect`
+/// that embeds the URL is unreachable on these async paths), so echoing the
+/// message stays inside the ambient-log boundary. `HttpFormat` here means
+/// tungstenite could not parse the server's own handshake response after the
+/// connection was established — a runtime server fault, which keeps the
+/// generic `Io` mapping instead of blaming the caller's configuration.
 fn map_connect_error(error: WebSocketError) -> SignalFishError {
-    let kind = match &error {
-        WebSocketError::Io(io) => io.kind(),
-        _ => std::io::ErrorKind::Other,
-    };
-    SignalFishError::Io(std::io::Error::new(kind, error))
+    match &error {
+        WebSocketError::Url(_) => SignalFishError::InvalidConfig {
+            field: "url",
+            problem: error.to_string(),
+        },
+        WebSocketError::Io(io) => SignalFishError::Io(std::io::Error::new(io.kind(), error)),
+        _ => SignalFishError::Io(std::io::Error::other(error)),
+    }
+}
+
+/// Classify client-side request-construction failures: an unparseable URL or
+/// an otherwise unbuildable handshake request is caller configuration,
+/// rejected before any network I/O.
+fn map_request_config_error(error: WebSocketError) -> SignalFishError {
+    match &error {
+        WebSocketError::Url(_) | WebSocketError::HttpFormat(_) => SignalFishError::InvalidConfig {
+            field: "url",
+            problem: error.to_string(),
+        },
+        _ => map_connect_error(error),
+    }
+}
+
+/// Build the WebSocket handshake request from `url` to validate it before any
+/// network I/O, so unparseable URLs report `InvalidConfig` and post-connect
+/// `HttpFormat` server-response failures cannot be mislabeled as
+/// configuration errors.
+fn validate_request_url(url: &str) -> Result<(), SignalFishError> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    url.into_client_request()
+        .map_err(map_request_config_error)?;
+    Ok(())
 }
 
 fn websocket_config(options: WebSocketConnectOptions) -> Result<WebSocketConfig, SignalFishError> {
     if options.max_inbound_message_size == Some(0) {
-        return Err(SignalFishError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "WebSocket max_inbound_message_size must be greater than zero or None",
-        )));
+        return Err(SignalFishError::InvalidConfig {
+            field: "max_inbound_message_size",
+            problem: "must be greater than zero or None".into(),
+        });
     }
     Ok(WebSocketConfig::default()
         .max_frame_size(options.max_inbound_message_size)
@@ -248,7 +286,9 @@ async fn connect_with_token_binding(
     use tokio_tungstenite::tungstenite::error::{ProtocolError, SubProtocolError};
     use tokio_tungstenite::tungstenite::http::header::{SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL};
 
-    let mut request = url.into_client_request().map_err(map_connect_error)?;
+    let mut request = url
+        .into_client_request()
+        .map_err(map_request_config_error)?;
     let handshake_key = zeroize::Zeroizing::new(
         request
             .headers()
@@ -367,13 +407,13 @@ async fn receive_token_binding_challenge(
             .ok_or(SignalFishError::TokenBinding(
                 crate::TokenBindingFailure::MissingChallenge,
             ))?
-            .map_err(|error| SignalFishError::TransportReceive(error.to_string()))?;
+            .map_err(|error| SignalFishError::TransportReceive(Box::new(error)))?;
         match message {
             Message::Text(text) => return crate::token_binding::parse_challenge(&text),
             Message::Ping(_) => stream
                 .flush()
                 .await
-                .map_err(|error| SignalFishError::TransportSend(error.to_string()))?,
+                .map_err(|error| SignalFishError::TransportSend(Box::new(error)))?,
             Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(_) => {
                 return Err(SignalFishError::TokenBinding(
@@ -724,7 +764,7 @@ impl WebSocketTransport {
     /// Establish a new WebSocket connection to the given URL.
     ///
     /// `ws://` is always supported. `wss://` requires the optional `tls` feature;
-    /// without it a `wss://` URL fails with [`SignalFishError::Io`].
+    /// without it a `wss://` URL fails with [`SignalFishError::InvalidConfig`].
     ///
     /// Nagle's algorithm is **disabled by default** (`TCP_NODELAY`) so small,
     /// latency-sensitive game messages are sent without delay. Inbound frames
@@ -734,8 +774,9 @@ impl WebSocketTransport {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] if the URL is invalid or the connection
-    /// cannot be established. When the underlying error is an I/O error its
+    /// Returns [`SignalFishError::InvalidConfig`] if the URL is invalid and
+    /// [`SignalFishError::Io`] if the connection cannot be established. When
+    /// the underlying error is an I/O error its
     /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
     /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other).
     pub async fn connect(url: &str) -> Result<Self, SignalFishError> {
@@ -753,18 +794,20 @@ impl WebSocketTransport {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] if the URL is invalid or the connection
-    /// cannot be established. When the underlying error is an I/O error its
-    /// [`ErrorKind`](std::io::ErrorKind) is preserved; all other errors are
-    /// mapped to [`ErrorKind::Other`](std::io::ErrorKind::Other) — including
-    /// HTTP upgrade rejections, which carry the underlying status in every
+    /// Returns [`SignalFishError::InvalidConfig`] when the URL cannot be
+    /// parsed into a WebSocket request or a connect option is invalid on its
+    /// face; neither attempts network I/O. Returns [`SignalFishError::Io`]
+    /// when the connection cannot be established: when the underlying error
+    /// is an I/O error its [`ErrorKind`](std::io::ErrorKind) is preserved, and
+    /// all other connection errors map to
+    /// [`ErrorKind::Other`](std::io::ErrorKind::Other) — including HTTP
+    /// upgrade rejections, which carry the underlying status in every
     /// token-binding mode. Optional or required mode returns
     /// [`SignalFishError::TokenBinding`] when the feature
     /// is disabled or subprotocol negotiation, challenge validation, or key
     /// derivation fails. A zero inbound size limit returns
-    /// [`SignalFishError::Io`] with
-    /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) before URL
-    /// parsing or network I/O. When token binding is requested without the
+    /// [`SignalFishError::InvalidConfig`] before URL parsing or network I/O.
+    /// When token binding is requested without the
     /// `token-binding` feature, its feature-disabled error takes precedence.
     /// The `require_client_fingerprint` policy always fails before network
     /// I/O here with [`SignalFishError::TokenBinding`], because this path can
@@ -781,6 +824,7 @@ impl WebSocketTransport {
         }
         reject_unsatisfiable_client_fingerprint_requirement(&options)?;
         let websocket_config = websocket_config(options)?;
+        validate_request_url(url)?;
 
         #[cfg(feature = "tls")]
         install_tls_provider();
@@ -848,16 +892,17 @@ impl WebSocketTransport {
     ///
     /// Returns the same connection and token-binding errors as
     /// [`connect_with_options`](Self::connect_with_options), including
-    /// [`SignalFishError::Io`] with
-    /// [`ErrorKind::InvalidInput`](std::io::ErrorKind::InvalidInput) for a zero
-    /// inbound size limit. The `require_client_fingerprint` policy fails
+    /// [`SignalFishError::InvalidConfig`] for a zero inbound size limit.
+    /// The `require_client_fingerprint` policy fails
     /// before network I/O when token binding is disabled (no proofs exist to
     /// bind), after the handshake and challenge when rustls selected no
     /// X.509 client signer, and after the unsigned fallback handshake (no
     /// challenge is consumed) when Optional mode fell back to an unsigned
     /// connection. On a plain `ws://` URL the custom TLS configuration is
     /// not used at all — tokio-tungstenite bypasses the connector, so no TLS
-    /// handshake or certificate selection runs and a warning is logged; with
+    /// handshake or certificate selection runs and a warning is logged (the
+    /// plain-URL predicate matches tungstenite's lowercase-only `ws`/`wss`
+    /// scheme handling); with
     /// token binding enabled the fingerprint policy still fails only after
     /// the completed challenge.
     #[cfg(feature = "tls")]
@@ -881,6 +926,7 @@ impl WebSocketTransport {
             reject_unsatisfiable_client_fingerprint_requirement(&options)?;
         }
         let websocket_config = websocket_config(options)?;
+        validate_request_url(url)?;
 
         install_tls_provider();
         let connector = tokio_tungstenite::Connector::Rustls(tls_config.clone());
@@ -1045,7 +1091,7 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => {
                     self.mark_send_failed();
-                    return Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())));
+                    return Poll::Ready(Err(SignalFishError::TransportSend(Box::new(error))));
                 }
                 Poll::Ready(Ok(())) => {}
             }
@@ -1124,7 +1170,7 @@ where
                 if !retryable {
                     self.mark_send_failed();
                 }
-                return Poll::Ready(Err(SignalFishError::TransportSend(detail)));
+                return Poll::Ready(Err(SignalFishError::TransportSend(detail.into())));
             }
             if token_binding_active {
                 let _accepted_original = frame.take();
@@ -1149,7 +1195,7 @@ where
             }
             Poll::Ready(Err(error)) => {
                 self.mark_send_failed();
-                Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                Poll::Ready(Err(SignalFishError::TransportSend(Box::new(error))))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -1182,7 +1228,7 @@ where
                     Poll::Ready(Err(error)) => {
                         self.mark_terminal();
                         return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
-                            error.to_string(),
+                            Box::new(error),
                         ))));
                     }
                     Poll::Ready(Ok(())) => {
@@ -1224,7 +1270,7 @@ where
                     Some(Err(e)) => {
                         self.mark_terminal();
                         return Poll::Ready(Some(Err(SignalFishError::TransportReceive(
-                            e.to_string(),
+                            Box::new(e),
                         ))));
                     }
                     None => {
@@ -1325,7 +1371,7 @@ where
                 }
                 Poll::Ready(Err(error)) => {
                     self.mark_terminal();
-                    Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                    Poll::Ready(Err(SignalFishError::TransportSend(Box::new(error))))
                 }
             };
         }
@@ -1343,7 +1389,7 @@ where
             }
             Poll::Ready(Err(error)) => {
                 self.mark_terminal();
-                Poll::Ready(Err(SignalFishError::TransportSend(error.to_string())))
+                Poll::Ready(Err(SignalFishError::TransportSend(Box::new(error))))
             }
             Poll::Pending => Poll::Pending,
         }
@@ -1444,8 +1490,9 @@ mod tests {
         )
         .await
         .expect_err("zero must not create a degenerate WebSocket codec");
-        assert!(
-            matches!(error, SignalFishError::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidInput)
+        assert_eq!(
+            error.to_string(),
+            "invalid configuration: max_inbound_message_size must be greater than zero or None"
         );
     }
 
@@ -1460,9 +1507,13 @@ mod tests {
         )
         .await
         .expect_err("zero must be rejected before token-binding handshake work");
-        assert!(
-            matches!(error, SignalFishError::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidInput)
-        );
+        assert!(matches!(
+            error,
+            SignalFishError::InvalidConfig {
+                field: "max_inbound_message_size",
+                ..
+            }
+        ));
     }
 
     #[cfg(all(feature = "tls", feature = "token-binding"))]
@@ -1611,7 +1662,14 @@ mod tests {
     async fn connect_fails_with_invalid_url() {
         let result = WebSocketTransport::connect("not-a-valid-url").await;
         let err = result.unwrap_err();
-        assert!(matches!(err, SignalFishError::Io(_)));
+        assert!(matches!(
+            err,
+            SignalFishError::InvalidConfig { field: "url", .. }
+        ));
+        assert!(
+            !err.to_string().contains("not-a-valid-url"),
+            "URL parse failures must not echo the caller's URL: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2111,47 +2169,88 @@ mod tests {
 
     #[cfg(feature = "token-binding")]
     #[tokio::test]
-    async fn optional_mode_does_not_retry_an_http_rejection() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("rejection listener must bind");
-        let addr = listener
-            .local_addr()
-            .expect("rejection listener must have an address");
-        let server_task = tokio::spawn(async move {
-            let (mut tcp, _) = listener.accept().await.expect("server must accept offer");
-            tcp.write_all(
-                b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    async fn http_rejections_keep_io_classification_in_every_token_binding_mode() {
+        for mode in [
+            TokenBindingMode::Disabled,
+            TokenBindingMode::Optional,
+            TokenBindingMode::Required,
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("rejection listener must bind");
+            let addr = listener
+                .local_addr()
+                .expect("rejection listener must have an address");
+            let server_task = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.expect("server must accept offer");
+                tcp.write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .expect("server must reject the offered handshake");
+                drop(tcp);
+
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "HTTP rejection must not trigger an unsigned fallback"
+                );
+            });
+
+            let error = WebSocketTransport::connect_with_options(
+                &format!("ws://{addr}"),
+                WebSocketConnectOptions::new().with_token_binding(mode),
             )
             .await
-            .expect("server must reject the offered handshake");
-            drop(tcp);
-
+            .expect_err("an HTTP rejection must fail the connect in every mode");
+            // An HTTP rejection says nothing about the offered subprotocol, so
+            // it surfaces through the same Io mapping as the disabled path and
+            // keeps the underlying status instead of a negotiation-specific
+            // label.
+            let message = error.to_string();
             assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
-                    .await
-                    .is_err(),
-                "HTTP rejection must not trigger an unsigned fallback"
+                matches!(error, SignalFishError::Io(_)),
+                "HTTP rejection must keep the generic I/O classification in {mode:?}: {message}"
             );
+            assert!(
+                message.contains("403"),
+                "HTTP rejection must preserve the server's status code in {mode:?}: {message}"
+            );
+            finish_mock_server(server_task).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_server_handshake_response_is_io_not_invalid_config() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("malformed listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("malformed listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.expect("server must accept offer");
+            // An unparseable status line makes tungstenite fail the handshake
+            // with an `HttpFormat` error after the TCP connection exists —
+            // a runtime server fault, not caller configuration.
+            tcp.write_all(b"HTTP/1.1 099 Bogus\r\n\r\n")
+                .await
+                .expect("server must write the malformed response");
         });
 
-        let error = WebSocketTransport::connect_with_options(
-            &format!("ws://{addr}"),
-            WebSocketConnectOptions::new().with_token_binding(TokenBindingMode::Optional),
-        )
-        .await
-        .expect_err("optional mode must preserve an HTTP rejection");
-        // An HTTP rejection says nothing about the offered subprotocol, so it
-        // surfaces through the same Io mapping as the disabled path and keeps
-        // the underlying status instead of a negotiation-specific label.
+        let error = WebSocketTransport::connect(&format!("ws://{addr}"))
+            .await
+            .expect_err("a malformed server response must fail the connect");
         let message = error.to_string();
         assert!(
             matches!(error, SignalFishError::Io(_)),
-            "HTTP rejection must keep the generic I/O classification: {message}"
+            "a server-side response parse failure must stay an I/O error, not \
+             blame the caller's URL: {message}"
         );
         assert!(
-            message.contains("403"),
-            "HTTP rejection must preserve the server's status code: {message}"
+            !matches!(error, SignalFishError::InvalidConfig { .. }),
+            "post-connect HttpFormat failures must not wear the configuration costume: {message}"
         );
         finish_mock_server(server_task).await;
     }
