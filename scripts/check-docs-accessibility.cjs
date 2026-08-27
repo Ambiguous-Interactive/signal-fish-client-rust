@@ -7,6 +7,12 @@ const { chromium } = require("playwright");
 
 const host = "127.0.0.1";
 const repoRoot = path.resolve(__dirname, "..");
+
+// Generous enough for the slowest observed hosted runner (a healthy full pass
+// stayed under 180 seconds; a slow one exceeded it) while far below the job's
+// 20-minute ceiling, so a genuine hang still fails fast.
+const ACCESSIBILITY_BUDGET_MS = 300_000;
+
 let origin;
 let activeBrowser;
 let activeServer;
@@ -118,18 +124,23 @@ const cleanup = () => {
     return cleanupPromise;
 };
 
-const watchdog = setTimeout(() => {
-    timedOut = true;
-    process.stderr.write("Documentation accessibility checks exceeded 180 seconds.\n");
-    void cleanup()
-        .catch((error) => {
-            process.stderr.write(`Accessibility cleanup failed: ${error.message}\n`);
-        })
-        .finally(() => {
-            process.exitCode = 1;
-        });
-}, 180_000);
-watchdog.unref();
+// The deadline races the browser flow, so when it fires, its clear timeout
+// error deterministically wins the report and cleanup cannot mask it with a
+// mid-evaluate "Target crashed" from the closing browser.
+const accessibilityDeadline = () => {
+    let releaseDeadline;
+    const deadline = new Promise((_, reject) => {
+        const timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error(
+                `Documentation accessibility checks exceeded ${ACCESSIBILITY_BUDGET_MS / 1000} seconds.`
+            ));
+        }, ACCESSIBILITY_BUDGET_MS);
+        timer.unref();
+        releaseDeadline = () => clearTimeout(timer);
+    });
+    return [deadline, () => releaseDeadline()];
+};
 
 const settleShell = async (page) => {
     // The browser context requests reduced motion, so CSS transitions finish in
@@ -468,45 +479,39 @@ const checkSearchResize = async (page) => {
     );
 };
 
-(async () => {
+const runBrowserChecks = async () => {
     await assertBuildFreshness();
     activeServer = await startServer();
-    if (timedOut) {
-        await cleanup();
-        throw new Error("Documentation accessibility checks timed out");
-    }
     const browserErrors = [];
+    activeBrowser = await chromium.launch({
+        args: ["--disable-gpu"],
+        headless: true,
+    });
+    const context = await activeBrowser.newContext({
+        reducedMotion: "reduce",
+        viewport: { width: 1220, height: 800 },
+    });
+    const page = configurePage(await context.newPage());
+    attachErrorCapture(page, browserErrors);
+    await checkClosedBoundaries(page);
+    await checkDrawerResize(page, "ltr");
+    await checkDrawerResize(page, "rtl");
+    await checkSearchResize(page);
+    expectState(
+        browserErrors.length === 0,
+        "documentation pages emitted browser errors",
+        browserErrors
+    );
+    process.stdout.write("Documentation accessibility browser checks passed.\n");
+};
+
+(async () => {
+    const [deadline, releaseDeadline] = accessibilityDeadline();
     try {
-        activeBrowser = await chromium.launch({
-            args: ["--disable-gpu"],
-            headless: true,
-        });
-        if (timedOut) {
-            await cleanup();
-            throw new Error("Documentation accessibility checks timed out");
-        }
-        const context = await activeBrowser.newContext({
-            reducedMotion: "reduce",
-            viewport: { width: 1220, height: 800 },
-        });
-        const page = configurePage(await context.newPage());
-        attachErrorCapture(page, browserErrors);
-        await checkClosedBoundaries(page);
-        await checkDrawerResize(page, "ltr");
-        await checkDrawerResize(page, "rtl");
-        await checkSearchResize(page);
-        expectState(
-            browserErrors.length === 0,
-            "documentation pages emitted browser errors",
-            browserErrors
-        );
-        process.stdout.write("Documentation accessibility browser checks passed.\n");
+        await Promise.race([runBrowserChecks(), deadline]);
     } finally {
-        try {
-            await cleanup();
-        } finally {
-            clearTimeout(watchdog);
-        }
+        releaseDeadline();
+        await cleanup();
     }
 })().catch((error) => {
     process.stderr.write(`${error.stack || error.message}\n`);
