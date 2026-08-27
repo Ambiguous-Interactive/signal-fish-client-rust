@@ -22,9 +22,9 @@
 
 use std::collections::VecDeque;
 
-use signal_fish_client::protocol::{IceServer, PlayerId, SessionGeneration};
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::webrtc::{DriverEvent, MeshController, MeshEvent, WebRtcDriver};
+use signal_fish_client::{IceServer, PlayerId, SessionGeneration};
 use signal_fish_client::{
     JoinRoomParams, PeerSignal, SignalFishConfig, SignalFishError, SignalFishEvent, Transport,
 };

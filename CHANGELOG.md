@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added root re-exports for the `PlayerId` and `RoomId` identity aliases that
+  appear throughout the client API (`reconnect`, `send_signal`,
+  `ClientSnapshot`), so typed helpers no longer need a deep
+  `signal_fish_client::protocol::` import.
 - Added `ErrorCode::RoomSessionIncompatible` (wire
   `ROOM_SESSION_INCOMPATIBLE`) for the post-0.7 server response used when a
   running room's sticky peer-to-peer topology/transport pair is incompatible
@@ -135,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The shared diagnostic accessors on both drivers —
+  `send_capacity`, `max_send_capacity`, `stats`, `snapshot`, and
+  `transport_diagnostics`, plus the polling driver's `polling_stats` and
+  `queue_age_stats` — are now `#[must_use]`; ignoring them is a compile
+  warning instead of silently discarding an entire coherent diagnostics view.
+- `MeshSession` now implements equality comparison like its sibling coherent
+  state views (`ClientSnapshot`, stats types), so folded session states can be
+  compared and asserted directly.
 - `SignalFishPollingClient::poll` is now `#[must_use]`; ignoring the returned
   event list is a compile warning instead of silently discarding that poll
   cycle's deliveries (the leading cause of "stuck in lobby" misuse reports).
@@ -257,6 +269,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed a liveness defect in protocol-v3 (and legacy-mode) room operations: a
+  typed terminal answer whose payload was rejected by delivery accountability
+  (for example, a drifting roster snapshot) left the operation's admission
+  fence armed forever, so every later join/leave/reconnect/spectator command
+  failed locally with `RoomOperationPending` until the connection tore down
+  (under every non-disconnecting violation policy). The answered fence is now
+  retired as soon as the matching terminal arrives. Violation handling,
+  suppression of the invalid payload, and retention of
+  mismatched/forged-operation fences are unchanged; as before, a later
+  duplicate reply for the already-settled id reports a lifecycle violation.
+  Red/green pinned across correlated, legacy-wire, and reconnect paths in
+  both drivers' shared core.
 - Fixed a release-automation defect that would make every future Prepare
   Release run fail before writing anything: the version-inventory still
   required `docs/examples.md` to mention the workspace version, but that page

@@ -229,8 +229,10 @@ where
 }
 
 /// Drive one transport send to completion from an async runtime.
-#[cfg(feature = "tokio-runtime")]
-#[cfg(test)]
+///
+/// Test helper for transports with async-runtime tests; gated to those
+/// transports so sparse-feature builds never carry an unused helper.
+#[cfg(all(test, feature = "transport-websocket"))]
 pub(crate) async fn send_frame<T: Transport + ?Sized>(
     transport: &mut T,
     frame: TransportFrame,
@@ -240,8 +242,10 @@ pub(crate) async fn send_frame<T: Transport + ?Sized>(
 }
 
 /// Await one inbound transport frame.
-#[cfg(feature = "tokio-runtime")]
-#[cfg(test)]
+///
+/// Test helper for transports with async-runtime tests; gated to those
+/// transports so sparse-feature builds never carry an unused helper.
+#[cfg(all(test, feature = "transport-websocket"))]
 pub(crate) async fn recv_frame<T: Transport + ?Sized>(
     transport: &mut T,
 ) -> Option<Result<TransportFrame, SignalFishError>> {

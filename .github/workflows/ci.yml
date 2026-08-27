@@ -88,6 +88,8 @@ jobs:
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
             flags: "--no-default-features --features mesh"
+          - name: tokio-runtime-only
+            flags: "--no-default-features --features tokio-runtime"
           - name: tls-only
             flags: "--no-default-features --features tls"
     steps:
@@ -126,6 +128,8 @@ jobs:
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
             flags: "--no-default-features --features mesh"
+          - name: tokio-runtime-only
+            flags: "--no-default-features --features tokio-runtime"
           - name: tls-only
             flags: "--no-default-features --features tls"
     steps:

@@ -38,7 +38,7 @@ pub struct MeshPeer {
 
 /// An always-consistent view of the current mesh/host/relay session, folded
 /// purely from [`SignalFishEvent`]s. See the [module docs](crate::mesh).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeshSession {
     generation: Option<SessionGeneration>,
     topology: Option<Topology>,

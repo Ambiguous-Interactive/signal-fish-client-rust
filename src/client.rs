@@ -1545,17 +1545,20 @@ impl SignalFishClient {
     /// A shrinking value is the congestion signal: the caller is producing
     /// faster than the transport drains. `0` means the next fail-fast send
     /// will be refused.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn send_capacity(&self) -> usize {
         self.cmd_tx.capacity()
     }
 
     /// Configured capacity of the outgoing command queue
     /// (see [`SignalFishConfig::command_channel_capacity`]).
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn max_send_capacity(&self) -> usize {
         self.cmd_tx.max_capacity()
     }
 
     /// Cumulative game-data traffic counters (see [`ClientStats`]).
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn stats(&self) -> ClientStats {
         lock_core(&self.state).stats()
     }
@@ -1574,11 +1577,13 @@ impl SignalFishClient {
     /// ([`SendBufferFull`](crate::SignalFishError::SendBufferFull), shrinking
     /// [`send_capacity`](Self::send_capacity)) apart from backend watermark or
     /// capacity deferrals when tuning a deployment.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         lock_core(&self.state).transport_diagnostics()
     }
 
     /// Return a coherent synchronous snapshot of connection and room state.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn snapshot(&self) -> ClientSnapshot {
         lock_core(&self.state).snapshot()
     }

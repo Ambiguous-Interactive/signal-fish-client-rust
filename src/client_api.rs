@@ -14,6 +14,12 @@ use crate::signal::PeerSignal;
 /// Driver-specific
 /// operations such as async waiting sends, `shutdown`, `poll`, and `close` are
 /// intentionally excluded.
+///
+/// Signal methods here take a concrete [`PeerSignal`] rather than
+/// `impl Into<PeerSignal>` because object safety forbids generic parameters;
+/// the inherent driver methods keep the ergonomic conversion, and the
+/// defaulted `send_offer`/`send_answer`/`send_ice_candidate` helpers accept
+/// raw SDP/candidate strings directly.
 pub trait SignalFishClientApi {
     /// Join or create a room.
     fn join_room(&mut self, params: JoinRoomParams) -> Result<()>;

@@ -888,23 +888,27 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// The queue drains on every [`poll()`](Self::poll) while the transport
     /// accepts writes, so a shrinking value means the transport is congested.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn send_capacity(&self) -> usize {
         self.command_capacity.saturating_sub(self.cmd_queue.len())
     }
 
     /// Configured capacity of the outgoing command queue
     /// (see [`SignalFishConfig::command_channel_capacity`]).
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn max_send_capacity(&self) -> usize {
         self.command_capacity
     }
 
     /// Cumulative game-data traffic counters
     /// (see [`ClientStats`](crate::client::ClientStats)).
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn stats(&self) -> crate::client::ClientStats {
         self.core.stats()
     }
 
     /// Return polling-driver queue, budget, and close diagnostics.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn polling_stats(&self) -> PollingStats {
         self.polling_stats
     }
@@ -915,6 +919,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// report zero. Backend acceptance ends client ownership immediately; use
     /// [`transport_diagnostics`](Self::transport_diagnostics) for buffering
     /// after that boundary.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn queue_age_stats(&self) -> PollingQueueAgeStats {
         self.queue_age_stats
     }
@@ -926,6 +931,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     /// Return backend-owned transport buffering and admission diagnostics.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn transport_diagnostics(&self) -> TransportDiagnostics {
         self.transport.diagnostics()
     }
@@ -939,6 +945,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     }
 
     /// Return a coherent synchronous snapshot of connection and room state.
+    #[must_use = "this diagnostic view is discarded if not used"]
     pub fn snapshot(&self) -> ClientSnapshot {
         self.core.snapshot()
     }
