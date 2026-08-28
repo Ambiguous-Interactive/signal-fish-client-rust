@@ -659,6 +659,12 @@ pub fn prepare_and_warm(spec: WorkloadSpec) -> Result<WorkloadFixture, String> {
     let mut config = SignalFishConfig::new("perf_lab")
         .enable_v3()
         .with_command_channel_capacity(256);
+    // The default sdk_version would embed the crate version in the
+    // Authenticate wire bytes and invalidate every pinned protocol-ledger
+    // digest on each release bump. The lab pins protocol behavior, not
+    // release metadata, so the field stays omitted like the ProtocolInfo
+    // fixture below.
+    config.sdk_version = None;
     let mut options = PollingClientOptions::default();
     let mut setup_incoming = VecDeque::new();
     let mut measured_incoming = VecDeque::new();
