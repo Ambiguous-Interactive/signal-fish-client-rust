@@ -85,6 +85,16 @@ class RepositoryRuleTests(unittest.TestCase):
                     ["no active ruleset targets ~DEFAULT_BRANCH"],
                 )
 
+    def test_exclude_all_alias_fails_closed(self) -> None:
+        # Excluding ~ALL excludes every ref, including the default branch the
+        # include lists; the ruleset protects nothing.
+        inert = self.ruleset()
+        inert["conditions"]["ref_name"]["exclude"] = ["~ALL"]
+        self.assertEqual(
+            audit.audit(self.policy, [inert]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
     def test_missing_conditions_do_not_crash_the_audit(self) -> None:
         ruleset = self.ruleset()
         ruleset["conditions"] = None

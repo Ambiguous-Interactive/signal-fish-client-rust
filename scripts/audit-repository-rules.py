@@ -141,9 +141,10 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
         excluded = ref_name.get("exclude") or []
         # A ref excluded from the same ruleset that includes it is protected
         # by nothing: GitHub conditions apply exclusions after inclusions.
-        # Wildcard exclude patterns are not modeled here, so they also fail
-        # closed instead of letting an inert ruleset pass the audit.
-        if expected_refs.intersection(excluded) or any(
+        # The ~ALL alias and wildcard exclude patterns are not modeled here,
+        # so they also fail closed instead of letting an inert ruleset pass
+        # the audit.
+        if expected_refs.intersection(excluded) or "~ALL" in excluded or any(
             isinstance(pattern, str) and set(pattern) & set("*?[")
             for pattern in excluded
         ):
