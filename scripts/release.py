@@ -925,7 +925,12 @@ def release_notes(root: Path, version: str) -> str:
     """Extract one release's notes verbatim, fence-aware, without the heading."""
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     body_start, body_end = release_section_span(changelog, root, version)
-    return changelog[body_start:body_end].strip()
+    notes = changelog[body_start:body_end].strip()
+    # Fail closed here: printing would still emit a newline, which would
+    # defeat the workflow's non-empty release-notes guard.
+    if not notes:
+        raise ReleaseError(f"CHANGELOG.md release {version} has empty notes")
+    return notes
 
 
 def registry_checksum(crate_name: str, version: str) -> str | None:

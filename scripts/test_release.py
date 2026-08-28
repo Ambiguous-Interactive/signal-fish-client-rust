@@ -811,6 +811,14 @@ class PreparationTests(unittest.TestCase):
         ):
             release.release_notes(self.root, "9.9.9")
 
+    def test_release_notes_rejects_empty_section(self) -> None:
+        (self.root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [1.2.3] - 2020-01-01\n\n## [1.2.2] - 2019-01-01\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "empty notes"):
+            release.release_notes(self.root, "1.2.3")
+
     def test_release_notes_rejects_unterminated_fence(self) -> None:
         changelog = self.root / "CHANGELOG.md"
         changelog.write_text(
