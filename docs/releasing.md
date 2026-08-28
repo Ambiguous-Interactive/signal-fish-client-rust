@@ -74,7 +74,8 @@ members set `version.workspace = true`. Preparation discovers crates through
 `cargo metadata`, verifies internal publishable dependencies inherit through
 `workspace = true`, updates the shared version and exact workspace
 requirements by manifest key (including renamed dependencies), then updates
-locks, documentation references, provenance, and the changelog. It fails
+locks, documentation references, the compatibility manifest's release-sync
+date, and the changelog. It fails
 before writing if the workspace graph, inventory, or `[Unreleased]` section is
 invalid. Release intent is deterministic: a `**Breaking:**` entry selects a
 major bump (or a pre-1.0 minor bump); Added, Changed, Deprecated, or Removed

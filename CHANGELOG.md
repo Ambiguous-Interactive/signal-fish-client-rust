@@ -318,6 +318,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the Prepare Release blocker that would fail every future release run:
+  the compatibility manifest now carries both a release-stamped top-level
+  `synced` date and real upstream-refresh dates under `[protocol_authority]`,
+  but the release tooling still required exactly one `synced` date in the
+  whole file. Releases now stamp only the top-level date and never rewrite
+  section-level upstream provenance (including the vendored PROVENANCE.toml
+  files), and a checkout-level guard catches inventory drift in tests instead
+  of on release day.
+- The published model-context page (`llms.txt`) now tracks the release
+  version automatically instead of advertising a stale crate version after
+  each release.
+- Release-version notes in the README and the mesh, getting-started, and
+  client guides no longer embed the next version number or enumerate
+  unreleased features, so release preparation can no longer rewrite them
+  into stale claims; they point at the changelog instead.
 - Fixed the native WebSocket send path flattening its error cause: a
   synchronous `start_send` rejection (the classic oversized-outbound-message
   refusal) boxed the formatted text instead of the backend's original

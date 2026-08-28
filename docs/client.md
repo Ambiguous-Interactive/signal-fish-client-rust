@@ -10,8 +10,9 @@ game-loop-driven alternative.
 
 !!! note "Published crate versus this guide"
     The stable crates.io release is **0.10.0**. This guide tracks the current
-    `main` branch, including polling budgets, close policies, queue-age
-    diagnostics, and adaptive Godot admission added after 0.10.0. Use the
+    `main` branch, which may include additions that have not reached a release
+    yet; the [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
+    lists what is new. Use the
     [0.10.0 API docs](https://docs.rs/signal-fish-client/0.10.0/) for the
     published surface, or a `git` dependency on `main` for the unreleased APIs.
 

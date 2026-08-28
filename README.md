@@ -78,7 +78,7 @@ Set `SIGNAL_FISH_URL` to use a server other than
 `ws://localhost:3536/v2/ws`.
 
 The published `0.10.0` crate is the stable release. This branch also documents
-unreleased changes planned for 0.11. Use the [0.10.0 API
+unreleased changes ahead of the next release. Use the [0.10.0 API
 docs](https://docs.rs/signal-fish-client/0.10.0/) for the published surface, or
 see the
 [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
