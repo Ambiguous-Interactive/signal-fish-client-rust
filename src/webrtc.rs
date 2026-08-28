@@ -633,7 +633,7 @@ mod controller {
         /// or topology change reassigned who offers) has its handshake cleanly
         /// restarted in the new role: leaving the stale role in place would let
         /// the two sides glare (both offer) or stall (both wait), because the SDK
-        /// obeys the server verbatim and runs no perfect-negotiation rollback. A
+        /// obeys the server verbatim and runs no perfect-negotiation rollback.
         /// Generation changes are hard handshake barriers: every retained peer is
         /// rebuilt even when its role is unchanged. Within one generation, a known
         /// peer whose role is unchanged keeps its live connection untouched.
@@ -1318,16 +1318,32 @@ mod tests {
             let expected_command_was_sent = expected_command.is_none_or(|expected| {
                 self.sent.lock().unwrap().iter().any(|json| {
                     serde_json::from_str::<crate::protocol::ClientMessage>(json).is_ok_and(
+                        // Correlated envelopes count as their inner
+                        // operation, mirroring the wire in negotiated mode.
                         |message| {
-                            matches!(
-                                (expected, message),
-                                ("JoinRoom", crate::protocol::ClientMessage::JoinRoom { .. })
-                                    | (
-                                        "Reconnect",
-                                        crate::protocol::ClientMessage::Reconnect { .. }
-                                    )
-                                    | ("LeaveRoom", crate::protocol::ClientMessage::LeaveRoom)
-                            )
+                            let sent_kind = match &message {
+                                crate::protocol::ClientMessage::JoinRoom { .. } => Some("JoinRoom"),
+                                crate::protocol::ClientMessage::Reconnect { .. } => {
+                                    Some("Reconnect")
+                                }
+                                crate::protocol::ClientMessage::LeaveRoom => Some("LeaveRoom"),
+                                crate::protocol::ClientMessage::RoomOperation {
+                                    operation, ..
+                                } => match operation.as_ref() {
+                                    crate::protocol::RoomOperationRequest::JoinRoom { .. } => {
+                                        Some("JoinRoom")
+                                    }
+                                    crate::protocol::RoomOperationRequest::Reconnect { .. } => {
+                                        Some("Reconnect")
+                                    }
+                                    crate::protocol::RoomOperationRequest::LeaveRoom => {
+                                        Some("LeaveRoom")
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            };
+                            sent_kind == Some(expected)
                         },
                     )
                 })

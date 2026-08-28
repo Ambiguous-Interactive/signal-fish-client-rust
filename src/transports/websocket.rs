@@ -8,7 +8,10 @@
 //!
 //! Connections disable Nagle's algorithm (`TCP_NODELAY`) by default for low
 //! latency and reject inbound frames or assembled messages larger than 8 MiB;
-//! see [`WebSocketConnectOptions`] to override either policy.
+//! see [`WebSocketConnectOptions`] to override either policy. Both policies
+//! apply to connections this type dials — a post-handshake
+//! [`from_stream`](WebSocketTransport::from_stream) connection applies neither
+//! and preserves caller-owned policy.
 //!
 //! # Feature gate
 //!

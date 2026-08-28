@@ -93,7 +93,10 @@ The caller owns `frame: Option<TransportFrame>` until the transport takes it.
 - If a transport returns `Pending` after taking a frame, it must retain all
   state needed to finish that exact accepted operation across later polls.
 - Repeated polls while that send is pending must not accept a replacement frame,
-  restart the write, or duplicate bytes.
+  restart the write, or duplicate bytes. Passing `Some(replacement)` while a
+  send is retained is outside the contract: built-in drivers never do it, and a
+  backend's behavior in that case is unspecified (the native WebSocket leaves
+  the replacement untouched and reports the retained operation).
 - `None` means no new frame. If no retained write exists, return `Ready(Ok(()))`.
 
 For a buffered sink, the usual state machine is:
@@ -123,7 +126,10 @@ If `poll_recv` consumes partial input before returning `Pending`, that partial
 input must remain in the transport. A later poll must continue it rather than
 lose it. When a real async waker is supplied, register or forward it so the
 async client wakes when progress becomes possible. A frame-loop polling client
-uses a noop waker and simply polls again next tick.
+uses a noop waker and simply polls again next tick. A polling-only backend (the
+Emscripten transport) may rely on that noop-waker contract and skip waker
+registration entirely; it must not be wrapped by the async driver, which
+requires a working waker.
 
 ## Close Contract
 

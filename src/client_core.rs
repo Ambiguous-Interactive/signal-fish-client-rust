@@ -1126,6 +1126,9 @@ impl ClientCore {
     /// Unreachable while every `ClientMessage` field serializes infallibly,
     /// but one fallible field away from a permanent `RoomOperationPending` in
     /// both drivers, so the fence is released instead of asserted away.
+    /// Matching is by operation kind only: at most one fence exists at a
+    /// time, so a same-kind message — wrapped or not — can only be the
+    /// command that armed it, never a competing operation.
     pub(crate) fn dequeue_serialization_failed(&mut self, message: &ClientMessage) {
         let kind = match message {
             ClientMessage::JoinRoom { .. } => PendingRoomOperation::JoinPlayer,
@@ -1133,6 +1136,13 @@ impl ClientCore {
             ClientMessage::Reconnect { .. } => PendingRoomOperation::ReconnectPlayer,
             ClientMessage::JoinAsSpectator { .. } => PendingRoomOperation::JoinSpectator,
             ClientMessage::LeaveSpectator => PendingRoomOperation::LeaveSpectator,
+            ClientMessage::RoomOperation { operation, .. } => match operation.as_ref() {
+                RoomOperationRequest::JoinRoom { .. } => PendingRoomOperation::JoinPlayer,
+                RoomOperationRequest::LeaveRoom => PendingRoomOperation::LeavePlayer,
+                RoomOperationRequest::Reconnect { .. } => PendingRoomOperation::ReconnectPlayer,
+                RoomOperationRequest::JoinAsSpectator { .. } => PendingRoomOperation::JoinSpectator,
+                RoomOperationRequest::LeaveSpectator => PendingRoomOperation::LeaveSpectator,
+            },
             _ => return,
         };
         if self
@@ -1417,7 +1427,10 @@ impl ClientCore {
                         | crate::protocol::SpectatorStateChangeReason::Removed
                         | crate::protocol::SpectatorStateChangeReason::RoomClosed,
                     ) => {
-                        if *room_id != self.snapshot.room_id {
+                        // The wire authority leaves `room_id` optional; an
+                        // authoritative exit from the current room need not
+                        // repeat its identity, but a named room must match.
+                        if room_id.is_some_and(|room_id| Some(room_id) != self.snapshot.room_id) {
                             return Err(
                                 "lifecycle violation: authoritative SpectatorLeft must identify the current room"
                                     .into(),
@@ -4533,20 +4546,39 @@ mod tests {
         assert_lifecycle_violation_containing(&outcome, "joined reason");
         assert_eq!(invalid.room_role(), Some(RoomRole::Spectator));
 
-        for room_id in [None, Some(RoomId::from_u128(999))] {
-            let mut invalid = v3_spectator(ProtocolViolationPolicy::Observe);
-            let outcome = process(
-                &mut invalid,
-                ServerMessage::SpectatorLeft {
-                    room_id,
-                    room_code: None,
-                    reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
-                    current_spectators: vec![],
-                },
-            );
-            assert_lifecycle_violation_containing(&outcome, "identify the current room");
-            assert_eq!(invalid.room_role(), Some(RoomRole::Spectator));
-        }
+        // The wire authority leaves `room_id` optional: an authoritative exit
+        // from the current room may omit the identity, while a named room
+        // must still match.
+        let mut omitted_identity = v3_spectator(ProtocolViolationPolicy::Observe);
+        let outcome = process(
+            &mut omitted_identity,
+            ServerMessage::SpectatorLeft {
+                room_id: None,
+                room_code: None,
+                reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
+                current_spectators: vec![],
+            },
+        );
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::SpectatorLeft { .. }]
+        ));
+        assert!(!outcome.disconnect);
+        assert_eq!(omitted_identity.room_role(), None);
+        assert!(!omitted_identity.snapshot().quarantined);
+
+        let mut mismatched_identity = v3_spectator(ProtocolViolationPolicy::Observe);
+        let outcome = process(
+            &mut mismatched_identity,
+            ServerMessage::SpectatorLeft {
+                room_id: Some(RoomId::from_u128(999)),
+                room_code: None,
+                reason: Some(crate::protocol::SpectatorStateChangeReason::RoomClosed),
+                current_spectators: vec![],
+            },
+        );
+        assert_lifecycle_violation_containing(&outcome, "identify the current room");
+        assert_eq!(mismatched_identity.room_role(), Some(RoomRole::Spectator));
     }
 
     #[test]
@@ -6557,13 +6589,13 @@ mod tests {
             ),
         ];
 
-        for (name, operation, message) in cases {
+        for (name, operation, message) in cases.iter() {
             let mut core = ClientCore::new(
                 Some(GameDataEncoding::Json),
                 ProtocolViolationPolicy::Observe,
                 true,
             );
-            core.record_admission(ClientCore::admission_for(&operation));
+            core.record_admission(ClientCore::admission_for(operation));
             assert!(
                 core.pending_room_operation.is_some(),
                 "{name}: admission must arm the fence"
@@ -6572,7 +6604,7 @@ mod tests {
                 assert_eq!(core.pending_reconnects.len(), 1);
             }
 
-            core.dequeue_serialization_failed(&message);
+            core.dequeue_serialization_failed(message);
             assert!(
                 core.pending_room_operation.is_none(),
                 "{name}: dequeue failure must release the fence"
@@ -6583,11 +6615,70 @@ mod tests {
             );
             // A mismatched message kind must never release someone else's
             // fence.
-            core.record_admission(ClientCore::admission_for(&operation));
+            core.record_admission(ClientCore::admission_for(operation));
             core.dequeue_serialization_failed(&ClientMessage::Ping);
             assert!(
                 core.pending_room_operation.is_some(),
                 "{name}: an unrelated message must not release the fence"
+            );
+        }
+
+        // After `room_operation_ids` negotiation the same five operations are
+        // enqueued wrapped in a correlated `RoomOperation` envelope; a
+        // dequeue-time serialization failure of that envelope must release
+        // the fence exactly like the unwrapped shapes above.
+        for (name, operation, unwrapped) in cases.iter().map(|(n, o, m)| (n, o, m.clone())) {
+            let operation_id = RoomOperationId::from_u128(0xaaaa);
+            let envelope = correlate_room_operation(unwrapped, operation_id);
+
+            // Negotiated mode, with the fence carrying the same operation id
+            // the envelope was built with — the exact state
+            // `prepare_with_admission` produces.
+            let mut core = ClientCore::new_with_room_operation_ids(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+                true,
+            );
+            core.record_admission(ClientCore::admission_for(operation));
+            if let Some(pending) = core.pending_room_operation.as_mut() {
+                pending.operation_id = Some(operation_id);
+            }
+            assert!(
+                core.pending_room_operation.is_some(),
+                "{name}: correlated admission must arm the fence"
+            );
+
+            core.dequeue_serialization_failed(&envelope);
+            assert!(
+                core.pending_room_operation.is_none(),
+                "{name}: a correlated dequeue failure must release the fence"
+            );
+            assert!(
+                core.pending_reconnects.is_empty(),
+                "{name}: correlated reconnect bookkeeping must be released with the fence"
+            );
+
+            // The kind match is still exact for envelopes.
+            core.record_admission(ClientCore::admission_for(operation));
+            let unrelated = correlate_room_operation(
+                match operation {
+                    ClientOperation::JoinRoom(_) => ClientMessage::LeaveRoom,
+                    _ => ClientMessage::JoinRoom {
+                        game_name: "other".into(),
+                        player_name: "local".into(),
+                        room_code: None,
+                        max_players: None,
+                        supports_authority: None,
+                        relay_transport: None,
+                    },
+                },
+                RoomOperationId::from_u128(0xbbbb),
+            );
+            core.dequeue_serialization_failed(&unrelated);
+            assert!(
+                core.pending_room_operation.is_some(),
+                "{name}: a different correlated operation must not release the fence"
             );
         }
     }

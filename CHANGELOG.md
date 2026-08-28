@@ -318,6 +318,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Accepted authoritative `SpectatorLeft` frames that omit the optional
+  `room_id` (server removal, spectator disconnect, or room close). The wire
+  authority marks the field optional, but the client required it and latched
+  quarantine on a schema-valid exit under the default policy; a named room
+  must still match the current one.
+- Corrected published documentation that reversed actual behavior or
+  misdescribed the API: the mesh guide now states that an empty `SessionPlan`
+  clears pre-gathered ICE servers (plans replace the list wholesale, they
+  never merge), the spectator-leaves event and protocol tables describe
+  authoritative exits, the `DecodeFailed.raw_prefix` field documents that
+  it carries verbatim frame content, and the events and web/Godot guides no
+  longer fabricate a lobby ready-count denominator or silently swallow
+  command errors in example sketches.
 - Fixed the release tooling's remaining fence-blind spots: release
   preparation, the changelog cut, semver-policy derivation, the previous
   baseline lookup, and release-notes extraction now track CommonMark fenced

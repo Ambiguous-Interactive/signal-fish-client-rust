@@ -1552,6 +1552,7 @@ mod tests {
     use proptest::{prop_assert, prop_assert_eq};
 
     use super::*;
+    use crate::protocol::RoomOperationRequest;
     use crate::protocol::ServerMessage;
     use crate::transport::TransportFrame;
 
@@ -1625,9 +1626,16 @@ mod tests {
                 )
             });
             let reconnect_was_sent = self.sent.iter().any(|json| {
-                matches!(
-                    serde_json::from_str::<ClientMessage>(json),
-                    Ok(ClientMessage::Reconnect { .. })
+                serde_json::from_str::<ClientMessage>(json).is_ok_and(
+                    // Correlated envelopes count as their inner
+                    // operation, mirroring the wire in negotiated mode.
+                    |message| match message {
+                        ClientMessage::Reconnect { .. } => true,
+                        ClientMessage::RoomOperation { operation, .. } => {
+                            matches!(operation.as_ref(), RoomOperationRequest::Reconnect { .. })
+                        }
+                        _ => false,
+                    },
                 )
             });
             if reconnect_response_is_gated && !reconnect_was_sent {

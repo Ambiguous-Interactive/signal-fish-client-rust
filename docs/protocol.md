@@ -635,7 +635,7 @@ pub enum ServerMessage { /* ... */ }
 | `PlayerReconnected` | Another player reconnected. |
 | `SpectatorJoined` | Successfully joined as a spectator. |
 | `SpectatorJoinFailed` | Failed to join as a spectator. |
-| `SpectatorLeft` | Successfully left spectator mode. |
+| `SpectatorLeft` | The spectator left the room: an answer to an admitted voluntary leave, or an authoritative exit (`reason`: `removed`, `disconnected`, or `room_closed`). Room identity fields are optional on the wire; a named room must match the current one. |
 | `RoomOperationResult` | **(negotiated v3)** Echoes the exact UUID and carries an operation-specific terminal result or `OperationFailed`. |
 | `NewSpectatorJoined` | Another spectator joined the room. |
 | `SpectatorDisconnected` | Another spectator disconnected. |
