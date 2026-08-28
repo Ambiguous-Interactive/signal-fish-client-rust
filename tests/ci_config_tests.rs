@@ -6713,7 +6713,7 @@ mod docs_brand_policy {
             "const canonicalPath = await fs.realpath(filePath)",
             "args: [\"--disable-gpu\"]",
             "reducedMotion: \"reduce\"",
-            "await checkClosedBoundaries(page)",
+            "runPhase(\"closed boundaries\", () => checkClosedBoundaries(page))",
         ] {
             assert!(
                 browser_check.contains(harness_contract),
