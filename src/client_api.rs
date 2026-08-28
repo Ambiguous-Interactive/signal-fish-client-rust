@@ -78,12 +78,16 @@ pub trait SignalFishClientApi {
     /// Report data-path transport status.
     fn report_transport_status(&mut self, transport: TransportKind, connected: bool) -> Result<()>;
     /// Remaining command-queue capacity.
+    #[must_use = "this diagnostic view is discarded if not used"]
     fn send_capacity(&self) -> usize;
     /// Configured command-queue capacity.
+    #[must_use = "this diagnostic view is discarded if not used"]
     fn max_send_capacity(&self) -> usize;
     /// Cumulative traffic statistics.
+    #[must_use = "this diagnostic view is discarded if not used"]
     fn stats(&self) -> ClientStats;
     /// Coherent connection and room snapshot.
+    #[must_use = "this diagnostic view is discarded if not used"]
     fn snapshot(&self) -> ClientSnapshot;
 
     /// Server-confirmed local role in the current room.

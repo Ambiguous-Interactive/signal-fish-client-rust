@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Godot adapter's `watermark_hits` and `backend_capacity_hits`
+  transport diagnostics now count each deferred send once, instead of once
+  per poll attempt that re-observed the same parked frame — so a frame held
+  across N polls no longer inflates the counters N-fold.
+- The `SignalFishClientApi` trait's diagnostic accessors (`send_capacity`,
+  `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`, matching
+  the concrete drivers, so discarding them silently is a compile warning.
+
+### Fixed
+
+- The async driver's `transport_diagnostics()` sample now refreshes during
+  the post-send-failure terminal drain, as its per-receive-poll contract
+  documents, instead of freezing at the last pre-teardown value.
+
 ## [0.11.0] - 2026-08-28
 
 <!-- semver-checks: major -->

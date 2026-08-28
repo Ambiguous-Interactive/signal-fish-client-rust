@@ -56,12 +56,24 @@ const DEFAULT_POLL_BYTES: usize = DEFAULT_DRIVER_WORK_BYTES;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollingWorkBudget {
     /// Maximum outbound ownership transfers per poll.
+    ///
+    /// Zero values clamp up to one: a poll always makes progress, it never
+    /// refuses all work.
     pub send_frames: usize,
     /// Maximum outbound payload bytes begun per poll.
+    ///
+    /// Zero values clamp up to one: a poll always makes progress, it never
+    /// refuses all work.
     pub send_bytes: usize,
     /// Maximum inbound frames processed per poll.
+    ///
+    /// Zero values clamp up to one: a poll always makes progress, it never
+    /// refuses all work.
     pub receive_frames: usize,
     /// Maximum inbound payload bytes processed per poll.
+    ///
+    /// Zero values clamp up to one: a poll always makes progress, it never
+    /// refuses all work.
     pub receive_bytes: usize,
 }
 
@@ -113,9 +125,11 @@ pub struct PollingStats {
     pub current_queue_depth: u64,
     /// Highest observed client-owned outbound depth.
     pub peak_queue_depth: u64,
-    /// Polls that stopped because the send frame or byte budget was exhausted.
+    /// Driver cycles that stopped because the send frame or byte budget was
+    /// exhausted (caller polls and close-time flush steps).
     pub send_budget_exhaustions: u64,
-    /// Polls that stopped because the receive frame or byte budget was exhausted.
+    /// Driver cycles that stopped because the receive frame or byte budget
+    /// was exhausted (caller polls and close-time drain steps).
     pub receive_budget_exhaustions: u64,
     /// Commands abandoned by close policy or close-deadline expiry, plus
     /// dequeue-time serialization failures.
@@ -962,6 +976,17 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// [`PollingClosePolicy`] either abandons client-owned work or flushes it
     /// under the normal work budget before starting the transport close.
     /// [`SignalFishConfig::shutdown_timeout`] bounds the complete operation.
+    ///
+    /// While the close is in flight, inbound frames that are already buffered
+    /// or immediately ready are drained and **discarded** — they are no
+    /// longer decoded, processed, or delivered as events, and the drain
+    /// itself is bounded by the configured receive work budget (a frame that
+    /// crosses the byte budget is still drained). Frames that
+    /// arrive later stay unread in the backend. (The async driver instead
+    /// processes immediately-ready frames through the core after a terminal
+    /// send failure and reads none after a peer close, so the same
+    /// client-visible outcome — late frames are not delivered — is reached
+    /// with different observable frame counts.)
     ///
     /// Unlike the async driver's `shutdown()`, `close` emits **no** terminal
     /// `Disconnected` event and no application events at all: observe

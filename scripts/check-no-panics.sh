@@ -69,11 +69,19 @@ for dir in "${PROD_DIRS[@]}"; do
 
     for pattern in "${PATTERNS[@]}"; do
         # Find violations, filtering out:
-        #   - Comment-only lines (// ...)
-        #   - Lines referencing the pattern inside comments
+        #   - Comment-only and doc-comment lines (`// …`, `/// …`). grep -rn
+        #     prefixes every hit with `path:line:`, so the filter is
+        #     prefix-aware: `^[^:]*:[0-9]*:` skips the location, then the
+        #     content must start with optional whitespace and `//`.
+        #   - Lines referencing the pattern inside a trailing comment. `//`
+        #     only starts a comment at line start or after whitespace, so a
+        #     colon-adjacent `//` (e.g. an "https://…" URL) is not treated as
+        #     one. Residual hole: whitespace inside a string literal can
+        #     still mask a violation later on the same line — clippy's deny
+        #     lints remain the authoritative backstop for that class.
         matches=$(grep -rn --include='*.rs' "$pattern" "$dir" \
-            | grep -v '^[[:space:]]*//' \
-            | grep -v '//.*'"$pattern" \
+            | grep -v '^[^:]*:[0-9]*:[[:space:]]*//' \
+            | grep -v '[[:space:]]//.*'"$pattern" \
             || true)
 
         if [ -z "$matches" ]; then

@@ -73,7 +73,9 @@ the sole documented exception for the platform C API. Required WASM policy and
 terminal deletion failure intentionally leaks the small allocation instead of
 risking late-callback use-after-free. Change-scoped, scheduled, and manual
 Deep Safety runs Miri protocol tests, ThreadSanitizer, three raw-byte
-JSON/MessagePack fuzz targets, and focused mutation testing; required Clippy
+JSON/MessagePack fuzz targets plus the token-binding facade target, and
+focused mutation testing (protocol.rs, protocol/binary.rs,
+terminal_drain.rs, error_codes.rs, error.rs); required Clippy
 and WASM gates enforce compiler safety on every PR. Every member denies
 `unwrap_used` through `indexing_slicing`/`unreachable`, plus `arithmetic_side_effects`; the No
 Panics grep gate scans all members; release builds enable `overflow-checks` (debug-equivalent arithmetic).
@@ -105,7 +107,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
 | `src/token_binding.rs` | Native WebSocket token-binding-v2 types, validation, canonicalization, and proof state (feature: `token-binding`) |
-| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 39 fake-backend tests |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 43 fake-backend tests |
 
 ### Transport Trait
 

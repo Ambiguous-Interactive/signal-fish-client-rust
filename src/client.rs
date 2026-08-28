@@ -24,6 +24,15 @@
 //!   the transport gracefully under [`shutdown_timeout`](SignalFishConfig::shutdown_timeout),
 //!   and deliver the terminal `Disconnected` best-effort (a receiver that
 //!   outlives the loop also observes the event channel closing).
+//! - **Terminal inbound frames** are not guaranteed delivery once the loop is
+//!   tearing down, and the policy differs by trigger: after a terminal
+//!   outbound send failure the loop still processes the frames that are
+//!   already immediately ready from the backend (bounded by the standard
+//!   64-frame / 64 KiB driver work budget and the shared teardown budget),
+//!   while after a peer close or receive error no further inbound frames are
+//!   read at all. The polling driver discards ready inbound frames during
+//!   close instead of processing them — the same client-visible outcome
+//!   (late frames are not delivered) with different observable frame counts.
 //! - **Commands** go through a bounded queue and queue admission is never
 //!   silent: the synchronous send methods fail fast with
 //!   [`SignalFishError::SendBufferFull`] when it is full, and the
@@ -1574,7 +1583,9 @@ impl SignalFishClient {
     /// loop-cycle start and each pending-send or receive poll — so a watermark
     /// or capacity hit that parks an in-flight send is visible to this
     /// accessor while backpressure is still in flight, not only at the next
-    /// wakeup. This mirrors the polling driver's
+    /// wakeup. After the loop exits (terminal disconnect or shutdown), the
+    /// sample stops refreshing and this accessor keeps reporting the last
+    /// observed values. This mirrors the polling driver's
     /// [`transport_diagnostics`](crate::polling_client::SignalFishPollingClient::transport_diagnostics),
     /// which reads its caller-owned transport synchronously. Use these
     /// counters to tell command-queue congestion
@@ -2190,6 +2201,12 @@ async fn finish_send_failure(
             ))
         })
         .await;
+        // Each drain step is a receive poll, so keep the sampled transport
+        // diagnostics current here too: backend-owned buffering (drained
+        // inbound frames) released during this terminal drain must be
+        // visible to `transport_diagnostics()` exactly as the per-poll
+        // refresh contract promises.
+        lock_core(state).record_transport_diagnostics(transport.diagnostics());
         let ReadyFrameDrainPoll::Frame {
             frame,
             budget_reached,

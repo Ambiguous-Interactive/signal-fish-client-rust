@@ -416,4 +416,42 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn debug_impls_redact_payload_bytes_and_report_lengths() {
+        let from_player = PlayerId::from_u128(PLAYER_ID);
+        // 0xDE 0xAD 0xBE 0xEF never appears in a Debug string; only the
+        // payload length may be shown (ambient-log redaction contract).
+        let payload = vec![0xde, 0xad, 0xbe, 0xef];
+
+        let v3 = V3BinaryGameDataFrame {
+            from_player,
+            encoding: GameDataEncoding::Json,
+            payload: payload.clone(),
+            seq: 7,
+            epoch: 2,
+        };
+        let v3_debug = format!("{v3:?}");
+        assert!(
+            v3_debug.starts_with("V3BinaryGameDataFrame {"),
+            "{v3_debug}"
+        );
+        assert!(v3_debug.contains("payload_bytes: 4"), "{v3_debug}");
+        assert!(v3_debug.contains("seq: 7"), "{v3_debug}");
+        assert!(v3_debug.contains("epoch: 2"), "{v3_debug}");
+        assert!(!v3_debug.contains("222"), "{v3_debug}");
+
+        let v2 = V2BinaryGameDataFrame {
+            from_player,
+            encoding: GameDataEncoding::MessagePack,
+            payload,
+        };
+        let v2_debug = format!("{v2:?}");
+        assert!(
+            v2_debug.starts_with("V2BinaryGameDataFrame {"),
+            "{v2_debug}"
+        );
+        assert!(v2_debug.contains("payload_bytes: 4"), "{v2_debug}");
+        assert!(!v2_debug.contains("222"), "{v2_debug}");
+    }
 }
