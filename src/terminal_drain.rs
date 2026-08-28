@@ -111,7 +111,7 @@ pub(crate) fn peer_close_reason<T: Transport + ?Sized>(transport: &T) -> Option<
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing)]
+#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
     use crate::transport::TransportCloseInfo;
@@ -274,7 +274,7 @@ mod tests {
         assert!(close_reason(&locally_closed).is_some());
         assert_eq!(peer_close_reason(&locally_closed), None);
 
-        let mut open = StubDrainTransport::with_frames(Vec::new());
+        let open = StubDrainTransport::with_frames(Vec::new());
         assert_eq!(close_reason(&open), None);
         assert_eq!(peer_close_reason(&open), None);
     }
