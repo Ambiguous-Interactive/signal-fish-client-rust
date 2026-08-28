@@ -95,6 +95,95 @@ class RequiredCheckTests(unittest.TestCase):
                     {"required_checks": [{"workflow": "CI", "job": job}]}
                 )
 
+    def test_accepts_complete_pagination_total(self) -> None:
+        payload = [
+            {
+                "total_count": 3,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "CI Required",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Docs Required",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ],
+            },
+            {
+                "total_count": 3,
+                "check_runs": [
+                    {
+                        "id": 3,
+                        "name": "CI Required",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    }
+                ],
+            },
+        ]
+        failures = checks.check_results(self.policy, payload)
+        self.assertEqual(
+            failures, ["CI Required: status=completed, conclusion=failure"]
+        )
+
+    def test_rejects_incomplete_pagination_before_judging_checks(self) -> None:
+        # A truncated feed could hide a newer failing rerun behind an older
+        # success; the missing run must fail the gate regardless of what the
+        # fetched pages contain.
+        payload = [
+            {
+                "total_count": 3,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "CI Required",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+            },
+            {"total_count": 3, "check_runs": []},
+        ]
+        with self.assertRaisesRegex(ValueError, "pagination incomplete"):
+            checks.check_results(self.policy, payload)
+
+    def test_rejects_pages_that_disagree_on_total_count(self) -> None:
+        payload = [
+            {"total_count": 2, "check_runs": []},
+            {"total_count": 3, "check_runs": []},
+        ]
+        with self.assertRaisesRegex(ValueError, "disagree on total_count"):
+            checks.check_results(self.policy, payload)
+
+    def test_rejects_non_integer_total_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "total_count"):
+            checks.check_results(
+                self.policy, [{"total_count": "2", "check_runs": []}]
+            )
+
+    def test_rejects_non_integer_check_run_ids(self) -> None:
+        for bad_id in (None, "7", 1.5, True):
+            with self.subTest(bad_id=bad_id):
+                payload = [
+                    {
+                        "check_runs": [
+                            {
+                                "id": bad_id,
+                                "name": "CI Required",
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                        ]
+                    }
+                ]
+                with self.assertRaisesRegex(ValueError, "integer id"):
+                    checks.check_results(self.policy, payload)
+
 
 if __name__ == "__main__":
     unittest.main()

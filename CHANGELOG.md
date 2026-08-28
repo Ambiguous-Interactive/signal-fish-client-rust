@@ -318,6 +318,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the release tooling's remaining fence-blind spots: release
+  preparation, the changelog cut, semver-policy derivation, the previous
+  baseline lookup, and release-notes extraction now track CommonMark fenced
+  code blocks everywhere the release-intent parser already does, so a
+  documentation example quoting changelog syntax inside `[Unreleased]` can
+  no longer brick preparation or silently truncate the cut release notes. A
+  crates.io response missing its version object now fails with a clear
+  release error instead of an uncaught Python traceback.
+- Made Release recovery reruns deterministic: the workspace root
+  `Cargo.lock` is now tracked — release preparation updates it in lockstep
+  with the manifests, and the release workflows package and publish with
+  `--locked` — so a rerun after a transient failure rebuilds byte-identical
+  `.crate` archives even when dependencies published compatible new versions
+  in between; previously such drift could make the checksum-verified recovery
+  refuse to complete.
+- Hardened the release plumbing against silent no-ops: Prepare Release now
+  fails loudly when the required-checks policy file is missing, malformed, or
+  empty instead of dispatching zero checks and stalling the release PR, the
+  Release workflow re-verifies default-branch HEAD immediately before
+  creating the release tag, and the required-checks gate fails closed on
+  truncated pagination or malformed check-run payloads.
 - Fixed the Prepare Release blocker that would fail every future release run:
   the compatibility manifest now carries both a release-stamped top-level
   `synced` date and real upstream-refresh dates under `[protocol_authority]`,
