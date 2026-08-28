@@ -88,7 +88,7 @@ impl Transport for LoopbackTransport {
         let result = match frame.take() {
             Some(TransportFrame::Text(message)) => tx
                 .send(message)
-                .map_err(|e| SignalFishError::TransportSend(e.to_string())),
+                .map_err(|e| SignalFishError::TransportSend(Box::new(e))),
             Some(TransportFrame::Binary(_)) => Err(SignalFishError::TransportSend(
                 "this text-only loopback does not accept binary frames".into(),
             )),

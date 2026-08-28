@@ -24,8 +24,8 @@ exhaustive public enum:
 
 | Variant | Fields | When it occurs |
 |---------|--------|----------------|
-| `TransportSend` | `String` | Failed to send a message through the transport. |
-| `TransportReceive` | `String` | Failed to receive a message from the transport. |
+| `TransportSend` | `Box<dyn Error + Send + Sync>` | Failed to send a message through the transport. The boxed cause is the backend's original error, so `Error::source()` reaches it: the built-in native WebSocket boxes the backend's own error whose chain reaches the underlying `std::io::Error`, and custom transports keep whatever error they produce. `Display` keeps the cause's own message. |
+| `TransportReceive` | `Box<dyn Error + Send + Sync>` | Failed to receive a message from the transport. Like `TransportSend`, the boxed cause stays inspectable through `Error::source()`. |
 | `TransportClosed` | — | The transport connection was closed unexpectedly. |
 | `TokenBinding` | `TokenBindingFailure` | Native WebSocket token-binding negotiation, challenge validation, key derivation, canonicalization, encoding, or sequence handling failed. Reasons are typed and contain no key, nonce, proof, signature, fingerprint, URL credential, or payload material. Includes `MissingClientFingerprint`, raised by the opt-in `require_client_fingerprint` connect policy when no X.509 client signer is selected. See [WebSocket Token Binding](token-binding.md). |
 | `Serialization` | `serde_json::Error` | Failed to serialize or deserialize a protocol message. Implements `From<serde_json::Error>`. |
@@ -43,6 +43,7 @@ exhaustive public enum:
 | `StaleSessionGeneration` | `attempted: Option<SessionGeneration>`, `current: Option<SessionGeneration>` | A generation-bound driver signal was produced after its session plan had been replaced. The client refuses it rather than relabeling stale signaling. |
 | `BinaryFormatNotNegotiated` | — | A binary send was attempted after negotiation resolved to JSON. Request `MessagePack` and confirm `effective_game_data_format() == Some(MessagePack)`; unsupported requests resolve to JSON and are refused before transport admission. Before `ProtocolInfo`, v3-only sends return `ProtocolUnsupported` instead. |
 | `Timeout` | — | The WebSocket handshake did not complete within its deadline. Only `WebSocketTransport::connect_with_timeout` emits this variant, when the connection is not established within the duration it is given. |
+| `InvalidConfig` | `field: &'static str`, `problem: String` | A caller-supplied configuration value was rejected because the value itself is unusable, before any network I/O: a zero inbound-size limit, a URL that cannot be parsed into a WebSocket request, a URL containing interior NUL bytes (Emscripten), or `wss://` without the opt-in `tls` feature. The failure is determined by the value or the build, not by a network outcome — retrying without correcting it keeps failing. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 
 Local validation has stable precedence: connection state, server-confirmed
@@ -65,8 +66,8 @@ fn try_join(client: &mut SignalFishClient) {
         Err(SignalFishError::NotConnected) => {
             eprintln!("Cannot join — not connected to the server");
         }
-        Err(SignalFishError::TransportSend(msg)) => {
-            eprintln!("Transport send failed: {msg}");
+        Err(SignalFishError::TransportSend(cause)) => {
+            eprintln!("Transport send failed: {cause}");
         }
         Err(SignalFishError::Serialization(err)) => {
             eprintln!("Serialization error: {err}");
@@ -394,8 +395,8 @@ fn send_data(client: &mut SignalFishClient) {
     let payload = serde_json::json!({"action": "move", "x": 10, "y": 20});
     match client.send_game_data(payload) {
         Ok(()) => { /* sent successfully */ }
-        Err(SignalFishError::TransportSend(msg)) => {
-            eprintln!("Transport layer failed to send: {msg}");
+        Err(SignalFishError::TransportSend(cause)) => {
+            eprintln!("Transport layer failed to send: {cause}");
         }
         Err(SignalFishError::TransportClosed) => {
             eprintln!("Connection lost — need to reconnect");

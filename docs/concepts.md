@@ -465,8 +465,8 @@ directly from client methods as `Result<(), SignalFishError>`.
 
 | Variant | Meaning |
 |---------|---------|
-| `TransportSend(String)` | Failed to write to the transport. |
-| `TransportReceive(String)` | Failed to read from the transport. |
+| `TransportSend(cause)` | Failed to write to the transport; `cause` is the backend's boxed original error (`Error::source()` reaches the root cause). |
+| `TransportReceive(cause)` | Failed to read from the transport; like `TransportSend`, the boxed cause stays inspectable. |
 | `TransportClosed` | The transport connection closed unexpectedly. |
 | `Serialization(serde_json::Error)` | JSON serialization / deserialization failed. |
 | `NotConnected` | Attempted an operation without an active connection. |
@@ -484,6 +484,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
 | `Timeout` | An operation exceeded its time limit. |
+| `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
 ### Server-Side: `ErrorCode`

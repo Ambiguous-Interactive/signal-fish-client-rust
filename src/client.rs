@@ -3546,7 +3546,7 @@ mod tests {
             assert!(matches!(
                 result,
                 Poll::Ready(Err(SignalFishError::TransportSend(ref diagnostic)))
-                    if diagnostic.contains("nonempty caller frame slot")
+                    if diagnostic.to_string().contains("nonempty caller frame slot")
             ));
             assert!(pending.frame.is_some(), "the caller must retain ownership");
             assert!(pending.is_game_data, "no transfer may be recorded");

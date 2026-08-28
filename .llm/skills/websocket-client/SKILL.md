@@ -27,8 +27,12 @@ to tungstenite's frame and assembled-message limits together. The default is
 an inclusive 8 MiB; `None` disables both and `Some(0)` is rejected before
 network I/O. This is a protective client policy, not a Server 0.7 protocol
 maximum; signal-fish-server#399 tracks the missing outbound contract.
-Connection failures map to `SignalFishError::Io`, preserving an underlying I/O
-error kind when possible.
+Network-determined connection failures map to `SignalFishError::Io`,
+preserving an underlying I/O error kind when possible. Value- and
+build-determined rejections — an unparsable URL, a zero inbound-size limit,
+or `wss://` without the `tls` feature — are the typed
+`SignalFishError::InvalidConfig { field, problem }` instead, decided before
+any network I/O.
 
 The opt-in `token-binding` feature adds `TokenBindingMode` to
 `WebSocketConnectOptions`. Keep disabled mode on the exact old connect path.
@@ -167,7 +171,7 @@ provider the application already installed) so tokio-tungstenite's
 `ClientConfig::builder()` never hits rustls' ambiguous feature auto-detection —
 which panics when both `ring` and `aws_lc_rs` are in the dependency graph.
 Without the `tls` feature, a `wss://` connect fails cleanly with
-`SignalFishError::Io` (never a panic). Keep TLS features aligned with
+`SignalFishError::InvalidConfig` (never a panic). Keep TLS features aligned with
 `Cargo.toml` rather than duplicating an alternative stack in the transport.
 `connect_with_tls_config` accepts caller-controlled roots or mTLS without
 retaining or formatting the configuration. When active token binding uses a

@@ -17,13 +17,21 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SignalFishError {
-    /// Failed to send a message through the transport.
+    /// Failed to send a message through the transport. The boxed cause is
+    /// the backend's original error (`#[source]`): `Error::source()` reaches
+    /// it for programmatic handling. The built-in native WebSocket boxes the
+    /// backend's own `tungstenite::Error`, whose chain reaches the underlying
+    /// `std::io::Error` one hop down; custom transports box whatever error
+    /// they produce. Display keeps the cause's own message. Construct from
+    /// any `Error + Send + Sync + 'static`, or from a string detail
+    /// (`"refused".into()`).
     #[error("transport send error: {0}")]
-    TransportSend(String),
+    TransportSend(#[source] Box<dyn std::error::Error + Send + Sync>),
 
-    /// Failed to receive a message from the transport.
+    /// Failed to receive a message from the transport; boxed cause like
+    /// `TransportSend`.
     #[error("transport receive error: {0}")]
-    TransportReceive(String),
+    TransportReceive(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// The transport connection was closed unexpectedly.
     #[error("transport connection closed")]
@@ -79,6 +87,15 @@ pub enum SignalFishError {
     #[error("operation timed out")]
     Timeout,
 
+    /// A caller-supplied configuration value (or required build feature) was
+    /// rejected before any network I/O. `problem` is non-secret and safe for
+    /// ambient logs.
+    #[error("invalid configuration: {field}: {problem}")]
+    InvalidConfig {
+        field: &'static str,
+        problem: String,
+    },
+
     /// An I/O error occurred.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -122,7 +139,7 @@ fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
     // This example backend is not the SDK's poll-based Transport trait.
     self.backend.try_send(json)
-        .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
+        .map_err(|e| SignalFishError::TransportSend(Box::new(e)))?;
 
     Ok(())
 }
@@ -200,14 +217,35 @@ explicitly inspectable through the transport accessor, while its `Debug`
 redacts the nonce.
 
 ```rust
-// WebSocket transport errors → TransportSend / TransportReceive
+// WebSocket transport errors → TransportSend / TransportReceive.
+// Box the original error so source() stays structural; Display is unchanged.
 stream.send(msg).await
-    .map_err(|e| SignalFishError::TransportSend(e.to_string()))?;
+    .map_err(|e| SignalFishError::TransportSend(Box::new(e)))?;
 
 stream.next().await
     .ok_or(SignalFishError::TransportClosed)?
-    .map_err(|e| SignalFishError::TransportReceive(e.to_string()))?;
+    .map_err(|e| SignalFishError::TransportReceive(Box::new(e)))?;
 ```
+
+Caller-configuration rejections that happen before any network I/O use
+`SignalFishError::InvalidConfig { field, problem }` instead of an
+`io::ErrorKind::InvalidInput` costume:
+
+```rust
+// A zero limit is caller error, not a network condition.
+if options.max_inbound_message_size == Some(0) {
+    return Err(SignalFishError::InvalidConfig {
+        field: "max_inbound_message_size",
+        problem: "must be greater than zero or None".into(),
+    });
+}
+```
+
+`problem` strings must stay non-secret and safe for ambient logs; never echo
+URLs, credentials, or payload bytes into `field`/`problem`. The same rule
+governs boxing causes: if an error's own `Debug` would embed payload bytes
+(for example `std::ffi::NulError` retains the whole input vector), box its
+`Display` text (`error.to_string().into()`) instead of the error value.
 
 ## Error Propagation Patterns
 

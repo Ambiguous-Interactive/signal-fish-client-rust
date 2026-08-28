@@ -352,7 +352,7 @@ impl Transport for LoopbackTransport {
         };
         let result = match frame.take() {
             Some(frame) => tx.send(frame).map_err(|error| {
-                SignalFishError::TransportSend(error.to_string())
+                SignalFishError::TransportSend(Box::new(error))
             }),
             None => Ok(()),
         };

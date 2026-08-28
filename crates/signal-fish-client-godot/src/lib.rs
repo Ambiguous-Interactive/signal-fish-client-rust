@@ -212,7 +212,7 @@ fn admission_decision(
 trait GodotWebSocketBackend {
     fn set_inbound_buffer_size(&mut self, bytes: i32);
     fn set_max_queued_packets(&mut self, packets: i32);
-    fn connect_to_url(&mut self, url: &str) -> Result<(), String>;
+    fn connect_to_url(&mut self, url: &str) -> Result<(), Error>;
     fn poll(&mut self);
     fn state(&self) -> PeerState;
     fn outbound_buffered_amount(&self) -> i32;
@@ -237,14 +237,12 @@ impl GodotWebSocketBackend for Gd<WebSocketPeer> {
         std::ops::DerefMut::deref_mut(self).set_max_queued_packets(packets);
     }
 
-    fn connect_to_url(&mut self, url: &str) -> Result<(), String> {
+    fn connect_to_url(&mut self, url: &str) -> Result<(), Error> {
         let result = std::ops::DerefMut::deref_mut(self).connect_to_url(url);
         if result == Error::OK {
             Ok(())
         } else {
-            Err(format!(
-                "Godot WebSocketPeer connect_to_url failed with {result:?}"
-            ))
+            Err(result)
         }
     }
 
@@ -346,6 +344,12 @@ fn godot_send_result(result: Error, operation: &str) -> BackendSendResult {
 /// [`SignalFishPollingClient`](signal_fish_client::SignalFishPollingClient). The contained
 /// Godot object is intentionally not required to be `Send`; call the polling
 /// client's `poll()` method from the same Godot thread on every frame.
+///
+/// A connection that closes before opening surfaces as
+/// [`SignalFishError::TransportReceive`] even when observed first through
+/// [`Transport::poll_send`]: the handshake result is a receive-path event, so
+/// the send defers it by one poll and the classification is identical on both
+/// sides.
 pub struct GodotWebSocketTransport {
     backend: Box<dyn GodotWebSocketBackend>,
     backpressure_policy: GodotBackpressurePolicy,
@@ -427,8 +431,9 @@ impl GodotWebSocketTransport {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] when Godot rejects the URL or cannot
-    /// start the connection attempt.
+    /// Returns [`SignalFishError::InvalidConfig`] when Godot rejects the URL.
+    /// Returns [`SignalFishError::Io`] when Godot cannot start the connection
+    /// attempt.
     pub fn connect(url: &str) -> Result<Self, SignalFishError> {
         Self::connect_with_options(url, GodotWebSocketOptions::default())
     }
@@ -442,8 +447,9 @@ impl GodotWebSocketTransport {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] when Godot rejects the URL or cannot
-    /// start the connection attempt.
+    /// Returns [`SignalFishError::InvalidConfig`] when Godot rejects the URL.
+    /// Returns [`SignalFishError::Io`] when Godot cannot start the connection
+    /// attempt.
     pub fn connect_with_options(
         url: &str,
         options: GodotWebSocketOptions,
@@ -477,9 +483,22 @@ impl GodotWebSocketTransport {
     ) -> Result<Self, SignalFishError> {
         backend.set_inbound_buffer_size(inbound_buffer_size);
         backend.set_max_queued_packets(DEFAULT_MAX_QUEUED_PACKETS);
-        backend
-            .connect_to_url(url)
-            .map_err(|error| SignalFishError::Io(std::io::Error::other(error)))?;
+        backend.connect_to_url(url).map_err(|error| match error {
+            // Godot 4.5 returns ERR_INVALID_PARAMETER exactly for URL faults
+            // (empty URL, an unparsable URL, or a non-ws(s):// scheme)
+            // before any connection work starts; see `WSLPeer::connect_to_url`
+            // in the engine source `modules/websocket/wsl_peer.cpp` (4.5).
+            Error::ERR_INVALID_PARAMETER => SignalFishError::InvalidConfig {
+                field: "url",
+                problem: format!("Godot rejected the URL with {error:?}"),
+            },
+            // Engine- or resource-level failures (for example WSS on a build
+            // without the TLS module, or socket exhaustion) are platform
+            // conditions, not URL faults.
+            other => SignalFishError::Io(std::io::Error::other(format!(
+                "Godot WebSocketPeer connect_to_url failed with {other:?}"
+            ))),
+        })?;
         Ok(Self::from_backend_with_options(backend, options))
     }
 
@@ -553,7 +572,7 @@ impl GodotWebSocketTransport {
             Poll::Ready(None)
         } else {
             Poll::Ready(Some(Err(SignalFishError::TransportReceive(
-                "Godot WebSocket connection closed before opening".to_string(),
+                "Godot WebSocket connection closed before opening".into(),
             ))))
         }
     }
@@ -563,7 +582,7 @@ impl GodotWebSocketTransport {
             SignalFishError::TransportClosed
         } else {
             SignalFishError::TransportReceive(
-                "Godot WebSocket connection closed before opening".to_string(),
+                "Godot WebSocket connection closed before opening".into(),
             )
         }
     }
@@ -797,7 +816,7 @@ impl Transport for GodotWebSocketTransport {
                 Poll::Pending
             }
             BackendSendResult::Error(error) => {
-                Poll::Ready(Err(SignalFishError::TransportSend(error)))
+                Poll::Ready(Err(SignalFishError::TransportSend(error.into())))
             }
         }
     }
@@ -823,14 +842,16 @@ impl Transport for GodotWebSocketTransport {
         }
         let (bytes, is_text) = match self.backend.receive_packet() {
             Ok(packet) => packet,
-            Err(error) => return Poll::Ready(Some(Err(SignalFishError::TransportReceive(error)))),
+            Err(error) => {
+                return Poll::Ready(Some(Err(SignalFishError::TransportReceive(error.into()))))
+            }
         };
         if is_text {
             match String::from_utf8(bytes) {
                 Ok(text) => Poll::Ready(Some(Ok(TransportFrame::Text(text)))),
-                Err(error) => Poll::Ready(Some(Err(SignalFishError::TransportReceive(format!(
-                    "Godot WebSocket text packet was not valid UTF-8: {error}"
-                ))))),
+                Err(error) => Poll::Ready(Some(Err(SignalFishError::TransportReceive(
+                    format!("Godot WebSocket text packet was not valid UTF-8: {error}").into(),
+                )))),
             }
         } else {
             Poll::Ready(Some(Ok(TransportFrame::Binary(bytes))))
@@ -926,7 +947,7 @@ mod tests {
         configured_inbound_buffer_size: Rc<Cell<i32>>,
         configured_max_queued_packets: Rc<Cell<i32>>,
         connection_steps: Rc<RefCell<Vec<&'static str>>>,
-        connect_error: Option<String>,
+        connect_error: Option<Error>,
     }
 
     impl FakeBackend {
@@ -966,7 +987,7 @@ mod tests {
             self.connection_steps.borrow_mut().push("configure_packets");
         }
 
-        fn connect_to_url(&mut self, _url: &str) -> Result<(), String> {
+        fn connect_to_url(&mut self, _url: &str) -> Result<(), Error> {
             self.connection_steps.borrow_mut().push("connect");
             self.connect_error.take().map_or(Ok(()), Err)
         }
@@ -1177,7 +1198,8 @@ mod tests {
 
         assert!(matches!(
             transport.poll_send(&mut context(), &mut frame),
-            Poll::Ready(Err(SignalFishError::TransportSend(error))) if error.contains("ERR_BUG")
+            Poll::Ready(Err(SignalFishError::TransportSend(error)))
+                if error.to_string().contains("ERR_BUG")
         ));
         assert_eq!(frame, Some(expected));
     }
@@ -1368,7 +1390,7 @@ mod tests {
     #[test]
     fn connection_failure_follows_buffer_configuration() {
         let mut backend = FakeBackend::new(PeerState::Connecting);
-        backend.connect_error = Some("scripted connect failure".to_string());
+        backend.connect_error = Some(Error::FAILED);
         let observed_steps = Rc::clone(&backend.connection_steps);
 
         let error = GodotWebSocketTransport::connect_backend_with_options(
@@ -1384,6 +1406,25 @@ mod tests {
             &*observed_steps.borrow(),
             &["configure_inbound", "configure_packets", "connect"]
         );
+    }
+
+    #[test]
+    fn url_fault_error_code_is_invalid_config() {
+        let mut backend = FakeBackend::new(PeerState::Connecting);
+        backend.connect_error = Some(Error::ERR_INVALID_PARAMETER);
+
+        let error = GodotWebSocketTransport::connect_backend_with_options(
+            Box::new(backend),
+            "not a url",
+            DEFAULT_INBOUND_BUFFER_SIZE,
+            GodotWebSocketOptions::default(),
+        )
+        .expect_err("a URL-fault error code must surface");
+
+        assert!(matches!(
+            error,
+            SignalFishError::InvalidConfig { field: "url", .. }
+        ));
     }
 
     #[test]
@@ -1650,7 +1691,7 @@ mod tests {
         else {
             panic!("expected a transport receive error");
         };
-        assert!(error.contains("UTF-8"));
+        assert!(error.to_string().contains("UTF-8"));
     }
 
     #[test]
@@ -1666,7 +1707,7 @@ mod tests {
         else {
             panic!("expected a transport receive error");
         };
-        assert!(error.contains("ERR_BUSY"));
+        assert!(error.to_string().contains("ERR_BUSY"));
     }
 
     #[test]
@@ -1857,7 +1898,7 @@ mod tests {
         assert!(matches!(
             transport.poll_recv(&mut context()),
             Poll::Ready(Some(Err(SignalFishError::TransportReceive(error))))
-                if error.contains("closed before opening")
+                if error.to_string().contains("closed before opening")
         ));
         assert!(matches!(
             transport.poll_recv(&mut context()),
@@ -1879,7 +1920,7 @@ mod tests {
         assert!(matches!(
             transport.poll_send(&mut context(), &mut frame),
             Poll::Ready(Err(SignalFishError::TransportReceive(error)))
-                if error.contains("closed before opening")
+                if error.to_string().contains("closed before opening")
         ));
         assert!(frame.is_some());
     }

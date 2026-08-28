@@ -416,12 +416,16 @@ impl EmscriptenWebSocketTransport {
     /// This function is synchronous — the WebSocket is created immediately,
     /// but the connection handshake completes asynchronously. The transport
     /// retains caller-owned messages until the browser reports that the
-    /// connection is open.
+    /// connection is open. Peer-close metadata (`close_info`) is best-effort:
+    /// it is populated by the next `poll_recv` that drains the queued close
+    /// event, so closing or dropping the transport before that poll leaves
+    /// `close_info` empty.
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] if the URL contains interior NUL bytes
-    /// or if `emscripten_websocket_new` fails.
+    /// Returns [`SignalFishError::InvalidConfig`] if the URL contains interior
+    /// NUL bytes. Returns [`SignalFishError::Io`] if
+    /// `emscripten_websocket_new` fails.
     pub fn connect(url: &str) -> Result<Self, SignalFishError> {
         Self::connect_with_options(url, EmscriptenWebSocketConnectOptions::default())
     }
@@ -436,22 +440,24 @@ impl EmscriptenWebSocketTransport {
     ///
     /// # Errors
     ///
-    /// Returns [`SignalFishError::Io`] if the URL contains interior NUL bytes,
-    /// if `max_inbound_queue_bytes` is `Some(0)`, or if
+    /// Returns [`SignalFishError::InvalidConfig`] if the URL contains interior
+    /// NUL bytes or `max_inbound_queue_bytes` is `Some(0)` — neither attempts
+    /// socket creation. Returns [`SignalFishError::Io`] if
     /// `emscripten_websocket_new` fails.
     pub fn connect_with_options(
         url: &str,
         options: EmscriptenWebSocketConnectOptions,
     ) -> Result<Self, SignalFishError> {
         if options.max_inbound_queue_bytes == Some(0) {
-            return Err(SignalFishError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Emscripten max_inbound_queue_bytes must be greater than zero or None",
-            )));
+            return Err(SignalFishError::InvalidConfig {
+                field: "max_inbound_queue_bytes",
+                problem: "must be greater than zero or None".into(),
+            });
         }
 
-        let c_url = std::ffi::CString::new(url).map_err(|e| {
-            SignalFishError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+        let c_url = std::ffi::CString::new(url).map_err(|e| SignalFishError::InvalidConfig {
+            field: "url",
+            problem: e.to_string(),
         })?;
 
         let (tx, rx) = std_mpsc::channel();
@@ -837,8 +843,12 @@ impl Transport for EmscriptenWebSocketTransport {
         poll_accept_frame(self.opened, frame, |frame_ref| {
             let result = match frame_ref {
                 TransportFrame::Text(message) => {
-                    let c_msg = std::ffi::CString::new(message.as_str())
-                        .map_err(|error| SignalFishError::TransportSend(error.to_string()))?;
+                    // Keep only the Display text: the boxed `NulError` itself
+                    // embeds the whole frame byte vector, which would leak
+                    // application payload through the public `Debug` output.
+                    let c_msg = std::ffi::CString::new(message.as_str()).map_err(|error| {
+                        SignalFishError::TransportSend(error.to_string().into())
+                    })?;
                     // SAFETY: `self.socket` is a live Emscripten WebSocket handle and
                     // `c_msg` remains allocated and NUL-terminated for the duration
                     // of this synchronous FFI call.
@@ -864,9 +874,9 @@ impl Transport for EmscriptenWebSocketTransport {
             if result == EMSCRIPTEN_RESULT_SUCCESS {
                 Ok(())
             } else {
-                Err(SignalFishError::TransportSend(format!(
-                    "Emscripten WebSocket send failed: {result}"
-                )))
+                Err(SignalFishError::TransportSend(
+                    format!("Emscripten WebSocket send failed: {result}").into(),
+                ))
             }
         })
     }
@@ -906,7 +916,7 @@ impl Transport for EmscriptenWebSocketTransport {
                 Ok(IncomingEvent::Error(error)) => {
                     self.closed = true;
                     return std::task::Poll::Ready(Some(Err(SignalFishError::TransportReceive(
-                        error,
+                        error.into(),
                     ))));
                 }
                 Ok(IncomingEvent::Close {
@@ -941,12 +951,12 @@ impl Transport for EmscriptenWebSocketTransport {
         let close_error = self.close_native_socket().err();
         let delete_result = self.delete_after_close_attempt();
         let result = match (close_error, delete_result) {
-            (_, Err(delete_result)) => Err(SignalFishError::TransportSend(format!(
-                "Emscripten WebSocket callback deletion failed: {delete_result}"
-            ))),
-            (Some(close_result), Ok(())) => Err(SignalFishError::TransportSend(format!(
-                "Emscripten WebSocket close failed: {close_result}"
-            ))),
+            (_, Err(delete_result)) => Err(SignalFishError::TransportSend(
+                format!("Emscripten WebSocket callback deletion failed: {delete_result}").into(),
+            )),
+            (Some(close_result), Ok(())) => Err(SignalFishError::TransportSend(
+                format!("Emscripten WebSocket close failed: {close_result}").into(),
+            )),
             (None, Ok(())) => Ok(()),
         };
         std::task::Poll::Ready(result)
