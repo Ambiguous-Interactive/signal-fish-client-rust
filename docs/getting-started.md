@@ -23,19 +23,19 @@ The equivalent manifest entries are:
 
 ```toml
 [dependencies]
-signal-fish-client = "0.10.0"
+signal-fish-client = "0.11.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 `signal-fish-client` enables its built-in WebSocket transport by default.
 
 !!! note "Published release and main"
-    **0.10.0** is the current crates.io release. This guide follows unreleased
+    **0.11.0** is the current crates.io release. This guide follows unreleased
     `main`, which may include breaking APIs that have not reached a release
     yet; the
     [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
-    says which release added them. Use the [0.10.0
-    docs.rs pages](https://docs.rs/signal-fish-client/0.10.0/) with the versioned
+    says which release added them. Use the [0.11.0
+    docs.rs pages](https://docs.rs/signal-fish-client/0.11.0/) with the versioned
     dependency above. To evaluate unreleased changes, use:
 
     ```toml
