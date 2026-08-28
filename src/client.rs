@@ -2201,6 +2201,12 @@ async fn finish_send_failure(
             ))
         })
         .await;
+        // Each drain step is a receive poll, so keep the sampled transport
+        // diagnostics current here too: backend-owned buffering (drained
+        // inbound frames) released during this terminal drain must be
+        // visible to `transport_diagnostics()` exactly as the per-poll
+        // refresh contract promises.
+        lock_core(state).record_transport_diagnostics(transport.diagnostics());
         let ReadyFrameDrainPoll::Frame {
             frame,
             budget_reached,
