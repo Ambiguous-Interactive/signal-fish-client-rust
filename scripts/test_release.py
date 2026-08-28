@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import tempfile
 import unittest
@@ -671,6 +672,155 @@ class PreparationTests(unittest.TestCase):
             release.prepare(self.root, "patch", "2026-07-13")
         self.assertEqual(release.package_version(self.root), "1.2.3")
 
+    def test_prepare_ignores_fenced_target_heading_example(self) -> None:
+        # release_intent is fence-aware, so a documentation example quoting
+        # the next version heading must not brick prepare with "already
+        # contains release" after intent already cleared it. The example
+        # survives the cut verbatim (inside its fence) while the real section
+        # stays machine-parseable.
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```markdown\n## [1.3.0] - 2026-07-13\n\n- Example only.\n```\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n\n"
+            "[Unreleased]: https://example.test/compare/v1.2.3...HEAD\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True),
+            "1.3.0",
+        )
+        cut = changelog.read_text(encoding="utf-8")
+        self.assertIn("```markdown\n## [1.3.0] - 2026-07-13\n", cut)
+        self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
+        self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+
+    def test_prepare_keeps_notes_around_fenced_other_version_heading(self) -> None:
+        # A fenced example quoting a different version heading must not bound
+        # the section: notes on both sides survive the cut and no phantom
+        # release heading becomes real.
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Before fence.\n\n"
+            "```markdown\n## [9.9.9] - 2024-01-01\n```\n\n"
+            "- After fence.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n\n"
+            "[Unreleased]: https://example.test/compare/v1.2.3...HEAD\n",
+            encoding="utf-8",
+        )
+
+        release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+        cut = changelog.read_text(encoding="utf-8")
+        self.assertIn("- Before fence.", cut)
+        self.assertIn("- After fence.", cut)
+        self.assertIn("```markdown\n## [9.9.9] - 2024-01-01\n```", cut)
+        self.assertNotIn("## [9.9.9]", release.strip_fenced_blocks(cut, self.root))
+        self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
+
+    def test_semver_policy_ignores_fenced_policy_marker(self) -> None:
+        release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "## [1.3.0] - 2026-07-13\n",
+                "## [1.3.0] - 2026-07-13\n\n```markdown\n"
+                "<!-- semver-checks: major -->\n```\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+
+    def test_previous_version_ignores_fenced_compare_link(self) -> None:
+        release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.",
+                "- Good thing.\n\n```text\n"
+                "[1.3.0]: https://example.test/compare/v0.9.0...v1.3.0\n```",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
+
+    def test_cut_changelog_updates_the_real_footer_link(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
+            "```text\n[Unreleased]: https://example.test/fenced\n```\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n\n"
+            "[Unreleased]: https://example.test/compare/v1.2.3...HEAD\n",
+            encoding="utf-8",
+        )
+
+        release.cut_changelog(changelog, "1.2.3", "1.3.0", "2026-07-13")
+        cut = changelog.read_text(encoding="utf-8")
+        self.assertIn("compare/v1.3.0...HEAD", cut)
+        self.assertIn("compare/v1.2.3...v1.3.0", cut)
+        self.assertIn("[Unreleased]: https://example.test/fenced\n```\n", cut)
+
+    def test_duplicate_unreleased_section_fails_closed(self) -> None:
+        (self.root / "CHANGELOG.md").write_text(
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- First.\n\n"
+            "## [Unreleased]\n\n### Fixed\n\n- Second.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "duplicate"):
+            release.release_intent(self.root)
+
+    def test_release_notes_extracts_the_complete_section(self) -> None:
+        version = release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+
+        notes = release.release_notes(self.root, version)
+        self.assertIn("- Good thing.", notes)
+        self.assertNotIn("## [1.3.0]", notes)
+        self.assertNotIn("- Old.", notes)
+        self.assertNotIn("compare/v1.2.3...v1.3.0", notes)
+
+    def test_release_notes_survive_fenced_release_syntax(self) -> None:
+        # The extraction this replaced (an awk heading scan) truncated the
+        # notes at the first fenced heading line; notes on both sides of a
+        # fenced example must survive intact.
+        release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Good thing.",
+                "- Good thing.\n\n```markdown\n## [1.3.0] - 2020-01-01\n```\n\n"
+                "- After fenced heading.",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        notes = release.release_notes(self.root, "1.3.0")
+        self.assertIn("- Good thing.", notes)
+        self.assertIn("## [1.3.0] - 2020-01-01", notes)
+        self.assertIn("- After fenced heading.", notes)
+        self.assertNotIn("- Old.", notes)
+
+    def test_release_notes_rejects_missing_section(self) -> None:
+        with self.assertRaisesRegex(
+            release.ReleaseError, "no complete release section"
+        ):
+            release.release_notes(self.root, "9.9.9")
+
+    def test_release_notes_rejects_unterminated_fence(self) -> None:
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            "# Changelog\n\n## [Unreleased]\n\n- Note.\n\n"
+            "## [1.2.3] - 2020-01-01\n\n- Old.\n\n```text\nnever closed\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "unterminated fenced"):
+            release.release_notes(self.root, "1.2.3")
+
 
 class ArtifactTests(unittest.TestCase):
     def test_checksum_recovery_requires_exact_match(self) -> None:
@@ -688,6 +838,29 @@ class ArtifactTests(unittest.TestCase):
             "url", 404, "missing", {}, None
         )
         self.assertIsNone(release.registry_checksum("demo", "1.2.3"))
+
+    @mock.patch.object(release.urllib.request, "urlopen")
+    def test_registry_checksum_rejects_malformed_payloads(self, urlopen: mock.Mock) -> None:
+        class Response:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def read(self) -> bytes:
+                return self.payload
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        for payload in (b'{"version": null}', b"[]", b'{"version": []}'):
+            with self.subTest(payload=payload):
+                urlopen.return_value = Response(payload)
+                with self.assertRaisesRegex(
+                    release.ReleaseError, "invalid checksum"
+                ):
+                    release.registry_checksum("demo", "1.2.3")
 
     def test_registry_plan_state_matrix_and_publish_order(self) -> None:
         plan = {
@@ -760,6 +933,25 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         cls.ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         cls.releasing = (root / "docs/releasing.md").read_text(encoding="utf-8")
+
+    def test_required_checks_policy_maps_to_dispatchable_workflows(self) -> None:
+        # Release day reads this file twice: the Prepare dispatch loop runs
+        # every listed workflow, and the Release gate expects every aggregate
+        # job. A malformed file used to dispatch nothing silently; a renamed
+        # aggregate would gate on a check no workflow produces.
+        root = Path(__file__).resolve().parents[1]
+        policy = json.loads(
+            (root / ".github/required-checks.json").read_text(encoding="utf-8")
+        )
+        required = policy["required_checks"]
+        self.assertTrue(required, "required-checks.json must list checks")
+        for check in required:
+            with self.subTest(file=check.get("file"), job=check.get("job")):
+                path = root / ".github/workflows" / check["file"]
+                self.assertTrue(path.is_file(), f"{check['file']} is missing")
+                workflow = path.read_text(encoding="utf-8")
+                self.assertIn("workflow_dispatch:", workflow)
+                self.assertIn(f"name: {check['job']}", workflow)
 
     def test_prepare_uses_builtin_token_and_supports_dry_run(self) -> None:
         self.assertNotIn("actions/create-github-app-token", self.prepare)

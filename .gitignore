@@ -17,8 +17,11 @@
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Cargo.lock for library crates
+# Dependency locks: the root lock is tracked so published .crate archives
+# embed one stable resolution and Release recovery reruns rebuild
+# byte-identical artifacts; nested workspace locks stay local.
 Cargo.lock
+!/Cargo.lock
 !tests/godot-compat-min/Cargo.lock
 !tests/godot-web-smoke/Cargo.lock
 
