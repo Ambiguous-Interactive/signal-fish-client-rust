@@ -318,6 +318,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Unbricked release preparation for every future version bump: the perf-lab
+  fixture's default `sdk_version` embedded the crate version in the
+  Authenticate wire bytes, so 27 of 28 pinned protocol-ledger digests
+  changed on each bump and Prepare Release's mandatory verification failed
+  until the pins were refreshed by hand. The fixture now omits the field
+  (like its ProtocolInfo fixture), so the pins cover protocol behavior
+  rather than release metadata.
 - Accepted authoritative `SpectatorLeft` frames that omit the optional
   `room_id` (server removal, spectator disconnect, or room close). The wire
   authority marks the field optional, but the client required it and latched
