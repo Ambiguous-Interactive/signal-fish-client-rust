@@ -160,6 +160,8 @@ from `true` to `false`. It never guarantees that the server selected P2P.
 `session_transport`, so 0.11 consumers constructing snapshots must initialize
 both fields. Routing code should read those fields from one `snapshot()` (or use
 `is_p2p_active()` for a one-value query); do not substitute `supports_mesh()`.
+For the release's other error-surface changes, see
+[Migrating 0.10 to 0.11](migration-0.11.md).
 
 ---
 

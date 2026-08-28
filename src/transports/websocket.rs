@@ -1133,14 +1133,15 @@ where
                 Pin::new(stream).start_send(message)
             };
             if let Err(error) = send_result {
-                let detail = error.to_string();
-                let retryable = if let WebSocketError::WriteBufferFull(message) = error {
+                // Classify by reference so the original backend error stays
+                // intact: `TransportSend` boxes it as the `#[source]` cause.
+                let retryable = if let WebSocketError::WriteBufferFull(message) = &error {
                     let restored = if token_binding_active {
                         // The exact original remains in the caller slot. Never
                         // restore the protected envelope or a retry would wrap it twice.
                         true
                     } else {
-                        match *message {
+                        match message.as_ref() {
                             Message::Text(text) => {
                                 *frame = Some(TransportFrame::Text(text.to_string()));
                                 true
@@ -1155,16 +1156,19 @@ where
                                 };
 
                                 match frame_data.header().opcode {
-                                    OpCode::Data(Data::Text) => match frame_data.into_text() {
-                                        Ok(text) => {
-                                            *frame = Some(TransportFrame::Text(text.to_string()));
-                                            true
+                                    OpCode::Data(Data::Text) => {
+                                        match frame_data.clone().into_text() {
+                                            Ok(text) => {
+                                                *frame =
+                                                    Some(TransportFrame::Text(text.to_string()));
+                                                true
+                                            }
+                                            Err(_) => false,
                                         }
-                                        Err(_) => false,
-                                    },
+                                    }
                                     OpCode::Data(Data::Binary) => {
                                         *frame = Some(TransportFrame::Binary(
-                                            frame_data.into_payload().to_vec(),
+                                            frame_data.payload().to_vec(),
                                         ));
                                         true
                                     }
@@ -1181,7 +1185,7 @@ where
                 if !retryable {
                     self.mark_send_failed();
                 }
-                return Poll::Ready(Err(SignalFishError::TransportSend(detail.into())));
+                return Poll::Ready(Err(SignalFishError::TransportSend(Box::new(error))));
             }
             if token_binding_active {
                 let _accepted_original = frame.take();
@@ -3087,6 +3091,16 @@ mod tests {
             assert!(!state.closed, "a per-message refusal is retryable");
             assert!(!state.send_failed, "the restored frame may be retried");
             assert!(!state.send_started);
+            // The structured backend cause survives the frame-restoration
+            // classification, so programmatic handling can still reach the
+            // exact `tungstenite::Error` (here `WriteBufferFull`).
+            let Poll::Ready(Err(SignalFishError::TransportSend(cause))) = result else {
+                panic!("the write-buffer refusal must surface as TransportSend");
+            };
+            assert!(matches!(
+                cause.downcast_ref::<WebSocketError>(),
+                Some(WebSocketError::WriteBufferFull(_))
+            ));
         }
     }
 
