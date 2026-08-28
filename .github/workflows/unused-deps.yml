@@ -69,9 +69,9 @@ jobs:
   # cargo-udeps — thorough unused dependency analysis (scheduled)
   #
   # Requires the nightly toolchain and a full build, so it runs on
-  # a weekday schedule only. Cargo.lock is not committed (library
-  # crate convention), so we generate a fresh lockfile first.
-  # Promote to PR-required once stable.
+  # a weekday schedule only. Analysis resolves dependencies freshly
+  # rather than trusting the tracked lock. Promote to PR-required
+  # once stable.
   # ──────────────────────────────────────────────────────────────
   cargo-udeps:
     name: cargo-udeps (scheduled)

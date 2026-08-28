@@ -1854,15 +1854,14 @@ mod ci_workflow_policy {
             ) && msrv_job.contains("--strip-components=1"),
             "MSRV must test Cargo's publishable package, not a hand-edited source manifest"
         );
-        let lockfile = msrv_job
-            .find("bash scripts/cargo-retry.sh +1.96.1 generate-lockfile")
-            .expect("MSRV package isolation must generate the gitignored root lockfile");
-        let package = msrv_job
-            .find("cargo +1.96.1 package --locked")
-            .expect("MSRV package isolation must package with the lockfile");
         assert!(
-            lockfile < package,
-            "lockfile generation must precede --locked packaging"
+            !msrv_job.contains("generate-lockfile"),
+            "MSRV package isolation must use the tracked root lockfile instead of \
+             regenerating a fresh resolution the release never publishes"
+        );
+        assert!(
+            msrv_job.contains("cargo +1.96.1 package --locked"),
+            "MSRV package isolation must package with the tracked lockfile"
         );
         assert!(
             msrv_job.contains(

@@ -38,8 +38,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # cargo-audit — check for known security vulnerabilities
   #
-  # Cargo.lock is not committed (library crate convention), so we
-  # generate a fresh lockfile before auditing.
+  # Audits resolve dependencies freshly rather than trusting the
+  # tracked lock, so the audit sees today's compatible versions.
   # ──────────────────────────────────────────────────────────────
   cargo-audit:
     name: cargo-audit
@@ -88,8 +88,8 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # SBOM — generate CycloneDX Software Bill of Materials
   #
-  # Cargo.lock is not committed (library crate convention), so we
-  # generate a fresh lockfile before building the SBOM.
+  # SBOM generation resolves dependencies freshly rather than
+  # trusting the tracked lock, so it reflects today's versions.
   # ──────────────────────────────────────────────────────────────
   sbom:
     name: SBOM
