@@ -17,7 +17,7 @@ drive the whole handshake for you.
     The generation-bearing Server 0.7 APIs in this guide may not have reached
     the published crates.io release yet; the
     [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
-    says which release added them. The current release is 0.10.0.
+    says which release added them. The current release is 0.11.0.
 
 ---
 

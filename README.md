@@ -31,7 +31,7 @@ Add the client and Tokio:
 
 ```toml
 [dependencies]
-signal-fish-client = "0.10.0"
+signal-fish-client = "0.11.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -77,9 +77,9 @@ cargo run --example basic_lobby
 Set `SIGNAL_FISH_URL` to use a server other than
 `ws://localhost:3536/v2/ws`.
 
-The published `0.10.0` crate is the stable release. This branch also documents
-unreleased changes ahead of the next release. Use the [0.10.0 API
-docs](https://docs.rs/signal-fish-client/0.10.0/) for the published surface, or
+The published `0.11.0` crate is the stable release. This branch also documents
+unreleased changes ahead of the next release. Use the [0.11.0 API
+docs](https://docs.rs/signal-fish-client/0.11.0/) for the published surface, or
 see the
 [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
 before depending on `main`.

@@ -20,9 +20,9 @@ polling client that runs inside your game loop.
 [View on GitHub](https://github.com/Ambiguous-Interactive/signal-fish-client-rust){ .md-button .sf-home-action }
 
 !!! note "Release status"
-    **0.10.0** is the current crates.io release and supports Rust **1.87.0** or
-    newer. This site follows unreleased `main`; use the [0.10.0 API
-    docs](https://docs.rs/signal-fish-client/0.10.0/) for the published surface.
+    **0.11.0** is the current crates.io release and supports Rust **1.87.0** or
+    newer. This site follows unreleased `main`; use the [0.11.0 API
+    docs](https://docs.rs/signal-fish-client/0.11.0/) for the published surface.
 
 ## Get connected
 
