@@ -225,7 +225,11 @@ jobs:
           tool: cargo-mutants@26.2.0
 
       - name: Run mutation tests
-        run: cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/protocol/binary.rs --file src/terminal_drain.rs --file src/error_codes.rs --file src/error.rs
+        run: >-
+          cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2
+          --file src/protocol.rs --file src/protocol/binary.rs
+          --file src/terminal_drain.rs --file src/error_codes.rs
+          --file src/error.rs
 
       - name: Upload mutation results
         if: always()
