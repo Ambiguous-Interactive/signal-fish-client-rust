@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the 0.11 migration guide (`docs/migration-0.11.md`, linked from the
+  site navigation and the errors and related guides) covering the breaking
+  error-surface changes: the boxed transport error causes and the new
+  `SignalFishError::InvalidConfig` reclassifications.
 - Added root re-exports for the `PlayerId` and `RoomId` identity aliases that
   appear throughout the client API (`reconnect`, `send_signal`,
   `ClientSnapshot`), so typed helpers no longer need a deep
@@ -314,6 +318,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the native WebSocket send path flattening its error cause: a
+  synchronous `start_send` rejection (the classic oversized-outbound-message
+  refusal) boxed the formatted text instead of the backend's original
+  `tungstenite::Error`, so `Error::source()` could not reach the root cause
+  on that one path. The structured cause now survives the frame-restoration
+  classification; `Display` text, retryability, and exact frame restoration
+  are unchanged.
 - Fixed misleading token-binding connect errors for HTTP upgrade rejections:
   a non-101 response (404 wrong path, 401/403 rejected auth, 500, ...) on an
   `Optional` or `Required` token-binding connect was reported as

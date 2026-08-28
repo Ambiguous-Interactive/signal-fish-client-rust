@@ -182,6 +182,8 @@ Because `abort` can run from `Drop` during unwinding, it must never panic. If an
 external cleanup API fails, keep callback backing storage alive rather than
 risk use-after-free, and make later `abort` or `Drop` retries safe.
 `examples/custom_transport.rs` shows a complete channel-backed implementation.
+For the release's other error-surface changes, see
+[Migrating 0.10 to 0.11](migration-0.11.md).
 
 ## Receiving
 

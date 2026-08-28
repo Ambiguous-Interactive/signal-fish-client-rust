@@ -487,6 +487,10 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
+Upgrading from 0.10? The transport error payloads and the `InvalidConfig`
+reclassification are breaking; see [the 0.11
+migration](migration-0.11.md#structured-transport-error-causes).
+
 ### Server-Side: `ErrorCode`
 
 `ErrorCode` is a 54-variant enum that arrives inside events. The post-0.7

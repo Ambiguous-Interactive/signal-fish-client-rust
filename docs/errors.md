@@ -46,6 +46,11 @@ exhaustive public enum:
 | `InvalidConfig` | `field: &'static str`, `problem: String` | A caller-supplied configuration value was rejected because the value itself is unusable, before any network I/O: a zero inbound-size limit, a URL that cannot be parsed into a WebSocket request, a URL containing interior NUL bytes (Emscripten), or `wss://` without the opt-in `tls` feature. The failure is determined by the value or the build, not by a network outcome — retrying without correcting it keeps failing. |
 | `Io` | `std::io::Error` | An I/O error occurred. Implements `From<std::io::Error>`. |
 
+Upgrading from 0.10? The transport error payloads and the `InvalidConfig`
+reclassification are breaking; see [the 0.11
+migration](migration-0.11.md#structured-transport-error-causes) for
+before/after examples.
+
 Local validation has stable precedence: connection state, server-confirmed
 authentication for directed room operations, an admitted pending room
 transition, membership/role, authority, protocol version, format/session plan,
