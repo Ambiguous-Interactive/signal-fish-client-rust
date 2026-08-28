@@ -274,17 +274,30 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
 
-    def test_prepare_requires_unique_top_level_synced_date(self) -> None:
+    def test_prepare_requires_top_level_identity_in_header_table(self) -> None:
         path = self.root / "tests/compatibility.toml"
-        path.write_text(
-            'client_version = "1.2.3"\nsynced = "2020-01-01"\n'
-            'synced = "2020-01-05"\n\n'
-            '[protocol_authority]\ncommit = "abc"\nsynced = "2020-01-02"\n',
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(release.ReleaseError, "top-level synced date"):
-            release.prepare(self.root, "minor", "2026-07-13", allow_dirty=True)
-        self.assertEqual(release.package_version(self.root), "1.2.3")
+        cases = {
+            "duplicate top-level synced": (
+                'client_version = "1.2.3"\nsynced = "2020-01-01"\n'
+                'synced = "2020-01-05"\n\n'
+                '[protocol_authority]\ncommit = "abc"\nsynced = "2020-01-02"\n'
+            ),
+            "client_version only in a section": (
+                'synced = "2020-01-01"\n\n'
+                '[protocol_authority]\ncommit = "abc"\n'
+                'client_version = "1.2.3"\nsynced = "2020-01-02"\n'
+            ),
+        }
+        for name, content in cases.items():
+            with self.subTest(case=name):
+                path.write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    release.ReleaseError, "top-level"
+                ):
+                    release.prepare(
+                        self.root, "minor", "2026-07-13", allow_dirty=True
+                    )
+                self.assertEqual(release.package_version(self.root), "1.2.3")
 
     def test_release_intent_derives_minor_from_added_entries(self) -> None:
         intent = release.release_intent(self.root)
@@ -875,15 +888,25 @@ class WorkflowPolicyTests(unittest.TestCase):
                     f"{relative} does not mention workspace version {version}",
                 )
 
-    def test_compatibility_top_level_synced_matches_this_checkout(self) -> None:
-        # Guards the release-day synced inventory against drift like #133
+    def test_compatibility_top_level_identity_matches_this_checkout(self) -> None:
+        # Guards the release-day identity inventory against drift like #133
         # adding a section-level synced date to tests/compatibility.toml,
         # which made every Prepare Release run fail before writing anything.
-        # Prepare stamps exactly one top-level synced date; section tables
-        # hold upstream provenance and may carry their own dates.
+        # Prepare stamps exactly one top-level client_version and synced
+        # date; section tables hold upstream provenance and may carry their
+        # own synced dates.
         root = Path(__file__).resolve().parents[1]
         text = (root / "tests/compatibility.toml").read_text(encoding="utf-8")
         header = text.partition("\n[")[0]
+        client_versions = re.findall(
+            r'^client_version = "[^"]+"$', header, re.MULTILINE
+        )
+        self.assertEqual(
+            len(client_versions),
+            1,
+            "tests/compatibility.toml must have exactly one top-level "
+            "client_version",
+        )
         dates = re.findall(
             r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$', header, re.MULTILINE
         )

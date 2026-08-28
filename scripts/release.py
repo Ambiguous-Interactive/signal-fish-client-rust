@@ -683,15 +683,23 @@ def prepare(
             if lock.count(marker) != 1:
                 raise ReleaseError(f"{relative} has no unique locked {package} {old}")
     compatibility_text = (root / "tests/compatibility.toml").read_text(encoding="utf-8")
+    # Only the top-level table carries the release-stamped identity. Section
+    # tables ([protocol_authority] and the vendored PROVENANCE.toml files) hold
+    # real upstream-refresh provenance and must never be rewritten by a release.
+    compatibility_header = compatibility_text.partition("\n[")[0]
     if (
-        len(re.findall(r'^client_version = "[^"]+"$', compatibility_text, re.MULTILINE))
+        len(
+            re.findall(
+                r'^client_version = "[^"]+"$',
+                compatibility_header,
+                re.MULTILINE,
+            )
+        )
         != 1
     ):
-        raise ReleaseError("tests/compatibility.toml has no unique client_version")
-    # Only the top-level table carries the release-sync date. Section tables
-    # ([protocol_authority] and the vendored PROVENANCE.toml files) hold real
-    # upstream-refresh provenance and must never be rewritten by a release.
-    compatibility_header = compatibility_text.partition("\n[")[0]
+        raise ReleaseError(
+            "tests/compatibility.toml has no unique top-level client_version"
+        )
     if (
         len(
             re.findall(
@@ -729,13 +737,17 @@ def prepare(
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
     header, separator, sections = compatibility_text.partition("\n[")
-    header = re.sub(
+    header, count = re.subn(
         r'^client_version = "[^"]+"$',
         f'client_version = "{new}"',
         header,
         count=1,
         flags=re.MULTILINE,
     )
+    if count != 1:
+        raise ReleaseError(
+            "tests/compatibility.toml has no unique top-level client_version"
+        )
     header, count = re.subn(
         r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$',
         f'synced = "{date}"',
