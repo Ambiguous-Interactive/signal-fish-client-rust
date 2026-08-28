@@ -75,10 +75,10 @@ for dir in "${PROD_DIRS[@]}"; do
         #     content must start with optional whitespace and `//`.
         #   - Lines referencing the pattern inside a trailing comment. `//`
         #     only starts a comment at line start or after whitespace, so a
-        #     `//` inside a string literal (e.g. an "https://…" URL) is not
-        #     treated as one and cannot hide a real violation. The portable
-        #     BRE form also keeps the deny patterns (which use literal
-        #     parens) valid in basic grep.
+        #     colon-adjacent `//` (e.g. an "https://…" URL) is not treated as
+        #     one. Residual hole: whitespace inside a string literal can
+        #     still mask a violation later on the same line — clippy's deny
+        #     lints remain the authoritative backstop for that class.
         matches=$(grep -rn --include='*.rs' "$pattern" "$dir" \
             | grep -v '^[^:]*:[0-9]*:[[:space:]]*//' \
             | grep -v '[[:space:]]//.*'"$pattern" \

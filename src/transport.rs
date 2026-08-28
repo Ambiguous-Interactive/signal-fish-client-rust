@@ -71,8 +71,9 @@ impl std::fmt::Debug for TransportCloseInfo {
 /// Publishing is optional per backend: the built-in native WebSocket and
 /// Emscripten transports report the all-default view (zero buffered bytes and
 /// counters), while the Godot adapter populates every field. A zero
-/// `effective_watermark_bytes` always means "no watermark published", never
-/// "zero watermark".
+/// `effective_watermark_bytes` means "no watermark published" for backends
+/// that do not track one; the Godot adapter can also publish a genuine
+/// configured zero (a fixed 0-byte watermark is strict stop-and-wait).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransportDiagnostics {
     /// Bytes currently buffered by the transport backend.
@@ -85,7 +86,9 @@ pub struct TransportDiagnostics {
     /// Always `0` for backends that do not publish diagnostics (the built-in
     /// native WebSocket and Emscripten transports).
     pub peak_buffered_bytes: u64,
-    /// Current admission watermark. `0` means the transport does not publish one.
+    /// Current admission watermark. Backends that publish no watermark report
+    /// `0`; so does a Godot adapter configured with a fixed 0-byte (strict
+    /// stop-and-wait) watermark.
     pub effective_watermark_bytes: u64,
     /// Frames accepted by the backend.
     pub accepted_frames: u64,
@@ -93,12 +96,14 @@ pub struct TransportDiagnostics {
     pub accepted_bytes: u64,
     /// Sends deferred by the configured admission watermark. One hit per
     /// deferred send: repeated polls that re-observe the same parked frame do
-    /// not count again, while a later independent send does.
+    /// not count again, while a later independent send does. A send deferred
+    /// by multiple mechanisms records only its first mechanism.
     pub watermark_hits: u64,
     /// Sends deferred because the backend reported or approached native
     /// capacity. One hit per deferred send: repeated polls that re-observe
     /// the same parked frame do not count again, while a later independent
-    /// send does.
+    /// send does. A send deferred by multiple mechanisms records only its
+    /// first mechanism.
     pub backend_capacity_hits: u64,
 }
 

@@ -629,7 +629,7 @@ impl GodotWebSocketTransport {
     /// Count one deferred send for the current caller frame. Repeated polls
     /// of the same parked frame re-enter `poll_send`, so the hit is recorded
     /// only on the first deferral of the episode and cleared when the frame
-    /// is accepted or leaves the slot.
+    /// is accepted, reported as a terminal send error, or leaves the slot.
     fn count_deferred_send(&mut self, select: impl FnOnce(&mut TransportDiagnostics) -> &mut u64) {
         if !self.deferred_counted {
             let counter = select(&mut self.diagnostics);
@@ -833,6 +833,9 @@ impl Transport for GodotWebSocketTransport {
                 Poll::Pending
             }
             BackendSendResult::Error(error) => {
+                // Terminal for the caller frame: close the deferral episode
+                // so the invariant does not depend on the teardown contract.
+                self.deferred_counted = false;
                 Poll::Ready(Err(SignalFishError::TransportSend(error.into())))
             }
         }
@@ -965,6 +968,9 @@ mod tests {
         configured_max_queued_packets: Rc<Cell<i32>>,
         connection_steps: Rc<RefCell<Vec<&'static str>>>,
         connect_error: Option<Error>,
+        /// Remaining `BackendSendResult::Capacity` refusals before sends are
+        /// accepted, for tests that must park a frame more than once.
+        capacity_refusals: usize,
     }
 
     impl FakeBackend {
@@ -989,6 +995,7 @@ mod tests {
                 configured_max_queued_packets: Rc::new(Cell::new(0)),
                 connection_steps: Rc::new(RefCell::new(Vec::new())),
                 connect_error: None,
+                capacity_refusals: 0,
             }
         }
     }
@@ -1041,6 +1048,10 @@ mod tests {
             if let Some(result) = self.send_result.take() {
                 return result;
             }
+            if self.capacity_refusals > 0 {
+                self.capacity_refusals = self.capacity_refusals.saturating_sub(1);
+                return BackendSendResult::Capacity;
+            }
             self.sent
                 .borrow_mut()
                 .push(TransportFrame::Text(text.to_string()));
@@ -1056,6 +1067,10 @@ mod tests {
         fn send_binary(&mut self, bytes: &[u8]) -> BackendSendResult {
             if let Some(result) = self.send_result.take() {
                 return result;
+            }
+            if self.capacity_refusals > 0 {
+                self.capacity_refusals = self.capacity_refusals.saturating_sub(1);
+                return BackendSendResult::Capacity;
             }
             self.sent
                 .borrow_mut()
@@ -1272,7 +1287,8 @@ mod tests {
     #[test]
     fn backend_capacity_result_park_counts_one_deferred_send_per_frame() {
         let mut backend = FakeBackend::new(PeerState::Open);
-        backend.send_result = Some(BackendSendResult::Capacity);
+        // The engine refuses the same frame twice before accepting it.
+        backend.capacity_refusals = 2;
         let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
         let expected = TransportFrame::Text("retry me".to_string());
         let mut frame = Some(expected.clone());
@@ -1281,6 +1297,22 @@ mod tests {
             transport.poll_send(&mut context(), &mut frame),
             Poll::Pending
         ));
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
+
+        // The same frame refused again: still one deferred send.
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(frame, Some(expected.clone()));
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
+
+        // Refusal budget spent: the frame is accepted, episode closed.
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(frame.is_none());
         assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
     }
 
