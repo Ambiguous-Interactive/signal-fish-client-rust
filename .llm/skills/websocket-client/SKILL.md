@@ -29,7 +29,7 @@ network I/O. This is a protective client policy, not a Server 0.7 protocol
 maximum; signal-fish-server#399 tracks the missing outbound contract.
 Network-determined connection failures map to `SignalFishError::Io`,
 preserving an underlying I/O error kind when possible. Value- and
-build-determined rejections — an unparseable URL, a zero inbound-size limit,
+build-determined rejections — an unparsable URL, a zero inbound-size limit,
 or `wss://` without the `tls` feature — are the typed
 `SignalFishError::InvalidConfig { field, problem }` instead, decided before
 any network I/O.

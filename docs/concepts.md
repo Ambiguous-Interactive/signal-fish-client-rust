@@ -484,7 +484,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
 | `Timeout` | An operation exceeded its time limit. |
-| `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparseable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
+| `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
 ### Server-Side: `ErrorCode`

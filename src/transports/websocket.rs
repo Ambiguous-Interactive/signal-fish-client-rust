@@ -76,7 +76,7 @@ fn map_connect_error(error: WebSocketError) -> SignalFishError {
     }
 }
 
-/// Classify client-side request-construction failures: an unparseable URL or
+/// Classify client-side request-construction failures: an unparsable URL or
 /// an otherwise unbuildable handshake request is caller configuration,
 /// rejected before any network I/O.
 fn map_request_config_error(error: WebSocketError) -> SignalFishError {
@@ -90,7 +90,7 @@ fn map_request_config_error(error: WebSocketError) -> SignalFishError {
 }
 
 /// Build the WebSocket handshake request from `url` to validate it before any
-/// network I/O, so unparseable URLs report `InvalidConfig` and post-connect
+/// network I/O, so unparsable URLs report `InvalidConfig` and post-connect
 /// `HttpFormat` server-response failures cannot be mislabeled as
 /// configuration errors. The `wss://` feature check mirrors tungstenite's
 /// lowercase-only scheme handling and moves the missing-`tls` failure before
@@ -1684,7 +1684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unparseable_url_is_invalid_config_from_the_pre_connect_check() {
+    async fn unparsable_url_is_invalid_config_from_the_pre_connect_check() {
         // A space makes `Uri::from_str` fail, which tungstenite classifies as
         // `HttpFormat` — post-connect that would be a server fault mapped to
         // `Io`, so this pin holds only while the pre-connect request
@@ -2273,7 +2273,7 @@ mod tests {
             .expect("malformed listener must have an address");
         let server_task = tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await.expect("server must accept offer");
-            // An unparseable status line makes tungstenite fail the handshake
+            // An unparsable status line makes tungstenite fail the handshake
             // with an `HttpFormat` error after the TCP connection exists —
             // a runtime server fault, not caller configuration.
             tcp.write_all(b"HTTP/1.1 099 Bogus\r\n\r\n")

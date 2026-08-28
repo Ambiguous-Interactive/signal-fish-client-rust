@@ -485,7 +485,7 @@ impl GodotWebSocketTransport {
         backend.set_max_queued_packets(DEFAULT_MAX_QUEUED_PACKETS);
         backend.connect_to_url(url).map_err(|error| match error {
             // Godot 4.5 returns ERR_INVALID_PARAMETER exactly for URL faults
-            // (empty URL, an unparseable URL, or a non-ws(s):// scheme)
+            // (empty URL, an unparsable URL, or a non-ws(s):// scheme)
             // before any connection work starts; see `WSLPeer::connect_to_url`
             // in the engine source `modules/websocket/wsl_peer.cpp` (4.5).
             Error::ERR_INVALID_PARAMETER => SignalFishError::InvalidConfig {
