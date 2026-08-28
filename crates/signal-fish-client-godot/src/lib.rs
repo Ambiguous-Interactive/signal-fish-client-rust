@@ -363,6 +363,10 @@ pub struct GodotWebSocketTransport {
     admission_watermark_violations: u64,
     one_frame_escape_frames: u64,
     one_frame_escape_bytes: u64,
+    /// The current caller frame's deferral is already counted, so polls that
+    /// re-observe the same parked state do not inflate the deferred-send
+    /// counters. Cleared when the frame is accepted (or the slot is empty).
+    deferred_counted: bool,
 }
 
 #[derive(Debug, Default)]
@@ -525,6 +529,7 @@ impl GodotWebSocketTransport {
             admission_watermark_violations: 0,
             one_frame_escape_frames: 0,
             one_frame_escape_bytes: 0,
+            deferred_counted: false,
         };
         transport.sample_cycle_at(Instant::now());
         transport
@@ -618,6 +623,18 @@ impl GodotWebSocketTransport {
                     .min(safe_native)
             }
             GodotBackpressurePolicy::NativeCapacity => safe_native,
+        }
+    }
+
+    /// Count one deferred send for the current caller frame. Repeated polls
+    /// of the same parked frame re-enter `poll_send`, so the hit is recorded
+    /// only on the first deferral of the episode and cleared when the frame
+    /// is accepted or leaves the slot.
+    fn count_deferred_send(&mut self, select: impl FnOnce(&mut TransportDiagnostics) -> &mut u64) {
+        if !self.deferred_counted {
+            let counter = select(&mut self.diagnostics);
+            *counter = counter.saturating_add(1);
+            self.deferred_counted = true;
         }
     }
 
@@ -738,6 +755,7 @@ impl Transport for GodotWebSocketTransport {
         }
 
         let Some(next_frame) = frame.as_ref() else {
+            self.deferred_counted = false;
             return Poll::Ready(Ok(()));
         };
         let next_bytes = match next_frame {
@@ -760,12 +778,11 @@ impl Transport for GodotWebSocketTransport {
         ) {
             AdmissionDecision::Admit => {}
             AdmissionDecision::NativeCapacity => {
-                self.diagnostics.backend_capacity_hits =
-                    self.diagnostics.backend_capacity_hits.saturating_add(1);
+                self.count_deferred_send(|diagnostics| &mut diagnostics.backend_capacity_hits);
                 return Poll::Pending;
             }
             AdmissionDecision::Watermark => {
-                self.diagnostics.watermark_hits = self.diagnostics.watermark_hits.saturating_add(1);
+                self.count_deferred_send(|diagnostics| &mut diagnostics.watermark_hits);
                 return Poll::Pending;
             }
         }
@@ -777,6 +794,7 @@ impl Transport for GodotWebSocketTransport {
         match result {
             BackendSendResult::Accepted => {
                 let _ = frame.take();
+                self.deferred_counted = false;
                 match accepted_admission_audit(current, next_bytes, watermark) {
                     AcceptedAdmissionAudit::WithinWatermark => {}
                     AcceptedAdmissionAudit::EmptyBufferEscape(bytes) => {
@@ -811,8 +829,7 @@ impl Transport for GodotWebSocketTransport {
                 Poll::Ready(Ok(()))
             }
             BackendSendResult::Capacity => {
-                self.diagnostics.backend_capacity_hits =
-                    self.diagnostics.backend_capacity_hits.saturating_add(1);
+                self.count_deferred_send(|diagnostics| &mut diagnostics.backend_capacity_hits);
                 Poll::Pending
             }
             BackendSendResult::Error(error) => {
@@ -1165,6 +1182,106 @@ mod tests {
         ));
         assert!(frame.is_none());
         assert_eq!(transport.diagnostics().accepted_frames, 1);
+    }
+
+    #[test]
+    fn watermark_park_across_repeated_polls_counts_one_deferred_send() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.buffered = 32 * 1024 - 4;
+        // Two consecutive polls observe the same parked watermark state, then
+        // the buffer drains, the third poll admits the frame, and a fourth
+        // parks again for an independent send.
+        backend
+            .buffered_after_poll
+            .extend([32 * 1024 - 4, 32 * 1024 - 4, 0, 32 * 1024 - 7]);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let expected = TransportFrame::Binary(vec![9; 8]);
+        let mut frame = Some(expected.clone());
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(frame, Some(expected.clone()));
+        assert_eq!(transport.diagnostics().watermark_hits, 1);
+
+        // The same frame still parked: the deferral must not count again.
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(frame, Some(expected.clone()));
+        assert_eq!(transport.diagnostics().watermark_hits, 1);
+
+        // Once the frame is admitted, the episode ends.
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(frame.is_none());
+        assert_eq!(transport.diagnostics().watermark_hits, 1);
+
+        // A later, independent send counts as its own deferral (the accepted
+        // 8-byte frame left 8 buffered bytes; the sampled entry re-parks the
+        // buffer above the watermark for this 8-byte frame).
+        let mut second = Some(TransportFrame::Binary(vec![7; 8]));
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut second),
+            Poll::Pending
+        ));
+        assert_eq!(transport.diagnostics().watermark_hits, 2);
+    }
+
+    #[test]
+    fn native_capacity_park_across_repeated_polls_counts_one_deferred_send() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.buffered = 8;
+        backend.capacity = 10;
+        backend.capacity_boundary = NativeCapacityBoundary::GreaterThan;
+        backend.buffered_after_poll.extend([8, 8, 0]);
+        let mut transport = GodotWebSocketTransport::from_backend_with_options(
+            Box::new(backend),
+            GodotWebSocketOptions {
+                backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
+            },
+        );
+        let expected = TransportFrame::Text("abc".to_string());
+        let mut frame = Some(expected.clone());
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(frame, Some(expected));
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(frame.is_none());
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
+    }
+
+    #[test]
+    fn backend_capacity_result_park_counts_one_deferred_send_per_frame() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.send_result = Some(BackendSendResult::Capacity);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+        let expected = TransportFrame::Text("retry me".to_string());
+        let mut frame = Some(expected.clone());
+
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(transport.diagnostics().backend_capacity_hits, 1);
     }
 
     #[test]

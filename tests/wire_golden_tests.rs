@@ -262,3 +262,34 @@ fn v3_signal_payload_is_externally_tagged_in_samples() {
     }
     assert!(found, "expected at least one Signal line in the v3 samples");
 }
+
+/// Hand-built spectator server-message wire fixtures.
+///
+/// The upstream server publishes no `SpectatorJoined`/`SpectatorLeft` (or
+/// related) sample lines, so the vendored `.jsonl` corpus is blind to the
+/// spectator lifecycle: a serde-shape drift there could never fail the golden
+/// conformance layer (round-20 finding F1 — a schema-optional `room_id`
+/// quarantining clients — is exactly the class this blindness allowed).
+///
+/// These fixtures are hand-built to the **vendored AsyncAPI authority**
+/// (`tests/server-spec/signal-fish-protocol.asyncapi.yaml`, checksum-pinned):
+/// `SpectatorJoined` oneOf branches (V2/V3/empty-room), `SpectatorJoinFailed`,
+/// `SpectatorLeft` (including the schema-optional `room_id` omission),
+/// `NewSpectatorJoined`, and `SpectatorDisconnected`. Every line must
+/// deserialize into `ServerMessage` and round-trip to a semantically
+/// identical JSON object, exactly like the complete v3 samples.
+#[test]
+fn spectator_server_wire_fixtures_conform() {
+    const SPECTATOR_SERVER_MESSAGES: &str = r#"
+{"type": "SpectatorJoined", "data": {"room_id": "11111111-1111-1111-1111-111111111111", "room_code": "ABC123", "spectator_id": "00000000-0000-0000-0000-0000000000c1", "game_name": "test_game", "current_players": [{"id": "00000000-0000-0000-0000-00000000000a", "name": "Alice", "is_authority": true, "is_ready": false, "connected_at": "2024-01-02T03:04:05Z", "epoch": 1, "seq": 42}], "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}], "lobby_state": "waiting", "reason": "joined"}}
+{"type": "SpectatorJoined", "data": {"room_id": "11111111-1111-1111-1111-111111111111", "room_code": "ABC123", "spectator_id": "00000000-0000-0000-0000-0000000000c1", "game_name": "test_game", "current_players": [{"id": "00000000-0000-0000-0000-00000000000a", "name": "Alice", "is_authority": true, "is_ready": false, "connected_at": "2024-01-02T03:04:05Z"}], "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}], "lobby_state": "lobby"}}
+{"type": "SpectatorJoined", "data": {"room_id": "11111111-1111-1111-1111-111111111111", "room_code": "ABC123", "spectator_id": "00000000-0000-0000-0000-0000000000c1", "game_name": "test_game", "current_players": [], "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}], "lobby_state": "waiting", "reason": "joined"}}
+{"type": "SpectatorJoinFailed", "data": {"reason": "room is full", "error_code": "TOO_MANY_SPECTATORS"}}
+{"type": "SpectatorJoinFailed", "data": {"reason": "spectators are not allowed in this room"}}
+{"type": "SpectatorLeft", "data": {"room_id": "11111111-1111-1111-1111-111111111111", "room_code": "ABC123", "reason": "voluntary_leave", "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}]}}
+{"type": "SpectatorLeft", "data": {"reason": "removed", "current_spectators": []}}
+{"type": "NewSpectatorJoined", "data": {"spectator": {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}, "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}, {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}], "reason": "joined"}}
+{"type": "SpectatorDisconnected", "data": {"spectator_id": "00000000-0000-0000-0000-0000000000c2", "reason": "disconnected", "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}]}}
+"#;
+    assert_conformance::<ServerMessage>("spectator-server-fixtures", SPECTATOR_SERVER_MESSAGES);
+}

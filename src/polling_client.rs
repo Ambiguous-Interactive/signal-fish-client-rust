@@ -963,6 +963,16 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// under the normal work budget before starting the transport close.
     /// [`SignalFishConfig::shutdown_timeout`] bounds the complete operation.
     ///
+    /// While the close is in flight, inbound frames that are already buffered
+    /// or immediately ready are drained and **discarded** — they are no
+    /// longer decoded, processed, or delivered as events, and the drain
+    /// itself is bounded by the configured receive work budget. Frames that
+    /// arrive later stay unread in the backend. (The async driver instead
+    /// processes immediately-ready frames through the core after a terminal
+    /// send failure and reads none after a peer close, so the same
+    /// client-visible outcome — late frames are not delivered — is reached
+    /// with different observable frame counts.)
+    ///
     /// Unlike the async driver's `shutdown()`, `close` emits **no** terminal
     /// `Disconnected` event and no application events at all: observe
     /// completion through [`snapshot`](Self::snapshot) instead of waiting on

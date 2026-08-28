@@ -79,9 +79,14 @@ pub struct TransportDiagnostics {
     pub accepted_frames: u64,
     /// Payload bytes accepted by the backend.
     pub accepted_bytes: u64,
-    /// Sends deferred by the configured admission watermark.
+    /// Sends deferred by the configured admission watermark. One hit per
+    /// deferred send: repeated polls that re-observe the same parked frame do
+    /// not count again, while a later independent send does.
     pub watermark_hits: u64,
-    /// Sends deferred because the backend reported or approached native capacity.
+    /// Sends deferred because the backend reported or approached native
+    /// capacity. One hit per deferred send: repeated polls that re-observe
+    /// the same parked frame do not count again, while a later independent
+    /// send does.
     pub backend_capacity_hits: u64,
 }
 
