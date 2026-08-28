@@ -31,7 +31,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 !!! note "Published release and main"
     **0.10.0** is the current crates.io release. This guide follows unreleased
-    `main`, which includes breaking APIs planned for 0.11. Use the [0.10.0
+    `main`, which may include breaking APIs that have not reached a release
+    yet. Use the [0.10.0
     docs.rs pages](https://docs.rs/signal-fish-client/0.10.0/) with the versioned
     dependency above. To evaluate unreleased changes, use:
 

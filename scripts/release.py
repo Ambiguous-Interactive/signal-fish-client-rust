@@ -30,14 +30,9 @@ VERSION_FILES = (
     "docs/mesh-guide.md",
     "docs/protocol.md",
     "docs/wasm.md",
+    "llms.txt",
     ".llm/context.md",
     ".llm/skills/crate-publishing/SKILL.md",
-)
-PROVENANCE_FILES = (
-    "tests/compatibility.toml",
-    "tests/server-spec/PROVENANCE.toml",
-    "tests/token-binding/PROVENANCE.toml",
-    "tests/wire-samples/PROVENANCE.toml",
 )
 CHANGELOG_CATEGORIES = (
     "Added",
@@ -693,17 +688,23 @@ def prepare(
         != 1
     ):
         raise ReleaseError("tests/compatibility.toml has no unique client_version")
-    for relative in PROVENANCE_FILES:
-        provenance = (root / relative).read_text(encoding="utf-8")
-        if (
-            len(
-                re.findall(
-                    r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$', provenance, re.MULTILINE
-                )
+    # Only the top-level table carries the release-sync date. Section tables
+    # ([protocol_authority] and the vendored PROVENANCE.toml files) hold real
+    # upstream-refresh provenance and must never be rewritten by a release.
+    compatibility_header = compatibility_text.partition("\n[")[0]
+    if (
+        len(
+            re.findall(
+                r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$',
+                compatibility_header,
+                re.MULTILINE,
             )
-            != 1
-        ):
-            raise ReleaseError(f"{relative} has no unique synced date")
+        )
+        != 1
+    ):
+        raise ReleaseError(
+            "tests/compatibility.toml has no unique top-level synced date"
+        )
     changelog_text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     unreleased_start = changelog_text.find("## [Unreleased]")
     next_release = changelog_text.find(
@@ -727,28 +728,24 @@ def prepare(
     for relative in VERSION_FILES:
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
-    text = compatibility_text
-    text = re.sub(
+    header, separator, sections = compatibility_text.partition("\n[")
+    header = re.sub(
         r'^client_version = "[^"]+"$',
         f'client_version = "{new}"',
-        text,
+        header,
         count=1,
         flags=re.MULTILINE,
     )
-    compatibility.write_text(text, encoding="utf-8")
-    for relative in PROVENANCE_FILES:
-        path = root / relative
-        provenance = path.read_text(encoding="utf-8")
-        provenance, count = re.subn(
-            r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$',
-            f'synced = "{date}"',
-            provenance,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        if count != 1:
-            raise ReleaseError(f"{relative} has no unique synced date")
-        path.write_text(provenance, encoding="utf-8")
+    header, count = re.subn(
+        r'^synced = "[0-9]{4}-[0-9]{2}-[0-9]{2}"$',
+        f'synced = "{date}"',
+        header,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise ReleaseError("tests/compatibility.toml has no unique top-level synced date")
+    compatibility.write_text(header + separator + sections, encoding="utf-8")
     cut_changelog(root / "CHANGELOG.md", old, new, date, breaking)
     return new
 
