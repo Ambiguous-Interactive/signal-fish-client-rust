@@ -329,9 +329,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The published model-context page (`llms.txt`) now tracks the release
   version automatically instead of advertising a stale crate version after
   each release.
-- Release-version notes in the README and the getting-started and client
-  guides no longer embed the next version number, so release preparation can
-  no longer rewrite them into stale claims.
+- Release-version notes in the README and the mesh, getting-started, and
+  client guides no longer embed the next version number or enumerate
+  unreleased features, so release preparation can no longer rewrite them
+  into stale claims; they point at the changelog instead.
 - Fixed the native WebSocket send path flattening its error cause: a
   synchronous `start_send` rejection (the classic oversized-outbound-message
   refusal) boxed the formatted text instead of the backend's original

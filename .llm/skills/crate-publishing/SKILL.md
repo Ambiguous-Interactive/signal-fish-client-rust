@@ -274,9 +274,12 @@ standard version-sync locations, this release introduced new files to keep in
 mind on future bumps:
 
 - `tests/wire-samples/PROVENANCE.toml` — its `synced` date is human-maintained
-  (refresh at release; see [protocol-wire-conformance](../protocol-wire-conformance/SKILL.md)).
-- `tests/token-binding/PROVENANCE.toml` — release preparation refreshes its
-  `synced` date with the other pinned Server 0.7 corpora.
+  upstream-refresh provenance (refresh only when re-syncing the samples; see
+  [protocol-wire-conformance](../protocol-wire-conformance/SKILL.md));
+  release preparation never rewrites it.
+- `tests/token-binding/PROVENANCE.toml` — its `synced` date is
+  upstream-refresh provenance maintained in the same commit as vector
+  changes; release preparation never rewrites it.
 - New skills: `protocol-versioning-and-negotiation.md`, `webrtc-mesh-signaling.md`,
   `../protocol-wire-conformance/SKILL.md` (auto-indexed; no version literal).
 - New feature `mesh` (pure-std, zero deps). Concrete WebRTC backends (str0m,

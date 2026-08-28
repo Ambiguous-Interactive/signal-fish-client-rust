@@ -14,8 +14,10 @@ drive the whole handshake for you.
     signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", features = ["mesh"] }
     ```
 
-    The generation-bearing Server 0.7 APIs in this guide target the forthcoming
-    breaking 0.11 release. Published 0.10.0 does not contain them.
+    The generation-bearing Server 0.7 APIs in this guide may not have reached
+    the published crates.io release yet; the
+    [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
+    says which release added them. The current release is 0.10.0.
 
 ---
 
