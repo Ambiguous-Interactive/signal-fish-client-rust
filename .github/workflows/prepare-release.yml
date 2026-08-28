@@ -93,8 +93,8 @@ jobs:
           for package in "${packages[@]}"; do
             package_args+=(-p "$package")
           done
-          cargo package --allow-dirty "${package_args[@]}"
-          cargo publish --dry-run --allow-dirty "${package_args[@]}"
+          cargo package --locked --allow-dirty "${package_args[@]}"
+          cargo publish --dry-run --locked --allow-dirty "${package_args[@]}"
           rustup toolchain install nightly --profile minimal
           bash scripts/check-docsrs.sh
 
@@ -198,6 +198,17 @@ jobs:
           if [ "$BREAKING" = true ]; then
             title="chore!: prepare release ${VERSION}"
           fi
+          # jq runs in the foreground with -e so a missing, malformed, or
+          # empty policy fails the run instead of silently dispatching no
+          # checks from inside an unreadable process substitution.
+          required_files=$(jq -e -r '.required_checks[].file' .github/required-checks.json) || {
+            printf '::error::required-checks.json is missing, invalid, or lists no checks.\n'
+            exit 1
+          }
+          if [ -z "$required_files" ]; then
+            printf '::error::required-checks.json lists no workflows to dispatch.\n'
+            exit 1
+          fi
           while IFS= read -r workflow; do
             if [ "$workflow" = semver-checks.yml ]; then
               gh workflow run "$workflow" --ref "$BRANCH" \
@@ -205,4 +216,4 @@ jobs:
             else
               gh workflow run "$workflow" --ref "$BRANCH"
             fi
-          done < <(jq -r '.required_checks[].file' .github/required-checks.json)
+          done <<< "$required_files"

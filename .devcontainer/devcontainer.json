@@ -134,7 +134,10 @@
         // -----------------------------------------------------------------------
         "search.exclude": {
           "**/target": true,
-          "**/Cargo.lock": true
+          "Cargo.lock": true,
+          "fuzz/Cargo.lock": true,
+          "tests/godot-compat-min/Cargo.lock": true,
+          "tests/godot-web-smoke/Cargo.lock": true
         },
         // -----------------------------------------------------------------------
         // Rust-Analyzer Settings

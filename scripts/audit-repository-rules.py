@@ -135,13 +135,27 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     required_checks = {check["job"] for check in configured_checks}
     if len(required_checks) != len(configured_checks):
         raise ValueError("required check job names must be unique")
+    def ruleset_applies(ruleset: dict[str, Any]) -> bool:
+        ref_name = ruleset.get("conditions") or {}
+        ref_name = ref_name.get("ref_name") or {}
+        excluded = ref_name.get("exclude") or []
+        # A ref excluded from the same ruleset that includes it is protected
+        # by nothing: GitHub conditions apply exclusions after inclusions.
+        # The ~ALL alias and wildcard exclude patterns are not modeled here,
+        # so they also fail closed instead of letting an inert ruleset pass
+        # the audit.
+        if expected_refs.intersection(excluded) or "~ALL" in excluded or any(
+            isinstance(pattern, str) and set(pattern) & set("*?[")
+            for pattern in excluded
+        ):
+            return False
+        return expected_refs.issubset(ref_name.get("include") or [])
+
     applicable = [
         ruleset
         for ruleset in rulesets
         if ruleset.get("enforcement") == expected.get("enforcement")
-        and expected_refs.issubset(
-            ruleset.get("conditions", {}).get("ref_name", {}).get("include", [])
-        )
+        and ruleset_applies(ruleset)
     ]
     if not applicable:
         return ["no active ruleset targets ~DEFAULT_BRANCH"]

@@ -36,17 +36,37 @@ def required_jobs(policy: dict[str, Any]) -> list[str]:
 def check_results(policy: dict[str, Any], payload: Any) -> list[str]:
     pages = payload if isinstance(payload, list) else [payload]
     runs: list[Any] = []
+    total: int | None = None
     for page in pages:
         if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
             raise ValueError("check-runs payload must define check_runs on every page")
+        page_total = page.get("total_count")
+        if page_total is not None:
+            if not isinstance(page_total, int) or isinstance(page_total, bool):
+                raise ValueError("check-runs total_count must be an integer")
+            if total is None:
+                total = page_total
+            elif total != page_total:
+                raise ValueError("check-runs pages disagree on total_count")
         runs.extend(page["check_runs"])
+    # A truncated pagination feed could hide a newer failing rerun behind an
+    # older success; GitHub reports the full total on every page, so any
+    # shortfall fails closed.
+    if total is not None and len(runs) != total:
+        raise ValueError(
+            f"check-runs pagination incomplete: fetched {len(runs)} runs, "
+            f"expected {total}"
+        )
     latest: dict[str, dict[str, Any]] = {}
     for run in runs:
         if not isinstance(run, dict) or not isinstance(run.get("name"), str):
             continue
+        run_id = run.get("id")
+        if not isinstance(run_id, int) or isinstance(run_id, bool):
+            raise ValueError("every check run must define an integer id")
         current = latest.get(run["name"])
-        if current is None or int(run.get("id", 0)) > int(current.get("id", 0)):
-            latest[run["name"]] = run
+        if current is None or run_id > current["id"]:
+            latest[run["name"]] = {**run, "id": run_id}
 
     failures = []
     for job in required_jobs(policy):

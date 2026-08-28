@@ -58,6 +58,51 @@ class RepositoryRuleTests(unittest.TestCase):
     def test_accepts_matching_default_branch_rules(self) -> None:
         self.assertEqual(audit.audit(self.policy, [self.ruleset()]), [])
 
+    def test_rejects_ruleset_that_excludes_the_default_branch(self) -> None:
+        # include + exclude of the same ref protects nothing: exclusions win.
+        inert = self.ruleset()
+        inert["conditions"]["ref_name"]["exclude"] = ["~DEFAULT_BRANCH"]
+        self.assertEqual(
+            audit.audit(self.policy, [inert]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
+    def test_excluding_an_unrelated_ref_keeps_the_ruleset_applicable(self) -> None:
+        ruleset = self.ruleset()
+        ruleset["conditions"]["ref_name"]["exclude"] = ["refs/heads/dev"]
+        self.assertEqual(audit.audit(self.policy, [ruleset]), [])
+
+    def test_wildcard_exclude_patterns_fail_closed(self) -> None:
+        # A pattern like refs/heads/ma* can exclude the default branch while
+        # not literally listing it; the audit does not model globs, so the
+        # ruleset must not count as applicable.
+        for pattern in ("refs/heads/ma*", "refs/heads/???", "refs/heads/[m]ain"):
+            with self.subTest(pattern=pattern):
+                inert = self.ruleset()
+                inert["conditions"]["ref_name"]["exclude"] = [pattern]
+                self.assertEqual(
+                    audit.audit(self.policy, [inert]),
+                    ["no active ruleset targets ~DEFAULT_BRANCH"],
+                )
+
+    def test_exclude_all_alias_fails_closed(self) -> None:
+        # Excluding ~ALL excludes every ref, including the default branch the
+        # include lists; the ruleset protects nothing.
+        inert = self.ruleset()
+        inert["conditions"]["ref_name"]["exclude"] = ["~ALL"]
+        self.assertEqual(
+            audit.audit(self.policy, [inert]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
+    def test_missing_conditions_do_not_crash_the_audit(self) -> None:
+        ruleset = self.ruleset()
+        ruleset["conditions"] = None
+        self.assertEqual(
+            audit.audit(self.policy, [ruleset]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
     def test_live_api_request_requires_and_sends_authentication(self) -> None:
         with self.assertRaisesRegex(ValueError, "authenticated GitHub token"):
             audit.api_request("https://api.github.test/rulesets", "")

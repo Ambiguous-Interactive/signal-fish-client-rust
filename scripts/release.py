@@ -18,7 +18,10 @@ from typing import Any, Callable
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CORE_MANIFEST = "Cargo.toml"
+# The root lock is stamped in lockstep so the release branch commits the
+# exact resolution its --locked packaging and publication require.
 LOCKSTEP_LOCKFILES = (
+    "Cargo.lock",
     "tests/godot-compat-min/Cargo.lock",
     "tests/godot-web-smoke/Cargo.lock",
 )
@@ -194,7 +197,12 @@ def release_heading(version: str) -> re.Pattern[str]:
 
 def previous_version(root: Path, version: str) -> str:
     parse_version(version)
-    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    # Fence-stripped text keeps a fenced example quoting compare-link syntax
+    # from shadowing the real footer link and silently deriving a wrong
+    # semver baseline.
+    changelog = strip_fenced_blocks(
+        (root / "CHANGELOG.md").read_text(encoding="utf-8"), root
+    )
     pattern = re.compile(
         rf"^\[{re.escape(version)}\]: .*/compare/v"
         rf"({SEMVER_RE.pattern[1:-1]})\.\.\.v{re.escape(version)}$",
@@ -208,38 +216,30 @@ def previous_version(root: Path, version: str) -> str:
     return previous
 
 
-def unreleased_changelog(root: Path) -> str:
-    """Return the complete Unreleased body without matching prefix headings.
+def unreleased_section_span(changelog: str, root: Path) -> tuple[int, int, int]:
+    """Locate the Unreleased section with CommonMark fence tracking.
 
-    Section boundaries are identified with the same CommonMark fence tracking
-    `strip_fenced_blocks` applies, so a fenced example quoting a
-    ``## [version] - date`` heading cannot truncate the section mid-fence and
-    later fail as unterminated. A fence that is still open when the next real
-    section starts (or at end of file) keeps failing closed through the
-    downstream strip.
+    Returns ``(heading_start, body_start, body_end)`` character offsets into
+    the raw text: the start of the ``## [Unreleased]`` heading line, the start
+    of the body after that line, and the newline immediately preceding the
+    next real ``## [`` heading line (``text[body_end:]`` starts with the
+    inter-section newline, mirroring the historical ``find("\n## [")`` cut
+    point). A ``## [`` line inside a fenced block
+    never bounds the section, so a changelog example quoting release syntax
+    cannot truncate the section or fabricate a boundary; a fence still open at
+    end of document fails closed. Every consumer of the section boundary
+    (release intent, preparation, cutting, and policy derivation) must go
+    through this helper or ``strip_fenced_blocks`` so one fence model governs
+    the whole tool.
     """
-    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-    lines = changelog.splitlines()
-    heading = "## [Unreleased]"
-    start = next(
-        (index for index, line in enumerate(lines) if line.startswith(heading)),
-        None,
-    )
-    if start is None:
-        raise ReleaseError("CHANGELOG.md has no [Unreleased] section")
-
-    body: list[str] = []
+    offset = 0
+    heading_start: int | None = None
+    body_start: int | None = None
     fence_char = ""
     fence_len = 0
-    for line in lines[start + 1 :]:
-        if not fence_char:
-            if line.startswith("## ["):
-                return "\n".join(body).strip()
-            opened = FENCE_OPEN_RE.match(line)
-            if opened is not None:
-                fence_char = opened.group(1)[0]
-                fence_len = len(opened.group(1))
-        else:
+    for line in changelog.splitlines(keepends=True):
+        line_end = offset + len(line)
+        if fence_char:
             candidate = line.strip()
             if (
                 len(candidate) >= fence_len
@@ -247,14 +247,47 @@ def unreleased_changelog(root: Path) -> str:
                 and set(candidate) == {fence_char}
             ):
                 fence_char = ""
-        body.append(line)
+        elif line.startswith("## [Unreleased]"):
+            if heading_start is None:
+                heading_start = offset
+                body_start = line_end
+            else:
+                raise ReleaseError(
+                    f"{root / 'CHANGELOG.md'} has a duplicate [Unreleased] section"
+                )
+        elif heading_start is not None and line.startswith("## ["):
+            assert body_start is not None
+            return (heading_start, body_start, offset - 1)
+        else:
+            opened = FENCE_OPEN_RE.match(line)
+            if opened is not None:
+                fence_char = opened.group(1)[0]
+                fence_len = len(opened.group(1))
+        offset = line_end
     if fence_char:
-        # The section never closed its fence; name the root cause rather than
-        # the missing successor heading.
+        # A fence left open anywhere fails closed; name the root cause rather
+        # than whatever boundary the scan was looking for.
         raise ReleaseError(
-            f"{root / 'CHANGELOG.md'} [Unreleased] has an unterminated fenced code block"
+            f"{root / 'CHANGELOG.md'} has an unterminated fenced code block"
         )
+    if heading_start is None or body_start is None:
+        raise ReleaseError("CHANGELOG.md has no [Unreleased] section")
     raise ReleaseError("CHANGELOG.md has no released section after [Unreleased]")
+
+
+def unreleased_changelog(root: Path) -> str:
+    """Return the complete Unreleased body without matching prefix headings.
+
+    Section boundaries are identified with the same CommonMark fence tracking
+    `unreleased_section_span` applies, so a fenced example quoting a
+    ``## [version] - date`` heading cannot truncate the section mid-fence and
+    later fail as unterminated. A fence that is still open when the next real
+    section starts (or at end of file) keeps failing closed through the
+    downstream strip.
+    """
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    _heading_start, body_start, body_end = unreleased_section_span(changelog, root)
+    return changelog[body_start:body_end].strip()
 
 
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -292,7 +325,7 @@ def strip_fenced_blocks(text: str, root: Path) -> str:
         fence_len = len(opened.group(1))
     if fence_char:
         raise ReleaseError(
-            f"{root / 'CHANGELOG.md'} [Unreleased] has an unterminated fenced code block"
+            f"{root / 'CHANGELOG.md'} has an unterminated fenced code block"
         )
     return "\n".join(lines)
 
@@ -368,24 +401,21 @@ def cut_changelog(
 ) -> None:
     text = path.read_text(encoding="utf-8")
     heading = "## [Unreleased]"
-    start = text.find(heading)
-    if start < 0:
-        raise ReleaseError("CHANGELOG.md has no [Unreleased] section")
-    content_start = start + len(heading)
-    next_heading = text.find("\n## [", content_start)
-    if next_heading < 0:
-        raise ReleaseError("CHANGELOG.md has no released section after [Unreleased]")
-    unreleased = text[content_start:next_heading].strip()
+    heading_start, body_start, body_end = unreleased_section_span(text, path.parent)
+    unreleased = text[body_start:body_end].strip()
     if not unreleased:
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
-    if release_heading(new).search(text) is not None:
+    # Duplicate detection runs on fence-stripped text so a fenced example
+    # quoting release syntax cannot brick the cut, and so the real heading
+    # cannot hide behind one.
+    if release_heading(new).search(strip_fenced_blocks(text, path.parent)) is not None:
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
     policy_marker = "\n<!-- semver-checks: major -->\n" if breaking else ""
     body = (
-        text[:start]
+        text[:heading_start]
         + f"{heading}\n\n## [{new}] - {date}\n{policy_marker}\n{unreleased}\n"
-        + text[next_heading:]
+        + text[body_end:]
     )
     reference_re = re.compile(r"^\[Unreleased\]:.*$", re.MULTILINE)
     release_link = (
@@ -396,8 +426,17 @@ def cut_changelog(
         "[Unreleased]: https://github.com/Ambiguous-Interactive/"
         f"signal-fish-client-rust/compare/v{new}...HEAD"
     )
-    if reference_re.search(body):
-        body = reference_re.sub(f"{unreleased_link}\n{release_link}", body, count=1)
+    matches = list(reference_re.finditer(body))
+    if matches:
+        # Rewrite the last link line: the real footer lives at the end of the
+        # document, while a fenced example quoting link syntax may sit above
+        # it and must never absorb the release links.
+        last = matches[-1]
+        body = (
+            body[: last.start()]
+            + f"{unreleased_link}\n{release_link}"
+            + body[last.end() :]
+        )
     else:
         body = body.rstrip() + f"\n\n{unreleased_link}\n{release_link}\n"
     path.write_text(body, encoding="utf-8")
@@ -714,17 +753,15 @@ def prepare(
             "tests/compatibility.toml has no unique top-level synced date"
         )
     changelog_text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased_start = changelog_text.find("## [Unreleased]")
-    next_release = changelog_text.find(
-        "\n## [", unreleased_start + len("## [Unreleased]")
+    _heading_start, body_start, body_end = unreleased_section_span(
+        changelog_text, root
     )
-    if unreleased_start < 0 or next_release < 0:
-        raise ReleaseError("CHANGELOG.md has no complete [Unreleased] section")
-    if not changelog_text[
-        unreleased_start + len("## [Unreleased]") : next_release
-    ].strip():
+    if not changelog_text[body_start:body_end].strip():
         raise ReleaseError("CHANGELOG.md [Unreleased] section is empty")
-    if release_heading(new).search(changelog_text) is not None:
+    if (
+        release_heading(new).search(strip_fenced_blocks(changelog_text, root))
+        is not None
+    ):
         raise ReleaseError(f"CHANGELOG.md already contains release {new}")
 
     replace_workspace_version(root / CORE_MANIFEST, old, new)
@@ -765,7 +802,12 @@ def prepare(
 def semver_policy(root: Path, version: str) -> str:
     previous = previous_version(root, version)
     policy = release_type(previous, version)
-    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    # Fence-stripped text keeps a fenced example quoting the version heading
+    # from hijacking the section boundary and a fenced policy marker from
+    # silently flipping the derived policy.
+    changelog = strip_fenced_blocks(
+        (root / "CHANGELOG.md").read_text(encoding="utf-8"), root
+    )
     heading = release_heading(version).search(changelog)
     if heading is None:
         raise ReleaseError(
@@ -833,6 +875,64 @@ def verify_artifact(crate: Path, expected_checksum: str | None) -> str:
     return checksum
 
 
+def release_section_span(changelog: str, root: Path, version: str) -> tuple[int, int]:
+    """Locate one released section's body with the shared fence tracking.
+
+    Returns ``(body_start, body_end)`` offsets of the text between the
+    ``## [version]`` heading line and the next real ``## [`` heading line (or
+    end of document), using the same CommonMark fence model as
+    ``unreleased_section_span`` so a fenced example quoting release syntax
+    cannot truncate the notes mid-example.
+    """
+    parse_version(version)
+    heading_re = release_heading(version)
+    offset = 0
+    body_start: int | None = None
+    fence_char = ""
+    fence_len = 0
+    for line in changelog.splitlines(keepends=True):
+        line_end = offset + len(line)
+        if fence_char:
+            candidate = line.strip()
+            if (
+                len(candidate) >= fence_len
+                and candidate
+                and set(candidate) == {fence_char}
+            ):
+                fence_char = ""
+        elif body_start is not None and line.startswith("## ["):
+            return (body_start, offset - 1)
+        elif body_start is None and heading_re.match(line.rstrip("\n")) is not None:
+            body_start = line_end
+        else:
+            opened = FENCE_OPEN_RE.match(line)
+            if opened is not None:
+                fence_char = opened.group(1)[0]
+                fence_len = len(opened.group(1))
+        offset = line_end
+    if body_start is None:
+        raise ReleaseError(
+            f"CHANGELOG.md has no complete release section for {version}"
+        )
+    if fence_char:
+        raise ReleaseError(
+            f"{root / 'CHANGELOG.md'} has an unterminated fenced code block"
+        )
+    return (body_start, len(changelog))
+
+
+def release_notes(root: Path, version: str) -> str:
+    """Extract one release's notes verbatim, fence-aware, without the heading."""
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    body_start, body_end = release_section_span(changelog, root, version)
+    notes = changelog[body_start:body_end].strip()
+    # Fail closed here: printing would still emit a newline, which would
+    # defeat the workflow's non-empty release-notes guard.
+    if not notes:
+        raise ReleaseError(f"CHANGELOG.md release {version} has empty notes")
+    return notes
+
+
 def registry_checksum(crate_name: str, version: str) -> str | None:
     parse_version(version)
     request = urllib.request.Request(
@@ -846,7 +946,8 @@ def registry_checksum(crate_name: str, version: str) -> str | None:
         if error.code == 404:
             return None
         raise ReleaseError(f"crates.io query failed with HTTP {error.code}") from error
-    checksum = payload.get("version", {}).get("checksum")
+    version_payload = payload.get("version") if isinstance(payload, dict) else None
+    checksum = version_payload.get("checksum") if isinstance(version_payload, dict) else None
     if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
         raise ReleaseError("crates.io returned an invalid checksum")
     return checksum
@@ -893,6 +994,10 @@ def main(argv: list[str] | None = None) -> int:
     semver.add_argument("version")
     semver.add_argument("--root", type=Path, default=Path.cwd())
 
+    notes = subparsers.add_parser("release-notes")
+    notes.add_argument("version")
+    notes.add_argument("--root", type=Path, default=Path.cwd())
+
     intent = subparsers.add_parser("release-intent")
     intent.add_argument("--root", type=Path, default=Path.cwd())
 
@@ -938,6 +1043,8 @@ def main(argv: list[str] | None = None) -> int:
             print(release_type(args.base, args.target))
         elif args.command == "semver-policy":
             print(semver_policy(args.root.resolve(), args.version))
+        elif args.command == "release-notes":
+            print(release_notes(args.root.resolve(), args.version))
         elif args.command == "release-intent":
             print(json.dumps(release_intent(args.root.resolve()), indent=2))
         else:

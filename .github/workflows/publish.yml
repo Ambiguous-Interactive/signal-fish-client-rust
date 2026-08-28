@@ -123,7 +123,10 @@ jobs:
           for package in "${packages[@]}"; do
             package_args+=(-p "$package")
           done
-          cargo package "${package_args[@]}"
+          # --locked pins the embedded Cargo.lock resolution: a recovery
+          # rerun must rebuild byte-identical .crate files even if upstream
+          # published semver-compatible releases in between.
+          cargo package --locked "${package_args[@]}"
           cargo cyclonedx --format json --all
 
           asset_dir="$RUNNER_TEMP/release-assets"
@@ -217,7 +220,7 @@ jobs:
             printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
             resume_args+=(--no-verify)
           fi
-          cargo publish --dry-run "${resume_args[@]}" "${publish_args[@]}"
+          cargo publish --dry-run --locked "${resume_args[@]}" "${publish_args[@]}"
 
       - name: Attest package provenance
         uses: actions/attest@v4.2.2
@@ -227,8 +230,18 @@ jobs:
       - name: Create annotated tag
         if: steps.state.outputs.tag_exists != 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release-metadata.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          remote_sha=$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq '.commit.sha')
+          local_sha=$(git rev-parse HEAD)
+          if [ "$local_sha" != "$remote_sha" ]; then
+            printf '::error::Default branch moved to %s before tagging %s; restart from that HEAD.\n' \
+              "$remote_sha" "$local_sha"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v${VERSION}" -m "Release ${VERSION}"
@@ -249,7 +262,7 @@ jobs:
             printf 'Using --no-verify because an internal dependency is already checksum-matched on crates.io.\n'
             resume_args+=(--no-verify)
           fi
-          cargo publish "${resume_args[@]}" "${publish_args[@]}"
+          cargo publish --locked "${resume_args[@]}" "${publish_args[@]}"
 
       - name: Wait for crates.io and verify every checksum
         run: |
@@ -281,11 +294,11 @@ jobs:
         env:
           VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
-          awk -v version="$VERSION" '
-            $0 ~ "^## \\[" version "\\]" { found=1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md > "$RUNNER_TEMP/release-assets/release-notes.md"
+          # Fence-aware extraction: a fenced example quoting release syntax
+          # inside the notes must not truncate them mid-example (the awk
+          # heading scan this replaced was fence-blind).
+          python3 scripts/release.py release-notes "$VERSION" \
+            > "$RUNNER_TEMP/release-assets/release-notes.md"
           if [ ! -s "$RUNNER_TEMP/release-assets/release-notes.md" ]; then
             printf '::error::Release notes are empty.\n'
             exit 1

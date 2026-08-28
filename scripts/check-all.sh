@@ -290,7 +290,7 @@ if ! command -v cargo-audit &>/dev/null; then
     PHASE_RESULTS[7]="SKIP"
 else
     LOCKFILE_READY=true
-    # Ensure a lockfile exists (library crate may not commit Cargo.lock)
+    # Fallback for fresh checkouts that predate the tracked root lockfile
     if [ ! -f Cargo.lock ]; then
         if ! "$SCRIPT_DIR/cargo-retry.sh" generate-lockfile 2>&1; then
             echo -e "${RED}Phase 7: FAIL (could not generate Cargo.lock)${NC}"

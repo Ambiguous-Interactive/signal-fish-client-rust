@@ -8,10 +8,10 @@ const { chromium } = require("playwright");
 const host = "127.0.0.1";
 const repoRoot = path.resolve(__dirname, "..");
 
-// Generous enough for the slowest observed hosted runner (a healthy full pass
-// stayed under 180 seconds; a slow one exceeded it) while far below the job's
+// Generous enough for the slowest observed hosted runner (healthy passes stay
+// under 180 seconds; one slow runner exceeded 300) while far below the job's
 // 20-minute ceiling, so a genuine hang still fails fast.
-const ACCESSIBILITY_BUDGET_MS = 300_000;
+const ACCESSIBILITY_BUDGET_MS = 600_000;
 
 let origin;
 let activeBrowser;
@@ -480,7 +480,16 @@ const checkSearchResize = async (page) => {
 };
 
 const runBrowserChecks = async () => {
-    await assertBuildFreshness();
+    const startedAt = Date.now();
+    const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    // Progress lines make a budget timeout diagnosable: the log names the
+    // phase that was still running when the deadline fired.
+    const runPhase = async (name, check) => {
+        process.stderr.write(`Accessibility: start ${name} at ${elapsed()}\n`);
+        await check();
+        process.stderr.write(`Accessibility: done ${name} at ${elapsed()}\n`);
+    };
+    await runPhase("build freshness", assertBuildFreshness);
     const server = await startServer();
     if (timedOut) {
         // The deadline fired while startup was pending: cleanup has been
@@ -506,10 +515,10 @@ const runBrowserChecks = async () => {
     });
     const page = configurePage(await context.newPage());
     attachErrorCapture(page, browserErrors);
-    await checkClosedBoundaries(page);
-    await checkDrawerResize(page, "ltr");
-    await checkDrawerResize(page, "rtl");
-    await checkSearchResize(page);
+    await runPhase("closed boundaries", () => checkClosedBoundaries(page));
+    await runPhase("drawer resize ltr", () => checkDrawerResize(page, "ltr"));
+    await runPhase("drawer resize rtl", () => checkDrawerResize(page, "rtl"));
+    await runPhase("search resize", () => checkSearchResize(page));
     expectState(
         browserErrors.length === 0,
         "documentation pages emitted browser errors",
