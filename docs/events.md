@@ -344,10 +344,8 @@ details.
 ```rust,ignore
 match event {
     SignalFishEvent::LobbyStateChanged { lobby_state, ready_players, all_ready } => {
-        println!("Lobby: {lobby_state:?}, {}/{} ready",
-            ready_players.len(),
-            ready_players.len() + if all_ready { 0 } else { 1 }
-        );
+        println!("Lobby: {lobby_state:?}, {} player(s) ready{}", ready_players.len(),
+            if all_ready { " (all ready)" } else { "" });
     }
     SignalFishEvent::GameStarting { peer_connections } => {
         println!("Game starting with {} peers", peer_connections.len());
@@ -560,7 +558,7 @@ full spectator lifecycle.
 |---------|------------|-------------|
 | `SpectatorJoined` | `room_id`, `spectator_id`, `current_players`, `current_spectators`, … | Successfully joined a room as a spectator. |
 | `SpectatorJoinFailed` | `reason: String`, `error_code: Option<ErrorCode>` | Failed to join as a spectator. |
-| `SpectatorLeft` | `room_id: Option<RoomId>`, `room_code: Option<String>`, `reason`, `current_spectators` | Successfully left spectator mode. |
+| `SpectatorLeft` | `room_id: Option<RoomId>`, `room_code: Option<String>`, `reason`, `current_spectators` | The spectator left the room: either the answer to this client's admitted voluntary leave, or an authoritative exit (server removal, spectator disconnect, or room close). |
 | `NewSpectatorJoined` | `spectator: SpectatorInfo`, `current_spectators`, `reason` | Another spectator joined the room. |
 | `SpectatorDisconnected` | `spectator_id: PlayerId`, `reason`, `current_spectators` | Another spectator disconnected. |
 

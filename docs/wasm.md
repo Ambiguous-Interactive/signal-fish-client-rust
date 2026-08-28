@@ -391,7 +391,9 @@ processes incoming messages up to the configured work budget, then returns a
 for event in client.poll() {
     match event {
         SignalFishEvent::Authenticated { .. } => {
-            client.join_room(JoinRoomParams::new("my-game", "Player1")).ok();
+            if let Err(e) = client.join_room(JoinRoomParams::new("my-game", "Player1")) {
+                eprintln!("join_room refused: {e}");
+            }
         }
         SignalFishEvent::RoomJoined { room_code, .. } => {
             // You are in the room
@@ -584,11 +586,15 @@ impl INode for SignalFishNode {
                     godot_print!("Authenticated as {}", app_name);
                     let params = JoinRoomParams::new("my-game", "GodotPlayer")
                         .with_max_players(4);
-                    client.join_room(params).ok();
+                    if let Err(e) = client.join_room(params) {
+                        godot_print!("join_room refused: {e}");
+                    }
                 }
                 SignalFishEvent::RoomJoined { room_code, player_id, .. } => {
                     godot_print!("Joined room {} as {}", room_code, player_id);
-                    client.set_ready().ok();
+                    if let Err(e) = client.set_ready() {
+                        godot_print!("set_ready refused: {e}");
+                    }
                 }
                 SignalFishEvent::GameData { from_player, data, .. } => {
                     godot_print!("Game data from {}: {}", from_player, data);

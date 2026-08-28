@@ -1104,7 +1104,9 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         error_code: Option<ErrorCode>,
     },
-    /// Successfully left spectator mode.
+    /// The spectator left the room: an answer to an admitted voluntary
+    /// leave, or an authoritative exit (`removed`, `disconnected`, or
+    /// `room_closed`).
     SpectatorLeft {
         #[serde(skip_serializing_if = "Option::is_none")]
         room_id: Option<RoomId>,

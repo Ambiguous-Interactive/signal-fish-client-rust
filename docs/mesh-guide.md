@@ -258,8 +258,9 @@ To shorten the time-to-connect, the server can deliver STUN/TURN servers
 the lobby wait — so your WebRTC stack can begin gathering candidates before the
 `SessionPlan` arrives. Feed these into `set_ice_servers` as soon as you get them
 (`MeshController` does this for you). When the `SessionPlan` later carries its own
-`ice_servers`, those supersede the pre-gathered set; an empty plan keeps the
-pre-gathered ones.
+`ice_servers`, those supersede the pre-gathered set; an empty plan
+authoritatively clears the pre-gathered set — plans replace the ICE list
+wholesale, they never merge with it.
 
 ---
 

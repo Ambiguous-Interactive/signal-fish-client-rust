@@ -2626,7 +2626,8 @@ async fn emit_event_or_shutdown(
 mod tests {
     use super::*;
     use crate::protocol::{
-        LobbyState, RateLimitInfo, RoomJoinedPayload, ROOM_OPERATION_IDS_CAPABILITY,
+        LobbyState, RateLimitInfo, RoomJoinedPayload, RoomOperationRequest,
+        ROOM_OPERATION_IDS_CAPABILITY,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -2834,37 +2835,65 @@ mod tests {
                 let Some(Ok(json)) = item else {
                     return None;
                 };
-                let message_type = serde_json::from_str::<serde_json::Value>(json)
-                    .ok()?
-                    .get("type")?
-                    .as_str()?
-                    .to_owned();
+                let parsed = serde_json::from_str::<serde_json::Value>(json).ok()?;
+                let message_type = parsed.get("type")?.as_str()?.to_owned();
                 match message_type.as_str() {
                     "RoomJoined" | "RoomJoinFailed" => Some(0),
                     "RoomLeft" => Some(1),
                     "Reconnected" | "ReconnectionFailed" => Some(2),
                     "SpectatorJoined" | "SpectatorJoinFailed" => Some(3),
-                    "SpectatorLeft" => Some(4),
+                    "SpectatorLeft" => {
+                        // Authoritative exits (removed, disconnected,
+                        // room-closed) are server-initiated and must be
+                        // deliverable without a matching client command;
+                        // only voluntary answers stay gated. Mirrors the
+                        // core's `spectator_exit_is_authoritative`. An
+                        // absent reason field stays gated (voluntary face).
+                        let reason = parsed
+                            .get("data")
+                            .and_then(|data| data.get("reason"))
+                            .and_then(|reason| reason.as_str())
+                            .map(str::to_owned);
+                        match reason.as_deref() {
+                            Some("room_closed" | "removed" | "disconnected") => None,
+                            _ => Some(4),
+                        }
+                    }
                     _ => None,
                 }
             });
             if let Some(kind) = response_kind {
+                // Counts both wire shapes of a directed room operation: the
+                // legacy unwrapped command and the correlated
+                // `RoomOperation` envelope sent after `room_operation_ids`
+                // negotiation.
+                fn directed_operation_kind(message: &ClientMessage) -> Option<usize> {
+                    match message {
+                        ClientMessage::JoinRoom { .. } => Some(0),
+                        ClientMessage::LeaveRoom => Some(1),
+                        ClientMessage::Reconnect { .. } => Some(2),
+                        ClientMessage::JoinAsSpectator { .. } => Some(3),
+                        ClientMessage::LeaveSpectator => Some(4),
+                        ClientMessage::RoomOperation { operation, .. } => {
+                            match operation.as_ref() {
+                                RoomOperationRequest::JoinRoom { .. } => Some(0),
+                                RoomOperationRequest::LeaveRoom => Some(1),
+                                RoomOperationRequest::Reconnect { .. } => Some(2),
+                                RoomOperationRequest::JoinAsSpectator { .. } => Some(3),
+                                RoomOperationRequest::LeaveSpectator => Some(4),
+                            }
+                        }
+                        _ => None,
+                    }
+                }
                 let sent_count = self
                     .sent
                     .lock()
                     .unwrap()
                     .iter()
                     .filter(|json| {
-                        serde_json::from_str::<ClientMessage>(json).is_ok_and(
-                            |message| match kind {
-                                0 => matches!(message, ClientMessage::JoinRoom { .. }),
-                                1 => matches!(message, ClientMessage::LeaveRoom),
-                                2 => matches!(message, ClientMessage::Reconnect { .. }),
-                                3 => matches!(message, ClientMessage::JoinAsSpectator { .. }),
-                                4 => matches!(message, ClientMessage::LeaveSpectator),
-                                _ => false,
-                            },
-                        )
+                        serde_json::from_str::<ClientMessage>(json)
+                            .is_ok_and(|message| directed_operation_kind(&message) == Some(kind))
                     })
                     .count();
                 if sent_count <= self.delivered_room_responses[kind] {
@@ -6521,6 +6550,76 @@ mod tests {
         assert!(client.current_room_code().await.is_none());
 
         client.shutdown().await;
+    }
+
+    /// The wire authority leaves `room_id` optional on `SpectatorLeft`
+    /// (vendored AsyncAPI: no `required` on the data object), so an
+    /// authoritative exit from the current room may omit the identity. A
+    /// named room must still match: that mismatch stays a violation.
+    #[tokio::test]
+    async fn authoritative_spectator_left_accepts_optional_room_identity() {
+        use crate::protocol::SpectatorStateChangeReason;
+        let authoritative_without_room_id = serde_json::to_string(&ServerMessage::SpectatorLeft {
+            room_id: None,
+            room_code: None,
+            reason: Some(SpectatorStateChangeReason::RoomClosed),
+            current_spectators: vec![],
+        })
+        .unwrap();
+        let mismatched_room_id = serde_json::to_string(&ServerMessage::SpectatorLeft {
+            room_id: Some(uuid::Uuid::from_u128(999)),
+            room_code: None,
+            reason: Some(SpectatorStateChangeReason::RoomClosed),
+            current_spectators: vec![],
+        })
+        .unwrap();
+
+        for (name, frame, accepted) in [
+            ("omitted room_id", authoritative_without_room_id, true),
+            ("mismatched room_id", mismatched_room_id, false),
+        ] {
+            let (transport, _sent, _closed) = MockTransport::new(vec![
+                Some(Ok(authenticated_json())),
+                Some(Ok(protocol_info_v2_json())),
+                Some(Ok(spectator_joined_json())),
+                Some(Ok(frame)),
+            ]);
+            let config = SignalFishConfig::new("mb_test");
+            let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+            enter_scripted_spectator_room(&mut client, &mut events).await;
+            let ev = events.recv().await.unwrap();
+            if accepted {
+                assert!(
+                    matches!(ev, SignalFishEvent::SpectatorLeft { .. }),
+                    "{name}: expected a SpectatorLeft event, got {ev:?}"
+                );
+                assert!(
+                    client.current_room_id().await.is_none(),
+                    "{name}: the authoritative exit must clear room membership"
+                );
+                assert!(
+                    !client.snapshot().quarantined,
+                    "{name}: a schema-valid authoritative exit must not quarantine"
+                );
+            } else {
+                assert!(
+                    matches!(ev, SignalFishEvent::ProtocolViolation { .. }),
+                    "{name}: expected a ProtocolViolation event, got {ev:?}"
+                );
+                assert_eq!(
+                    client.current_room_id().await,
+                    Some(uuid::Uuid::from_u128(300)),
+                    "{name}: a rejected exit must not clear room membership"
+                );
+                assert!(
+                    client.snapshot().quarantined,
+                    "{name}: a mismatched authoritative identity must quarantine"
+                );
+            }
+
+            client.shutdown().await;
+        }
     }
 
     #[tokio::test]

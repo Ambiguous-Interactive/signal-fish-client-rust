@@ -116,6 +116,11 @@ pub enum SignalFishEvent {
         error: String,
         /// The raw frame text, truncated to at most
         /// [`DECODE_FAILED_RAW_PREFIX_MAX`] bytes on a UTF-8 boundary.
+        ///
+        /// This is verbatim frame content and can include sensitive data the
+        /// frame carried (for example SDP inside a signal relay). [`Debug`]
+        /// formatting of this event redacts it; treat the field itself as
+        /// diagnostic-only and never log it verbatim.
         raw_prefix: String,
     },
 
@@ -475,7 +480,9 @@ pub enum SignalFishEvent {
         error_code: Option<ErrorCode>,
     },
 
-    /// Successfully left spectator mode.
+    /// The spectator left the room: either the answer to this client's
+    /// admitted voluntary leave, or an authoritative exit (server removal,
+    /// spectator disconnect, or room close).
     SpectatorLeft {
         /// Room identifier, if available.
         room_id: Option<RoomId>,
