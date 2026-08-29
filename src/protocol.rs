@@ -417,20 +417,30 @@ pub struct RateLimitInfo {
 /// Describes negotiated protocol capabilities for a specific SDK.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolInfoPayload {
+    /// Platform label the server recognized from the client's advertised
+    /// platform, when echoed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    /// Client SDK version echoed back by the server, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sdk_version: Option<String>,
+    /// Lowest server SDK version the deployment supports, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub minimum_version: Option<String>,
+    /// Server SDK version the deployment recommends, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recommended_version: Option<String>,
+    /// Optional capability tokens the deployment supports.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Free-form deployment notes, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Game-data encodings the deployment accepts, in the canonical
+    /// negotiation order (JSON first, MessagePack optional).
     #[serde(default)]
     pub game_data_formats: Vec<GameDataEncoding>,
+    /// Player-name character rules, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub player_name_rules: Option<PlayerNameRulesPayload>,
     /// Protocol version negotiated for this connection (protocol v3+ only).
@@ -483,13 +493,20 @@ pub struct ProtocolInfoPayload {
 /// Describes the characters a deployment allows inside `player_name`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerNameRulesPayload {
+    /// Maximum accepted `player_name` length.
     pub max_length: usize,
+    /// Minimum accepted `player_name` length.
     pub min_length: usize,
+    /// Whether Unicode alphanumeric characters are allowed.
     pub allow_unicode_alphanumeric: bool,
+    /// Whether spaces are allowed.
     pub allow_spaces: bool,
+    /// Whether leading and trailing whitespace is allowed.
     pub allow_leading_trailing_whitespace: bool,
+    /// Symbols accepted in addition to the base rules.
     #[serde(default)]
     pub allowed_symbols: Vec<char>,
+    /// Additional allowed characters as a free-form string, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_allowed_characters: Option<String>,
 }

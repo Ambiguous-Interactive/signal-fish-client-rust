@@ -1587,6 +1587,10 @@ impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingC
         SignalFishPollingClient::snapshot(self)
     }
 
+    fn transport_diagnostics(&self) -> TransportDiagnostics {
+        SignalFishPollingClient::transport_diagnostics(self)
+    }
+
     fn supports_mesh(&self) -> bool {
         SignalFishPollingClient::supports_mesh(self)
     }

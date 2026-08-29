@@ -45,6 +45,21 @@ Before finalizing a user-visible change:
    `Removed`, `Fixed`, `Security`).
 4. Use concrete, consumer-facing wording (what changed and impact).
 
+## Entry Style (issue #197)
+
+Entries exist for consumers scanning release notes. Keep each one short,
+simple, and consumer-facing:
+
+- One sentence per entry; use a second sentence only when a breaking change
+  needs a migration hint.
+- Lead with what the consumer experiences. Omit internal mechanics (module
+  paths, fix history, server commit pins, test names) unless they change
+  how the consumer uses the crate.
+- Fold related fixes of the same class into one entry instead of listing
+  each instance.
+- Never edit released sections: the release cut syncs them into published
+  release notes. Fix wording only in `## [Unreleased]`.
+
 ## Section Classification Rules
 
 - New public API surface area belongs under `### Added`.
