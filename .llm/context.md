@@ -348,7 +348,7 @@ an inherited workspace dependency, `default-features = false`, and
 `godot = ">=0.4.5, <0.6"` with no-thread WASM and lazy-function-table support.
 Its minimum 0.4.5 and latest 0.5.4 standalone fixtures must each lock exactly
 one `godot` and one version of every `godot-*` family crate.
-Tests additionally use full-featured `tokio` and `tracing-subscriber`.
+Core tests additionally use full-featured `tokio` and `tracing-subscriber` (the adapter suite has no dev-dependencies).
 
 ## Key Design Decisions
 

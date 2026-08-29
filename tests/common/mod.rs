@@ -20,7 +20,7 @@ use signal_fish_client::protocol::SpectatorJoinedPayload;
 use signal_fish_client::protocol::{
     GameDataEncoding, LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, RateLimitInfo,
     ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark, ServerMessage,
-    SessionPeer, SessionPlanPayload, Topology, TransportKind,
+    SessionPeer, SessionPlanPayload, SpectatorStateChangeReason, Topology, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ClientMessage, SignalFishError, Transport};
@@ -132,7 +132,21 @@ impl Transport for MockTransport {
                 ServerMessage::SpectatorJoined(_) | ServerMessage::SpectatorJoinFailed { .. } => {
                     Some(3)
                 }
-                ServerMessage::SpectatorLeft { .. } => Some(4),
+                // Authoritative exits (removed, disconnected, room-closed)
+                // are server-initiated and must be deliverable without a
+                // matching client command; the command-answer faces (absent
+                // reason, `voluntary_leave`, `joined`) stay gated. Mirrors
+                // the async driver's test mock and the core's
+                // `spectator_exit_is_authoritative` partition.
+                ServerMessage::SpectatorLeft {
+                    reason:
+                        None
+                        | Some(
+                            SpectatorStateChangeReason::VoluntaryLeave
+                            | SpectatorStateChangeReason::Joined,
+                        ),
+                    ..
+                } => Some(4),
                 _ => None,
             }
         });
@@ -290,10 +304,16 @@ pub fn spectator_joined_json() -> String {
 
 /// Returns the JSON string for a `SpectatorLeft` server message.
 pub fn spectator_left_json() -> String {
+    spectator_left_json_with_reason(None)
+}
+
+/// Returns the JSON string for a `SpectatorLeft` server message carrying the
+/// given state-change reason (`None` models the voluntary/absent-reason face).
+pub fn spectator_left_json_with_reason(reason: Option<SpectatorStateChangeReason>) -> String {
     serde_json::to_string(&ServerMessage::SpectatorLeft {
         room_id: Some(uuid::Uuid::from_u128(300)),
         room_code: Some("SPEC1".into()),
-        reason: None,
+        reason,
         current_spectators: vec![],
     })
     .expect("spectator_left_json serialization")
@@ -365,9 +385,13 @@ pub fn game_data_json(from_player: uuid::Uuid, data: serde_json::Value) -> Strin
 
 // ── Protocol v3 fixtures ────────────────────────────────────────────
 
-/// Builds a `ProtocolInfoPayload` with the given negotiated version (min 2 /
-/// max 3 when the version is set; all version fields omitted for `None`).
+/// Builds a `ProtocolInfoPayload` with the given negotiated version. Versions
+/// `>= 3` stamp all five v3 fields; versions below 3 — like `None` — produce
+/// the v2 shape with every v3 field (including `protocol_version` itself)
+/// omitted, matching the vendored AsyncAPI ("absent on negotiated v2
+/// connections") so every emitted shape is server-sendable.
 pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPayload {
+    let v3_fields = protocol_version.filter(|version| *version >= 3);
     ProtocolInfoPayload {
         platform: None,
         sdk_version: None,
@@ -377,12 +401,12 @@ pub fn protocol_info_payload(protocol_version: Option<u16>) -> ProtocolInfoPaylo
         notes: None,
         game_data_formats: vec![GameDataEncoding::Json, GameDataEncoding::MessagePack],
         player_name_rules: None,
-        protocol_version,
-        min_protocol_version: protocol_version.map(|_| 2),
-        max_protocol_version: protocol_version.map(|version| version.max(3)),
-        transports: protocol_version
+        protocol_version: v3_fields,
+        min_protocol_version: v3_fields.map(|_| 2),
+        max_protocol_version: v3_fields.map(|version| version.max(3)),
+        transports: v3_fields
             .map(|_| vec![signal_fish_client::protocol::MessageTransport::Websocket]),
-        max_outbound_message_size: protocol_version.map(|_| 8 * 1024 * 1024),
+        max_outbound_message_size: v3_fields.map(|_| 8 * 1024 * 1024),
     }
 }
 

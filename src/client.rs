@@ -2863,9 +2863,10 @@ mod tests {
                         // Authoritative exits (removed, disconnected,
                         // room-closed) are server-initiated and must be
                         // deliverable without a matching client command;
-                        // only voluntary answers stay gated. Mirrors the
-                        // core's `spectator_exit_is_authoritative`. An
-                        // absent reason field stays gated (voluntary face).
+                        // the command-answer faces (absent reason,
+                        // `voluntary_leave`, `joined`) stay gated. Mirrors
+                        // the core's `spectator_exit_is_authoritative`
+                        // partition.
                         let reason = parsed
                             .get("data")
                             .and_then(|data| data.get("reason"))

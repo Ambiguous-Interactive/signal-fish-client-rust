@@ -1976,6 +1976,54 @@ mod ci_workflow_policy {
         }
     }
 
+    /// The six sparse matrix rows must scope to the core package. With
+    /// `--workspace`, the Godot adapter member's dependency edge
+    /// force-enables the core `polling-client` feature, so the feature
+    /// unifier silently compiles a state different from the one every sparse
+    /// row name claims (round-22 audit). The pin is per-cell: each row's
+    /// `scope` must sit directly above its `flags`, so swapping scopes
+    /// between rows or dropping a `scope` key fails here.
+    #[test]
+    fn sparse_matrix_rows_scope_the_core_package() {
+        const CORE_SCOPE: &str = "-p signal-fish-client";
+        /// (flags, scope) for every matrix row, wide rows first.
+        const ROWS: [(&str, &str); 8] = [
+            ("", "--workspace"),
+            ("--all-features", "--workspace"),
+            ("--no-default-features --features token-binding", CORE_SCOPE),
+            ("--no-default-features", CORE_SCOPE),
+            (
+                "--no-default-features --features polling-client",
+                CORE_SCOPE,
+            ),
+            ("--no-default-features --features mesh", CORE_SCOPE),
+            ("--no-default-features --features tokio-runtime", CORE_SCOPE),
+            ("--no-default-features --features tls", CORE_SCOPE),
+        ];
+        let contents = ci_contents();
+        for job_name in ["clippy", "test"] {
+            let job = extract_job_block(&contents, job_name)
+                .unwrap_or_else(|| panic!("ci.yml must define the {job_name} job"));
+            for (flags, scope) in ROWS {
+                assert!(
+                    job.contains(&format!(
+                        "scope: \"{scope}\"\n            flags: \"{flags}\""
+                    )),
+                    "ci.yml {job_name} matrix row for flags \"{flags}\" must carry scope \"{scope}\""
+                );
+            }
+            let expected_run = if job_name == "clippy" {
+                "cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} -- -D warnings"
+            } else {
+                "cargo test ${{ matrix.scope }} ${{ matrix.flags }}"
+            };
+            assert!(
+                job.contains(expected_run),
+                "ci.yml {job_name} run line must honor the per-row scope: {expected_run}"
+            );
+        }
+    }
+
     #[test]
     fn semver_tool_supports_the_stable_rustdoc_format() {
         for path in [

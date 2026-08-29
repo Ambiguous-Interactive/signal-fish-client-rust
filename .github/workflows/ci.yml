@@ -77,20 +77,32 @@ jobs:
       matrix:
         include:
           - name: default
+            scope: "--workspace"
             flags: ""
           - name: all-features
+            scope: "--workspace"
             flags: "--all-features"
+          # Sparse cells scope to the core package: `--workspace` would pull
+          # in the Godot adapter, whose dependency edge force-enables the
+          # core `polling-client` feature and silently unifies every isolated
+          # state the cell names.
           - name: token-binding-no-tls
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features token-binding"
           - name: no-default-features
+            scope: "-p signal-fish-client"
             flags: "--no-default-features"
           - name: polling-client-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features mesh"
           - name: tokio-runtime-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features tokio-runtime"
           - name: tls-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features tls"
     steps:
       - name: Checkout repository
@@ -102,7 +114,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
+        run: cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
   # Tests — run across feature combinations
@@ -117,20 +129,32 @@ jobs:
       matrix:
         include:
           - name: default
+            scope: "--workspace"
             flags: ""
           - name: all-features
+            scope: "--workspace"
             flags: "--all-features"
+          # Sparse cells scope to the core package: `--workspace` would pull
+          # in the Godot adapter, whose dependency edge force-enables the
+          # core `polling-client` feature and silently unifies every isolated
+          # state the cell names.
           - name: token-binding-no-tls
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features token-binding"
           - name: no-default-features
+            scope: "-p signal-fish-client"
             flags: "--no-default-features"
           - name: polling-client-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features polling-client"
           - name: mesh-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features mesh"
           - name: tokio-runtime-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features tokio-runtime"
           - name: tls-only
+            scope: "-p signal-fish-client"
             flags: "--no-default-features --features tls"
     steps:
       - name: Checkout repository
@@ -140,7 +164,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Run tests
-        run: cargo test --workspace ${{ matrix.flags }}
+        run: cargo test ${{ matrix.scope }} ${{ matrix.flags }}
 
   # ──────────────────────────────────────────────────────────────
   # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh,
