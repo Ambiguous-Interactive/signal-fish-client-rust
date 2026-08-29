@@ -126,6 +126,20 @@ pub struct TransportDiagnostics {
 /// `Send + 'static` at its task-spawning boundary; the polling client can own a
 /// main-thread-only transport.
 ///
+/// # Panic boundary
+///
+/// Only [`abort`](Self::abort) is required not to panic (it runs from `Drop`,
+/// including during unwinding — a panic inside it aborts the whole process).
+/// The other methods have no panic constraint, but a panic in any of them is a
+/// backend contract violation with driver-specific consequences: the async
+/// driver's loop task dies, so the event channel closes **without** a
+/// `Disconnected` event, queued and parked reliable sends resolve with
+/// [`SignalFishError::NotConnected`], and `abort` still runs exactly once from
+/// the loop's drop guard; the polling driver propagates the panic into the
+/// caller's thread, and `close()` afterwards heals — through the close-deadline
+/// `abort` only if the violating method keeps panicking. The core keeps its last pre-death state in both cases until a
+/// `shutdown`/`close` reconciles it.
+///
 /// # Outbound ownership
 ///
 /// `poll_send` receives the caller's pending frame slot. An implementation may

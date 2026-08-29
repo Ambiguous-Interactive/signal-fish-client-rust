@@ -498,6 +498,10 @@ pub struct WebSocketConnectOptions {
     /// disable both tungstenite receive limits.
     ///
     /// `Some(0)` is invalid and makes connection setup fail before network I/O.
+    /// Very large values behave like `None`: a hostile peer's announced frame
+    /// length drives tungstenite's read-buffer reservation whenever the limit
+    /// is disabled or unreachable, so keep a bounded limit for hostile-peer
+    /// posture and treat `None` as a trusted-network setting.
     pub max_inbound_message_size: Option<usize>,
     /// Token-binding-v2 negotiation policy.
     ///

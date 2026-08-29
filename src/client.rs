@@ -17,13 +17,15 @@
 //!   [`ClientStats::messages_undecodable`]) rather than dropped. An event can
 //!   only be missed when the loop stops delivering entirely: the receiver was
 //!   dropped, the client handle was dropped without calling
-//!   [`shutdown`](SignalFishClient::shutdown) (which aborts immediately), or
+//!   [`shutdown`](SignalFishClient::shutdown) (which aborts immediately),
 //!   delivery was preempted — `shutdown`, or a terminal disconnect facing a
 //!   consumer that never drains, abandon at most the one event delivery they
 //!   interrupt (remaining batch events get one nonblocking attempt), close
 //!   the transport gracefully under [`shutdown_timeout`](SignalFishConfig::shutdown_timeout),
 //!   and deliver the terminal `Disconnected` best-effort (a receiver that
-//!   outlives the loop also observes the event channel closing).
+//!   outlives the loop also observes the event channel closing) — or a
+//!   `Transport` method panicked (a contract violation; see the
+//!   [`Transport`](crate::Transport) trait docs for the exact consequences).
 //! - **Terminal inbound frames** are not guaranteed delivery once the loop is
 //!   tearing down, and the policy differs by trigger: after a terminal
 //!   outbound send failure the loop still processes the frames that are
@@ -1159,6 +1161,13 @@ impl SignalFishClient {
 
     /// Request to become (or relinquish) authority.
     ///
+    /// A room creator that joined with
+    /// [`JoinRoomParams::with_supports_authority`] already holds authority
+    /// (the server auto-assigns it), so an immediate
+    /// `request_authority(true)` is denied with
+    /// [`ErrorCode::AuthorityConflict`] — relinquish first with
+    /// `request_authority(false)` to hand authority to another player.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`],
@@ -1583,7 +1592,15 @@ impl SignalFishClient {
     ///
     /// A shrinking value is the congestion signal: the caller is producing
     /// faster than the transport drains. `0` means the next fail-fast send
-    /// will be refused.
+    /// will be refused. This is a *queue-space* diagnostic, not a liveness
+    /// signal: a dead loop (a panicked `Transport`, or a dropped runtime)
+    /// keeps reporting queue capacity while actual sends fail — with
+    /// [`SignalFishError::NotConnected`] once validation passes, or the same
+    /// membership error a live connection would refuse, because the snapshot
+    /// keeps its last pre-death values. Pair it with
+    /// [`snapshot`](Self::snapshot) or the event stream to observe connection
+    /// health; a later [`shutdown`](Self::shutdown) reconciles the snapshot
+    /// with the dead loop.
     #[must_use = "this diagnostic view is discarded if not used"]
     pub fn send_capacity(&self) -> usize {
         self.cmd_tx.capacity()
@@ -2702,6 +2719,13 @@ mod tests {
     }
 
     impl IncomingControls {
+        /// Wake the loop's registered recv waker without delivering anything.
+        fn wake(&self) {
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+
         fn close_peer(&self) {
             self.incoming.lock().unwrap().push_back(None);
             if let Some(waker) = self.waker.lock().unwrap().take() {
@@ -7368,6 +7392,308 @@ mod tests {
         assert!(
             !emit_terminal_event(&tx, &mut shutdown, None, SignalFishEvent::Connected).await,
             "a consumed signal must preempt a terminal delivery"
+        );
+    }
+
+    // ── Driver-death boundary (round 27) ────────────────────────────
+
+    /// A `Transport` whose `poll_recv` panics once armed. The trait contract
+    /// forbids panicking backends; this mock exists to pin the driver's
+    /// documented behavior when one violates that contract.
+    struct PanickingRecvTransport {
+        inner: MockTransport,
+        armed: Arc<AtomicBool>,
+    }
+
+    impl Transport for PanickingRecvTransport {
+        fn begin_poll_cycle(&mut self) {
+            self.inner.begin_poll_cycle();
+        }
+
+        fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
+            self.inner.diagnostics()
+        }
+
+        fn poll_send(
+            &mut self,
+            cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            self.inner.poll_send(cx, frame)
+        }
+
+        fn poll_recv(
+            &mut self,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            if self.armed.load(Ordering::Acquire) {
+                panic!("transport contract violation: poll_recv panicked");
+            }
+            self.inner.poll_recv(cx)
+        }
+
+        fn poll_close(
+            &mut self,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            self.inner.poll_close(cx)
+        }
+
+        fn is_ready(&self) -> bool {
+            true
+        }
+
+        fn abort(&mut self) {
+            self.inner.abort();
+        }
+    }
+
+    /// A panicking `Transport` (contract violation) kills the loop task: the
+    /// event channel closes without a `Disconnected` event, parked reliable
+    /// senders resolve `NotConnected` promptly, `abort` still runs from the
+    /// loop's drop guard, the snapshot keeps its last pre-death values, and a
+    /// later `shutdown()` reconciles the snapshot and completes promptly.
+    #[tokio::test]
+    async fn transport_panic_kills_loop_without_disconnected_but_resolves_parked_senders() {
+        let armed = Arc::new(AtomicBool::new(false));
+        let (inner, _sent, closed, controls) = MockTransport::new_shared(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
+            Some(Ok(room_joined_json())),
+        ]);
+        let transport = PanickingRecvTransport {
+            inner,
+            armed: Arc::clone(&armed),
+        };
+
+        let config = SignalFishConfig::new("mb_test");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            events.recv().await
+        })
+        .await
+        .expect("Connected promptly"); // Connected
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            events.recv().await
+        })
+        .await
+        .expect("Authenticated promptly"); // Authenticated
+        client
+            .join_room(JoinRoomParams::new("g", "alice"))
+            .expect("queue join");
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match events.recv().await {
+                    Some(SignalFishEvent::RoomJoined { .. }) => break,
+                    Some(_) => {}
+                    None => panic!("event stream ended before RoomJoined"),
+                }
+            }
+        })
+        .await;
+        assert!(joined.is_ok(), "RoomJoined must arrive promptly");
+
+        armed.store(true, Ordering::Release);
+        // Wake the loop so its next recv poll hits the armed panic. The loop
+        // dies on that poll; the channel closes without a `Disconnected`
+        // delivery (the unwind drops the sender first).
+        controls.wake();
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("channel close must be prompt");
+        assert!(
+            observed.is_none(),
+            "the loop must die without further events, got {observed:?}"
+        );
+        drop(controls);
+
+        // The panic killed the task, not the runtime: commands now fail fast.
+        let result = client.send_game_data(serde_json::json!({ "n": 1 }));
+        assert!(
+            matches!(result, Err(SignalFishError::NotConnected)),
+            "an in-room client on a dead loop must fail with NotConnected, got {result:?}"
+        );
+        // The parked variant resolves instead of hanging forever.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.send_game_data_reliable(serde_json::json!({ "n": 2 })),
+        )
+        .await
+        .expect("parked reliable send must resolve promptly");
+        assert!(
+            matches!(result, Err(SignalFishError::NotConnected)),
+            "got {result:?}"
+        );
+
+        // The snapshot keeps its stale pre-death view...
+        assert!(
+            client.is_connected(),
+            "only shutdown()/close reconciles the core after abnormal loop death"
+        );
+        // ...while the loop's drop guard ran `abort` during unwind.
+        assert!(
+            closed.load(Ordering::Acquire),
+            "abort must run from the loop's drop guard during unwind"
+        );
+
+        // A later shutdown() reconciles the snapshot and completes promptly.
+        tokio::time::timeout(std::time::Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("shutdown after transport panic must complete promptly");
+        assert!(!client.is_connected());
+    }
+
+    /// After a terminal disconnect (peer closed), every membership-class
+    /// command refuses uniformly with `NotConnected` and the reliable
+    /// variants resolve instead of hanging. Data-driven matrix pin for the
+    /// documented error precedence in a finalized v3 room.
+    #[tokio::test]
+    async fn every_command_returns_not_connected_after_terminal_close() {
+        let (transport, _sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(finalized_room_v3_json(uuid::Uuid::from_u128(7)))),
+            // Explicit `None` signals a clean peer close.
+            None,
+        ]);
+        let mut config = SignalFishConfig::new("mb_test").enable_v3();
+        config.game_data_format = Some(GameDataEncoding::MessagePack);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        enter_scripted_player_room(&mut client, &mut events).await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("peer close must be delivered promptly");
+        assert!(matches!(event, Some(SignalFishEvent::Disconnected { .. })));
+
+        // The diagnostics stay readable...
+        let _ = client.send_capacity();
+        let _ = client.max_send_capacity();
+        let _ = client.stats();
+        let snapshot = client.snapshot();
+        assert!(!snapshot.connected);
+        let _ = client.transport_diagnostics();
+
+        // ...while every membership-class command refuses with the same
+        // error kind. (Signal sends additionally require a live, WebRTC
+        // session plan before queue capacity is consulted; that documented
+        // precedence has its own pins.)
+        let not_connected = |result: crate::error::Result<()>, what: &str| {
+            assert!(
+                matches!(result, Err(SignalFishError::NotConnected)),
+                "{what} must refuse with NotConnected after a terminal close, got {result:?}"
+            );
+        };
+        let data = serde_json::json!({ "n": 0 });
+        not_connected(
+            client.join_room(JoinRoomParams::new("g", "alice")),
+            "join_room",
+        );
+        not_connected(client.leave_room(), "leave_room");
+        not_connected(client.send_game_data(data.clone()), "send_game_data");
+        not_connected(
+            client.send_game_data_with_delivery(data.clone(), GameDataDelivery::Latest { key: 1 }),
+            "send_game_data_with_delivery",
+        );
+        not_connected(
+            client.send_binary_game_data(Vec::new()),
+            "send_binary_game_data",
+        );
+        not_connected(client.set_ready(), "set_ready");
+        not_connected(client.start_game(), "start_game");
+        not_connected(client.request_authority(true), "request_authority");
+        not_connected(
+            client.provide_connection_info(crate::protocol::ConnectionInfo::Direct {
+                host: "127.0.0.1".into(),
+                port: 1,
+            }),
+            "provide_connection_info",
+        );
+        not_connected(
+            client.reconnect(uuid::Uuid::from_u128(42), uuid::Uuid::nil(), "token".into()),
+            "reconnect",
+        );
+        not_connected(
+            client.join_as_spectator("g".into(), "ABC123".into(), "spectator".into()),
+            "join_as_spectator",
+        );
+        not_connected(client.leave_spectator(), "leave_spectator");
+        not_connected(client.ping(), "ping");
+        let reliable = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.send_game_data_reliable(data),
+        )
+        .await
+        .expect("reliable send must resolve promptly after a terminal close");
+        assert!(matches!(reliable, Err(SignalFishError::NotConnected)));
+
+        // A shutdown after the self-terminated loop stays prompt and
+        // idempotent.
+        client.shutdown().await;
+    }
+
+    /// The async twin of the polling driver's unbounded-deadline pin: a
+    /// `Duration::MAX` shutdown budget arms its deadline through checked
+    /// arithmetic (no panic, no premature expiry) and stays parked — the loop
+    /// keeps owning the graceful close until the deadline actually passes.
+    #[tokio::test]
+    async fn max_shutdown_timeout_arms_deadline_without_overflow() {
+        struct HangingCloseTransport {
+            closed: Arc<AtomicBool>,
+        }
+        impl Transport for HangingCloseTransport {
+            fn abort(&mut self) {
+                self.closed.store(true, Ordering::Release);
+            }
+            fn poll_send(
+                &mut self,
+                _cx: &mut Context<'_>,
+                _frame: &mut Option<TransportFrame>,
+            ) -> Poll<std::result::Result<(), SignalFishError>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_recv(
+                &mut self,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+                Poll::Pending
+            }
+            fn poll_close(
+                &mut self,
+                _cx: &mut Context<'_>,
+            ) -> Poll<std::result::Result<(), SignalFishError>> {
+                // Never completes: the deadline budget is the only exit.
+                Poll::Pending
+            }
+        }
+
+        let closed = Arc::new(AtomicBool::new(false));
+        let transport = HangingCloseTransport {
+            closed: Arc::clone(&closed),
+        };
+        let config =
+            SignalFishConfig::new("mb_test").with_shutdown_timeout(std::time::Duration::MAX);
+        let (mut client, _events) = SignalFishClient::start(transport, config);
+
+        let mut shutdown = Box::pin(client.shutdown());
+        // A far-future (checked, non-overflowing) deadline must neither
+        // panic, expire, nor abort the graceful close early.
+        tokio::time::timeout(std::time::Duration::from_millis(50), shutdown.as_mut())
+            .await
+            .unwrap_err();
+        assert!(
+            !closed.load(Ordering::Acquire),
+            "an unexpired Duration::MAX budget must not abort the graceful close"
+        );
+        // Dropping the parked shutdown future only abandons the wait; the
+        // loop keeps owning the graceful close (documented: the handle holds
+        // no event sender and no abort authority of its own).
+        drop(shutdown);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !closed.load(Ordering::Acquire),
+            "dropping the shutdown future must not abort the transport"
         );
     }
 }

@@ -1671,6 +1671,11 @@ mod ci_workflow_policy {
                 "e2e_server_070_spectator_live_smoke",
             ),
             (
+                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.7.0",
+                "e2e_server_070_authority_handoff_and_latest_delivery",
+            ),
+            (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
                 "0.4.0",
                 "e2e_server_040_generationless_mesh_signal",

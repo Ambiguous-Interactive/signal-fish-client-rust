@@ -582,6 +582,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
 
     /// Request or relinquish authority status.
     ///
+    /// A room creator that joined with
+    /// [`JoinRoomParams::with_supports_authority`] already holds authority
+    /// (the server auto-assigns it), so an immediate
+    /// `request_authority(true)` is denied with
+    /// [`ErrorCode::AuthorityConflict`] — relinquish first with
+    /// `request_authority(false)` to hand authority to another player.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`],
@@ -1606,6 +1613,8 @@ mod tests {
     use crate::protocol::RoomOperationRequest;
     use crate::protocol::ServerMessage;
     use crate::transport::TransportFrame;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     // ── Mock transport ──────────────────────────────────────────────
 
@@ -5940,6 +5949,197 @@ mod tests {
         let _ = client.poll_at(start + Duration::from_secs(1));
         assert!(client.is_closing());
         assert_eq!(client.polling_stats().close_deadline_expirations, 0);
+    }
+
+    // ── D2. Transport-panic boundary (round 27) ─────────────────────
+
+    /// A `Transport` whose `poll_recv` panics once armed: the panic must
+    /// propagate into the caller's thread, leave the core state readable, and
+    /// leave the client closable (no wedge, no poisoning).
+    struct PanickingRecvPollingTransport {
+        incoming: VecDeque<Option<std::result::Result<TransportFrame, SignalFishError>>>,
+        armed: Arc<AtomicBool>,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl Transport for PanickingRecvPollingTransport {
+        fn abort(&mut self) {
+            self.aborted.store(true, Ordering::Release);
+            self.incoming.clear();
+        }
+
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            let _ = frame.take();
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            // One-shot: a backend that violates its contract exactly once.
+            // (Every-call panicking would also wedge the close path, which the
+            // deadline-healing test covers separately.)
+            if self.armed.swap(false, Ordering::AcqRel) {
+                panic!("transport contract violation: poll_recv panicked");
+            }
+            match self.incoming.pop_front() {
+                Some(item) => std::task::Poll::Ready(item),
+                None => std::task::Poll::Pending,
+            }
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            self.aborted.store(true, Ordering::Release);
+            self.incoming.clear();
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn polling_transport_panic_propagates_and_close_recovers() {
+        let authenticated = serde_json::to_string(&ServerMessage::Authenticated {
+            app_name: "test-app".into(),
+            organization: None,
+            rate_limits: crate::protocol::RateLimitInfo {
+                per_minute: 60,
+                per_hour: 1000,
+                per_day: 10000,
+            },
+        })
+        .unwrap();
+        let transport = PanickingRecvPollingTransport {
+            incoming: VecDeque::from(vec![Some(Ok(TransportFrame::Text(authenticated)))]),
+            armed: Arc::new(AtomicBool::new(false)),
+            aborted: Arc::new(AtomicBool::new(false)),
+        };
+        let armed = Arc::clone(&transport.armed);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+
+        let events = client.poll();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::Authenticated { .. })));
+        assert!(client.snapshot().authenticated);
+
+        armed.store(true, Ordering::Release);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.poll()));
+        assert!(
+            result.is_err(),
+            "a panicking poll_recv must propagate into the caller's thread"
+        );
+        // The core state stays readable and consistent (no poisoning): the
+        // authenticated snapshot survives the panic untouched.
+        assert!(client.snapshot().authenticated);
+
+        // The client remains closable; close heals through its normal path.
+        client.close();
+        assert!(!client.is_connected());
+        assert!(
+            !client.is_closing(),
+            "a completed close must leave the Closed phase"
+        );
+        let events = client.poll();
+        assert!(events.is_empty(), "a closed client yields no events");
+    }
+
+    /// A `Transport` whose `poll_close` panics (a contract violation; `abort`
+    /// is the only method that must never panic): every `poll()` re-panics
+    /// until the close deadline expires, then the deadline path aborts the
+    /// transport, marks the client `Closed`, and heals every later poll.
+    #[test]
+    fn panicking_poll_close_heals_after_close_deadline() {
+        struct PanickingCloseTransport {
+            armed: Arc<AtomicBool>,
+            aborted: Arc<AtomicBool>,
+        }
+        impl Transport for PanickingCloseTransport {
+            fn abort(&mut self) {
+                self.aborted.store(true, Ordering::Release);
+            }
+            fn poll_send(
+                &mut self,
+                _cx: &mut std::task::Context<'_>,
+                frame: &mut Option<TransportFrame>,
+            ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+                let _ = frame.take();
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_recv(
+                &mut self,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>>
+            {
+                std::task::Poll::Pending
+            }
+            fn poll_close(
+                &mut self,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+                if self.armed.load(Ordering::Acquire) {
+                    panic!("transport contract violation: poll_close panicked");
+                }
+                std::task::Poll::Pending
+            }
+        }
+
+        let armed = Arc::new(AtomicBool::new(false));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let transport = PanickingCloseTransport {
+            armed: Arc::clone(&armed),
+            aborted: Arc::clone(&aborted),
+        };
+        let config = default_config().with_shutdown_timeout(Duration::from_millis(20));
+        let mut client = SignalFishPollingClient::new(transport, config);
+
+        // Drive the close on a virtual clock so the deadline boundaries are
+        // deterministic regardless of machine speed.
+        let started = Instant::now();
+        client.close_at(started);
+        assert!(client.is_closing());
+        armed.store(true, Ordering::Release);
+
+        // Before the deadline, every poll re-panics into the caller.
+        for offset in [
+            Duration::from_millis(5),
+            Duration::from_millis(10),
+            Duration::from_millis(15),
+        ] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                client.poll_at(started + offset)
+            }));
+            assert!(result.is_err(), "the armed poll_close must keep panicking");
+        }
+
+        // At the deadline, the driver stops calling poll_close: it aborts
+        // and closes without panicking.
+        let events = client.poll_at(started + Duration::from_millis(20));
+        let events = if client.is_closing() {
+            client.poll_at(started + Duration::from_millis(40))
+        } else {
+            events
+        };
+        assert!(!client.is_closing(), "the deadline must heal the close");
+        let _ = events;
+        assert!(
+            aborted.load(Ordering::Acquire),
+            "the deadline path must abort the violating transport"
+        );
+        assert_eq!(
+            client.polling_stats().close_deadline_expirations,
+            1,
+            "exactly one deadline expiration must be recorded"
+        );
+        assert!(!client.is_connected());
+        let events = client.poll();
+        assert!(events.is_empty(), "a closed client yields no events");
     }
 
     // ── E. Integration Scenarios ───────────────────────────────────

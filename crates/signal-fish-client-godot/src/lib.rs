@@ -2282,4 +2282,133 @@ mod tests {
             Poll::Ready(Ok(()))
         ));
     }
+
+    // ── Adaptive-policy boundary pins (round 27) ────────────────────
+    //
+    // The adaptive watermark math is safe by construction, but nothing but a
+    // pinned test catches a `clamp` argument swap, a lost native-capacity
+    // clamp, or a lost saturation guard — lint-invisible regressions.
+
+    fn adaptive_transport(
+        policy: GodotBackpressurePolicy,
+        capacity: i32,
+    ) -> GodotWebSocketTransport {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.capacity = capacity;
+        GodotWebSocketTransport::from_backend_with_options(
+            Box::new(backend),
+            GodotWebSocketOptions {
+                backpressure_policy: policy,
+            },
+        )
+    }
+
+    /// A zero `latency_target` must drop the latency term entirely: with a
+    /// huge seeded drain estimate and no burst, the watermark collapses to
+    /// the floor instead of the latency-scaled drain bytes (which would pin
+    /// the ceiling under any nonzero target).
+    #[test]
+    fn adaptive_zero_latency_target_drops_latency_term() {
+        let mut transport = adaptive_transport(
+            GodotBackpressurePolicy::Adaptive {
+                latency_target: Duration::ZERO,
+                floor_bytes: 0,
+                ceiling_bytes: 1_000,
+            },
+            65_535,
+        );
+        let base = Instant::now();
+        transport.adaptive = AdaptiveState::default();
+        transport.sample_cycle_at(base);
+        transport.adaptive.drain_bytes_per_second_ewma = 1_000_000;
+        transport.sample_cycle_at(base + Duration::from_secs(1));
+        // latency_bytes = decayed drain estimate * 0 ns = 0; burst estimate
+        // is 0, so the watermark degenerates to the floor. A nonzero target
+        // would scale the decayed drain estimate (875,000 B/s after one
+        // 1/8-decay step) to tens of thousands of bytes and pin the 1,000
+        // ceiling.
+        assert_eq!(transport.diagnostics().effective_watermark_bytes, 0);
+    }
+
+    /// A huge `latency_target` must saturate through the checked math and pin
+    /// the watermark at the configured ceiling instead of overflowing.
+    #[test]
+    fn adaptive_huge_latency_target_saturates_to_ceiling() {
+        let mut transport = adaptive_transport(
+            GodotBackpressurePolicy::Adaptive {
+                latency_target: Duration::MAX,
+                floor_bytes: 0,
+                ceiling_bytes: 1_000,
+            },
+            65_535,
+        );
+        let base = Instant::now();
+        transport.adaptive = AdaptiveState::default();
+        transport.sample_cycle_at(base);
+        transport.adaptive.accepted_since_sample = 800;
+        transport.sample_cycle_at(base + Duration::from_secs(1));
+        assert_eq!(transport.diagnostics().effective_watermark_bytes, 1_000);
+    }
+
+    /// An inverted policy (`floor_bytes` above `ceiling_bytes`) must pin the
+    /// watermark to the ceiling: the floor never wins the clamp swap.
+    #[test]
+    fn adaptive_floor_above_ceiling_pins_watermark_to_ceiling() {
+        let mut transport = adaptive_transport(
+            GodotBackpressurePolicy::Adaptive {
+                latency_target: Duration::from_millis(50),
+                floor_bytes: 5_000,
+                ceiling_bytes: 1_000,
+            },
+            65_535,
+        );
+        let base = Instant::now();
+        transport.adaptive = AdaptiveState::default();
+        transport.sample_cycle_at(base);
+        transport.adaptive.accepted_since_sample = 800;
+        transport.sample_cycle_at(base + Duration::from_secs(1));
+        assert_eq!(transport.diagnostics().effective_watermark_bytes, 1_000);
+    }
+
+    /// A zero adaptive ceiling degenerates to strict stop-and-wait with the
+    /// documented one-frame escape for a frame that fits native capacity.
+    #[test]
+    fn adaptive_zero_ceiling_degenerates_to_stop_and_wait() {
+        let mut transport = adaptive_transport(
+            GodotBackpressurePolicy::Adaptive {
+                latency_target: Duration::from_millis(50),
+                floor_bytes: 0,
+                ceiling_bytes: 0,
+            },
+            65_535,
+        );
+        transport.begin_poll_cycle();
+        let mut first = Some(TransportFrame::Text("one-frame escape".to_string()));
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut first),
+            Poll::Ready(Ok(()))
+        ));
+        let mut second = Some(TransportFrame::Text("parked".to_string()));
+        assert!(matches!(
+            transport.poll_send(&mut context(), &mut second),
+            Poll::Pending
+        ));
+        assert_eq!(second, Some(TransportFrame::Text("parked".to_string())));
+        assert_eq!(transport.admission_watermark_violations(), 0);
+        assert_eq!(transport.one_frame_escape_frames(), 1);
+    }
+
+    /// A `usize::MAX` fixed watermark must clamp to the backend's reported
+    /// native outbound capacity instead of admitting unbounded bytes.
+    #[test]
+    fn fixed_usize_max_watermark_clamps_to_native_capacity() {
+        let mut transport = adaptive_transport(
+            GodotBackpressurePolicy::Fixed {
+                high_water_mark_bytes: usize::MAX,
+            },
+            65_535,
+        );
+        transport.begin_poll_cycle();
+        assert_eq!(transport.configured_watermark(), 65_535);
+    }
 }
