@@ -13,6 +13,13 @@ const repoRoot = path.resolve(__dirname, "..");
 // 20-minute ceiling, so a genuine hang still fails fast.
 const ACCESSIBILITY_BUDGET_MS = 600_000;
 
+// Healthy phases finish in seconds. This bound exists for the wedged-step
+// failure mode observed on hosted runners (2026-08-29: one Playwright call
+// never settled and burned the whole 600-second budget): a phase that
+// outlives it is retried once on a fresh page, and the retry bound keeps a
+// genuinely broken site failing fast instead of stalling to the deadline.
+const PHASE_BUDGET_MS = 90_000;
+
 let origin;
 let activeBrowser;
 let activeServer;
@@ -140,6 +147,32 @@ const accessibilityDeadline = () => {
         releaseDeadline = () => clearTimeout(timer);
     });
     return [deadline, () => releaseDeadline()];
+};
+
+// Bound one awaitable so a step that never settles (a wedged Playwright
+// protocol call; evaluate and keyboard dispatch have no built-in timeout)
+// rejects with a named error instead of stalling to the global deadline.
+const raceTimeout = (promise, ms, message) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(message);
+            error.phaseTimeout = true;
+            reject(error);
+        }, ms);
+        timer.unref();
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
+// Close a page without letting a wedged protocol stall the flow; the
+// browser (and every page in it) is closed by cleanup regardless.
+const closePageBounded = async (page) => {
+    try {
+        await raceTimeout(page.close(), 5_000, "page close exceeded 5s");
+    } catch {
+        // Leaking this page is bounded by cleanup's browser close.
+    }
 };
 
 const settleShell = async (page) => {
@@ -482,11 +515,40 @@ const checkSearchResize = async (page) => {
 const runBrowserChecks = async () => {
     const startedAt = Date.now();
     const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+    let context;
+    let page;
+    const browserErrors = [];
     // Progress lines make a budget timeout diagnosable: the log names the
     // phase that was still running when the deadline fired.
     const runPhase = async (name, check) => {
         process.stderr.write(`Accessibility: start ${name} at ${elapsed()}\n`);
-        await check();
+        try {
+            await raceTimeout(
+                check(page),
+                PHASE_BUDGET_MS,
+                `phase "${name}" exceeded ${PHASE_BUDGET_MS / 1000} seconds`,
+            );
+        } catch (error) {
+            // A wedged protocol call can leave the page unusable while the
+            // browser itself is healthy: recover once on a fresh page. Only
+            // phase timeouts retry — assertion failures are deterministic
+            // and a retry would only blur their evidence.
+            if (!error.phaseTimeout || !context) {
+                throw error;
+            }
+            process.stderr.write(
+                `Accessibility: retrying ${name} on a fresh page at ${elapsed()}\n`,
+            );
+            const previous = page;
+            page = configurePage(await context.newPage());
+            attachErrorCapture(page, browserErrors);
+            await closePageBounded(previous);
+            await raceTimeout(
+                check(page),
+                PHASE_BUDGET_MS,
+                `phase "${name}" exceeded ${PHASE_BUDGET_MS / 1000} seconds again on a fresh page`,
+            );
+        }
         process.stderr.write(`Accessibility: done ${name} at ${elapsed()}\n`);
     };
     await runPhase("build freshness", assertBuildFreshness);
@@ -499,7 +561,6 @@ const runBrowserChecks = async () => {
         throw new Error("Documentation accessibility checks timed out");
     }
     activeServer = server;
-    const browserErrors = [];
     const browser = await chromium.launch({
         args: ["--disable-gpu"],
         headless: true,
@@ -509,16 +570,16 @@ const runBrowserChecks = async () => {
         throw new Error("Documentation accessibility checks timed out");
     }
     activeBrowser = browser;
-    const context = await browser.newContext({
+    context = await browser.newContext({
         reducedMotion: "reduce",
         viewport: { width: 1220, height: 800 },
     });
-    const page = configurePage(await context.newPage());
+    page = configurePage(await context.newPage());
     attachErrorCapture(page, browserErrors);
     await runPhase("closed boundaries", () => checkClosedBoundaries(page));
-    await runPhase("drawer resize ltr", () => checkDrawerResize(page, "ltr"));
-    await runPhase("drawer resize rtl", () => checkDrawerResize(page, "rtl"));
-    await runPhase("search resize", () => checkSearchResize(page));
+    await runPhase("drawer resize ltr", (phasePage) => checkDrawerResize(phasePage, "ltr"));
+    await runPhase("drawer resize rtl", (phasePage) => checkDrawerResize(phasePage, "rtl"));
+    await runPhase("search resize", (phasePage) => checkSearchResize(phasePage));
     expectState(
         browserErrors.length === 0,
         "documentation pages emitted browser errors",
