@@ -97,8 +97,7 @@ pub trait SignalFishClientApi {
     /// Most recent backend buffering/admission diagnostics sample.
     ///
     /// Reads the same per-I/O-step sample as the inherent driver methods; see
-    /// [`TransportDiagnostics`](crate::TransportDiagnostics) for field
-    /// semantics.
+    /// [`TransportDiagnostics`] for field semantics.
     #[must_use = "this diagnostic view is discarded if not used"]
     fn transport_diagnostics(&self) -> TransportDiagnostics;
 
