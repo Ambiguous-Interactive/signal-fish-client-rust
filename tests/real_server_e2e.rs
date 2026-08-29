@@ -2001,11 +2001,19 @@ async fn e2e_server_070_spectator_live_smoke() {
 /// auto-authority, an explicit release/handoff, the local `AuthorityRequired`
 /// gate, `ConnectionInfo` propagation through `GameStarting`, and
 /// `Latest`-keyed coalescing as observed through `GameData` plus the
-/// accountable `DeliveryReport`. Spawn-mode only.
+/// accountable `DeliveryReport`. Spawn-mode only: the coalescing leg needs
+/// the server's batch window enabled, because with batching off the outbound
+/// drain may legitimately pop the first frame before the successor's enqueue
+/// wins the race — server-correct, but not the behavior this cell pins.
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN"]
 async fn e2e_server_070_authority_handoff_and_latest_delivery() {
-    let Some((guard, url)) = spawn_server(&[]).await else {
+    let Some((guard, url)) = spawn_server(&[
+        ("SIGNAL_FISH__WEBSOCKET__ENABLE_BATCHING", "true"),
+        ("SIGNAL_FISH__WEBSOCKET__BATCH_INTERVAL_MS", "1000"),
+    ])
+    .await
+    else {
         eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
         return;
     };
