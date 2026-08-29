@@ -417,7 +417,7 @@ to every JSON delivery class equally.
 
 !!! note "Cost of the depth check"
     The bound is enforced by a fast, allocation-free walk of the payload on
-    the calling thread before queueing — no wire bytes, allocation counts,
+    the calling thread before queuing — no wire bytes, allocation counts,
     or pinned performance ledgers change.
 
 #### Binary game data (protocol v3)

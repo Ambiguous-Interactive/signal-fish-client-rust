@@ -1233,7 +1233,7 @@ async fn game_data_container_depth_is_bounded_at_admission() {
     wait_for_sent_len(&sent, 2).await; // Authenticate + JoinRoom
     sent.lock().unwrap().clear();
 
-    // Refusals precede queueing: nothing reaches the transport and the
+    // Refusals precede queuing: nothing reaches the transport and the
     // client keeps working.
     for depth in [129u32, 1_000] {
         let payload = nested_chain(depth);

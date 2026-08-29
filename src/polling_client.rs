@@ -3920,7 +3920,7 @@ mod tests {
         let _ = client.poll(); // flush auth
         let primed_sent = client.transport.sent.len();
 
-        // Refusals precede queueing: the sent log stays untouched and the
+        // Refusals precede queuing: the sent log stays untouched and the
         // client keeps working.
         for depth in [129u32, 1_000] {
             let payload = nested_chain(depth);
