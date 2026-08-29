@@ -148,7 +148,11 @@ timer.
 ## Using `MeshController` (batteries-included)
 
 `MeshController` drives the **entire** v3 handshake against your driver on top of
-a `SignalFishClient`. On a WebRTC `SessionPlan`/`NewPeer` it calls
+an async `SignalFishClient` — it is unavailable on `tokio-runtime`-less builds
+(such as wasm) and there is no polling-client variant: `SignalFishPollingClient`
+users integrate their own driver with the manual
+`send_signal_for_generation` / `report_transport_status` choreography described
+below. On a WebRTC `SessionPlan`/`NewPeer` it calls
 `connect(peer, generation, initiate)` and `set_ice_servers`; on a received
 signal it feeds `on_signal`; it
 relays the driver's outbound signals via the client (a signal the command

@@ -112,6 +112,14 @@ impl MeshSession {
                 peer_id,
                 you_initiate,
             } => {
+                // The authority scopes `NewPeer` to WebRTC peer directives
+                // ("additive WebRTC peer directive"), mirroring the
+                // `PeerTransportStatus` transport gate below: on a relay plan
+                // (or before any plan) a peer directive cannot describe a
+                // connectable peer, so the session view stays unchanged.
+                if self.transport != Some(TransportKind::WebRtc) {
+                    return false;
+                }
                 // Late joiner: upsert by id (idempotent; latest flag wins).
                 if let Some(existing) = self.peers.iter_mut().find(|p| p.player_id == *peer_id) {
                     let changed = existing.initiate != *you_initiate;
@@ -478,6 +486,7 @@ mod tests {
     #[test]
     fn duplicate_new_peer_is_idempotent() {
         let mut s = MeshSession::new();
+        s.apply(&plan(Topology::Mesh, None, vec![], vec![]));
         s.apply(&SignalFishEvent::NewPeer {
             peer_id: uuid(5),
             you_initiate: true,
@@ -488,6 +497,41 @@ mod tests {
         });
         assert_eq!(s.peers().len(), 1);
         assert!(s.peer(uuid(5)).unwrap().initiate);
+    }
+
+    #[test]
+    fn new_peer_requires_a_selected_webrtc_transport() {
+        // The authority scopes `NewPeer` to WebRTC peer directives: without a
+        // plan, and on a relay plan, a peer directive must not invent a peer
+        // the controller will never connect.
+        let mut s = MeshSession::new();
+        assert!(!s.apply(&SignalFishEvent::NewPeer {
+            peer_id: uuid(5),
+            you_initiate: true,
+        }));
+        assert!(s.peers().is_empty(), "pre-plan NewPeer invented a peer");
+        s.apply(&SignalFishEvent::SessionPlan {
+            generation: None,
+            topology: Topology::Relay,
+            transport: TransportKind::Relay,
+            host: None,
+            direct_endpoint: None,
+            peers: vec![],
+            ice_servers: vec![],
+            fallback: TransportKind::Relay,
+        });
+        assert!(!s.apply(&SignalFishEvent::NewPeer {
+            peer_id: uuid(5),
+            you_initiate: true,
+        }));
+        assert!(s.peers().is_empty(), "relay-plan NewPeer invented a peer");
+        // After the WebRTC plan the same directive applies normally.
+        s.apply(&plan(Topology::Mesh, None, vec![], vec![]));
+        assert!(s.apply(&SignalFishEvent::NewPeer {
+            peer_id: uuid(5),
+            you_initiate: true,
+        }));
+        assert_eq!(s.peers().len(), 1);
     }
 
     #[test]

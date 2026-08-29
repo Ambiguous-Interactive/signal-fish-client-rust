@@ -609,6 +609,8 @@ impl DeliveryAccountability {
                 .entry((gap.from_player, gap.epoch))
                 .or_default();
             gaps.push(gap.clone());
+            // Ties are impossible: equal `from_seq` ranges overlap and were
+            // already rejected, so the unstable sort is fully deterministic.
             gaps.sort_unstable_by_key(|candidate| candidate.from_seq);
         }
         if unsupported_gap.is_some() {

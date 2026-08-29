@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `MeshSession` now ignores `NewPeer` directives while the selected
+  transport is not WebRTC — before any plan, and on relay plans. The
+  protocol authority scopes `NewPeer` to WebRTC peer directives, so a
+  nonconformant or racing server can no longer make the session view list
+  a peer that will never be connected; matching `PeerTransportStatus`, the
+  directive is applied normally once a WebRTC plan is selected.
+- A `ProtocolInfo` advertisement whose `max_outbound_message_size` falls
+  outside the vendored authority bounds (1..=67108864) is now a lifecycle
+  violation instead of being mirrored unbound into
+  `ClientSnapshot::server_max_outbound_message_size`, and a v2-shaped
+  advertisement carrying the v3-only size field is rejected like the other
+  v2/v3 dialect crossings.
 - The Emscripten WebSocket transport no longer acknowledges sends on a
   connection the browser has already closed. The browser's `send()` on a
   closing/closed WebSocket silently discards the data while the JS shim

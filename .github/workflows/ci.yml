@@ -98,6 +98,9 @@ jobs:
           - name: mesh-only
             scope: "-p signal-fish-client"
             flags: "--no-default-features --features mesh"
+          - name: polling-client-mesh
+            scope: "-p signal-fish-client"
+            flags: "--no-default-features --features polling-client,mesh"
           - name: tokio-runtime-only
             scope: "-p signal-fish-client"
             flags: "--no-default-features --features tokio-runtime"
@@ -150,6 +153,9 @@ jobs:
           - name: mesh-only
             scope: "-p signal-fish-client"
             flags: "--no-default-features --features mesh"
+          - name: polling-client-mesh
+            scope: "-p signal-fish-client"
+            flags: "--no-default-features --features polling-client,mesh"
           - name: tokio-runtime-only
             scope: "-p signal-fish-client"
             flags: "--no-default-features --features tokio-runtime"
