@@ -345,17 +345,17 @@ Rate-limit information returned after authentication.
 
 ```rust,ignore
 pub struct RateLimitInfo {
-    pub per_minute: u32,
-    pub per_hour: u32,
-    pub per_day: u32,
+    pub per_minute: u64,
+    pub per_hour: u64,
+    pub per_day: u64,
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `per_minute` | `u32` | Maximum requests allowed per minute. |
-| `per_hour` | `u32` | Maximum requests allowed per hour. |
-| `per_day` | `u32` | Maximum requests allowed per day. |
+| `per_minute` | `u64` | Maximum requests allowed per minute. |
+| `per_hour` | `u64` | Maximum requests allowed per hour. |
+| `per_day` | `u64` | Maximum requests allowed per day. |
 
 ---
 
@@ -582,7 +582,7 @@ pub enum ClientMessage { /* ... */ }
 | `LeaveRoom` | Leave the current room. |
 | `GameData` | Send arbitrary JSON game data to other players. |
 | `AuthorityRequest` | Request to become (or yield) the room authority. |
-| `PlayerReady` | Signal readiness to start the game. |
+| `PlayerReady` | Toggle lobby readiness (call once per room membership). |
 | `ProvideConnectionInfo` | Provide your P2P connection info to peers. |
 | `Ping` | Heartbeat to keep the connection alive. |
 | `Reconnect` | Reconnect to a room after a disconnection. |

@@ -1628,6 +1628,40 @@ fn fixture_authenticated_from_server() {
 }
 
 #[test]
+fn fixture_authenticated_rate_limits_are_unbounded_integers() {
+    // The authority (AsyncAPI `RateLimitInfo`) types the limits as plain
+    // unbounded integers: a value above u32::MAX must decode instead of
+    // breaking the whole required `Authenticated` frame.
+    for (field, value) in [
+        ("per_minute", u32::MAX as u64 + 1),
+        ("per_hour", 5_000_000_000),
+        ("per_day", u64::MAX),
+    ] {
+        let limits = [
+            ("per_minute", if field == "per_minute" { value } else { 1 }),
+            ("per_hour", if field == "per_hour" { value } else { 2 }),
+            ("per_day", if field == "per_day" { value } else { 3 }),
+        ]
+        .map(|(name, limit)| format!(r#""{name}":{limit}"#))
+        .join(",");
+        let json = format!(
+            r#"{{"type":"Authenticated","data":{{"app_name":"app","rate_limits":{{{limits}}}}}}}"#
+        );
+        let ServerMessage::Authenticated { rate_limits, .. } =
+            serde_json::from_str(&json).expect("unbounded rate-limit integers must decode")
+        else {
+            panic!("expected Authenticated");
+        };
+        let decoded = match field {
+            "per_minute" => rate_limits.per_minute,
+            "per_hour" => rate_limits.per_hour,
+            _ => rate_limits.per_day,
+        };
+        assert_eq!(decoded, value, "{field} must round-trip {value}");
+    }
+}
+
+#[test]
 fn fixture_room_joined_from_server() {
     let room_id = uuid::Uuid::new_v4();
     let player_id = uuid::Uuid::new_v4();

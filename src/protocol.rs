@@ -403,11 +403,15 @@ pub struct PeerConnectionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitInfo {
     /// Requests allowed per minute.
-    pub per_minute: u32,
+    ///
+    /// The protocol authority leaves these limits unbounded integers, so they
+    /// are `u64`: a hostile or absurd `Authenticated` rate-limit value must
+    /// not be able to break authentication.
+    pub per_minute: u64,
     /// Requests allowed per hour.
-    pub per_hour: u32,
+    pub per_hour: u64,
     /// Requests allowed per day.
-    pub per_day: u32,
+    pub per_day: u64,
 }
 
 /// Describes negotiated protocol capabilities for a specific SDK.

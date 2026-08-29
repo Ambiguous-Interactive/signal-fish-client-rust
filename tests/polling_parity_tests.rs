@@ -32,11 +32,11 @@ use signal_fish_client::polling_client::{
 };
 use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, DeliveryClass, DeliveryCountersByClass, DeliveryGap,
-    DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, LatestDeliveryCounters, LobbyState,
-    PlayerId, PlayerInfo, ProtocolInfoPayload, ReconnectedPayload, ReliableDeliveryCounters,
-    ReplayStatus, RoomJoinedPayload, RoomOperationRequest, RoomOperationResult, SenderWatermark,
-    ServerMessage, SpectatorJoinedPayload, Topology, TransportKind, V2BinaryGameDataFrame,
-    V3BinaryGameDataFrame,
+    DeliveryGapReason, DeliveryReportPayload, GameDataEncoding, IceServer, LatestDeliveryCounters,
+    LobbyState, PlayerId, PlayerInfo, ProtocolInfoPayload, ReconnectedPayload,
+    ReliableDeliveryCounters, ReplayStatus, RoomJoinedPayload, RoomOperationRequest,
+    RoomOperationResult, SenderWatermark, ServerMessage, SpectatorJoinedPayload, Topology,
+    TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{ClientStats, ErrorCode, ProtocolViolationPolicy, RoomRole};
@@ -2880,6 +2880,25 @@ fn finalized_v2_room_frame() -> TransportFrame {
     })))
 }
 
+/// A v2 room baseline that a nonconforming server decorated with v3-only
+/// fields (the schema's v2 branch forbids both).
+fn v2_room_frame_with_v3_metadata(
+    reconnection_token: Option<String>,
+    ice_servers: Vec<IceServer>,
+) -> TransportFrame {
+    let mut message = match finalized_v2_room_frame() {
+        TransportFrame::Text(message) => serde_json::from_str::<ServerMessage>(&message)
+            .expect("v2 room fixture must round-trip"),
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let ServerMessage::RoomJoined(payload) = &mut message else {
+        unreachable!("v2 room fixture is a RoomJoined")
+    };
+    payload.reconnection_token = reconnection_token;
+    payload.ice_servers = ice_servers;
+    text_server_frame(message)
+}
+
 fn spectator_accountability_prefix(player_id: PlayerId) -> Vec<TransportFrame> {
     let spectator_joined = ServerMessage::SpectatorJoined(Box::new(SpectatorJoinedPayload {
         room_id: uuid::Uuid::from_u128(201),
@@ -3207,6 +3226,44 @@ async fn delayed_duplicate_exit_does_not_consume_rejoin_fence_in_either_driver()
 }
 
 #[tokio::test]
+async fn spectators_receive_lobby_and_game_starting_events() {
+    // Spectator membership passes the same lifecycle gate as players, so both
+    // lobby-machinery events must be delivered to a spectator on both drivers.
+    let frames = spectator_accountability_prefix(uuid::Uuid::from_u128(365))
+        .into_iter()
+        .chain([
+            text_server_frame(ServerMessage::LobbyStateChanged {
+                lobby_state: LobbyState::Lobby,
+                ready_players: vec![uuid::Uuid::from_u128(365)],
+                all_ready: false,
+            }),
+            text_server_frame(ServerMessage::GameStarting {
+                peer_connections: vec![],
+            }),
+        ])
+        .collect();
+    let events = assert_frame_trace_parity(frames, SignalFishConfig::new("app").enable_v3()).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("LobbyStateChanged|")),
+        "the spectator must receive LobbyStateChanged: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("GameStarting|")),
+        "the spectator must receive GameStarting: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.starts_with("ProtocolViolation")),
+        "spectator receipt of both events must not violate lifecycle: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn authoritative_spectator_exit_absorbs_overtaken_leave_with_driver_parity() {
     let mut frames = spectator_accountability_prefix(uuid::Uuid::from_u128(365));
     frames.push(text_server_frame(ServerMessage::SpectatorLeft {
@@ -3395,6 +3452,55 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
             "PlayerLeft",
         ),
         (
+            "lobby-pre-room",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                text_server_frame(ServerMessage::LobbyStateChanged {
+                    lobby_state: LobbyState::Lobby,
+                    ready_players: vec![],
+                    all_ready: false,
+                }),
+            ],
+            "LobbyStateChanged",
+        ),
+        (
+            "game-starting-pre-room",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                text_server_frame(ServerMessage::GameStarting {
+                    peer_connections: vec![],
+                }),
+            ],
+            "GameStarting",
+        ),
+        (
+            "v2-room-token",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V2.into()),
+                v2_room_frame_with_v3_metadata(Some("v2-must-not-carry-tokens".into()), vec![]),
+            ],
+            "RoomJoined",
+        ),
+        (
+            "v2-room-ice-servers",
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V2.into()),
+                v2_room_frame_with_v3_metadata(
+                    None,
+                    vec![IceServer {
+                        urls: vec!["stun:stun.l.google.com:19302".into()],
+                        username: None,
+                        credential: None,
+                    }],
+                ),
+            ],
+            "RoomJoined",
+        ),
+        (
             "delivery-report-pre-room",
             vec![
                 TransportFrame::Text(AUTH.into()),
@@ -3432,6 +3538,36 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
                 .chain(std::iter::once(mixed_coalesced_unsupported_report(peer)))
                 .collect(),
             "DeliveryReport",
+        ),
+        (
+            "lobby-post-leave",
+            binary_accountability_prefix(peer)
+                .iter()
+                .cloned()
+                .chain(std::iter::once(text_server_frame(ServerMessage::RoomLeft)))
+                .chain(std::iter::once(text_server_frame(
+                    ServerMessage::LobbyStateChanged {
+                        lobby_state: LobbyState::Lobby,
+                        ready_players: vec![],
+                        all_ready: false,
+                    },
+                )))
+                .collect(),
+            "LobbyStateChanged",
+        ),
+        (
+            "game-starting-post-leave",
+            binary_accountability_prefix(peer)
+                .iter()
+                .cloned()
+                .chain(std::iter::once(text_server_frame(ServerMessage::RoomLeft)))
+                .chain(std::iter::once(text_server_frame(
+                    ServerMessage::GameStarting {
+                        peer_connections: vec![],
+                    },
+                )))
+                .collect(),
+            "GameStarting",
         ),
         (
             "noncanonical-plan",

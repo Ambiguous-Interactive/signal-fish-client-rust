@@ -1391,6 +1391,17 @@ impl ClientCore {
                     PendingRoomOperation::JoinPlayer,
                     "RoomJoined",
                 )?;
+                if self
+                    .snapshot
+                    .negotiated_protocol_version
+                    .is_none_or(|version| version < 3)
+                    && (payload.reconnection_token.is_some() || !payload.ice_servers.is_empty())
+                {
+                    return Err(
+                        "lifecycle violation: v2 RoomJoined exposed v3 token or ICE-server metadata"
+                            .into(),
+                    );
+                }
                 validate_local_player_snapshot(
                     payload.player_id,
                     payload.is_authority,
@@ -2720,6 +2731,9 @@ mod tests {
             player.epoch = None;
             player.seq = None;
         }
+        // The v2 dialect carries no v3-only room metadata.
+        payload.reconnection_token = None;
+        payload.ice_servers = Vec::new();
         ServerMessage::RoomJoined(payload)
     }
 
@@ -3187,7 +3201,7 @@ mod tests {
         let outcome = process(
             &mut legacy,
             ServerMessage::RoomJoined(roster_duplicate_room_joined_payload(room_joined_payload(
-                room_joined(),
+                room_joined_v2(),
             ))),
         );
         assert!(matches!(

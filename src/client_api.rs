@@ -36,6 +36,9 @@ pub trait SignalFishClientApi {
     /// Send opaque binary game data.
     fn send_binary_game_data(&mut self, payload: Vec<u8>) -> Result<()>;
     /// Mark the local player ready.
+    ///
+    /// The wire `PlayerReady` message toggles readiness: call exactly once
+    /// per room membership, since a repeated call un-readies the player.
     fn set_ready(&mut self) -> Result<()>;
     /// Request the protocol-v2 game start.
     fn start_game(&mut self) -> Result<()>;

@@ -103,7 +103,8 @@ silently dropping events.
 
 Most games continue with these events and commands:
 
-1. On `RoomJoined`, call `set_ready()` when the local player is ready.
+1. On `RoomJoined`, call `set_ready()` once when the local player is ready
+   (the wire message toggles readiness, so a second call would un-ready you).
 2. Observe `LobbyStateChanged` and authority events.
 3. Call `start_game()` once the server's room rules allow it.
 4. Exchange JSON game data after `GameStarting`. Binary frames require

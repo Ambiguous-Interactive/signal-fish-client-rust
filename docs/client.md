@@ -235,7 +235,9 @@ The server will broadcast a player-left event to remaining room members.
 
 #### `set_ready`
 
-Signal readiness to start the game in the lobby.
+Signal readiness to start the game in the lobby. Each call **toggles**
+readiness, so call it once per room membership — a repeated call flips the
+player back to not-ready.
 
 ```rust,ignore
 fn set_ready(&mut self) -> Result<()>
@@ -861,7 +863,7 @@ configured capacity.
 |---|---|
 | `join_room(params: JoinRoomParams)` | Join or create a room. |
 | `leave_room()` | Leave the current room. |
-| `set_ready()` | Signal readiness in the lobby; this does not start the game. |
+| `set_ready()` | Signal readiness in the lobby; this does not start the game. Each call **toggles** readiness, so call it once per room membership. |
 | `start_game()` | Explicitly request game start after all players are ready. |
 | `send_game_data(data: serde_json::Value)` | Send protocol-reliable JSON game data. |
 | `send_game_data_with_delivery(data, delivery)` | Select a protocol-v3 JSON delivery class. |
