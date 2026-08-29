@@ -340,6 +340,15 @@ The data is forwarded to all other players (and spectators) in the room.
 command queue is full it fails fast with
 `SignalFishError::SendBufferFull` — the message is not queued.
 
+JSON game data is bounded at **128 nested containers** (arrays/objects),
+matching `serde_json`'s own deserialization recursion limit, so every
+payload the client could receive is also sendable. A deeper payload is
+refused at the call site with `SignalFishError::PayloadTooDeep` instead of
+being serialized recursively on a driver thread, where a sufficiently deep
+value would abort the whole process with a stack overflow. Flatten deeply
+nested payloads, or send compact binary game data
+(`send_binary_game_data`, protocol v3).
+
 ---
 
 #### `send_game_data_reliable`
@@ -362,8 +371,9 @@ instead of failing fast with `SendBufferFull`, it pauses until the transport
 drains a slot, pacing the caller to actual transport throughput. This is the
 recommended way to stream high-rate payloads (rollback input packets, state
 sync) without guessing at sleep durations. It returns the same membership
-errors as [`send_game_data`](#send_game_data) — checked synchronously before
-it waits — plus `NotConnected` if the transport closes while waiting.
+and payload-shape errors as [`send_game_data`](#send_game_data) — including
+`SignalFishError::PayloadTooDeep`, checked synchronously before it waits —
+plus `NotConnected` if the transport closes while waiting.
 
 !!! warning "Keep draining events"
     The command queue only drains while the transport loop runs, and the
@@ -402,7 +412,13 @@ client.send_game_data_with_delivery(
 return `ProtocolUnsupported`. The async
 `send_game_data_with_delivery_reliable` counterpart waits for command-queue
 capacity; “reliable” in that method name describes local queue admission, not
-the selected server delivery class.
+the selected server delivery class. The 128-container nesting bound applies
+to every JSON delivery class equally.
+
+!!! note "Cost of the depth check"
+    The bound is enforced by a fast, allocation-free walk of the payload on
+    the calling thread before queuing — no wire bytes, allocation counts,
+    or pinned performance ledgers change.
 
 #### Binary game data (protocol v3)
 

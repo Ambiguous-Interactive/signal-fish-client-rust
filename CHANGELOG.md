@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed to decode the entire required `Authenticated` frame, silently
   preventing authentication. Update any code that assigned these fields
   with a literal or cast that assumed `u32`.
+- **Breaking:** the exhaustive `SignalFishError` enum gains
+  `PayloadTooDeep { max_depth: usize }`, so exhaustive matches must add an
+  arm. Caller-supplied JSON payloads nested deeper than 128 containers are
+  now refused at the call site (see the Fixed entry below).
 - The Godot adapter's `watermark_hits` and `backend_capacity_hits`
   transport diagnostics now count each deferred send once, instead of once
   per poll attempt that re-observed the same parked frame — so a frame held
@@ -25,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deeply nested caller-supplied JSON payloads — game data, raw WebRTC
+  signals (`send_raw_signal`), and custom connection info — whose container
+  nesting exceeds 128 levels are now refused at the call site with the new
+  `SignalFishError::PayloadTooDeep` error. Such a payload was previously
+  serialized recursively on a driver thread, where a sufficiently deep
+  value aborts the whole process with a stack overflow — after the send
+  call had already reported success (the async driver serializes on a
+  tokio worker thread the application does not own). The bound matches
+  `serde_json`'s own deserialization recursion limit, so every payload the
+  client could receive is also sendable; flatten deeply nested payloads or
+  send binary game data.
 - `MeshSession` now ignores `NewPeer` directives while the selected
   transport is not WebRTC — before any plan, and on relay plans. The
   protocol authority scopes `NewPeer` to WebRTC peer directives, so a
@@ -82,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the player. Both drivers' docs, the client/getting-started/protocol
   guides, and the lobby example now say to call it exactly once per room
   membership.
+- Corrected additional published documentation claims: `DecodeFailed`'s
+  `message_type: None` case covers frames too large for tag recovery
+  (>512 bytes); `with_max_players` documents its `u8` saturation; the mesh
+  guide and crate feature table state that `MeshController` requires the
+  `tokio-runtime` feature; the WASM guide warns that pthreads is
+  single-thread-only and that outbound pacing is not surfaced; and the
+  token-binding guide classifies transport errors raised inside the
+  challenge window.
 
 ## [0.11.0] - 2026-08-28
 

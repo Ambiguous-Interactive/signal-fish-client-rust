@@ -23,8 +23,8 @@ use signal_fish_client::protocol::{
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
-    ErrorCode, JoinRoomParams, PeerSignal, SignalFishClient, SignalFishConfig, SignalFishError,
-    SignalFishEvent, Transport,
+    ErrorCode, GameDataDelivery, JoinRoomParams, PeerSignal, SignalFishClient, SignalFishConfig,
+    SignalFishError, SignalFishEvent, Transport,
 };
 
 type StartedClient = (
@@ -1214,6 +1214,132 @@ async fn send_game_data_produces_correct_json() {
         assert!(class.is_none());
         assert!(key.is_none());
     }
+
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn game_data_container_depth_is_bounded_at_admission() {
+    fn nested_chain(depth: u32) -> serde_json::Value {
+        let mut value = serde_json::json!(depth);
+        for _ in 0..depth {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        value
+    }
+
+    let (mut client, mut events, sent, _closed) = start_client(player_room_script([])).await;
+    drain_player_room(&mut events).await;
+    wait_for_sent_len(&sent, 2).await; // Authenticate + JoinRoom
+    sent.lock().unwrap().clear();
+
+    // Refusals precede queuing: nothing reaches the transport and the
+    // client keeps working.
+    for depth in [129u32, 1_000] {
+        let payload = nested_chain(depth);
+        let result = client.send_game_data(payload);
+        assert!(
+            matches!(
+                result,
+                Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+            ),
+            "depth {depth} must be refused at admission"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "refused commands must never reach the transport"
+    );
+
+    // Exactly at the bound is admitted and reaches the wire intact.
+    let payload = nested_chain(128);
+    client
+        .send_game_data(payload.clone())
+        .expect("128-deep payload is at the bound");
+    wait_for_sent_len(&sent, 1).await;
+    let message = sent.lock().unwrap()[0].clone();
+    // Compare against a freshly serialized expected frame instead of
+    // re-parsing: the envelope plus 128 nested containers sits beyond
+    // serde_json's own 128-level deserialization recursion limit.
+    let expected = serde_json::to_string(&ClientMessage::GameData {
+        data: payload,
+        class: None,
+        key: None,
+    })
+    .expect("expected frame must serialize");
+    assert_eq!(message, expected);
+
+    // Membership precedence: a deep payload before joining is NotInRoom.
+    let (mut unjoined, mut unjoined_events, _sent, _closed) =
+        start_client(vec![Some(Ok(authenticated_json()))]).await;
+    drain_until_authenticated(&mut unjoined_events).await;
+    let result = unjoined.send_game_data(nested_chain(129));
+    assert!(matches!(result, Err(SignalFishError::NotInRoom)));
+    unjoined.shutdown().await;
+
+    // Protocol precedence: the v3 delivery gate precedes payload shape.
+    let result =
+        client.send_game_data_with_delivery(nested_chain(129), GameDataDelivery::Latest { key: 1 });
+    assert!(matches!(
+        result,
+        Err(SignalFishError::ProtocolUnsupported { .. })
+    ));
+
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn raw_signal_and_custom_connection_info_depth_are_bounded() {
+    fn nested_chain(depth: u32) -> serde_json::Value {
+        let mut value = serde_json::json!(depth);
+        for _ in 0..depth {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        value
+    }
+
+    let peer = uuid::Uuid::from_u128(77);
+    let (mut client, mut events, sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(Some(3)))),
+        Some(Ok(v3_room_baseline_json(peer))),
+        Some(Ok(session_plan_json(peer, true))),
+    ])
+    .await;
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    while !matches!(
+        events.recv().await.expect("SessionPlan event"),
+        SignalFishEvent::SessionPlan { .. }
+    ) {}
+    wait_for_sent_len(&sent, 2).await; // Authenticate + JoinRoom
+    sent.lock().unwrap().clear();
+
+    // Deep raw signals and deep custom connection info are refused at
+    // admission; nothing reaches the transport.
+    let deep = nested_chain(129);
+    assert!(matches!(
+        client.send_raw_signal(peer, deep.clone()),
+        Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+    ));
+    assert!(matches!(
+        client.provide_connection_info(ConnectionInfo::Custom { data: deep }),
+        Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(sent.lock().unwrap().is_empty());
+
+    // Shallow payloads on both paths stay admitted.
+    client
+        .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
+        .expect("shallow raw signal must be admitted");
+    client
+        .provide_connection_info(ConnectionInfo::Custom {
+            data: serde_json::json!({"link": true}),
+        })
+        .expect("shallow custom connection info must be admitted");
+    wait_for_sent_len(&sent, 2).await;
 
     client.shutdown().await;
 }

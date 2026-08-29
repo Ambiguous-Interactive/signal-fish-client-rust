@@ -1013,14 +1013,21 @@ impl SignalFishClient {
     /// floats: `NaN`/`±Infinity` become `null` at construction, so peers
     /// receive `null` where a non-finite value was intended.
     ///
+    /// Container nesting is bounded at 128 levels (serde_json's own
+    /// deserialization recursion limit), so a pathologically deep payload is
+    /// refused here instead of aborting the process with a stack overflow on
+    /// the driver thread.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a spectator,
     /// [`SignalFishError::RoomOperationPending`] during a room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
-    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
-    /// is full (the message is **not** queued; nothing is silently dropped).
+    /// [`SignalFishError::PayloadTooDeep`] for a payload nested deeper than
+    /// 128 containers, or [`SignalFishError::SendBufferFull`] if the outgoing
+    /// command queue is full (the message is **not** queued; nothing is
+    /// silently dropped).
     pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
         self.send_operation(ClientOperation::GameData(data, GameDataDelivery::Reliable))
     }
@@ -1030,7 +1037,9 @@ impl SignalFishClient {
     /// # Errors
     ///
     /// Returns the membership/queue errors documented by
-    /// [`send_game_data`](Self::send_game_data), or
+    /// [`send_game_data`](Self::send_game_data),
+    /// [`SignalFishError::PayloadTooDeep`] for a payload nested deeper than
+    /// 128 containers, or
     /// [`SignalFishError::ProtocolUnsupported`] for a non-reliable delivery
     /// class before protocol v3 is negotiated.
     pub fn send_game_data_with_delivery(
@@ -1078,9 +1087,11 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns the membership errors documented by
-    /// [`send_game_data`](Self::send_game_data), or
-    /// [`SignalFishError::NotConnected`] if the transport closes while waiting.
+    /// Returns the membership and payload-shape errors documented by
+    /// [`send_game_data`](Self::send_game_data) (including
+    /// [`SignalFishError::PayloadTooDeep`], checked synchronously before
+    /// waiting), or [`SignalFishError::NotConnected`] if the transport
+    /// closes while waiting.
     pub async fn send_game_data_reliable(&self, data: serde_json::Value) -> Result<()> {
         self.send_operation_reliable(ClientOperation::GameData(data, GameDataDelivery::Reliable))
             .await
@@ -1090,8 +1101,9 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// Returns the same membership and protocol errors as
-    /// [`send_game_data_with_delivery`](Self::send_game_data_with_delivery), or
+    /// Returns the same membership, protocol, and payload-shape errors as
+    /// [`send_game_data_with_delivery`](Self::send_game_data_with_delivery)
+    /// (including [`SignalFishError::PayloadTooDeep`]), or
     /// [`SignalFishError::NotConnected`] if the transport closes while waiting.
     pub async fn send_game_data_with_delivery_reliable(
         &self,
@@ -1169,8 +1181,11 @@ impl SignalFishClient {
     /// [`SignalFishError::WrongRoomRole`], or
     /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
-    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
-    /// is full (the message is **not** queued; nothing is silently dropped).
+    /// [`SignalFishError::PayloadTooDeep`] when
+    /// [`ConnectionInfo::Custom`] carries a payload nested deeper than 128
+    /// containers, or [`SignalFishError::SendBufferFull`] if the outgoing
+    /// command queue is full (the message is **not** queued; nothing is
+    /// silently dropped).
     pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
         self.send_operation(ClientOperation::ProvideConnectionInfo(connection_info))
     }
@@ -1400,10 +1415,16 @@ impl SignalFishClient {
     ///
     /// Like the typed helpers, this is still gated on a negotiated v3 session —
     /// the escape hatch bypasses the *typing*, not the negotiation guard.
+    /// Container nesting is bounded at 128 levels (serde_json's own
+    /// deserialization recursion limit), so a pathologically deep signal is
+    /// refused here instead of aborting the process with a stack overflow on
+    /// the driver thread.
     ///
     /// # Errors
     ///
-    /// See [`send_signal`](Self::send_signal).
+    /// See [`send_signal`](Self::send_signal), or
+    /// [`SignalFishError::PayloadTooDeep`] for a signal nested deeper than
+    /// 128 containers.
     pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
         self.send_operation(ClientOperation::RawSignal(
             to,
@@ -1416,7 +1437,7 @@ impl SignalFishClient {
     ///
     /// # Errors
     ///
-    /// See [`send_signal_for_generation`](Self::send_signal_for_generation).
+    /// See [`send_raw_signal`](Self::send_raw_signal).
     pub fn send_raw_signal_for_generation(
         &mut self,
         to: PlayerId,

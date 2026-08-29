@@ -131,8 +131,13 @@ pub struct PollingStats {
     /// Driver cycles that stopped because the receive frame or byte budget
     /// was exhausted (caller polls and close-time drain steps).
     pub receive_budget_exhaustions: u64,
-    /// Commands abandoned by close policy or close-deadline expiry, plus
-    /// dequeue-time serialization failures.
+    /// Commands abandoned by close policy, close-deadline expiry, a send
+    /// failure during close flush, a server- or transport-initiated
+    /// disconnect while work is queued, or dequeue-time serialization
+    /// failures. A frame already counted in
+    /// [`ClientStats::game_data_sent`](crate::ClientStats::game_data_sent)
+    /// at transfer can also be counted here if teardown discards it: the
+    /// counters measure acceptance and teardown independently.
     pub abandoned_commands: u64,
     /// Flush/close lifecycles aborted after the configured deadline.
     pub close_deadline_expirations: u64,
@@ -507,14 +512,21 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// floats: `NaN`/`±Infinity` become `null` at construction, so peers
     /// receive `null` where a non-finite value was intended.
     ///
+    /// Container nesting is bounded at 128 levels (serde_json's own
+    /// deserialization recursion limit), so a pathologically deep payload is
+    /// refused here instead of aborting the process with a stack overflow
+    /// during serialization.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`] outside a room,
     /// [`SignalFishError::WrongRoomRole`] as a spectator,
     /// [`SignalFishError::RoomOperationPending`] during a room transition,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
-    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
-    /// is full (the message is **not** queued; nothing is silently dropped).
+    /// [`SignalFishError::PayloadTooDeep`] for a payload nested deeper than
+    /// 128 containers, or [`SignalFishError::SendBufferFull`] if the outgoing
+    /// command queue is full (the message is **not** queued; nothing is
+    /// silently dropped).
     pub fn send_game_data(&mut self, data: serde_json::Value) -> Result<()> {
         self.queue_operation(ClientOperation::GameData(data, GameDataDelivery::Reliable))
     }
@@ -524,7 +536,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// # Errors
     ///
     /// Returns the membership/queue errors documented by
-    /// [`send_game_data`](Self::send_game_data), or
+    /// [`send_game_data`](Self::send_game_data),
+    /// [`SignalFishError::PayloadTooDeep`] for a payload nested deeper than
+    /// 128 containers, or
     /// [`SignalFishError::ProtocolUnsupported`] for a non-reliable delivery
     /// class before protocol v3 is negotiated.
     pub fn send_game_data_with_delivery(
@@ -590,8 +604,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// [`SignalFishError::WrongRoomRole`], or
     /// [`SignalFishError::RoomOperationPending`] for invalid membership state,
     /// [`SignalFishError::NotConnected`] if the transport has closed,
-    /// or [`SignalFishError::SendBufferFull`] if the outgoing command queue
-    /// is full (the message is **not** queued; nothing is silently dropped).
+    /// [`SignalFishError::PayloadTooDeep`] when
+    /// [`ConnectionInfo::Custom`] carries a payload nested deeper than 128
+    /// containers, or [`SignalFishError::SendBufferFull`] if the outgoing
+    /// command queue is full (the message is **not** queued; nothing is
+    /// silently dropped).
     pub fn provide_connection_info(&mut self, connection_info: ConnectionInfo) -> Result<()> {
         self.queue_operation(ClientOperation::ProvideConnectionInfo(connection_info))
     }
@@ -764,11 +781,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// Raw escape hatch: relay an un-modeled signal shape. **Protocol v3 only.**
     ///
     /// Still gated on a negotiated v3 session — the escape hatch bypasses the
-    /// typing, not the negotiation guard.
+    /// typing, not the negotiation guard. Container nesting is bounded at 128
+    /// levels, so a pathologically deep signal is refused here instead of
+    /// aborting the process with a stack overflow during serialization.
     ///
     /// # Errors
     ///
-    /// See [`send_signal`](Self::send_signal).
+    /// See [`send_signal`](Self::send_signal), or
+    /// [`SignalFishError::PayloadTooDeep`] for a signal nested deeper than
+    /// 128 containers.
     pub fn send_raw_signal(&mut self, to: PlayerId, signal: serde_json::Value) -> Result<()> {
         self.queue_operation(ClientOperation::RawSignal(
             to,
@@ -781,7 +802,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// # Errors
     ///
-    /// See [`send_signal_for_generation`](Self::send_signal_for_generation).
+    /// See [`send_raw_signal`](Self::send_raw_signal).
     pub fn send_raw_signal_for_generation(
         &mut self,
         to: PlayerId,
@@ -3880,6 +3901,112 @@ mod tests {
             serde_json::from_str(last_sent).expect("sent message must be valid JSON");
         assert_eq!(sent_json["type"], "GameData");
         assert_eq!(sent_json["data"]["data"]["score"], 42);
+    }
+
+    /// A chain of `depth` nested arrays around one scalar.
+    fn nested_chain(depth: u32) -> serde_json::Value {
+        let mut value = serde_json::json!(depth);
+        for _ in 0..depth {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        value
+    }
+
+    #[test]
+    fn game_data_container_depth_is_bounded_at_admission() {
+        let transport = MockTransport::new();
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        prime_room(&mut client);
+        let _ = client.poll(); // flush auth
+        let primed_sent = client.transport.sent.len();
+
+        // Refusals precede queuing: the sent log stays untouched and the
+        // client keeps working.
+        for depth in [129u32, 1_000] {
+            let payload = nested_chain(depth);
+            let result = client.send_game_data(payload);
+            assert!(
+                matches!(
+                    result,
+                    Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+                ),
+                "depth {depth} must be refused at admission"
+            );
+        }
+        let _ = client.poll();
+        assert_eq!(client.transport.sent.len(), primed_sent);
+
+        // Exactly at the bound is admitted and reaches the wire intact.
+        let payload = nested_chain(128);
+        client
+            .send_game_data(payload.clone())
+            .expect("128-deep payload is at the bound");
+        let _ = client.poll();
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        // Compare against a freshly serialized expected frame instead of
+        // re-parsing: the envelope plus 128 nested containers sits beyond
+        // serde_json's own 128-level deserialization recursion limit.
+        let expected = serde_json::to_string(&crate::protocol::ClientMessage::GameData {
+            data: payload,
+            class: None,
+            key: None,
+        })
+        .expect("expected frame must serialize");
+        assert_eq!(last_sent, &expected);
+
+        // Membership precedence: a deep payload outside a room is refused as
+        // NotInRoom, not as a payload-shape error.
+        let mut fresh = SignalFishPollingClient::new(MockTransport::new(), default_config());
+        prime_connection(&mut fresh);
+        let result = fresh.send_game_data(nested_chain(129));
+        assert!(matches!(result, Err(SignalFishError::NotInRoom)));
+    }
+
+    #[test]
+    fn raw_signal_and_custom_connection_info_depth_are_bounded() {
+        let peer: PlayerId = PEER_UUID.parse().unwrap();
+        let transport = MockTransport::new().with_incoming(finalized_v3_room_incoming(
+            peer,
+            [session_plan_json(peer, Some(uuid::Uuid::from_u128(12)))],
+        ));
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        admit_player_join(&mut client);
+        let _ = client.poll();
+
+        let deep = nested_chain(129);
+        let result = client.send_raw_signal(peer, deep.clone());
+        assert!(matches!(
+            result,
+            Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+        ));
+        let result = client.provide_connection_info(ConnectionInfo::Custom { data: deep });
+        assert!(matches!(
+            result,
+            Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+        ));
+
+        // Shallow payloads on both paths stay admitted and reach the wire.
+        client
+            .send_raw_signal(peer, serde_json::json!({ "Renegotiate": true }))
+            .expect("shallow raw signal must be admitted");
+        client
+            .provide_connection_info(ConnectionInfo::Custom {
+                data: serde_json::json!({"link": true}),
+            })
+            .expect("shallow custom connection info must be admitted");
+        let _ = client.poll();
+        let sent = last_sent(&client);
+        assert!(sent.iter().any(|m| matches!(
+            m,
+            ClientMessage::Signal { signal, .. } if signal == &serde_json::json!({ "Renegotiate": true })
+        )));
+        assert!(sent
+            .iter()
+            .any(|m| matches!(m, ClientMessage::ProvideConnectionInfo { .. })));
     }
 
     #[test]
