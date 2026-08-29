@@ -98,6 +98,14 @@ impl InboundQueueBound {
         }
     }
 
+    /// Permanently fuses the queue without an over-limit refusal, for
+    /// terminal corruption detected after a frame was admitted (the invalid
+    /// UTF-8 text path). Later input reports
+    /// [`QueueRefusal::AlreadyFused`] exactly like an over-limit fusion.
+    pub(super) fn fuse(&mut self) {
+        self.fused = true;
+    }
+
     /// Admits one frame of `frame_bytes` charged units, recording them
     /// against the buffered total on success. Callers must pass
     /// [`charged_frame_bytes`] so empty payloads still reserve their queuing
@@ -220,6 +228,22 @@ mod tests {
             Err(QueueRefusal::AlreadyFused),
             "draining must not clear fusion"
         );
+    }
+
+    #[test]
+    fn explicit_fusion_behaves_like_an_over_limit_fusion() {
+        // The invalid-UTF-8 path fuses after a frame was admitted; later
+        // input must be refused at the callback exactly like flood traffic.
+        let mut bound = InboundQueueBound::new(Some(LIMIT));
+        bound.admit(charged_frame_bytes(64)).unwrap();
+        bound.record_drained(charged_frame_bytes(64));
+        bound.fuse();
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::AlreadyFused)
+        );
+        bound.record_drained(usize::MAX);
+        assert_eq!(bound.admit(1), Err(QueueRefusal::AlreadyFused));
     }
 
     #[test]

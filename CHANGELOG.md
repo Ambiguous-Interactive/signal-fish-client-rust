@@ -25,6 +25,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Emscripten WebSocket transport no longer acknowledges sends on a
+  connection the browser has already closed. The browser's `send()` on a
+  closing/closed WebSocket silently discards the data while the JS shim
+  reports success, so a full polling tick's queued commands could be lost
+  and counted as delivered; each send now checks the live
+  `WebSocket.readyState` and fails terminally instead, leaving the frame
+  to the driver's teardown.
+- The Emscripten WebSocket transport now fuses the connection with a
+  terminal receive error when a text frame's payload is not valid UTF-8.
+  Such frames were previously dropped silently, contradicting the
+  transport contract and diverging from the native and Godot transports,
+  which surface corruption instead of omitting frames.
+- The Emscripten WebSocket transport now preserves structured close
+  metadata when the browser queues `onclose` behind `onerror` (the common
+  failed-handshake shape): `close_info()` reports the close code, reason,
+  and cleanliness instead of staying empty.
+- WebSocket connect URLs whose scheme is not exactly lowercase `ws://` or
+  `wss://` (for example `http://`, `WS://`) are now rejected with
+  `InvalidConfig` before any network I/O. Previously the classification
+  depended on network reachability — an uppercase or foreign scheme with an
+  explicit port dialed first and could report either `InvalidConfig` (on a
+  reachable endpoint) or `Io` (on a closed one) — contradicting the
+  documented value-determined error contract.
+- The Godot adapter now selects Godot's web capacity boundary (refusal at
+  or above the outbound buffer size) for every wasm target family member,
+  not just `wasm32-unknown-emscripten`, so `wasm32-unknown-unknown` web
+  builds classify an exactly-buffer-sized frame correctly instead of
+  admitting it for the engine to refuse.
+- Corrected the Godot adapter's inbound-limit documentation: at Godot's
+  inbound bounds, the web backend silently drops newly arriving frames
+  while the native backend stops reading and backpressures (delivery
+  stalls until the application drains queued packets). Previously both
+  platforms were described as silently dropping.
 - The async driver's `transport_diagnostics()` sample now refreshes during
   the post-send-failure terminal drain, as its per-receive-poll contract
   documents, instead of freezing at the last pre-teardown value.

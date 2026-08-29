@@ -67,10 +67,11 @@ The `expect` keeps the example short; surface the error to your UI and retry
 instead of panicking in production code.
 
 SDK-created peers raise Godot's inbound buffer to 8 MiB and its independent
-queued-packet cap from 4,096 to 65,536 before connecting. Godot's native and web
-backends can silently drop newly arriving frames when either limit fills, so
-applications with unusually large bursts of tiny frames should construct and
-configure their own peer. Outbound keeps Godot's legacy 65,535-byte default:
-keep single game payloads under ~64 KiB, or construct your own peer with a
-raised outbound buffer and wrap it with
+queued-packet cap from 4,096 to 65,536 before connecting. At that bound the
+web backend silently drops newly arriving frames while the native backend
+stops reading (delivery stalls until the application drains queued packets),
+so applications with unusually large bursts of tiny frames should construct
+and configure their own peer. Outbound keeps Godot's legacy 65,535-byte
+default: keep single game payloads under ~64 KiB, or construct your own peer
+with a raised outbound buffer and wrap it with
 [`GodotWebSocketTransport::from_peer`].

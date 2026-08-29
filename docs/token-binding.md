@@ -39,7 +39,7 @@ assert_eq!(transport.token_binding_status(), TokenBindingStatus::Active);
 |---|---|
 | `Disabled` | Default. Does not offer a subprotocol and preserves the old connection path exactly. |
 | `Optional` | Offers v2. If the server completes the upgrade without selecting a subprotocol, reconnects once without the offer and reports `NotNegotiated`. It never retries an HTTP rejection, malformed challenge, unexpected selection, network error, or TLS failure. |
-| `Required` | Fails with a typed `SignalFishError::TokenBinding` unless the server selects v2 and sends a valid first-message challenge before the configured deadline. HTTP upgrade rejections (404, 401, 500, ...) are not negotiation outcomes and surface as `Io` carrying the underlying status, exactly like `Disabled`. |
+| `Required` | Fails with a typed `SignalFishError::TokenBinding` unless the server selects v2 and sends a valid first-message challenge before the configured deadline. HTTP upgrade rejections (404, 401, 500, ...) are not negotiation outcomes and surface as `Io` carrying the underlying status, exactly like `Disabled`; network failures inside the challenge window (an abrupt drop with no close handshake) keep the transport-error classification instead of being relabeled as negotiation outcomes. |
 
 Optional mode permits an explicit downgrade when the server accepts an
 unsigned upgrade. TLS authenticates the handshake and prevents an on-path

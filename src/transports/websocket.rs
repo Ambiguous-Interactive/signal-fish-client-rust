@@ -59,7 +59,7 @@ const DEFAULT_MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 ///
 /// `validate_request_url` classifies every client-side request-construction
 /// failure before I/O, so a `Url` error reaching this function is a
-/// defense-in-depth catch (for example an exotic scheme rejected after the
+/// defense-in-depth catch (tungstenite re-builds the request after the
 /// pre-check) and stays `InvalidConfig`: value- or build-determined, never a
 /// network outcome. Every reachable `UrlError` formats as static text (the
 /// blocking-only `UnableToConnect` that embeds the URL is unreachable on
@@ -95,9 +95,12 @@ fn map_request_config_error(error: WebSocketError) -> SignalFishError {
 /// Build the WebSocket handshake request from `url` to validate it before any
 /// network I/O, so unparsable URLs report `InvalidConfig` and post-connect
 /// `HttpFormat` server-response failures cannot be mislabeled as
-/// configuration errors. The `wss://` feature check mirrors tungstenite's
-/// lowercase-only scheme handling and moves the missing-`tls` failure before
-/// the TCP connect so the classification does not depend on network order.
+/// configuration errors. The scheme must be exactly lowercase `ws` or `wss`
+/// (mirroring tungstenite's `uri_mode`, which otherwise runs after the TCP
+/// connect): uppercase and foreign schemes are rejected here so the
+/// classification never depends on network order. The `wss://` feature check
+/// moves the missing-`tls` failure before the TCP connect for the same
+/// reason.
 fn validate_request_url(url: &str) -> Result<(), SignalFishError> {
     #[cfg(not(feature = "tls"))]
     if url.starts_with("wss://") {
@@ -107,8 +110,16 @@ fn validate_request_url(url: &str) -> Result<(), SignalFishError> {
         });
     }
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-    url.into_client_request()
+    let request = url
+        .into_client_request()
         .map_err(map_request_config_error)?;
+    let scheme = request.uri().scheme_str();
+    if !matches!(scheme, Some("ws") | Some("wss")) {
+        return Err(SignalFishError::InvalidConfig {
+            field: "url",
+            problem: "unsupported URL scheme: must be ws:// or wss://".into(),
+        });
+    }
     Ok(())
 }
 
@@ -573,6 +584,10 @@ impl WebSocketConnectOptions {
     }
 
     /// Set the deadline for receiving the negotiated server challenge.
+    ///
+    /// A zero duration is not rejected: the challenge window expires
+    /// immediately, so a selected connection fails with
+    /// `TokenBindingFailure::ChallengeTimeout` before any challenge is read.
     #[must_use]
     pub fn with_token_binding_challenge_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.token_binding_challenge_timeout = timeout;
@@ -1722,6 +1737,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_ws_schemes_are_invalid_config_regardless_of_reachability() {
+        // tungstenite's own scheme check runs after the TCP connect, so an
+        // uppercase or foreign scheme with an explicit port used to dial
+        // first: `InvalidConfig` on a reachable port but `Io` on a closed
+        // one. The pre-connect check must reject every such URL before I/O,
+        // making the classification value-determined — an unreachable port
+        // is what makes this pin red against the old behavior.
+        for url in [
+            "http://127.0.0.1:1",
+            "ftp://127.0.0.1:1",
+            "WS://127.0.0.1:1",
+            "WSS://127.0.0.1:1",
+        ] {
+            let error = WebSocketTransport::connect(url)
+                .await
+                .expect_err("only exact lowercase ws:// and wss:// are valid");
+            assert!(
+                matches!(error, SignalFishError::InvalidConfig { field: "url", .. }),
+                "{url} must be InvalidConfig, got: {error}"
+            );
+            assert!(
+                !error.to_string().contains("127.0.0.1"),
+                "scheme rejections must not echo the caller's URL: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn foreign_scheme_with_a_reachable_port_is_rejected_before_io() {
+        // Companion to `non_ws_schemes_are_invalid_config_regardless_of_reachability`:
+        // a listening port must not change the classification — and no dial
+        // may happen, which the empty listener's accept queue proves.
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("dynamic test listener binds");
+        let port = listener.local_addr().expect("bound address").port();
+        let error = WebSocketTransport::connect(&format!("http://127.0.0.1:{port}"))
+            .await
+            .expect_err("a foreign scheme is caller configuration, not a network outcome");
+        assert!(matches!(
+            error,
+            SignalFishError::InvalidConfig { field: "url", .. }
+        ));
+        listener
+            .set_nonblocking(true)
+            .expect("listener must switch to non-blocking");
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "the rejected connect must not have dialed the listener"
+        );
+    }
+
+    #[tokio::test]
     async fn connect_fails_with_unreachable_host() {
         let result = WebSocketTransport::connect("ws://127.0.0.1:1").await;
         let err = result.unwrap_err();
@@ -2512,6 +2579,112 @@ mod tests {
                 error,
                 SignalFishError::TokenBinding(actual) if actual == expected
             ));
+            finish_mock_server(server_task).await;
+        }
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn required_mode_rejects_a_foreign_subprotocol_selection() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("subprotocol listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("subprotocol listener must have an address");
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("server must accept client");
+            let _ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                move |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    response.headers_mut().insert(
+                        SEC_WEBSOCKET_PROTOCOL,
+                        tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                            "other-protocol",
+                        ),
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("server-side handshake must complete");
+        });
+        let error = WebSocketTransport::connect_with_options(
+            &format!("ws://{addr}"),
+            required_token_binding_options(),
+        )
+        .await
+        .expect_err("a selection outside the offered set must fail closed");
+        assert!(matches!(
+            error,
+            SignalFishError::TokenBinding(crate::TokenBindingFailure::UnexpectedSubprotocol)
+        ));
+        finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[tokio::test]
+    async fn required_mode_reports_missing_challenge_when_the_stream_ends_or_closes() {
+        use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+        for send_close_frame in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("challengeless listener must bind");
+            let addr = listener
+                .local_addr()
+                .expect("challengeless listener must have an address");
+            let server_task = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("server must accept client");
+                let mut ws = tokio_tungstenite::accept_hdr_async(
+                    tcp,
+                    move |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                          mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        response.headers_mut().insert(
+                            SEC_WEBSOCKET_PROTOCOL,
+                            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                            ),
+                        );
+                        Ok(response)
+                    },
+                )
+                .await
+                .expect("server-side handshake must complete");
+                if send_close_frame {
+                    ws.send(Message::Close(None))
+                        .await
+                        .expect("server must send its close frame");
+                }
+                // Without a close frame the stream is dropped at task end, so
+                // the client observes a clean EOF instead.
+            });
+            let error = WebSocketTransport::connect_with_options(
+                &format!("ws://{addr}"),
+                required_token_binding_options(),
+            )
+            .await
+            .expect_err("a selected connection with no challenge must fail closed");
+            if send_close_frame {
+                assert!(
+                    matches!(
+                        error,
+                        SignalFishError::TokenBinding(crate::TokenBindingFailure::MissingChallenge)
+                    ),
+                    "close-before-challenge must report MissingChallenge, got: {error}"
+                );
+            } else {
+                // An abrupt TCP drop inside the challenge window carries no
+                // close metadata, so it keeps the transport-receive
+                // classification instead of being relabeled.
+                assert!(
+                    matches!(error, SignalFishError::TransportReceive(_)),
+                    "an abrupt drop must stay a transport receive error, got: {error}"
+                );
+            }
             finish_mock_server(server_task).await;
         }
     }

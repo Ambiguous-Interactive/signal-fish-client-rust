@@ -254,6 +254,26 @@ where
     }
 }
 
+/// Decode a text-frame payload, surfacing corruption as a terminal receive
+/// error instead of silently omitting the frame.
+///
+/// The [`Transport`] contract requires corrupt inbound input to be surfaced
+/// rather than dropped. Engine-backed transports inherit that behavior from
+/// their engine (tungstenite fuses on protocol errors; the Godot adapter
+/// fuses on invalid UTF-8 packets); byte-oriented backends decode raw text
+/// payloads themselves and must use this helper for the same guarantee. The
+/// error message carries only the UTF-8 diagnostic, never the payload bytes.
+#[cfg(any(test, target_os = "emscripten"))]
+pub(crate) fn text_frame_from_utf8(payload: &[u8]) -> Result<String, SignalFishError> {
+    std::str::from_utf8(payload)
+        .map(str::to_owned)
+        .map_err(|error| {
+            SignalFishError::TransportReceive(
+                format!("received a text frame that is not valid UTF-8: {error}").into(),
+            )
+        })
+}
+
 /// Drive one transport send to completion from an async runtime.
 ///
 /// Test helper for transports with async-runtime tests; gated to those
@@ -291,7 +311,7 @@ mod tests {
     use std::cell::Cell;
     use std::task::Poll;
 
-    use super::{poll_accept_frame, TransportFrame};
+    use super::{poll_accept_frame, text_frame_from_utf8, TransportFrame};
     use crate::SignalFishError;
 
     #[test]
@@ -321,5 +341,26 @@ mod tests {
             Poll::Ready(Ok(()))
         ));
         assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn text_frame_from_utf8_surfaces_corruption_without_echoing_payload() {
+        assert!(matches!(
+            text_frame_from_utf8(b"hello"),
+            Ok(text) if text == "hello"
+        ));
+
+        let error = text_frame_from_utf8(&[0xFF, 0xFE, 0x53, 0x45, 0x43, 0x52, 0x45, 0x54]);
+        assert!(
+            matches!(&error, Err(SignalFishError::TransportReceive(boxed)) if {
+                let rendered = boxed.to_string();
+                rendered.contains("not valid UTF-8")
+                    && !rendered.contains("SECRET")
+                    && !rendered.contains("ff")
+                    && !rendered.contains("FF")
+            }),
+            "error must be a terminal receive error describing the corruption \
+             without echoing payload bytes: {error:?}"
+        );
     }
 }
