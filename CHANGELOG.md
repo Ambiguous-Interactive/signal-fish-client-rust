@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `SignalFishClientApi` trait's diagnostic accessors (`send_capacity`,
   `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`, matching
   the concrete drivers, so discarding them silently is a compile warning.
+- Documented the panic boundary between the SDK and custom transports: a
+  `Transport` method that panics (a contract violation — only `abort`
+  promises never to panic) now has explicit, pinned semantics. On the async
+  driver the loop task dies: the event channel closes without a
+  `Disconnected` event, queued and parked reliable sends resolve with
+  `NotConnected`, the transport's `abort` still runs, and the snapshot keeps
+  its last pre-death values until a later `shutdown()` reconciles them. On
+  the polling driver the panic propagates into the caller's thread, and
+  `close()` heals — through the close-deadline `abort` only if the violating
+  method keeps panicking.
+- Documented that a room creator joining with `supports_authority` already
+  holds authority (the server auto-assigns it), so an immediate
+  `request_authority(true)` is denied with `AuthorityConflict` — relinquish
+  first to hand authority to another player.
 
 ### Fixed
 

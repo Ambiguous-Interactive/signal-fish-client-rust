@@ -35,14 +35,16 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use rustls::pki_types::pem::PemObject as _;
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use sha2::{Digest as _, Sha256};
-use signal_fish_client::protocol::GameDataEncoding;
+use signal_fish_client::protocol::{
+    ConnectionInfo, DeliveryClass, DeliveryGapReason, GameDataEncoding, RelayTransport,
+};
 #[cfg(all(feature = "tls", feature = "token-binding", feature = "polling-client"))]
 use signal_fish_client::SignalFishPollingClient;
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use signal_fish_client::TokenBindingFailure;
 use signal_fish_client::{
-    ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
-    SignalFishEvent, SpectatorStateChangeReason, WebSocketTransport,
+    ErrorCode, GameDataDelivery, JoinRoomParams, SignalFishClient, SignalFishConfig,
+    SignalFishError, SignalFishEvent, SpectatorStateChangeReason, WebSocketTransport,
 };
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use signal_fish_client::{TokenBindingMode, TokenBindingStatus, WebSocketConnectOptions};
@@ -1993,4 +1995,339 @@ async fn e2e_server_070_spectator_live_smoke() {
     );
     s.shutdown().await;
     a.shutdown().await;
+}
+
+/// The v3 data plane against the pinned Server 0.7 authority: creator
+/// auto-authority, an explicit release/handoff, the local `AuthorityRequired`
+/// gate, `ConnectionInfo` propagation through `GameStarting`, and
+/// `Latest`-keyed coalescing as observed through `GameData` plus the
+/// accountable `DeliveryReport`. Spawn-mode only: the coalescing leg needs
+/// the server's batch window enabled, because with batching off the outbound
+/// drain may legitimately pop the first frame before the successor's enqueue
+/// wins the race — server-correct, but not the behavior this cell pins.
+#[tokio::test]
+#[ignore = "requires pinned Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN"]
+async fn e2e_server_070_authority_handoff_and_latest_delivery() {
+    let Some((guard, url)) = spawn_server(&[
+        ("SIGNAL_FISH__WEBSOCKET__ENABLE_BATCHING", "true"),
+        ("SIGNAL_FISH__WEBSOCKET__BATCH_INTERVAL_MS", "1000"),
+    ])
+    .await
+    else {
+        eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
+        return;
+    };
+    let _guard = guard;
+
+    // ── A joins first; the creator auto-holds authority ─────────────
+    let (mut a, mut a_events) =
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+    a.join_room(JoinRoomParams::new("e2e-authority-latest", "alice").with_supports_authority(true))
+        .expect("join_room");
+    let a_joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        room_code,
+        player_id: player_a,
+        is_authority: a_authority,
+        ..
+    } = a_joined
+    else {
+        unreachable!()
+    };
+    assert!(
+        a_authority,
+        "the creator must auto-hold authority (server default)"
+    );
+
+    // ── B joins by code and observes A's authority ──────────────────
+    let (mut b, mut b_events) =
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+    b.join_room(
+        JoinRoomParams::new("e2e-authority-latest", "bob")
+            .with_room_code(&room_code)
+            .with_supports_authority(true),
+    )
+    .expect("join_room by code");
+    let b_joined = wait_for_event(&mut b_events, "B RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        player_id: player_b,
+        is_authority: b_authority,
+        ..
+    } = b_joined
+    else {
+        unreachable!()
+    };
+    assert!(!b_authority, "the joiner must not hold authority");
+    let _ = wait_for_event(
+        &mut a_events,
+        "A PlayerJoined",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::PlayerJoined { .. }),
+    )
+    .await;
+
+    // ── A releases; B claims ────────────────────────────────────────
+    a.request_authority(false).expect("queue release");
+    wait_for_event(
+        &mut a_events,
+        "A release grant",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::AuthorityResponse { granted: true, .. }),
+    )
+    .await;
+    for (events, who) in [(&mut a_events, "A"), (&mut b_events, "B")] {
+        let changed = wait_for_event(
+            events,
+            &format!("{who} AuthorityChanged after release"),
+            Duration::from_secs(5),
+            |e| matches!(e, SignalFishEvent::AuthorityChanged { .. }),
+        )
+        .await;
+        let SignalFishEvent::AuthorityChanged {
+            authority_player,
+            you_are_authority,
+        } = changed
+        else {
+            unreachable!()
+        };
+        assert_eq!(authority_player, None, "{who} must observe a vacant seat");
+        assert!(!you_are_authority);
+    }
+
+    b.request_authority(true).expect("queue claim");
+    wait_for_event(
+        &mut b_events,
+        "B claim grant",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::AuthorityResponse { granted: true, .. }),
+    )
+    .await;
+    let b_changed = wait_for_event(
+        &mut b_events,
+        "B AuthorityChanged after claim",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::AuthorityChanged { .. }),
+    )
+    .await;
+    let SignalFishEvent::AuthorityChanged {
+        authority_player: claimed,
+        you_are_authority: b_is_authority,
+    } = b_changed
+    else {
+        unreachable!()
+    };
+    assert_eq!(claimed, Some(player_b));
+    assert!(b_is_authority);
+    let a_changed = wait_for_event(
+        &mut a_events,
+        "A AuthorityChanged after claim",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::AuthorityChanged { .. }),
+    )
+    .await;
+    let SignalFishEvent::AuthorityChanged {
+        authority_player: observed,
+        you_are_authority,
+    } = a_changed
+    else {
+        unreachable!()
+    };
+    assert_eq!(observed, Some(player_b));
+    assert!(
+        !you_are_authority,
+        "A must see the claim as a non-authority"
+    );
+
+    // Re-claiming while already authority is a conflict, reported honestly.
+    b.request_authority(true).expect("queue duplicate claim");
+    let denied = wait_for_event(
+        &mut b_events,
+        "B duplicate-claim denial",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::AuthorityResponse { granted: false, .. }),
+    )
+    .await;
+    let SignalFishEvent::AuthorityResponse {
+        error_code: Some(code),
+        ..
+    } = denied
+    else {
+        panic!("the duplicate-claim denial must carry a structured error code")
+    };
+    assert_eq!(code, ErrorCode::AuthorityConflict);
+
+    // ── Connection info flows through GameStarting to the peer ──────
+    a.provide_connection_info(ConnectionInfo::Relay {
+        host: "e2e-relay-host".into(),
+        port: 7777,
+        transport: RelayTransport::Udp,
+        allocation_id: "e2e-alloc".into(),
+        token: "e2e-token".into(),
+        client_id: None,
+    })
+    .expect("queue connection info");
+
+    a.set_ready().expect("A ready");
+    b.set_ready().expect("B ready");
+    a.ping().expect("queue A readiness fence");
+    wait_for_event(&mut a_events, "A fence Pong", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::Pong)
+    })
+    .await;
+    b.ping().expect("queue B readiness fence");
+    wait_for_event(&mut b_events, "B fence Pong", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::Pong)
+    })
+    .await;
+
+    let a_start = a.start_game();
+    assert!(
+        matches!(&a_start, Err(SignalFishError::AuthorityRequired)),
+        "a non-authority start_game must be refused locally, got {a_start:?}"
+    );
+    b.start_game().expect("authority starts the game");
+    for (events, who) in [(&mut a_events, "A"), (&mut b_events, "B")] {
+        let starting = wait_for_event(
+            events,
+            &format!("{who} GameStarting"),
+            Duration::from_secs(5),
+            |e| matches!(e, SignalFishEvent::GameStarting { .. }),
+        )
+        .await;
+        let SignalFishEvent::GameStarting {
+            peer_connections, ..
+        } = starting
+        else {
+            unreachable!()
+        };
+        let peer = peer_connections
+            .iter()
+            .find(|peer| peer.player_id == player_a)
+            .expect("A must appear in peer_connections");
+        assert!(!peer.is_authority, "A must not hold authority anymore");
+        match &peer.connection_info {
+            Some(ConnectionInfo::Relay {
+                host,
+                allocation_id,
+                ..
+            }) => {
+                assert_eq!(host, "e2e-relay-host");
+                assert_eq!(allocation_id, "e2e-alloc");
+            }
+            other => panic!("must observe A's Relay connection info, got {other:?}"),
+        }
+    }
+
+    // ── Latest-keyed coalescing with an accountable report ──────────
+    b.send_game_data_with_delivery(
+        serde_json::json!({ "n": 1 }),
+        GameDataDelivery::Latest { key: 1 },
+    )
+    .expect("queue latest n=1");
+    b.send_game_data_with_delivery(
+        serde_json::json!({ "n": 2 }),
+        GameDataDelivery::Latest { key: 1 },
+    )
+    .expect("queue latest n=2");
+
+    // The report rides the latency-sensitive control lane and typically
+    // arrives *before* the batch-windowed survivor frame, so collect both in
+    // one loop regardless of order.
+    let mut survivor = None;
+    let mut payload = None;
+    {
+        let end = Instant::now() + Duration::from_secs(5);
+        while (survivor.is_none() || payload.is_none()) && Instant::now() < end {
+            let remaining = end.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, a_events.recv()).await {
+                Ok(Some(SignalFishEvent::GameData {
+                    from_player,
+                    data,
+                    key: Some(1),
+                    class,
+                    ..
+                })) => {
+                    // Only the newest value may ever arrive: a server that
+                    // relays the superseded n=1 frame fails right here.
+                    assert_eq!(
+                        data,
+                        serde_json::json!({ "n": 2 }),
+                        "only the newest value survives"
+                    );
+                    survivor = Some((from_player, data, class));
+                }
+                Ok(Some(SignalFishEvent::DeliveryReport(report))) => payload = Some(report),
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("event stream ended while waiting for the survivor/report"),
+                Err(_) => break,
+            }
+        }
+    }
+    let (from_player, data, class) =
+        survivor.expect("the surviving latest frame must be delivered");
+    assert_eq!(from_player, player_b);
+    assert_eq!(
+        data,
+        serde_json::json!({ "n": 2 }),
+        "only the newest value survives"
+    );
+    assert_eq!(class, Some(DeliveryClass::Latest));
+    let payload = payload.expect("the coalescing report must reach the recipient");
+    assert!(
+        payload.per_class.latest.superseded >= 1,
+        "the coalesced frame must be accounted as superseded"
+    );
+    assert!(
+        payload
+            .gaps
+            .iter()
+            .any(|gap| gap.from_player == player_b
+                && gap.reason == DeliveryGapReason::LatestSuperseded),
+        "the superseded sequence must appear as a LatestSuperseded gap"
+    );
+
+    // Nothing else may arrive: the superseded n=1 is gone for good. This
+    // bounded negative drain is what gives the pin teeth — a server (or
+    // config) that relays both frames fails here.
+    let drain_end = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < drain_end {
+        let remaining = drain_end.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, a_events.recv()).await {
+            Ok(Some(SignalFishEvent::GameData {
+                from_player, data, ..
+            })) if from_player == player_b => {
+                panic!("the superseded frame must never be delivered: {data}")
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("A's event stream ended during the coalescing drain"),
+            Err(_) => break,
+        }
+    }
+
+    // The accountability machine must digest the report without complaint.
+    let drain_end = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < drain_end {
+        let remaining = drain_end.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(remaining, a_events.recv()).await {
+            Ok(Some(event)) => match event {
+                SignalFishEvent::ProtocolViolation { .. } => {
+                    panic!("accepting a LatestSuperseded report must not violate the protocol")
+                }
+                SignalFishEvent::DecodeFailed { .. } => {
+                    panic!("the DeliveryReport must decode cleanly")
+                }
+                _ => {}
+            },
+            Ok(None) | Err(_) => break,
+        }
+    }
+
+    a.shutdown().await;
+    b.shutdown().await;
 }

@@ -204,6 +204,28 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_below_the_minimum_charge_fuses_on_the_first_input() {
+        // `Some(1)` is a valid configuration (round-27 boundary pin): any
+        // frame charges at least `MIN_FRAME_CHARGE_BYTES`, so even an
+        // empty-payload frame alone exceeds the bound and fuses the queue at
+        // the callback — exactly as the connect-options documentation
+        // promises.
+        let mut bound = InboundQueueBound::new(Some(1));
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::FrameExceedsLimit {
+                frame_bytes: MIN_FRAME_CHARGE_BYTES,
+                limit: 1,
+            })
+        );
+        assert_eq!(
+            bound.admit(charged_frame_bytes(0)),
+            Err(QueueRefusal::AlreadyFused),
+            "the first refusal must fuse the queue permanently"
+        );
+    }
+
+    #[test]
     fn oversized_frames_refuse_and_fuse_permanently() {
         let mut bound = InboundQueueBound::new(Some(LIMIT));
         assert_eq!(
