@@ -2,9 +2,9 @@
 //!
 //! This binary is built for `wasm32-unknown-emscripten` and executed under
 //! Node.js by `driver/run-harness.cjs`, which owns the loopback WebSocket
-//! server and drives one exported scheduling step at a time through
-//! `setImmediate` so the JavaScript event loop can deliver browser events
-//! between steps.
+//! server and drives one exported scheduling step per ~1 ms timer tick so
+//! the JavaScript event loop can deliver browser events between steps at a
+//! cadence resembling a polling game loop.
 //!
 //! Scenarios (selected by the `mode` argument of `sfh_begin`):
 //!
@@ -139,6 +139,10 @@ struct RoundtripScenario {
     expected: Vec<Echo>,
     /// Frame slot for `poll_send`; must be retained across `Pending`.
     slot: Option<TransportFrame>,
+    /// How many `poll_send` calls observed the pre-open `Pending` retention;
+    /// the scenario refuses to pass if the CONNECTING window was never
+    /// observed (the driver delays the handshake to guarantee it).
+    pre_open_pending_polls: u32,
 }
 
 enum RoundtripPhase {
@@ -164,6 +168,7 @@ impl RoundtripScenario {
             expected: script.clone(),
             pending_sends: script,
             slot: None,
+            pre_open_pending_polls: 0,
         }
     }
 
@@ -214,6 +219,7 @@ impl RoundtripScenario {
                                 "pre-open Pending poll_send consumed the caller frame".into(),
                             );
                         }
+                        self.pre_open_pending_polls += 1;
                         StepOutcome::Running
                     }
                     Poll::Ready(Ok(())) => {
@@ -274,13 +280,22 @@ impl RoundtripScenario {
                 }
                 StepOutcome::Running
             }
-            RoundtripPhase::Closing => match transport.poll_close(&mut ctx()) {
-                Poll::Ready(Ok(())) => StepOutcome::Pass,
-                Poll::Ready(Err(error)) => {
-                    StepOutcome::Fail(format!("client-initiated poll_close failed: {error}"))
+            RoundtripPhase::Closing => {
+                if self.pre_open_pending_polls == 0 {
+                    return StepOutcome::Fail(
+                        "the CONNECTING window was never observed; the pre-open \
+                         retention pin did not run"
+                            .into(),
+                    );
                 }
-                Poll::Pending => StepOutcome::Running,
-            },
+                match transport.poll_close(&mut ctx()) {
+                    Poll::Ready(Ok(())) => StepOutcome::Pass,
+                    Poll::Ready(Err(error)) => {
+                        StepOutcome::Fail(format!("client-initiated poll_close failed: {error}"))
+                    }
+                    Poll::Pending => StepOutcome::Running,
+                }
+            }
         }
     }
 }
@@ -597,35 +612,39 @@ pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
         other => return begin_fail(format!("unknown scenario mode {other}")),
     };
 
-    // SAFETY: see the `HARNESS` static comment; main-thread-only access and
-    // any previous scenario was fully observed via sfh_step/sfh_fail_reason
-    // before the driver starts the next one.
-    unsafe {
-        ptr::addr_of_mut!(HARNESS).write(Some(Harness {
-            transport: Some(transport),
-            scenario,
-            fail_reason: None,
-            steps: 0,
-        }));
-    }
+    store_harness(Harness {
+        transport: Some(transport),
+        scenario,
+        fail_reason: None,
+        steps: 0,
+    });
     RESULT_RUNNING
 }
 
+/// Store a fresh harness state, dropping any previous one so the prior
+/// scenario's transport runs its `Drop` (close → delete → callback-state
+/// reclaim) instead of leaking a registered socket.
+fn store_harness(harness: Harness) {
+    // SAFETY: main-thread-only access; the previous value, if any, was fully
+    // observed via sfh_step/sfh_fail_reason before the driver starts the
+    // next scenario.
+    let previous = unsafe { std::ptr::replace(ptr::addr_of_mut!(HARNESS), Some(harness)) };
+    drop(previous);
+}
+
 fn begin_fail(reason: String) -> i32 {
-    // SAFETY: main-thread-only access; overwrites any completed scenario.
-    unsafe {
-        ptr::addr_of_mut!(HARNESS).write(Some(Harness {
-            transport: None,
-            scenario: Scenario::Roundtrip(RoundtripScenario {
-                phase: RoundtripPhase::Connecting,
-                pending_sends: Vec::new(),
-                expected: Vec::new(),
-                slot: None,
-            }),
-            fail_reason: Some(cstring(&reason)),
-            steps: 0,
-        }));
-    }
+    store_harness(Harness {
+        transport: None,
+        scenario: Scenario::Roundtrip(RoundtripScenario {
+            phase: RoundtripPhase::Connecting,
+            pending_sends: Vec::new(),
+            expected: Vec::new(),
+            slot: None,
+            pre_open_pending_polls: 0,
+        }),
+        fail_reason: Some(cstring(&reason)),
+        steps: 0,
+    });
     RESULT_FAIL
 }
 

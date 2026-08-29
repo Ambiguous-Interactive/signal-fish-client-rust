@@ -106,8 +106,9 @@ function encodeClientFrame(opcode, payload) {
  * a conformant peer must.
  */
 class FrameParser {
-  constructor() {
+  constructor(requireMasked = false) {
     this.buffer = Buffer.alloc(0);
+    this.requireMasked = requireMasked;
   }
 
   /** Returns an array of {opcode, payload} frames completed by `chunk`. */
@@ -141,6 +142,9 @@ class FrameParser {
       if (!fin || (first & 0x70) !== 0) {
         fail(`harness received a fragmented/RSV frame (opcode ${opcode}); unsupported`);
       }
+      if (this.requireMasked && !masked) {
+        fail("harness received an unmasked client-to-server frame; RFC 6455 5.1 violation");
+      }
       if (opcode !== OP_TEXT && opcode !== OP_BINARY && opcode !== OP_CLOSE
           && opcode !== OP_PING && opcode !== OP_PONG) {
         fail(`harness received unknown opcode ${opcode}`);
@@ -168,6 +172,10 @@ class FrameParser {
 class LoopbackServer {
   constructor() {
     this.script = null;
+    // Optional delay before the 101 response, so scenarios that must
+    // observe the CONNECTING window (pre-open send retention) get
+    // deterministic scheduling steps instead of racing one event-loop turn.
+    this.handshakeDelayMs = 0;
     this.sockets = new Set();
     this.server = net.createServer((socket) => this.onConnection(socket));
   }
@@ -192,6 +200,7 @@ class LoopbackServer {
     socket.setNoDelay(true);
     let handshake = Buffer.alloc(0);
     let established = false;
+    let responding = false;
     let parser = null;
     let peer = null;
 
@@ -199,19 +208,17 @@ class LoopbackServer {
       this.sockets.delete(socket);
     };
     socket.on("error", () => cleanup());
-    socket.on("close", () => {
-      if (peer !== null && peer.onabrupt) peer.onabrupt();
-      cleanup();
-    });
+    socket.on("close", () => cleanup());
 
     socket.on("data", (chunk) => {
-      if (!established) {
+      if (!established && !responding) {
         handshake = Buffer.concat([handshake, chunk]);
         const end = handshake.indexOf("\r\n\r\n");
         if (end === -1) {
           if (handshake.length > 16 * 1024) socket.destroy();
           return;
         }
+        responding = true;
         const request = handshake.subarray(0, end).toString("latin1");
         const key = /^sec-websocket-key:\s*(.+)\r?$/im.exec(request);
         if (!/^get \/harness\s+http\/1\.[01]\r?$/i.test(request.split("\r\n")[0]) || key === null) {
@@ -222,20 +229,28 @@ class LoopbackServer {
           .createHash("sha1")
           .update(key[1].trim() + WS_GUID)
           .digest("base64");
-        socket.write(
-          "HTTP/1.1 101 Switching Protocols\r\n" +
-            "Upgrade: websocket\r\n" +
-            "Connection: Upgrade\r\n" +
-            `Sec-WebSocket-Accept: ${accept}\r\n` +
-            "\r\n",
-        );
-        established = true;
-        debug("server: handshake complete; attaching script");
-        const rest = handshake.subarray(end + 4);
-        parser = new FrameParser();
-        peer = this.attachPeer(socket);
-        if (rest.length > 0) this.dispatch(peer, parser.push(rest));
-        if (this.script !== null) this.script(peer);
+        const finishHandshake = () => {
+          if (this.sockets.has(socket) === false) return;
+          socket.write(
+            "HTTP/1.1 101 Switching Protocols\r\n" +
+              "Upgrade: websocket\r\n" +
+              "Connection: Upgrade\r\n" +
+              `Sec-WebSocket-Accept: ${accept}\r\n` +
+              "\r\n",
+          );
+          established = true;
+          debug("server: handshake complete; attaching script");
+          const rest = handshake.subarray(end + 4);
+          parser = new FrameParser(true);
+          peer = this.attachPeer(socket);
+          if (rest.length > 0) this.dispatch(peer, parser.push(rest));
+          if (this.script !== null) this.script(peer);
+        };
+        if (this.handshakeDelayMs > 0) {
+          setTimeout(finishHandshake, this.handshakeDelayMs);
+        } else {
+          finishHandshake();
+        }
         return;
       }
       this.dispatch(peer, parser.push(chunk));
@@ -254,7 +269,6 @@ class LoopbackServer {
       },
       destroy: () => socket.destroy(),
       onmessage: null,
-      onabrupt: null,
     };
     return peer;
   }
@@ -319,13 +333,14 @@ class HarnessWebSocket {
     this.onmessage = null;
 
     this.parser = new FrameParser();
+    this.acceptKey = crypto.randomBytes(16).toString("base64");
     this.socket = net.connect(Number(parsed[2]), parsed[1], () => {
       this.socket.write(
         `GET ${parsed[3]} HTTP/1.1\r\n` +
           `Host: ${parsed[1]}:${parsed[2]}\r\n` +
           "Upgrade: websocket\r\n" +
           "Connection: Upgrade\r\n" +
-          `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString("base64")}\r\n` +
+          `Sec-WebSocket-Key: ${this.acceptKey}\r\n` +
           "Sec-WebSocket-Version: 13\r\n" +
           "\r\n",
       );
@@ -338,10 +353,24 @@ class HarnessWebSocket {
       if (!established) {
         handshake = Buffer.concat([handshake, chunk]);
         const end = handshake.indexOf("\r\n\r\n");
-        if (end === -1) return;
-        const status = handshake.subarray(0, end).toString("latin1").split("\r\n")[0];
+        if (end === -1) {
+          if (handshake.length > 16 * 1024) this.failConnection(1002, "handshake too large");
+          return;
+        }
+        const head = handshake.subarray(0, end).toString("latin1");
+        const status = head.split("\r\n")[0];
         if (!/^http\/1\.1 101/i.test(status)) {
           this.failConnection(1002, "handshake rejected");
+          return;
+        }
+        // RFC 6455 4.1: the client must verify the server's accept key.
+        const serverAccept = /^sec-websocket-accept:\s*(.+)\r?$/im.exec(head);
+        const expectedAccept = crypto
+          .createHash("sha1")
+          .update(this.acceptKey + WS_GUID)
+          .digest("base64");
+        if (serverAccept === null || serverAccept[1].trim() !== expectedAccept) {
+          this.failConnection(1002, "handshake accept-key mismatch");
           return;
         }
         established = true;
@@ -415,8 +444,15 @@ class HarnessWebSocket {
   }
 
   send(data) {
+    // Browser-faithful per the WHATWG spec: send() throws only while
+    // CONNECTING; on CLOSING/CLOSED the data is silently discarded (this
+    // silent discard is exactly the browser behavior the transport's
+    // live-ready-state send consult must compensate for).
+    if (this.readyState === HarnessWebSocket.CONNECTING) {
+      throw new Error("HarnessWebSocket.send called while connecting");
+    }
     if (this.readyState !== HarnessWebSocket.OPEN) {
-      throw new Error("HarnessWebSocket.send called on a non-open socket");
+      return;
     }
     if (typeof data === "string") {
       this.socket.write(encodeClientFrame(OP_TEXT, Buffer.from(data, "utf8")));
@@ -500,6 +536,10 @@ async function main() {
 
   const runScenario = (mode) => new Promise((resolve) => {
     server.script = SCRIPTS[mode];
+    // Scenario 0 pins the pre-open Pending retention contract, so its
+    // handshake is delayed to guarantee several CONNECTING steps; every
+    // other scenario opens immediately.
+    server.handshakeDelayMs = mode === 0 ? 10 : 0;
     const begin = globalThis.Module.ccall(
       "sfh_begin",
       "number",
@@ -512,7 +552,6 @@ async function main() {
       );
       fail(`scenario ${mode}: sfh_begin failed: ${reason}`);
     }
-    server.script = SCRIPTS[mode];
     const pump = () => {
       if (Date.now() > deadline) {
         fail(`scenario ${mode}: exceeded the ${DEADLINE_MS}ms harness deadline`);

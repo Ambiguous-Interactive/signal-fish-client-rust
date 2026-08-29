@@ -62,8 +62,9 @@ impl MeshSession {
     /// connections); a [`SessionPlan`](SignalFishEvent::SessionPlan) always
     /// returns `true` because it re-asserts the authoritative plan.
     ///
-    /// Irrelevant events — and no-ops such as a status for an unknown peer or a
-    /// redundant `NewPeer`/`PeerTransportStatus` — return `false`. Applying the
+    /// Irrelevant events — and no-ops such as a status for an unknown peer, a
+    /// redundant `NewPeer`/`PeerTransportStatus`, or a `NewPeer` while the
+    /// selected transport is not WebRTC — return `false`. Applying the
     /// same sequence twice yields the same state as applying it once (idempotent
     /// under reconnect replay).
     pub fn apply(&mut self, event: &SignalFishEvent) -> bool {

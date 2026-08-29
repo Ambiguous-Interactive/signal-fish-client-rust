@@ -127,6 +127,7 @@ jobs:
         run: |
           cargo +nightly build -Zbuild-std=std,panic_abort \
             --manifest-path tests/emscripten-harness/Cargo.toml \
+            --target-dir target \
             --target wasm32-unknown-emscripten \
             --no-default-features \
             --features signal-fish-client/transport-websocket-emscripten \
