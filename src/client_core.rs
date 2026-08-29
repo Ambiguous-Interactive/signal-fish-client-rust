@@ -37,6 +37,39 @@ pub(crate) enum CoreCommand {
 const GAME_DATA_JSON_ENVELOPE_CAPACITY: usize = 128;
 const GAME_DATA_JSON_PREALLOCATION_THRESHOLD: usize = 4_096;
 
+/// Maximum container nesting accepted for outbound JSON game data.
+///
+/// Serialization of a [`serde_json::Value`] recurses once per container
+/// level, so an unbounded payload could overflow the stack on a driver
+/// thread — aborting the whole process — after the send call had already
+/// reported success. Admission therefore refuses deeper payloads with
+/// [`SignalFishError::PayloadTooDeep`](crate::SignalFishError::PayloadTooDeep).
+/// The bound matches serde_json's default deserialization recursion limit,
+/// so every payload the SDK could itself receive is also sendable.
+pub(crate) const MAX_GAME_DATA_DEPTH: usize = 128;
+
+/// Bounded-budget container-depth check for outbound JSON game data.
+///
+/// The recursion depth is capped by `budget`, so validation itself can never
+/// overflow the stack no matter how deeply the caller nested the value.
+fn game_data_depth_within(value: &serde_json::Value, budget: usize) -> bool {
+    match value {
+        serde_json::Value::Array(items) if budget > 0 => {
+            let child_budget = budget.saturating_sub(1);
+            items
+                .iter()
+                .all(|item| game_data_depth_within(item, child_budget))
+        }
+        serde_json::Value::Object(map) if budget > 0 => {
+            let child_budget = budget.saturating_sub(1);
+            map.values()
+                .all(|item| game_data_depth_within(item, child_budget))
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => false,
+        _ => true,
+    }
+}
+
 /// Serialize one client message while avoiding geometric buffer growth for
 /// application-owned JSON payloads.
 ///
@@ -529,6 +562,29 @@ impl ClientCore {
                 }
             }
             _ => {}
+        }
+        // Payload-shape admission comes last, so connection, membership,
+        // role, authority, protocol, and plan refusals keep precedence over
+        // per-payload refusals. Every caller-supplied `serde_json::Value`
+        // that reaches the recursive outbound serializer is bounded here.
+        let payload_shape = match operation {
+            ClientOperation::GameData(data, _) => Some(data),
+            ClientOperation::RawSignal(_, _, signal) => Some(signal),
+            ClientOperation::ProvideConnectionInfo(connection_info) => match connection_info {
+                ConnectionInfo::Custom { data } => Some(data),
+                ConnectionInfo::Direct { .. }
+                | ConnectionInfo::UnityRelay { .. }
+                | ConnectionInfo::Relay { .. }
+                | ConnectionInfo::WebRTC { .. } => None,
+            },
+            _ => None,
+        };
+        if let Some(payload) = payload_shape {
+            if !game_data_depth_within(payload, MAX_GAME_DATA_DEPTH) {
+                return Err(crate::SignalFishError::PayloadTooDeep {
+                    max_depth: MAX_GAME_DATA_DEPTH,
+                });
+            }
         }
         Ok(())
     }
@@ -2545,6 +2601,89 @@ mod tests {
         RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
         SessionPeer, SpectatorJoinedPayload, V2BinaryGameDataFrame,
     };
+
+    /// A chain of `depth` nested arrays around one scalar.
+    fn nested_chain(depth: u32) -> serde_json::Value {
+        let mut value = serde_json::json!(depth);
+        for _ in 0..depth {
+            value = serde_json::Value::Array(vec![value]);
+        }
+        value
+    }
+
+    #[test]
+    fn game_data_depth_walk_matches_the_container_bound_exactly() {
+        assert!(game_data_depth_within(
+            &serde_json::json!(42),
+            MAX_GAME_DATA_DEPTH
+        ));
+        assert!(game_data_depth_within(
+            &serde_json::json!({}),
+            MAX_GAME_DATA_DEPTH
+        ));
+        assert!(game_data_depth_within(
+            &serde_json::json!({"a": [1, {"b": [true, null]}]}),
+            MAX_GAME_DATA_DEPTH
+        ));
+        // Exactly at the bound is accepted; one deeper is refused, on every
+        // container shape.
+        let at_bound = nested_chain(MAX_GAME_DATA_DEPTH as u32);
+        assert!(game_data_depth_within(&at_bound, MAX_GAME_DATA_DEPTH));
+        let over = serde_json::Value::Array(vec![at_bound]);
+        assert!(!game_data_depth_within(&over, MAX_GAME_DATA_DEPTH));
+
+        let at_bound = serde_json::json!({"k": nested_chain(127)});
+        assert!(game_data_depth_within(&at_bound, MAX_GAME_DATA_DEPTH));
+        let over = serde_json::json!({"k": nested_chain(128)});
+        assert!(!game_data_depth_within(&over, MAX_GAME_DATA_DEPTH));
+
+        // Deep branches do not mask shallow violations elsewhere.
+        let mixed = serde_json::json!([nested_chain(200), {"flat": true, "deep": nested_chain(2)}]);
+        assert!(!game_data_depth_within(&mixed, MAX_GAME_DATA_DEPTH));
+
+        // Validation must stay stack-safe for pathologically nested caller
+        // payloads: this chain is far deeper than any thread could recurse
+        // over, and the bounded-budget walk refuses it without overflowing.
+        let pathological = nested_chain(200_000);
+        assert!(!game_data_depth_within(&pathological, MAX_GAME_DATA_DEPTH));
+        // Dropping a 200k-deep chain recurses in `serde_json` itself and
+        // would abort the test thread; leaking this proof-only fixture is
+        // the bounded outcome (the same deliberate-leak precedent as the
+        // Emscripten close-before-delete policy).
+        #[allow(clippy::mem_forget)]
+        std::mem::forget(pathological);
+    }
+
+    #[test]
+    fn validate_refuses_deep_caller_payloads_at_admission() {
+        let core = v3_room(ProtocolViolationPolicy::Quarantine);
+        let deep = serde_json::Value::Array(vec![nested_chain(MAX_GAME_DATA_DEPTH as u32)]);
+        assert!(matches!(
+            core.validate(&ClientOperation::GameData(
+                deep.clone(),
+                GameDataDelivery::Reliable
+            )),
+            Err(crate::SignalFishError::PayloadTooDeep { max_depth: 128 })
+        ));
+        assert!(matches!(
+            core.validate(&ClientOperation::ProvideConnectionInfo(
+                ConnectionInfo::Custom { data: deep },
+            )),
+            Err(crate::SignalFishError::PayloadTooDeep { max_depth: 128 })
+        ));
+        // At the bound the same operations are admitted.
+        core.validate(&ClientOperation::GameData(
+            nested_chain(MAX_GAME_DATA_DEPTH as u32),
+            GameDataDelivery::Reliable,
+        ))
+        .expect("at-bound game data must validate");
+        core.validate(&ClientOperation::ProvideConnectionInfo(
+            ConnectionInfo::Custom {
+                data: nested_chain(MAX_GAME_DATA_DEPTH as u32),
+            },
+        ))
+        .expect("at-bound custom connection info must validate");
+    }
 
     #[test]
     fn optimized_game_data_serialization_preserves_canonical_wire() {

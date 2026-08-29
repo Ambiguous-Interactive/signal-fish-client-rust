@@ -107,7 +107,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/webrtc.rs` | `WebRtcDriver` seam + `MeshController` (feature: `mesh`) |
 | `src/transports/websocket.rs` | WebSocket transport (feature: `transport-websocket`) |
 | `src/token_binding.rs` | Native WebSocket token-binding-v2 types, validation, canonicalization, and proof state (feature: `token-binding`) |
-| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 43 fake-backend tests |
+| `crates/signal-fish-client-godot/src/lib.rs` | Godot 4.5 native/web `WebSocketPeer` adapter and its 44 fake-backend tests |
 
 ### Transport Trait
 
@@ -283,7 +283,7 @@ selected plan. `MeshController` rebuilds retained pairs across generations or
 offerer-role changes. `MeshSession` accepts liveness only for the selected transport.
 
 Membership pairs `room_role` with room/participant IDs. Commands validate connection, authentication (directed room
-operations refuse with `NotAuthenticated` before the server confirms it), transition, role, authority, protocol/session, then queue capacity.
+operations refuse with `NotAuthenticated` before the server confirms it), transition, role, authority, protocol/session, caller-payload shape, then queue capacity.
 Admitted joins/leaves/reconnects fence later work until a matching typed terminal response; generic errors/absence stay fenced until teardown.
 A v3-capable config requests `room_operation_ids`; after an exact echo, the core records one fresh UUID at successful queue admission for all five room operations, and only the matching ID/result kind releases it.
 Pre-echo admissions and missing-capability servers stay legacy for that operation's lifetime. Terminal responses without a compatible pending operation violate lifecycle, except that an authoritative spectator removal, disconnect, or room-close may overtake an already-admitted voluntary leave: exactly one matching late reply for the prior room is absorbed without disturbing a newly admitted join, while wrong-room, duplicate, and unrelated results still violate. Authoritative spectator exits need no voluntary leave. Events are never dropped: a full event channel backpressures; undecodable frames surface as `DecodeFailed`;

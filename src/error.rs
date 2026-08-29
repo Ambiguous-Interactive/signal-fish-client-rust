@@ -269,6 +269,28 @@ pub enum SignalFishError {
     )]
     BinaryFormatNotNegotiated,
 
+    /// A caller-supplied JSON payload was refused because its container
+    /// nesting exceeds the client's outbound depth bound.
+    ///
+    /// Serializing a deeply nested [`serde_json::Value`] recurses once per
+    /// container level, so an unbounded payload could overflow the stack on
+    /// a driver thread — aborting the whole process — after the send call
+    /// had already reported success. The command is refused at admission
+    /// instead, while the payload is still on the caller's thread. The bound
+    /// matches serde_json's default deserialization recursion limit, so
+    /// every payload the SDK could itself receive is also sendable; flatten
+    /// the payload. This applies to JSON game data, raw WebRTC signals
+    /// ([`send_raw_signal`](crate::SignalFishClientApi::send_raw_signal)),
+    /// and custom connection info.
+    #[error(
+        "payload nesting exceeds the maximum depth of {max_depth} nested containers; \
+         flatten the payload"
+    )]
+    PayloadTooDeep {
+        /// The enforced maximum container nesting depth.
+        max_depth: usize,
+    },
+
     /// Native WebSocket token-binding-v2 setup or outbound protection failed.
     ///
     /// The reason is intentionally structured and contains no secret or proof
@@ -438,6 +460,16 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "invalid configuration: max_inbound_message_size: must be greater than zero or None"
+        );
+    }
+
+    #[test]
+    fn payload_too_deep_display_names_the_bound() {
+        let error = SignalFishError::PayloadTooDeep { max_depth: 128 };
+        assert_eq!(
+            error.to_string(),
+            "payload nesting exceeds the maximum depth of 128 nested containers; \
+             flatten the payload"
         );
     }
 }
