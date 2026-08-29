@@ -2064,6 +2064,22 @@ fn connection_info_webrtc_tag() {
     let json = serde_json::to_string(&info).expect("serialize");
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
     assert_eq!(val["type"], "webrtc");
+
+    // The vendored authority declares `sdp` nullable (asyncapi.yaml
+    // `nullable: true`), so the `None` wire face is an explicit JSON null —
+    // unlike JoinRoom's optional members, which are omitted entirely.
+    let info = ConnectionInfo::WebRTC {
+        sdp: None,
+        ice_candidates: vec![],
+    };
+    let json = serde_json::to_string(&info).expect("serialize");
+    let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
+    assert_eq!(val["type"], "webrtc");
+    assert!(
+        val.as_object().expect("object").contains_key("sdp"),
+        "sdp: None must serialize as an explicit null, not be omitted: {val}"
+    );
+    assert!(val["sdp"].is_null());
 }
 
 #[test]

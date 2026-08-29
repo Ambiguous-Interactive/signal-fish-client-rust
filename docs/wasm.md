@@ -270,6 +270,12 @@ bound; this transport is therefore usable by `SignalFishPollingClient` without
 an unsafe thread-safety claim. The async client adds its own `Send + 'static`
 bound and does not accept this main-thread transport.
 
+The transport is designed for the single-threaded (non-pthread) Emscripten
+configuration the SDK tests. Builds that enable pthreads move the engine's
+main loop off the browser's main thread, which the emscripten WebSocket
+library does not make safe for this module's `Rc`-based callback state — do
+not construct the transport on a worker thread.
+
 ### Compatibility
 
 !!! warning "Polling client only"
@@ -292,7 +298,18 @@ bound and does not accept this main-thread transport.
     message) remain owned by `SignalFishPollingClient`. The transport returns
     `Pending` without consuming the frame until it observes `onopen`; a later
     `poll()` retries the exact same frame, in order. The browser only receives
-    the command after its synchronous send API accepts it.
+    the command after its synchronous send API accepts it — and because that
+    API reports success even for sockets the browser already closed, each send
+    first checks the live `WebSocket.readyState`: a connection that is closing
+    or closed fails the queued send terminally instead of silently discarding
+    it.
+
+    Unlike the Godot adapter, this transport performs no outbound pacing of
+    its own, and the browser's `bufferedAmount` is neither queried nor
+    reported: a burst of sends accepted while the socket is open buffers in
+    the browser without bound and without surfacing in
+    `TransportDiagnostics`. Pace large outbound bursts from the game loop
+    itself.
 
     The async `SignalFishClient` uses the same readiness boundary. Built-in
     `WebSocketTransport::connect(url).await` is already ready, while a custom
@@ -337,9 +354,11 @@ The byte buffer is a protective client default sized above the roughly
 produce, not a protocol maximum or a guarantee that every larger message is
 rejected at exactly that boundary. Godot may reserve roughly twice that amount
 per peer across its receive ring and packet buffer, plus packet metadata.
-Godot's native and web backends can silently drop newly arriving frames when
-either inbound limit fills, so enough unusually small frames can still reach
-the packet cap first.
+At the inbound bounds the web backend silently drops newly arriving frames
+while the native backend stops reading and backpressures (delivery stalls
+until the application drains queued packets), so enough unusually small
+frames can still reach the packet cap first (web) or stall delivery
+(native).
 
 Applications with a different trusted size contract can create and configure a
 Godot `WebSocketPeer`, call `connect_to_url`, and pass it through `from_peer` or

@@ -109,7 +109,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | Method | Parameter Type | Description |
 |---|---|---|
 | `.with_room_code(code)` | `impl Into<String>` | Set an explicit room code to join. |
-| `.with_max_players(n)` | `u8` | Set the maximum number of players allowed in the room. |
+| `.with_max_players(n)` | `u8` | Set the maximum number of players allowed in the room. The field is a `u8`, so values above 255 cannot be expressed; rooms larger than that are outside this SDK's model. |
 | `.with_supports_authority(flag)` | `bool` | Enable or disable authority delegation support. |
 | `.with_relay_transport(transport)` | `RelayTransport` | Set legacy relay metadata retained for wire compatibility; Server 0.7 ignores it and it does not reconfigure signaling. |
 
