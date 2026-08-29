@@ -25,12 +25,16 @@
 //! # Inbound queue bounds and platform divergence
 //!
 //! Godot bounds its inbound queue by both bytes (`inbound_buffer_size`) and
-//! packet count (`max_queued_packets`, engine default 4,096). Godot's native
-//! and web backends can **silently drop** newly arriving frames once either
-//! bound is hit; the adapter receives no error it could surface. SDK-created
-//! peers therefore raise the packet cap from 4,096 to 65,536 alongside the
-//! 8 MiB inbound byte buffer. The limits remain independent: enough very small
-//! frames can still reach the packet cap first.
+//! packet count (`max_queued_packets`, engine default 4,096). What happens at
+//! the bound diverges by platform: Godot's web backend **silently drops**
+//! newly arriving frames (the adapter receives no error it could surface),
+//! while the native backend stops reading and **backpressures** the
+//! connection — delivery stalls (server writes block, latency climbs) until
+//! the application drains queued packets. SDK-created peers therefore raise
+//! the packet cap from 4,096 to 65,536 alongside the 8 MiB inbound byte
+//! buffer: preventing silent drops on web and keeping natively stalled
+//! delivery rare. The limits remain independent: enough very small frames
+//! can still reach the packet cap first.
 //! [`GodotWebSocketTransport::from_peer`] preserves whatever the application
 //! configured — raise `max_queued_packets` yourself if a caller-owned peer
 //! must absorb large inbound bursts on web.
@@ -65,11 +69,13 @@ const DEFAULT_ADAPTIVE_FLOOR: usize = 4 * 1024;
 const DEFAULT_ADAPTIVE_CEILING: usize = 32 * 1024;
 const DEFAULT_ADAPTIVE_LATENCY: Duration = Duration::from_millis(50);
 const DEFAULT_INBOUND_BUFFER_SIZE: i32 = 8 * 1024 * 1024;
-// Godot bounds its inbound queue by packet count as well as bytes, and its
-// native and web backends can silently drop frames once either bound is hit. The engine
-// default of 4,096 packets would silently discard legitimate traffic long
-// before an 8 MiB byte buffer filled (frames averaging under ~2 KiB), so
-// SDK-created peers raise the cap while retaining a finite metadata bound.
+// Godot bounds its inbound queue by packet count as well as bytes. At the
+// bound the web backend silently drops newly arriving frames, and the native
+// backend stops reading (delivery stalls until the application drains queued
+// packets). The engine default of 4,096 packets would discard legitimate
+// web traffic — or stall native delivery — long before an 8 MiB byte buffer
+// filled (frames averaging under ~2 KiB), so SDK-created peers raise the cap
+// while retaining a finite metadata bound.
 const DEFAULT_MAX_QUEUED_PACKETS: i32 = 65_536;
 
 /// Godot outbound admission strategy.
@@ -272,7 +278,11 @@ impl GodotWebSocketBackend for Gd<WebSocketPeer> {
     }
 
     fn capacity_boundary(&self) -> NativeCapacityBoundary {
-        if cfg!(target_os = "emscripten") {
+        // The web engine backend refuses at `buffered + size >=`
+        // outbound_buffer_size (emws_peer.cpp), native at `>` (wsl_peer.cpp).
+        // godot-rust selects the web backend for the whole wasm target family
+        // (wasm32-unknown-emscripten and wasm32-unknown-unknown alike).
+        if cfg!(target_family = "wasm") {
             NativeCapacityBoundary::GreaterThanOrEqual
         } else {
             NativeCapacityBoundary::GreaterThan
@@ -427,8 +437,9 @@ impl GodotWebSocketTransport {
     /// The connection handshake advances when the transport is polled. For web
     /// exports, use `wss://` when the exported page is served over HTTPS. The
     /// SDK-created peer uses an 8 MiB Godot inbound buffer and raises the
-    /// queued-packet cap from 4,096 to 65,536, because Godot can silently drop
-    /// inbound frames when either independent bound fills.
+    /// queued-packet cap from 4,096 to 65,536, because web silently drops
+    /// inbound frames at either independent bound (native instead stalls
+    /// delivery until the application drains queued packets).
     /// The outbound buffer keeps Godot's own default — see the crate docs for
     /// how that bounds a single admitted frame. Use [`Self::from_peer`] when
     /// the application must choose any of these settings.
@@ -971,6 +982,11 @@ mod tests {
         /// Remaining `BackendSendResult::Capacity` refusals before sends are
         /// accepted, for tests that must park a frame more than once.
         capacity_refusals: usize,
+        /// Frames the web backend still delivers between the transport's
+        /// `close()` and the peer reaching `CLOSED` (browsers keep firing
+        /// `onmessage` until the close event). `close()` clears the queue
+        /// first, then hands these over.
+        inbound_after_close: VecDeque<Result<(Vec<u8>, bool), String>>,
     }
 
     impl FakeBackend {
@@ -979,7 +995,8 @@ mod tests {
                 states: VecDeque::new(),
                 state,
                 buffered: 0,
-                capacity: 64 * 1024,
+                // Godot's engine default `outbound_buffer_size` is 65,535.
+                capacity: 65_535,
                 capacity_boundary: NativeCapacityBoundary::GreaterThan,
                 buffered_after_poll: VecDeque::new(),
                 packets: VecDeque::new(),
@@ -996,6 +1013,7 @@ mod tests {
                 connection_steps: Rc::new(RefCell::new(Vec::new())),
                 connect_error: None,
                 capacity_refusals: 0,
+                inbound_after_close: VecDeque::new(),
             }
         }
     }
@@ -1096,6 +1114,16 @@ mod tests {
 
         fn close(&mut self) {
             self.close_calls += 1;
+            // Godot's engine `close()` clears both inbound buffers on every
+            // platform: web does so unconditionally on each call
+            // (emws_peer.cpp), and native makes buffered packets inaccessible
+            // the moment the peer leaves OPEN and clears them at CLOSED
+            // (wsl_peer.cpp). A locally initiated close therefore always
+            // forfeits frames already queued in the engine. Frames the web
+            // backend still delivers until the close event are handed over
+            // after the clear.
+            self.packets.clear();
+            self.packets.extend(self.inbound_after_close.drain(..));
         }
 
         fn abort(&mut self) {
@@ -1521,9 +1549,9 @@ mod tests {
         .expect("fake connection setup should succeed");
 
         assert_eq!(observed_size.get(), DEFAULT_INBOUND_BUFFER_SIZE);
-        // The queued-packet cap must be raised with the byte buffer: Godot's
-        // native and web backends can silently drop inbound frames once the
-        // engine default of 4,096 packets fills, even with bytes to spare.
+        // The queued-packet cap must be raised with the byte buffer: at the
+        // engine default of 4,096 packets, web silently drops inbound frames
+        // (native stalls delivery) even with bytes to spare.
         assert_eq!(
             observed_packets.get(),
             DEFAULT_MAX_QUEUED_PACKETS,
@@ -1899,6 +1927,15 @@ mod tests {
             // 1015: reserved for local TLS-handshake failure reports; also
             // never transmitted on the wire.
             (1015, Some(1015), Some(false)),
+            // 1002/1007/1009: the native engine synthesizes these when its
+            // own protocol-error path stops reading (wslay status-code
+            // translation in wsl_peer.cpp), but a peer can also send them in
+            // a genuine CLOSE frame and the adapter cannot distinguish the
+            // two — they classify clean by the documented ambiguity (see
+            // "Synthesized close codes" in the crate docs).
+            (1002, Some(1002), Some(true)),
+            (1007, Some(1007), Some(true)),
+            (1009, Some(1009), Some(true)),
             (1000, Some(1000), Some(true)),
             (4000, Some(4000), Some(true)),
         ];
@@ -1990,7 +2027,12 @@ mod tests {
     }
 
     #[test]
-    fn locally_started_close_waits_for_buffered_inbound_packets() {
+    fn locally_initiated_close_forfeits_buffered_inbound_packets() {
+        // Godot's engine close() clears both inbound buffers on every
+        // platform (web unconditionally; native gates the count to OPEN and
+        // clears at CLOSED), so frames queued before the transport's own
+        // close() are lost — unlike a peer-initiated close, whose tail
+        // frames remain drainable on web.
         let mut backend = FakeBackend::new(PeerState::Open);
         backend.states.extend([PeerState::Open, PeerState::Closed]);
         backend
@@ -2000,11 +2042,36 @@ mod tests {
 
         assert!(matches!(
             transport.poll_close(&mut context()),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn locally_started_close_still_drains_frames_that_arrive_while_closing() {
+        // On web the browser keeps delivering messages until the close event
+        // fires, so frames arriving after the transport's close() but before
+        // the peer reaches CLOSED are queued and must drain instead of being
+        // stranded behind the close.
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend
+            .states
+            .extend([PeerState::Open, PeerState::Closing, PeerState::Closed]);
+        backend
+            .inbound_after_close
+            .push_back(Ok((b"tail frame".to_vec(), true)));
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(matches!(
+            transport.poll_close(&mut context()),
             Poll::Pending
         ));
         assert!(matches!(
             transport.poll_recv(&mut context()),
-            Poll::Ready(Some(Ok(TransportFrame::Text(text)))) if text == "last packet"
+            Poll::Ready(Some(Ok(TransportFrame::Text(text)))) if text == "tail frame"
         ));
         assert!(matches!(
             transport.poll_close(&mut context()),
