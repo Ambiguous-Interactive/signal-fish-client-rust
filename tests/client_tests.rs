@@ -18,7 +18,8 @@ mod common;
 use std::collections::VecDeque;
 
 use signal_fish_client::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage, TransportKind,
+    ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage,
+    SpectatorStateChangeReason, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
@@ -37,8 +38,8 @@ use common::{
     authenticated_json, authority_response_json, error_json, finalized_reconnected_json,
     game_data_json, new_peer_json, peer_transport_status_json, player_left_json, pong_json,
     protocol_info_json, reconnected_json, room_joined_json, room_left_json, session_plan_json,
-    signal_json, spectator_joined_json, spectator_left_json, wait_for_sent_len, MockTransport,
-    RecordingCloseTransport,
+    signal_json, spectator_joined_json, spectator_left_json, spectator_left_json_with_reason,
+    wait_for_sent_len, MockTransport, RecordingCloseTransport,
 };
 use std::time::Duration;
 
@@ -498,6 +499,59 @@ async fn spectator_join_and_leave_flow() {
     assert!(client.current_room_code().await.is_none());
 
     client.shutdown().await;
+}
+
+/// Authoritative spectator exits (`removed` / `disconnected` / `room_closed`)
+/// are server-initiated: the shared mock must deliver them without any
+/// matching `LeaveSpectator` command. Before the round-22 gate alignment this
+/// deadlocked the shared mock (the frame stayed gated forever), while the
+/// async driver's own mock delivered them — the four harness gates disagreed.
+#[tokio::test]
+async fn authoritative_spectator_exit_is_delivered_without_a_voluntary_leave() {
+    for (label, reason) in [
+        ("removed", SpectatorStateChangeReason::Removed),
+        ("disconnected", SpectatorStateChangeReason::Disconnected),
+        ("room_closed", SpectatorStateChangeReason::RoomClosed),
+    ] {
+        let (mut client, mut events, sent, _closed) = start_client(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_json(None))),
+            Some(Ok(spectator_joined_json())),
+            Some(Ok(spectator_left_json_with_reason(Some(reason)))),
+        ])
+        .await;
+
+        drain_until_authenticated(&mut events).await;
+        drain_until_protocol_info(&mut events).await;
+        let ev = events.recv().await.expect("event");
+        assert!(
+            matches!(ev, SignalFishEvent::SpectatorJoined { .. }),
+            "{label}: expected SpectatorJoined, got {ev:?}"
+        );
+
+        // No voluntary leave is issued: the authoritative exit must arrive on
+        // its own and clear the room-scoped state.
+        let ev = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{label}: authoritative SpectatorLeft was never delivered"))
+            .expect("event");
+        assert!(
+            matches!(ev, SignalFishEvent::SpectatorLeft { .. }),
+            "{label}: expected SpectatorLeft, got {ev:?}"
+        );
+        assert!(client.current_room_id().await.is_none());
+        assert!(
+            !sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| serde_json::from_str::<ClientMessage>(m)
+                    .is_ok_and(|cm| matches!(cm, ClientMessage::LeaveSpectator))),
+            "{label}: no LeaveSpectator may be sent for an authoritative exit"
+        );
+
+        client.shutdown().await;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════

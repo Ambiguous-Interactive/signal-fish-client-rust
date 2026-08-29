@@ -2599,6 +2599,10 @@ mod tests {
     }
 
     fn protocol_info(version: Option<u16>) -> ServerMessage {
+        // Server-sendable shapes only: a v2 connection's ProtocolInfo omits
+        // all five v3 fields including `protocol_version` itself (vendored
+        // AsyncAPI), so versions below 3 produce exactly the `None` shape.
+        let v3_fields = version.filter(|version| *version >= 3);
         ServerMessage::ProtocolInfo(ProtocolInfoPayload {
             platform: None,
             sdk_version: None,
@@ -2608,11 +2612,11 @@ mod tests {
             notes: None,
             game_data_formats: vec![GameDataEncoding::Json],
             player_name_rules: None,
-            protocol_version: version,
-            min_protocol_version: version.map(|_| 2),
-            max_protocol_version: version,
-            transports: version.map(|_| vec![MessageTransport::Websocket]),
-            max_outbound_message_size: version.map(|_| 8 * 1024 * 1024),
+            protocol_version: v3_fields,
+            min_protocol_version: v3_fields.map(|_| 2),
+            max_protocol_version: v3_fields,
+            transports: v3_fields.map(|_| vec![MessageTransport::Websocket]),
+            max_outbound_message_size: v3_fields.map(|_| 8 * 1024 * 1024),
         })
     }
 
@@ -5880,6 +5884,46 @@ mod tests {
             let mut relay = plan(Topology::Relay, TransportKind::Relay);
             relay.generation = Some(SessionGeneration::from_u128(5));
             let _ = process(&mut core, ServerMessage::SessionPlan(Box::new(relay)));
+
+            let outcome = process(
+                &mut core,
+                ServerMessage::Signal {
+                    from: PlayerId::from_u128(PEER),
+                    generation: Some(SessionGeneration::from_u128(GENERATION)),
+                    signal: serde_json::json!({"Offer": "late"}),
+                },
+            );
+            assert!(outcome.events.is_empty(), "{policy:?}");
+            assert!(!outcome.disconnect, "{policy:?}");
+            assert!(!core.snapshot().quarantined, "{policy:?}");
+        }
+    }
+
+    /// Same-generation WebRtc→relay replan: peers dropped by the replacement
+    /// hold no authority under the still-live generation, so their in-flight
+    /// same-generation signals must stay benign (retired at replacement,
+    /// which reads the pre-replacement transport), not lifecycle violations.
+    #[test]
+    fn same_generation_relay_replan_retires_dropped_webrtc_plan_peers() {
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = v3_room(policy);
+            let _ = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan(Topology::Mesh, TransportKind::WebRtc))),
+            );
+            // The relay replacement keeps the current generation.
+            let _ = process(
+                &mut core,
+                ServerMessage::SessionPlan(Box::new(plan(Topology::Relay, TransportKind::Relay))),
+            );
+            assert_eq!(
+                core.snapshot().session_generation,
+                Some(SessionGeneration::from_u128(GENERATION))
+            );
 
             let outcome = process(
                 &mut core,

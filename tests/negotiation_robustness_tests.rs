@@ -95,6 +95,12 @@ async fn drain_until_violation(rx: &mut tokio::sync::mpsc::Receiver<SignalFishEv
 
 /// Build a `Reconnected` JSON whose `missed_events` is an arbitrary list.
 fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
+    reconnected_with(missed, ReplayStatus::Complete)
+}
+
+/// Build a `Reconnected` JSON with an arbitrary `missed_events` list and
+/// caller-chosen `replay` status.
+fn reconnected_with(missed: Vec<ServerMessage>, replay: ReplayStatus) -> String {
     let payload = ReconnectedPayload {
         room_id: uuid::Uuid::from_u128(100),
         room_code: "RECON1".into(),
@@ -122,7 +128,7 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
         current_spectators: vec![],
         ice_servers: vec![],
         missed_events: missed,
-        replay: Some(ReplayStatus::Complete),
+        replay: Some(replay),
         sender_watermarks: [200, 9]
             .into_iter()
             .map(|id| SenderWatermark {
@@ -191,6 +197,57 @@ async fn reconnect_rejects_protocol_info_without_downgrading_active_v3() {
     );
     assert!(client.supports_mesh());
     client.shutdown().await;
+}
+
+/// The vendored AsyncAPI pins exactly three `ReplayStatus` wire tokens
+/// (`complete` / `truncated` / `unavailable`). Every value must decode and
+/// surface verbatim on the `Reconnected` event; previously only `complete`
+/// was ever exercised anywhere.
+#[tokio::test]
+async fn reconnected_replay_status_decodes_and_surfaces_every_wire_value() {
+    for (status, token) in [
+        (ReplayStatus::Complete, "complete"),
+        (ReplayStatus::Truncated, "truncated"),
+        (ReplayStatus::Unavailable, "unavailable"),
+    ] {
+        // Wire token, both directions.
+        assert_eq!(
+            serde_json::to_string(&status)
+                .expect("ReplayStatus always serializes")
+                .as_str(),
+            format!("\"{token}\""),
+            "serialize direction for {token}"
+        );
+        assert_eq!(
+            serde_json::from_str::<ReplayStatus>(&format!("\"{token}\"")).ok(),
+            Some(status),
+            "decode direction for {token}"
+        );
+
+        let (mut client, mut events, _sent, _closed) = start_client(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_json(Some(3)))),
+            Some(Ok(reconnected_with(vec![], status))),
+        ]);
+        drain_until_authenticated(&mut events).await;
+        drain_until_protocol_info(&mut events).await;
+        client
+            .reconnect(
+                uuid::Uuid::from_u128(200),
+                uuid::Uuid::from_u128(100),
+                "submitted-token".into(),
+            )
+            .expect("authenticated reconnect must queue");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for the Reconnected event")
+            .expect("event channel closed");
+        assert!(
+            matches!(&event, SignalFishEvent::Reconnected { replay: Some(replay), .. } if *replay == status),
+            "expected replay {status:?} ({token}), got {event:?}"
+        );
+        client.shutdown().await;
+    }
 }
 
 /// Multiple replayed negotiation messages are rejected as one invalid reconnect.
