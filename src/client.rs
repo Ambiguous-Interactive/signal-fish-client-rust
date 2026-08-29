@@ -25,7 +25,7 @@
 //!   and deliver the terminal `Disconnected` best-effort (a receiver that
 //!   outlives the loop also observes the event channel closing) — or a
 //!   `Transport` method panicked (a contract violation; see the
-//!   [`Transport`](crate::Transport) trait docs for the exact consequences).
+//!   [`Transport`] trait docs for the exact consequences).
 //! - **Terminal inbound frames** are not guaranteed delivery once the loop is
 //!   tearing down, and the policy differs by trigger: after a terminal
 //!   outbound send failure the loop still processes the frames that are
@@ -1165,7 +1165,8 @@ impl SignalFishClient {
     /// [`JoinRoomParams::with_supports_authority`] already holds authority
     /// (the server auto-assigns it), so an immediate
     /// `request_authority(true)` is denied with
-    /// [`ErrorCode::AuthorityConflict`] — relinquish first with
+    /// [`ErrorCode::AuthorityConflict`](crate::ErrorCode::AuthorityConflict) —
+    /// relinquish first with
     /// `request_authority(false)` to hand authority to another player.
     ///
     /// # Errors

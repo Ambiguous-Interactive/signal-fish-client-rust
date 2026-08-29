@@ -586,8 +586,9 @@ impl<T: Transport> SignalFishPollingClient<T> {
     /// [`JoinRoomParams::with_supports_authority`] already holds authority
     /// (the server auto-assigns it), so an immediate
     /// `request_authority(true)` is denied with
-    /// [`ErrorCode::AuthorityConflict`] — relinquish first with
-    /// `request_authority(false)` to hand authority to another player.
+    /// [`ErrorCode::AuthorityConflict`](crate::ErrorCode::AuthorityConflict) —
+    /// relinquish first with `request_authority(false)` to hand authority to
+    /// another player.
     ///
     /// # Errors
     ///
