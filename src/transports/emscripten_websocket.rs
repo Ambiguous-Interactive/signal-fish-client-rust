@@ -25,9 +25,15 @@
 //! copies any payload, so a server cannot grow this transport's heap without
 //! limit between polling ticks; zero-length frames carry a conservative
 //! minimum charge so count-based floods hit the same bound. The first
-//! over-limit frame or backlog fuses the transport with one terminal receive
-//! error; later flood frames drop silently. Drained frames release their
-//! charge back to the ledger.
+//! over-limit frame or backlog, or a text frame that is not valid UTF-8,
+//! fuses the transport with one terminal receive error; later flood frames
+//! drop silently. Drained frames release their charge back to the ledger.
+//!
+//! Sends consult the browser's live `WebSocket.readyState` before each FFI
+//! call: the close/error callbacks only reach the transport when `poll_recv`
+//! drains them, and the JS send shim reports success unconditionally even for
+//! sockets the browser already closed, so a dying socket fails its queued
+//! send terminally instead of silently discarding it.
 //!
 //! # Compatibility
 //!
@@ -103,7 +109,9 @@ use super::emscripten_inbound_queue::{
     charged_frame_bytes, InboundQueueBound, QueueRefusal, DEFAULT_MAX_INBOUND_QUEUE_BYTES,
 };
 use crate::error::SignalFishError;
-use crate::transport::{poll_accept_frame, Transport, TransportCloseInfo, TransportFrame};
+use crate::transport::{
+    poll_accept_frame, text_frame_from_utf8, Transport, TransportCloseInfo, TransportFrame,
+};
 
 // ── FFI Bindings ────────────────────────────────────────────────────────────
 
@@ -123,6 +131,12 @@ type C_BOOL = u8;
 
 /// Emscripten result code indicating success.
 const EMSCRIPTEN_RESULT_SUCCESS: c_int = 0;
+
+/// `WebSocket.readyState` value for an established connection. The C API
+/// returns the browser's `readyState` through the `unsigned short *`
+/// out-parameter of `emscripten_websocket_get_ready_state`; the browser
+/// reports `CLOSING`(2)/`CLOSED`(3) once the connection is dying or dead.
+const EM_READY_STATE_OPEN: u16 = 1;
 
 #[repr(C)]
 struct EmscriptenWebSocketCreateAttributes {
@@ -173,6 +187,11 @@ extern "C" {
     fn emscripten_websocket_new(
         attrs: *const EmscriptenWebSocketCreateAttributes,
     ) -> EMSCRIPTEN_WEBSOCKET_T;
+
+    fn emscripten_websocket_get_ready_state(
+        socket: EMSCRIPTEN_WEBSOCKET_T,
+        ready_state: *mut u16,
+    ) -> c_int;
 
     fn emscripten_websocket_send_utf8_text(
         socket: EMSCRIPTEN_WEBSOCKET_T,
@@ -418,8 +437,9 @@ impl EmscriptenWebSocketTransport {
     /// retains caller-owned messages until the browser reports that the
     /// connection is open. Peer-close metadata (`close_info`) is best-effort:
     /// it is populated by the next `poll_recv` that drains the queued close
-    /// event, so closing or dropping the transport before that poll leaves
-    /// `close_info` empty.
+    /// event (or by the terminal error poll when the browser's `onclose` is
+    /// already queued behind an `onerror`), so closing or dropping the
+    /// transport before that poll leaves `close_info` empty.
     ///
     /// # Errors
     ///
@@ -593,6 +613,33 @@ impl EmscriptenWebSocketTransport {
         })
     }
 
+    /// Record structured metadata for a peer-initiated close event.
+    fn record_peer_close(&mut self, code: u16, was_clean: bool, reason: Option<String>) {
+        self.cleanup.record_peer_close();
+        self.close_info = Some(TransportCloseInfo {
+            code: Some(code),
+            reason,
+            clean: Some(was_clean),
+            initiated_by_peer: true,
+        });
+    }
+
+    /// Whether the browser socket is still open for sends at this instant.
+    ///
+    /// The transport-local `closed` flag only updates when `poll_recv` drains
+    /// the queued close/error event, so between ticks it can lag the browser.
+    /// Synchronous `emscripten_websocket_send_*` results cannot be trusted on
+    /// a dying socket, so sends consult the authoritative ready state.
+    fn socket_open_for_sends(&self) -> bool {
+        let mut ready_state: u16 = 0;
+        // SAFETY: `ready_state` is a valid `u16` out-parameter for this
+        // synchronous call, and `self.socket` is a live handle while the
+        // callback state is registered (`poll_send` returns early once the
+        // transport is closed, before deletion).
+        let result = unsafe { emscripten_websocket_get_ready_state(self.socket, &mut ready_state) };
+        result == EMSCRIPTEN_RESULT_SUCCESS && ready_state == EM_READY_STATE_OPEN
+    }
+
     /// Close the native socket once. A failed close remains retryable because
     /// deletion has not yet proved that callbacks can no longer run.
     fn close_native_socket(&mut self) -> Result<(), c_int> {
@@ -753,21 +800,32 @@ extern "C" fn on_message_callback(
     }
 
     if is_text {
-        // Text message — create String from UTF-8 bytes.
+        // Text message — decode the payload bytes (which exclude the NUL
+        // terminator) as UTF-8. Corrupt text frames fuse the transport
+        // instead of being silently dropped: the transport contract requires
+        // corruption to surface, and the native and Godot transports both
+        // fuse on engine-reported corruption.
         // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
         // points to `event.num_bytes` valid bytes for this callback.
         // `content_len` excludes the NUL terminator. Empty payloads do not
         // dereference data.
         let bytes = unsafe { copy_event_payload(event.data, content_len) };
-        match std::str::from_utf8(&bytes) {
-            Ok(s) => {
+        match text_frame_from_utf8(&bytes) {
+            Ok(text) => {
                 let _ = state
                     .tx
-                    .send(IncomingEvent::Message(TransportFrame::Text(s.to_owned())));
+                    .send(IncomingEvent::Message(TransportFrame::Text(text)));
             }
-            Err(e) => {
-                tracing::warn!("received non-UTF-8 text message: {e}");
+            Err(error) => {
                 release_queued_bytes(&state.inbound_queue, content_len);
+                // Fusion is recorded in the ledger itself so frames arriving
+                // before the client drains the error drop at the callback
+                // instead of being admitted behind a terminal event they can
+                // never reach.
+                let mut bound = state.inbound_queue.get();
+                bound.fuse();
+                state.inbound_queue.set(bound);
+                let _ = state.tx.send(IncomingEvent::Error(error.to_string()));
             }
         }
     } else {
@@ -841,6 +899,18 @@ impl Transport for EmscriptenWebSocketTransport {
             return std::task::Poll::Ready(Err(SignalFishError::TransportClosed));
         }
         poll_accept_frame(self.opened, frame, |frame_ref| {
+            // The close/error callbacks queue into the event channel and are
+            // only drained by `poll_recv`, which runs after outbound
+            // admission in a polling-client tick. Query the live ready state
+            // here so a socket the browser already closed fails its sends
+            // instead of silently discarding them: the JS shim returns
+            // success unconditionally, and the browser drops `send()` output
+            // on a closing or closed WebSocket.
+            if !self.socket_open_for_sends() {
+                return Err(SignalFishError::TransportSend(
+                    "the WebSocket is no longer open (closing or closed)".into(),
+                ));
+            }
             let result = match frame_ref {
                 TransportFrame::Text(message) => {
                     // Keep only the Display text: the boxed `NulError` itself
@@ -915,6 +985,24 @@ impl Transport for EmscriptenWebSocketTransport {
                 }
                 Ok(IncomingEvent::Error(error)) => {
                     self.closed = true;
+                    // The browser fires exactly one `onclose` after `onerror`
+                    // and both events are typically queued together, but this
+                    // terminal return stops all further draining. Consume the
+                    // queued tail now (non-blocking) so the structured close
+                    // metadata survives instead of being stranded behind the
+                    // error; later-queued events are unreachable after a
+                    // terminal receive either way.
+                    while let Ok(event) = self.incoming_rx.try_recv() {
+                        if let IncomingEvent::Close {
+                            code,
+                            was_clean,
+                            reason,
+                        } = event
+                        {
+                            self.record_peer_close(code, was_clean, reason);
+                            break;
+                        }
+                    }
                     return std::task::Poll::Ready(Some(Err(SignalFishError::TransportReceive(
                         error.into(),
                     ))));
@@ -925,13 +1013,7 @@ impl Transport for EmscriptenWebSocketTransport {
                     reason,
                 }) => {
                     self.closed = true;
-                    self.cleanup.record_peer_close();
-                    self.close_info = Some(TransportCloseInfo {
-                        code: Some(code),
-                        reason,
-                        clean: Some(was_clean),
-                        initiated_by_peer: true,
-                    });
+                    self.record_peer_close(code, was_clean, reason);
                     return std::task::Poll::Ready(None);
                 }
                 Err(std_mpsc::TryRecvError::Empty) => return std::task::Poll::Pending,
