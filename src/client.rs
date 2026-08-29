@@ -1128,6 +1128,11 @@ impl SignalFishClient {
 
     /// Signal readiness to start the game in the lobby.
     ///
+    /// The wire `PlayerReady` message **toggles** readiness (per the protocol
+    /// authority), so call this exactly once per room membership: a repeated
+    /// call flips the player back to not-ready. A fresh `RoomJoined` starts
+    /// unready, so one call per join is correct.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::NotInRoom`] outside a room,

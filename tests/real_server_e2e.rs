@@ -42,7 +42,7 @@ use signal_fish_client::SignalFishPollingClient;
 use signal_fish_client::TokenBindingFailure;
 use signal_fish_client::{
     ErrorCode, JoinRoomParams, SignalFishClient, SignalFishConfig, SignalFishError,
-    SignalFishEvent, WebSocketTransport,
+    SignalFishEvent, SpectatorStateChangeReason, WebSocketTransport,
 };
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 use signal_fish_client::{TokenBindingMode, TokenBindingStatus, WebSocketConnectOptions};
@@ -365,6 +365,26 @@ impl Drop for ServerGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl ServerGuard {
+    /// Deliver SIGTERM so the server starts its graceful shutdown drain:
+    /// v3 clients receive a `GoingAway` advisory and, after the configured
+    /// grace, the authoritative WebSocket close with semantic code 4000.
+    #[cfg(unix)]
+    fn terminate_gracefully(&self) {
+        let pid = self.child.id().to_string();
+        let status = Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .expect("spawn kill to deliver SIGTERM to the server");
+        assert!(status.success(), "kill -TERM {pid} must succeed");
+    }
+
+    #[cfg(not(unix))]
+    fn terminate_gracefully(&self) {
+        panic!("the graceful SIGTERM drain cell requires a Unix host");
     }
 }
 
@@ -1739,5 +1759,238 @@ async fn e2e_sender_ping_survives_own_game_data_flood() {
         worst_rtt < Duration::from_secs(2),
         "sender-side Pong RTT should stay low during its own flood; got {worst_rtt:?}"
     );
+    a.shutdown().await;
+}
+
+fn unix_epoch_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock must be after the Unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("epoch milliseconds must fit u64")
+}
+
+/// The GoingAway → close-4000 pair (issue #190): a connected v3 client must
+/// observe the graceful-shutdown advisory with an honest deadline and retry
+/// hint, and then the authoritative coded close attributed to the server.
+/// The drain must be triggerable with a bounded grace, so this cell is
+/// spawn-mode only.
+#[tokio::test]
+#[ignore = "requires pinned Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN"]
+async fn e2e_server_070_going_away_close_4000() {
+    const GRACE_SECS: u64 = 2;
+    // The deadline must be honored within a scheduling-slack budget on top of
+    // the configured grace, not stretched by another full grace window.
+    const DEADLINE_SLACK_MS: u64 = 5_000;
+    let grace = GRACE_SECS.to_string();
+    let Some((guard, url)) =
+        spawn_server(&[("SIGNAL_FISH__SERVER__DRAIN_GRACE_SECS", &grace)]).await
+    else {
+        eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
+        return;
+    };
+
+    let (_client, mut events) =
+        connect_authenticated(&url, SignalFishConfig::new(app_id()).enable_v3()).await;
+
+    let signal_epoch_ms = unix_epoch_ms_now();
+    guard.terminate_gracefully();
+
+    // The advisory is best-effort but reaches an idle connection: a missing
+    // GoingAway before the close must fail this cell loudly.
+    let advisory = wait_for_event(&mut events, "GoingAway", Duration::from_secs(10), |e| {
+        matches!(e, SignalFishEvent::GoingAway { .. })
+    })
+    .await;
+    let SignalFishEvent::GoingAway {
+        deadline_ms,
+        retry_after_secs,
+    } = advisory
+    else {
+        unreachable!()
+    };
+    assert!(
+        deadline_ms >= signal_epoch_ms
+            && deadline_ms <= signal_epoch_ms + GRACE_SECS * 1_000 + DEADLINE_SLACK_MS,
+        "GoingAway deadline {deadline_ms} must be a near-future epoch-ms deadline \
+         issued at SIGTERM time ({signal_epoch_ms} + {GRACE_SECS}s grace)"
+    );
+    assert_eq!(
+        retry_after_secs,
+        Some(GRACE_SECS),
+        "server 0.7 derives the retry hint from the configured grace"
+    );
+
+    // The close frame is authoritative: the terminal event must carry the
+    // semantic drain code, attributed to the server (never a send failure).
+    let disconnected = wait_for_event(&mut events, "Disconnected", Duration::from_secs(10), |e| {
+        matches!(e, SignalFishEvent::Disconnected { .. })
+    })
+    .await;
+    let SignalFishEvent::Disconnected {
+        reason,
+        last_server_error,
+    } = disconnected
+    else {
+        unreachable!()
+    };
+    let reason = reason.expect("a coded server close must surface close metadata");
+    assert!(
+        reason.starts_with("closed by server:"),
+        "a drain close is peer-initiated; got {reason:?}"
+    );
+    assert!(
+        reason.contains("code=Some(4000)"),
+        "the drain must close with semantic code 4000; got {reason:?}"
+    );
+    assert!(
+        last_server_error.is_none(),
+        "a drain close carries no error farewell; got {last_server_error:?}"
+    );
+    println!("E5 DATA: GoingAway deadline_ms={deadline_ms} retry_after_secs={retry_after_secs:?}; close reason={reason:?}");
+}
+
+/// Spectator lifecycle live smoke (issue #190): join → observe → exit against
+/// the pinned Server 0.7, exercising the live baseline snapshot, the room
+/// broadcasts, and the voluntary-exit acknowledgment that round 20/22 covered
+/// only through vendored-spec fixtures.
+#[tokio::test]
+#[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
+async fn e2e_server_070_spectator_live_smoke() {
+    let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
+        Some(url) => (None, url),
+        None => match spawn_server(&[]).await {
+            Some((guard, url)) => (Some(guard), url),
+            None => {
+                eprintln!("skipping: neither SIGNAL_FISH_E2E_URL nor SIGNAL_FISH_SERVER_BIN set");
+                return;
+            }
+        },
+    };
+
+    // A player creates the room the spectator will watch.
+    let (mut a, mut a_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
+    a.join_room(JoinRoomParams::new("e2e-spectator-smoke", "host"))
+        .expect("A join_room");
+    let joined = wait_for_event(&mut a_events, "A RoomJoined", Duration::from_secs(5), |e| {
+        matches!(e, SignalFishEvent::RoomJoined { .. })
+    })
+    .await;
+    let SignalFishEvent::RoomJoined {
+        room_id,
+        room_code,
+        player_id,
+        ..
+    } = joined
+    else {
+        unreachable!()
+    };
+
+    // The spectator joins by room code and observes the live player roster.
+    let (mut s, mut s_events) = connect_authenticated(&url, SignalFishConfig::new(app_id())).await;
+    s.join_as_spectator(
+        "e2e-spectator-smoke".to_string(),
+        room_code.clone(),
+        "watcher".to_string(),
+    )
+    .expect("S join_as_spectator");
+    let spectated = wait_for_event(
+        &mut s_events,
+        "S SpectatorJoined",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SpectatorJoined { .. }),
+    )
+    .await;
+    let SignalFishEvent::SpectatorJoined {
+        room_id: spectated_room_id,
+        room_code: spectated_room_code,
+        spectator_id,
+        current_players,
+        ..
+    } = spectated
+    else {
+        unreachable!()
+    };
+    assert_eq!(spectated_room_id, room_id, "the join must target A's room");
+    assert_eq!(
+        spectated_room_code, room_code,
+        "the join must echo the requested room code"
+    );
+    assert_ne!(spectator_id, player_id);
+    assert!(
+        current_players
+            .iter()
+            .any(|p| p.id == player_id && p.name == "host"),
+        "the spectator baseline must include the live player roster; got {current_players:?}"
+    );
+
+    // The room observes the spectator join.
+    let observed = wait_for_event(
+        &mut a_events,
+        "A NewSpectatorJoined",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::NewSpectatorJoined { .. }),
+    )
+    .await;
+    let SignalFishEvent::NewSpectatorJoined { spectator, .. } = observed else {
+        unreachable!()
+    };
+    assert_eq!(spectator.id, spectator_id);
+
+    // Voluntary exit: the acknowledgment must name the room and drain the
+    // spectator roster; the room must observe the departure.
+    s.leave_spectator().expect("S leave_spectator");
+    let left = wait_for_event(
+        &mut s_events,
+        "S SpectatorLeft",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SpectatorLeft { .. }),
+    )
+    .await;
+    let SignalFishEvent::SpectatorLeft {
+        room_id: left_room_id,
+        room_code: left_room_code,
+        reason,
+        current_spectators,
+    } = left
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        left_room_id,
+        Some(room_id),
+        "server 0.7 names the room on a voluntary SpectatorLeft"
+    );
+    assert_eq!(left_room_code, Some(room_code.clone()));
+    assert_eq!(reason, Some(SpectatorStateChangeReason::VoluntaryLeave));
+    assert!(
+        !current_spectators
+            .iter()
+            .any(|spectator| spectator.id == spectator_id),
+        "the departing spectator must not be counted in the remaining roster"
+    );
+
+    let departed = wait_for_event(
+        &mut a_events,
+        "A SpectatorDisconnected",
+        Duration::from_secs(5),
+        |e| matches!(e, SignalFishEvent::SpectatorDisconnected { .. }),
+    )
+    .await;
+    let SignalFishEvent::SpectatorDisconnected {
+        spectator_id: departed_id,
+        reason: departed_reason,
+        ..
+    } = departed
+    else {
+        unreachable!()
+    };
+    assert_eq!(departed_id, spectator_id);
+    assert_eq!(
+        departed_reason,
+        Some(SpectatorStateChangeReason::VoluntaryLeave)
+    );
+    s.shutdown().await;
     a.shutdown().await;
 }

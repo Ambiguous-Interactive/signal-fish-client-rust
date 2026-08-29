@@ -113,7 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // readiness and one-shot start latch for the fresh room.
                         lobby_start.reset_for_room(room_supports_authority, locally_authority);
 
-                        // Mark ourselves as ready.
+                        // Mark ourselves as ready. `PlayerReady` toggles, and a
+                        // fresh RoomJoined starts unready, so one call per join
+                        // is correct — never retry it on later updates.
                         client.set_ready()?;
                         tracing::info!("Set ready");
                     }

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `RateLimitInfo`'s `per_minute`, `per_hour`, and `per_day`
+  fields are now `u64` instead of `u32`. The protocol authority types these
+  limits as unbounded integers, and a value above `u32::MAX` previously
+  failed to decode the entire required `Authenticated` frame, silently
+  preventing authentication. Update any code that assigned these fields
+  with a literal or cast that assumed `u32`.
 - The Godot adapter's `watermark_hits` and `backend_capacity_hits`
   transport diagnostics now count each deferred send once, instead of once
   per poll attempt that re-observed the same parked frame — so a frame held
@@ -22,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The async driver's `transport_diagnostics()` sample now refreshes during
   the post-send-failure terminal drain, as its per-receive-poll contract
   documents, instead of freezing at the last pre-teardown value.
+- A protocol-v2 `RoomJoined` that exposes protocol-v3-only metadata
+  (a `reconnection_token` or non-empty `ice_servers`) is now rejected as a
+  lifecycle violation under the violation policy, matching the existing
+  `Reconnected` guard; previously the token surfaced in `snapshot()`.
+- Corrected published documentation for `set_ready()`: the wire
+  `PlayerReady` message **toggles** readiness, so a repeated call un-readies
+  the player. Both drivers' docs, the client/getting-started/protocol
+  guides, and the lobby example now say to call it exactly once per room
+  membership.
 
 ## [0.11.0] - 2026-08-28
 
