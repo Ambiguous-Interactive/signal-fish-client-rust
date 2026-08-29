@@ -24,6 +24,7 @@ Cargo.lock
 !/Cargo.lock
 !tests/godot-compat-min/Cargo.lock
 !tests/godot-web-smoke/Cargo.lock
+!tests/emscripten-harness/Cargo.lock
 
 # Editor swap files
 *.swp

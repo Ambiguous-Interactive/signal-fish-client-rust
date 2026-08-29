@@ -70,7 +70,7 @@ jobs:
   emscripten:
     name: Build (wasm32-unknown-emscripten)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -106,6 +106,33 @@ jobs:
           --no-default-features
           --features transport-websocket-emscripten
           -- -D warnings
+
+      # On-target runtime coverage for the Emscripten transport (issue #194):
+      # the harness binary is linked against the transport and executed under
+      # Node.js against a loopback RFC 6455 server, pinning the send-after-
+      # close classification, ledger-bound fusion, close-metadata capture,
+      # and close→delete cleanup contracts that static lanes cannot execute.
+      - name: Run on-target Emscripten transport harness
+        env:
+          RUSTFLAGS: >-
+            -C panic=abort
+            -C link-arg=-lwebsocket.js
+            -C link-arg=-sALLOW_MEMORY_GROWTH=1
+            -C link-arg=-sENVIRONMENT=node
+            -C link-arg=-sEXIT_RUNTIME=0
+            -C link-arg=-sWASM_ASYNC_COMPILATION=0
+            -C link-arg=-sEXPORTED_FUNCTIONS=_main,_sfh_begin,_sfh_step,_sfh_fail_reason,_malloc,_free
+            -C link-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString
+            -C llvm-args=-enable-emscripten-cxx-exceptions=0
+        run: |
+          cargo +nightly build -Zbuild-std=std,panic_abort \
+            --manifest-path tests/emscripten-harness/Cargo.toml \
+            --target wasm32-unknown-emscripten \
+            --no-default-features \
+            --features signal-fish-client/transport-websocket-emscripten \
+            --locked
+          node tests/emscripten-harness/driver/run-harness.cjs \
+            target/wasm32-unknown-emscripten/debug/signal-fish-emscripten-harness.js
 
   required:
     name: WASM Required

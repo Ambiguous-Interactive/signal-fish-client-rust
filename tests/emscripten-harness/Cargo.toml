@@ -1,0 +1,13 @@
+[package]
+name = "signal-fish-emscripten-harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "On-target wasm32-unknown-emscripten runtime harness for EmscriptenWebSocketTransport (issue #194)."
+
+[dependencies]
+signal-fish-client = { path = "../..", default-features = false, features = [
+    "transport-websocket-emscripten",
+] }
+
+[workspace]
