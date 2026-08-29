@@ -12,9 +12,9 @@
  *      `globalThis.WebSocket` before the Emscripten module loads (Node 18
  *      has no global WebSocket; Emscripten's shim requires one).
  *   3. The scenario scheduler: it begins each scenario through the module's
- *      exported `sfh_begin`, then pumps `sfh_step` once per `setImmediate`
+ *      exported `sfh_begin`, then pumps one `sfh_step` per ~1ms timer tick
  *      so the JavaScript event loop can deliver browser events between
- *      steps, exactly like a browser game loop would.
+ *      steps, at a cadence resembling a polling game loop.
  *
  * Scenario scripts run server-side, keyed by the same mode value the driver
  * passes to `sfh_begin`:
