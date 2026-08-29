@@ -1986,7 +1986,7 @@ mod ci_workflow_policy {
         }
     }
 
-    /// The six sparse matrix rows must scope to the core package. With
+    /// The nine sparse matrix rows must scope to the core package. With
     /// `--workspace`, the Godot adapter member's dependency edge
     /// force-enables the core `polling-client` feature, so the feature
     /// unifier silently compiles a state different from the one every sparse
@@ -1997,7 +1997,7 @@ mod ci_workflow_policy {
     fn sparse_matrix_rows_scope_the_core_package() {
         const CORE_SCOPE: &str = "-p signal-fish-client";
         /// (flags, scope) for every matrix row, wide rows first.
-        const ROWS: [(&str, &str); 8] = [
+        const ROWS: [(&str, &str); 9] = [
             ("", "--workspace"),
             ("--all-features", "--workspace"),
             ("--no-default-features --features token-binding", CORE_SCOPE),
@@ -2007,6 +2007,10 @@ mod ci_workflow_policy {
                 CORE_SCOPE,
             ),
             ("--no-default-features --features mesh", CORE_SCOPE),
+            (
+                "--no-default-features --features polling-client,mesh",
+                CORE_SCOPE,
+            ),
             ("--no-default-features --features tokio-runtime", CORE_SCOPE),
             ("--no-default-features --features tls", CORE_SCOPE),
         ];

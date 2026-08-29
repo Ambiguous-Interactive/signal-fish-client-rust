@@ -727,7 +727,7 @@ for the full workflow. Key steps:
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
 | `token-binding` | No | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2` | No | No |
 | `tls` | No | `wss://` TLS for the built-in native WebSocket transport (rustls) | No | No |
-| `mesh` | No | Protocol v3 mesh tracker plus the `WebRtcDriver` seam / `MeshController`; bundles no WebRTC stack | Yes | Yes |
+| `mesh` | No | Protocol v3 mesh tracker plus the `WebRtcDriver` seam; `MeshController` needs `tokio-runtime`, which wasm forbids, so on wasm only the tracker/seam (manual choreography via the polling client) is available; bundles no WebRTC stack | Yes | Yes |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 

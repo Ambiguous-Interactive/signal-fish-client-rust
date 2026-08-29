@@ -352,6 +352,121 @@ async fn reconnect_without_protocol_info_preserves_prior_v3() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// ProtocolInfo inbound envelope (round 25)
+// ════════════════════════════════════════════════════════════════════
+
+/// Data-driven pin for the `ProtocolInfo` inbound envelope (round 25). The
+/// version triple is deliberately forward-compatible (`>= 3`, pinned by
+/// `v4_negotiation_still_enables_mesh`: future protocol versions negotiate
+/// and are stored verbatim), but the v3-only `max_outbound_message_size`
+/// honors the vendored AsyncAPI authority bounds 1..=67108864 and is absent
+/// on negotiated v2. Before round 25 a hostile outbound size of 0 (or
+/// `u64::MAX`) passed unbound into the public snapshot, and a v2-shaped
+/// advertisement could smuggle the v3-only size field.
+#[tokio::test]
+async fn protocol_info_authority_bounds() {
+    const ACCEPTED: bool = true;
+    const VIOLATION: bool = false;
+
+    let base = |mutate: &dyn Fn(&mut signal_fish_client::protocol::ProtocolInfoPayload)| {
+        let mut payload = protocol_info_payload(Some(3));
+        mutate(&mut payload);
+        payload
+    };
+    let v2 = |mutate: &dyn Fn(&mut signal_fish_client::protocol::ProtocolInfoPayload)| {
+        let mut payload = protocol_info_payload(None);
+        mutate(&mut payload);
+        payload
+    };
+
+    let cases: Vec<(
+        &str,
+        signal_fish_client::protocol::ProtocolInfoPayload,
+        bool,
+    )> = vec![
+        // Conformant v3 shapes stay accepted, including both size bounds.
+        (
+            "v3 (3,2,3) with 8 MiB outbound size",
+            base(&|_| {}),
+            ACCEPTED,
+        ),
+        (
+            "v3 (3,3,3) without outbound size",
+            base(&|payload| {
+                payload.min_protocol_version = Some(3);
+                payload.max_outbound_message_size = None;
+            }),
+            ACCEPTED,
+        ),
+        (
+            "v3 with minimum outbound size 1",
+            base(&|payload| payload.max_outbound_message_size = Some(1)),
+            ACCEPTED,
+        ),
+        (
+            "v3 with maximum outbound size 67108864",
+            base(&|payload| payload.max_outbound_message_size = Some(67_108_864)),
+            ACCEPTED,
+        ),
+        // Forward compatibility is deliberate: future version triples keep
+        // negotiating (treated as v3 by every `>= 3` gate) instead of
+        // quarantining against future servers.
+        (
+            "future (99,2,99) stays forward-compatible",
+            base(&|payload| {
+                payload.protocol_version = Some(99);
+                payload.max_protocol_version = Some(99);
+            }),
+            ACCEPTED,
+        ),
+        (
+            "future (3,2,4) stays forward-compatible",
+            base(&|payload| payload.max_protocol_version = Some(4)),
+            ACCEPTED,
+        ),
+        // Round-25: the outbound size bound is enforced against hostile
+        // values instead of mirroring them into the public snapshot.
+        (
+            "v3 with outbound size 0 below the minimum",
+            base(&|payload| payload.max_outbound_message_size = Some(0)),
+            VIOLATION,
+        ),
+        (
+            "v3 with outbound size above the authority maximum",
+            base(&|payload| payload.max_outbound_message_size = Some(67_108_865)),
+            VIOLATION,
+        ),
+        // v3-only field on a negotiated-v2 shape (round-23 dialect class).
+        (
+            "v2 shape exposing the v3-only outbound size",
+            v2(&|payload| payload.max_outbound_message_size = Some(8 * 1024 * 1024)),
+            VIOLATION,
+        ),
+    ];
+
+    for (name, payload, accepted) in cases {
+        let (mut client, mut events, _sent, _closed) = start_client(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(serde_json::to_string(&ServerMessage::ProtocolInfo(
+                payload,
+            ))
+            .unwrap())),
+        ]);
+        if accepted {
+            drain_until_protocol_info(&mut events).await;
+        } else {
+            drain_until_violation(&mut events).await;
+            assert_eq!(
+                client.negotiated_protocol_version(),
+                None,
+                "{name}: rejected ProtocolInfo must not set a negotiated version"
+            );
+        }
+        client.shutdown().await;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Transport robustness
 // ════════════════════════════════════════════════════════════════════
 

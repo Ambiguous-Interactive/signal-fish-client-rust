@@ -2358,6 +2358,12 @@ fn room_operation_result_name(result: &RoomOperationResult) -> &'static str {
 fn validate_protocol_info_formats(
     payload: &crate::protocol::ProtocolInfoPayload,
 ) -> Result<(), String> {
+    /// Vendored AsyncAPI authority: `max_outbound_message_size` is bounded
+    /// `minimum: 1, maximum: 67108864`, and absent on negotiated v2. The
+    /// version triple itself stays deliberately forward-compatible (`>= 3`
+    /// pins `v4_negotiation_still_enables_mesh`): future protocol versions
+    /// are treated as v3, so only the size field is bounded here.
+    const MAX_OUTBOUND_MESSAGE_SIZE_BOUND: usize = 67_108_864;
     match payload.game_data_formats.as_slice() {
         [GameDataEncoding::Json]
         | [GameDataEncoding::Json, GameDataEncoding::MessagePack] => Ok(()),
@@ -2370,7 +2376,15 @@ fn validate_protocol_info_formats(
         payload.min_protocol_version,
         payload.max_protocol_version,
     ) {
-        (None, None, None) if payload.transports.is_none() => Ok(()),
+        (None, None, None) if payload.transports.is_none() => {
+            if let Some(size) = payload.max_outbound_message_size {
+                return Err(format!(
+                    "lifecycle violation: v2 ProtocolInfo exposed the v3-only \
+                     max_outbound_message_size ({size})"
+                ));
+            }
+            Ok(())
+        }
         (Some(version), Some(min), Some(max))
             if version >= 3
                 && min >= 2
@@ -2378,7 +2392,14 @@ fn validate_protocol_info_formats(
                 && version <= max
                 && payload.transports.as_deref() == Some(&[crate::protocol::MessageTransport::Websocket]) =>
         {
-            Ok(())
+            match payload.max_outbound_message_size {
+                None => Ok(()),
+                Some(size) if (1..=MAX_OUTBOUND_MESSAGE_SIZE_BOUND).contains(&size) => Ok(()),
+                Some(size) => Err(format!(
+                    "lifecycle violation: ProtocolInfo max_outbound_message_size {size} \
+                     violates the vendored authority bounds 1..=67108864"
+                )),
+            }
         }
         version_tuple => Err(format!(
             "lifecycle violation: ProtocolInfo version range {version_tuple:?} and transports presence do not form a coherent v2/v3 negotiation"

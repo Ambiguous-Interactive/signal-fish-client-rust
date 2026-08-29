@@ -31,7 +31,7 @@
 //! | `transport-websocket-emscripten` | off | Emscripten WebSocket transport (implies `polling-client`) |
 //! | `polling-client` | off | Sync, polling-based `SignalFishPollingClient` for frame-driven engines and `wasm32` |
 //! | `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features for the async client |
-//! | `mesh` | off | Protocol v3 mesh tracker plus the `WebRtcDriver` seam / `MeshController` |
+//! | `mesh` | off | Protocol v3 mesh tracker plus the `WebRtcDriver` seam; `MeshController` additionally requires `tokio-runtime` (async driver only) |
 //!
 //! `tls` requires `transport-websocket`; the mesh feature requires you to
 //! supply a WebRTC implementation behind the `WebRtcDriver` seam — this

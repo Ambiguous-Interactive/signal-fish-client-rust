@@ -84,7 +84,7 @@ increments [`ClientStats::messages_undecodable`](client.md#send-queue-and-traffi
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `message_type` | `Option<String>` | The wire `type` tag when the frame was valid JSON. `Some("Error")` plus a decode failure strongly implies an unknown `error_code`; `None` means the frame was not valid JSON at all. |
+| `message_type` | `Option<String>` | The wire `type` tag when the frame was valid JSON and the failure position allowed tag recovery (frames larger than the 512-byte `raw_prefix` window report `None` even when valid JSON). `Some("Error")` plus a decode failure strongly implies an unknown `error_code`; `None` usually means the frame was not valid JSON at all. |
 | `error` | `String` | The deserialization error text. |
 | `raw_prefix` | `String` | The raw frame, truncated to `DECODE_FAILED_RAW_PREFIX_MAX` (512) bytes on a UTF-8 boundary. |
 
