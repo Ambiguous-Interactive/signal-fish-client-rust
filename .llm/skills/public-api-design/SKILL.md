@@ -214,6 +214,13 @@ This crate is pre-1.0 (0.1.0). Under semver:
 | Add required method to `Transport` trait | Yes |
 | Change `#[serde(rename)]` or tag values | Yes (wire protocol) |
 
+Known `cargo semver-checks` blind spots (verified against 0.50.0, round 29):
+required-trait-method additions whose signatures use crate-defined type
+aliases (e.g. methods returning `error::Result<T>`) are missed by the
+sealing analysis, and plain-struct field type changes have no lint at all.
+For those classes the `**Breaking:**` changelog marker is the only working
+gate — and it drives Prepare Release's bump policy, so it is mandatory.
+
 ## Documenting Public API
 
 Every public item should have a doc comment:

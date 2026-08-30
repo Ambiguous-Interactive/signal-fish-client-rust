@@ -125,7 +125,11 @@ default-branch move stops the run. Never delete or move release state to make a
 rerun pass. The root `Cargo.lock` is tracked: release preparation updates it
 in lockstep with the manifests, and the release workflows package and publish
 with `--locked`, so a rerun resolves the same dependency versions as the
-interrupted attempt and rebuilds byte-identical `.crate` archives. If only a
+interrupted attempt and rebuilds byte-identical `.crate` archives. The nested
+fixture locks and `fuzz/Cargo.lock` are stamped in lockstep too (partial locks
+— such as the fuzz lock, whose graph reaches only the core — are stamped for
+the members they actually contain), keeping their `--locked` verification
+lanes green across a version bump. If only a
 dependent remains unpublished, the rerun uses
 `--no-verify` after full workspace verification and exact dependency checksum
 matching so crates.io sparse-index propagation cannot strand recovery.
