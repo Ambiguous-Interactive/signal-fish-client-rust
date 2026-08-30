@@ -95,14 +95,19 @@ try {
   throw error;
 }
 const consoleLines = [];
+const consoleErrors = [];
 const pageErrors = [];
 let metricsBefore = "";
 let metricsAfter = "";
 let loadSummary;
 page.on("console", (message) => {
   const line = message.text();
+  const type = message.type();
   consoleLines.push(line);
-  process.stdout.write(`[browser:${message.type()}] ${line}\n`);
+  if (type === "error") {
+    consoleErrors.push({ type, text: line });
+  }
+  process.stdout.write(`[browser:${type}] ${line}\n`);
 });
 page.on("pageerror", (error) => {
   pageErrors.push(error.message);
@@ -309,9 +314,9 @@ try {
     const failures = consoleLines.filter(
       (line) => line.includes("-error") || line.includes("unexpected-disconnect"),
     );
-    if (pageErrors.length > 0 || failures.length > 0) {
+    if (pageErrors.length > 0 || consoleErrors.length > 0 || failures.length > 0) {
       throw new Error(
-        `browser reported failures: ${JSON.stringify({ pageErrors, failures })}`,
+        `browser reported failures: ${JSON.stringify({ pageErrors, consoleErrors, failures })}`,
       );
     }
   }
