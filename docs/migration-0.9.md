@@ -11,13 +11,13 @@ Godot binding version selected by your GDExtension:
 
 ```diff
 -signal-fish-client = { version = "0.8", default-features = false, features = ["transport-godot"] }
-+godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
++godot = { version = "0.5.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 +signal-fish-client = { version = "0.9", default-features = false, features = ["polling-client"] }
 +signal-fish-client-godot = "0.9"
 ```
 
 The adapter supports godot-rust 0.4.5 through every compatible 0.5.x release.
-The browser/Fortress fixture pins 0.5.4, while a standalone minimum fixture
+The browser/Fortress fixture pins 0.5.5, while a standalone minimum fixture
 pins 0.4.5 and passes a directly constructed `Gd<WebSocketPeer>` through
 `GodotWebSocketTransport::from_peer`.
 
@@ -34,7 +34,7 @@ crate. If a 0.4.5 project retains a 0.5 binding selected only for the adapter,
 align the lockfile explicitly and commit it:
 
 ```sh
-cargo update -p godot@0.5.4 --precise 0.4.5
+cargo update -p godot@0.5.5 --precise 0.4.5
 ```
 
 Do not pass `Gd` values between duplicate binding versions; those are distinct

@@ -147,17 +147,17 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.1
         with:
-          tool: cargo-fuzz@0.13.1
+          tool: cargo-fuzz@0.13.2
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: fuzz
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile --manifest-path fuzz/Cargo.toml
+      - name: Verify fuzz lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --manifest-path fuzz/Cargo.toml --locked > /dev/null
 
       - name: Run every protocol fuzz target
         run: |
@@ -220,7 +220,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.1
         with:
           tool: cargo-mutants@26.2.0
 

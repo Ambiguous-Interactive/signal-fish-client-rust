@@ -55,7 +55,7 @@ secret-handling rules verified in session 070).
 ## CI/CD Action Reference Policy
 
 Use `owner/action@vN.N.N` (preferred) or `@vN`, not commit hashes. Exceptions:
-`dtolnay/rust-toolchain@stable|nightly|beta` and `mymindstorm/setup-emsdk@vN`.
+`dtolnay/rust-toolchain@stable|nightly|beta` and `emscripten-core/setup-emsdk@vN`.
 
 ## Changelog Policy
 
@@ -346,7 +346,7 @@ The core manifest must never depend on `godot` or expose godot-rust types.
 an inherited workspace dependency, `default-features = false`, and
 `polling-client`, and declares
 `godot = ">=0.4.5, <0.6"` with no-thread WASM and lazy-function-table support.
-Its minimum 0.4.5 and latest 0.5.4 standalone fixtures must each lock exactly
+Its minimum 0.4.5 and latest 0.5.5 standalone fixtures must each lock exactly
 one `godot` and one version of every `godot-*` family crate.
 Core tests additionally use full-featured `tokio` and `tracing-subscriber` (the adapter suite has no dev-dependencies).
 

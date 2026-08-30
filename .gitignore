@@ -19,12 +19,15 @@
 
 # Dependency locks: the root lock is tracked so published .crate archives
 # embed one stable resolution and Release recovery reruns rebuild
-# byte-identical artifacts; nested workspace locks stay local.
+# byte-identical artifacts; nested workspace locks stay local. Fixture and
+# fuzz locks are tracked so their lanes verify resolution instead of
+# silently re-resolving on every run.
 Cargo.lock
 !/Cargo.lock
 !tests/godot-compat-min/Cargo.lock
 !tests/godot-web-smoke/Cargo.lock
 !tests/emscripten-harness/Cargo.lock
+!fuzz/Cargo.lock
 
 # Editor swap files
 *.swp

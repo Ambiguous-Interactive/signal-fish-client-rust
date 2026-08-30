@@ -18,7 +18,7 @@ their direct Godot dependency; the adapter retains no-thread WASM and lazy
 function-table support.
 
 ```toml
-godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+godot = { version = "0.5.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
 signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
 ```
@@ -150,7 +150,7 @@ Primary sources: [Godot WebSocketPeer API](https://docs.godotengine.org/en/stabl
 
 The `tests/godot-compat-min` fixture pins godot-rust 0.4.5 and passes a
 directly-created `Gd<WebSocketPeer>` through `from_peer`. The
-`tests/godot-web-smoke` fixture pins 0.5.4 and is the standalone production
+`tests/godot-web-smoke` fixture pins 0.5.5 and is the standalone production
 GDExtension workspace. Both lockfiles must contain exactly one `godot` version
 and one version of every `godot-*` family crate. Compile both natively and for
 `wasm32-unknown-emscripten`; run browser scenarios only on the latest fixture.

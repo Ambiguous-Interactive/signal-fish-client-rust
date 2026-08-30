@@ -146,7 +146,7 @@ fn minimum_and_latest_fixtures_pin_the_contract_endpoints() {
     let core = parse_toml(root().join("Cargo.toml"));
     let expected_client = workspace_version(&core);
 
-    for (fixture, expected_godot) in [(MIN_FIXTURE, "0.4.5"), (LATEST_FIXTURE, "0.5.4")] {
+    for (fixture, expected_godot) in [(MIN_FIXTURE, "0.4.5"), (LATEST_FIXTURE, "0.5.5")] {
         let manifest = parse_toml(root().join(fixture).join("Cargo.toml"));
         let expected_requirement = format!("={expected_godot}");
         assert_eq!(
