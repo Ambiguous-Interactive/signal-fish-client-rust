@@ -884,7 +884,7 @@ configured capacity.
 | `send_game_data(data: serde_json::Value)` | Send protocol-reliable JSON game data. |
 | `send_game_data_with_delivery(data, delivery)` | Select a protocol-v3 JSON delivery class. |
 | `send_binary_game_data(payload: Vec<u8>)` | Send a protocol-v3 binary game-data frame. |
-| `request_authority(become: bool)` | Request or release room authority. |
+| `request_authority(become_authority: bool)` | Request or release room authority. |
 | `provide_connection_info(info: ConnectionInfo)` | Provide P2P connection information. |
 | `reconnect(player_id, room_id, auth_token)` | Reconnect to a previous session. |
 | `ping()` | Send a heartbeat ping. |

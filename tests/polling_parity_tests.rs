@@ -1465,6 +1465,8 @@ fn pi_v2_payload() -> ProtocolInfoPayload {
     p.protocol_version = None;
     p.min_protocol_version = None;
     p.max_protocol_version = None;
+    p.transports = None;
+    p.max_outbound_message_size = None;
     p
 }
 

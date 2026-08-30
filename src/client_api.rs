@@ -6,6 +6,7 @@ use crate::protocol::{
     ConnectionInfo, GameDataEncoding, PlayerId, RoomId, SessionGeneration, Topology, TransportKind,
 };
 use crate::signal::PeerSignal;
+use crate::transport::TransportDiagnostics;
 
 /// Object-safe synchronous command and state surface shared by both clients.
 ///
@@ -13,7 +14,8 @@ use crate::signal::PeerSignal;
 /// connection is driven by `SignalFishClient` or `SignalFishPollingClient`.
 /// Driver-specific
 /// operations such as async waiting sends, `shutdown`, `poll`, and `close` are
-/// intentionally excluded.
+/// intentionally excluded; `transport_diagnostics` is shared and therefore
+/// included.
 ///
 /// Signal methods here take a concrete [`PeerSignal`] rather than
 /// `impl Into<PeerSignal>` because object safety forbids generic parameters;
@@ -92,6 +94,12 @@ pub trait SignalFishClientApi {
     /// Coherent connection and room snapshot.
     #[must_use = "this diagnostic view is discarded if not used"]
     fn snapshot(&self) -> ClientSnapshot;
+    /// Most recent backend buffering/admission diagnostics sample.
+    ///
+    /// Reads the same per-I/O-step sample as the inherent driver methods; see
+    /// [`TransportDiagnostics`] for field semantics.
+    #[must_use = "this diagnostic view is discarded if not used"]
+    fn transport_diagnostics(&self) -> TransportDiagnostics;
 
     /// Server-confirmed local role in the current room.
     fn room_role(&self) -> Option<RoomRole> {

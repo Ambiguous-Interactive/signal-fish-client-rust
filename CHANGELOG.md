@@ -7,118 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Breaking:** the exhaustive `SignalFishError` enum gains
+  `PayloadTooDeep { max_depth }`; add an arm to exhaustive matches.
+- **Breaking:** the `SignalFishClientApi` trait gains `transport_diagnostics`;
+  implementors must add the method (consumers of either driver are
+  unaffected).
+- Added root re-exports for `ProtocolInfoPayload`, `PlayerNameRulesPayload`,
+  and `MeshWaker` (the latter requires the `mesh` and `tokio-runtime`
+  features).
+
 ### Changed
 
 - **Breaking:** `RateLimitInfo`'s `per_minute`, `per_hour`, and `per_day`
-  fields are now `u64` instead of `u32`. The protocol authority types these
-  limits as unbounded integers, and a value above `u32::MAX` previously
-  failed to decode the entire required `Authenticated` frame, silently
-  preventing authentication. Update any code that assigned these fields
-  with a literal or cast that assumed `u32`.
-- **Breaking:** the exhaustive `SignalFishError` enum gains
-  `PayloadTooDeep { max_depth: usize }`, so exhaustive matches must add an
-  arm. Caller-supplied JSON payloads nested deeper than 128 containers are
-  now refused at the call site (see the Fixed entry below).
+  are now `u64` instead of `u32`; a server reporting a limit above
+  `u32::MAX` no longer fails authentication. Update literals/casts that
+  assumed `u32`.
 - The Godot adapter's `watermark_hits` and `backend_capacity_hits`
-  transport diagnostics now count each deferred send once, instead of once
-  per poll attempt that re-observed the same parked frame — so a frame held
-  across N polls no longer inflates the counters N-fold.
-- The `SignalFishClientApi` trait's diagnostic accessors (`send_capacity`,
-  `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`, matching
-  the concrete drivers, so discarding them silently is a compile warning.
-- Documented the panic boundary between the SDK and custom transports: a
-  `Transport` method that panics (a contract violation — only `abort`
-  promises never to panic) now has explicit, pinned semantics. On the async
-  driver the loop task dies: the event channel closes without a
-  `Disconnected` event, queued and parked reliable sends resolve with
-  `NotConnected`, the transport's `abort` still runs, and the snapshot keeps
-  its last pre-death values until a later `shutdown()` reconciles them. On
-  the polling driver the panic propagates into the caller's thread, and
-  `close()` heals — through the close-deadline `abort` only if the violating
-  method keeps panicking.
-- Documented that a room creator joining with `supports_authority` already
-  holds authority (the server auto-assigns it), so an immediate
-  `request_authority(true)` is denied with `AuthorityConflict` — relinquish
-  first to hand authority to another player.
+  diagnostics now count each deferred send once instead of once per poll.
+- The object-safe client trait's diagnostic accessors (`send_capacity`,
+  `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`.
+- Documented custom-transport panic semantics: a panicking `Transport`
+  method kills the async loop (event channel closes without `Disconnected`,
+  parked reliable sends resolve `NotConnected`) and propagates into the
+  caller on the polling driver, where `close()` heals.
+- Documented that a room creator already holds authority, so an immediate
+  `request_authority(true)` is refused with `AuthorityConflict`.
 
 ### Fixed
 
-- Deeply nested caller-supplied JSON payloads — game data, raw WebRTC
-  signals (`send_raw_signal`), and custom connection info — whose container
-  nesting exceeds 128 levels are now refused at the call site with the new
-  `SignalFishError::PayloadTooDeep` error. Such a payload was previously
-  serialized recursively on a driver thread, where a sufficiently deep
-  value aborts the whole process with a stack overflow — after the send
-  call had already reported success (the async driver serializes on a
-  tokio worker thread the application does not own). The bound matches
-  `serde_json`'s own deserialization recursion limit, so every payload the
-  client could receive is also sendable; flatten deeply nested payloads or
-  send binary game data.
-- `MeshSession` now ignores `NewPeer` directives while the selected
-  transport is not WebRTC — before any plan, and on relay plans. The
-  protocol authority scopes `NewPeer` to WebRTC peer directives, so a
-  nonconformant or racing server can no longer make the session view list
-  a peer that will never be connected; matching `PeerTransportStatus`, the
-  directive is applied normally once a WebRTC plan is selected.
-- A `ProtocolInfo` advertisement whose `max_outbound_message_size` falls
-  outside the vendored authority bounds (1..=67108864) is now a lifecycle
-  violation instead of being mirrored unbound into
-  `ClientSnapshot::server_max_outbound_message_size`, and a v2-shaped
-  advertisement carrying the v3-only size field is rejected like the other
-  v2/v3 dialect crossings.
-- The Emscripten WebSocket transport no longer acknowledges sends on a
-  connection the browser has already closed. The browser's `send()` on a
-  closing/closed WebSocket silently discards the data while the JS shim
-  reports success, so a full polling tick's queued commands could be lost
-  and counted as delivered; each send now checks the live
-  `WebSocket.readyState` and fails terminally instead, leaving the frame
-  to the driver's teardown.
-- The Emscripten WebSocket transport now fuses the connection with a
-  terminal receive error when a text frame's payload is not valid UTF-8.
-  Such frames were previously dropped silently, contradicting the
-  transport contract and diverging from the native and Godot transports,
-  which surface corruption instead of omitting frames.
-- The Emscripten WebSocket transport now preserves structured close
-  metadata when the browser queues `onclose` behind `onerror` (the common
-  failed-handshake shape): `close_info()` reports the close code, reason,
-  and cleanliness instead of staying empty.
-- WebSocket connect URLs whose scheme is not exactly lowercase `ws://` or
-  `wss://` (for example `http://`, `WS://`) are now rejected with
-  `InvalidConfig` before any network I/O. Previously the classification
-  depended on network reachability — an uppercase or foreign scheme with an
-  explicit port dialed first and could report either `InvalidConfig` (on a
-  reachable endpoint) or `Io` (on a closed one) — contradicting the
-  documented value-determined error contract.
-- The Godot adapter now selects Godot's web capacity boundary (refusal at
-  or above the outbound buffer size) for every wasm target family member,
-  not just `wasm32-unknown-emscripten`, so `wasm32-unknown-unknown` web
-  builds classify an exactly-buffer-sized frame correctly instead of
-  admitting it for the engine to refuse.
-- Corrected the Godot adapter's inbound-limit documentation: at Godot's
-  inbound bounds, the web backend silently drops newly arriving frames
-  while the native backend stops reading and backpressures (delivery
-  stalls until the application drains queued packets). Previously both
-  platforms were described as silently dropping.
-- The async driver's `transport_diagnostics()` sample now refreshes during
-  the post-send-failure terminal drain, as its per-receive-poll contract
-  documents, instead of freezing at the last pre-teardown value.
-- A protocol-v2 `RoomJoined` that exposes protocol-v3-only metadata
-  (a `reconnection_token` or non-empty `ice_servers`) is now rejected as a
-  lifecycle violation under the violation policy, matching the existing
-  `Reconnected` guard; previously the token surfaced in `snapshot()`.
-- Corrected published documentation for `set_ready()`: the wire
-  `PlayerReady` message **toggles** readiness, so a repeated call un-readies
-  the player. Both drivers' docs, the client/getting-started/protocol
-  guides, and the lobby example now say to call it exactly once per room
-  membership.
-- Corrected additional published documentation claims: `DecodeFailed`'s
-  `message_type: None` case covers frames too large for tag recovery
-  (>512 bytes); `with_max_players` documents its `u8` saturation; the mesh
-  guide and crate feature table state that `MeshController` requires the
-  `tokio-runtime` feature; the WASM guide warns that pthreads is
-  single-thread-only and that outbound pacing is not surfaced; and the
-  token-binding guide classifies transport errors raised inside the
-  challenge window.
+- Deeply nested caller JSON (game data, raw signals, custom connection
+  info) is now refused at the call site with `PayloadTooDeep` instead of
+  risking a stack-overflow process abort during serialization; the bound
+  is 128 nested containers.
+- `MeshSession` ignores `NewPeer` directives while the selected transport
+  is not WebRTC.
+- v2/v3 dialect crossings are now rejected as lifecycle violations:
+  out-of-bounds `ProtocolInfo.max_outbound_message_size`, v2 frames
+  carrying the v3-only size field, and v2 `RoomJoined` frames carrying
+  `reconnection_token` or `ice_servers`.
+- The Emscripten transport no longer acknowledges sends on a connection
+  the browser already closed (they fail terminally and keep the frame),
+  fuses on non-UTF-8 text frames instead of dropping them, and reports the
+  queued `onclose` metadata when it arrives behind `onerror`.
+- WebSocket URLs whose scheme is not lowercase `ws://` or `wss://` are
+  rejected with `InvalidConfig` before any network I/O.
+- The Godot adapter applies Godot's web capacity boundary on every wasm
+  target, not just Emscripten.
+- The async driver's `transport_diagnostics()` now refreshes during the
+  terminal drain instead of freezing at the pre-teardown value.
+- Corrected docs: `set_ready()` toggles readiness (call it once per room
+  stay), `DecodeFailed.message_type` is `None` for frames over 512 bytes,
+  `with_max_players` saturates at `u8::MAX`, `MeshController` requires
+  `tokio-runtime`, the WASM guide warns pthreads is single-thread-only and
+  outbound pacing is not surfaced, at Godot's inbound bounds web drops new
+  frames while native backpressures, and the token-binding guide
+  classifies challenge-window transport errors.
 
 ## [0.11.0] - 2026-08-28
 

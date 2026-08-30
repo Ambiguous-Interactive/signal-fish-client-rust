@@ -1831,6 +1831,10 @@ impl crate::client_api::SignalFishClientApi for SignalFishClient {
         SignalFishClient::snapshot(self)
     }
 
+    fn transport_diagnostics(&self) -> TransportDiagnostics {
+        SignalFishClient::transport_diagnostics(self)
+    }
+
     fn supports_mesh(&self) -> bool {
         SignalFishClient::supports_mesh(self)
     }
@@ -2753,6 +2757,9 @@ mod tests {
             Option<Pin<Box<dyn Future<Output = tokio::sync::OwnedSemaphorePermit> + Send>>>,
         /// Count of outbound frames the gate has taken ownership of.
         frames_taken: Arc<std::sync::atomic::AtomicUsize>,
+        /// When present, outbound binary frames are recorded verbatim instead
+        /// of being refused by the text-only default.
+        sent_binary: Option<Arc<StdMutex<Vec<Vec<u8>>>>>,
         /// Diagnostics reported by the mocked backend.
         diagnostics: crate::transport::TransportDiagnostics,
     }
@@ -2763,6 +2770,23 @@ mod tests {
         ) -> (Self, Arc<StdMutex<Vec<String>>>, Arc<AtomicBool>) {
             let (transport, sent, closed, _controls) = Self::new_shared(incoming);
             (transport, sent, closed)
+        }
+
+        /// A mock that additionally records outbound binary frames verbatim
+        /// instead of refusing them.
+        #[allow(clippy::type_complexity)]
+        fn new_binary_recording(
+            incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
+        ) -> (
+            Self,
+            Arc<StdMutex<Vec<String>>>,
+            Arc<StdMutex<Vec<Vec<u8>>>>,
+            Arc<AtomicBool>,
+        ) {
+            let (mut transport, sent, closed, _controls) = Self::new_shared(incoming);
+            let sent_binary = Arc::new(StdMutex::new(Vec::new()));
+            transport.sent_binary = Some(Arc::clone(&sent_binary));
+            (transport, sent, sent_binary, closed)
         }
 
         #[allow(clippy::type_complexity)]
@@ -2788,6 +2812,7 @@ mod tests {
                 held_frame: None,
                 permit_wait: None,
                 frames_taken: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                sent_binary: None,
                 diagnostics: crate::transport::TransportDiagnostics::default(),
             };
             (
@@ -2847,9 +2872,15 @@ mod tests {
                         self.sent.lock().unwrap().push(message);
                         Poll::Ready(Ok(()))
                     }
-                    Some(TransportFrame::Binary(_)) => Poll::Ready(Err(
-                        SignalFishError::TransportSend("mock expected a text frame".into()),
-                    )),
+                    Some(TransportFrame::Binary(payload)) => match &self.sent_binary {
+                        Some(log) => {
+                            log.lock().unwrap().push(payload);
+                            Poll::Ready(Ok(()))
+                        }
+                        None => Poll::Ready(Err(SignalFishError::TransportSend(
+                            "mock expected a text frame".into(),
+                        ))),
+                    },
                     None => Poll::Ready(Ok(())),
                 };
             };
@@ -5541,6 +5572,30 @@ mod tests {
             client.send_binary_game_data(vec![1, 2, 3]),
             Err(SignalFishError::BinaryFormatNotNegotiated)
         ));
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn async_binary_send_forwards_exact_bytes_verbatim() {
+        let (transport, _sent, sent_binary, _closed) = MockTransport::new_binary_recording(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(finalized_room_v3_json(uuid::Uuid::from_u128(7)))),
+        ]);
+        let mut config = SignalFishConfig::new("mb_test").enable_v3();
+        config.game_data_format = Some(GameDataEncoding::MessagePack);
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        enter_scripted_player_room(&mut client, &mut events).await;
+
+        client
+            .send_binary_game_data(vec![1, 2, 3])
+            .expect("negotiated MessagePack accepts binary game data");
+        wait_until(|| !sent_binary.lock().unwrap().is_empty()).await;
+        assert_eq!(
+            sent_binary.lock().unwrap().as_slice(),
+            [vec![1, 2, 3]],
+            "the binary frame must reach the transport byte-for-byte"
+        );
         client.shutdown().await;
     }
 

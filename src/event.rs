@@ -37,13 +37,16 @@ use crate::protocol::{
 ///
 /// # Example
 ///
+/// The enum is exhaustive: every variant is handled explicitly, with no
+/// catch-all arm.
+///
 /// ```text
 /// // Assuming `events` is an async receiver of SignalFishEvent:
 /// match event {
-///     SignalFishEvent::RoomJoined { room_code, current_players, .. } => { /* … */ }
-///     SignalFishEvent::PlayerJoined { player } => { /* … */ }
-///     SignalFishEvent::Disconnected { reason, .. } => { /* … */ }
-///     _ => {}
+///     SignalFishEvent::RoomJoined { .. } => { /* … */ }
+///     SignalFishEvent::PlayerJoined { .. } => { /* … */ }
+///     SignalFishEvent::Disconnected { .. } => { /* … */ }
+///     // …one arm per remaining variant…
 /// }
 /// ```
 #[derive(Clone)]
