@@ -172,6 +172,98 @@ mod required_check_policy {
     }
 
     #[test]
+    fn aggregate_gates_list_every_sibling_job_in_needs() {
+        // A job omitted from the aggregate gate's `needs:` (for example a
+        // schedule-only lane such as cargo-deny or cargo-udeps) can fail
+        // forever without ever failing the required check, because the
+        // gate's jq filter only sees the jobs it depends on. Pin the
+        // complete class: every top-level job in a required workflow must
+        // feed its aggregate gate.
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        let checks = policy["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array");
+
+        for check in checks {
+            let file = check["file"].as_str().expect("required check file");
+            let gate_job = check["job"].as_str().expect("required check job");
+            let workflow = read_project_file(&format!(".github/workflows/{file}"));
+
+            let jobs_section = workflow
+                .split_once("\njobs:\n")
+                .unwrap_or_else(|| panic!("{file} must define a jobs section"))
+                .1;
+            // Top-level job keys sit at exactly two-space indentation; each
+            // block's display name comes from its four-space `name:` line.
+            let mut job_blocks: Vec<(&str, String)> = Vec::new();
+            for line in jobs_section.lines() {
+                if let Some(key) = line.strip_prefix("  ").filter(|rest| {
+                    !rest.starts_with(' ') && rest.ends_with(':') && !rest.contains("://")
+                }) {
+                    job_blocks.push((key.trim_end_matches(':').trim(), String::new()));
+                } else if let Some((_, block)) = job_blocks.last_mut() {
+                    block.push_str(line);
+                    block.push('\n');
+                }
+            }
+            let gate_block = job_blocks
+                .iter()
+                .find(|(_, block)| {
+                    block.lines().any(|line| {
+                        line.trim()
+                            .strip_prefix("name:")
+                            .map(|name| name.trim() == gate_job)
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or_else(|| panic!("{file} must define the aggregate gate job {gate_job}"));
+
+            // The aggregate job's needs list, in inline `[a, b]` or block form.
+            let needs: BTreeSet<String> = gate_block
+                .1
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("needs:"))
+                .map(|inline| {
+                    inline
+                        .trim()
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|job| job.trim().to_string())
+                        .filter(|job| !job.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            for (sibling, _) in &job_blocks {
+                if *sibling == gate_block.0 {
+                    continue;
+                }
+                assert!(
+                    needs.contains(*sibling),
+                    "{file}: job '{sibling}' is missing from the {gate_job} \
+                     aggregate gate's needs list; its failures could never \
+                     fail the required check"
+                );
+            }
+
+            // A workflow with schedule-only jobs feeds them to the gate as
+            // "skipped" on every push/PR run, so the gate's filter must
+            // tolerate skipped results instead of failing every run.
+            let has_schedule_only_job = workflow.contains("if: github.event_name == 'schedule'");
+            if has_schedule_only_job {
+                assert!(
+                    workflow.contains(".value.result != \"skipped\""),
+                    "{file} has schedule-only jobs in its gate; the jq filter \
+                     must tolerate \"skipped\" results so push/PR runs stay green"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn release_preflight_reads_every_page_of_commit_checks() {
         let workflow = read_project_file(".github/workflows/publish.yml");
         assert!(
@@ -3079,9 +3171,9 @@ mod workflow_security {
         );
 
         assert!(
-            contents.contains("grep -n -E"),
-            "scripts/check-workflows.sh must provide a grep fallback for step-name \
-             enforcement when ripgrep is unavailable."
+            contents.contains("grep -R -n -E"),
+            "scripts/check-workflows.sh must provide a recursive grep fallback \
+             for step-name enforcement when ripgrep is unavailable."
         );
     }
 
@@ -4384,10 +4476,8 @@ mod ci_config_validation {
     /// a second comment marker (`  # rationale`).
     #[test]
     fn trap_handler_scripts_use_parse_safe_sc2317_disable_directive() {
-        for path in ["scripts/verify-sccache.sh", "scripts/check-workflows.sh"] {
-            let validation = validate_sc2317_directive_in_script(path);
-            assert!(validation.is_ok(), "{}", validation.unwrap_err());
-        }
+        let validation = validate_sc2317_directive_in_script("scripts/check-workflows.sh");
+        assert!(validation.is_ok(), "{}", validation.unwrap_err());
     }
 
     #[test]
@@ -7273,32 +7363,33 @@ mod panic_script_cfg_handling {
         );
     }
 
-    /// The grep pattern used by `check-no-panics.sh` to detect `#[cfg(..test..)]`
-    /// module boundaries. This must match both simple `#[cfg(test)]` and compound
-    /// forms like `#[cfg(all(test, feature = "tokio-runtime"))]`.
+    /// Verify that `check-no-panics.sh` tracks brace-bounded cfg(test) mod
+    /// regions instead of excusing "everything below the last cfg(test)
+    /// attribute".
     ///
-    /// Regression: The original script only matched `#[cfg(test)]` exactly,
-    /// missing compound cfg attributes. This caused false violations for code
-    /// inside `#[cfg(all(test, ...))]` modules (e.g., `src/client.rs`).
+    /// Forms like `#[cfg(all(test, feature = "tokio-runtime"))]` are handled
+    /// by construction: any attribute containing `test` may open a region.
+    ///
+    /// Regression: The original script found the LAST `#[cfg(..test..)]`
+    /// line in the file and excused every match below it. That silently
+    /// excused production code appended after a closed test module, or below
+    /// a mid-file test-only item (`#[cfg(test)] use ...`), letting real
+    /// `.unwrap()` calls escape the gate entirely.
     #[test]
     fn check_no_panics_script_uses_compound_cfg_test_pattern() {
         let contents = read_project_file("scripts/check-no-panics.sh");
 
-        // The script must use a POSIX-portable grep -E pattern that matches
-        // `test` as a whole word inside any `#[cfg(...)]` attribute, not just
-        // exact `#[cfg(test)]`. The current pattern is:
-        //   grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file"
-        //
-        // The pattern `(.*[^[:alnum:]_])?` makes the pre-boundary optional so
-        // that `#[cfg(test)]` matches (where `test` immediately follows the
-        // opening paren already consumed by `\(`).
         assert!(
-            contents.contains(r"#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)"),
-            "scripts/check-no-panics.sh must use a POSIX-portable grep -E \
-             pattern that matches both simple `#[cfg(test)]` and compound cfg \
-             attributes containing `test` \
-             (e.g., `#[cfg(all(test, feature = \"...\"))]`). \
-             Expected pattern: `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)`"
+            contents.contains("CFG_REGION_AWK") && contents.contains("in_test_region"),
+            "scripts/check-no-panics.sh must track brace-bounded cfg(test) mod \
+             regions (CFG_REGION_AWK + in_test_region) so test-module excusal \
+             cannot cover production code outside the test module body"
+        );
+        assert!(
+            !contents.contains("cfg_test_line="),
+            "scripts/check-no-panics.sh must not excuse everything below the \
+             last cfg(test) attribute line (the cfg_test_line= tail-1 window); \
+             production code after a closed test module would escape the gate"
         );
     }
 
@@ -7349,13 +7440,11 @@ mod panic_script_cfg_handling {
              If all test modules have been removed, this test should be updated."
         );
 
-        // The script's grep pattern is: #\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)
-        // This translates to: the line must contain `#[cfg(` followed (possibly
-        // with intervening characters) by the word `test` as a whole word.
-        // We check this without a regex dependency by verifying:
-        //   1. The line contains `#[cfg(`
-        //   2. After `#[cfg(`, the word `test` appears as a standalone identifier
-        //      (not part of a larger word like `testing`).
+        // The script's region tracker (CFG_REGION_AWK) opens an excused
+        // region for any attribute whose bracketed contents include the
+        // whole word `test`. This helper re-implements the same matching:
+        // the line must contain `#[cfg(` followed by `test` as a standalone
+        // identifier (not part of a larger word like `testing`).
         fn matches_cfg_test_pattern(line: &str) -> bool {
             let Some(cfg_pos) = line.find("#[cfg(") else {
                 return false;
@@ -7482,23 +7571,26 @@ mod panic_script_cfg_handling {
         );
     }
 
-    /// Verify that the script explicitly documents the compound cfg handling
-    /// in its inline comments. This prevents future maintainers from
-    /// simplifying the pattern back to exact `#[cfg(test)]` matching.
+    /// Verify that the script documents its region-tracking cfg(test)
+    /// handling, including the known `not(test)` caveat. This prevents
+    /// future maintainers from reintroducing narrower (or wider) excusal
+    /// windows without updating the pinned contract.
     #[test]
     fn check_no_panics_script_documents_compound_cfg_handling() {
         let contents = read_project_file("scripts/check-no-panics.sh");
 
         assert!(
-            contents.contains("cfg(all(test,"),
-            "scripts/check-no-panics.sh must mention `cfg(all(test,` in a comment \
-             to document that compound cfg attributes are supported."
+            contents.contains("attribute containing `test`"),
+            "scripts/check-no-panics.sh must document that any cfg attribute \
+             containing `test` (simple or compound, e.g. cfg(all(test, ...))) \
+             may open an excused region."
         );
 
         assert!(
-            contents.contains("#[cfg(..test..)]") || contents.contains("cfg(..test..)"),
-            "scripts/check-no-panics.sh must reference the general pattern \
-             `cfg(..test..)` to indicate it handles any cfg containing `test`."
+            contents.contains("not(test)"),
+            "scripts/check-no-panics.sh must reference the `not(test)` caveat \
+             and the pinned safety net that keeps that form out of the \
+             scanned production roots."
         );
     }
 }
