@@ -65,9 +65,11 @@ TEST_DIRS=(tests crates/*/tests tools/*/tests)
 # entirely.
 #
 # The region scan is textual (brace counting includes braces inside string
-# literals and comments); a miscount fails toward flagging, and clippy's
-# deny lints remain the authoritative backstop for compiled code. Any
-# attribute containing `test` may open a region — including the
+# literals and comments); a miscount almost always fails toward flagging,
+# and clippy's deny lints remain the authoritative backstop for compiled
+# code. A module body whose closing brace never appears extends the region
+# to end-of-file, which only arises in files that do not compile. Any
+# cfg attribute containing `test` may open a region — including the
 # `not(test)` form; the pinned ci_config_tests.rs sweep
 # (no_production_source_uses_cfg_not_test) keeps that form out of the
 # production roots scanned here.
@@ -75,7 +77,9 @@ TEST_DIRS=(tests crates/*/tests tools/*/tests)
 CFG_REGION_AWK='
 {
     lines[NR] = $0
-    if ($0 ~ /#[[][^]]*test[^]]*]/) istest[NR] = 1
+    # Only a line that STARTS with a bracketed attribute can open a region;
+    # a `test` mention inside a comment or string literal must not.
+    if ($0 ~ /^[[:space:]]*#[[][^]]*test[^]]*]/) istest[NR] = 1
 }
 END {
     i = 1
@@ -121,7 +125,7 @@ END {
                         if (lookahead > 1) break
                     }
                 }
-                if (opened) { print i, endline; i = endline + 1 }
+                if (opened) { print modline, endline; i = endline + 1 }
                 else { i = modline + 1 }
                 continue
             }

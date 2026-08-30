@@ -139,6 +139,13 @@ else
                 if printf '%s\n' "$line" | grep -q '{' && printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
                     _flag_bare_bool
                 fi
+                if [ "$opens" -eq "$closes" ]; then
+                    # Fully closed on the declaration line — leave the body
+                    # state clean for whatever follows.
+                    in_struct=false
+                    struct_name=""
+                    brace_depth=0
+                fi
                 continue
             fi
 

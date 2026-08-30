@@ -7547,19 +7547,21 @@ mod panic_script_cfg_handling {
                 continue;
             };
             for entry in entries.flatten() {
-                let member_sources = entry.path().join("src");
-                if member_sources.is_dir() {
-                    scan_for_cfg_not_test(&member_sources, &root, &mut violations);
+                for source_dir in ["src", "examples"] {
+                    let member_sources = entry.path().join(source_dir);
+                    if member_sources.is_dir() {
+                        scan_for_cfg_not_test(&member_sources, &root, &mut violations);
+                    }
                 }
             }
         }
 
         assert!(
             violations.is_empty(),
-            "Found `#[cfg(not(test))]` in production sources. This attribute causes a false \
-             positive in check-no-panics.sh (the grep pattern \
-             `#\\[cfg\\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)` matches it and \
-             incorrectly treats the code as inside a test module). \
+            "Found `#[cfg(not(test))]` in production sources. This attribute opens a \
+             cfg(test) excusal region in check-no-panics.sh's region tracker \
+             (any attribute containing `test` may open one), incorrectly \
+             treating the code below it as inside a test module. \
              Use a different gating mechanism or update check-no-panics.sh to \
              exclude `not(test)` before adding this attribute.\n\
              Violations:\n{}",

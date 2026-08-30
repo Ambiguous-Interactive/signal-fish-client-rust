@@ -437,7 +437,9 @@ else
             tilde_matches=$(grep -cE '<p>([[:space:]]*~{3}|<sub>~</sub>)' "$html_file" || true)
             if [ "$matches" -gt 0 ] || [ "$tilde_matches" -gt 0 ]; then
                 fail "Broken code fence(s) in $rel_path — fence markers rendered as <p> content"
-                { grep -nE '<p>[[:space:]]*```' "$html_file"; grep -nE '<p>([[:space:]]*~{3}|<sub>~</sub>)' "$html_file"; } | head -5 | while IFS= read -r line; do
+                # `|| :` keeps the other pattern's exit-1 from tripping
+                # pipefail and aborting the remaining checks.
+                { grep -nE '<p>[[:space:]]*```' "$html_file" || :; grep -nE '<p>([[:space:]]*~{3}|<sub>~</sub>)' "$html_file" || :; } | head -5 | while IFS= read -r line; do
                     echo "      $line"
                 done
                 BROKEN_FENCES=true

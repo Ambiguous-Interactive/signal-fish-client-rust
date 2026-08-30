@@ -283,6 +283,12 @@ _check_string_command() {
     # shell leg plus one Unix shell leg joined by '||' — can pass. The
     # previous five-pattern blocklist let any other Unix-only command
     # (chmod, ln, cp, sed -i, ...) pass silently.
+    #
+    # Known textual limitation: leg detection is line-level, so a '|| pwsh'
+    # inside a quoted payload (for example `sh -c '… || pwsh …'`) counts as
+    # a Windows leg. The documented initializer pattern (and this repo's
+    # scripts) never quotes the fallback; a real fallback inside quotes is
+    # not one cmd.exe can use anyway.
     if [ "$has_unix_leg" = true ] && [ "$has_windows_leg" = true ]; then
         return 0
     fi
