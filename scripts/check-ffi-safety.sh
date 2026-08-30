@@ -136,7 +136,7 @@ else
                 # One-line struct bodies (`struct X { pub flag: bool }`)
                 # never reach the per-line field scan below, so check this
                 # declaration line directly whenever it opens a body.
-                if printf '%s\n' "$line" | grep -q '{' && printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
+                if printf '%s\n' "$line" | grep -q '{' && printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool([^a-zA-Z0-9_]|$)'; then
                     _flag_bare_bool
                 fi
                 if [ "$opens" -eq "$closes" ]; then
@@ -165,7 +165,7 @@ else
                 brace_depth=$((brace_depth + opens - closes))
 
                 # Check for bare bool field: `: bool` not preceded by `//`
-                if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
+                if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool([^a-zA-Z0-9_]|$)'; then
                     _flag_bare_bool
                 fi
 

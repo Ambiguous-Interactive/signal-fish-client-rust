@@ -100,6 +100,26 @@ RUST
 run_check
 assert_exit "one-line repr(C) struct with bool should FAIL" 1
 
+# -- Should FAIL: one-line body whose bool field is not last --
+setup_fake_repo
+cat > "$FAKE_REPO/src/mid_line_bool.rs" << 'RUST'
+#[repr(C)]
+pub struct TwoField { pub flag: bool, pub n: u8 }
+RUST
+run_check
+assert_exit "one-line repr(C) struct with non-final bool should FAIL" 1
+
+# -- Should FAIL: several fields sharing one body line, bool first --
+setup_fake_repo
+cat > "$FAKE_REPO/src/shared_line_bool.rs" << 'RUST'
+#[repr(C)]
+pub struct Shared {
+    pub flag: bool, pub other: u8,
+}
+RUST
+run_check
+assert_exit "shared-line bool field should FAIL" 1
+
 # -- Should PASS: one-line #[repr(C)] struct body without a bool field --
 setup_fake_repo
 cat > "$FAKE_REPO/src/one_line_clean.rs" << 'RUST'

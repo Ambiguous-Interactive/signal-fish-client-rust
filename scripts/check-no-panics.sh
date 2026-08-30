@@ -85,22 +85,45 @@ END {
     i = 1
     while (i <= NR) {
         if (istest[i]) {
-            # Scan forward from the attribute to the first code item. The
-            # attribute (including multi-line #[allow( ... )] arguments),
-            # comments, and blanks are skipped; the first item decides:
-            # `mod` opens a region, any other item closes the search.
+            # The attribute line itself may also declare the module
+            # (`#[cfg(test)] mod tests { ... }`).
             modline = 0
-            for (k = i; k <= NR; k++) {
-                code = lines[k]
-                sub(/^[[:space:]]+/, "", code)
-                n = split(code, tok, /[[:space:]()]+/)
-                kw = ""
-                for (t = 1; t <= n && t <= 4; t++) {
-                    if (tok[t] == "pub" || tok[t] == "crate" || tok[t] == "async" || tok[t] == "unsafe") continue
-                    kw = tok[t]; break
+            if (lines[i] ~ /(^|[^A-Za-z_])mod[[:space:]]+[A-Za-z_]/) modline = i
+
+            # Otherwise scan forward from the attribute. Attribute groups
+            # (tracked by open-paren depth), their argument lines, comments,
+            # and blanks are skipped. The first real code item decides:
+            # `mod` opens a region; any other item or statement stops the
+            # search so a later unrelated `mod` is never excused by this
+            # attribute.
+            if (! modline) {
+                attr_depth = 0
+                for (k = i + 1; k <= NR; k++) {
+                    code = lines[k]
+                    trimmed = code
+                    sub(/^[[:space:]]+/, "", trimmed)
+                    # Attribute lines (balanced or opening a group), their
+                    # argument continuation lines, comments, and blanks are
+                    # never code items.
+                    if (attr_depth == 0 && trimmed ~ /^#\[/) {
+                        attr_depth += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
+                        continue
+                    }
+                    if (attr_depth > 0) {
+                        attr_depth += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
+                        continue
+                    }
+                    if (trimmed ~ /^(\/\/|\/\*|\*|$)/) continue
+                    sub(/^[[:space:]]+/, "", code)
+                    n = split(code, tok, /[[:space:]()]+/)
+                    kw = ""
+                    for (t = 1; t <= n && t <= 6; t++) {
+                        if (tok[t] == "pub" || tok[t] == "crate" || tok[t] == "super" || tok[t] == "in" || tok[t] == "self" || tok[t] == "async" || tok[t] == "unsafe") continue
+                        kw = tok[t]; break
+                    }
+                    if (kw == "mod") { modline = k; break }
+                    if (kw != "") break
                 }
-                if (kw == "mod") { modline = k; break }
-                if (kw == "fn" || kw == "struct" || kw == "enum" || kw == "impl" || kw == "use" || kw == "const" || kw == "static" || kw == "type" || kw == "trait") break
             }
             if (modline) {
                 mline = lines[modline]

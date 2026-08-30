@@ -189,12 +189,14 @@ else
         UNCLOSED_FOUND=false
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
-            # Count opening and closing fences (lines starting with ``` or
-            # ~~~; both fence characters are valid CommonMark). A file
-            # should have an even number of fence lines.
-            fence_count=$(grep -cE '^[[:space:]]*(`{3,}|~{3,})' "$md_file" || true)
-            if [ $((fence_count % 2)) -ne 0 ]; then
-                fail "Unclosed code fence in $rel_path (odd number of fence markers: $fence_count)"
+            # Count opening and closing fence lines per fence character:
+            # CommonMark only closes a fence with the same character, so a
+            # leftover ``` plus a stray ~~~ must not cancel out in one
+            # combined even/odd total. Each character's count must be even.
+            backtick_count=$(grep -cE '^[[:space:]]*`{3,}' "$md_file" || true)
+            tilde_count=$(grep -cE '^[[:space:]]*~{3,}' "$md_file" || true)
+            if [ $((backtick_count % 2)) -ne 0 ] || [ $((tilde_count % 2)) -ne 0 ]; then
+                fail "Unclosed code fence in $rel_path (fence markers: backtick=$backtick_count, tilde=$tilde_count; each must be even)"
                 UNCLOSED_FOUND=true
             fi
         done
