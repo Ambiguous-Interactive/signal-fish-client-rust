@@ -97,8 +97,10 @@ thiserror = "2.0"
 futures-util = "0.3"
 TOML
 
-# Replace the placeholder with the real repo root path.
-sed -i "s|REPO_ROOT_PLACEHOLDER|$REPO_ROOT|g" "$TEMP_DIR/Cargo.toml"
+# Replace the placeholder with the real repo root path. (No `sed -i`: the
+# in-place flag is GNU-only and breaks on BSD/macOS sed.)
+sed "s|REPO_ROOT_PLACEHOLDER|$REPO_ROOT|g" "$TEMP_DIR/Cargo.toml" > "$TEMP_DIR/Cargo.toml.tmp"
+mv "$TEMP_DIR/Cargo.toml.tmp" "$TEMP_DIR/Cargo.toml"
 
 # Create a dummy lib.rs so cargo doesn't complain.
 echo "" > "$TEMP_SRC/lib.rs"

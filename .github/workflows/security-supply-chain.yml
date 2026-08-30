@@ -127,7 +127,11 @@ jobs:
   required:
     name: Security Required
     if: ${{ always() }}
-    needs: [cargo-audit, sbom]
+    # cargo-deny is schedule-only; it must still feed this gate so a
+    # scheduled advisory failure cannot pass invisibly. The filter below
+    # tolerates "skipped" so pull-request runs (where cargo-deny does not
+    # trigger) stay green while a real scheduled failure goes red.
+    needs: [cargo-audit, cargo-deny, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -135,7 +139,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
           if [ -n "$failures" ]; then
             printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
             exit 1

@@ -31,6 +31,7 @@
 # Exit codes:
 #   0 — no violations found
 #   1 — one or more violations detected
+#   2 — the guard could not do its job (canonical sources missing / scan error)
 
 set -euo pipefail
 
@@ -46,6 +47,40 @@ NC='\033[0m' # No Color
 
 VIOLATIONS=0
 
+# Report one bare-bool field violation. Reads the enclosing scan loop's
+# file/lineno/struct_name/line variables directly so callers never pass the
+# file being read as an argument (shellcheck SC2094).
+_flag_bare_bool() {
+    echo -e "${RED}VIOLATION:${NC} ${file}:${lineno}: bare 'bool' in #[repr(C)] struct '${struct_name}'"
+    echo "  ${line}"
+    echo "  Use an explicit integer alias matching the upstream header (for example C_BOOL = u8 or EM_BOOL = c_int)."
+    echo "  Bare Rust bool has no supported FFI ABI guarantee for repr(C) fields."
+    VIOLATIONS=$((VIOLATIONS + 1))
+}
+
+# ── Scan roots ────────────────────────────────────────────────────────
+# The same production roots check-no-panics.sh scans: FFI ABI mistakes
+# anywhere in the workspace must be visible, not only in the core crate
+# (the lockstep Godot adapter crate under crates/ is real FFI-adjacent
+# code today).
+SCAN_DIRS=()
+for dir in src examples crates/*/src crates/*/examples tools/*/src; do
+    if [ -d "$dir" ]; then
+        SCAN_DIRS+=("$dir")
+    fi
+done
+if [ ! -d src ]; then
+    echo -e "${RED}FATAL: src/ is missing — the core crate's sources were not scanned.${NC}" >&2
+    exit 2
+fi
+if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
+    echo -e "${RED}FATAL: no production source roots found — nothing was scanned.${NC}" >&2
+    exit 2
+fi
+
+FFI_SCAN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/sf-ffi-scan.XXXXXX")"
+trap 'rm -rf "$FFI_SCAN_TMP"' EXIT
+
 echo -e "${YELLOW}=== FFI safety check ===${NC}"
 echo ""
 
@@ -55,8 +90,17 @@ echo ""
 # bodies that follow a #[repr(C)] annotation.
 echo -e "${YELLOW}Check 1: Scanning for bare 'bool' fields in #[repr(C)] structs...${NC}"
 
-# Find all .rs files that contain #[repr(C)]
-REPR_C_FILES=$(grep -rl '#\[repr(C)\]' src/ 2>/dev/null || true)
+# Find all .rs files that contain #[repr(C)]. Grep exit 1 (no match) is
+# normal; any other failure must fail the guard instead of reporting a
+# vacuous pass.
+REPR_C_FILES=""
+grep_status=0
+grep -rl '#\[repr(C)\]' "${SCAN_DIRS[@]}" 2>/dev/null >"${FFI_SCAN_TMP}/reprc" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+    echo -e "${RED}FATAL: scan for #[repr(C)] failed (grep exit $grep_status).${NC}" >&2
+    exit 2
+fi
+REPR_C_FILES=$(cat "${FFI_SCAN_TMP}/reprc")
 
 if [ -z "$REPR_C_FILES" ]; then
     echo -e "${GREEN}  No #[repr(C)] structs found — nothing to check.${NC}"
@@ -89,6 +133,19 @@ else
                 closes=$(printf '%s\n' "$line" | tr -cd '}' | wc -c)
                 brace_depth=$((brace_depth + opens - closes))
                 in_repr_c=false
+                # One-line struct bodies (`struct X { pub flag: bool }`)
+                # never reach the per-line field scan below, so check this
+                # declaration line directly whenever it opens a body.
+                if printf '%s\n' "$line" | grep -q '{' && printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool([^a-zA-Z0-9_]|$)'; then
+                    _flag_bare_bool
+                fi
+                if [ "$opens" -eq "$closes" ]; then
+                    # Fully closed on the declaration line — leave the body
+                    # state clean for whatever follows.
+                    in_struct=false
+                    struct_name=""
+                    brace_depth=0
+                fi
                 continue
             fi
 
@@ -108,12 +165,8 @@ else
                 brace_depth=$((brace_depth + opens - closes))
 
                 # Check for bare bool field: `: bool` not preceded by `//`
-                if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool[[:space:]]*[,}]?[[:space:]]*$'; then
-                    echo -e "${RED}VIOLATION:${NC} $file:$lineno: bare 'bool' in #[repr(C)] struct '$struct_name'"
-                    echo "  $line"
-                    echo "  Use an explicit integer alias matching the upstream header (for example C_BOOL = u8 or EM_BOOL = c_int)."
-                    echo "  Bare Rust bool has no supported FFI ABI guarantee for repr(C) fields."
-                    VIOLATIONS=$((VIOLATIONS + 1))
+                if printf '%s\n' "$line" | grep -v '^[[:space:]]*//' | grep -qE ':[[:space:]]*bool([^a-zA-Z0-9_]|$)'; then
+                    _flag_bare_bool
                 fi
 
                 if [ "$brace_depth" -le 0 ]; then
@@ -139,7 +192,14 @@ echo -e "${YELLOW}Check 2: Scanning for unchecked FFI callback-registration retu
 
 CHECK2_VIOLATIONS=0
 
-FFI_FILES=$(grep -rl 'emscripten_websocket_set_' src/ 2>/dev/null || true)
+FFI_FILES=""
+grep_status=0
+grep -rl 'emscripten_websocket_set_' "${SCAN_DIRS[@]}" 2>/dev/null >"${FFI_SCAN_TMP}/set_cb" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+    echo -e "${RED}FATAL: scan for FFI callback registrations failed (grep exit $grep_status).${NC}" >&2
+    exit 2
+fi
+FFI_FILES=$(cat "${FFI_SCAN_TMP}/set_cb")
 
 if [ -z "$FFI_FILES" ]; then
     echo -e "${GREEN}  No FFI callback registrations found — nothing to check.${NC}"
@@ -162,7 +222,11 @@ else
             || true)
 
         # Read the file into an array so we can inspect context lines.
-        mapfile -t file_lines < "$file"
+        # (No mapfile: bash 3.2 on macOS does not provide it.)
+        file_lines=()
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            file_lines+=("$_line")
+        done <"$file"
 
         while IFS= read -r match_line; do
             match_line="${match_line//$'\r'/}"
@@ -231,7 +295,14 @@ echo -e "${YELLOW}Check 3: Scanning for missing target guards in Emscripten FFI 
 
 CHECK3_VIOLATIONS=0
 
-EMSCRIPTEN_FFI_FILES=$(grep -rl 'emscripten_websocket_new\|emscripten_websocket_set_' src/ 2>/dev/null || true)
+EMSCRIPTEN_FFI_FILES=""
+grep_status=0
+grep -rl 'emscripten_websocket_new\|emscripten_websocket_set_' "${SCAN_DIRS[@]}" 2>/dev/null >"${FFI_SCAN_TMP}/emffi" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+    echo -e "${RED}FATAL: scan for Emscripten FFI files failed (grep exit $grep_status).${NC}" >&2
+    exit 2
+fi
+EMSCRIPTEN_FFI_FILES=$(cat "${FFI_SCAN_TMP}/emffi")
 
 if [ -z "$EMSCRIPTEN_FFI_FILES" ]; then
     echo -e "${GREEN}  No Emscripten FFI files found — nothing to check.${NC}"
@@ -266,7 +337,14 @@ echo -e "${YELLOW}Check 4: Scanning for missing per-function SAFETY comments on 
 
 CHECK4_VIOLATIONS=0
 
-EXTERN_C_FILES=$(grep -rl 'extern "C" fn' src/ 2>/dev/null || true)
+EXTERN_C_FILES=""
+grep_status=0
+grep -rl 'extern "C" fn' "${SCAN_DIRS[@]}" 2>/dev/null >"${FFI_SCAN_TMP}/externc" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+    echo -e "${RED}FATAL: scan for extern \"C\" fn files failed (grep exit $grep_status).${NC}" >&2
+    exit 2
+fi
+EXTERN_C_FILES=$(cat "${FFI_SCAN_TMP}/externc")
 
 if [ -z "$EXTERN_C_FILES" ]; then
     echo -e "${GREEN}  No extern \"C\" fn declarations found — nothing to check.${NC}"
@@ -284,7 +362,11 @@ else
         fi
 
         # File has a callback SAFETY block — check each extern "C" fn.
-        mapfile -t file_lines < "$file"
+        # (No mapfile: bash 3.2 on macOS does not provide it.)
+        file_lines=()
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            file_lines+=("$_line")
+        done <"$file"
         total_lines=${#file_lines[@]}
 
         for ((i = 0; i < total_lines; i++)); do
@@ -407,6 +489,12 @@ EXPECTED_FILE='src/transports/emscripten_websocket.rs'
 EXPECTED_COUNT=0
 RECLAIM_FOUND=0
 
+grep_status=0
+grep -rnE 'from_raw(_parts)?|drop_in_place|std::alloc::dealloc|std::mem::transmute|(^|[^[:alnum:]_])(dealloc|free|transmute)[[:space:]]*\(' "${SCAN_DIRS[@]}" 2>/dev/null >"${FFI_SCAN_TMP}/reclaim" || grep_status=$?
+if [ "$grep_status" -gt 1 ]; then
+    printf '%b\n' "${RED}FATAL: scan for raw ownership reclamation failed (grep exit $grep_status).${NC}" >&2
+    exit 2
+fi
 while IFS=: read -r file lineno line; do
     [ -n "$file" ] || continue
     trimmed=$(printf '%s\n' "$line" | sed 's/^[[:space:]]*//')
@@ -434,7 +522,7 @@ while IFS=: read -r file lineno line; do
     printf '%b\n' "${RED}VIOLATION:${NC} $file:$lineno: raw ownership reclamation bypasses RegisteredCallbackState authorization"
     printf '  %s\n' "$line"
     CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
-done < <(grep -rnE 'from_raw(_parts)?|drop_in_place|std::alloc::dealloc|std::mem::transmute|(^|[^[:alnum:]_])(dealloc|free|transmute)[[:space:]]*\(' src/ 2>/dev/null || true)
+done <"${FFI_SCAN_TMP}/reclaim"
 
 if [ "$RECLAIM_FOUND" -eq 1 ] && [ "$EXPECTED_COUNT" -ne 1 ]; then
     printf '%b\n' "${RED}VIOLATION:${NC} expected exactly one authorized callback-state reclaim, found $EXPECTED_COUNT"
@@ -448,7 +536,13 @@ if [ "$RECLAIM_FOUND" -eq 1 ] &&
     CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
 fi
 
-if grep -rnE '(dealloc|free|from_raw|transmute)[[:space:]]+as[[:space:]]+' src/ >/dev/null 2>&1; then
+aliased_status=0
+grep -rnE '(dealloc|free|from_raw|transmute)[[:space:]]+as[[:space:]]+' "${SCAN_DIRS[@]}" >/dev/null 2>&1 || aliased_status=$?
+if [ "$aliased_status" -gt 1 ]; then
+    printf '%b\n' "${RED}FATAL: scan for aliased reclamation functions failed (grep exit $aliased_status).${NC}" >&2
+    exit 2
+fi
+if [ "$aliased_status" -eq 0 ]; then
     printf '%b\n' "${RED}VIOLATION:${NC} raw reclamation functions must not be aliased"
     CHECK7_VIOLATIONS=$((CHECK7_VIOLATIONS + 1))
 fi

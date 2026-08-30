@@ -174,7 +174,11 @@ if [ ! -d "$DOCS_DIR" ]; then
     fail "docs/ directory does not exist"
 else
     # Collect all markdown files under docs/ (exclude includes/ abbreviations)
-    mapfile -t MD_FILES < <(find "$DOCS_DIR" -name '*.md' -type f ! -path '*/includes/*' | sort)
+    # (No mapfile: bash 3.2 on macOS does not provide it.)
+    MD_FILES=()
+    while IFS= read -r md_entry; do
+        MD_FILES+=("$md_entry")
+    done < <(find "$DOCS_DIR" -name '*.md' -type f ! -path '*/includes/*' | sort)
 
     if [ ${#MD_FILES[@]} -eq 0 ]; then
         fail "No markdown files found in docs/"
@@ -185,11 +189,14 @@ else
         UNCLOSED_FOUND=false
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
-            # Count opening and closing fences (lines starting with ```)
-            # A file should have an even number of fence lines.
-            fence_count=$(grep -cE '^[[:space:]]*```' "$md_file" || true)
-            if [ $((fence_count % 2)) -ne 0 ]; then
-                fail "Unclosed code fence in $rel_path (odd number of fence markers: $fence_count)"
+            # Count opening and closing fence lines per fence character:
+            # CommonMark only closes a fence with the same character, so a
+            # leftover ``` plus a stray ~~~ must not cancel out in one
+            # combined even/odd total. Each character's count must be even.
+            backtick_count=$(grep -cE '^[[:space:]]*`{3,}' "$md_file" || true)
+            tilde_count=$(grep -cE '^[[:space:]]*~{3,}' "$md_file" || true)
+            if [ $((backtick_count % 2)) -ne 0 ] || [ $((tilde_count % 2)) -ne 0 ]; then
+                fail "Unclosed code fence in $rel_path (fence markers: backtick=$backtick_count, tilde=$tilde_count; each must be even)"
                 UNCLOSED_FOUND=true
             fi
         done
@@ -202,7 +209,10 @@ else
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
             # Extract line numbers of mermaid open fences
-            mapfile -t MERMAID_OPENS < <(grep -nE '^[[:space:]]*```[[:space:]]*mermaid[[:space:]]*$' "$md_file" | cut -d: -f1)
+            MERMAID_OPENS=()
+            while IFS= read -r open_line; do
+                MERMAID_OPENS+=("$open_line")
+            done < <(grep -nE '^[[:space:]]*```[[:space:]]*mermaid[[:space:]]*$' "$md_file" | cut -d: -f1)
             for line_no in "${MERMAID_OPENS[@]}"; do
                 [ -z "$line_no" ] && continue
                 # Find the next closing fence after this line
@@ -225,15 +235,19 @@ else
             pass "All mermaid blocks are well-formed"
         fi
 
-        # 2c. Check for code fence language tags Pygments won't recognize
-        # The hook handles rust,* patterns, but warn about any OTHER unknown
-        # language tags that could cause issues.
+        # 2c. Check for code fence language tags Pygments won't recognize.
+        # The hook handles rust,* patterns; any OTHER unknown language tag
+        # renders as raw text, so this is blocking, not a warning: a miss
+        # here means silently corrupted rendering shipped green.
         KNOWN_LANGS="rust|python|py|bash|sh|shell|zsh|toml|yaml|yml|json|javascript|js|typescript|ts|html|css|xml|sql|c|cpp|go|java|kotlin|swift|ruby|text|console|diff|makefile|dockerfile|graphql|markdown|md|plaintext|ini|cfg|conf|http|csv|latex|tex|r|lua|perl|php|scala|haskell|hs|elixir|erlang|clojure|csharp|cs|fsharp|powershell|ps1|vim|nix|protobuf|proto|cmake|zig|ocaml|lisp|scheme|wasm|wat|asm|nasm|objc|groovy"
         UNKNOWN_LANGS_FOUND=false
         for md_file in "${MD_FILES[@]}"; do
             rel_path="${md_file#"$REPO_ROOT"/}"
-            # Extract language tags from code fences (```lang)
-            mapfile -t LANG_TAGS < <(sed -nE 's/^[[:space:]]*```[[:space:]]*([a-zA-Z0-9_,.-]+).*/\1/p' "$md_file" 2>/dev/null | sort -u)
+            # Extract language tags from code fences (```lang or ~~~lang)
+            LANG_TAGS=()
+            while IFS= read -r lang_tag; do
+                LANG_TAGS+=("$lang_tag")
+            done < <(sed -nE 's/^[[:space:]]*(`{3,}|~{3,})[[:space:]]*([a-zA-Z0-9_,.-]+).*/\2/p' "$md_file" 2>/dev/null | sort -u)
             for tag in "${LANG_TAGS[@]}"; do
                 [ -z "$tag" ] && continue
                 # Skip mermaid — handled by custom_fences
@@ -246,7 +260,8 @@ else
                 fi
                 # Check against known languages (case-insensitive)
                 if ! printf '%s\n' "$tag" | grep -qiE "^($KNOWN_LANGS)$"; then
-                    warn "Potentially unrecognized language tag '$tag' in $rel_path (may render as plain text)"
+                    fail "Unrecognized language tag '$tag' in $rel_path (renders as raw text)"
+                    info "Add it to KNOWN_LANGS if it highlights correctly, or fix or remove the tag."
                     UNKNOWN_LANGS_FOUND=true
                 fi
             done
@@ -316,7 +331,11 @@ if [ ! -d "$SITE_DIR" ]; then
     info "Run 'mkdocs build' first"
 else
     # Collect all HTML files
-    mapfile -t HTML_FILES < <(find "$SITE_DIR" -name '*.html' -type f | sort)
+    # (No mapfile: bash 3.2 on macOS does not provide it.)
+    HTML_FILES=()
+    while IFS= read -r html_entry; do
+        HTML_FILES+=("$html_entry")
+    done < <(find "$SITE_DIR" -name '*.html' -type f | sort)
 
     if [ ${#HTML_FILES[@]} -eq 0 ]; then
         fail "No HTML files found in site/"
@@ -409,22 +428,27 @@ else
         fi
 
         # 4d. Check for broken code fences showing as raw markdown
-        #     If triple backticks appear inside <p> tags in the rendered HTML,
-        #     a code fence was not parsed correctly.
+        #     If fence markers appear inside <p> tags in the rendered HTML,
+        #     a code fence was not parsed correctly. Both fence characters
+        #     are covered: backticks leak as literal ```, while an unparsed
+        #     tilde fence leaks as <sub>~</sub> (pymdownx.tilde) or literal ~~~.
         BROKEN_FENCES=false
         for html_file in "${HTML_FILES[@]}"; do
             rel_path="${html_file#"$REPO_ROOT"/}"
             matches=$(grep -cE '<p>[[:space:]]*```' "$html_file" || true)
-            if [ "$matches" -gt 0 ]; then
-                fail "Broken code fence(s) in $rel_path — triple backticks rendered as <p> content"
-                grep -nE '<p>[[:space:]]*```' "$html_file" | head -5 | while IFS= read -r line; do
+            tilde_matches=$(grep -cE '<p>([[:space:]]*~{3}|<sub>~</sub>)' "$html_file" || true)
+            if [ "$matches" -gt 0 ] || [ "$tilde_matches" -gt 0 ]; then
+                fail "Broken code fence(s) in $rel_path — fence markers rendered as <p> content"
+                # `|| :` keeps the other pattern's exit-1 from tripping
+                # pipefail and aborting the remaining checks.
+                { grep -nE '<p>[[:space:]]*```' "$html_file" || :; grep -nE '<p>([[:space:]]*~{3}|<sub>~</sub>)' "$html_file" || :; } | head -5 | while IFS= read -r line; do
                     echo "      $line"
                 done
                 BROKEN_FENCES=true
             fi
         done
         if [ "$BROKEN_FENCES" = false ]; then
-            pass "No broken code fences (raw backticks in <p> tags)"
+            pass "No broken code fences (raw fence markers in <p> tags)"
         fi
 
         # 4e. Check for HTML error indicators

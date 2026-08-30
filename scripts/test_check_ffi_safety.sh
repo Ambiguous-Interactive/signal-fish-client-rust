@@ -90,6 +90,62 @@ RUST
 run_check
 assert_exit "repr(C) struct with bool field should FAIL" 1
 
+# -- Should FAIL: one-line #[repr(C)] struct body with a bool field --
+# (the declaration line never reached the per-line body scan before)
+setup_fake_repo
+cat > "$FAKE_REPO/src/one_line_bool.rs" << 'RUST'
+#[repr(C)]
+pub struct OneLine { pub flag: bool }
+RUST
+run_check
+assert_exit "one-line repr(C) struct with bool should FAIL" 1
+
+# -- Should FAIL: one-line body whose bool field is not last --
+setup_fake_repo
+cat > "$FAKE_REPO/src/mid_line_bool.rs" << 'RUST'
+#[repr(C)]
+pub struct TwoField { pub flag: bool, pub n: u8 }
+RUST
+run_check
+assert_exit "one-line repr(C) struct with non-final bool should FAIL" 1
+
+# -- Should FAIL: several fields sharing one body line, bool first --
+setup_fake_repo
+cat > "$FAKE_REPO/src/shared_line_bool.rs" << 'RUST'
+#[repr(C)]
+pub struct Shared {
+    pub flag: bool, pub other: u8,
+}
+RUST
+run_check
+assert_exit "shared-line bool field should FAIL" 1
+
+# -- Should PASS: one-line #[repr(C)] struct body without a bool field --
+setup_fake_repo
+cat > "$FAKE_REPO/src/one_line_clean.rs" << 'RUST'
+use std::os::raw::c_int;
+
+#[repr(C)]
+pub struct OneLine { pub flag: c_int }
+RUST
+run_check
+assert_exit "one-line repr(C) struct without bool should PASS" 0
+
+# -- Should FAIL: bare bool inside a member crate under crates/ --
+# (the scan roots must cover every workspace member, not only the core)
+setup_fake_repo
+mkdir -p "$FAKE_REPO/src"
+printf 'pub fn ok() {}\n' > "$FAKE_REPO/src/lib.rs"
+mkdir -p "$FAKE_REPO/crates/some-adapter/src"
+cat > "$FAKE_REPO/crates/some-adapter/src/ffi.rs" << 'RUST'
+#[repr(C)]
+pub struct AdapterStruct {
+    pub ready: bool,
+}
+RUST
+run_check
+assert_exit "bool struct in a member crate should FAIL" 1
+
 # -- Should PASS: #[repr(C)] struct with no bool fields --
 setup_fake_repo
 cat > "$FAKE_REPO/src/good_struct.rs" << 'RUST'

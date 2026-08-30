@@ -150,7 +150,7 @@ while IFS= read -r workflow_path; do
             echo "$workflow_path:$line_num: non-tag action ref '$version_ref' (expected v-prefixed version tag)" >>"$TMP_ACTION_REF_VIOLATIONS"
         fi
     done <"$workflow_path"
-done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+done < <(find .github/workflows -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
 
 if [ -s "$TMP_ACTION_REF_VIOLATIONS" ]; then
     echo -e "${RED}Phase 4: FAIL${NC}"
@@ -167,7 +167,7 @@ echo ""
 # ── Phase 5: rust-toolchain usage guard — catch MSRV misconfiguration ──
 echo -e "${YELLOW}Phase 5: Checking dtolnay/rust-toolchain usage patterns...${NC}"
 
-if grep -R -n -E "uses:[[:space:]]*['\"]?dtolnay/rust-toolchain@[0-9]+(\.[0-9]+)*(['\"])?([[:space:]]|$|#)" .github/workflows/*.yml >"$TMP_TOOLCHAIN_VIOLATIONS"; then
+if grep -R -n -E "uses:[[:space:]]*['\"]?dtolnay/rust-toolchain@[0-9]+(\.[0-9]+)*(['\"])?([[:space:]]|$|#)" --include='*.yml' --include='*.yaml' .github/workflows >"$TMP_TOOLCHAIN_VIOLATIONS"; then
     echo -e "${RED}Phase 5: FAIL${NC}"
     echo "Found semver-like dtolnay/rust-toolchain refs (digits and dots only, e.g. @1.85.0) in workflow files:"
     cat "$TMP_TOOLCHAIN_VIOLATIONS"
@@ -291,9 +291,9 @@ echo -e "${YELLOW}Phase 6: Checking workflow step naming policy...${NC}"
 
 find_unnamed_workflow_steps() {
     if command -v rg &>/dev/null; then
-        rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml
+        rg -n "^[[:space:]]*-[[:space:]]+(uses|run):" -g '*.yml' -g '*.yaml' .github/workflows
     else
-        grep -n -E "^[[:space:]]*-[[:space:]]+(uses|run):" .github/workflows/*.yml
+        grep -R -n -E "^[[:space:]]*-[[:space:]]+(uses|run):" --include='*.yml' --include='*.yaml' .github/workflows
     fi
 }
 
@@ -370,7 +370,7 @@ while IFS= read -r workflow_path; do
             echo "  $workflow_path:$line_num: $reference (consider pinning to a specific patch version)" >>"$TMP_MAJOR_ONLY_VIOLATIONS"
         fi
     done <"$workflow_path"
-done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+done < <(find .github/workflows -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
 
 if [ -s "$TMP_MAJOR_ONLY_VIOLATIONS" ]; then
     echo -e "${YELLOW}WARNING: The following actions use major-version-only tags, which are mutable:${NC}"
@@ -393,7 +393,7 @@ while IFS= read -r workflow_path; do
     if ! grep -Eq '^[[:space:]]*cancel-in-progress:' "$workflow_path"; then
         echo "  $workflow_path: missing 'cancel-in-progress:' in concurrency block" >>"$TMP_CONCURRENCY_VIOLATIONS"
     fi
-done < <(find .github/workflows -maxdepth 1 -name "*.yml" -type f | sort)
+done < <(find .github/workflows -maxdepth 1 \( -name "*.yml" -o -name "*.yaml" \) -type f | sort)
 
 if [ -s "$TMP_CONCURRENCY_VIOLATIONS" ]; then
     echo -e "${RED}Phase 8: FAIL${NC}"

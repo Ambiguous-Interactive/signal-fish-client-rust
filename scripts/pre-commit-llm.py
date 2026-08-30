@@ -946,9 +946,23 @@ def warn_absolute_guarantee_language() -> List[str]:
 
 
 def main() -> int:
-    if not LLM_DIR.exists():
-        print("No .llm/ directory found — skipping LLM hook.", file=sys.stderr)
-        return 0
+    # Fail closed: this hook exists to enforce this repository's .llm/
+    # contracts, so a missing canonical tree must disable nothing. (The old
+    # silent skip meant deleting .llm/ turned every check below into a
+    # no-op while the hook stayed green.)
+    canonical_missing = [
+        str(path.relative_to(REPO_ROOT))
+        for path in (LLM_DIR / "context.md", SKILLS_DIR)
+        if not path.exists()
+    ]
+    if canonical_missing:
+        print(
+            "ERROR: canonical .llm/ paths are missing: "
+            + ", ".join(canonical_missing)
+            + " — refusing to skip the LLM checks.",
+            file=sys.stderr,
+        )
+        return 1
 
     # 1. Sync selected version references from Cargo.toml (blocking on errors)
     version_sync_errors = []

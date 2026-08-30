@@ -474,8 +474,8 @@ Planning records are local-only working notes: session logs/evidence under `prog
 MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
 rustdoc fence annotations for Pygments; `hooks/llms_txt.py` generates model text.
 Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use pinned provenance and local OFL fonts preloaded via `overrides/main.html`; both palettes retain AA contrast, visible focus, reduced-motion behavior, and responsive scrolling (`docs_brand_policy` pins these contracts; evidence under local-only `progress/assets/`). CI runs strict MkDocs
-(`.github/workflows/docs-deploy.yml`) and 17 checks in
-`.github/workflows/docs-validation.yml`; see `skills/markdown-and-doc-validation/SKILL.md`.
+(`.github/workflows/docs-deploy.yml`) and the 17 rendering checks in
+`scripts/check-docs-rendering.sh` (invoked by `.github/workflows/docs-validation.yml`); see `skills/markdown-and-doc-validation/SKILL.md`.
 
 ## Pre-commit Enforcement
 

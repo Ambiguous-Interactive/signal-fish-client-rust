@@ -12,6 +12,12 @@
 #   (b) is an array form with a cross-platform executable (pwsh, node, python3, etc.), OR
 #   (c) is an object form where every named command is cross-platform.
 #
+# String-form commands are default-deny: they execute under cmd.exe on
+# Windows hosts, so only the documented '||' fallback pattern (one Windows
+# shell leg plus one Unix shell leg) can pass. The original five-pattern
+# Unix-only blocklist let any other host-only command (chmod, ln, cp,
+# chown, ...) pass silently.
+#
 # It also rejects required bind mounts from host-home variables and credential
 # paths (~/.ssh, ~/.gitconfig, ~/.gnupg). Those mounts are fragile because the
 # source path must exist and be shared with Docker before the container can
@@ -241,16 +247,27 @@ _check_string_command() {
     local unix_shell_pattern='((/usr/bin/)?env[[:space:]]+(-S[[:space:]]+)?(bash|sh|zsh|fish|dash)|(/[^[:space:]]*/)?(bash|sh|zsh|fish|dash))'
     local windows_shell_pattern='((powershell|powershell\.exe|pwsh|pwsh\.exe|cmd|cmd\.exe))'
 
-    local has_unix_fallback=false
+    # Detect the two halves of the documented cross-platform '||' fallback
+    # pattern: one Windows-shell leg and one Unix-shell leg, in either
+    # order (Windows-primary-with-Unix-fallback or the reverse).
+    local has_unix_leg=false
+    local has_windows_leg=false
+    if printf '%s\n' "$cmd" | grep -qiE "^[[:space:]]*${unix_shell_pattern}([[:space:]]|$)"; then
+        has_unix_leg=true
+    fi
     if printf '%s\n' "$cmd" | grep -qiE "\|\|[[:space:]]*${unix_shell_pattern}([[:space:]]|$)"; then
-        has_unix_fallback=true
+        has_unix_leg=true
+    fi
+    if printf '%s\n' "$cmd" | grep -qiE "^[[:space:]]*${windows_shell_pattern}([[:space:]]|$)"; then
+        has_windows_leg=true
+    fi
+    if printf '%s\n' "$cmd" | grep -qiE '\|\|[[:space:]]*(powershell|pwsh)(\.exe)?([[:space:]]|$)'; then
+        has_windows_leg=true
     fi
 
-    # Windows-only shell executables fail on Linux/macOS unless there is an
-    # explicit Unix fallback. This is the mirror image of the Unix-shell check
-    # below and catches bare `powershell ...` / `cmd ...` host commands.
+    # Windows-only shell without a Unix fallback fails on Linux/macOS hosts.
     if printf '%s\n' "$cmd" | grep -qiE "^[[:space:]]*${windows_shell_pattern}([[:space:]]|$)"; then
-        if [ "$has_unix_fallback" = false ]; then
+        if [ "$has_unix_leg" = false ]; then
             echo -e "${RED}FAIL${NC}: $label starts with a Windows-only shell without a Unix fallback."
             echo "  Command: $cmd"
             echo ""
@@ -261,72 +278,32 @@ _check_string_command() {
         return 0
     fi
 
-    # Patterns that are UNIX-ONLY (will fail in Windows cmd.exe):
-    #   mkdir -p         → Windows mkdir has no -p flag
-    #   2>/dev/null      → Windows uses 2>nul
-    #   ; touch <path>   → touch does not exist in Windows cmd.exe
-    #   ^touch <path>    → touch at start of command
-    #   bash/sh/...      → Unix shells are not guaranteed on Windows hosts
-    #   || true          → 'true' is not a Windows cmd.exe builtin.
-    #                      Use [^a-zA-Z_] after 'true' to match '|| true;' (with
-    #                      semicolon) as well as '|| true' at end-of-string or
-    #                      followed by whitespace.  This avoids false positives on
-    #                      substrings like 'truecolor' or 'true-value'.
-    local found_unix_pattern=false
-    local unix_reason=""
-
-    if printf '%s\n' "$cmd" | grep -qE "^[[:space:]]*${unix_shell_pattern}([[:space:]]|$)"; then
-        found_unix_pattern=true
-        unix_reason="starts with Unix-only shell executable"
-    elif printf '%s\n' "$cmd" | grep -qE 'mkdir[[:space:]]+-p'; then
-        found_unix_pattern=true
-        unix_reason="mkdir -p (no -p flag in Windows cmd.exe)"
-    elif printf '%s\n' "$cmd" | grep -qE '2>/dev/null'; then
-        found_unix_pattern=true
-        unix_reason="2>/dev/null (Windows uses 2>nul)"
-    elif printf '%s\n' "$cmd" | grep -qE '(^|;[[:space:]]*)touch[[:space:]]'; then
-        found_unix_pattern=true
-        unix_reason="touch (not available in Windows cmd.exe)"
-    elif printf '%s\n' "$cmd" | grep -qE '\|\|[[:space:]]*true([^a-zA-Z_]|$)'; then
-        found_unix_pattern=true
-        unix_reason="|| true (true is not a Windows cmd.exe builtin)"
-    fi
-
-    if [ "$found_unix_pattern" = false ]; then
+    # Default-deny: a bare string command runs under cmd.exe on Windows
+    # hosts, so only the documented cross-platform pattern — one Windows
+    # shell leg plus one Unix shell leg joined by '||' — can pass. The
+    # previous five-pattern blocklist let any other Unix-only command
+    # (chmod, ln, cp, sed -i, ...) pass silently.
+    #
+    # Known textual limitation: leg detection is line-level, so a '|| pwsh'
+    # inside a quoted payload (for example `sh -c '… || pwsh …'`) counts as
+    # a Windows leg. The documented initializer pattern (and this repo's
+    # scripts) never quotes the fallback; a real fallback inside quotes is
+    # not one cmd.exe can use anyway.
+    if [ "$has_unix_leg" = true ] && [ "$has_windows_leg" = true ]; then
         return 0
     fi
 
-    # Unix pattern found.  Now check whether there is a Windows-compatible
-    # fallback — i.e., the command uses the '||' fallback pattern to invoke
-    # powershell/pwsh as the primary, with sh/bash as the Unix fallback.
-    local has_windows_fallback=false
-
-    # Pattern: starts with powershell or pwsh (Windows-primary)
-    if printf '%s\n' "$cmd" | grep -qiE '^[[:space:]]*(powershell|pwsh)[[:space:]]'; then
-        has_windows_fallback=true
-    fi
-
-    # Pattern: uses || to fall back to powershell/pwsh (Windows-as-fallback)
-    if printf '%s\n' "$cmd" | grep -qiE '\|\|[[:space:]]*(powershell|pwsh)[[:space:]]'; then
-        has_windows_fallback=true
-    fi
-
-    if [ "$has_windows_fallback" = true ]; then
-        return 0
-    fi
-
-    echo -e "${RED}FAIL${NC}: $label uses Unix-only syntax without a Windows fallback."
+    echo -e "${RED}FAIL${NC}: $label is a bare string command without the documented cross-platform fallback pattern."
     echo "  Command: $cmd"
-    echo "  Reason:  $unix_reason"
     echo ""
-    echo "  Fix: Use the cross-platform '||' fallback pattern:"
+    echo "  A bare string command executes under cmd.exe on Windows hosts, where"
+    echo "  Unix-only tools and syntax are unavailable. Fix one of two ways:"
+    echo ""
+    echo "  1. Use the cross-platform '||' fallback pattern:"
     echo "    powershell -NoProfile -ExecutionPolicy Bypass -File .devcontainer/scripts/initialize-host.ps1 || sh .devcontainer/scripts/initialize-host.sh"
     echo ""
-    echo "  How it works:"
-    echo "    - Windows (cmd.exe): powershell succeeds → '||' short-circuits → sh not called"
-    echo "    - Linux/macOS (sh):  powershell not found → exit 127 → '||' triggers → sh runs"
-    echo "  Note: '||' responds to any non-zero exit, not just 'binary not found'."
-    echo "  The PS1 script should emit diagnostics before exiting non-zero."
+    echo "  2. Prefer no host command at all, or move the work into the container"
+    echo "     lifecycle (postCreateCommand), which always runs on Linux."
     return 1
 }
 

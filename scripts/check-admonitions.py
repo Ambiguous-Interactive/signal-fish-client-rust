@@ -154,6 +154,19 @@ def resolve_roots(args: List[str]) -> List[Path]:
 
 def main(argv: List[str]) -> int:
     files = iter_markdown_files(resolve_roots(argv))
+    if not files:
+        # Scanning nothing is a guard failure, not a pass: a moved or
+        # renamed docs tree must fail loudly instead of reporting a vacuous
+        # green (explicit path arguments are exempt so callers can probe
+        # individual files or empty scratch directories).
+        if not argv:
+            print(
+                "ERROR: default documentation roots yielded no markdown files "
+                f"({', '.join(str(REPO_ROOT / r) for r in DEFAULT_ROOTS)}); "
+                "refusing to report a vacuous pass.",
+                file=sys.stderr,
+            )
+            return 1
     all_errors: List[str] = []
     for path in files:
         try:

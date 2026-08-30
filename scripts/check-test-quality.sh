@@ -77,7 +77,10 @@ fi
 quality_ls_tmp="$(mktemp "${TMPDIR:-/tmp}/test-quality.ls.XXXXXX")"
 trap 'rm -rf "$quality_ls_tmp"' EXIT
 
-if ! git ls-files -z -- src tests >"$quality_ls_tmp" 2>/dev/null; then
+# Every workspace member's sources are in scope: the core crate (src/),
+# repository tests (tests/), and the member crates (crates/), so a
+# `&mut <literal>` temporary in the Godot adapter cannot escape this gate.
+if ! git ls-files -z -- src tests crates >"$quality_ls_tmp" 2>/dev/null; then
     echo "ERROR: git ls-files failed; refusing to guess the scan scope." >&2
     exit 2
 fi
