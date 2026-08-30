@@ -8,7 +8,7 @@ Add the rollback library beside the SDK in the Godot GDExtension crate:
 
 ```toml
 fortress-rollback = "=0.10.0"
-godot = { version = "0.5.4", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
+godot = { version = "0.5.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 serde = { version = "1.0", features = ["derive"] }
 signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
 signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }

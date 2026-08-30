@@ -165,6 +165,14 @@ async fn connect(
             Ok(Some(SignalFishEvent::AuthenticationError { error, .. })) => {
                 return Err(format!("{name}: authentication failed: {error}").into());
             }
+            // A measurement harness must not confuse hostile-server
+            // diagnostics with silence.
+            Ok(Some(SignalFishEvent::DecodeFailed { .. })) => {
+                eprintln!("{name}: received an undecodable server frame");
+            }
+            Ok(Some(SignalFishEvent::ProtocolViolation { diagnostic, .. })) => {
+                eprintln!("{name}: protocol violation: {diagnostic}");
+            }
             Ok(Some(_)) => {}
             _ => return Err(format!("{name}: no Authenticated within 5s").into()),
         }
@@ -191,6 +199,12 @@ async fn join(
             Ok(Some(SignalFishEvent::RoomJoined { room_code, .. })) => return Ok(room_code),
             Ok(Some(SignalFishEvent::RoomJoinFailed { reason, .. })) => {
                 return Err(format!("{name}: join failed: {reason}").into());
+            }
+            Ok(Some(SignalFishEvent::DecodeFailed { .. })) => {
+                eprintln!("{name}: received an undecodable server frame");
+            }
+            Ok(Some(SignalFishEvent::ProtocolViolation { diagnostic, .. })) => {
+                eprintln!("{name}: protocol violation: {diagnostic}");
             }
             Ok(Some(_)) => {}
             _ => return Err(format!("{name}: no RoomJoined within 5s").into()),
@@ -226,6 +240,12 @@ async fn drain_role(
                 disconnected = true;
                 break;
             }
+            Ok(Some(SignalFishEvent::DecodeFailed { .. })) => {
+                eprintln!("drain: received an undecodable server frame");
+            }
+            Ok(Some(SignalFishEvent::ProtocolViolation { diagnostic, .. })) => {
+                eprintln!("drain: protocol violation: {diagnostic}");
+            }
             Ok(Some(_)) => {}
             Ok(None) => {
                 disconnected = true;
@@ -235,6 +255,13 @@ async fn drain_role(
         }
     }
     (latencies, received, disconnected)
+}
+
+/// Discard a client's own event stream after each send. The measurement
+/// loops only need send results and explicitly-awaited events; informational
+/// room traffic is intentionally dropped here rather than counted.
+fn discard_events(events: &mut tokio::sync::mpsc::Receiver<SignalFishEvent>) {
+    while events.try_recv().is_ok() {}
 }
 
 // ── Modes ───────────────────────────────────────────────────────────
@@ -260,6 +287,7 @@ async fn mode_ping(opts: &Options) -> Result<(), Box<dyn Error>> {
     let (n, p50, p95, p99, max) = summarize(rtts);
     println!("mode,samples,p50_ms,p95_ms,p99_ms,max_ms");
     println!("ping,{n},{p50:.2},{p95:.2},{p99:.2},{max:.2}");
+    client.shutdown().await;
     Ok(())
 }
 
@@ -306,17 +334,17 @@ async fn mode_throughput(opts: &Options) -> Result<(), Box<dyn Error>> {
                 Err(_) => refused += 1,
             }
             // Keep the sender's own event stream drained.
-            while sender_events.try_recv().is_ok() {}
+            discard_events(&mut sender_events);
         }
         let accepted_per_s = accepted as f64 / opts.secs as f64;
 
         let mut all_latencies = Vec::new();
         let mut delivered_total = 0u64;
-        for (rx_client, handle) in receiver_handles {
+        for (mut rx_client, handle) in receiver_handles {
             let (latencies, received, _) = handle.await?;
             delivered_total += received;
             all_latencies.extend(latencies);
-            drop(rx_client);
+            rx_client.shutdown().await;
         }
         let delivered_per_s =
             delivered_total as f64 / opts.secs as f64 / std::cmp::max(opts.recipients, 1) as f64;
@@ -325,7 +353,7 @@ async fn mode_throughput(opts: &Options) -> Result<(), Box<dyn Error>> {
             "throughput,{rate},{},{accepted_per_s:.1},{refused},{delivered_per_s:.1},{p50:.2},{p95:.2},{p99:.2},{max:.2}",
             opts.payload
         );
-        drop(sender);
+        sender.shutdown().await;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Ok(())
@@ -380,7 +408,7 @@ async fn mode_slow_consumer(opts: &Options) -> Result<(), Box<dyn Error>> {
             .send_game_data_reliable(payload_with_timestamp(opts.payload))
             .await?;
         sent += 1;
-        while sender_events.try_recv().is_ok() {}
+        discard_events(&mut sender_events);
     }
     let achieved = sent as f64 / opts.secs as f64;
 
@@ -388,13 +416,13 @@ async fn mode_slow_consumer(opts: &Options) -> Result<(), Box<dyn Error>> {
         "mode,role,offered_per_s,achieved_per_s,received,p50_ms,p95_ms,p99_ms,max_ms,disconnected"
     );
     println!("slow-consumer,sender,{},{achieved:.1},,,,,,", opts.rate);
-    for (i, (c, handle)) in healthy.into_iter().enumerate() {
+    for (i, (mut c, handle)) in healthy.into_iter().enumerate() {
         let (latencies, received, disconnected) = handle.await?;
         let (_, p50, p95, p99, max) = summarize(latencies);
         println!(
             "slow-consumer,healthy{i},,,{received},{p50:.2},{p95:.2},{p99:.2},{max:.2},{disconnected}"
         );
-        drop(c);
+        c.shutdown().await;
     }
     let (latencies, received, disconnected) = slow_handle.await?;
     let (_, p50, p95, p99, max) = summarize(latencies);
@@ -402,7 +430,8 @@ async fn mode_slow_consumer(opts: &Options) -> Result<(), Box<dyn Error>> {
         "slow-consumer,slow(drain {}ms),,,{received},{p50:.2},{p95:.2},{p99:.2},{max:.2},{disconnected}",
         opts.drain_ms
     );
-    drop(slow_client);
+    slow_client.shutdown().await;
+    sender.shutdown().await;
     Ok(())
 }
 
@@ -438,8 +467,9 @@ async fn mode_control_starvation(opts: &Options) -> Result<(), Box<dyn Error>> {
                 break;
             }
             sent += 1;
-            while flooder_events.try_recv().is_ok() {}
+            discard_events(&mut flooder_events);
         }
+        flooder.shutdown().await;
         sent
     });
 
@@ -494,6 +524,8 @@ async fn mode_control_starvation(opts: &Options) -> Result<(), Box<dyn Error>> {
     println!(
         "control-starvation,{flooded},{received},{gd_p50:.2},{gd_p99:.2},{n_pong},{pong_p50:.2},{pong_p95:.2},{pong_p99:.2},{pong_max:.2}"
     );
+    // The flooder handle is owned by the flood task and is torn down there.
+    victim.shutdown().await;
     Ok(())
 }
 

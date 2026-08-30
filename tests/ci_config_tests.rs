@@ -3163,8 +3163,8 @@ mod workflow_security {
         );
 
         assert!(
-            contents.contains("mymindstorm/setup-emsdk"),
-            "scripts/check-workflows.sh must include mymindstorm/setup-emsdk \
+            contents.contains("emscripten-core/setup-emsdk"),
+            "scripts/check-workflows.sh must include emscripten-core/setup-emsdk \
              in the MAJOR_ONLY_EXCEPTIONS list as a known exception."
         );
 

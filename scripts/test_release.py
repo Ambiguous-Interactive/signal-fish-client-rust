@@ -239,6 +239,16 @@ class PreparationTests(unittest.TestCase):
                 'name = "signal-fish-client-godot"\nversion = "1.2.3"\n',
                 encoding="utf-8",
             )
+        # Partial locks record only the members their graph reaches (the
+        # fuzz graph never contains the Godot adapter).
+        for relative in release.PARTIAL_LOCKFILES:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                'version = 4\n\n[[package]]\nname = "signal-fish-client"\n'
+                'version = "1.2.3"\n',
+                encoding="utf-8",
+            )
         (self.root / "CHANGELOG.md").write_text(
             "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Good thing.\n\n"
             "## [1.2.3] - 2020-01-01\n\n- Old.\n\n"
@@ -259,6 +269,12 @@ class PreparationTests(unittest.TestCase):
         for relative in release.LOCKSTEP_LOCKFILES:
             lock = (self.root / relative).read_text(encoding="utf-8")
             self.assertEqual(lock.count('version = "1.3.0"'), 2)
+        for relative in release.PARTIAL_LOCKFILES:
+            lock = (self.root / relative).read_text(encoding="utf-8")
+            # The fuzz graph contains only the core; the adapter must stay
+            # absent, and the core's recorded version must move in lockstep.
+            self.assertEqual(lock.count('version = "1.3.0"'), 1)
+            self.assertNotIn("signal-fish-client-godot", lock)
         changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn("## [Unreleased]\n\n## [1.3.0] - 2026-07-13", changelog)
         self.assertIn("compare/v1.2.3...v1.3.0", changelog)
@@ -628,6 +644,19 @@ class PreparationTests(unittest.TestCase):
         missing = self.root / release.VERSION_FILES[-1]
         missing.write_text("stale\n", encoding="utf-8")
         with self.assertRaisesRegex(release.ReleaseError, "required value"):
+            release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
+        self.assertEqual(release.package_version(self.root), "1.2.3")
+
+    def test_duplicate_partial_lock_entry_fails_before_writes(self) -> None:
+        # A partial lock must never carry a member twice; that would make the
+        # lockstep stamp ambiguous and the --locked verify unreliable.
+        path = self.root / release.PARTIAL_LOCKFILES[0]
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + '\n[[package]]\nname = "signal-fish-client"\nversion = "1.2.3"\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "duplicate locked"):
             release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
         self.assertEqual(release.package_version(self.root), "1.2.3")
 

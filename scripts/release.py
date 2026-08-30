@@ -25,6 +25,15 @@ LOCKSTEP_LOCKFILES = (
     "tests/godot-compat-min/Cargo.lock",
     "tests/godot-web-smoke/Cargo.lock",
 )
+# Locks that need not contain every publishable member: each member's
+# recorded version is stamped when present, absence of a member is fine, and
+# a duplicate entry still fails closed. fuzz/Cargo.lock records only the
+# path-depended core (the fuzz graph never reaches the Godot adapter), and
+# its stale recorded version would fail the Deep Safety lane's
+# `cargo metadata --locked` freshness verify after a bump.
+PARTIAL_LOCKFILES = (
+    "fuzz/Cargo.lock",
+)
 VERSION_FILES = (
     "README.md",
     "docs/client.md",
@@ -184,6 +193,27 @@ def replace_lockstep_package_versions(
         lock, count = pattern.subn(rf"\g<1>{new}\2", lock, count=1)
         if count != 1:
             raise ReleaseError(f"{path} has no unique locked {package} {old}")
+    path.write_text(lock, encoding="utf-8")
+
+
+def replace_present_lockstep_package_versions(
+    path: Path, package_names: list[str], old: str, new: str
+) -> None:
+    """Stamp every member present exactly once; absent members stay absent.
+
+    Counterpart to [`replace_lockstep_package_versions`] for partial locks
+    (see [`PARTIAL_LOCKFILES`]): prepare's validation loop has already
+    rejected duplicate entries for the whole tree before any write, so
+    `count=1` here caps a replacement that validation proved unique-or-absent.
+    """
+    lock = path.read_text(encoding="utf-8")
+    for package in package_names:
+        pattern = re.compile(
+            rf'(^\[\[package\]\]\nname = "{re.escape(package)}"\nversion = ")'
+            rf'{re.escape(old)}("$)',
+            re.MULTILINE,
+        )
+        lock, _count = pattern.subn(rf"\g<1>{new}\2", lock, count=1)
     path.write_text(lock, encoding="utf-8")
 
 
@@ -721,6 +751,12 @@ def prepare(
             marker = f'name = "{package}"\nversion = "{old}"'
             if lock.count(marker) != 1:
                 raise ReleaseError(f"{relative} has no unique locked {package} {old}")
+    for relative in PARTIAL_LOCKFILES:
+        lock = (root / relative).read_text(encoding="utf-8")
+        for package in package_names:
+            marker = f'name = "{package}"\nversion = "{old}"'
+            if lock.count(marker) > 1:
+                raise ReleaseError(f"{relative} has duplicate locked {package} {old}")
     compatibility_text = (root / "tests/compatibility.toml").read_text(encoding="utf-8")
     # Only the top-level table carries the release-stamped identity. Section
     # tables ([protocol_authority] and the vendored PROVENANCE.toml files) hold
@@ -770,6 +806,10 @@ def prepare(
     )
     for relative in LOCKSTEP_LOCKFILES:
         replace_lockstep_package_versions(root / relative, package_names, old, new)
+    for relative in PARTIAL_LOCKFILES:
+        replace_present_lockstep_package_versions(
+            root / relative, package_names, old, new
+        )
     for relative in VERSION_FILES:
         replace_required(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"

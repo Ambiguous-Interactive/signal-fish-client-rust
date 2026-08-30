@@ -59,9 +59,9 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.1
         with:
-          tool: cargo-audit@0.22.1
+          tool: cargo-audit@0.22.2
 
       - name: Run cargo audit
         run: cargo audit
@@ -109,9 +109,9 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.1
         with:
-          tool: cargo-cyclonedx@0.5.7
+          tool: cargo-cyclonedx@0.5.9
 
       - name: Generate CycloneDX SBOM
         run: cargo cyclonedx --format json

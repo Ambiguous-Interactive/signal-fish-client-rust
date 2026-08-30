@@ -72,9 +72,9 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Install release tools
-        uses: taiki-e/install-action@v2.86.5
+        uses: taiki-e/install-action@v2.87.1
         with:
-          tool: cargo-cyclonedx@0.5.7,cargo-semver-checks@0.50.0
+          tool: cargo-cyclonedx@0.5.9,cargo-semver-checks@0.50.0
 
       - name: Derive and validate release metadata
         id: release-metadata

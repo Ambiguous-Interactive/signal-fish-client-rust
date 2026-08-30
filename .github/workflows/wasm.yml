@@ -79,7 +79,7 @@ jobs:
         with:
           components: rust-src, clippy
       - name: Install Emscripten SDK
-        uses: mymindstorm/setup-emsdk@v16
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: 3.1.74
       - name: Cache Cargo artifacts
