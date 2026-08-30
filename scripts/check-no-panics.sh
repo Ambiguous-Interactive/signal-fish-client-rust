@@ -99,7 +99,13 @@ END {
                 if (kw == "fn" || kw == "struct" || kw == "enum" || kw == "impl" || kw == "use" || kw == "const" || kw == "static" || kw == "type" || kw == "trait") break
             }
             if (modline) {
-                depth = 0; opened = 0; endline = modline
+                mline = lines[modline]
+                if (mline ~ /;/ && mline !~ /\{/) {
+                    # Declaration-only module (`mod x;`) — no body to excuse.
+                    i = modline + 1
+                    continue
+                }
+                depth = 0; opened = 0; endline = modline; lookahead = 0
                 for (k = modline; k <= NR; k++) {
                     s = lines[k]
                     o = gsub(/{/, "{", s); c = gsub(/}/, "}", s)
@@ -107,6 +113,13 @@ END {
                     endline = k
                     if (o > 0) opened = 1
                     if (opened && depth <= 0) break
+                    if (!opened) {
+                        # Tolerate a brace on the following line; past that,
+                        # this is not a module body (stop before production
+                        # braces can be mistaken for one).
+                        lookahead++
+                        if (lookahead > 1) break
+                    }
                 }
                 if (opened) { print i, endline; i = endline + 1 }
                 else { i = modline + 1 }
