@@ -20,10 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Least privilege: only `deploy` consumes the workflow-level pages/id-token
-    # grants. The build job installs third-party docs dependencies, so it must
-    # not hold an OIDC-minting handle.
+    # write grants. The build job installs third-party docs dependencies, so it
+    # must not hold an OIDC-minting handle; `pages: read` covers the
+    # configure-pages metadata GET (actions/configure-pages#188).
     permissions:
       contents: read
+      pages: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
