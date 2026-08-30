@@ -102,7 +102,11 @@ jobs:
   required:
     name: Unused Deps Required
     if: ${{ always() }}
-    needs: [cargo-machete]
+    # cargo-udeps is schedule-only; it must still feed this gate so a
+    # scheduled unused-dependency failure cannot pass invisibly. The filter
+    # below tolerates "skipped" so pull-request runs (where cargo-udeps does
+    # not trigger) stay green while a real scheduled failure goes red.
+    needs: [cargo-machete, cargo-udeps]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -110,7 +114,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
           if [ -n "$failures" ]; then
             printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
             exit 1
