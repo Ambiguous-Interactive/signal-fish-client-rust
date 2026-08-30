@@ -135,6 +135,19 @@ check_file() {
             fi
         done <<< "$gs_raw"
     fi
+
+    # ── Check 6: mapfile (bash 4.0+ — macOS ships bash 3.2) ──────────
+    # Use a `while IFS= read -r` loop into an array instead.
+    _run_check "$file" \
+        '(^|[^[:alnum:]_])mapfile([[:space:]]|$)' \
+        'mapfile (bash 4.0+, unavailable on macOS bash 3.2 — use a while-read loop)'
+
+    # ── Check 7: sed -i (GNU-only in-place editing) ───────────────────
+    # BSD/macOS sed requires a backup-suffix argument. Write to a temp
+    # file and mv instead.
+    _run_check "$file" \
+        'sed[[:space:]]+-[a-zA-Z]*i[a-zA-Z]*([[:space:]]|$)' \
+        'sed -i (GNU-only in-place flag — write to a temp file and mv instead)'
 }
 
 # ── Main ──────────────────────────────────────────────────────────────

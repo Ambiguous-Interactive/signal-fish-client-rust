@@ -19,6 +19,7 @@
 # Exit codes:
 #   0 — no violations found
 #   1 — forbidden patterns detected
+#   2 — the guard could not do its job (canonical sources missing)
 
 set -euo pipefail
 
@@ -56,11 +57,100 @@ PATTERNS=(
 PROD_DIRS=(src examples crates/*/src crates/*/examples tools/*/src)
 TEST_DIRS=(tests crates/*/tests tools/*/tests)
 
+# ── cfg(test) region tracking ─────────────────────────────────────────
+# A match is excused only inside the brace-bounded body of a `mod` opened
+# by a `#[cfg(...test...)]` attribute. Excusing "everything below the last
+# test attribute" was fail-open: production code appended after a closed
+# test module, or below a mid-file test-only item, escaped the gate
+# entirely.
+#
+# The region scan is textual (brace counting includes braces inside string
+# literals and comments); a miscount fails toward flagging, and clippy's
+# deny lints remain the authoritative backstop for compiled code. Any
+# attribute containing `test` may open a region — including the
+# `not(test)` form; the pinned ci_config_tests.rs sweep
+# (no_production_source_uses_cfg_not_test) keeps that form out of the
+# production roots scanned here.
+# shellcheck disable=SC2016  # intentional: the awk program must not expand
+CFG_REGION_AWK='
+{
+    lines[NR] = $0
+    if ($0 ~ /#[[][^]]*test[^]]*]/) istest[NR] = 1
+}
+END {
+    i = 1
+    while (i <= NR) {
+        if (istest[i]) {
+            # Scan forward from the attribute to the first code item. The
+            # attribute (including multi-line #[allow( ... )] arguments),
+            # comments, and blanks are skipped; the first item decides:
+            # `mod` opens a region, any other item closes the search.
+            modline = 0
+            for (k = i; k <= NR; k++) {
+                code = lines[k]
+                sub(/^[[:space:]]+/, "", code)
+                n = split(code, tok, /[[:space:]()]+/)
+                kw = ""
+                for (t = 1; t <= n && t <= 4; t++) {
+                    if (tok[t] == "pub" || tok[t] == "crate" || tok[t] == "async" || tok[t] == "unsafe") continue
+                    kw = tok[t]; break
+                }
+                if (kw == "mod") { modline = k; break }
+                if (kw == "fn" || kw == "struct" || kw == "enum" || kw == "impl" || kw == "use" || kw == "const" || kw == "static" || kw == "type" || kw == "trait") break
+            }
+            if (modline) {
+                depth = 0; opened = 0; endline = modline
+                for (k = modline; k <= NR; k++) {
+                    s = lines[k]
+                    o = gsub(/{/, "{", s); c = gsub(/}/, "}", s)
+                    depth += o - c
+                    endline = k
+                    if (o > 0) opened = 1
+                    if (opened && depth <= 0) break
+                }
+                if (opened) { print i, endline; i = endline + 1 }
+                else { i = modline + 1 }
+                continue
+            }
+        }
+        i++
+    }
+}'
+
+REGION_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/sf-no-panics-regions.XXXXXX")"
+trap 'rm -rf "$REGION_CACHE"' EXIT
+
+in_test_region() {
+    # $1 = file, $2 = line number; returns 0 when the line lies inside the
+    # brace-bounded body of a cfg(test)-opened mod block.
+    local file="$1" lineno="$2"
+    local cache
+    cache="$REGION_CACHE/$(printf '%s' "$file" | tr '/' '_')"
+    if [ ! -f "$cache" ]; then
+        awk "$CFG_REGION_AWK" "$file" >"$cache" 2>/dev/null || : >"$cache"
+    fi
+    local start end
+    while read -r start end; do
+        [ -n "$start" ] || continue
+        if [ "$lineno" -ge "$start" ] && [ "$lineno" -le "$end" ]; then
+            return 0
+        fi
+    done <"$cache"
+    return 1
+}
+
 echo -e "${YELLOW}=== Panic-free policy check ===${NC}"
 echo ""
 
 # ── Phase 1: Scan library and example code (must be panic-free) ──────
 echo -e "${YELLOW}Phase 1: Scanning all workspace member sources for forbidden patterns...${NC}"
+
+# The core crate's sources are the canonical scan root; scanning nothing
+# must fail the guard instead of reporting a vacuous pass.
+if [ ! -d src ]; then
+    echo -e "${RED}FATAL: src/ is missing — the core crate's sources were not scanned.${NC}" >&2
+    exit 2
+fi
 
 for dir in "${PROD_DIRS[@]}"; do
     if [ ! -d "$dir" ]; then
@@ -88,28 +178,14 @@ for dir in "${PROD_DIRS[@]}"; do
             continue
         fi
 
-        # Filter out matches inside #[cfg(test)] modules.
+        # Filter out matches inside cfg(test)-opened mod blocks.
         while IFS= read -r line; do
             line="${line//$'\r'/}"
             file=$(printf '%s\n' "$line" | cut -d: -f1)
             lineno=$(printf '%s\n' "$line" | cut -d: -f2)
 
-            # Find the last #[cfg(...test...)] line number in the file.
-            # This matches both simple `#[cfg(test)]` and compound forms
-            # like `#[cfg(all(test, feature = "..."))]`.
-            #
-            # LIMITATION: This pattern also matches `#[cfg(not(test))]`,
-            # which would incorrectly treat the code below it as "inside a
-            # test module" when it is actually the opposite. A safety-net
-            # test in tests/ci_config_tests.rs (module panic_script_cfg_handling,
-            # no_production_source_uses_cfg_not_test) verifies that none of
-            # the production roots scanned here uses `not(test)` in any cfg
-            # attribute, so this false positive cannot occur in practice.
-            cfg_test_line=$(grep -nE '#\[cfg\((.*[^[:alnum:]_])?test([^[:alnum:]_]|$)' "$file" 2>/dev/null \
-                | tail -1 | cut -d: -f1 || true)
-
-            if [ -n "$cfg_test_line" ] && [ "$lineno" -gt "$cfg_test_line" ]; then
-                # Inside a #[cfg(..test..)] module — allowed.
+            if in_test_region "$file" "$lineno"; then
+                # Inside a #[cfg(..test..)] module body — allowed.
                 continue
             fi
 

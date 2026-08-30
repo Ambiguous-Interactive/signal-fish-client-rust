@@ -205,7 +205,21 @@ _run_test "$D" 0 "Accepts: array form with python3 (cross-platform)"
 
 D="$TMPDIR_FIXTURES/t15"; mkdir -p "$D"
 _make_fixture "$D" '"echo hello"'
-_run_test "$D" 0 "Accepts: simple echo (no Unix-specific patterns)"
+_run_test "$D" 1 "Rejects: bare string command without the '||' fallback (default-deny)"
+
+# Default-deny class: commands absent from the historical Unix-only
+# blocklist must also be rejected, not silently accepted.
+D="$TMPDIR_FIXTURES/t16"; mkdir -p "$D"
+_make_fixture "$D" '"chown -R user:user /workspace"'
+_run_test "$D" 1 "Rejects: chown (not in the historical blocklist — default-deny)"
+
+D="$TMPDIR_FIXTURES/t17"; mkdir -p "$D"
+_make_fixture "$D" '"git submodule update --init"'
+_run_test "$D" 1 "Rejects: benign-looking host command without the fallback pattern"
+
+D="$TMPDIR_FIXTURES/t18"; mkdir -p "$D"
+_make_fixture "$D" '"sh .devcontainer/scripts/initialize-host.sh || powershell -NoProfile -File .devcontainer/scripts/initialize-host.ps1"'
+_run_test "$D" 0 "Accepts: Unix-primary with Windows fallback (both '||' directions)"
 
 # ── Group 3: Edge cases ───────────────────────────────────────────────────────
 
@@ -219,7 +233,7 @@ _run_test "$D" 0 "Accepts: no initializeCommand at all"
 # Object form with both platforms (all cross-platform)
 D="$TMPDIR_FIXTURES/t21"; mkdir -p "$D"
 _make_fixture "$D" '{"setup": "echo hello"}'
-_run_test "$D" 0 "Accepts: object form with cross-platform commands"
+_run_test "$D" 1 "Rejects: object form whose named command is a bare string (default-deny)"
 
 # Object form where one named command is Unix-only
 D="$TMPDIR_FIXTURES/t22"; mkdir -p "$D"

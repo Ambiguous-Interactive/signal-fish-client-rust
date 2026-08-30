@@ -138,6 +138,14 @@ require_cmd rustfmt "rustup component add rustfmt"
 require_cmd cargo-clippy "rustup component add clippy"
 
 echo -e "${YELLOW}Preflight: Checking fuzz seeds for forbidden '\"data\":null'...${NC}"
+# Fail closed when a seed directory is missing: a silently absent corpus
+# must not disable the scan (grep would otherwise report "nothing found").
+for seed_dir in fuzz/seeds/fuzz_client_message fuzz/seeds/fuzz_server_message; do
+    if [ ! -d "$seed_dir" ]; then
+        echo -e "${RED}ERROR: fuzz seed directory missing: $seed_dir${NC}" >&2
+        exit 1
+    fi
+done
 if grep -R -n -E '"data"[[:space:]]*:[[:space:]]*null' \
     fuzz/seeds/fuzz_client_message \
     fuzz/seeds/fuzz_server_message; then

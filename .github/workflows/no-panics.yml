@@ -1,11 +1,13 @@
 # Panic-free policy enforcement.
 #
 # Runs on every PR and push to main. Uses the guard script to scan for
-# forbidden panic-prone patterns in library/example code and runs Clippy
-# with the deny-level lints configured in Cargo.toml.
+# forbidden panic-prone patterns in all workspace member sources. (The
+# deny-level Clippy lints run in ci.yml's clippy job; this grep gate adds
+# coverage for paths Clippy does not compile, such as Emscripten-gated
+# code on host runners.)
 #
 # Jobs:
-#   panic-free-policy — grep-based scan + Clippy hard-fail lints
+#   panic-free-policy — grep-based panic-pattern scan across all members
 
 name: No Panics
 
@@ -37,8 +39,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2

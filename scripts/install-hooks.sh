@@ -97,6 +97,10 @@ _elapsed() {
 run_check() {
     local name="$1" id="$2"
     shift 2
+    # Record every launched check so the collector can fail closed when a
+    # check dies before writing its result (otherwise it would be silently
+    # dropped from the totals).
+    printf '%s\n' "$id" >> "$CHECK_TMPDIR/.launched"
     local start end elapsed
     start=$(_now)
     if "$@" > "$CHECK_TMPDIR/$id.stdout" 2> "$CHECK_TMPDIR/$id.stderr"; then
@@ -370,6 +374,18 @@ if [ ${#PIDS[@]} -gt 0 ]; then
     done
 fi
 
+# Fail closed: every launched check must have recorded a result. A check
+# whose subshell died before writing its result would otherwise be
+# silently dropped from the totals below.
+if [ -f "$CHECK_TMPDIR/.launched" ]; then
+    while IFS= read -r launched_id; do
+        [ -n "$launched_id" ] || continue
+        if [ ! -f "$CHECK_TMPDIR/$launched_id.result" ]; then
+            printf 'FAIL 0.0 %s (no result recorded)\n' "$launched_id" > "$CHECK_TMPDIR/$launched_id.result"
+        fi
+    done < "$CHECK_TMPDIR/.launched"
+fi
+
 OVERALL_END=$(_now)
 OVERALL_ELAPSED=$(_elapsed "$OVERALL_START" "$OVERALL_END")
 
@@ -460,6 +476,10 @@ _elapsed() {
 run_check() {
     local name="$1" id="$2"
     shift 2
+    # Record every launched check so the collector can fail closed when a
+    # check dies before writing its result (otherwise it would be silently
+    # dropped from the totals).
+    printf '%s\n' "$id" >> "$CHECK_TMPDIR/.launched"
     local start end elapsed
     start=$(_now)
     if "$@" > "$CHECK_TMPDIR/$id.stdout" 2> "$CHECK_TMPDIR/$id.stderr"; then
@@ -533,6 +553,18 @@ if [ ${#PIDS[@]} -gt 0 ]; then
     for pid in "${PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
+fi
+
+# Fail closed: every launched check must have recorded a result. A check
+# whose subshell died before writing its result would otherwise be
+# silently dropped from the totals below.
+if [ -f "$CHECK_TMPDIR/.launched" ]; then
+    while IFS= read -r launched_id; do
+        [ -n "$launched_id" ] || continue
+        if [ ! -f "$CHECK_TMPDIR/$launched_id.result" ]; then
+            printf 'FAIL 0.0 %s (no result recorded)\n' "$launched_id" > "$CHECK_TMPDIR/$launched_id.result"
+        fi
+    done < "$CHECK_TMPDIR/.launched"
 fi
 
 OVERALL_END=$(_now)
