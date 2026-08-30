@@ -199,6 +199,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::error!("Server error [{error_code:?}]: {message}");
                     }
 
+                    // ── Hostile-server diagnostics ───────────────────
+                    // The default violation policy is Quarantine: the client
+                    // suppresses the offending server's delivery but stays
+                    // up. Surface both loudly — they never belong in a
+                    // debug-level catch-all.
+                    SignalFishEvent::ProtocolViolation { kind, diagnostic } => {
+                        tracing::error!("Protocol violation ({kind:?}): {diagnostic}");
+                    }
+
+                    SignalFishEvent::DecodeFailed { .. } => {
+                        tracing::warn!("Received a frame that failed to decode");
+                    }
+
                     // ── Disconnect ───────────────────────────────────
                     SignalFishEvent::Disconnected { reason, .. } => {
                         tracing::warn!("Disconnected: {}", reason.as_deref().unwrap_or("unknown"));

@@ -62,8 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_max_players` saturates at `u8::MAX`, `MeshController` requires
   `tokio-runtime`, the WASM guide warns pthreads is single-thread-only and
   outbound pacing is not surfaced, at Godot's inbound bounds web drops new
-  frames while native backpressures, and the token-binding guide
+  frames while native backpressures, the polling client's `close()`
+  documents that already-buffered inbound frames are drained and discarded
+  without being decoded or delivered, and the token-binding guide
   classifies challenge-window transport errors.
+- The self-contained mesh example's scripted server spoke an obsolete
+  protocol flow and hung; it now completes end-to-end and the examples
+  surface protocol violations instead of silently discarding them.
 
 ## [0.11.0] - 2026-08-28
 
