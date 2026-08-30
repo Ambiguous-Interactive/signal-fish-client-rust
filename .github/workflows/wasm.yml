@@ -81,6 +81,9 @@ jobs:
       - name: Install Emscripten SDK
         uses: emscripten-core/setup-emsdk@v16
         with:
+          # Matched to the Godot 4.5 web export toolchain; the tier-3
+          # wasm32-unknown-emscripten -Zbuild-std link flags are
+          # emsdk-version-sensitive. Upgrade only after a green probe (issue #201).
           version: 3.1.74
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2

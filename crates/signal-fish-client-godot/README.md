@@ -16,13 +16,15 @@ for setup and migration instructions.
 | godot-rust (`godot` crate) | `>=0.4.5, <0.6` — pick one exact version so your `Gd<WebSocketPeer>` shares the adapter's type identity |
 | Godot Engine | 4.5, native or official web export |
 
-Add both crates as direct dependencies — the Quick Start imports
-`signal_fish_client` types directly:
+Add the adapter, the core crate, and a matching `godot` binding as direct
+dependencies — the Quick Start imports `signal_fish_client` and `godot` types
+directly:
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.10", default-features = false, features = ["polling-client"] }
-signal-fish-client-godot = { version = "0.10" }
+godot = { version = ">=0.4.5, <0.6" }
+signal-fish-client = { version = "0.11", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { version = "0.11" }
 ```
 
 ## Quick start

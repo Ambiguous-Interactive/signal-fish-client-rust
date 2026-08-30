@@ -17,8 +17,12 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   GODOT_VERSION: "4.5"
+  # Pinned to the emsdk matching Godot 4.5's web export toolchain: the
+  # official export templates and the tier-3 wasm32-unknown-emscripten
+  # -Zbuild-std link flags (e.g. -lwebsocket.js) are emsdk-version-sensitive.
+  # Upgrade only after a green probe of the web matrix (issue #201).
   EMSDK_VERSION: "3.1.74"
-  PLAYWRIGHT_VERSION: "1.61.1"
+  PLAYWRIGHT_VERSION: "1.62.1"
   RUST_NIGHTLY: "nightly-2026-03-01"
   NETEM_SEED: "6101"
   IPROUTE2_VERSION: "6.6.0"
@@ -475,7 +479,11 @@ jobs:
               --scenario clean --server-url "${server_url}" 2>&1 | tee fortress-browser.log
             node scripts/run-godot-web-smoke.mjs \
               tests/godot-web-smoke/project/build "${server_pid}" 2>&1 | tee browser.log
-            wait "${server_pid}"
+            # The runner already SIGTERMed the server; its exit status is not
+            # an oracle (the runner's own close-attribution checks are). Stay
+            # symmetric with the impaired branch so a non-zero SIGTERM exit
+            # cannot false-red the job after every oracle passed.
+            wait "${server_pid}" || true
             server_pid=""
             node scripts/run-godot-web-smoke.mjs \
               tests/godot-web-smoke/project/build-negative \

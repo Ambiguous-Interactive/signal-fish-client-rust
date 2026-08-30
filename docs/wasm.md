@@ -109,9 +109,9 @@ export templates that explicitly link Emscripten's WebSocket library.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust nightly | 2026-03-01 | Pinned tier 3 toolchain used by CI |
+| Rust nightly | 2026-03-01 | Pinned tier 3 toolchain; the Godot web export CI lane pins the same date |
 | `rust-src` component | (matches nightly) | Required by `-Zbuild-std` to build `std` from source |
-| Emscripten SDK | 3.1.74 | Provides the sysroot and system libraries |
+| Emscripten SDK | 3.1.74 | Provides the sysroot and system libraries. Pinned to the emsdk matching Godot 4.5's web export toolchain; newer emsdk releases are unverified |
 
 ### Feature flags
 
@@ -662,9 +662,11 @@ Step-by-step instructions for setting up the Emscripten build environment.
 
 ### 1. Install Rust nightly and `rust-src`
 
+The Godot web export path pins a dated nightly so local builds match CI
+exactly; every command on this page uses the same toolchain.
+
 ```sh
-rustup toolchain install nightly
-rustup component add rust-src --toolchain nightly
+rustup toolchain install nightly-2026-03-01 --component rust-src
 ```
 
 ### 2. Install the Emscripten SDK
@@ -685,12 +687,12 @@ source ./emsdk_env.sh
 
 ```sh
 # Core types only (no transport)
-cargo +nightly build -Zbuild-std \
+cargo +nightly-2026-03-01 build -Zbuild-std \
     --target wasm32-unknown-emscripten \
     --no-default-features
 
 # With Emscripten WebSocket transport
-cargo +nightly build -Zbuild-std \
+cargo +nightly-2026-03-01 build -Zbuild-std \
     --target wasm32-unknown-emscripten \
     --no-default-features \
     --features transport-websocket-emscripten
@@ -775,15 +777,17 @@ source `emsdk_env.sh` before building. See
 **Error:**
 
 ```text
-error[E0432]: unresolved import `crate::transports::emscripten_websocket`
+error[E0432]: unresolved import `signal_fish_client::EmscriptenWebSocketTransport`
 ```
 
 **Solution:** You are building for `wasm32-unknown-unknown` with the
-`transport-websocket-emscripten` feature enabled. This feature is only available
-on `wasm32-unknown-emscripten`. Switch to the correct target:
+`transport-websocket-emscripten` feature enabled. The type is only available
+on `wasm32-unknown-emscripten`; the SDK compiles cleanly without it on the
+wrong target, so the failure surfaces at your own import site. Switch to the
+correct target:
 
 ```sh
-cargo +nightly build -Zbuild-std \
+cargo +nightly-2026-03-01 build -Zbuild-std \
     --target wasm32-unknown-emscripten \
     --no-default-features \
     --features transport-websocket-emscripten
@@ -802,7 +806,7 @@ error: the `-Zbuild-std` flag requires the `rust-src` component
 **Solution:**
 
 ```sh
-rustup component add rust-src --toolchain nightly
+rustup component add rust-src --toolchain nightly-2026-03-01
 ```
 
 ---

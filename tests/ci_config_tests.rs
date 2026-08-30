@@ -258,7 +258,7 @@ mod godot_issue_61_policy {
             .as_str()
             .expect("Fortress dependency uses a simple exact version");
 
-        assert_eq!(fortress, "=0.10.0");
+        assert_eq!(fortress, "=0.13.0");
         assert!(fortress_fixture.contains("const PREDICTION_WINDOW_FRAMES: usize = 20;"));
         assert!(fortress_fixture.contains("with_max_prediction_window(PREDICTION_WINDOW_FRAMES)"));
         assert!(fortress_runner.contains("scenario === \"soak\" ? 3_600 : 600"));

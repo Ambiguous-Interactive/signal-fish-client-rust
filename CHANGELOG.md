@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The self-contained mesh example's scripted server spoke an obsolete
   protocol flow and hung; it now completes end-to-end and the examples
   surface protocol violations instead of silently discarding them.
+- Corrected recommended usage in the docs: the `wasm.md` guide now installs
+  and uses the pinned `nightly-2026-03-01` toolchain consistently and
+  quotes the actual user-side error for the wrong-target Emscripten
+  transport, and the Godot adapter README's Quick Start lists the `godot`
+  dependency its snippet imports and pins both crates to `0.11`.
 
 ## [0.11.0] - 2026-08-28
 

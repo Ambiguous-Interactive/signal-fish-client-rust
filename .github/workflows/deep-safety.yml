@@ -222,7 +222,7 @@ jobs:
       - name: Install cargo-mutants
         uses: taiki-e/install-action@v2.87.1
         with:
-          tool: cargo-mutants@26.2.0
+          tool: cargo-mutants@27.1.0
 
       - name: Run mutation tests
         run: >-

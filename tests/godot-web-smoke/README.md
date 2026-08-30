@@ -37,7 +37,7 @@ commands do not try to link a GDExtension test binary outside Godot.
 ## Fortress rollback scenario
 
 The same fixture also contains a deterministic two-player
-`fortress-rollback` 0.10.0 game. CI launches two independent Chromium
+`fortress-rollback` 0.13.0 game. CI launches two independent Chromium
 processes, each hosting its own Godot runtime and Signal Fish client, against
 one real Signal Fish server process. The primary clean, impaired, and soak jobs
 pin 0.7.0, while a clean compatibility job pins 0.4.0. Player A creates a room and player B
