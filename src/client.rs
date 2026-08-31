@@ -2347,6 +2347,14 @@ async fn transport_loop(
                 break;
             }
         }
+        // Arm selection among simultaneously-ready arms is deliberately
+        // nondeterministic. When a transport send failure and an
+        // already-fired shutdown signal become ready in the same
+        // iteration, either terminal teardown may win, so the farewell
+        // reason names whichever cause was observed first. Both causes are
+        // real terminal edges, every pinned invariant (one bounded
+        // farewell, cause precedence, event order) holds under either
+        // winner, and no priority is documented between them.
         tokio::select! {
             command = cmd_rx.recv(), if pending_send.is_none() => {
                 let Some(command) = command else {
