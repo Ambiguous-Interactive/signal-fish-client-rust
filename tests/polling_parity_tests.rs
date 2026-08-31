@@ -302,6 +302,13 @@ impl NeverSendMock {
             waker.wake();
         }
     }
+
+    fn push_frame(&self, frame: TransportFrame) {
+        self.incoming.lock().unwrap().push_back(frame);
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
 }
 
 impl Transport for NeverSendMock {
@@ -456,9 +463,7 @@ impl FrameMock {
             incoming: Arc::new(Mutex::new(VecDeque::from([
                 TransportFrame::Text(AUTH.into()),
                 TransportFrame::Text(PI_V3.into()),
-                TransportFrame::Text(
-                    r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000008","room_code":"ROOM","player_id":"00000000-0000-0000-0000-000000000009","game_name":"game","max_players":4,"supports_authority":true,"current_players":[{"id":"00000000-0000-0000-0000-000000000009","name":"local","is_authority":true,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000007","name":"peer","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000006","name":"off-plan","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0}],"is_authority":true,"lobby_state":"finalized","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#.into(),
-                ),
+                TransportFrame::Text(V3_FINALIZED_ROOM.into()),
                 TransportFrame::Text(
                     r#"{"type":"SessionPlan","data":{"generation":"00000000-0000-0000-0000-00000000000c","topology":"mesh","transport":"webrtc","peers":[{"player_id":"00000000-0000-0000-0000-000000000007","player_name":"peer","is_authority":false,"initiate":true}],"fallback":"relay"}}"#.into(),
                 ),
@@ -958,6 +963,7 @@ const PEER_UUID: &str = "00000000-0000-0000-0000-000000000007";
 const AUTH: &str = r#"{"type":"Authenticated","data":{"app_name":"test","rate_limits":{"per_minute":60,"per_hour":1000,"per_day":10000}}}"#;
 const PI_V3: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
 const PI_V3_ROOM_OPERATION_IDS: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":["room_operation_ids"],"game_data_formats":["json","message_pack"],"protocol_version":3,"min_protocol_version":2,"max_protocol_version":3,"transports":["websocket"]}}"#;
+const V3_FINALIZED_ROOM: &str = r#"{"type":"RoomJoined","data":{"room_id":"00000000-0000-0000-0000-000000000008","room_code":"ROOM","player_id":"00000000-0000-0000-0000-000000000009","game_name":"game","max_players":4,"supports_authority":true,"current_players":[{"id":"00000000-0000-0000-0000-000000000009","name":"local","is_authority":true,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000007","name":"peer","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0},{"id":"00000000-0000-0000-0000-000000000006","name":"off-plan","is_authority":false,"is_ready":true,"connected_at":"2026-01-01T00:00:00Z","epoch":1,"seq":0}],"is_authority":true,"lobby_state":"finalized","ready_players":[],"relay_type":"websocket","current_spectators":[]}}"#;
 // A v2 negotiation omits the version fields, so it deserializes to
 // `protocol_version: None` — a terminal relay floor.
 const PI_V2: &str = r#"{"type":"ProtocolInfo","data":{"capabilities":[],"game_data_formats":["json","message_pack"]}}"#;
@@ -4743,6 +4749,21 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
         async_client.send_game_data(serde_json::json!({"after": "leave"})),
         Err(SignalFishError::RoomOperationPending)
     ));
+    // The fence gates room-joining commands before `AlreadyInRoom` (the
+    // local player is still rostered while the leave awaits its terminal
+    // response), and `ping` remains available during a pending fence —
+    // the documented gate order in docs/errors.md.
+    assert!(matches!(
+        async_client.join_room(JoinRoomParams::new("game", "again")),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    assert!(matches!(
+        async_client.join_as_spectator("game".into(), "ROOM".into(), "again".into()),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    async_client
+        .ping()
+        .expect("ping remains available during a pending fence");
 
     let polling_mock = FrameMock::v3();
     let polling_sent = Arc::clone(&polling_mock.sent);
@@ -4767,17 +4788,29 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
         polling_client.send_game_data(serde_json::json!({"after": "leave"})),
         Err(SignalFishError::RoomOperationPending)
     ));
+    assert!(matches!(
+        polling_client.join_room(JoinRoomParams::new("game", "again")),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    assert!(matches!(
+        polling_client.join_as_spectator("game".into(), "ROOM".into(), "again".into()),
+        Err(SignalFishError::RoomOperationPending)
+    ));
+    polling_client
+        .ping()
+        .expect("ping remains available during a pending fence");
 
     let _ = polling_client.poll();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while async_sent.lock().unwrap().is_empty() {
+        while async_sent.lock().unwrap().len() < 2 {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("async LeaveRoom frame");
-    assert_eq!(async_sent.lock().unwrap().len(), 1);
-    assert_eq!(polling_sent.lock().unwrap().len(), 1);
+    .expect("async LeaveRoom and Ping frames");
+    let _ = polling_client.poll();
+    assert_eq!(async_sent.lock().unwrap().len(), 2);
+    assert_eq!(polling_sent.lock().unwrap().len(), 2);
     assert!(matches!(
         &async_sent.lock().unwrap()[0],
         TransportFrame::Text(frame) if frame.contains("LeaveRoom")
@@ -4786,7 +4819,291 @@ async fn admitted_leave_fences_following_player_commands_in_both_drivers() {
         &polling_sent.lock().unwrap()[0],
         TransportFrame::Text(frame) if frame.contains("LeaveRoom")
     ));
+    assert!(matches!(
+        &async_sent.lock().unwrap()[1],
+        TransportFrame::Text(frame) if frame.contains("\"Ping\"")
+    ));
+    assert!(matches!(
+        &polling_sent.lock().unwrap()[1],
+        TransportFrame::Text(frame) if frame.contains("\"Ping\"")
+    ));
     async_client.shutdown().await;
+}
+
+#[tokio::test]
+async fn authority_gated_commands_refuse_at_driver_level_in_both_drivers() {
+    // The shared core refuses `start_game` and `request_authority(false)`
+    // while a peer holds authority; this pins the same typed refusal through
+    // both public drivers, whose membership matrices only classify these
+    // commands as AdmittedOrLaterGuard.
+    let authority_change = ServerMessage::AuthorityChanged {
+        authority_player: Some(uuid::Uuid::from_u128(7)),
+        you_are_authority: false,
+    };
+    {
+        let async_mock = FrameMock::v3();
+        async_mock
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back(text_server_frame(authority_change.clone()));
+        let async_sent = Arc::clone(&async_mock.sent);
+        let (mut async_client, mut async_events) =
+            SignalFishClient::start(async_mock, SignalFishConfig::new("app").enable_v3());
+        common::wait_for_authentication(&async_client).await;
+        admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
+        loop {
+            match async_events.recv().await {
+                Some(SignalFishEvent::AuthorityChanged { .. }) => break,
+                Some(_) => {}
+                None => panic!("async authority trace closed before AuthorityChanged"),
+            }
+        }
+        async_sent.lock().unwrap().clear();
+        assert!(matches!(
+            async_client.start_game(),
+            Err(SignalFishError::AuthorityRequired)
+        ));
+        assert!(matches!(
+            async_client.request_authority(false),
+            Err(SignalFishError::AuthorityRequired)
+        ));
+        assert!(
+            async_sent.lock().unwrap().is_empty(),
+            "authority refusals must not queue anything"
+        );
+        async_client.shutdown().await;
+
+        let polling_mock = FrameMock::v3();
+        polling_mock
+            .incoming
+            .lock()
+            .unwrap()
+            .push_back(text_server_frame(authority_change));
+        let polling_sent = Arc::clone(&polling_mock.sent);
+        let mut polling_client =
+            SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app").enable_v3());
+        for _ in 0..16 {
+            if polling_client.is_authenticated() {
+                break;
+            }
+            let _ = polling_client.poll();
+        }
+        assert!(
+            polling_client.is_authenticated(),
+            "polling fixture must authenticate before admission"
+        );
+        admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
+        let mut authority_seen = false;
+        for _ in 0..16 {
+            let events = polling_client.poll();
+            authority_seen |= events
+                .iter()
+                .any(|event| matches!(event, SignalFishEvent::AuthorityChanged { .. }));
+            if authority_seen {
+                break;
+            }
+        }
+        assert!(authority_seen, "polling trace must reach AuthorityChanged");
+        polling_sent.lock().unwrap().clear();
+        assert!(matches!(
+            polling_client.start_game(),
+            Err(SignalFishError::AuthorityRequired)
+        ));
+        assert!(matches!(
+            polling_client.request_authority(false),
+            Err(SignalFishError::AuthorityRequired)
+        ));
+        assert!(
+            polling_sent.lock().unwrap().is_empty(),
+            "authority refusals must not queue anything"
+        );
+    }
+}
+
+fn v2_relay_floor_mock() -> SharedMock {
+    let room = match finalized_v2_room_frame() {
+        TransportFrame::Text(room) => room,
+        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
+    };
+    let messages = vec![AUTH.to_string(), PI_V2.to_string(), room];
+    SharedMock::from_msgs_gated(
+        messages
+            .into_iter()
+            .map(|message| Some(Ok(message)))
+            .collect(),
+        false,
+    )
+}
+
+#[tokio::test]
+async fn v3_only_operations_refuse_on_the_v2_relay_floor_in_both_drivers() {
+    // Gate-7 arm membership: every v3-only outbound operation refuses with
+    // the terminal "relay-only" mode once a v2 ProtocolInfo has been
+    // observed, while reliable JSON game data stays admitted. Deleting a
+    // match arm from the shared ensure_v3 gate must fail this table.
+    for case in [
+        CommonCommandCase::LatestData,
+        CommonCommandCase::VolatileData,
+        CommonCommandCase::BinaryData,
+        CommonCommandCase::TransportStatus,
+    ] {
+        let async_mock = v2_relay_floor_mock();
+        let async_sent = Arc::clone(&async_mock.sent);
+        let (mut async_client, mut async_events) =
+            SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
+        common::wait_for_authentication(&async_client).await;
+        admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
+        loop {
+            match async_events.recv().await {
+                Some(SignalFishEvent::RoomJoined { .. }) | None => break,
+                _ => {}
+            }
+        }
+        async_sent.lock().unwrap().clear();
+        assert!(
+            matches!(
+                case.invoke(&mut async_client),
+                Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+            ),
+            "async {case:?} must refuse on the v2 relay floor"
+        );
+        assert!(
+            async_sent.lock().unwrap().is_empty(),
+            "async {case:?} refusal must not queue anything"
+        );
+        async_client.shutdown().await;
+
+        let polling_mock = v2_relay_floor_mock();
+        let polling_sent = Arc::clone(&polling_mock.sent);
+        let mut polling_client =
+            SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app"));
+        for _ in 0..16 {
+            if polling_client.is_authenticated() {
+                break;
+            }
+            let _ = polling_client.poll();
+        }
+        assert!(
+            polling_client.is_authenticated(),
+            "polling fixture must authenticate before admission"
+        );
+        admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
+        let _ = polling_client.poll();
+        polling_sent.lock().unwrap().clear();
+        assert!(
+            matches!(
+                case.invoke(&mut polling_client),
+                Err(SignalFishError::ProtocolUnsupported { mode: "relay-only" })
+            ),
+            "polling {case:?} must refuse on the v2 relay floor"
+        );
+        let _ = polling_client.poll();
+        assert!(
+            polling_sent.lock().unwrap().is_empty(),
+            "polling {case:?} refusal must not queue anything"
+        );
+    }
+
+    // Control: the relay floor keeps reliable JSON game data admitted.
+    let async_mock = v2_relay_floor_mock();
+    let async_sent = Arc::clone(&async_mock.sent);
+    let (mut async_client, mut async_events) =
+        SignalFishClient::start(async_mock.clone(), SignalFishConfig::new("app"));
+    common::wait_for_authentication(&async_client).await;
+    admit_initial_room_operation(&mut async_client, Some(InitialRoomOperation::JoinPlayer));
+    loop {
+        match async_events.recv().await {
+            Some(SignalFishEvent::RoomJoined { .. }) | None => break,
+            _ => {}
+        }
+    }
+    async_sent.lock().unwrap().clear();
+    async_client
+        .send_game_data(serde_json::json!({"relay": "floor"}))
+        .expect("reliable JSON stays admitted on the v2 relay floor");
+    wait_for_sent_len(&async_mock, 1).await;
+    assert!(
+        async_sent.lock().unwrap()[0].contains("GameData"),
+        "reliable JSON must reach the wire on the v2 relay floor"
+    );
+    async_client.shutdown().await;
+
+    let polling_mock = v2_relay_floor_mock();
+    let polling_sent = Arc::clone(&polling_mock.sent);
+    let mut polling_client =
+        SignalFishPollingClient::new(polling_mock, SignalFishConfig::new("app"));
+    for _ in 0..16 {
+        if polling_client.is_authenticated() {
+            break;
+        }
+        let _ = polling_client.poll();
+    }
+    assert!(
+        polling_client.is_authenticated(),
+        "polling fixture must authenticate before admission"
+    );
+    admit_initial_room_operation(&mut polling_client, Some(InitialRoomOperation::JoinPlayer));
+    let _ = polling_client.poll();
+    polling_sent.lock().unwrap().clear();
+    polling_client
+        .send_game_data(serde_json::json!({"relay": "floor"}))
+        .expect("reliable JSON stays admitted on the v2 relay floor");
+    let _ = polling_client.poll();
+    assert_eq!(polling_sent.lock().unwrap().len(), 1);
+}
+
+fn nested_chain(depth: u32) -> serde_json::Value {
+    let mut value = serde_json::json!(depth);
+    for _ in 0..depth {
+        value = serde_json::Value::Array(vec![value]);
+    }
+    value
+}
+
+#[tokio::test]
+async fn reliable_send_validation_precedes_waiting_for_queue_space() {
+    // docs/client.md pins the payload-depth check as a synchronous refusal:
+    // the caller's thread must not wait for queue capacity before local
+    // validation. The stalled transport keeps both command slots occupied,
+    // so an implementation that validated after waiting would park forever
+    // and fail this test by timeout.
+    let mock = NeverSendMock::new();
+    // Capacity 1: the dequeued Authenticate parks in the transport's send
+    // path forever, and the admitted join then fills the only channel slot.
+    let config = SignalFishConfig::new("app")
+        .enable_v3()
+        .with_command_channel_capacity(1)
+        .with_shutdown_timeout(std::time::Duration::from_millis(50));
+    let (mut client, mut events) = SignalFishClient::start(mock.clone(), config);
+    common::wait_for_authentication(&client).await;
+    // Admit the join before the room frame exists, so the scripted
+    // RoomJoined matches an armed fence instead of being suppressed as an
+    // unsolicited lifecycle violation.
+    client
+        .join_room(JoinRoomParams::new("game", "local"))
+        .expect("the free queue slot fits the join");
+    mock.push_frame(TransportFrame::Text(PI_V3.into()));
+    mock.push_frame(TransportFrame::Text(V3_FINALIZED_ROOM.into()));
+    loop {
+        match events.recv().await {
+            Some(SignalFishEvent::RoomJoined { .. }) => break,
+            Some(_) => {}
+            None => panic!("stalled-room trace closed before RoomJoined"),
+        }
+    }
+    assert_eq!(client.send_capacity(), 0, "both slots stay parked");
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.send_game_data_reliable(nested_chain(129)),
+    )
+    .await
+    .expect("reliable validation must not wait for queue space");
+    assert!(matches!(
+        result,
+        Err(SignalFishError::PayloadTooDeep { max_depth: 128 })
+    ));
+    client.shutdown().await;
 }
 
 #[tokio::test]
