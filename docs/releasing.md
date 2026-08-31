@@ -37,7 +37,8 @@ first adapter release, create a crates.io token scoped to the
 Protect the default branch with an active ruleset that has no bypass actors and
 requires:
 
-- pull requests, one approval, stale-review dismissal, and resolved threads;
+- pull requests, stale-review dismissal, and resolved threads (approving
+  reviews are not required — the repository has a single maintainer);
 - a branch updated with its base before merging;
 - every job named in `.github/required-checks.json`;
 - deletion and non-fast-forward protections.

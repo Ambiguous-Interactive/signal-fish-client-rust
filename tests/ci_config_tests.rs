@@ -313,6 +313,13 @@ mod required_check_policy {
             .is_none());
         assert_eq!(policy["repository_rules"]["target"], "branch");
         assert_eq!(policy["repository_rules"]["exclude"], serde_json::json!([]));
+        // The repository has a single maintainer: a required approving
+        // review would block every merge. Pin the deliberate zero so a
+        // future policy edit cannot silently re-tighten it.
+        assert_eq!(
+            policy["repository_rules"]["required_approving_review_count"],
+            serde_json::json!(0)
+        );
         assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
         assert!(workflow.contains("  pull_request:\n"));
         assert!(workflow.contains("  push:\n    branches: [main]\n"));
