@@ -584,11 +584,14 @@ class TestMainFunctionValidation:
         fake_root.mkdir()
         llm_dir = fake_root / ".llm"
         llm_dir.mkdir()
+        skills_dir = llm_dir / "skills"
+        skills_dir.mkdir()
+        (llm_dir / "context.md").write_text("# Context\n", encoding="utf-8")
 
         monkeypatch.setattr(_mod, "REPO_ROOT", fake_root)
         monkeypatch.setattr(_mod, "LLM_DIR", llm_dir)
-        monkeypatch.setattr(_mod, "SKILLS_DIR", llm_dir / "skills")
-        monkeypatch.setattr(_mod, "INDEX_FILE", llm_dir / "skills" / "index.md")
+        monkeypatch.setattr(_mod, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(_mod, "INDEX_FILE", skills_dir / "index.md")
         monkeypatch.setattr(_mod, "find_md_files", lambda _directory: [])
         monkeypatch.setattr(_mod, "validate_mkdocs_nav", lambda: [])
         monkeypatch.setattr(_mod, "validate_yaml_step_indentation", lambda _md: [])
@@ -665,7 +668,6 @@ class TestMainFunctionValidation:
         monkeypatch.setattr(_mod, "sync_crate_version_references", lambda _v: ([], []))
 
         skills_dir = tmp_path / "repo" / ".llm" / "skills"
-        skills_dir.mkdir()
         _write_modern_skill(
             skills_dir,
             "example",

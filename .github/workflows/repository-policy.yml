@@ -1,16 +1,19 @@
 name: Repository Policy
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
-    - cron: "17 7 * * 1"
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: repository-policy
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   audit:
@@ -20,6 +23,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Test policy audit
         run: python3 -m unittest scripts/test_audit_repository_rules.py scripts/test_required_checks.py
@@ -28,3 +33,20 @@ jobs:
         run: python3 scripts/audit-repository-rules.py
         env:
           GH_TOKEN: ${{ github.token }}
+
+  required:
+    name: Repository Policy Required
+    if: ${{ always() }}
+    needs: [audit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every repository policy job
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          failures=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"' <<< "$NEEDS_JSON")
+          if [ -n "$failures" ]; then
+            printf '::error::Required jobs did not succeed:\n%s\n' "$failures"
+            exit 1
+          fi

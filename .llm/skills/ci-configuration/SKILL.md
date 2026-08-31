@@ -37,7 +37,7 @@ verify the exact default-branch SHA rather than only the pre-merge PR head.
 
 `.github/required-checks.json` is the canonical list of gate names and desired
 default-branch rules. Keep gate names unique and stable. Update the config, the
-workflow gate, and `required_check_policy` tests together. The scheduled
+workflow gate, and `required_check_policy` tests together. The required, daily
 Repository Policy workflow detects live GitHub ruleset drift; do not add bypass
 actors to make a failing gate mergeable. Live ruleset reads use the workflow's
 authenticated built-in `GITHUB_TOKEN`. GitHub hides bypass actors from workflow
@@ -312,7 +312,7 @@ When test code skips files by module name (e.g., excluding `emscripten_websocket
 Major-version tags like `@v2` are mutable (supply-chain risk). Prefer patch-level pinning (e.g., `@v2.8.2`). Exceptions (keep in sync with `scripts/check-workflows.sh` Phase 7 `MAJOR_ONLY_EXCEPTIONS` array):
 
 - `dtolnay/rust-toolchain` — uses channels (`@stable`, `@nightly`, `@beta`)
-- `mymindstorm/setup-emsdk` — only publishes major-version tags
+- `emscripten-core/setup-emsdk` — uses project-supported major-version tags
 - `taiki-e/install-action` — releases near-daily; patch pins go stale fast
 
 Phase 7 emits non-blocking warnings for major-only pins. Verified by `ci_config_tests.rs::workflow_security::check_workflows_script_detects_major_only_version_tags`.

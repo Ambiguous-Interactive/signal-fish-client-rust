@@ -107,8 +107,10 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     if not isinstance(expected, dict):
         raise ValueError("policy has no repository_rules object")
     supported_keys = {
+        "target",
         "enforcement",
         "include",
+        "exclude",
         "required_approving_review_count",
         "dismiss_stale_reviews_on_push",
         "required_review_thread_resolution",
@@ -122,6 +124,14 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     expected_refs = set(expected.get("include", []))
     if not expected_refs:
         raise ValueError("repository_rules.include must not be empty")
+    expected_excludes = expected.get("exclude")
+    if not isinstance(expected_excludes, list) or any(
+        not isinstance(pattern, str) for pattern in expected_excludes
+    ):
+        raise ValueError("repository_rules.exclude must be a list of ref patterns")
+    expected_target = expected.get("target")
+    if expected_target not in ("branch", "tag"):
+        raise ValueError("repository_rules.target must be branch or tag")
     configured_checks = policy.get("required_checks")
     if not isinstance(configured_checks, list) or not configured_checks:
         raise ValueError("policy must define a non-empty required_checks list")
@@ -138,18 +148,20 @@ def audit(policy: dict[str, Any], rulesets: list[dict[str, Any]]) -> list[str]:
     def ruleset_applies(ruleset: dict[str, Any]) -> bool:
         ref_name = ruleset.get("conditions") or {}
         ref_name = ref_name.get("ref_name") or {}
-        excluded = ref_name.get("exclude") or []
-        # A ref excluded from the same ruleset that includes it is protected
-        # by nothing: GitHub conditions apply exclusions after inclusions.
-        # The ~ALL alias and wildcard exclude patterns are not modeled here,
-        # so they also fail closed instead of letting an inert ruleset pass
-        # the audit.
-        if expected_refs.intersection(excluded) or "~ALL" in excluded or any(
-            isinstance(pattern, str) and set(pattern) & set("*?[")
-            for pattern in excluded
+        included = ref_name.get("include")
+        excluded = ref_name.get("exclude")
+        if (
+            ruleset.get("target") != expected_target
+            or not isinstance(included, list)
+            or any(not isinstance(pattern, str) for pattern in included)
+            or not isinstance(excluded, list)
+            or any(not isinstance(pattern, str) for pattern in excluded)
         ):
             return False
-        return expected_refs.issubset(ref_name.get("include") or [])
+        # Exclusions override inclusions. Require the exact checked-in set so
+        # an explicit default-branch ref, alias, or glob cannot silently make
+        # an otherwise matching ruleset inert.
+        return expected_refs.issubset(included) and excluded == expected_excludes
 
     applicable = [
         ruleset

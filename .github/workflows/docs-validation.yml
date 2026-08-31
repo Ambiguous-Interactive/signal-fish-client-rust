@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run markdownlint
         uses: DavidAnson/markdownlint-cli2-action@v24.2.0
@@ -55,6 +57,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run lychee link checker
         uses: lycheeverse/lychee-action@v2.9.0
