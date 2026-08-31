@@ -174,7 +174,9 @@ fn start(
 ```
 
 The return tuple is marked `#[must_use]` — you **must** consume the event
-receiver to observe server events.
+receiver to observe server events. Both the handle and the event receiver are
+`Send + Sync`: move the receiver into a `tokio::spawn` drain loop and share the
+handle via `Arc<Mutex<_>>` across tasks.
 
 On start, the client automatically sends an `Authenticate` message using the
 provided config. A background Tokio task is spawned to multiplex send/receive

@@ -517,8 +517,70 @@ impl<'de> serde::de::Visitor<'de> for UniqueJsonVisitor {
             }
             values.insert(key, value);
         }
+        // A consumer crate can silently enable serde_json's `arbitrary_precision`
+        // feature through Cargo feature unification; that feature delivers every
+        // number that fails its u64/i64 parse to `deserialize_any` visitors as a
+        // single-member marker map instead of calling the scalar visitors.
+        // Classify the marker unconditionally (the key is a serde_json-internal
+        // name no protocol payload legitimately carries) so a consumer's feature
+        // flags cannot flip accept/reject verdicts or the canonical bytes. The
+        // one deliberate divergence: serde_json classifies the literal `-0` as
+        // the integer `0` before any marker exists, so unified builds accept
+        // `-0` as `0` — as the bare literal or via a hand-crafted marker raw
+        // text — where default builds reject it as a negative-zero float;
+        // canonical `0` is exactly the server's RFC 8785 form for `-0`.
+        if values.len() == 1 {
+            if let Some(serde_json::Value::String(raw)) =
+                values.get(ARBITRARY_PRECISION_NUMBER_MARKER)
+            {
+                return classify_marker_number(raw)
+                    .map(UniqueJsonValue)
+                    .map_err(serde::de::Error::custom);
+            }
+        }
         Ok(UniqueJsonValue(serde_json::Value::Object(values)))
     }
+}
+
+#[cfg(feature = "token-binding")]
+const ARBITRARY_PRECISION_NUMBER_MARKER: &str = "$serde_json::private::Number";
+
+/// Classifies a serde_json `arbitrary_precision` marker payload exactly like
+/// the scalar visitors classify a directly parsed number: integers within the
+/// interoperable safe range are kept, and everything else (floats, exponents,
+/// out-of-range integers) is forbidden input. The literal `-0` never reaches
+/// this helper from serde_json itself — neither as the bare literal nor inside
+/// a genuine marker raw text: serde_json classifies it as the integer `0`
+/// before any marker exists, so unified builds accept it as `0` where default
+/// builds reject it as a negative-zero float (canonical `0` is exactly the
+/// server's RFC 8785 form for `-0`). A hand-crafted marker `"-0"` follows the
+/// same split verdicts.
+#[cfg(feature = "token-binding")]
+fn classify_marker_number(raw: &str) -> Result<serde_json::Value, String> {
+    // serde_json marker raw texts are exact number tokens with no surrounding
+    // whitespace; reject anything else instead of relying on `from_str`
+    // leniency.
+    if raw.trim() != raw {
+        return Err("malformed JSON number".to_string());
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| "malformed JSON number".to_string())?;
+    if let Some(value) = parsed.as_u64() {
+        if value > MAX_SAFE_INTEGER {
+            return Err("JSON integer exceeds the interoperable safe range".to_string());
+        }
+        return Ok(serde_json::Value::Number(value.into()));
+    }
+    if let Some(value) = parsed.as_i64() {
+        if value.unsigned_abs() > MAX_SAFE_INTEGER {
+            return Err("JSON integer exceeds the interoperable safe range".to_string());
+        }
+        return Ok(serde_json::Value::Number(value.into()));
+    }
+    if parsed.as_f64().is_some() {
+        return Err("floating-point JSON numbers are unsupported".to_string());
+    }
+    Err("malformed JSON number".to_string())
 }
 
 #[cfg(all(test, feature = "token-binding"))]
@@ -682,6 +744,75 @@ mod tests {
                     TokenBindingFailure::UnsupportedJson
                 ))
             ));
+        }
+    }
+
+    /// A marker-shaped single-member string object is classified as a number
+    /// in every build (see `visit_map`): a safe-integer raw text must produce
+    /// the exact same signed envelope as the bare literal, and a non-string
+    /// marker value must keep the plain-object fall-through byte-stable.
+    /// (serde_json itself only ever produces marker raw texts for forbidden
+    /// classes — floats, exponents, out-of-range integers — so the `"5"`
+    /// case pins the deliberate default-build reclassification, the same
+    /// verdict a unified build would reach for that input.)
+    #[test]
+    fn canonical_json_treats_arbitrary_precision_marker_maps_like_numbers() {
+        // Two sessions from the same challenge share the derived key and
+        // start at the same sequence, so differing envelopes would prove the
+        // marker path changed the canonical bytes.
+        let marker = r#"{"type":"Ping","n":{"$serde_json::private::Number":"5"}}"#;
+        let plain = r#"{"type":"Ping","n":5}"#;
+        let signed_marker = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
+            .expect("test challenge must derive a session")
+            .prepare(&TransportFrame::Text(marker.to_string()))
+            .expect("marker-encoded safe integer must prepare");
+        let signed_plain = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
+            .expect("test challenge must derive a session")
+            .prepare(&TransportFrame::Text(plain.to_string()))
+            .expect("plain safe integer must prepare");
+        assert_eq!(signed_marker, signed_plain);
+
+        // A marker key with a non-string value is an ordinary object: sign it
+        // and prove the envelope differs from the number-reclassified form.
+        let object = r#"{"type":"Ping","w":{"$serde_json::private::Number":5}}"#;
+        let signed_object = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
+            .expect("test challenge must derive a session")
+            .prepare(&TransportFrame::Text(object.to_string()))
+            .expect("non-string marker value must stay an ordinary object");
+        let reclassified = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
+            .expect("test challenge must derive a session")
+            .prepare(&TransportFrame::Text(
+                r#"{"type":"Ping","w":5}"#.to_string(),
+            ))
+            .expect("plain nested number must prepare");
+        assert_ne!(
+            signed_object, reclassified,
+            "a non-string marker value must not be reclassified as its number"
+        );
+    }
+
+    #[test]
+    fn canonical_json_rejects_marker_encoded_forbidden_numbers() {
+        let session = TokenBindingSession::from_challenge(HANDSHAKE_KEY, challenge(), None)
+            .expect("test challenge must derive a session");
+        for raw in [
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"1.0"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"1e0"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"-0.0"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"9007199254740992"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"-9007199254740992"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":"bogus"}}"#,
+            r#"{"type":"Ping","n":{"$serde_json::private::Number":""}}"#,
+        ] {
+            assert!(
+                matches!(
+                    session.prepare(&TransportFrame::Text(raw.to_string())),
+                    Err(SignalFishError::TokenBinding(
+                        TokenBindingFailure::UnsupportedJson
+                    ))
+                ),
+                "marker payload must be classified like the scalar visitors: {raw}"
+            );
         }
     }
 

@@ -2383,9 +2383,9 @@ mod ci_workflow_policy {
                 );
             }
             let expected_run = if job_name == "clippy" {
-                "cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} -- -D warnings"
+                "cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} --locked -- -D warnings"
             } else {
-                "cargo test ${{ matrix.scope }} ${{ matrix.flags }}"
+                "cargo test ${{ matrix.scope }} ${{ matrix.flags }} --locked"
             };
             assert!(
                 job.contains(expected_run),
