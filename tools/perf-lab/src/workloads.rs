@@ -1197,9 +1197,11 @@ fn validate_ledger_semantics(spec: WorkloadSpec, ledger: &WorkloadLedger) -> Res
     // Queue-age sampling liveness: every cell that enqueues measured
     // commands owns queued work at the first measured poll, and each poll
     // samples the oldest queued frame on entry, so a positive peak age is
-    // guaranteed. A zero here means the sampling instrumentation died (or a
-    // driver change stopped sampling queued work) while every wall-clock
-    // magnitude stays deliberately diagnostic and unpinned.
+    // guaranteed on any platform with a sub-microsecond monotonic clock
+    // (every CI and supported dev platform). A zero here means the sampling
+    // instrumentation died (or a driver change stopped sampling queued
+    // work) while every wall-clock magnitude stays deliberately diagnostic
+    // and unpinned.
     if enqueues_measured_commands(spec.workload) && ledger.peak_queue_age_ns == 0 {
         return Err(format!(
             "{} queued measured commands but never sampled a positive queue age",

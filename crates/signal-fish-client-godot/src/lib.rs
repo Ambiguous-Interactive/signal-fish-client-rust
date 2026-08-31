@@ -54,10 +54,10 @@
 //! - **Unvalidated native text frames:** Godot's native backend does not
 //!   validate text-frame UTF-8, so a corrupt text packet from the network
 //!   reaches the adapter as raw bytes. Because [`TransportFrame::Text`]
-//!   cannot represent invalid UTF-8, such a packet fails the transport
-//!   stream closed with a terminal `TransportReceive` error instead of
-//!   being lossily substituted. Web exports are immune: browsers validate
-//!   text frames before delivery.
+//!   cannot represent invalid UTF-8, such a packet surfaces a terminal
+//!   `TransportReceive` error instead of being lossily substituted, which
+//!   ends the stream at the driver. Web exports are immune: browsers
+//!   validate text frames before delivery.
 
 use std::fmt;
 use std::task::{Context, Poll};
@@ -535,15 +535,27 @@ impl GodotWebSocketTransport {
     ) -> Self {
         let state = backend.state();
         // A peer already CLOSED with genuine post-open close metadata — a
-        // wire close code other than the never-connected -1 or the
-        // abnormal-termination 1006/1015 — demonstrably completed its
-        // handshake before the wrap, so its end classifies as a close with
-        // metadata rather than a "closed before opening" failure. Fresh
-        // peers report CLOSED with close code -1, and web connect failures
-        // synthesize 1006/1015, so those keep the failure classification.
+        // wire or engine-synthesized close code other than the
+        // never-connected -1 or the abnormal-termination 1006/1015 —
+        // demonstrably completed its handshake before the wrap, so its end
+        // classifies as a close with metadata rather than a "closed before
+        // opening" failure. CONNECTING peers and CLOSED peers with -1
+        // (pre-open close or failure) keep the failure classification, as
+        // do peers reporting 1006/1015. Verified against the Godot 4.5
+        // engine sources (native writes close codes only from a wire CLOSE
+        // or post-open synthesis and discards caller codes on pre-open
+        // closes; web writes them only from the JS close event, and failed
+        // web connects report 1006) — a future engine version that reports
+        // synthesized codes pre-open would need this predicate revisited.
+        // Godot's native backend reaches CLOSING only from OPEN, so a
+        // natively closing peer also demonstrably opened; the web backend
+        // may enter CLOSING from CONNECTING, where the state proves
+        // nothing, so the seed does not apply on wasm.
+        let native_closing = state == PeerState::Closing && !cfg!(target_family = "wasm");
+        let post_open_close_code = !matches!(backend.close_code(), -1 | 1006 | 1015);
         let ever_ready = state == PeerState::Open
-            || (state == PeerState::Closed
-                && matches!(backend.close_code(), code if code != -1 && code != 1006 && code != 1015));
+            || native_closing
+            || ((state == PeerState::Closed || native_closing) && post_open_close_code);
         let mut transport = Self {
             backend,
             backpressure_policy: options.backpressure_policy,
@@ -1866,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn fake_backend_abort_forfeits_queued_inbound_like_engine_force_close() {
+    fn fake_backend_abort_clears_queued_inbound_packets() {
         let mut backend = FakeBackend::new(PeerState::Open);
         backend.packets.push_back(Ok((b"queued".to_vec(), true)));
 
@@ -1894,6 +1906,25 @@ mod tests {
         assert_eq!(close_info.code, Some(1000));
         assert_eq!(close_info.clean, Some(true));
         assert!(close_info.initiated_by_peer);
+    }
+
+    #[test]
+    fn wrapping_a_natively_closing_peer_reports_post_open_history() {
+        let mut backend = FakeBackend::new(PeerState::Closing);
+        backend.close_code = 1000;
+        backend.states.push_back(PeerState::Closed);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(transport.is_ready());
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+        let close_info = transport
+            .close_info()
+            .expect("post-open close must carry metadata");
+        assert_eq!(close_info.code, Some(1000));
+        assert!(close_info.clean.unwrap_or(false));
     }
 
     #[test]
