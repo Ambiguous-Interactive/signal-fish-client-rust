@@ -5179,19 +5179,7 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
     // state before any `ProtocolInfo` arrives (see the parity test above).
     let peer: PlayerId = PEER_UUID.parse().unwrap();
 
-    let room = match finalized_v2_room_frame() {
-        TransportFrame::Text(room) => room,
-        TransportFrame::Binary(_) => unreachable!("room baseline must be text"),
-    };
-    let messages = [AUTH.to_string(), PI_V2.to_string(), room];
-    let async_mock = SharedMock::from_msgs_gated(
-        messages
-            .iter()
-            .cloned()
-            .map(|message| Some(Ok(message)))
-            .collect(),
-        false,
-    );
+    let async_mock = v2_relay_floor_mock();
     let (mut client, mut events) =
         SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
     common::wait_for_authentication(&client).await;
@@ -5205,13 +5193,7 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
     }
     let async_err = client.send_offer(peer, "sdp").unwrap_err();
 
-    let poll_mock = SharedMock::from_msgs_gated(
-        messages
-            .into_iter()
-            .map(|message| Some(Ok(message)))
-            .collect(),
-        false,
-    );
+    let poll_mock = v2_relay_floor_mock();
     let mut poll_client = SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app"));
     for _ in 0..16 {
         if poll_client.is_authenticated() {

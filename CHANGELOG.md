@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   UTF-8, so a corrupt text packet surfaces a terminal receive error that
   ends the stream at the driver.
 - Corrected docs: `set_ready()` toggles readiness (call it once per room
-  stay),   `DecodeFailed.message_type` is `None` for frames over 512 bytes,
+  stay), `DecodeFailed.message_type` is `None` for frames over 512 bytes,
   `with_max_players` takes a `u8` (values above 255 cannot be expressed),
   `MeshController` requires
   `tokio-runtime`, the WASM guide warns pthreads is single-thread-only and
@@ -83,7 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and uses the pinned `nightly-2026-03-01` toolchain consistently and
   quotes the actual user-side error for the wrong-target Emscripten
   transport, and the Godot adapter README's Quick Start lists the `godot`
-  dependency its snippet imports and pins both crates to `0.11`.
+  dependency its snippet imports and pins both crates to the previously
+  released version.
 - The guide's `SignalFishError` reference table now lists the
   `PayloadTooDeep { max_depth }` variant, matching the errors guide; the
   table predated the variant.
