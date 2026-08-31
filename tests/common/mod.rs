@@ -31,6 +31,15 @@ use signal_fish_client::{ClientMessage, SignalFishError, Transport};
 ///
 /// Scripted server responses are consumed in order by `recv()`.
 /// All messages sent by the client are recorded in `sent`.
+///
+/// Deliberate polling-faithful limitations (pin, do not "fix" here):
+/// `poll_recv` `Pending` registers no waker, so scripted frames only flow
+/// when the driver loop is re-polling anyway (command sends, timers) —
+/// there is no autonomous readiness-driven progress and no mid-session
+/// server-push injection API — and outbound binary frames are refused with
+/// a terminal `TransportSend` error (text-only backend face). Use a
+/// wake-faithful mock (e.g. the in-crate `MockTransport` in `src/client.rs`'s
+/// test module) for server-push or readiness-wake coverage.
 pub struct MockTransport {
     /// Scripted server responses (consumed in order by `recv`).
     incoming: VecDeque<Option<Result<TransportFrame, SignalFishError>>>,
@@ -109,7 +118,12 @@ impl Transport for MockTransport {
     ) -> std::task::Poll<Result<(), SignalFishError>> {
         if let Some(frame) = frame.take() {
             let TransportFrame::Text(message) = frame else {
-                panic!("test mock expected an outbound text frame");
+                // Post-acceptance failure face (contract-legal): refuse the
+                // binary frame terminally instead of a physically impossible
+                // silent acceptance.
+                return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                    "test mock does not accept outbound binary frames".into(),
+                )));
             };
             self.sent.lock().unwrap().push(message);
         }

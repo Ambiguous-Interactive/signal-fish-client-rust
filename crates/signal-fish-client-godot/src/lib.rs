@@ -371,6 +371,20 @@ fn is_abnormal_close_code(raw_code: i32) -> bool {
 /// Godot object is intentionally not required to be `Send`; call the polling
 /// client's `poll()` method from the same Godot thread on every frame.
 ///
+/// Drop/close semantics: a successful
+/// [`SignalFishPollingClient::close`](signal_fish_client::SignalFishPollingClient::close)
+/// tears down through the transport's graceful close handshake. The transport's
+/// [`Transport::abort`] — a force-close (`close_ex().code(-1)`) that runs
+/// exactly once — covers every other teardown: dropping the client without a
+/// completed `close()`, a `close` deadline expiry, or a failed close. A
+/// `close()` on a client that never connected performs no transport I/O and
+/// leaves the peer untouched for its owner. Any teardown that reaches the peer
+/// closes it before the `Gd<WebSocketPeer>` is released, on both native and
+/// web. Dropping a bare transport without `abort`/`close` leaves reclamation
+/// to Godot's engine destructor semantics for an open peer, which differ by
+/// platform; drive it through the polling client (or call `close()`/`abort()`
+/// explicitly) for deterministic teardown.
+///
 /// A connection that closes before opening surfaces as
 /// [`SignalFishError::TransportReceive`] even when observed first through
 /// [`Transport::poll_send`]: the handshake result is a receive-path event, so

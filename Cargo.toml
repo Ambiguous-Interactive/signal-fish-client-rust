@@ -66,7 +66,9 @@ tokio = { version = "1.21", features = ["sync", "macros"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# 1.0.68 is the true minimum: older releases parsed a bare `-0` as integer
+# `0`, silently disabling the token-binding forbidden-input (float) gate.
+serde_json = "1.0.68"
 serde_bytes = "0.11"
 rmp = "0.8"
 rmp-serde = "1.3"
@@ -78,7 +80,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2.0"
 
 # Logging
-tracing = "0.1"
+# 0.1.35 is the oldest release line verified to build under a fresh
+# minimal-versions resolution; older tracing releases fail to compile on
+# modern toolchains through their own dependency graph (tracing-core or
+# tracing-attributes/syn, depending on the release).
+tracing = "0.1.35"
 
 # Optional Signal Fish token-binding-v2 primitives.
 base64 = { version = "0.23", optional = true }
@@ -94,15 +100,19 @@ futures-util = { version = "0.3", optional = true, features = ["sink"] }
 # `ring::default_provider().install_default()` in `connect_with_options` so the
 # wss:// path always has a provider — even when the dependency graph also pulls
 # rustls' aws_lc_rs provider, whose auto-detection otherwise panics on ambiguity.
-rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
+# 0.23.16 is the true minimum: `ResolvesClientCert::only_raw_public_keys`
+# first shipped there.
+rustls = { version = "0.23.16", default-features = false, features = ["ring"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["v4", "serde", "js"] }
 
 [dev-dependencies]
-tokio = { version = "1.21", features = ["full", "test-util"] }
+# 1.50 is the true minimum for the suites: `TcpStream::set_zero_linger`
+# (1.50) backs the test transports.
+tokio = { version = "1.50", features = ["full", "test-util"] }
 futures-util = "0.3"
-serde_json = "1.0"
+serde_json = "1.0.68"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 toml = "1.0"
 # Used by the wire-sample provenance policy test to verify checksums.

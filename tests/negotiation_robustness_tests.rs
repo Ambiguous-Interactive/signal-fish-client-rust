@@ -513,7 +513,9 @@ impl Transport for SendErrorTransport {
         }
         if let Some(frame) = frame.take() {
             let TransportFrame::Text(message) = frame else {
-                panic!("test mock expected an outbound text frame");
+                return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                    "test mock does not accept outbound binary frames".into(),
+                )));
             };
             if serde_json::from_str::<ClientMessage>(&message)
                 .is_ok_and(|message| matches!(message, ClientMessage::JoinRoom { .. }))

@@ -17,7 +17,8 @@
 //!   [`ClientStats::messages_undecodable`]) rather than dropped. An event can
 //!   only be missed when the loop stops delivering entirely: the receiver was
 //!   dropped, the client handle was dropped without calling
-//!   [`shutdown`](SignalFishClient::shutdown) (which aborts immediately),
+//!   [`shutdown`](SignalFishClient::shutdown) (which stops the loop
+//!   immediately and tears down its transport exactly once),
 //!   delivery was preempted — `shutdown`, or a terminal disconnect facing a
 //!   consumer that never drains, abandon at most the one event delivery they
 //!   interrupt (remaining batch events get one nonblocking attempt), close
@@ -924,8 +925,12 @@ impl SignalFishClient {
     /// finish; if the timeout expires (e.g. a transport whose `poll_close`
     /// remains pending), the transport is aborted and the loop normally
     /// returns. A later watchdog cancels the task if it still does not stop.
-    /// Task cancellation and handle drop also invoke the transport's required
-    /// abort fallback. The same budget bounds a terminal disconnect when
+    /// Task cancellation and handle drop also finish the loop without a
+    /// graceful deadline: the transport's required abort fallback runs, or —
+    /// in the rare race where the loop observes the dropped handle's closed
+    /// command channel before cancellation lands — an immediate graceful
+    /// close wins. Cleanup runs exactly once either way and is never
+    /// repeated. The same budget bounds a terminal disconnect when
     /// `shutdown` is never called: a consumer that wedges permanently cannot
     /// keep the loop (and every waiting reliable sender) alive past it.
     /// After shutdown completes, the event

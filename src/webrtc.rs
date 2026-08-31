@@ -270,6 +270,15 @@ mod controller {
     /// `MeshController<D>` is [`Send`] when `D` is, so the `recv()` loop can run
     /// on a spawned task. A `!Send` driver (e.g. a browser `RTCPeerConnection`
     /// wrapper) must instead be driven on the current task.
+    ///
+    /// Dropping the controller without [`shutdown`](Self::shutdown) finishes
+    /// the underlying signaling client through the client handle's teardown
+    /// path: the transport's abort fallback runs exactly once, except in the
+    /// rare race where an immediate graceful close wins first (see
+    /// [`SignalFishClient::shutdown`]). Driver peers are never disconnected by
+    /// plain drop; graceful peer teardown — disconnecting each known peer once
+    /// — belongs to [`shutdown`](Self::shutdown) and to `recv` observing the
+    /// end of the signaling stream.
     pub struct MeshController<D: WebRtcDriver> {
         client: SignalFishClient,
         events: mpsc::Receiver<SignalFishEvent>,
@@ -932,7 +941,7 @@ mod tests {
     use crate::client::SignalFishConfig;
     use crate::protocol::{ClientMessage, Topology, TransportKind};
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     // The docs promise `MeshController<D>` is `Send` when `D` is, so the `recv()`
@@ -994,6 +1003,41 @@ mod tests {
         Send(PlayerId, Vec<u8>),
         Disconnect(PlayerId),
         Poll,
+    }
+
+    /// Counts `abort` invocations so teardown pins can distinguish the
+    /// required abort fallback from a graceful `poll_close`.
+    struct AbortCountingTransport {
+        inner: MockTransport,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    impl Transport for AbortCountingTransport {
+        fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::Relaxed);
+            self.inner.abort();
+        }
+        fn poll_send(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+            frame: &mut Option<crate::transport::TransportFrame>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
+            self.inner.poll_send(cx, frame)
+        }
+        fn poll_recv(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<
+            Option<Result<crate::transport::TransportFrame, crate::error::SignalFishError>>,
+        > {
+            self.inner.poll_recv(cx)
+        }
+        fn poll_close(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
+            self.inner.poll_close(cx)
+        }
     }
 
     #[derive(Default)]
@@ -1289,7 +1333,11 @@ mod tests {
         ) -> std::task::Poll<Result<(), crate::error::SignalFishError>> {
             if let Some(frame) = frame.take() {
                 let crate::transport::TransportFrame::Text(message) = frame else {
-                    panic!("test mock expected an outbound text frame");
+                    return std::task::Poll::Ready(Err(
+                        crate::error::SignalFishError::TransportSend(
+                            "test mock does not accept outbound binary frames".into(),
+                        ),
+                    ));
                 };
                 self.sent.lock().unwrap().push(message);
             }
@@ -1825,7 +1873,11 @@ mod tests {
             permit.forget();
             if let Some(frame) = frame.take() {
                 let crate::transport::TransportFrame::Text(message) = frame else {
-                    panic!("test mock expected an outbound text frame");
+                    return std::task::Poll::Ready(Err(
+                        crate::error::SignalFishError::TransportSend(
+                            "test mock does not accept outbound binary frames".into(),
+                        ),
+                    ));
                 };
                 self.sent.lock().unwrap().push(message);
             }
@@ -2585,6 +2637,68 @@ mod tests {
         );
 
         mesh.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn plain_drop_aborts_signaling_but_never_disconnects_driver_peers() {
+        // Plain `Drop` (no `shutdown()`) runs the signaling transport's abort
+        // fallback exactly once and never calls driver `Disconnect` — graceful
+        // peer teardown belongs to `shutdown()` and end-of-stream handling.
+        // This pins the documented plain-drop contract end to end.
+        let peer = uuid(4);
+        let driver = SharedDriver::default();
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let (inner, sent) = MockTransport::new_in_room(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            Some(Ok(room_baseline(peer))),
+            Some(Ok(session_plan(peer, true))),
+        ]);
+        let transport = AbortCountingTransport {
+            inner,
+            aborts: Arc::clone(&aborts),
+        };
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        wait_for_authenticated(&mut mesh).await;
+        mesh.join_room(crate::client::JoinRoomParams::new("test", "local"))
+            .expect("scripted room response must follow an admitted join");
+        let connected = pump_until(&mut mesh, &driver, |calls| {
+            calls.contains(&DriverCall::Connect(peer, true))
+        })
+        .await;
+        assert!(connected, "the planned peer connect must be driven");
+
+        drop(mesh);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while aborts.load(Ordering::Relaxed) < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("plain drop must run the transport abort fallback");
+        // Settle, then pin all three faces of the contract: exactly one abort,
+        // no driver `Disconnect` ever issued by the plain-drop path, and no
+        // graceful LeaveRoom on the wire.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            aborts.load(Ordering::Relaxed),
+            1,
+            "abort fallback must run exactly once on plain drop"
+        );
+        assert_eq!(
+            count_calls(&driver, |call| matches!(call, DriverCall::Disconnect(_))),
+            0,
+            "plain drop must never disconnect driver peers"
+        );
+        assert!(
+            !sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|message| message.contains("LeaveRoom")),
+            "plain drop must not send a graceful LeaveRoom"
+        );
     }
 
     #[tokio::test]

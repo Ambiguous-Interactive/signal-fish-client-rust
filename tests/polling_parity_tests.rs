@@ -1298,7 +1298,9 @@ impl Transport for SharedMock {
     ) -> std::task::Poll<Result<(), SignalFishError>> {
         if let Some(frame) = frame.take() {
             let TransportFrame::Text(message) = frame else {
-                panic!("parity mock expected an outbound text frame");
+                return std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                    "parity mock does not accept outbound binary frames".into(),
+                )));
             };
             self.sent.lock().unwrap().push(message);
         }

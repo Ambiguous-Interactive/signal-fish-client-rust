@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`.
 - Documented that the async client handle and its event receiver are
   `Send + Sync`, pinned by compile-time assertions on both drivers.
+- Raised the declared dependency floors to verified values (`rustls`
+  0.23.16, `serde_json` 1.0.68, `tracing` 0.1.35, dev-only `tokio` 1.50)
+  so a downstream resolver without this repository's lockfile cannot
+  assemble a broken build.
+- Documented teardown semantics: plain-dropping the mesh controller never
+  disconnects driver peers (aborting the signaling transport is its whole
+  teardown), the Godot transport's exact abort/graceful-close split, and
+  the async handle-drop race where an immediate graceful close can win
+  over the abort fallback.
 - Documented custom-transport panic semantics: a panicking `Transport`
   method kills the async loop (event channel closes without `Disconnected`,
   parked reliable sends resolve `NotConnected`) and propagates into the
