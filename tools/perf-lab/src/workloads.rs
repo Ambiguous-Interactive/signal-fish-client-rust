@@ -1194,6 +1194,18 @@ fn validate_ledger_semantics(spec: WorkloadSpec, ledger: &WorkloadLedger) -> Res
     if ledger.current_queue_age_ns != 0 {
         return Err(format!("{} retained a nonzero queue age", spec.id));
     }
+    // Queue-age sampling liveness: every cell that enqueues measured
+    // commands owns queued work at the first measured poll, and each poll
+    // samples the oldest queued frame on entry, so a positive peak age is
+    // guaranteed. A zero here means the sampling instrumentation died (or a
+    // driver change stopped sampling queued work) while every wall-clock
+    // magnitude stays deliberately diagnostic and unpinned.
+    if enqueues_measured_commands(spec.workload) && ledger.peak_queue_age_ns == 0 {
+        return Err(format!(
+            "{} queued measured commands but never sampled a positive queue age",
+            spec.id
+        ));
+    }
 
     match spec.workload {
         Workload::Lobby { players } => {
@@ -1631,6 +1643,24 @@ fn expected_receive_budget_exhaustions(workload: Workload) -> u64 {
     }
 }
 
+/// Whether the workload enqueues client-owned commands in the measured
+/// region. Exactly the cells whose measured polls start with queued work,
+/// so their queue-age sampler must observe a positive peak age.
+fn enqueues_measured_commands(workload: Workload) -> bool {
+    match workload {
+        Workload::Lobby { .. } | Workload::AuthorizedGap => false,
+        Workload::JsonRelay { direction, .. } | Workload::BinaryRelay { direction, .. } => {
+            direction == Direction::Outbound
+        }
+        Workload::Latest
+        | Workload::Volatile
+        | Workload::Reconnect { .. }
+        | Workload::PollingReadyFrameBurst
+        | Workload::PollingReadyByteBurst
+        | Workload::PollingPendingRecovery => true,
+    }
+}
+
 fn delivery_class_byte(class: Option<DeliveryClass>) -> u8 {
     match class {
         None => 0,
@@ -1863,7 +1893,38 @@ mod tests {
                 "{} output digest",
                 spec.id
             );
+            if enqueues_measured_commands(spec.workload) {
+                assert!(
+                    ledger.peak_queue_age_ns > 0,
+                    "{} queue-age sampler observed no queued work",
+                    spec.id
+                );
+            }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn queue_age_liveness_canary_rejects_zeroed_peak_only_for_queuing_cells() -> Result<(), String>
+    {
+        let queuing = WORKLOADS
+            .iter()
+            .copied()
+            .find(|spec| spec.id == "json/out/256/burst64")
+            .ok_or_else(|| "json/out/256/burst64 workload is missing".to_string())?;
+        let ledger = execute_once(queuing)?;
+        assert!(ledger.peak_queue_age_ns > 0);
+        let mut dead_sampler = ledger;
+        dead_sampler.peak_queue_age_ns = 0;
+        assert!(validate_ledger(queuing, &dead_sampler).is_err());
+
+        let inbound = WORKLOADS
+            .iter()
+            .copied()
+            .find(|spec| spec.id == "json/in/256/burst64")
+            .ok_or_else(|| "json/in/256/burst64 workload is missing".to_string())?;
+        let ledger = execute_once(inbound)?;
+        assert_eq!(ledger.peak_queue_age_ns, 0);
         Ok(())
     }
 

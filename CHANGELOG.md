@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target, not just Emscripten.
 - The async driver's `transport_diagnostics()` now refreshes during the
   terminal drain instead of freezing at the pre-teardown value.
+- The Godot adapter classifies a caller-wrapped peer that was already
+  cleanly closed (real wire close code) as a post-open close with metadata
+  instead of a "closed before opening" failure; never-opened (`-1`) and
+  abnormal (`1006`/`1015`) closes keep the failure classification.
+  Crate docs now also record that Godot's native backend does not validate
+  text-frame UTF-8, so a corrupt text packet fails the transport closed.
 - Corrected docs: `set_ready()` toggles readiness (call it once per room
   stay), `DecodeFailed.message_type` is `None` for frames over 512 bytes,
   `with_max_players` saturates at `u8::MAX`, `MeshController` requires
