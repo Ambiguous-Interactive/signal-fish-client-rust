@@ -18,7 +18,9 @@ include = ["/src/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 [dependencies]
 godot = { version = ">=0.4.5, <0.6", features = ["experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 signal-fish-client = { workspace = true, default-features = false, features = ["polling-client"] }
-tracing = "0.1"
+# 0.1.35 matches the core crate's verified minimum (older tracing releases
+# fail to compile on modern toolchains through their own dependency graph).
+tracing = "0.1.35"
 
 [package.metadata.docs.rs]
 all-features = true

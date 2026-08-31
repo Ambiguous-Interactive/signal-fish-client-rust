@@ -68,7 +68,9 @@ impl Transport for MockTransport {
     ) -> Poll<Result<(), SignalFishError>> {
         if let Some(frame) = frame.take() {
             let TransportFrame::Text(message) = frame else {
-                panic!("test expected an outbound text frame");
+                return Poll::Ready(Err(SignalFishError::TransportSend(
+                    "test mock does not accept outbound binary frames".into(),
+                )));
             };
             self.sent.lock().unwrap().push(message);
         }

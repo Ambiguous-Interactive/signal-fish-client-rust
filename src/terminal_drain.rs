@@ -160,7 +160,7 @@ mod tests {
 
     /// Minimal transport: a scripted receive queue plus close metadata.
     struct StubDrainTransport {
-        frames: std::vec::Vec<Option<Result<TransportFrame, SignalFishError>>>,
+        frames: std::collections::VecDeque<Option<Result<TransportFrame, SignalFishError>>>,
         close: Option<TransportCloseInfo>,
     }
 
@@ -186,7 +186,7 @@ mod tests {
             &mut self,
             _cx: &mut Context<'_>,
         ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
-            Poll::Ready(self.frames.pop().flatten())
+            Poll::Ready(self.frames.pop_front().flatten())
         }
 
         fn poll_close(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
@@ -214,19 +214,26 @@ mod tests {
         ]);
         let mut drain = ReadyFrameDrain::new(None, ReadyFrameDrainBudget::new(3, 1_000));
         let mut cx = noop_context();
-        let mut drained = 0;
+        let mut drained = Vec::new();
         for expected_reached in [false, false, true] {
-            let budget_reached = match drain.poll_next(&mut transport, &mut cx, false) {
-                ReadyFrameDrainPoll::Frame { budget_reached, .. } => budget_reached,
+            let (frame, budget_reached) = match drain.poll_next(&mut transport, &mut cx, false) {
+                ReadyFrameDrainPoll::Frame {
+                    frame,
+                    budget_reached,
+                } => (frame, budget_reached),
                 ReadyFrameDrainPoll::Pending => panic!("transport unexpectedly pending"),
                 ReadyFrameDrainPoll::Closed => panic!("transport unexpectedly closed"),
                 ReadyFrameDrainPoll::ReceiveFailed(_) => panic!("unexpected receive failure"),
                 ReadyFrameDrainPoll::DeadlineReached => panic!("unexpected deadline"),
             };
             assert_eq!(budget_reached, expected_reached);
-            drained += 1;
+            let TransportFrame::Text(payload) = frame else {
+                panic!("expected a text frame")
+            };
+            drained.push(payload);
         }
-        assert_eq!(drained, 3);
+        // The scripted queue is consumed first-in-first-out.
+        assert_eq!(drained, ["1", "2", "3"]);
     }
 
     #[test]
