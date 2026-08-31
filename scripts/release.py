@@ -36,6 +36,7 @@ PARTIAL_LOCKFILES = (
 )
 VERSION_FILES = (
     "README.md",
+    "crates/signal-fish-client-godot/README.md",
     "docs/client.md",
     "docs/getting-started.md",
     "docs/index.md",

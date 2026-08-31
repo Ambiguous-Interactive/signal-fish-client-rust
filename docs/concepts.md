@@ -482,6 +482,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `SessionPlanUnavailable` | A WebRTC signal was attempted but no authoritative session plan currently authorizes it (before a plan, targeting self, unknown, or departed players, or the negotiated session transport is not WebRTC). |
 | `StaleSessionGeneration { .. }` | A WebRTC signal was produced under an already-replaced session-plan generation; the newer plan remains authoritative. |
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
+| `PayloadTooDeep { max_depth }` | A caller-supplied JSON payload was refused because its container nesting exceeds the outbound depth bound (128 nested containers, matching `serde_json`'s recursion limit). Applies to JSON game data, raw WebRTC signals, and `ConnectionInfo::Custom`; refused at the call site, before queuing, so flattening the payload is required. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
 | `Timeout` | An operation exceeded its time limit. |
 | `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
