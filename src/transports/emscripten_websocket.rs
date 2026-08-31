@@ -803,8 +803,9 @@ extern "C" fn on_message_callback(
         // Text message — decode the payload bytes (which exclude the NUL
         // terminator) as UTF-8. Corrupt text frames fuse the transport
         // instead of being silently dropped: the transport contract requires
-        // corruption to surface, and the native and Godot transports both
-        // fuse on engine-reported corruption.
+        // corruption to surface, and the native WebSocket transport fuses on
+        // the engine-reported error while the Godot adapter surfaces the
+        // corruption and the driver ends the stream.
         // SAFETY: For a non-empty payload, Emscripten guarantees `event.data`
         // points to `event.num_bytes` valid bytes for this callback.
         // `content_len` excludes the NUL terminator. Empty payloads do not

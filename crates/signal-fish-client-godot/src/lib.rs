@@ -355,6 +355,15 @@ fn godot_send_result(result: Error, operation: &str) -> BackendSendResult {
     }
 }
 
+/// Close codes that never represent a genuine wire CLOSE handshake: -1 is
+/// Godot's "no close observed" default, while 1006 (abnormal termination)
+/// and 1015 (TLS failure) are synthesized by the engines and forbidden on
+/// the wire by RFC 6455 section 7.4.1. Any other code — wire close frames
+/// and post-open engine synthesis alike — requires a connection that opened.
+fn is_abnormal_close_code(raw_code: i32) -> bool {
+    raw_code == -1 || raw_code == 1006 || raw_code == 1015
+}
+
 /// A main-thread [`Transport`] backed by Godot 4.5's `WebSocketPeer`.
 ///
 /// Add this adapter crate and drive the transport through
@@ -552,10 +561,10 @@ impl GodotWebSocketTransport {
         // may enter CLOSING from CONNECTING, where the state proves
         // nothing, so the seed does not apply on wasm.
         let native_closing = state == PeerState::Closing && !cfg!(target_family = "wasm");
-        let post_open_close_code = !matches!(backend.close_code(), -1 | 1006 | 1015);
+        let post_open_close_code = !is_abnormal_close_code(backend.close_code());
         let ever_ready = state == PeerState::Open
             || native_closing
-            || ((state == PeerState::Closed || native_closing) && post_open_close_code);
+            || (state == PeerState::Closed && post_open_close_code);
         let mut transport = Self {
             backend,
             backpressure_policy: options.backpressure_policy,
@@ -574,7 +583,6 @@ impl GodotWebSocketTransport {
         transport.sample_cycle_at(Instant::now());
         transport
     }
-
     fn advance(&mut self) -> PeerState {
         if !self.terminal {
             self.backend.poll();
@@ -599,7 +607,7 @@ impl GodotWebSocketTransport {
         // section 7.4.1, so observing one means no clean CLOSE handshake
         // occurred. 1005 stays clean: it reports a real CLOSE frame that
         // merely carried no status code.
-        let clean = raw_code != -1 && raw_code != 1006 && raw_code != 1015;
+        let clean = !is_abnormal_close_code(raw_code);
         let code = u16::try_from(raw_code).ok();
         let reason = self.backend.close_reason();
         self.close_info = Some(TransportCloseInfo {
