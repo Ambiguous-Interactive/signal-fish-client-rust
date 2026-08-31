@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics now count each deferred send once instead of once per poll.
 - The object-safe client trait's diagnostic accessors (`send_capacity`,
   `max_send_capacity`, `stats`, `snapshot`) are now `#[must_use]`.
+- Documented that the async client handle and its event receiver are
+  `Send + Sync`, pinned by compile-time assertions on both drivers.
 - Documented custom-transport panic semantics: a panicking `Transport`
   method kills the async loop (event channel closes without `Disconnected`,
   parked reliable sends resolve `NotConnected`) and propagates into the
@@ -37,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Token-binding connections are now robust against serde_json's
+  `arbitrary_precision` feature being enabled by a consumer crate:
+  previously that unification delivered numbers as private marker maps
+  that bypassed the strict number gate and could corrupt outbound
+  payloads. Single-member objects carrying serde_json's private marker
+  key with a string value are now classified as numbers in all builds;
+  floats, exponents, and out-of-range integers keep their existing
+  refusals (only the literal `-0` differs: unified serde_json reports it
+  as the integer `0`, whose canonical form matches the server's RFC 8785
+  output).
 - Deeply nested caller JSON (game data, raw signals, custom connection
   info) is now refused at the call site with `PayloadTooDeep` instead of
   risking a stack-overflow process abort during serialization; the bound

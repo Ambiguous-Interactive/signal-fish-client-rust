@@ -22,8 +22,9 @@ on:
       - tests/wire-samples/PROVENANCE.toml
       - tests/wire-samples/*.jsonl
   schedule:
-    # Mondays at 05:00 UTC — staggered from the other scheduled workflows.
-    - cron: "0 5 * * 1"
+    # Mondays at 05:30 UTC — 30 minutes after unused-deps (05:00) so the two
+    # Monday schedules never start simultaneously.
+    - cron: "30 5 * * 1"
   workflow_dispatch:
 
 permissions:

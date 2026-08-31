@@ -1621,6 +1621,17 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
+    // The polling client's threading contract follows its transport: it is
+    // `Send`/`Sync` exactly when `T` is. It embeds the shared `ClientCore`,
+    // so pin the auto traits with a `Send` mock to catch accidental interior
+    // non-Send state in the core before it narrows this contract.
+    const _: fn() = || {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<SignalFishPollingClient<MockTransport>>();
+        assert_sync::<SignalFishPollingClient<MockTransport>>();
+    };
+
     // ── Mock transport ──────────────────────────────────────────────
 
     struct MockTransport {

@@ -22,6 +22,9 @@ env:
   # -Zbuild-std link flags (e.g. -lwebsocket.js) are emsdk-version-sensitive.
   # Upgrade only after a green probe of the web matrix (issue #201).
   EMSDK_VERSION: "3.1.74"
+  # Intentionally newer than docs-validation's 1.61.1: this lane adopted
+  # 1.62.1 on its own measured evaluation (issue #202); docs-validation keeps
+  # its tested per-lane pin until it runs the same evaluation.
   PLAYWRIGHT_VERSION: "1.62.1"
   RUST_NIGHTLY: "nightly-2026-03-01"
   NETEM_SEED: "6101"
@@ -33,7 +36,10 @@ jobs:
   build-export:
     name: Build and export official template
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    # Full GDExtension web build + template export + fixtures: ~30 minutes
+    # on slow hosted runners; post-steps need honest headroom (PR #209 hit
+    # the old 35-minute ceiling with every step already green).
+    timeout-minutes: 50
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1

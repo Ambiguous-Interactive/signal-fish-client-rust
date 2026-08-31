@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -123,7 +123,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Run Clippy
-        run: cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} -- -D warnings
+        run: cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} --locked -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
   # Tests — run across feature combinations
@@ -178,7 +178,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Run tests
-        run: cargo test ${{ matrix.scope }} ${{ matrix.flags }}
+        run: cargo test ${{ matrix.scope }} ${{ matrix.flags }} --locked
 
   # ──────────────────────────────────────────────────────────────
   # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh,

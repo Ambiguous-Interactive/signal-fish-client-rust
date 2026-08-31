@@ -148,8 +148,9 @@ connects locally — pre-I/O on unsatisfiable paths, post-handshake when no X.50
 client signer is selected — with `TokenBindingFailure::MissingClientFingerprint`. A selected connection consumes and validates the first challenge
 before either client sees a ready transport, derives HKDF-SHA-256 from the exact
 RFC 6455 key plus server nonce, zeroizes retained key material, and protects all
-outbound JSON/binary frames with one sequence. Sequence commits only at backend
-ownership transfer. Browser, Emscripten, and Godot APIs cannot expose the
+outbound JSON/binary frames with one sequence; canonical bytes stay stable even
+when consumers unify serde_json's `arbitrary_precision` feature. Sequence
+commits only at backend ownership transfer. Browser, Emscripten, and Godot APIs cannot expose the
 handshake key; `from_stream` is likewise post-handshake and cannot opt in.
 Required Server 0.7 profiles require WSS. Custom rustls token-binding offers
 wrap the resolver and disable resumption only on a clone, including Optional

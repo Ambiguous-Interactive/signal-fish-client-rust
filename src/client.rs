@@ -858,6 +858,9 @@ impl SignalFishClient {
     ///
     /// A tuple of `(client_handle, event_receiver)`. The event receiver yields
     /// [`SignalFishEvent`]s until the transport closes or the client shuts down.
+    /// Both the handle and the receiver are `Send + Sync`: move the receiver
+    /// into a `tokio::spawn` drain loop and share the handle via
+    /// `Arc<Mutex<_>>` across tasks.
     #[must_use = "the event receiver must be used to receive events"]
     pub fn start(
         transport: impl Transport + Send + 'static,
@@ -2707,6 +2710,20 @@ mod tests {
     use std::pin::Pin;
     use std::sync::{Barrier, Mutex as StdMutex};
     use std::task::{Context, Poll, Waker};
+
+    // The docs promise the handle and the event receiver are `Send + Sync` so
+    // the drain loop can run on a spawned task while the handle is shared via
+    // `Arc<Mutex<_>>`. Both embed the shared `ClientCore`, so pin the auto
+    // traits with compile-time assertions to catch accidental interior
+    // non-Send state before it breaks every documented usage.
+    const _: fn() = || {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+        assert_send::<SignalFishClient>();
+        assert_sync::<SignalFishClient>();
+        assert_send::<tokio::sync::mpsc::Receiver<SignalFishEvent>>();
+        assert_sync::<tokio::sync::mpsc::Receiver<SignalFishEvent>>();
+    };
 
     #[test]
     fn snapshot_debug_redacts_reconnection_token() {

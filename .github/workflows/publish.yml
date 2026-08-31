@@ -23,7 +23,9 @@ jobs:
   release:
     name: Release publication
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Widest single job: fmt + clippy + full tests + per-package semver checks
+    # + package/SBOM/attest + publish + registry retries; leave rerun headroom.
+    timeout-minutes: 60
     environment: crates-io
     steps:
       - name: Require the default branch
