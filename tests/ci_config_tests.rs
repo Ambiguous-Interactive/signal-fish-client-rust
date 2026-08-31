@@ -321,6 +321,59 @@ mod required_check_policy {
     }
 
     #[test]
+    fn required_multi_trigger_workflows_do_not_share_one_concurrency_group() {
+        // A fully static concurrency group is shared by every trigger: with
+        // GitHub's one-pending-run-per-group behavior, a newer queued run of
+        // another event type cancels an older still-pending run, leaving the
+        // required aggregate check unreported on that PR or branch head.
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        let required_files: BTreeSet<String> = policy["required_checks"]
+            .as_array()
+            .expect("required_checks must be an array")
+            .iter()
+            .map(|check| {
+                let file = check["file"]
+                    .as_str()
+                    .expect("every required check names a workflow file");
+                format!(".github/workflows/{file}")
+            })
+            .collect();
+
+        for file in required_files {
+            let workflow = read_project_file(&file);
+            let on_block = workflow
+                .split("\non:")
+                .nth(1)
+                .map(|rest| rest.split("\njobs:").next().unwrap_or(rest))
+                .unwrap_or_default();
+            let event_count = on_block
+                .lines()
+                .filter(|line| {
+                    let indent = line.len() - line.trim_start().len();
+                    let trimmed = line.trim();
+                    indent == 2 && !trimmed.starts_with('#') && trimmed.ends_with(':')
+                })
+                .count();
+            let group = workflow
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("group:"))
+                .map(str::trim)
+                .next()
+                .expect("every required workflow defines a concurrency group");
+            let interpolated = group.contains("${{");
+            assert!(
+                interpolated || event_count <= 1,
+                "{file} declares {event_count} event types but shares the static \
+                 concurrency group \"{group}\"; interpolate github.ref / \
+                 github.event_name so one trigger's queued run cannot cancel \
+                 another trigger's pending required check"
+            );
+        }
+    }
+
+    #[test]
     fn required_python_tooling_runs_every_repository_python_suite() {
         let workflow = read_project_file(".github/workflows/workflow-lint.yml");
         let job = workflow_job_block(&workflow, "python-tooling");
