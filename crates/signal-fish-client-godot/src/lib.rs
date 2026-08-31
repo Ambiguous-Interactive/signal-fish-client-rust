@@ -39,7 +39,7 @@
 //! configured — raise `max_queued_packets` yourself if a caller-owned peer
 //! must absorb large inbound bursts on web.
 //!
-//! Two further engine-imposed limits cannot be worked around adapter-side:
+//! Three further engine-imposed limits cannot be worked around adapter-side:
 //!
 //! - **Native tail frames:** Godot's native build makes buffered packets
 //!   inaccessible the moment the peer leaves the `OPEN` state, so final
@@ -51,6 +51,13 @@
 //!   wire close frame; the JS `wasClean` flag is discarded on web. Close
 //!   metadata in [`Transport::close_info`] therefore cannot perfectly
 //!   distinguish a genuine peer close from a locally synthesized one.
+//! - **Unvalidated native text frames:** Godot's native backend does not
+//!   validate text-frame UTF-8, so a corrupt text packet from the network
+//!   reaches the adapter as raw bytes. Because [`TransportFrame::Text`]
+//!   cannot represent invalid UTF-8, such a packet surfaces a terminal
+//!   `TransportReceive` error instead of being lossily substituted, which
+//!   ends the stream at the driver. Web exports are immune: browsers
+//!   validate text frames before delivery.
 
 use std::fmt;
 use std::task::{Context, Poll};
@@ -348,6 +355,15 @@ fn godot_send_result(result: Error, operation: &str) -> BackendSendResult {
     }
 }
 
+/// Close codes that never represent a genuine wire CLOSE handshake: -1 is
+/// Godot's "no close observed" default, while 1006 (abnormal termination)
+/// and 1015 (TLS failure) are synthesized by the engines and forbidden on
+/// the wire by RFC 6455 section 7.4.1. Any other code — wire close frames
+/// and post-open engine synthesis alike — requires a connection that opened.
+fn is_abnormal_close_code(raw_code: i32) -> bool {
+    raw_code == -1 || raw_code == 1006 || raw_code == 1015
+}
+
 /// A main-thread [`Transport`] backed by Godot 4.5's `WebSocketPeer`.
 ///
 /// Add this adapter crate and drive the transport through
@@ -526,7 +542,29 @@ impl GodotWebSocketTransport {
         backend: Box<dyn GodotWebSocketBackend>,
         options: GodotWebSocketOptions,
     ) -> Self {
-        let ever_ready = backend.state() == PeerState::Open;
+        let state = backend.state();
+        // A peer already CLOSED with genuine post-open close metadata — a
+        // wire or engine-synthesized close code other than the
+        // never-connected -1 or the abnormal-termination 1006/1015 —
+        // demonstrably completed its handshake before the wrap, so its end
+        // classifies as a close with metadata rather than a "closed before
+        // opening" failure. CONNECTING peers and CLOSED peers with -1
+        // (pre-open close or failure) keep the failure classification, as
+        // do peers reporting 1006/1015. Verified against the Godot 4.5
+        // engine sources (native writes close codes only from a wire CLOSE
+        // or post-open synthesis and discards caller codes on pre-open
+        // closes; web writes them only from the JS close event, and failed
+        // web connects report 1006) — a future engine version that reports
+        // synthesized codes pre-open would need this predicate revisited.
+        // Godot's native backend reaches CLOSING only from OPEN, so a
+        // natively closing peer also demonstrably opened; the web backend
+        // may enter CLOSING from CONNECTING, where the state proves
+        // nothing, so the seed does not apply on wasm.
+        let native_closing = state == PeerState::Closing && !cfg!(target_family = "wasm");
+        let post_open_close_code = !is_abnormal_close_code(backend.close_code());
+        let ever_ready = state == PeerState::Open
+            || native_closing
+            || (state == PeerState::Closed && post_open_close_code);
         let mut transport = Self {
             backend,
             backpressure_policy: options.backpressure_policy,
@@ -545,7 +583,6 @@ impl GodotWebSocketTransport {
         transport.sample_cycle_at(Instant::now());
         transport
     }
-
     fn advance(&mut self) -> PeerState {
         if !self.terminal {
             self.backend.poll();
@@ -570,7 +607,7 @@ impl GodotWebSocketTransport {
         // section 7.4.1, so observing one means no clean CLOSE handshake
         // occurred. 1005 stays clean: it reports a real CLOSE frame that
         // merely carried no status code.
-        let clean = raw_code != -1 && raw_code != 1006 && raw_code != 1015;
+        let clean = !is_abnormal_close_code(raw_code);
         let code = u16::try_from(raw_code).ok();
         let reason = self.backend.close_reason();
         self.close_info = Some(TransportCloseInfo {
@@ -1129,6 +1166,14 @@ mod tests {
         fn abort(&mut self) {
             self.abort_calls
                 .set(self.abort_calls.get().saturating_add(1));
+            // Godot's force close (native `close(-1)` at CLOSED, web socket
+            // destruction) clears the inbound packet buffer on every
+            // platform (wsl_peer.cpp / emws_peer.cpp). The transport's
+            // terminal gate stops packets from being read after an abort,
+            // but the fake must still model the forfeiture so a future
+            // change that relaxes the gate cannot silently diverge from the
+            // engine.
+            self.packets.clear();
             self.state = PeerState::Closed;
         }
 
@@ -1838,6 +1883,74 @@ mod tests {
             transport.poll_close(&mut context()),
             Poll::Ready(Ok(()))
         ));
+    }
+
+    #[test]
+    fn fake_backend_abort_clears_queued_inbound_packets() {
+        let mut backend = FakeBackend::new(PeerState::Open);
+        backend.packets.push_back(Ok((b"queued".to_vec(), true)));
+
+        GodotWebSocketBackend::abort(&mut backend);
+
+        assert_eq!(backend.available_packet_count(), 0);
+        assert_eq!(backend.state(), PeerState::Closed);
+    }
+
+    #[test]
+    fn wrapping_an_already_cleanly_closed_peer_reports_close_metadata() {
+        let mut backend = FakeBackend::new(PeerState::Closed);
+        backend.close_code = 1000;
+        backend.close_reason = "normal".to_string();
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(transport.is_ready());
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+        let close_info = transport
+            .close_info()
+            .expect("post-open close must carry metadata");
+        assert_eq!(close_info.code, Some(1000));
+        assert_eq!(close_info.clean, Some(true));
+        assert!(close_info.initiated_by_peer);
+    }
+
+    #[test]
+    fn wrapping_a_natively_closing_peer_reports_post_open_history() {
+        let mut backend = FakeBackend::new(PeerState::Closing);
+        backend.close_code = 1000;
+        backend.states.push_back(PeerState::Closed);
+        let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+        assert!(transport.is_ready());
+        assert!(matches!(
+            transport.poll_recv(&mut context()),
+            Poll::Ready(None)
+        ));
+        let close_info = transport
+            .close_info()
+            .expect("post-open close must carry metadata");
+        assert_eq!(close_info.code, Some(1000));
+        assert!(close_info.clean.unwrap_or(false));
+    }
+
+    #[test]
+    fn wrapping_a_never_opened_or_abnormally_closed_peer_still_reports_failure() {
+        for close_code in [-1, 1006, 1015] {
+            let mut backend = FakeBackend::new(PeerState::Closed);
+            backend.close_code = close_code;
+            let mut transport = GodotWebSocketTransport::from_backend(Box::new(backend));
+
+            assert!(!transport.is_ready(), "close_code {close_code}");
+            assert!(
+                matches!(
+                    transport.poll_recv(&mut context()),
+                    Poll::Ready(Some(Err(SignalFishError::TransportReceive(_))))
+                ),
+                "close_code {close_code}"
+            );
+        }
     }
 
     #[test]

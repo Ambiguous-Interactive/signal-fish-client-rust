@@ -272,11 +272,14 @@ where
 /// error instead of silently omitting the frame.
 ///
 /// The [`Transport`] contract requires corrupt inbound input to be surfaced
-/// rather than dropped. Engine-backed transports inherit that behavior from
-/// their engine (tungstenite fuses on protocol errors; the Godot adapter
-/// fuses on invalid UTF-8 packets); byte-oriented backends decode raw text
-/// payloads themselves and must use this helper for the same guarantee. The
-/// error message carries only the UTF-8 diagnostic, never the payload bytes.
+/// rather than dropped. Engine-backed transports surface the corruption for
+/// the driver to treat as terminal (tungstenite reports protocol and UTF-8
+/// errors, which the WebSocket transport treats as terminal; the Godot
+/// adapter reports invalid UTF-8 text packets as a receive error, which
+/// likewise ends the stream at the driver); byte-oriented backends decode
+/// raw text payloads themselves and must use this helper for the same
+/// guarantee. The error message carries only the UTF-8 diagnostic, never
+/// the payload bytes.
 #[cfg(any(test, target_os = "emscripten"))]
 pub(crate) fn text_frame_from_utf8(payload: &[u8]) -> Result<String, SignalFishError> {
     std::str::from_utf8(payload)
