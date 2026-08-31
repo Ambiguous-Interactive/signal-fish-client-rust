@@ -20,8 +20,10 @@ class RepositoryRuleTests(unittest.TestCase):
     policy = {
         "required_checks": [{"workflow": "CI", "job": "CI Required"}],
         "repository_rules": {
+            "target": "branch",
             "enforcement": "active",
             "include": ["~DEFAULT_BRANCH"],
+            "exclude": [],
             "required_approving_review_count": 1,
             "dismiss_stale_reviews_on_push": True,
             "required_review_thread_resolution": True,
@@ -32,6 +34,7 @@ class RepositoryRuleTests(unittest.TestCase):
     @staticmethod
     def ruleset() -> dict[str, object]:
         return {
+            "target": "branch",
             "enforcement": "active",
             "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
             "rules": [
@@ -67,10 +70,29 @@ class RepositoryRuleTests(unittest.TestCase):
             ["no active ruleset targets ~DEFAULT_BRANCH"],
         )
 
-    def test_excluding_an_unrelated_ref_keeps_the_ruleset_applicable(self) -> None:
+    def test_rejects_every_exclusion_not_in_the_checked_in_policy(self) -> None:
         ruleset = self.ruleset()
         ruleset["conditions"]["ref_name"]["exclude"] = ["refs/heads/dev"]
-        self.assertEqual(audit.audit(self.policy, [ruleset]), [])
+        self.assertEqual(
+            audit.audit(self.policy, [ruleset]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
+    def test_rejects_explicit_default_branch_exclusion(self) -> None:
+        ruleset = self.ruleset()
+        ruleset["conditions"]["ref_name"]["exclude"] = ["refs/heads/main"]
+        self.assertEqual(
+            audit.audit(self.policy, [ruleset]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
+
+    def test_rejects_tag_ruleset_for_default_branch_policy(self) -> None:
+        ruleset = self.ruleset()
+        ruleset["target"] = "tag"
+        self.assertEqual(
+            audit.audit(self.policy, [ruleset]),
+            ["no active ruleset targets ~DEFAULT_BRANCH"],
+        )
 
     def test_wildcard_exclude_patterns_fail_closed(self) -> None:
         # A pattern like refs/heads/ma* can exclude the default branch while

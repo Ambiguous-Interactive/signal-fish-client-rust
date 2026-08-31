@@ -3,7 +3,7 @@
 # Runs on every push to main and on all pull requests so its stable aggregate
 # gate reports on every protected-branch candidate.
 # Jobs: actionlint — workflow syntax, yamllint — YAML style, shellcheck — shell scripts,
-#        devcontainer-compat — cross-platform devcontainer validation
+#        python-tooling — repository Python guards, devcontainer-compat — cross-platform validation
 #
 # Cancel in-progress runs on the same branch to save resources.
 
@@ -33,6 +33,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -57,6 +59,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install yamllint
         run: pip install 'yamllint>=1.35,<2'
@@ -74,6 +78,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run shellcheck
         run: shellcheck scripts/*.sh .devcontainer/scripts/*.sh
@@ -83,6 +89,51 @@ jobs:
 
       - name: Run test quality checker unit tests
         run: bash scripts/test_check_test_quality.sh
+
+      - name: Run target-gated doc-link checker unit tests
+        run: bash scripts/test_check_target_gated_doc_links.sh
+
+      - name: Run shell portability checker unit tests
+        run: bash scripts/test_shell_portability.sh
+
+  # ──────────────────────────────────────────────────────────────
+  # python-tooling — run every repository Python guard and self-test
+  # ──────────────────────────────────────────────────────────────
+  python-tooling:
+    name: Python tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: python3 -m pip install 'pytest==9.1.1'
+
+      - name: Validate Agent Skills and generated index
+        run: |
+          python3 scripts/pre-commit-llm.py
+          git diff --exit-code HEAD --
+
+      - name: Test Agent Skills validation
+        run: python3 -m pytest -q scripts/test_pre_commit_llm.py
+
+      - name: Test repository Python tooling
+        run: >-
+          python3 -m unittest
+          scripts/test_release.py
+          scripts/test_required_checks.py
+          scripts/test_audit_repository_rules.py
+
+      - name: Test admonition validation
+        run: python3 scripts/test_check_admonitions.py
 
   # ──────────────────────────────────────────────────────────────
   # devcontainer-compat — validate cross-platform devcontainer behavior
@@ -94,6 +145,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Validate devcontainer cross-platform compatibility
         run: bash scripts/check-devcontainer-compat.sh
@@ -107,7 +160,7 @@ jobs:
   required:
     name: Workflow Lint Required
     if: ${{ always() }}
-    needs: [actionlint, yamllint, shellcheck, devcontainer-compat]
+    needs: [actionlint, yamllint, shellcheck, python-tooling, devcontainer-compat]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

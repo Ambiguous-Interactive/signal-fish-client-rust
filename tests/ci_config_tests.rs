@@ -128,6 +128,29 @@ mod required_check_policy {
 
     use super::*;
 
+    fn workflow_job_block(workflow: &str, job: &str) -> String {
+        let marker = format!("  {job}:");
+        let mut found = false;
+        let mut block = String::new();
+        for line in workflow.lines() {
+            if line == marker {
+                found = true;
+                block.push_str(line);
+                block.push('\n');
+                continue;
+            }
+            if found && line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':') {
+                break;
+            }
+            if found {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+        assert!(found, "workflow must define job {job}");
+        block
+    }
+
     #[test]
     fn every_blocking_pr_workflow_has_a_stable_aggregate_gate() {
         let policy: serde_json::Value =
@@ -136,7 +159,7 @@ mod required_check_policy {
         let checks = policy["required_checks"]
             .as_array()
             .expect("required_checks must be an array");
-        assert_eq!(checks.len(), 11);
+        assert_eq!(checks.len(), 12);
 
         let mut jobs = BTreeSet::new();
         for check in checks {
@@ -288,7 +311,183 @@ mod required_check_policy {
         assert!(policy["repository_rules"]
             .get("forbid_bypass_actors")
             .is_none());
+        assert_eq!(policy["repository_rules"]["target"], "branch");
+        assert_eq!(policy["repository_rules"]["exclude"], serde_json::json!([]));
         assert!(audit.contains(r#""Authorization": f"Bearer {token}""#));
+        assert!(workflow.contains("  pull_request:\n"));
+        assert!(workflow.contains("  push:\n    branches: [main]\n"));
+        assert!(workflow.contains("    - cron: \"17 7 * * *\""));
+        assert!(workflow.contains("name: Repository Policy Required"));
+    }
+
+    #[test]
+    fn required_python_tooling_runs_every_repository_python_suite() {
+        let workflow = read_project_file(".github/workflows/workflow-lint.yml");
+        let job = workflow_job_block(&workflow, "python-tooling");
+        for required in [
+            "uses: actions/setup-python@v7.0.0",
+            "python-version: '3.11'",
+            "python3 -m pip install 'pytest==9.1.1'",
+            "python3 scripts/pre-commit-llm.py",
+            "git diff --exit-code HEAD --",
+        ] {
+            assert!(job.contains(required), "python-tooling must run {required}");
+        }
+
+        let scripts = project_root().join("scripts");
+        let python_suites: BTreeSet<String> = std::fs::read_dir(&scripts)
+            .expect("read scripts directory")
+            .map(|entry| entry.expect("read scripts entry").file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("test_") && name.ends_with(".py"))
+            .collect();
+        assert!(
+            !python_suites.is_empty(),
+            "expected Python self-test suites"
+        );
+        for suite in python_suites {
+            let path = format!("scripts/{suite}");
+            assert!(
+                job.contains(&path),
+                "required python-tooling job must run {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_repository_checker_self_test_runs_in_a_workflow() {
+        let workflow_corpus = REQUIRED_WORKFLOW_PATHS
+            .iter()
+            .map(|path| read_project_file(path))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let scripts = project_root().join("scripts");
+        let suites: BTreeSet<String> = std::fs::read_dir(&scripts)
+            .expect("read scripts directory")
+            .map(|entry| entry.expect("read scripts entry").file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| {
+                name.starts_with("test_") && (name.ends_with(".py") || name.ends_with(".sh"))
+            })
+            .collect();
+        assert!(!suites.is_empty(), "expected repository checker self-tests");
+        for suite in suites {
+            let path = format!("scripts/{suite}");
+            assert!(
+                workflow_corpus.contains(&path),
+                "repository checker self-test {path} is absent from every workflow"
+            );
+        }
+    }
+
+    #[test]
+    fn checkout_credentials_are_retained_only_for_push_jobs() {
+        let credential_writers = BTreeSet::from([
+            (".github/workflows/prepare-release.yml", "prepare"),
+            (".github/workflows/publish.yml", "release"),
+        ]);
+        let mut seen_writers = BTreeSet::new();
+
+        let workflows = project_root().join(".github/workflows");
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&workflows)
+            .expect("read workflows directory")
+            .map(|entry| entry.expect("read workflow entry").path())
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("yml" | "yaml")
+                )
+            })
+            .collect();
+        paths.sort();
+
+        for path in paths {
+            let relative = path
+                .strip_prefix(project_root())
+                .expect("workflow path is below project root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let workflow = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            let lines: Vec<&str> = workflow.lines().collect();
+            let mut job = "";
+
+            for (index, line) in lines.iter().enumerate() {
+                let indentation = line.len() - line.trim_start().len();
+                let trimmed = line.trim();
+                if indentation == 2 && !trimmed.starts_with('#') && trimmed.ends_with(':') {
+                    job = trimmed.trim_end_matches(':');
+                    continue;
+                }
+                let uses = if indentation == 6 {
+                    trimmed.strip_prefix("- uses:")
+                } else if indentation == 8 {
+                    trimmed.strip_prefix("uses:")
+                } else {
+                    None
+                };
+                let Some(action) = uses.map(str::trim) else {
+                    continue;
+                };
+                let action = action.trim_matches(['\'', '"']);
+                if !action.starts_with("actions/checkout@") {
+                    continue;
+                }
+                assert!(!job.is_empty(), "{relative}: checkout is outside a job");
+
+                let mut values = Vec::new();
+                for following in &lines[index + 1..] {
+                    let following_indent = following.len() - following.trim_start().len();
+                    let following_trimmed = following.trim();
+                    if following_indent <= 6 && following_trimmed.starts_with('-') {
+                        break;
+                    }
+                    if following_indent == 2
+                        && !following_trimmed.starts_with('#')
+                        && following_trimmed.ends_with(':')
+                    {
+                        break;
+                    }
+                    if let Some(value) = following_trimmed.strip_prefix("persist-credentials:") {
+                        values.push(value.trim().trim_matches(['\'', '"']));
+                    }
+                }
+                assert_eq!(
+                    values.len(),
+                    1,
+                    "{relative}::{job}: checkout must set persist-credentials exactly once"
+                );
+                let retains_credentials = match values[0] {
+                    "true" => true,
+                    "false" => false,
+                    value => panic!(
+                        "{relative}::{job}: persist-credentials must be a literal boolean, got {value}"
+                    ),
+                };
+                let identity = (relative.as_str(), job);
+                let expected = credential_writers.contains(&identity);
+                assert_eq!(
+                    retains_credentials, expected,
+                    "{relative}::{job}: checkout credential policy mismatch"
+                );
+                if expected {
+                    assert!(
+                        workflow_job_block(&workflow, job).contains("git push"),
+                        "{relative}::{job}: credential exception no longer performs a push"
+                    );
+                    assert!(
+                        seen_writers.insert((relative.clone(), job.to_string())),
+                        "{relative}::{job}: credential-bearing checkout must be unique"
+                    );
+                }
+            }
+        }
+
+        let expected_writers: BTreeSet<(String, String)> = credential_writers
+            .iter()
+            .map(|(path, job)| ((*path).to_string(), (*job).to_string()))
+            .collect();
+        assert_eq!(seen_writers, expected_writers);
     }
 }
 
@@ -6849,10 +7048,6 @@ mod docs_brand_policy {
             .nth(1)
             .and_then(|jobs| jobs.split("  required:").next())
             .expect("Docs Validation must retain its rendering job");
-        assert!(
-            rendering_job.contains("persist-credentials: false"),
-            "the docs rendering checkout must not persist repository credentials"
-        );
         let render_position = rendering_job
             .find("bash scripts/check-docs-rendering.sh")
             .expect("Docs Validation must build docs before browser testing");
