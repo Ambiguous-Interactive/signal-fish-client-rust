@@ -25,6 +25,14 @@
  *     opens (the transport bound admits two, fuses on the third).
  *   3 abrupt-error: destroy the TCP socket right after the client opens so
  *     the browser reports onerror + onclose(1006, unclean).
+ *   4 ledger-drain: send two 50-byte frames on open; when the client proves
+ *     it drained wave 1 ("next"), send two more, so a drain-credit leak
+ *     fuses wave 2 at the callback (issue #212 M2).
+ *   5 pre-open-failure: reject the handshake with HTTP 403 so the transport
+ *     must surface the terminal error before is_ready() (issue #212 M3).
+ *   6 abort-extended: send a 126-byte text frame and a 300-byte binary
+ *     frame (2-byte extended length), echo everything else verbatim so the
+ *     client's 70 KiB probe exercises the 8-byte encoding both directions.
  */
 
 const crypto = require("node:crypto");
@@ -33,7 +41,7 @@ const path = require("node:path");
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const HARNESS_URL_PATH = "/harness";
-const SCENARIO_COUNT = 4;
+const SCENARIO_COUNT = 7;
 const DEADLINE_MS = 30_000;
 
 function fail(message) {
@@ -187,6 +195,9 @@ class LoopbackServer {
     // observe the CONNECTING window (pre-open send retention) get
     // deterministic scheduling steps instead of racing one event-loop turn.
     this.handshakeDelayMs = 0;
+    // When true, the handshake is rejected with an HTTP 403 response instead
+    // of upgraded (pre-open-failure scenario, issue #212 M3).
+    this.rejectHandshake = false;
     this.sockets = new Set();
     this.server = net.createServer((socket) => this.onConnection(socket));
   }
@@ -232,6 +243,21 @@ class LoopbackServer {
         responding = true;
         const request = handshake.subarray(0, end).toString("latin1");
         const key = /^sec-websocket-key:\s*(.+)\r?$/im.exec(request);
+        if (this.rejectHandshake) {
+          // Flush the rejection after the configured handshake delay (same
+          // determinism knob as the 101 path), then close so the browser
+          // polyfill reports the failed handshake as an abnormal closure.
+          debug(`server: rejecting handshake with HTTP 403 in ${this.handshakeDelayMs}ms`);
+          setTimeout(() => {
+            socket.end(
+              "HTTP/1.1 403 Forbidden\r\n" +
+                "Connection: close\r\n" +
+                "Content-Length: 0\r\n" +
+                "\r\n",
+            );
+          }, this.handshakeDelayMs);
+          return;
+        }
         if (!/^get \/harness\s+http\/1\.[01]\r?$/i.test(request.split("\r\n")[0]) || key === null) {
           socket.destroy();
           return;
@@ -371,7 +397,11 @@ class HarnessWebSocket {
         const head = handshake.subarray(0, end).toString("latin1");
         const status = head.split("\r\n")[0];
         if (!/^http\/1\.1 101/i.test(status)) {
-          this.failConnection(1002, "handshake rejected");
+          // Browser-faithful per WHATWG: a rejected handshake is an abnormal
+          // closure because no close frame was ever received, so onclose
+          // reports 1006/unclean — a wire-level status like 403 is never
+          // surfaced through the close event.
+          this.failConnection(1006, "handshake rejected");
           return;
         }
         // RFC 6455 4.1: the client must verify the server's accept key.
@@ -524,6 +554,42 @@ const SCRIPTS = {
       peer.destroy();
     }, 30);
   },
+  4: (peer) => {
+    // Ledger drain-credit (issue #212 M2): wave 1 fills the 160-byte bound
+    // (two 50-byte frames, 64-unit minimum charge each). Wave 2 only leaves
+    // after the client proves it drained wave 1 ("next"), so a regression
+    // that leaks drain credit fuses wave 2 at the callback.
+    const sendWave = () => {
+      peer.sendText("b".repeat(50));
+      peer.sendText("b".repeat(50));
+    };
+    sendWave();
+    peer.onmessage = ({ isText, data }) => {
+      if (isText && data.toString("utf8") === "next") sendWave();
+    };
+  },
+  5: () => {
+    // The handshake is rejected before any script can attach; nothing to do.
+  },
+  6: (peer) => {
+    // Extended-length frames (issue #212): a 126-byte text frame and a
+    // 300-byte binary frame force the 2-byte extended length server→client;
+    // everything the client sends is echoed verbatim so its 70 KiB binary
+    // probe exercises the 8-byte encoding in both directions. The binary
+    // frame carries a byte-index ramp so corruption/reordering is detectable
+    // (the client expects offset-truncated values, identical to `i as u8`).
+    peer.sendText("x".repeat(126));
+    const ramp = Buffer.alloc(300);
+    for (let i = 0; i < ramp.length; ++i) ramp[i] = i & 0xff;
+    peer.sendBinary(ramp);
+    peer.onmessage = ({ isText, data }) => {
+      if (isText) {
+        peer.sendText(data.toString("utf8"));
+      } else {
+        peer.sendBinary(data);
+      }
+    };
+  },
 };
 
 // ── Harness module driving ──────────────────────────────────────────────────
@@ -547,10 +613,12 @@ async function main() {
 
   const runScenario = (mode) => new Promise((resolve) => {
     server.script = SCRIPTS[mode];
-    // Scenario 0 pins the pre-open Pending retention contract, so its
-    // handshake is delayed to guarantee several CONNECTING steps; every
-    // other scenario opens immediately.
-    server.handshakeDelayMs = mode === 0 ? 10 : 0;
+    // Scenarios 0 and 5 pin pre-open send retention, so their handshakes are
+    // delayed to guarantee several CONNECTING steps; every other scenario
+    // opens immediately.
+    server.handshakeDelayMs = mode === 0 || mode === 5 ? 10 : 0;
+    // Scenario 5 rejects the handshake itself (issue #212 M3).
+    server.rejectHandshake = mode === 5;
     const begin = globalThis.Module.ccall(
       "sfh_begin",
       "number",
@@ -605,6 +673,13 @@ async function main() {
   try {
     for (let mode = 0; mode < SCENARIO_COUNT; ++mode) {
       await runScenario(mode);
+    }
+    // The last transport is never dropped by an sfh_begin (no scenario
+    // follows), so tear it down explicitly: a cleanup failure during that
+    // Drop must fail the harness instead of vanishing at process exit.
+    const finish = globalThis.Module.ccall("sfh_finish", "number");
+    if (finish !== 1) {
+      fail("sfh_finish: the final transport's Drop logged a cleanup failure");
     }
   } finally {
     await server.close();

@@ -27,9 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proofs are forgeable by an on-path observer.
 
 - **Breaking:** `RateLimitInfo`'s `per_minute`, `per_hour`, and `per_day`
-  are now `u64` instead of `u32`; a server reporting a limit above
-  `u32::MAX` no longer fails authentication. Update literals/casts that
-  assumed `u32`.
+  are now `u64` instead of `u32` (update literals/casts that assumed
+  `u32`); a server reporting a limit above `u32::MAX` no longer fails
+  authentication.
 - The Godot adapter's `watermark_hits` and `backend_capacity_hits`
   diagnostics now count each deferred send once instead of once per poll.
 - The object-safe client trait's diagnostic accessors (`send_capacity`,
@@ -60,13 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Debug builds of downstream crates no longer log a spurious
+  "must be driven by SignalFishPollingClient" error on the Emscripten
+  transport's first receive poll: the debug-only waker-misuse check relied on
+  best-effort waker identity that does not hold across crate boundaries and
+  was removed (the polling-only contract remains documented).
 - Token-binding connections are now robust against serde_json's
   `arbitrary_precision` feature being enabled by a consumer crate:
   previously that unification delivered numbers as private marker maps
   that bypassed the strict number gate and could corrupt outbound
-  payloads. Single-member objects carrying serde_json's private marker
-  key with a string value are now classified as numbers in all builds;
-  floats, exponents, and out-of-range integers keep their existing
+  payloads, so single-member objects carrying serde_json's private marker
+  key with a string value are now classified as numbers in all builds,
+  while floats, exponents, and out-of-range integers keep their existing
   refusals (only the literal `-0` differs: unified serde_json reports it
   as the integer `0`, whose canonical form matches the server's RFC 8785
   output).
@@ -93,10 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Godot adapter classifies a caller-wrapped peer that already closed or
   is natively closing after an open connection (wire or engine-synthesized
   close code) as a post-open close with metadata instead of a "closed
-  before opening" failure; never-opened (`-1`), abnormal (`1006`/`1015`),
-  and pre-open web closes keep the failure classification. The initiator of
-  a pre-wrap close is unknowable and reported as peer-initiated. Crate docs
-  now also record that Godot's native backend does not validate text-frame
+  before opening" failure (never-opened (`-1`), abnormal (`1006`/`1015`),
+  and pre-open web closes keep the failure classification; the unknowable
+  initiator of a pre-wrap close is reported as peer-initiated), and crate
+  docs now record that Godot's native backend does not validate text-frame
   UTF-8, so a corrupt text packet surfaces a terminal receive error that
   ends the stream at the driver.
 - Corrected docs: `set_ready()` toggles readiness (call it once per room

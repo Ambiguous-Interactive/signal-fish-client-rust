@@ -9,5 +9,8 @@ description = "On-target wasm32-unknown-emscripten runtime harness for Emscripte
 signal-fish-client = { path = "../..", default-features = false, features = [
     "transport-websocket-emscripten",
 ] }
+# Minimal subscriber dependency: the harness latches error-level events so a
+# silent Drop-path cleanup failure fails a scenario (issue #212 M4).
+tracing = "0.1"
 
 [workspace]

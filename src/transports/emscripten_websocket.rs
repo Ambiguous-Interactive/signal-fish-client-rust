@@ -63,12 +63,10 @@
 //!   this transport does not register a waker, using it with
 //!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
 //!   any real executor will cause `poll_recv()` to remain pending indefinitely.
-//!
-//! - **Debug-build misuse detection.** In `cfg(debug_assertions)` builds,
-//!   `poll_recv()` emits a `tracing::error!` once if it detects a non-noop waker,
-//!   which indicates the transport is being driven by a real async runtime
-//!   instead of `SignalFishPollingClient`. This makes misuse visible
-//!   during development rather than manifesting as a silent hang.
+//!   Waker misuse cannot be detected at runtime —
+//!   [`Waker::will_wake`](std::task::Waker::will_wake) is
+//!   documented best-effort and compares vtable identities that duplicate
+//!   across crate boundaries — so this contract is documentation-enforced.
 //!
 //! # Example
 //!
@@ -418,8 +416,6 @@ pub struct EmscriptenWebSocketTransport {
     /// leave it unchanged so cleanup still attempts close before deletion.
     cleanup: CleanupState,
     close_info: Option<TransportCloseInfo>,
-    #[cfg(debug_assertions)]
-    reported_non_noop_waker: bool,
     /// Explicit `!Send` marker. The raw `callback_state` pointer already prevents
     /// auto-`Send`, but this field documents the intent and prevents it from being
     /// accidentally removed if the implementation ever changes.
@@ -607,8 +603,6 @@ impl EmscriptenWebSocketTransport {
             opened: false,
             cleanup,
             close_info: None,
-            #[cfg(debug_assertions)]
-            reported_non_noop_waker: false,
             _not_send: std::marker::PhantomData,
         })
     }
@@ -954,20 +948,8 @@ impl Transport for EmscriptenWebSocketTransport {
 
     fn poll_recv(
         &mut self,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        // Keep release builds warning-free when the debug-only diagnostic below
-        // is compiled out.
-        let _ = cx;
-        #[cfg(debug_assertions)]
-        if !self.reported_non_noop_waker && !cx.waker().will_wake(std::task::Waker::noop()) {
-            self.reported_non_noop_waker = true;
-            tracing::error!(
-                "EmscriptenWebSocketTransport must be driven by \
-                 SignalFishPollingClient with a noop waker; a wake-driven \
-                 executor can remain pending indefinitely"
-            );
-        }
         if self.closed {
             return std::task::Poll::Ready(None);
         }

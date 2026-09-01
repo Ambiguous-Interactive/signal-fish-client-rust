@@ -377,8 +377,10 @@ fn is_abnormal_close_code(raw_code: i32) -> bool {
 /// [`Transport::abort`] — a force-close (`close_ex().code(-1)`) that runs
 /// exactly once — covers every other teardown: dropping the client without a
 /// completed `close()`, a `close` deadline expiry, or a failed close. A
-/// `close()` on a client that never connected performs no transport I/O and
-/// leaves the peer untouched for its owner. Any teardown that reaches the peer
+/// `close()` on a client whose core already observed terminal failure
+/// performs no transport I/O and leaves the peer untouched for its owner; on
+/// a client still connecting it drives the peer's close path like any other
+/// teardown. Any teardown that reaches the peer
 /// closes it before the `Gd<WebSocketPeer>` is released, on both native and
 /// web. Dropping a bare transport without `abort`/`close` leaves reclamation
 /// to Godot's engine destructor semantics for an open peer, which differ by

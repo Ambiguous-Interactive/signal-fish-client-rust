@@ -246,10 +246,17 @@ runtime, the result is a silent hang that is extremely difficult to diagnose --
 especially in Godot/Emscripten debugging scenarios where standard debugger support
 is limited.
 
-Add `cfg(debug_assertions)` guards that detect misuse at runtime. For example,
-check whether the waker provided to `poll()` is a noop waker; if not, panic with
-a clear message directing the developer to use `SignalFishPollingClient` instead.
-See the `transport-abstraction` skill for the `NoopWakerPending` pattern.
+**Do not attempt runtime waker-misuse detection.** `Waker::will_wake` is
+documented best-effort: it compares `RawWaker` data plus vtable pointer
+identity, and the noop waker's `#[inline] const` internals duplicate that
+identity per crate. A check like
+`cx.waker().will_wake(Waker::noop())` returned `false` for genuine noop wakers
+in a verified two-crate probe (and in the on-target harness), so the check
+that once shipped in `EmscriptenWebSocketTransport::poll_recv` false-positived
+for every out-of-crate caller in debug builds and was removed. Enforce the
+noop-waker contract through documentation and the driver design
+(`SignalFishPollingClient` constructs its own noop-waker contexts; see the
+`transport-abstraction` skill) instead of a runtime probe.
 
 ## Std API Calls in `cfg`-Guarded Code
 
@@ -260,12 +267,9 @@ can hide indefinitely.
 ### Rules
 
 1. **Always verify argument types for std API calls in cfg-guarded blocks.** The compiler
-   won't catch errors in code that's never compiled for CI targets.
-2. **`Waker::will_wake` takes `&Waker`.** The compiler auto-refs owned `Waker`
-   values, so `.will_wake(noop)` is idiomatic. Do **not** write `.will_wake(&noop)`
-   — nightly clippy flags the explicit `&` as `needless_borrow`. The emscripten CI
-   job now runs clippy on the actual target, catching type errors directly.
-3. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
+   won't catch errors in code that's never compiled for CI targets; the emscripten
+   CI job now runs clippy on the actual target, catching type errors directly.
+2. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
    patterns that are prone to this class of bug.
 
 ## Target-Restricted Features
@@ -326,4 +330,4 @@ Use this checklist when adding or reviewing any FFI binding:
 | Deletion failure still frees callback state | Callback use-after-free | Preserve state and allow retry; safety-leak on final failure |
 | `unsafe impl Send` added for Emscripten | Main-thread callback state crosses the async spawn boundary | Keep the transport `!Send` and use the polling client |
 | Missing per-function SAFETY comment on callback | Inconsistent safety documentation, harder to audit | Add `// SAFETY:` referencing the block comment before every `extern "C" fn` |
-| `.will_wake(&waker)` with explicit `&` | Nightly clippy `needless_borrow` warning | Omit the `&` — write `.will_wake(waker)`; the compiler auto-refs. Caught by emscripten CI clippy job |
+| Runtime waker-misuse check via `Waker::will_wake` | False positives for every out-of-crate noop-waker caller (best-effort vtable identity duplicates per crate) | No reliable runtime probe exists; document the contract instead (see "Debug Assertions for FFI Transport Misuse") |

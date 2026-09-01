@@ -227,6 +227,7 @@ name = "signal-fish-emscripten-harness"
 version = "0.0.0"
 dependencies = [
  "signal-fish-client",
+ "tracing",
 ]
 
 [[package]]
