@@ -102,8 +102,9 @@ function encodeClientFrame(opcode, payload) {
 /**
  * Incremental frame parser. Feed raw chunks; yields complete frames.
  * Supports the single-frame unfragmented messages this harness uses and
- * rejects anything else (fragmentation, RSV bits, unknown opcodes) the way
- * a conformant peer must.
+ * rejects anything else (fragmentation, RSV bits, unknown opcodes,
+ * control frames with a payload over 125 bytes, close frames with a
+ * 1-byte body) the way a conformant peer must.
  */
 class FrameParser {
   constructor(requireMasked = false) {
@@ -148,6 +149,16 @@ class FrameParser {
       if (opcode !== OP_TEXT && opcode !== OP_BINARY && opcode !== OP_CLOSE
           && opcode !== OP_PING && opcode !== OP_PONG) {
         fail(`harness received unknown opcode ${opcode}`);
+      }
+      // RFC 6455 5.5: control frames must have a payload of 125 bytes or
+      // less, and 5.5.1: a close body of exactly 1 byte is invalid. Both are
+      // mandatory-fail protocol errors (1002); the shim must never emit them.
+      const isControl = opcode >= OP_CLOSE && opcode <= OP_PONG;
+      if (isControl && length > 125) {
+        fail(`harness received a control frame (opcode ${opcode}) with a ${length}-byte payload; RFC 6455 5.5 requires failing the connection with 1002`);
+      }
+      if (opcode === OP_CLOSE && length === 1) {
+        fail("harness received a 1-byte close body; RFC 6455 5.5.1 requires failing the connection with 1002");
       }
       let payload = this.buffer.subarray(offset + maskKey, offset + maskKey + length);
       if (masked) {

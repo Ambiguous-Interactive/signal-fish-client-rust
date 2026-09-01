@@ -823,7 +823,9 @@ impl WebSocketTransport {
     /// socket tuning, inbound frame/message size limits, and token-binding
     /// negotiation policy. Socket options are applied before any TLS handshake,
     /// so they cover both `ws://` and `wss://`. A selected token-binding
-    /// challenge is consumed before this method returns.
+    /// challenge is consumed before this method returns. A token-binding
+    /// offer over a plain `ws://` URL logs a warning: the resulting proofs
+    /// are forgeable by an on-path observer there.
     ///
     /// # Errors
     ///
@@ -862,8 +864,21 @@ impl WebSocketTransport {
         #[cfg(feature = "tls")]
         install_tls_provider();
 
+        let secure = url.starts_with("wss://");
+        #[cfg(feature = "token-binding")]
+        if options.token_binding != TokenBindingMode::Disabled && !secure {
+            // tokio-tungstenite performs no TLS handshake on a plain URL, so
+            // an on-path observer reads the handshake key and nonce and can
+            // forge every proof. Never inline the URL here; `validate_request_url`
+            // makes `!secure` equivalent to a plain `ws://` scheme.
+            tracing::warn!(
+                "token-binding mode {:?} on a plain ws:// URL produces proofs \
+                 forgeable by an on-path observer; use wss://",
+                options.token_binding
+            );
+        }
         tracing::debug!(
-            secure = url.starts_with("wss://"),
+            secure,
             disable_nagle = options.disable_nagle,
             max_inbound_message_size = options.max_inbound_message_size,
             token_binding = ?options.token_binding,
@@ -2093,6 +2108,167 @@ mod tests {
             Some(Err(SignalFishError::TransportReceive(_)))
         ));
         finish_mock_server(server_task).await;
+    }
+
+    #[cfg(feature = "token-binding")]
+    #[test]
+    fn plain_ws_token_binding_offer_warns_that_proofs_are_forgeable() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        // The warn fires at connect time before I/O, so a thread-local
+        // subscriber capture around a separate single-thread runtime pins it
+        // without a global subscriber or a capture precedent elsewhere.
+        struct MessageVisitor(Option<String>);
+
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+
+        struct WarnCapture(Arc<std::sync::Mutex<Vec<String>>>);
+
+        impl<S> tracing_subscriber::layer::Layer<S> for WarnCapture
+        where
+            S: tracing::Subscriber,
+        {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _context: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event.metadata().level() != &tracing::Level::WARN {
+                    return;
+                }
+                let mut visitor = MessageVisitor(None);
+                event.record(&mut visitor);
+                if let Some(message) = visitor.0 {
+                    self.0
+                        .lock()
+                        .expect("warn capture mutex must not be poisoned")
+                        .push(message);
+                }
+            }
+        }
+
+        let capture_messages = |capture: &Arc<std::sync::Mutex<Vec<String>>>| {
+            capture
+                .lock()
+                .expect("warn capture mutex must not be poisoned")
+                .clone()
+        };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime must build");
+
+        let plain_capture = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(WarnCapture(plain_capture.clone())),
+            || {
+                runtime.block_on(async {
+                    use tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+
+                    let listener = TcpListener::bind("127.0.0.1:0")
+                        .await
+                        .expect("plain-ws offer listener must bind");
+                    let addr = listener
+                        .local_addr()
+                        .expect("plain-ws offer listener must have an address");
+                    let server_task = tokio::spawn(async move {
+                        let (tcp, _) = listener.accept().await.expect("server must accept");
+                        let mut ws = tokio_tungstenite::accept_hdr_async(
+                            tcp,
+                            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                             mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                                assert_eq!(
+                                    request
+                                        .headers()
+                                        .get(SEC_WEBSOCKET_PROTOCOL)
+                                        .and_then(|value| value.to_str().ok()),
+                                    Some(crate::token_binding::TOKEN_BINDING_SUBPROTOCOL)
+                                );
+                                response.headers_mut().insert(
+                                    SEC_WEBSOCKET_PROTOCOL,
+                                    tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                        crate::token_binding::TOKEN_BINDING_SUBPROTOCOL,
+                                    ),
+                                );
+                                Ok(response)
+                            },
+                        )
+                        .await
+                        .expect("plain-ws handshake must succeed");
+                        ws.send(Message::Text(challenge_json().into()))
+                            .await
+                            .expect("server must send challenge");
+                        let _signed_or_dropped = ws.next().await;
+                    });
+
+                    let transport = WebSocketTransport::connect_with_options(
+                        &format!("ws://{addr}"),
+                        required_token_binding_options(),
+                    )
+                    .await
+                    .expect("a plain-ws token-binding connect must still succeed");
+                    assert_eq!(
+                        transport.token_binding_status(),
+                        TokenBindingStatus::Active
+                    );
+                    drop(transport);
+                    finish_mock_server(server_task).await;
+                });
+            },
+        );
+        let messages = capture_messages(&plain_capture);
+        assert_eq!(
+            messages.len(),
+            1,
+            "exactly one plain-scheme warning must fire at connect time: {messages:?}"
+        );
+        assert!(
+            messages[0].contains("Required"),
+            "warning must name the mode: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("ws://") && messages[0].contains("wss://"),
+            "warning must name the scheme and recommend wss://: {}",
+            messages[0]
+        );
+        assert!(
+            !messages[0].contains("127.0.0.1"),
+            "warning must never inline the caller's URL: {}",
+            messages[0]
+        );
+
+        // Meaningful only where a wss:// URL reaches the warn site (the
+        // missing-`tls` rejection precedes it and is pinned separately).
+        #[cfg(feature = "tls")]
+        {
+            let secure_capture = Arc::new(std::sync::Mutex::new(Vec::new()));
+            tracing::subscriber::with_default(
+                tracing_subscriber::registry().with(WarnCapture(secure_capture.clone())),
+                || {
+                    runtime.block_on(async {
+                        let error = WebSocketTransport::connect_with_options(
+                            "wss://127.0.0.1:1",
+                            required_token_binding_options(),
+                        )
+                        .await
+                        .expect_err("wss:// to a closed port must fail as a network error");
+                        assert!(matches!(error, SignalFishError::Io(_)), "got: {error}");
+                    });
+                },
+            );
+            assert!(
+                capture_messages(&secure_capture).is_empty(),
+                "a wss:// URL must not trigger the plain-scheme warning"
+            );
+        }
     }
 
     #[cfg(all(feature = "tls", feature = "token-binding"))]
