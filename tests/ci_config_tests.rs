@@ -6708,7 +6708,7 @@ mod docs_onboarding_shape {
 
         assert!(
             invalid.is_empty(),
-            "User-facing WebSocket URLs must use the pinned Server 0.7 `/v2/ws` \
+            "User-facing WebSocket URLs must use the protocol-versioned `/v2/ws` \
              or `/v3/ws` route:\n{}",
             invalid.join("\n")
         );

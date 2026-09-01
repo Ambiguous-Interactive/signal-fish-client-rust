@@ -137,7 +137,7 @@ ownership; preparation failures, `Pending`, and `WriteBufferFull` leave both
 the original caller frame and sequence unchanged.
 
 The implementation follows Signal Fish Server 0.8.0 commit
-`1975db5d900221331a2abffb9fa6762fe9c6e502` (the proof scheme is unchanged
+`d79dcdc7549777c8c2bd9fcb2d132641532d8c86` (the proof scheme is unchanged
 since 0.7.0). Checked-in provenance and exact
 JSON/MessagePack goldens live under `tests/token-binding/`. Unsupported JSON
 forms—duplicate object members, floats/exponents/negative zero, and integers

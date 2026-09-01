@@ -181,7 +181,7 @@ jobs:
         run: cargo test ${{ matrix.scope }} ${{ matrix.flags }} --locked
 
   # ──────────────────────────────────────────────────────────────
-  # Pinned server compatibility E2E — generation-less 0.4, Server 0.7 mesh,
+  # Pinned server compatibility E2E — generation-less 0.4, Server 0.8 mesh,
   # reconnect and liveness behavior, and required token-binding security cases.
   # ──────────────────────────────────────────────────────────────
   server-mesh-e2e:

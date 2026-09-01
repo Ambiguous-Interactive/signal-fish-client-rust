@@ -67,12 +67,12 @@ datagram protocol, or a server-authentication mechanism. `TransportFrame` carrie
 no source address or peer identity, so the client attributes every yielded
 frame to that server. The built-in transports connect to the server's
 WebSocket endpoint, and the pinned Server 0.8.0
-[AsyncAPI contract](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/1975db5d900221331a2abffb9fa6762fe9c6e502/spec/signal-fish-protocol.asyncapi.yaml)
+[AsyncAPI contract](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/spec/signal-fish-protocol.asyncapi.yaml)
 defines one bidirectional WebSocket channel for signaling and relayed
 `GameData`. Its room service
-[accepts but ignores `JoinRoom.relay_transport`](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/1975db5d900221331a2abffb9fa6762fe9c6e502/src/server/room_service.rs#L427-L444),
+[accepts but ignores `JoinRoom.relay_transport`](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/src/server/room_service.rs#L427-L444),
 and its relay policy states that Server 0.8
-[contains no separate relay server](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/1975db5d900221331a2abffb9fa6762fe9c6e502/src/server/relay_policy.rs#L5-L20).
+[contains no separate relay server](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/src/server/relay_policy.rs#L5-L20).
 
 A custom TCP or QUIC-stream adapter must delimit messages before returning a
 frame. A custom datagram adapter would likewise need an external protocol that

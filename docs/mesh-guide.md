@@ -293,7 +293,7 @@ status (above) is what lets the server make these fallback decisions.
 ## Reconnect behavior
 
 After a reconnect, the server rebuilds the mesh session by re-sending a fresh,
-**live** `SessionPlan`. Server 0.7 does not place `ProtocolInfo`, `SessionPlan`,
+**live** `SessionPlan`. Server 0.8 does not place `ProtocolInfo`, `SessionPlan`,
 `Signal`, or `NewPeer` in `Reconnected.missed_events`; the client rejects those
 non-replayable nested variants and waits for the fresh top-level plan.
 

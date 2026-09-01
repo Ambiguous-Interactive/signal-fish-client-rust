@@ -36,7 +36,8 @@ pub enum TokenBindingStatus {
     Active,
 }
 
-/// Token-binding proof scheme defined by Signal Fish Server 0.7.0.
+/// Token-binding proof scheme, introduced by Signal Fish Server 0.7.0 and
+/// unchanged through 0.8.0.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenBindingScheme {
@@ -51,13 +52,13 @@ pub enum TokenBindingScheme {
 /// not accumulate handshake material. Explicit field access is unchanged.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenBindingChallenge {
-    /// Wire-contract version. Server 0.7.0 emits `2`.
+    /// Wire-contract version. Server 0.7.0+ emits `2`.
     pub version: u8,
     /// Selected key-derivation and proof scheme.
     pub scheme: TokenBindingScheme,
     /// Standard-base64 server nonce, which decodes to exactly 32 bytes.
     pub nonce: String,
-    /// First shared JSON/binary sequence number. Server 0.7.0 emits `1`.
+    /// First shared JSON/binary sequence number. Server 0.7.0+ emits `1`.
     pub first_sequence: u64,
 }
 

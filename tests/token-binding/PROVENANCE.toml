@@ -1,6 +1,6 @@
 server_repository = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 server_release = "0.8.0"
-server_commit = "1975db5d900221331a2abffb9fa6762fe9c6e502"
+server_commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
 synced = "2026-09-01"
 vectors_sha256 = "e3693dd897728527603cacf7a0910dc93541402200e471e80354bd2e882dde9b"
 

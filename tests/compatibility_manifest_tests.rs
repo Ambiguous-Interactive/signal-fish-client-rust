@@ -45,7 +45,7 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     let commit = manifest["server_commit"]
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
-    assert_eq!(commit, "1975db5d900221331a2abffb9fa6762fe9c6e502");
+    assert_eq!(commit, "d79dcdc7549777c8c2bd9fcb2d132641532d8c86");
     assert_eq!(manifest["legacy_server"]["version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["legacy_server"]["tag"].as_str(), Some("v0.4.0"));
     assert_eq!(
@@ -83,7 +83,7 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     let protocol_commit = manifest["protocol_authority"]["commit"]
         .as_str()
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
-    assert_eq!(protocol_commit, "1975db5d900221331a2abffb9fa6762fe9c6e502");
+    assert_eq!(protocol_commit, "d79dcdc7549777c8c2bd9fcb2d132641532d8c86");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)

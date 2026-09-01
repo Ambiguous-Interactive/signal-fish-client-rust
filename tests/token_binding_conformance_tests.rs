@@ -20,7 +20,7 @@ fn pinned_server_080_token_binding_provenance_is_complete() {
         toml::from_str(&provenance_text).expect("parse token-binding provenance");
     assert_eq!(
         provenance["server_commit"].as_str(),
-        Some("1975db5d900221331a2abffb9fa6762fe9c6e502")
+        Some("d79dcdc7549777c8c2bd9fcb2d132641532d8c86")
     );
     assert_eq!(provenance["server_release"].as_str(), Some("0.8.0"));
     let upstream = provenance["upstream_sha256"]

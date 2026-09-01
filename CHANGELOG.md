@@ -23,11 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The pinned server compatibility binding moved from Server 0.7.0 to the
-  released Server 0.8.0 (commit `1975db5d900221331a2abffb9fa6762fe9c6e502`;
-  tarball digest updated in the E2E matrix and Godot workflows). The wire
-  samples and AsyncAPI authority are byte-identical to the previously pinned
-  post-0.7 preview, so no protocol behavior changes; Server 0.7.0 remains
-  wire-compatible.
+  released Server 0.8.0 (commit `d79dcdc7549777c8c2bd9fcb2d132641532d8c86`;
+  tarball digest updated in the E2E matrix and Godot workflows). The vendored
+  wire samples and AsyncAPI authority are byte-identical to the previously
+  pinned post-0.7 preview, so no client wire changes were required, and the
+  byte-frozen v2 relay floor keeps Server 0.7.0 deployments interoperable.
 - `ErrorCode::description()` texts were aligned with the Server 0.8.0
   authority for `InvalidAppId` (control characters and the 256-byte cap are
   now refused in every policy mode), `ServerDraining` (also refuses

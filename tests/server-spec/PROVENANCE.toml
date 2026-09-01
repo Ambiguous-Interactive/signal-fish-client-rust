@@ -7,7 +7,7 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-commit = "1975db5d900221331a2abffb9fa6762fe9c6e502"
+commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
 # ISO 8601 date of the last refresh.
 synced = "2026-09-01"
 

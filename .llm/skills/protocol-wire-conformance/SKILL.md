@@ -34,7 +34,7 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus currently pins released protocol-authority commit
-`1975db5d900221331a2abffb9fa6762fe9c6e502` (Server 0.8.0; the wire samples and
+`d79dcdc7549777c8c2bd9fcb2d132641532d8c86` (Server 0.8.0; the wire samples and
 AsyncAPI spec are byte-identical to the earlier post-0.7 preview this corpus
 previously pinned). Released runtime compatibility is bound to that same
 Server 0.8.0 release in `tests/compatibility.toml`; the older Server 0.7.0

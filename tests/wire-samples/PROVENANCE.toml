@@ -7,7 +7,7 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
 # Exact server commit the .jsonl bytes were copied from.
-commit = "1975db5d900221331a2abffb9fa6762fe9c6e502"
+commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
