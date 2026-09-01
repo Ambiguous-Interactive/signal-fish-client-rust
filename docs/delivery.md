@@ -86,7 +86,12 @@ the server 0.4.0 reference accountability algorithm and validates snapshots,
 lifecycle epochs, exact gap coverage, reports, terminal watermarks, and
 reconnect baselines. A sequence hole is authorized only by the union of prior
 exact `DeliveryReport` ranges for that sender and epoch; aggregate
-`RelayStats` and counter deltas are diagnostics, not authorization.
+`RelayStats` and counter deltas are diagnostics, not authorization. A
+`RelayStats` frame that violates the authority's own invariants — a
+non-positive or changed-mid-connection `interval_ms`, or non-monotonic
+counters — is itself rejected: the frame is suppressed and reported as a
+`ProtocolViolation { Counters }` diagnostic (under `Observe`, the violating
+frame is still delivered).
 
 On a violation the SDK emits `SignalFishEvent::ProtocolViolation`. The default
 `ProtocolViolationPolicy::Quarantine` suppresses subsequent room game data

@@ -1721,15 +1721,29 @@ mod tests {
             .count()
     }
 
+    /// Clock-agnostic bounded spin: `yield_now` for the fast path (no timer),
+    /// then a parking 1 ms sleep so an enclosing `timeout` guard still fires —
+    /// under paused (`start_paused`) time a pure spin never parks and would
+    /// starve tokio's auto-advance forever.
+    async fn spin_until(mut done: impl FnMut() -> bool) {
+        let mut spins = 0usize;
+        while !done() {
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
+    }
+
     async fn wait_for_sent_count(
         sent: &Arc<Mutex<Vec<String>>>,
         needles: &[&str],
         expected: usize,
     ) {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while sent_count(sent, needles) < expected {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| sent_count(sent, needles) >= expected).await;
         })
         .await
         .unwrap_or_else(|_| {
@@ -2057,7 +2071,13 @@ mod tests {
     /// signal relay: a driver signal refused by a full command queue must be
     /// buffered (not dropped), survive `recv()` cancellation, and go out
     /// exactly once when the congestion clears.
-    #[tokio::test]
+    ///
+    /// Runs on paused virtual time: all mocks are channel/semaphore-based,
+    /// so progress never needs the wall clock. Parked `recv()` pumps resolve
+    /// through tokio auto-advance (the 20ms default pump timer fires as a
+    /// no-op before each `timeout` bound), keeping the drain loops
+    /// deterministic instead of racing CI scheduling.
+    #[tokio::test(start_paused = true)]
     async fn congestion_buffers_driver_signal_and_relays_exactly_once() {
         let peer = uuid(9);
         // Two permits establish the real Authenticate + JoinRoom setup.
@@ -2082,9 +2102,7 @@ mod tests {
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
         let mut mesh = MeshController::start(transport, config, driver.clone());
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while sent_count(&sent, &[r#""type":"Authenticate""#]) == 0 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| sent_count(&sent, &[r#""type":"Authenticate""#]) > 0).await;
         })
         .await
         .expect("Authenticate never left the capacity-1 queue");
@@ -2108,9 +2126,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
         })
         .await
         .expect("transport loop never parked in the gated send");
@@ -2153,7 +2169,12 @@ mod tests {
     /// retried after capacity returns. Otherwise the controller's local
     /// `connected_peers` transition suppresses every duplicate driver event
     /// while the server retains stale WebRTC liveness for the whole interval.
-    #[tokio::test]
+    ///
+    /// Paused virtual time for the same reasons as
+    /// [`congestion_buffers_driver_signal_and_relays_exactly_once`]: the
+    /// permit/counter/channel seams carry all progress, and parked pump
+    /// windows resolve deterministically via auto-advance.
+    #[tokio::test(start_paused = true)]
     async fn congestion_retries_transport_status_edges_exactly_once() {
         let peer = uuid(9);
         // Authenticate + JoinRoom consume the two setup permits. Using the
@@ -2173,9 +2194,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .expect("first filler should enter the transport");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
         })
         .await
         .expect("transport loop never parked in the first congested send");
@@ -2213,9 +2232,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 3 }))
             .expect("third filler should enter the transport");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 6 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 6).await;
         })
         .await
         .expect("transport loop never parked in the second congested send");
@@ -2269,9 +2286,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .expect("first filler should enter the transport");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
         })
         .await
         .expect("transport loop never parked in the first congested send");
@@ -2317,9 +2332,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 3 }))
             .expect("third filler should enter the transport");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 7 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 7).await;
         })
         .await
         .expect("transport loop never parked in the second congested send");
@@ -2378,9 +2391,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .expect("first filler should enter the transport");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
         })
         .await
         .expect("transport loop never parked in the congested send");
@@ -2413,7 +2424,12 @@ mod tests {
     /// A leave fence is also transient when the correlated operation later
     /// fails. The last-channel down edge must survive `RoomOperationPending`
     /// and be reported after the failure leaves this client in the room.
-    #[tokio::test]
+    ///
+    /// Paused virtual time for the same reasons as
+    /// [`congestion_buffers_driver_signal_and_relays_exactly_once`]: the
+    /// permit/counter/channel seams carry all progress, and parked pump
+    /// windows resolve deterministically via auto-advance.
+    #[tokio::test(start_paused = true)]
     async fn failed_leave_retries_transport_status_after_operation_fence_clears() {
         let peer = uuid(10);
         // Authenticate, JoinRoom, and the initial up status consume these
@@ -2437,9 +2453,7 @@ mod tests {
         mesh.leave_room()
             .expect("leave should arm the negotiated room-operation fence");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 4 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 4).await;
         })
         .await
         .expect("LeaveRoom never parked in the gated transport");
@@ -2546,9 +2560,7 @@ mod tests {
         let config = SignalFishConfig::new("app").with_command_channel_capacity(1);
         let mut mesh = MeshController::start(transport, config, driver.clone());
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while sent_count(&sent, &[r#""type":"Authenticate""#]) == 0 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| sent_count(&sent, &[r#""type":"Authenticate""#]) > 0).await;
         })
         .await
         .expect("Authenticate never left the capacity-1 queue");
@@ -2571,9 +2583,7 @@ mod tests {
             .send_game_data(serde_json::json!({ "filler": 1 }))
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while entered.load(std::sync::atomic::Ordering::Acquire) < 3 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
         })
         .await
         .expect("transport loop never parked in the gated send");
@@ -2671,9 +2681,7 @@ mod tests {
 
         drop(mesh);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while aborts.load(Ordering::Relaxed) < 1 {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| aborts.load(Ordering::Relaxed) >= 1).await;
         })
         .await
         .expect("plain drop must run the transport abort fallback");
@@ -3313,9 +3321,7 @@ mod tests {
         }
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while mesh.client().snapshot().session_generation != Some(second) {
-                tokio::task::yield_now().await;
-            }
+            spin_until(|| mesh.client().snapshot().session_generation == Some(second)).await;
         })
         .await
         .expect("core never observed replacement generation");

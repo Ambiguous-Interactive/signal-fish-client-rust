@@ -4767,8 +4767,17 @@ mod tests {
 
     async fn wait_until(condition: impl Fn() -> bool) {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut spins = 0usize;
             while !condition() {
-                tokio::task::yield_now().await;
+                // Bounded spin, then park: a pure `yield_now` loop never
+                // parks, so under paused (`start_paused`) virtual time it
+                // would starve auto-advance and the guard could never fire.
+                if spins < 64 {
+                    spins += 1;
+                    tokio::task::yield_now().await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
             }
         })
         .await
@@ -7192,7 +7201,7 @@ mod tests {
     /// A receive error wedges terminal delivery exactly like a clean close:
     /// with no `shutdown()` and an uncompletable `poll_close`, teardown must
     /// come from the budget-expiry abort, never hang the loop.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn terminal_receive_error_aborts_only_after_the_shutdown_budget() {
         // Connected and Authenticated fill the capacity-2 channel, so the
         // terminal Disconnected delivery wedges with no `shutdown()` call.
@@ -7200,6 +7209,12 @@ mod tests {
         // impossible: teardown can only come from the budget expiry aborting
         // the transport. A regression that restores unbounded delivery keeps
         // this spin alive forever instead of passing vacuously.
+        //
+        // Paused virtual time: the spin's 5ms sleeps resolve via tokio
+        // auto-advance only while every task is parked, so the abort surfaces
+        // at virtual ~100ms (the budget) and the guard below is exact. A
+        // regression that wedges past the budget would push virtual elapsed
+        // to the 2s guard instead of hanging on the wall clock.
         let (transport, _close_called, abort_called, _dropped) =
             HangingCloseTransport::with_incoming(vec![
                 Some(Ok(authenticated_json())),
@@ -7212,7 +7227,7 @@ mod tests {
             .with_shutdown_timeout(std::time::Duration::from_millis(100));
         let (client, mut events) = SignalFishClient::start(transport, config);
 
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         while !abort_called.load(Ordering::Acquire) {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(2),
@@ -7245,7 +7260,7 @@ mod tests {
     /// A policy-driven disconnect wedges on its violation batch exactly like
     /// a peer close: with no `shutdown()` and a full channel, teardown must
     /// come from the shared shutdown budget, never hang past it.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn policy_disconnect_violation_batch_is_bounded_by_the_shutdown_budget() {
         // Connected, Authenticated, and ProtocolInfo fill the capacity-3
         // channel, so the violation batch that precedes the Disconnect-policy
@@ -7254,6 +7269,11 @@ mod tests {
         // budget expiry aborting the transport. A regression that restores
         // unbounded delivery keeps this spin alive forever instead of passing
         // vacuously.
+        //
+        // Paused virtual time: the spin's 5ms sleeps resolve via tokio
+        // auto-advance only while every task is parked, so the abort surfaces
+        // at virtual ~200ms (the budget) and the budget-sharing assertion
+        // below is exact on the virtual clock.
         let room_left_json = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
         let (transport, _close_called, abort_called, _dropped) =
             HangingCloseTransport::with_incoming(vec![
@@ -7267,7 +7287,7 @@ mod tests {
             .with_shutdown_timeout(std::time::Duration::from_millis(200));
         let (client, mut events) = SignalFishClient::start(transport, config);
 
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         while !abort_called.load(Ordering::Acquire) {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(2),
@@ -7277,7 +7297,8 @@ mod tests {
         }
         // The batch and the close share one budget: a regression that lets
         // the close restart a fresh window after the batch consumed it
-        // observes roughly twice the configured timeout here.
+        // aborts at virtual ~400ms — twice the configured timeout — and
+        // fails this assertion deterministically.
         let elapsed = started.elapsed();
         assert!(
             elapsed < std::time::Duration::from_millis(300),
@@ -7370,7 +7391,7 @@ mod tests {
 
     /// When a batch delivery is preempted, the remaining batch events get one
     /// nonblocking attempt instead of being discarded sight unseen.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn expired_budget_preempts_blocked_batch_delivers_without_corruption() {
         let (tx, mut rx) = mpsc::channel(4);
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -7378,12 +7399,13 @@ mod tests {
 
         // A budget that expired before the call makes every blocked delivery
         // deterministic. The channel starts full, so both batch events are
-        // preempted instead of delivered or queued.
+        // preempted instead of delivered or queued. The expiry is produced by
+        // advancing the paused virtual clock past the sampled deadline.
         for _ in 0..4 {
             tx.try_send(SignalFishEvent::Pong).expect("filler fits");
         }
         let stale_deadline = tokio::time::Instant::now();
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
 
         let batch = vec![SignalFishEvent::Connected, SignalFishEvent::Connected];
         let delivered = emit_event_batch(&tx, &mut shutdown, Some(stale_deadline), batch).await;

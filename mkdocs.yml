@@ -143,6 +143,7 @@ nav:
       - Client Commands & State: client.md
       - Events: events.md
       - Errors: errors.md
+      - Deterministic Testing: testing.md
       - WebAssembly & Godot: wasm.md
       - Godot + Fortress: fortress.md
   - Multiplayer Choices:

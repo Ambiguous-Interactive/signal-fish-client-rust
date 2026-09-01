@@ -341,3 +341,62 @@ Not every `.unwrap()` needs to become `.expect()`. These cases are acceptable:
   obeys the server, signals are relayed, and `PeerConnected`/`PeerDisconnected`
   surface with correct transport-status reports. Cross-test controller config
   augmentation and selected topology/transport against both client drivers.
+
+## Paused Virtual Time (start_paused + advance)
+
+The async driver reads only `tokio::time`, so `#[tokio::test(start_paused = true)]`
+(current-thread runtime only) virtualizes every SDK deadline, including
+`shutdown_timeout`. Enabled by the dev-dependency's `test-util` feature
+(`tokio = { version = "1.50", features = ["full", "test-util"] }`). Semantics
+verified on tokio 1.53:
+
+- **Auto-advance**: with paused time, the runtime advances the clock to the
+  next timer deadline when (and only when) *every* task is parked. So
+  `tokio::time::sleep(Nms).await` in a test is a deterministic "wait until the
+  driver parks" — if the driver is wedged on a full channel, the clock stays
+  frozen and the sleep does not resolve early.
+- **Deadlines fire deterministically**: a regression that blocks until a
+  budget/timeout pushes virtual elapsed past the assertion bound and fails in
+  ~0 real ms. Measure budgets with `tokio::time::Instant` deltas, never
+  `std::time::Instant`.
+- **Advancer-task pattern**: for "fire the budget if the fast path doesn't
+  win", spawn `tokio::spawn(async move { sleep(budget).await; ... })` or call
+  `tokio::time::advance(...)` explicitly; auto-advance alone only helps when
+  the test task parks too.
+- **multi_thread exclusion**: paused time requires the current-thread flavor.
+  `multi_thread` tests (e.g., `src/webrtc.rs` waker latency, `src/client.rs`
+  concurrency) must stay real-time.
+- **Mock timer caution**: helpers that spin with `yield_now` never park, which
+  starves auto-advance — a `timeout(...)` guard around a pure spin loop hangs
+  forever under paused time instead of firing. Make such helpers clock-agnostic
+  with a bounded spin that falls back to a 1ms sleep (see
+  `tests/common/mod.rs::wait_for_authentication`); pure-yield loops are fine
+  when the awaited condition is guaranteed. Mesh `recv()` parks on a
+  `sleep(pump_interval)` select arm (default 20ms), which auto-advance fires
+  harmlessly; a deliberately huge `with_pump_interval` test proving
+  waker-beats-pump must stay real-time.
+- **Pre-0.7.0-style regressions stay detected**: re-introducing a blocking
+  emit that ignores the shutdown signal must fail the converted wedged-consumer
+  tests on virtual elapsed; re-introducing a fresh close budget must fail the
+  budget-sharing assertion at ~2x the configured timeout.
+
+Example (wedged close resolved by the virtual budget):
+
+```rust
+#[tokio::test(start_paused = true)]
+async fn shutdown_deadline_is_fully_virtual() {
+    // HangingCloseTransport: poll_close pends forever; abort() flips a flag.
+    let (transport, _close, abort_called, _dropped) =
+        HangingCloseTransport::with_incoming(vec![]);
+    let config = SignalFishConfig::new("mb_test")
+        .with_shutdown_timeout(std::time::Duration::from_millis(250));
+    let (client, _events) = SignalFishClient::start(transport, config);
+
+    let started = tokio::time::Instant::now();
+    client.shutdown().await;
+
+    // Auto-advance fired the budget while the close was parked.
+    assert_eq!(started.elapsed(), std::time::Duration::from_millis(250));
+    assert!(abort_called.load(Ordering::Acquire));
+}
+```

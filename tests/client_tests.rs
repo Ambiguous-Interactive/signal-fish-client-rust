@@ -2260,13 +2260,20 @@ async fn disconnected_last_server_error_is_none_without_prior_error() {
 // Wedged-consumer shutdown: graceful close instead of abort-only
 // ════════════════════════════════════════════════════════════════════
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn shutdown_completes_gracefully_with_wedged_consumer() {
     // A consumer that stops draining wedges the transport loop in the event
     // send. Pre-0.7.0 the shutdown oneshot was starved too, so shutdown()
     // could only abort the task, leaving the transport unclosed. Now the
     // event send races the shutdown signal: the loop unblocks, closes the
     // transport, and shutdown() completes without reaching the abort.
+    //
+    // Paused virtual time: the 50ms sleep resolves only once every task is
+    // parked (tokio auto-advance), i.e. once the loop is wedged on the full
+    // channel — so the wait is deterministic, and the elapsed budget below is
+    // measured on the virtual clock. A regression that restores the blocking
+    // emit would park shutdown() until the 5s shutdown_timeout fires, pushing
+    // virtual elapsed to >= 5s and failing the assertion deterministically.
     let (transport, _sent, closed) = MockTransport::new(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
@@ -2278,10 +2285,10 @@ async fn shutdown_completes_gracefully_with_wedged_consumer() {
         .with_shutdown_timeout(std::time::Duration::from_secs(5));
     let (mut client, events) = SignalFishClient::start(transport, config);
 
-    // Never drain `events`; give the loop time to wedge on a full channel.
+    // Never drain `events`; park until the loop has wedged on a full channel.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     client.shutdown().await;
     let elapsed = started.elapsed();
 
@@ -2290,17 +2297,23 @@ async fn shutdown_completes_gracefully_with_wedged_consumer() {
         "transport must be closed gracefully even with a wedged consumer"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(4),
-        "shutdown must not need the timeout/abort path; took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(1),
+        "shutdown must not need the timeout/abort path; took {elapsed:?} of \
+         virtual time"
     );
     drop(events);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     // Guards against over-eager abandonment: a consumer that resumes draining
     // BEFORE shutdown still receives every event, and shutdown then delivers
     // the terminal Disconnected.
+    //
+    // Paused virtual time: the pre-shutdown sleep below resolves via tokio
+    // auto-advance only once the loop is parked (wedged on the full channel),
+    // making the "resume draining" ordering deterministic instead of a
+    // wall-clock race.
     let (transport, _sent, closed) = MockTransport::new(vec![
         Some(Ok(authenticated_json())),
         Some(Ok(protocol_info_json(None))),
@@ -2309,7 +2322,7 @@ async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     let config = SignalFishConfig::new("mb_test_integration").with_event_channel_capacity(1);
     let (mut client, mut events) = SignalFishClient::start(transport, config);
 
-    // Let the loop wedge against the capacity-1 channel.
+    // Park until the loop has wedged against the capacity-1 channel.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Resume draining: everything must arrive in order.
@@ -2328,7 +2341,7 @@ async fn wedged_consumer_events_before_shutdown_are_not_lost_when_drained() {
     assert!(closed.load(std::sync::atomic::Ordering::Relaxed));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn shutdown_races_wedged_terminal_disconnect() {
     // The *terminal* Disconnected — emitted on a transport error, a clean
     // server close, or a dropped handle — must race the shutdown signal too,
@@ -2336,8 +2349,13 @@ async fn shutdown_races_wedged_terminal_disconnect() {
     // one helper; this exercises it via a transport receive error that fires
     // while the event channel is full (cap 1, undrained Connected), so the
     // terminal delivery blocks. Pre-fix those paths used a blocking emit that
-    // ignored shutdown, pinning shutdown() to its full timeout/abort. A
-    // generous timeout makes the racing path (ms) unmistakable vs blocking (s).
+    // ignored shutdown, pinning shutdown() to its full timeout/abort.
+    //
+    // Paused virtual time: the sleep resolves via auto-advance exactly when
+    // the loop has parked (wedged terminal delivery), and the elapsed budget
+    // below is virtual. The racing path completes in ~0 virtual ms; a
+    // regression that blocks until the 10s shutdown_timeout/abort fires
+    // would advance virtual elapsed to >= 10s and fail the 3s budget.
     let (transport, _sent, closed) = MockTransport::new(vec![Some(Err(
         SignalFishError::TransportReceive("boom".into()),
     ))]);
@@ -2350,7 +2368,7 @@ async fn shutdown_races_wedged_terminal_disconnect() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     client.shutdown().await;
     let elapsed = started.elapsed();
     assert!(
@@ -2596,8 +2614,16 @@ async fn generation_bound_typed_and_raw_signals_refuse_stale_plan() {
     ])
     .await;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut spins = 0usize;
         while client.snapshot().session_generation != Some(second) {
-            tokio::task::yield_now().await;
+            // Bounded spin, then park: a pure `yield_now` loop would starve
+            // auto-advance under paused virtual time.
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
     })
     .await

@@ -141,7 +141,9 @@ jobs:
             --no-default-features \
             --features signal-fish-client/transport-websocket-emscripten \
             --locked
-          node tests/emscripten-harness/driver/run-harness.cjs \
+          # A panic-free infinite spin inside one wasm ccall must fail this
+          # step in two minutes instead of hanging to the job-level timeout.
+          timeout 120 node tests/emscripten-harness/driver/run-harness.cjs \
             target/wasm32-unknown-emscripten/debug/signal-fish-emscripten-harness.js
 
   required:

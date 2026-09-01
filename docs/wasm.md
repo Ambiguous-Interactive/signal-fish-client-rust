@@ -729,7 +729,7 @@ for the full workflow. Key steps:
 | `transport-websocket-emscripten` | No | `EmscriptenWebSocketTransport`; enables `polling-client` | No | Yes |
 | `token-binding` | No | Native `WebSocketTransport` support for `signalfish.tokenbinding.v2` | No | No |
 | `tls` | No | `wss://` TLS for the built-in native WebSocket transport (rustls) | No | No |
-| `mesh` | No | Protocol v3 mesh tracker plus the `WebRtcDriver` seam; `MeshController` needs `tokio-runtime`, which wasm forbids, so on wasm only the tracker/seam (manual choreography via the polling client) is available; bundles no WebRTC stack | Yes | Yes |
+| `mesh` | No | Protocol v3 mesh tracker plus the `WebRtcDriver` seam; `MeshController` needs `tokio-runtime`, which has no supported WASM profile, so on wasm only the tracker/seam (manual choreography via the polling client) is available; bundles no WebRTC stack | Yes | Yes |
 | `polling-client` | No | `SignalFishPollingClient` — sync, polling-based client for any `Transport` | Yes | Yes |
 | `tokio-runtime` | Yes (via `transport-websocket`) | Enables `tokio/rt` and `tokio/time` for background task spawning | No | No |
 
@@ -743,9 +743,11 @@ for the full workflow. Key steps:
 | Custom link-enabled Emscripten host | `--no-default-features --features transport-websocket-emscripten` |
 
 !!! warning "Feature conflicts"
-    Do not enable `transport-websocket` or `tokio-runtime` when targeting any
-    WASM target. They depend on `tokio::net::TcpStream` and Tokio's
-    multi-threaded runtime, which do not compile to WebAssembly.
+    Do not enable `transport-websocket` when targeting any WASM target: its
+    TCP socket stack does not compile to WebAssembly. `tokio-runtime` alone
+    compiles today, but the SDK ships no WASM profile that drives the async
+    client, so it is unsupported and untested there — use the
+    `--no-default-features` profile and bring your own transport.
 
 !!! warning "Required token-binding deployments are native-only"
     Browser WebSocket APIs—including Emscripten and Godot's browser-backed

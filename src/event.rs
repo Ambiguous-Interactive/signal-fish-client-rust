@@ -372,16 +372,37 @@ pub enum SignalFishEvent {
     },
 
     /// Cumulative relay-delivery diagnostics (protocol v3 only).
+    ///
+    /// Counters are cumulative since this connection registered with the
+    /// relay (they survive reconnection) and `interval_ms` must stay constant
+    /// for the whole connection. The SDK validates those invariants —
+    /// positive interval, fixed interval, monotonic counters — and suppresses
+    /// the violating frame and reports `ProtocolViolation { Counters }`
+    /// under the configured policy. A rising `backpressure_events` predicts
+    /// the server's `4002 slow_consumer` eviction.
     RelayStats {
+        /// Configured emission interval in milliseconds.
         interval_ms: u64,
+        /// Cumulative frames delivered to this connection.
         sent_to_you: u64,
+        /// Cumulative frames dropped instead of being delivered to this
+        /// connection.
         dropped_for_you: u64,
+        /// Cumulative intervals in which this connection's outbound queue
+        /// was observed full.
         backpressure_events: u64,
     },
 
     /// Graceful server-shutdown advisory (protocol v3 only).
+    ///
+    /// Best-effort: the structured transport close that follows remains the
+    /// authoritative disconnect signal. The advisory is passed through
+    /// verbatim; the SDK never acts on it.
     GoingAway {
+        /// Absolute Unix epoch timestamp, in milliseconds, at which the
+        /// server will force-close the connection.
         deadline_ms: u64,
+        /// Operator retry hint in seconds, if the deployment advertises one.
         retry_after_secs: Option<u64>,
     },
 
