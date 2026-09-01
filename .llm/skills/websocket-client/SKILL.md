@@ -181,7 +181,7 @@ hex, and signs those same fingerprint bytes. Raw public keys are not treated as
 certificates, and no caller claim is accepted. Offering token binding disables
 resumption only on the cloned configuration, including Optional fallback, so
 every physical connection exposes certificate selection without mutating the
-caller's configuration/cache. Server 0.7 refuses required token binding without
+caller's configuration/cache. Server 0.8 refuses required token binding without
 built-in TLS, so its positive E2E must use WSS.
 
 ## Reconnection
@@ -216,7 +216,7 @@ closed WebSocket object.
 - Preparation, `Pending`, and `WriteBufferFull` preserve the original frame and
   sequence; JSON/binary goldens share one sequence.
 - Certificate-capable custom rustls connections bind JSON and binary proofs to
-  the actual selected mTLS leaf and pass pinned fingerprint-required Server 0.7
+  the actual selected mTLS leaf and pass pinned fingerprint-required Server 0.8
   positive and adversarial E2Es.
 - Debug/tracing/errors omit keys, nonces, proofs, signatures, URL credentials,
   and protected payloads.

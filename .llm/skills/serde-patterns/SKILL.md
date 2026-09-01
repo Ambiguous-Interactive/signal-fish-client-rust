@@ -244,7 +244,7 @@ assert_eq!(value["data"]["game_name"], "my-game");
   protocol version stayed at 3. Model these as `Option<Uuid>` with `default`,
   skip-if-none, and the presence-sensitive `deserialize_present_optional`
   helper. Omission remains `None` for legacy 0.4 traffic, while explicit `null`
-  and invalid present UUID strings fail decoding as required by Server 0.7.
+  and invalid present UUID strings fail decoding as required by Server 0.8.
 
 ### The per-direction explicit-null policy
 

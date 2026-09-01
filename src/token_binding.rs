@@ -673,13 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn server_070_json_and_binary_goldens_match_exactly() {
+    fn server_080_json_and_binary_goldens_match_exactly() {
         let vectors = golden_vectors();
         let mut challenge = challenge();
         challenge.nonce.clone_from(&vectors.nonce_base64);
         let mut session =
             TokenBindingSession::from_challenge(&vectors.handshake_key_base64, challenge, None)
-                .expect("pinned Server 0.7 challenge must derive a session");
+                .expect("pinned Server 0.8 challenge must derive a session");
         assert_eq!(encode_hex(session.secret.as_ref()), vectors.derived_key_hex);
         assert_eq!(HKDF_INFO, vectors.hkdf_info.as_bytes());
         assert_eq!(encode_hex(JSON_DOMAIN), vectors.json_domain_hex);
@@ -856,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
+    fn server_080_fingerprint_goldens_bind_json_and_binary_proofs() {
         let vectors = golden_vectors();
         let mut challenge = challenge();
         challenge.nonce.clone_from(&vectors.nonce_base64);
@@ -865,7 +865,7 @@ mod tests {
             challenge,
             Some(vectors.client_fingerprint.clone()),
         )
-        .expect("pinned Server 0.7 fingerprint challenge must derive a session");
+        .expect("pinned Server 0.8 fingerprint challenge must derive a session");
         let UniqueJsonValue(unsigned_json) = serde_json::from_str(&vectors.json_input)
             .expect("fingerprint JSON golden must be unique and strict");
         let mut expected_json_mac_input = JSON_DOMAIN.to_vec();

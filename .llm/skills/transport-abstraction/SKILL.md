@@ -60,7 +60,7 @@ violations become a transport error; they are not silently skipped or passed
 up as fabricated frames.
 
 This crate has no raw UDP backend. `RelayTransport::Udp` is ignored legacy
-`JoinRoom` metadata under pinned Server 0.7 and otherwise only labels
+`JoinRoom` metadata under pinned Server 0.8 and otherwise only labels
 self-declared `ConnectionInfo::Relay` metadata; it is not a switch for the
 signaling `Transport`. WebRTC drivers likewise own their underlying
 ICE/DTLS/SCTP and UDP sockets and expose assembled messages to
