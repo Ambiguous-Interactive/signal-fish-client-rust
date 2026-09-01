@@ -52,7 +52,7 @@ Use these to track the raw connection lifecycle.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reason` | `Option<String>` | Human-readable close explanation with structured transport code/reason when available. Servers use semantic codes such as `4000 server_shutdown` and `4002 slow_consumer`; Server 0.7 also uses `4005 room_inactive`. |
+| `reason` | `Option<String>` | Human-readable close explanation with structured transport code/reason when available. Servers use semantic codes such as `4000 server_shutdown` and `4002 slow_consumer`; Server 0.8 also uses `4005 room_inactive`. |
 | `last_server_error` | `Option<ServerErrorInfo>` | The most recent `Error`/`AuthenticationError` received on this connection — a correlation aid for attributing the disconnect. A server that evicts a slow consumer writes a best-effort `Error { error_code: SlowConsumer }` farewell before closing; when that frame arrives, it shows up here. See the [Delivery Contract](delivery.md). |
 
 After outbound send failure, ready server errors can still populate
@@ -197,7 +197,7 @@ Events related to joining, failing to join, or leaving a room.
 | `is_authority` | `bool` | Whether the local player is the authority. |
 | `lobby_state` | `LobbyState` | Current lobby readiness state (`Waiting`, `Lobby`, or `Finalized`). |
 | `ready_players` | `Vec<PlayerId>` | Players that have signaled readiness. |
-| `relay_type` | `String` | Legacy deployment relay label; Server 0.7 uses it as protocol metadata, not proof of a physical path. |
+| `relay_type` | `String` | Legacy deployment relay label; Server 0.8 uses it as protocol metadata, not proof of a physical path. |
 | `current_spectators` | `Vec<SpectatorInfo>` | Spectators currently watching. |
 | `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering; empty on the v2 floor. |
 | `reconnection_token` | `Option<String>` | Server-issued v3 secret retained by `ClientSnapshot` for unexpected-disconnect recovery. |
@@ -393,7 +393,7 @@ May arrive multiple times (host re-election, late-join re-plan); each one
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `generation` | `Option<SessionGeneration>` | Handshake generation. `Some` on server 0.7; `None` only for legacy generation-less plans. |
+| `generation` | `Option<SessionGeneration>` | Handshake generation. `Some` on server 0.7+; `None` only for legacy generation-less plans. |
 | `topology` | `Topology` | Chosen session topology (`Relay`, `Host`, or `Mesh`). |
 | `transport` | `TransportKind` | Chosen data-path transport (`Relay`, `Direct`, or `WebRtc`). |
 | `host` | `Option<PlayerId>` | The elected host (present for `Host` topology). |

@@ -36,7 +36,8 @@ pub enum TokenBindingStatus {
     Active,
 }
 
-/// Token-binding proof scheme defined by Signal Fish Server 0.7.0.
+/// Token-binding proof scheme, introduced by Signal Fish Server 0.7.0 and
+/// unchanged through 0.8.0.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenBindingScheme {
@@ -51,13 +52,13 @@ pub enum TokenBindingScheme {
 /// not accumulate handshake material. Explicit field access is unchanged.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenBindingChallenge {
-    /// Wire-contract version. Server 0.7.0 emits `2`.
+    /// Wire-contract version. Server 0.7.0+ emits `2`.
     pub version: u8,
     /// Selected key-derivation and proof scheme.
     pub scheme: TokenBindingScheme,
     /// Standard-base64 server nonce, which decodes to exactly 32 bytes.
     pub nonce: String,
-    /// First shared JSON/binary sequence number. Server 0.7.0 emits `1`.
+    /// First shared JSON/binary sequence number. Server 0.7.0+ emits `1`.
     pub first_sequence: u64,
 }
 
@@ -672,13 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn server_070_json_and_binary_goldens_match_exactly() {
+    fn server_080_json_and_binary_goldens_match_exactly() {
         let vectors = golden_vectors();
         let mut challenge = challenge();
         challenge.nonce.clone_from(&vectors.nonce_base64);
         let mut session =
             TokenBindingSession::from_challenge(&vectors.handshake_key_base64, challenge, None)
-                .expect("pinned Server 0.7 challenge must derive a session");
+                .expect("pinned Server 0.8 challenge must derive a session");
         assert_eq!(encode_hex(session.secret.as_ref()), vectors.derived_key_hex);
         assert_eq!(HKDF_INFO, vectors.hkdf_info.as_bytes());
         assert_eq!(encode_hex(JSON_DOMAIN), vectors.json_domain_hex);
@@ -855,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn server_070_fingerprint_goldens_bind_json_and_binary_proofs() {
+    fn server_080_fingerprint_goldens_bind_json_and_binary_proofs() {
         let vectors = golden_vectors();
         let mut challenge = challenge();
         challenge.nonce.clone_from(&vectors.nonce_base64);
@@ -864,7 +865,7 @@ mod tests {
             challenge,
             Some(vectors.client_fingerprint.clone()),
         )
-        .expect("pinned Server 0.7 fingerprint challenge must derive a session");
+        .expect("pinned Server 0.8 fingerprint challenge must derive a session");
         let UniqueJsonValue(unsigned_json) = serde_json::from_str(&vectors.json_input)
             .expect("fingerprint JSON golden must be unique and strict");
         let mut expected_json_mac_input = JSON_DOMAIN.to_vec();

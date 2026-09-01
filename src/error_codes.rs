@@ -119,13 +119,16 @@ pub enum ErrorCode {
     /// (no messages received within the activity window). Wire:
     /// `"ACTIVITY_TIMEOUT"`.
     ActivityTimeout,
-    /// The server is draining for shutdown and rejecting new room creation.
-    /// Existing connections close with semantic code 4000 at the deadline.
+    /// The server is draining for shutdown and refusing new room creation,
+    /// reconnection attempts, and spectator joins. Existing connections close
+    /// with semantic code 4000 at the deadline.
     ServerDraining,
     /// The requested protocol-v3 delivery class/key combination is invalid.
     InvalidDeliveryClass,
     /// The client's highest supported protocol version is below the server's
-    /// configured minimum.
+    /// configured minimum, or a pre-v3 connection sent a frame class that
+    /// requires a newer protocol surface (such as the v3 `RoomOperation`
+    /// envelope).
     UnsupportedProtocolVersion,
 }
 
@@ -158,7 +161,7 @@ impl ErrorCode {
                 "This operation requires authentication. Please provide valid credentials."
             }
             Self::InvalidAppId => {
-                "The provided application ID is not recognized. Verify your app ID is correct."
+                "The provided application ID is not recognized or is not acceptable. Verify your app ID is correct and free of control characters (maximum 256 bytes)."
             }
             Self::AppIdExpired => {
                 "The application ID has expired. Please renew your application registration."
@@ -238,7 +241,7 @@ impl ErrorCode {
 
             // Rate limiting
             Self::RateLimitExceeded => {
-                "Too many requests in a short time. Please slow down and try again later."
+                "Too many requests in a short time. Room/spectator admission refusals leave the connection open; a refused handshake closes it. Wait out the window before retrying."
             }
             Self::TooManyConnections => {
                 "You have too many active connections. Close some connections before opening new ones."
@@ -246,7 +249,7 @@ impl ErrorCode {
 
             // Reconnection errors
             Self::ReconnectionFailed => {
-                "Failed to reconnect to the room. The session may have expired or the room may be closed."
+                "Failed to reconnect. The session may have expired, the room closed, or the attempt landed on a socket the server had already scheduled to close. The token is not consumed by such a refusal; retry from a fresh connection while the window is open."
             }
             Self::ReconnectionTokenInvalid => {
                 "The reconnection token is invalid or malformed. You may need to join the room again."
@@ -291,7 +294,7 @@ impl ErrorCode {
                 "You are not permitted to start the game. Only the room's authority may start it."
             }
             Self::RoomSessionIncompatible => {
-                "This room already started a peer-to-peer session with a topology or transport this client did not negotiate. Reconnect with compatible capabilities or join another room."
+                "This room already started a peer-to-peer session with a topology or transport this client did not negotiate. Reconnect with compatible capabilities or join another room; rooms finalized to the relay floor remain open to everyone."
             }
 
             // Signaling errors (protocol v3)
@@ -321,16 +324,16 @@ impl ErrorCode {
                 "The server closed this connection because the client was not reading messages fast enough. Drain events promptly, or reduce inbound volume."
             }
             Self::ActivityTimeout => {
-                "The connection was closed by the server due to prolonged inactivity. Send periodic pings to keep the connection alive."
+                "The connection was closed by the server due to prolonged inactivity. Send periodic application pings (or keep answering server probes) to keep the connection alive; frames rejected for size or content do not refresh the window."
             }
             Self::ServerDraining => {
-                "The server is shutting down and is not accepting new rooms. Reconnect after the advertised drain deadline."
+                "The server is shutting down and is refusing new room creation, reconnection attempts, and spectator joins. Existing sockets close with code 4000 at the drain deadline; retry on another healthy instance."
             }
             Self::InvalidDeliveryClass => {
                 "The requested game-data delivery class and key combination is invalid. Latest requires a key; reliable and volatile forbid one."
             }
             Self::UnsupportedProtocolVersion => {
-                "The client's highest supported protocol version is below this server's configured minimum. Upgrade the client or connect to a compatible deployment."
+                "The client's highest supported protocol version is below this server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment."
             }
         }
     }

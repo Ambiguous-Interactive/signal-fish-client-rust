@@ -22,6 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The pinned server compatibility binding moved from Server 0.7.0 to the
+  released Server 0.8.0 (commit `d79dcdc7549777c8c2bd9fcb2d132641532d8c86`;
+  tarball digest updated in the E2E matrix and Godot workflows). The vendored
+  wire samples and AsyncAPI authority are byte-identical to the previously
+  pinned post-0.7 preview, so no client wire changes were required, and the
+  byte-frozen v2 relay floor keeps Server 0.7.0 deployments interoperable.
+- `ErrorCode::description()` texts were aligned with the Server 0.8.0
+  authority for `InvalidAppId` (control characters and the 256-byte cap are
+  now refused in every policy mode), `ServerDraining` (also refuses
+  reconnection and spectator joins), `ReconnectionFailed` (a refusal on an
+  already-closing socket does not consume the token),
+  `UnsupportedProtocolVersion` (also covers pre-v3 connections sending
+  newer-protocol frames), `RateLimitExceeded`, `ActivityTimeout`, and
+  `RoomSessionIncompatible`.
+- Documented `LobbyStateChanged`'s advisory `all_ready` semantics (a later
+  join is always unready and triggers no corrective broadcast; recompute
+  readiness on membership changes and treat `start_game` as the only
+  authoritative gate), matching the Server 0.8.0 protocol documentation.
 - `WebSocketTransport::connect_with_options` now logs a warning when a
   token-binding offer proceeds over a plain `ws://` URL, where the resulting
   proofs are forgeable by an on-path observer.

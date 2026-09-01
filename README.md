@@ -93,7 +93,7 @@ before depending on `main`.
 | Browser or another frame-driven host | `SignalFishPollingClient` with your own `Transport` |
 | Custom async network stack | `SignalFishClient` with your own `Transport + Send` |
 
-Start with protocol v2 relay unless you need Server 0.7 delivery
+Start with protocol v2 relay unless you need Server 0.8 delivery
 accountability or WebRTC mesh signaling. Opt into those features deliberately;
 the [protocol versioning guide](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol-versioning/)
 explains the

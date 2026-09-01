@@ -211,7 +211,7 @@ pub(crate) struct ClientCore {
     // races to suppress, not integrity violations. Cleared whenever an
     // authoritative baseline rebuilds the room/session; within one room the
     // bound is O(distinct departed peers between generation bumps), because
-    // Server 0.7 re-plans on membership churn.
+    // Server 0.8 re-plans on membership churn.
     retired_signal_peers: HashSet<PlayerId>,
     pending_room_operation: Option<PendingRoomOperationState>,
     // The reply to an admitted voluntary spectator leave may legally arrive
@@ -2424,7 +2424,7 @@ fn validate_protocol_info_formats(
         [GameDataEncoding::Json]
         | [GameDataEncoding::Json, GameDataEncoding::MessagePack] => Ok(()),
         formats => Err(format!(
-            "lifecycle violation: ProtocolInfo game_data_formats {formats:?} does not match the canonical Server 0.7 negotiation order [Json, MessagePack?]"
+            "lifecycle violation: ProtocolInfo game_data_formats {formats:?} does not match the canonical Server 0.8 negotiation order [Json, MessagePack?]"
         )),
     }?;
     match (

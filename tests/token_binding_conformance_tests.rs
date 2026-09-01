@@ -11,7 +11,7 @@
 use sha2::{Digest as _, Sha256};
 
 #[test]
-fn pinned_server_070_token_binding_provenance_is_complete() {
+fn pinned_server_080_token_binding_provenance_is_complete() {
     let provenance_path = "tests/token-binding/PROVENANCE.toml";
     let vectors_path = "src/testdata/token-binding-vectors.toml";
     let provenance_text =
@@ -20,9 +20,9 @@ fn pinned_server_070_token_binding_provenance_is_complete() {
         toml::from_str(&provenance_text).expect("parse token-binding provenance");
     assert_eq!(
         provenance["server_commit"].as_str(),
-        Some("3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333")
+        Some("d79dcdc7549777c8c2bd9fcb2d132641532d8c86")
     );
-    assert_eq!(provenance["server_release"].as_str(), Some("0.7.0"));
+    assert_eq!(provenance["server_release"].as_str(), Some("0.8.0"));
     let upstream = provenance["upstream_sha256"]
         .as_table()
         .expect("upstream hashes must be a table");
@@ -37,11 +37,11 @@ fn pinned_server_070_token_binding_provenance_is_complete() {
         ),
         (
             "src/websocket/token_binding.rs",
-            "2eacb6f0a92bbe189fc4a9e8e8df312b3c434ec6bf2737147b62b8083d7b2fe3",
+            "2ddf2af30f758eda333026422b88743f042a098170525922078f0899d54e3f2f",
         ),
         (
             "docs/configuration-recipes.md",
-            "cefa5380830b575f8b7f195afd08759a4a08a09f96aba0b76f2fe34b5c7e2796",
+            "d144c945ffe0306460b4f486f651791104dc1c9d8cc5c9e50e720368c414e66a",
         ),
         (
             "tests/fixtures/tls/client-101-cert.pem",
@@ -49,7 +49,7 @@ fn pinned_server_070_token_binding_provenance_is_complete() {
         ),
         (
             "tests/mtls_token_binding_e2e.rs",
-            "b8158e517c52d4433a58fba6ecfb5cdbb718d312be82199de5749a48225e4617",
+            "9d25e8a92c7d1ec98c5ef5a3d590f9c152eb1450686e06a517b4d3ee2b162351",
         ),
     ];
     assert_eq!(upstream.len(), expected_upstream.len());

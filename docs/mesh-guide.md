@@ -14,10 +14,10 @@ drive the whole handshake for you.
     signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", features = ["mesh"] }
     ```
 
-    The generation-bearing Server 0.7 APIs in this guide may not have reached
-    the published crates.io release yet; the
+    The generation-bearing protocol-v3 mesh APIs in this guide are all
+    published as of client release 0.11.0; the
     [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
-    says which release added them. The current release is 0.11.0.
+    says which release added each.
 
 ---
 
@@ -293,7 +293,7 @@ status (above) is what lets the server make these fallback decisions.
 ## Reconnect behavior
 
 After a reconnect, the server rebuilds the mesh session by re-sending a fresh,
-**live** `SessionPlan`. Server 0.7 does not place `ProtocolInfo`, `SessionPlan`,
+**live** `SessionPlan`. Server 0.8 does not place `ProtocolInfo`, `SessionPlan`,
 `Signal`, or `NewPeer` in `Reconnected.missed_events`; the client rejects those
 non-replayable nested variants and waits for the fresh top-level plan.
 

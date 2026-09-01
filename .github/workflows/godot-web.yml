@@ -30,7 +30,7 @@ env:
   NETEM_SEED: "6101"
   IPROUTE2_VERSION: "6.6.0"
   IPROUTE2_SHA256: "8738c804afd09f0bf756937f0c3de23117832a98d8cbbf50386cf5005cd613ce"
-  NATIVE_SERVER_VERSION: "0.7.0"
+  NATIVE_SERVER_VERSION: "0.8.0"
 
 jobs:
   build-export:
@@ -320,16 +320,16 @@ jobs:
       matrix:
         include:
           - scenario: clean
-            server_version: "0.7.0"
+            server_version: "0.8.0"
             timeout: 30
           - scenario: clean
             server_version: "0.4.0"
             timeout: 30
           - scenario: impaired
-            server_version: "0.7.0"
+            server_version: "0.8.0"
             timeout: 30
           - scenario: soak
-            server_version: "0.7.0"
+            server_version: "0.8.0"
             timeout: 75
     steps:
       - name: Checkout repository

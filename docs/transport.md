@@ -66,13 +66,13 @@ stream bound to the intended server**. It is not a byte-stream codec, a
 datagram protocol, or a server-authentication mechanism. `TransportFrame` carries
 no source address or peer identity, so the client attributes every yielded
 frame to that server. The built-in transports connect to the server's
-WebSocket endpoint, and the pinned Server 0.7
-[AsyncAPI contract](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/spec/signal-fish-protocol.asyncapi.yaml)
+WebSocket endpoint, and the pinned Server 0.8.0
+[AsyncAPI contract](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/spec/signal-fish-protocol.asyncapi.yaml)
 defines one bidirectional WebSocket channel for signaling and relayed
 `GameData`. Its room service
-[accepts but ignores `JoinRoom.relay_transport`](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/src/server/room_service.rs#L213-L222),
-and its relay policy states that Server 0.7
-[contains no separate relay server](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333/src/server/relay_policy.rs#L5-L20).
+[accepts but ignores `JoinRoom.relay_transport`](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/src/server/room_service.rs#L427-L444),
+and its relay policy states that Server 0.8
+[contains no separate relay server](https://github.com/Ambiguous-Interactive/signal-fish-server/blob/d79dcdc7549777c8c2bd9fcb2d132641532d8c86/src/server/relay_policy.rs#L5-L20).
 
 A custom TCP or QUIC-stream adapter must delimit messages before returning a
 frame. A custom datagram adapter would likewise need an external protocol that
@@ -106,7 +106,7 @@ with the component that owns the actual data path:
   and trust boundary before adapting complete frames into `Transport` (or use a
   separate abstraction if its semantics are not connection-oriented).
 
-`RelayTransport::Udp` is only a legacy wire label. Signal Fish Server 0.7
+`RelayTransport::Udp` is only a legacy wire label. Signal Fish Server 0.8
 ignores it when selected in `JoinRoomParams`; that selection neither creates an
 executable UDP path nor reconfigures the signaling transport, opens a UDP
 socket, or bypasses the complete-frame requirement.
@@ -265,7 +265,7 @@ let transport = WebSocketTransport::connect_with_options(
 The size limit is inclusive and applies equally to a single frame and to the
 aggregate payload of fragmented frames. Set it to `None` only when another
 trusted layer supplies an appropriate bound; `Some(0)` is invalid. The 8 MiB
-default accommodates ordinary Server 0.7 room snapshots, but it is a client
+default accommodates ordinary Server 0.8 room snapshots, but it is a client
 resource policy, not a protocol maximum.
 
 Server deployments advertise their own outbound bound
@@ -293,10 +293,10 @@ The opt-in native `token-binding` feature adds disabled, optional, and required
 `signalfish.tokenbinding.v2` policies to `WebSocketConnectOptions`. Negotiation,
 challenge validation, and outbound frame protection stay inside this physical
 transport, so the same connected transport works with both async and polling
-clients. Required Server 0.7 deployments use WSS; private trust roots or mTLS
+clients. Required Server 0.8 deployments use WSS; private trust roots or mTLS
 can be supplied through `connect_with_tls_config`. When a compatible X.509
 client signer is selected, the active custom-rustls token-binding path
-automatically binds each proof to that exact leaf, supporting Server 0.7's
+automatically binds each proof to that exact leaf, supporting Server 0.8's
 `require_client_fingerprint=true` profile without a caller-supplied claim. See
 [WebSocket Token Binding](token-binding.md) for downgrade behavior, platform
 limits, and the exact wire contract.

@@ -187,7 +187,7 @@ impl MeshSession {
             // ICE pre-gather: seed the ICE servers during the lobby wait. Do not
             // create peers here — a relay-floor room may never produce a plan.
             SignalFishEvent::RoomJoined { ice_servers, .. } => self.apply_pre_gather(ice_servers),
-            // Reconnect is a hard plan boundary. Server 0.7 publishes a fresh
+            // Reconnect is a hard plan boundary. Server 0.8 publishes a fresh
             // live SessionPlan after this baseline; SessionPlan and other mesh
             // controls are not valid replay entries. Clear the prior plan and
             // peer set immediately so stale topology cannot remain actionable

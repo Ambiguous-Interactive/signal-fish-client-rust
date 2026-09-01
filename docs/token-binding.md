@@ -1,6 +1,6 @@
 # WebSocket Token Binding
 
-Signal Fish Server 0.7 can require the negotiated
+Signal Fish Server 0.8 can require the negotiated
 `signalfish.tokenbinding.v2` WebSocket subprotocol. The built-in native
 `WebSocketTransport` supports it behind the opt-in `token-binding` Cargo
 feature.
@@ -53,7 +53,7 @@ application frames to the one physical WebSocket handshake. It does not protect
 server-to-client frames and is not a substitute for TLS server authentication
 or confidentiality. On plain `ws://`, an on-path observer can read both
 `Sec-WebSocket-Key` and the server nonce, derive the same session key, and forge
-proofs. Use `wss://`; Server 0.7 enforces TLS when token binding is required.
+proofs. Use `wss://`; Server 0.8 enforces TLS when token binding is required.
 
 The server nonce, derived key, and sequence space are fresh for every physical
 connection and are never reused across reconnects. Replayed or reordered
@@ -85,7 +85,7 @@ subprotocol. The caller's configuration and resumption cache are not mutated.
 A plain `ws://` URL bypasses the connector entirely — the custom configuration,
 including any mTLS client identity, is silently unused, and the transport logs
 a warning — so always use `wss://` with a custom configuration.
-Server 0.7 profiles with `require_client_fingerprint=true` additionally require
+Server 0.8 profiles with `require_client_fingerprint=true` additionally require
 built-in WSS, a trusted client CA, mTLS client authentication, and required
 token binding.
 
@@ -136,8 +136,9 @@ sequence. A frame consumes its sequence only when the WebSocket backend accepts
 ownership; preparation failures, `Pending`, and `WriteBufferFull` leave both
 the original caller frame and sequence unchanged.
 
-The implementation follows Signal Fish Server 0.7.0 commit
-`3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333`. Checked-in provenance and exact
+The implementation follows Signal Fish Server 0.8.0 commit
+`d79dcdc7549777c8c2bd9fcb2d132641532d8c86` (the proof scheme is unchanged
+since 0.7.0). Checked-in provenance and exact
 JSON/MessagePack goldens live under `tests/token-binding/`. Unsupported JSON
 forms—duplicate object members, floats/exponents/negative zero, and integers
 outside JavaScript's safe range—fail closed with a typed, non-secret reason.
