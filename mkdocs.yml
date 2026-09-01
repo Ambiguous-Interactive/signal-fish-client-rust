@@ -127,6 +127,10 @@ extra_css:
 extra_javascript:
   - javascripts/accessibility.js
 
+# Snippet sources are inputs only; never render docs/includes/ as pages.
+exclude_docs: |
+  includes/*
+
 validation:
   nav:
     omitted_files: info
@@ -140,11 +144,11 @@ nav:
       - Installation & Quick Start: getting-started.md
       - Basic Lobby Walkthrough: examples.md
   - Use the SDK:
-      - Client Commands & State: client.md
+      - Client API Reference: client.md
       - Events: events.md
       - Errors: errors.md
       - Deterministic Testing: testing.md
-      - WebAssembly & Godot: wasm.md
+      - WebAssembly (WASM): wasm.md
       - Godot + Fortress: fortress.md
   - Multiplayer Choices:
       - Core Concepts: concepts.md

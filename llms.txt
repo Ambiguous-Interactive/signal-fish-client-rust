@@ -17,12 +17,25 @@ repository git dependency when evaluating APIs and fixes listed under
 ## Documentation
 
 - [Getting started](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/getting-started/): Installation, features, and first client
-- [Client APIs](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/): Async and polling clients, work budgets, shutdown, and diagnostics
-- [Transport contract](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/transport/): Ownership, backpressure, framing, and close semantics
-- [Godot and WebAssembly](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/): Supported targets and current Godot 4.5 setup
+- [Basic lobby walkthrough](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/examples/): A complete lobby client with readiness, game start, and shutdown
+- [Client commands and state](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/): Async and polling clients, commands, work budgets, shutdown, and diagnostics
+- [Events](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/events/): The event stream and every variant a game loop must handle
+- [Errors](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/errors/): Error types, codes, and recovery guidance
+- [Deterministic testing](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/testing/): Paused-clock and caller-cadence recipes for both drivers
+- [WebAssembly (WASM)](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/): Supported targets and current Godot 4.5 setup
 - [Godot + Fortress](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/fortress/): Bounded rollback relay and game-loop ordering
-- [Delivery and backpressure](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/delivery/): Delivery stages, capacity, metrics, and load testing
+- [Core concepts](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/concepts/): Connections, rooms, authority, and the protocol in brief
 - [Protocol versioning](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol-versioning/): v2/v3 negotiation and compatibility
+- [Delivery and backpressure](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/delivery/): Delivery stages, capacity, metrics, and load testing
+- [Mesh guide](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/mesh-guide/): WebRTC mesh signaling (protocol v3)
+- [Transport contract](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/transport/): Ownership, backpressure, framing, and close semantics
+- [Protocol types](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol/): The typed wire messages and payloads
+- [WebSocket token binding](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/token-binding/): Negotiation and outbound proofs on native WSS
+- [Migrating 0.7 to 0.8](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/migration-0.8/): Explicit game start and 0.8 changes
+- [Migrating 0.8 to 0.9](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/migration-0.9/): 0.9 delivery and signaling changes
+- [Migrating 0.10 to 0.11](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/migration-0.11/): Error-surface and capability changes in 0.11
+- [Release operations](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/releasing/): Prepare Release and Release workflows
+- [Brand and font attribution](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/attributions/): Asset provenance and licenses
 - [API reference](https://docs.rs/signal-fish-client): Rust API documentation
 
 ## Project

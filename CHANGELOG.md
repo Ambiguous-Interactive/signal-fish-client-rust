@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WebSocketTransport::connect_with_options` now logs a warning when a
   token-binding offer proceeds over a plain `ws://` URL, where the resulting
   proofs are forgeable by an on-path observer.
+- The custom-transport guide documents the mandatory `ProtocolInfo`
+  negotiation step that scripted test peers must send between
+  `Authenticated` and any further server traffic, and the docs site's
+  model-facing `llms.txt` now lists every guide page.
 
 - **Breaking:** `RateLimitInfo`'s `per_minute`, `per_hour`, and `per_day`
   are now `u64` instead of `u32` (update literals/casts that assumed
@@ -60,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prepare Release now also stamps the tracked
+  `tests/emscripten-harness/Cargo.lock`; its stale recorded version failed
+  the WASM workflow's Emscripten lane on every release branch.
 - Debug builds of downstream crates no longer log a spurious
   "must be driven by SignalFishPollingClient" error on the Emscripten
   transport's first receive poll: the debug-only waker-misuse check relied on

@@ -106,4 +106,7 @@ canonical guide for that subsystem:
   fixture with the [Godot and WebAssembly guide](wasm.md)
 
 The focused guides own platform setup and protocol contracts so those details
-have one maintained source of truth.
+have one maintained source of truth. When a lobby or mesh session behaves
+nondeterministically under your own game loop, the
+[deterministic testing guide](testing.md) shows how to reproduce it with
+paused clocks and caller-driven cadence on both drivers.

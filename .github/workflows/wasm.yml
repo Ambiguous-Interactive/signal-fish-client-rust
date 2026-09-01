@@ -65,9 +65,9 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Build for WASM target
-        run: cargo build --target wasm32-unknown-unknown --no-default-features
+        run: cargo build --target wasm32-unknown-unknown --no-default-features --locked
       - name: Clippy check for WASM target
-        run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features --locked -- -D warnings
 
   emscripten:
     name: Build (wasm32-unknown-emscripten)
@@ -102,18 +102,21 @@ jobs:
           cargo +nightly build -Zbuild-std
           --target wasm32-unknown-emscripten
           --no-default-features
+          --locked
       - name: Build (emscripten transport)
         run: >-
           cargo +nightly build -Zbuild-std
           --target wasm32-unknown-emscripten
           --no-default-features
           --features transport-websocket-emscripten
+          --locked
       - name: Clippy (emscripten transport)
         run: >-
           cargo +nightly clippy -Zbuild-std
           --target wasm32-unknown-emscripten
           --no-default-features
           --features transport-websocket-emscripten
+          --locked
           -- -D warnings
 
       # On-target runtime coverage for the Emscripten transport (issues #194

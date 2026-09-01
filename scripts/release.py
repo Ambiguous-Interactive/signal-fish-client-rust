@@ -30,9 +30,13 @@ LOCKSTEP_LOCKFILES = (
 # a duplicate entry still fails closed. fuzz/Cargo.lock records only the
 # path-depended core (the fuzz graph never reaches the Godot adapter), and
 # its stale recorded version would fail the Deep Safety lane's
-# `cargo metadata --locked` freshness verify after a bump.
+# `cargo metadata --locked` freshness verify after a bump. The Emscripten
+# harness lock has the same shape (core only, `--locked` build lane), and a
+# stale recorded version fails the required WASM workflow's Emscripten job
+# on every release branch.
 PARTIAL_LOCKFILES = (
     "fuzz/Cargo.lock",
+    "tests/emscripten-harness/Cargo.lock",
 )
 VERSION_FILES = (
     "README.md",
