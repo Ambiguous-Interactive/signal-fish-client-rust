@@ -343,6 +343,7 @@ pub struct LoopbackTransport {
     rx: mpsc::UnboundedReceiver<TransportFrame>,
     closed: bool,
 }
+
 impl Transport for LoopbackTransport {
     fn poll_send(
         &mut self,

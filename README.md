@@ -106,7 +106,7 @@ choice.
 - [Client commands and configuration](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/)
 - [Events](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/events/)
   and [errors](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/errors/)
-- [Godot and WebAssembly](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/)
+- [WebAssembly (WASM)](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/wasm/)
 - [Protocol v2, v3, and mesh](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/protocol-versioning/)
 - [Custom transports](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/transport/)
 - [API reference](https://docs.rs/signal-fish-client)
