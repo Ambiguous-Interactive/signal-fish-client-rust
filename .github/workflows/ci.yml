@@ -266,7 +266,7 @@ jobs:
           server_bin="$(find .signal-fish-server -type f -name signal-fish-server -print -quit)"
           chmod +x "${server_bin}"
           listed_tests="$(
-            cargo test --all-features --test real_server_e2e \
+            cargo test --locked --all-features --test real_server_e2e \
               "${SERVER_TEST}" \
               -- --ignored --exact --list
           )"
@@ -279,7 +279,7 @@ jobs:
             exit 1
           fi
           SIGNAL_FISH_SERVER_BIN="${PWD}/${server_bin}" \
-            cargo test --all-features --test real_server_e2e \
+            cargo test --locked --all-features --test real_server_e2e \
               "${SERVER_TEST}" \
               -- --ignored --exact --test-threads=1
 
@@ -370,7 +370,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps
+        run: cargo doc --workspace --all-features --no-deps --locked
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal
       - name: Verify docs.rs compatibility

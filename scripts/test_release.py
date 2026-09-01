@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -1115,6 +1116,46 @@ class WorkflowPolicyTests(unittest.TestCase):
                     version,
                     path.read_text(encoding="utf-8"),
                     f"{relative} does not mention workspace version {version}",
+                )
+
+    def test_tracked_lockfile_inventory_matches_release_lists(self) -> None:
+        # Guards the lock-stamping inventory against fixture drift: a tracked
+        # standalone Cargo.lock absent from both release lists never gets its
+        # recorded member versions stamped, so the first release branch after
+        # adding the fixture fails its own `--locked` lanes (the
+        # tests/emscripten-harness omission produced exactly that on the
+        # WASM workflow's Emscripten job).
+        root = Path(__file__).resolve().parents[1]
+        listed = set(release.LOCKSTEP_LOCKFILES) | set(release.PARTIAL_LOCKFILES)
+        self.assertEqual(
+            len(listed),
+            len(release.LOCKSTEP_LOCKFILES) + len(release.PARTIAL_LOCKFILES),
+            "a lockfile appears in both LOCKSTEP_LOCKFILES and PARTIAL_LOCKFILES",
+        )
+        tracked = subprocess.run(
+            ["git", "ls-files", "Cargo.lock", "**/Cargo.lock"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        self.assertTrue(tracked, "git ls-files found no tracked Cargo.lock")
+        for relative in sorted(tracked):
+            with self.subTest(lockfile=relative):
+                self.assertIn(
+                    relative,
+                    listed,
+                    f"tracked {relative} is absent from LOCKSTEP_LOCKFILES "
+                    "and PARTIAL_LOCKFILES; release stamping would leave it "
+                    "stale and fail its --locked lanes",
+                )
+        for relative in sorted(listed):
+            with self.subTest(listed=relative):
+                self.assertIn(
+                    relative,
+                    tracked,
+                    f"{relative} is listed for release stamping but is not "
+                    "tracked in git",
                 )
 
     def test_compatibility_top_level_identity_matches_this_checkout(self) -> None:

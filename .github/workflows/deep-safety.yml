@@ -162,6 +162,9 @@ jobs:
         with:
           workspaces: fuzz
 
+      # Load-bearing gate ordering: `cargo fuzz run` cannot take --locked,
+      # so this verify must stay ahead of it — on a fixed checkout nothing
+      # can re-resolve fuzz/Cargo.lock between the two steps.
       - name: Verify fuzz lockfile is current
         run: bash scripts/cargo-retry.sh metadata --manifest-path fuzz/Cargo.toml --locked > /dev/null
 

@@ -242,3 +242,4 @@ the explicit-start audit:
 - [Protocol Types](protocol.md) — the v3 wire types in detail.
 - [Events](events.md#mesh-events-protocol-v3) — the v3 events.
 - [Errors](errors.md) — `ProtocolUnsupported` and the v3 error codes.
+- [Migrating 0.8 to 0.9](migration-0.9.md) — the 0.9 delivery and signaling changes.

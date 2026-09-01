@@ -191,10 +191,10 @@ changes while the async driver is blocked, wake a waker registered by
 `poll_send` or `poll_recv`, because `is_ready()` cannot register one itself.
 
 `begin_poll_cycle()` marks a driver scheduling cycle, not necessarily a
-rendered frame. The polling client calls it once per public `poll()` invocation;
-the async client calls it once per outer transport-loop iteration. Backends may
-sample buffering or capacity once at this boundary, but must not infer a fixed
-wall-clock cadence from it.
+rendered frame. The polling client calls it once per public `poll()` invocation
+plus once for that driver's `close()`; the async client calls it once per outer
+transport-loop iteration. Backends may sample buffering or capacity once at
+this boundary, but must not infer a fixed wall-clock cadence from it.
 
 ## Minimal Channel Transport
 

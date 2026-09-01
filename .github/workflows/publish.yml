@@ -102,8 +102,8 @@ jobs:
           VERSION: ${{ steps.release-metadata.outputs.version }}
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo test --workspace --all-features
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-features --locked
           previous=$(python3 scripts/release.py previous-version "$VERSION")
           while IFS= read -r package; do
             baseline=$(python3 scripts/release.py registry-checksum "$package" "$previous")

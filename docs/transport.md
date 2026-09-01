@@ -137,8 +137,9 @@ the frame. This lets both clients admit FIFO commands during an asynchronous
 handshake without transferring them prematurely.
 
 `begin_poll_cycle` lets adaptive transports sample once per driver scheduling
-cycle: once per `SignalFishPollingClient::poll` call in the polling driver and
-once per outer transport-loop iteration in the async driver.
+cycle: once per `SignalFishPollingClient::poll` call in the polling driver
+(plus once for that driver's `close()`), and once per outer transport-loop
+iteration in the async driver.
 `diagnostics` distinguishes backend-owned buffering/admission from the client
 queue. `abort` is required and is invoked when graceful close errors, either
 client's close deadline expires, or an owner is dropped before close completes.
@@ -392,6 +393,14 @@ impl Transport for LoopbackTransport {
 The channel send completes synchronously, so it can take the frame and return
 `Ready` in the same call. A socket that remains pending after acceptance needs
 an internal outbound slot or equivalent state machine.
+
+When your test peer scripts a Signal Fish server, it must complete protocol
+negotiation before room-scoped traffic: after `Authenticated`, send a
+`ProtocolInfo` frame carrying a valid `game_data_formats` list
+(`["json"]` or `["json", "message_pack"]`) before any room reply such as
+`RoomJoined`. A room-scoped frame that arrives before a valid `ProtocolInfo`
+is rejected as a lifecycle violation and surfaces as
+[`ProtocolViolation`](events.md), not as a join failure.
 
 Use it with the async client only when the transport is `Send + 'static`:
 

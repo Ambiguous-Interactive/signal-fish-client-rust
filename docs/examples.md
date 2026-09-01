@@ -103,7 +103,10 @@ canonical guide for that subsystem:
 - [`load_lab.rs`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/examples/load_lab.rs)
   with the [delivery and backpressure guide](delivery.md)
 - the complete [`tests/godot-web-smoke`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/tree/main/tests/godot-web-smoke)
-  fixture with the [Godot and WebAssembly guide](wasm.md)
+  fixture with the [WebAssembly (WASM) guide](wasm.md)
 
 The focused guides own platform setup and protocol contracts so those details
-have one maintained source of truth.
+have one maintained source of truth. When a lobby or mesh session behaves
+nondeterministically under your own game loop, the
+[deterministic testing guide](testing.md) shows how to reproduce it with
+paused clocks and caller-driven cadence on both drivers.

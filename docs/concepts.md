@@ -132,7 +132,11 @@ that a v2 connection never sees.
    `protocol_version` (plus min/max) back in `ProtocolInfo`.
 3. The client records it; `supports_mesh()` reports negotiated local capability
    only when WebRTC and a Host or Mesh topology were advertised. It does not say
-   which plan the server selected.
+   which plan the server selected. Until a valid `ProtocolInfo` completes
+   negotiation, the client rejects every server frame except authentication,
+   negotiation, pong, and error control frames as lifecycle violations —
+   scripted test peers must send `ProtocolInfo` after `Authenticated` and
+   before any further traffic.
 
 v3-only sends (`send_signal`, `report_transport_status`, …) **fail fast** with
 [`SignalFishError::ProtocolUnsupported`](errors.md) until v3 is negotiated —

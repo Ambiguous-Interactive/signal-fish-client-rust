@@ -177,7 +177,7 @@ Details that matter for deterministic polling tests:
 - **The Godot adapter samples per `begin_poll_cycle`.** One `poll()` call is
   one scheduling cycle; tests inject cadence by calling `poll()` in a fixed
   loop rather than sleeping between calls. See
-  [WebAssembly & Godot](wasm.md).
+  [WebAssembly (WASM)](wasm.md).
 
 ## Why there is no injectable Clock API
 

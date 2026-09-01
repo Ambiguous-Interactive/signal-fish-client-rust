@@ -49,7 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Run doc tests
-        run: cargo test --doc --all-features
+        run: cargo test --doc --all-features --locked
 
   # ──────────────────────────────────────────────────────────────
   # Examples — validate example programs build
@@ -71,7 +71,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Build and test examples
-        run: cargo test --examples --all-features
+        run: cargo test --examples --all-features --locked
 
       - name: Run offline custom_transport example
         run: timeout 120 cargo run --locked --example custom_transport
@@ -80,7 +80,7 @@ jobs:
         run: timeout 120 cargo run --locked --example mesh_session --features mesh
 
       - name: Clippy mesh example without default features
-        run: cargo clippy --example mesh_session --no-default-features --features mesh,tokio-runtime -- -D warnings
+        run: cargo clippy --example mesh_session --no-default-features --features mesh,tokio-runtime --locked -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
   # Snippet check — validate Rust code blocks in markdown
