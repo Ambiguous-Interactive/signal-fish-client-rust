@@ -193,48 +193,48 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_generation_signal_and_host_replan
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_rkyv_request_resolves_to_json
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_generation_signal_and_host_replan
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_rkyv_request_resolves_to_json
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
             test_name: e2e_reconnect_after_disconnect_uses_server_token
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
             test_name: e2e_slow_consumer_eviction_is_observable
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
             test_name: e2e_sender_ping_survives_own_game_data_flood
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_required_token_binding_wss
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_rejects_invalid_token_binding_proofs
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_required_client_fingerprint_token_binding_wss
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_less_signer
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_polling_client_fingerprint_token_binding_wss
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_rejects_invalid_client_fingerprint_proofs
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_going_away_close_4000
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_spectator_live_smoke
-          - server_version: "0.7.0"
-            server_sha256: "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
-            test_name: e2e_server_070_authority_handoff_and_latest_delivery
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_required_token_binding_wss
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_rejects_invalid_token_binding_proofs
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_required_client_fingerprint_token_binding_wss
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_require_client_fingerprint_option_rejects_fingerprint_less_signer
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_polling_client_fingerprint_token_binding_wss
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_rejects_invalid_client_fingerprint_proofs
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_going_away_close_4000
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_spectator_live_smoke
+          - server_version: "0.8.0"
+            server_sha256: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+            test_name: e2e_server_080_authority_handoff_and_latest_delivery
           - server_version: "0.4.0"
             server_sha256: "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
             test_name: e2e_server_040_generationless_mesh_signal

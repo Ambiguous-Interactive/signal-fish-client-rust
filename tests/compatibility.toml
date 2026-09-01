@@ -1,13 +1,13 @@
 # Canonical client/server protocol compatibility binding.
 client_version = "0.11.0"
-server_version = "0.7.0"
-server_tag = "v0.7.0"
-server_commit = "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333"
-synced = "2026-08-28"
+server_version = "0.8.0"
+server_tag = "v0.8.0"
+server_commit = "1975db5d900221331a2abffb9fa6762fe9c6e502"
+synced = "2026-09-01"
 
 [protocol_authority]
-commit = "5de9105e4c269a29919ae29880f5b67fc8d630c3"
-synced = "2026-08-26"
+commit = "1975db5d900221331a2abffb9fa6762fe9c6e502"
+synced = "2026-09-01"
 
 [legacy_server]
 version = "0.4.0"
@@ -16,7 +16,7 @@ commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
 generation = "omitted"
 
 [server_release_artifacts]
-"signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz" = "70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e"
+"signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz" = "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz" = "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
 
 [wire_samples]

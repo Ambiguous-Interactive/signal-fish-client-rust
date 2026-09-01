@@ -648,7 +648,7 @@ mod godot_issue_61_policy {
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
             workflow.contains("server_version: \"0.4.0\"")
-                && workflow.contains("server_version: \"0.7.0\"")
+                && workflow.contains("server_version: \"0.8.0\"")
                 && workflow.contains("SERVER_VERSION: ${{ matrix.server_version }}")
                 && workflow.contains("run-godot-fortress-e2e.mjs")
                 && workflow.contains("scenario: clean")
@@ -1957,74 +1957,74 @@ mod ci_workflow_policy {
             .expect("server_release_artifacts must be a table");
         let pinned_seams = [
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_generation_signal_and_host_replan",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_generation_signal_and_host_replan",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_rkyv_request_resolves_to_json",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_rkyv_request_resolves_to_json",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
                 "e2e_reconnect_after_disconnect_uses_server_token",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
                 "e2e_slow_consumer_eviction_is_observable",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
                 "e2e_sender_ping_survives_own_game_data_flood",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_required_token_binding_wss",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_required_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_rejects_invalid_token_binding_proofs",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_rejects_invalid_token_binding_proofs",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_required_client_fingerprint_token_binding_wss",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_required_client_fingerprint_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_less_signer",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_require_client_fingerprint_option_rejects_fingerprint_less_signer",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_polling_client_fingerprint_token_binding_wss",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_polling_client_fingerprint_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_rejects_invalid_client_fingerprint_proofs",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_rejects_invalid_client_fingerprint_proofs",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_going_away_close_4000",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_going_away_close_4000",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_spectator_live_smoke",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_spectator_live_smoke",
             ),
             (
-                "signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.7.0",
-                "e2e_server_070_authority_handoff_and_latest_delivery",
+                "signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "0.8.0",
+                "e2e_server_080_authority_handoff_and_latest_delivery",
             ),
             (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -6667,7 +6667,7 @@ mod docs_onboarding_shape {
     }
 
     #[test]
-    fn user_facing_websocket_urls_use_a_server_070_versioned_route() {
+    fn user_facing_websocket_urls_use_protocol_versioned_routes() {
         let server_spec = read_project_file("tests/server-spec/signal-fish-protocol.asyncapi.yaml");
         assert_eq!(server_pathname(&server_spec, "v2"), Some("/v2/ws"));
         assert_eq!(server_pathname(&server_spec, "v3"), Some("/v3/ws"));

@@ -576,7 +576,7 @@ async fn recv_next_event(
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_required_token_binding_wss() {
+async fn e2e_server_080_required_token_binding_wss() {
     let tls = TlsFixture::generate();
     let certificate = tls.certificate.to_string_lossy().into_owned();
     let private_key = tls.private_key.to_string_lossy().into_owned();
@@ -654,7 +654,7 @@ async fn e2e_server_070_required_token_binding_wss() {
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_required_client_fingerprint_token_binding_wss() {
+async fn e2e_server_080_required_client_fingerprint_token_binding_wss() {
     let tls = TlsFixture::generate();
     let Some((_guard, url)) = spawn_required_fingerprint_server(&tls).await else {
         eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
@@ -717,7 +717,7 @@ async fn e2e_server_070_required_client_fingerprint_token_binding_wss() {
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_less_signer() {
+async fn e2e_server_080_require_client_fingerprint_option_rejects_fingerprint_less_signer() {
     let tls = TlsFixture::generate();
     let certificate = tls.certificate.to_string_lossy().into_owned();
     let private_key = tls.private_key.to_string_lossy().into_owned();
@@ -770,7 +770,7 @@ async fn e2e_server_070_require_client_fingerprint_option_rejects_fingerprint_le
 #[cfg(all(feature = "tls", feature = "token-binding", feature = "polling-client"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_polling_client_fingerprint_token_binding_wss() {
+async fn e2e_server_080_polling_client_fingerprint_token_binding_wss() {
     let tls = TlsFixture::generate();
     let Some((_guard, url)) = spawn_required_fingerprint_server(&tls).await else {
         eprintln!("skipping: SIGNAL_FISH_SERVER_BIN not set");
@@ -840,7 +840,7 @@ async fn e2e_server_070_polling_client_fingerprint_token_binding_wss() {
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_rejects_invalid_client_fingerprint_proofs() {
+async fn e2e_server_080_rejects_invalid_client_fingerprint_proofs() {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use tokio_tungstenite::tungstenite::Message;
 
@@ -948,7 +948,7 @@ async fn e2e_server_070_rejects_invalid_client_fingerprint_proofs() {
 #[cfg(all(feature = "tls", feature = "token-binding"))]
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7 and openssl; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_rejects_invalid_token_binding_proofs() {
+async fn e2e_server_080_rejects_invalid_token_binding_proofs() {
     use tokio_tungstenite::tungstenite::Message;
 
     let tls = TlsFixture::generate();
@@ -1051,7 +1051,7 @@ async fn e2e_server_070_rejects_invalid_token_binding_proofs() {
 /// warning-before-authentication sequence, then resolves coherently to JSON.
 #[tokio::test]
 #[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
-async fn e2e_server_070_rkyv_request_resolves_to_json() {
+async fn e2e_server_080_rkyv_request_resolves_to_json() {
     let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
         Some(url) => (None, url),
         None => match spawn_server(&[]).await {
@@ -1398,7 +1398,7 @@ async fn e2e_reconnect_after_disconnect_uses_server_token() {
 /// and host failover publishes a new generation to every survivor.
 #[tokio::test]
 #[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
-async fn e2e_server_070_generation_signal_and_host_replan() {
+async fn e2e_server_080_generation_signal_and_host_replan() {
     let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
         Some(url) => (None, url),
         None => match spawn_server(&[("SIGNAL_FISH__SESSION__DEFAULT_TOPOLOGY", "host")]).await {
@@ -1780,7 +1780,7 @@ fn unix_epoch_ms_now() -> u64 {
 /// spawn-mode only.
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_going_away_close_4000() {
+async fn e2e_server_080_going_away_close_4000() {
     const GRACE_SECS: u64 = 2;
     // The deadline must be honored within a scheduling-slack budget on top of
     // the configured grace, not stretched by another full grace window.
@@ -1859,7 +1859,7 @@ async fn e2e_server_070_going_away_close_4000() {
 /// only through vendored-spec fixtures.
 #[tokio::test]
 #[ignore = "requires Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
-async fn e2e_server_070_spectator_live_smoke() {
+async fn e2e_server_080_spectator_live_smoke() {
     let (_guard, url): (Option<ServerGuard>, String) = match external_url() {
         Some(url) => (None, url),
         None => match spawn_server(&[]).await {
@@ -2007,7 +2007,7 @@ async fn e2e_server_070_spectator_live_smoke() {
 /// wins the race — server-correct, but not the behavior this cell pins.
 #[tokio::test]
 #[ignore = "requires pinned Signal Fish Server 0.7; set SIGNAL_FISH_SERVER_BIN"]
-async fn e2e_server_070_authority_handoff_and_latest_delivery() {
+async fn e2e_server_080_authority_handoff_and_latest_delivery() {
     let Some((guard, url)) = spawn_server(&[
         ("SIGNAL_FISH__WEBSOCKET__ENABLE_BATCHING", "true"),
         ("SIGNAL_FISH__WEBSOCKET__BATCH_INTERVAL_MS", "1000"),

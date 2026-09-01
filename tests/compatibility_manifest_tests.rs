@@ -40,12 +40,12 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         version_parts.next().is_none(),
         "client_version must be strict X.Y.Z"
     );
-    assert_eq!(manifest["server_version"].as_str(), Some("0.7.0"));
-    assert_eq!(manifest["server_tag"].as_str(), Some("v0.7.0"));
+    assert_eq!(manifest["server_version"].as_str(), Some("0.8.0"));
+    assert_eq!(manifest["server_tag"].as_str(), Some("v0.8.0"));
     let commit = manifest["server_commit"]
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
-    assert_eq!(commit, "3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333");
+    assert_eq!(commit, "1975db5d900221331a2abffb9fa6762fe9c6e502");
     assert_eq!(manifest["legacy_server"]["version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["legacy_server"]["tag"].as_str(), Some("v0.4.0"));
     assert_eq!(
@@ -58,9 +58,9 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     );
     assert_eq!(
         manifest["server_release_artifacts"]
-            ["signal-fish-server-v0.7.0-x86_64-unknown-linux-gnu.tar.gz"]
+            ["signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz"]
             .as_str(),
-        Some("70c6d12ac77843038c96d374a91225825c685cbf65fd7bedfd26b08d4003af7e")
+        Some("28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515")
     );
     assert_eq!(
         manifest["server_release_artifacts"]
@@ -83,7 +83,7 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     let protocol_commit = manifest["protocol_authority"]["commit"]
         .as_str()
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
-    assert_eq!(protocol_commit, "5de9105e4c269a29919ae29880f5b67fc8d630c3");
+    assert_eq!(protocol_commit, "1975db5d900221331a2abffb9fa6762fe9c6e502");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)
