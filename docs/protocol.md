@@ -36,7 +36,7 @@ Legacy relay labels retained for wire compatibility. The value appears in the
 ignored `JoinRoom.relay_transport` preference and in self-declared
 `ConnectionInfo::Relay` metadata; it does not select this crate's signaling
 [`Transport`](transport.md), open a socket, or define a datagram envelope.
-Signal Fish Server 0.7 continues to use its WebSocket connection for relayed
+Signal Fish Server 0.8 continues to use its WebSocket connection for relayed
 `GameData`. See
 [Datagram and raw-stream scope](transport.md#datagram-and-raw-stream-scope).
 
@@ -88,9 +88,9 @@ pub enum GameDataEncoding {
 |---------|-----------|-------------|
 | `Json` | `"json"` | JSON payloads delivered over text frames (default). |
 | `MessagePack` | `"message_pack"` | MessagePack binary payloads delivered over binary frames. |
-| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** Server 0.7 never advertises it; requesting it produces an `UnsupportedGameDataFormat` advisory and resolves to JSON. |
+| `Rkyv` | `"rkyv"` | Rkyv zero-copy binary format. **Reserved:** Server 0.8 never advertises it; requesting it produces an `UnsupportedGameDataFormat` advisory and resolves to JSON. |
 
-Server 0.7 advertises exactly `[Json]` or `[Json, MessagePack]`. The first valid
+Server 0.8 advertises exactly `[Json]` or `[Json, MessagePack]`. The first valid
 `ProtocolInfo` atomically resolves the client's effective format: a requested
 advertised format wins, while omission or an unsupported request resolves to
 JSON. The earlier unsupported-format error is advisory and does not mutate the
@@ -183,7 +183,7 @@ pub enum ConnectionInfo {
 |---------|--------|-------------|
 | `Direct` | `host: String`, `port: u16` | Direct IP:port connection (Mirror, FishNet, Unity NetCode direct). |
 | `UnityRelay` | `allocation_id: String`, `connection_data: String`, `key: String` | Unity Relay allocation (Unity NetCode via Unity Relay). |
-| `Relay` | `host: String`, `port: u16`, `transport: RelayTransport`, `allocation_id: String`, `token: String`, `client_id: Option<u16>` | Legacy self-declared relay metadata forwarded to peers; neither the SDK nor Server 0.7 opens or authenticates the endpoint. |
+| `Relay` | `host: String`, `port: u16`, `transport: RelayTransport`, `allocation_id: String`, `token: String`, `client_id: Option<u16>` | Legacy self-declared relay metadata forwarded to peers; neither the SDK nor Server 0.8 opens or authenticates the endpoint. |
 | `WebRTC` | `sdp: Option<String>`, `ice_candidates: Vec<String>` | WebRTC connection info (Matchbox). |
 | `Custom` | `data: serde_json::Value` | Arbitrary JSON blob for custom networking solutions. |
 
@@ -334,7 +334,7 @@ pub struct PeerConnectionInfo {
 | `player_id` | `PlayerId` | The peer's unique identifier. |
 | `player_name` | `String` | The peer's display name. |
 | `is_authority` | `bool` | Whether this peer is the room authority. |
-| `relay_type` | `String` | Legacy deployment relay label; Server 0.7 uses it as protocol metadata, not proof of a physical path. |
+| `relay_type` | `String` | Legacy deployment relay label; Server 0.8 uses it as protocol metadata, not proof of a physical path. |
 | `connection_info` | `Option<ConnectionInfo>` | Connection info provided by the peer for P2P establishment. |
 
 ---
@@ -391,7 +391,7 @@ pub struct ProtocolInfoPayload {
 | `recommended_version` | `Option<String>` | Recommended SDK version. |
 | `capabilities` | `Vec<String>` | List of server-supported capability flags. |
 | `notes` | `Option<String>` | Freeform notes from the server (e.g. deprecation warnings). |
-| `game_data_formats` | `Vec<GameDataEncoding>` | Ordered server-supported encodings. Server 0.7 emits exactly `[Json]` or `[Json, MessagePack]`; malformed, empty, duplicate, or reordered lists are rejected transactionally. |
+| `game_data_formats` | `Vec<GameDataEncoding>` | Ordered server-supported encodings. Server 0.8 emits exactly `[Json]` or `[Json, MessagePack]`; malformed, empty, duplicate, or reordered lists are rejected transactionally. |
 | `player_name_rules` | `Option<PlayerNameRulesPayload>` | Validation rules for player names (if enforced). |
 | `protocol_version` | `Option<u16>` | **Protocol v3+.** The negotiated protocol version. `None` for a v2 negotiation, keeping v2 bytes identical. |
 | `min_protocol_version` | `Option<u16>` | **Protocol v3+.** Lowest version this deployment accepts. |
@@ -498,7 +498,7 @@ pub struct SessionPlanPayload {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `generation` | `Option<SessionGeneration>` | Server 0.6+ handshake generation. Required on server 0.7; optional in the SDK only to decode generation-less 0.4 plans. |
+| `generation` | `Option<SessionGeneration>` | Server 0.6+ handshake generation. Required on server 0.7+; optional in the SDK only to decode generation-less 0.4 plans. |
 | `topology` | `Topology` | Chosen session topology (`relay`, `host`, or `mesh`). |
 | `transport` | `TransportKind` | Chosen data-path transport (`relay`, `direct`, or `webrtc`). |
 | `host` | `Option<PlayerId>` | The elected host, present only for `host` topology. |

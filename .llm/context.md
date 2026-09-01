@@ -117,7 +117,7 @@ The object-safe surface is pinned verbatim in
 `is_ready`, and `close_info` have defaults.
 
 The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`. Its boundary is one complete, ordered text/binary frame stream for one intended server, not raw bytes, datagrams, or server authentication.
-A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.7 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.
+A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.8 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.
 `poll_send` may take a frame only at backend ownership transfer; that increments `game_data_sent` even if completion later fails, but never proves peer delivery.
 `Pending` before acceptance leaves the frame intact. Async readiness changes wake registered I/O; both drivers map the first `is_ready()` observation to `transport_ready` and `Connected`. Close is
 idempotent; on error, logical I/O terminates and fallible cleanup remains safe for the abort fallback. `abort` is a required,
@@ -152,11 +152,11 @@ outbound JSON/binary frames with one sequence; canonical bytes stay stable even
 when consumers unify serde_json's `arbitrary_precision` feature. Sequence
 commits only at backend ownership transfer. Browser, Emscripten, and Godot APIs cannot expose the
 handshake key; `from_stream` is likewise post-handshake and cannot opt in.
-Required Server 0.7 profiles require WSS. Custom rustls token-binding offers
+Required Server 0.8 profiles require WSS. Custom rustls token-binding offers
 wrap the resolver and disable resumption only on a clone, including Optional
 fallback; a compatible X.509 signer binds proofs to its selected leaf's
 lowercase SHA-256-of-DER fingerprint without a caller claim. This supports
-strict Server 0.7; browser, Emscripten, Godot, and post-handshake transports remain incapable.
+strict Server 0.8; browser, Emscripten, Godot, and post-handshake transports remain incapable.
 The v2 proof is client-to-server only and binds content/order to one physical
 handshake; it is not confidentiality or server authentication. On `ws://`, an
 on-path observer sees the key and nonce and can forge it. Every reconnect gets a
@@ -168,7 +168,7 @@ transfers ownership immediately; browser buffering is observed separately.
 SDK-created Godot peers set an 8 MiB inbound buffer and raise the independent queued-packet cap from 4,096 to 65,536 before connecting; the byte storage may reserve roughly 16 MiB in Godot, plus packet metadata. At the inbound bound Godot's web backend silently drops newly arriving frames while the native backend stops reading and backpressures until the application drains queued packets, so enough unusually small frames can still reach the finite packet cap first (web) or stall delivery (native); `from_peer` preserves caller settings. Outbound keeps Godot's legacy 65,535-byte default: a single frame over that size on native (at or above it on web) parks as `Pending`, growing only capacity diagnostics. The
 blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
-3,600-frame soak jobs on Server 0.7 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
+3,600-frame soak jobs on Server 0.8 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
 6.6.0 for seeded netem rather
 than relying on the runner's older `tc`.
 The fixture uses a peer-independent fixed 18 Hz simulation cadence with a
@@ -273,11 +273,11 @@ client.snapshot() -> ClientSnapshot // coherent readiness/role/session view
 client.shutdown().await      // async, graceful
 ```
 
-WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.7
+WebRTC signaling also requires an authoritative `SessionPlan`. Server 0.8
 plans/signals carry a UUID generation; the core stamps outgoing signals, suppresses stale/unknown inbound
 generations plus departed/re-planned-out peers' late same-generation signals (benign races), rejects
 self/off-plan/unknown senders, and snapshots the generation plus selected topology/transport atomically.
-Accepted finalized-room, current-roster plans use one of four Server 0.7 topology/transport pairs and replace peer authority atomically; the most recent eight superseded non-null generations stay fenced against replay before authoritative plan fields, peers, or mesh revision change (bounded memory under generation churn; older replays degrade to fresh authoritative plans).
+Accepted finalized-room, current-roster plans use one of four Server 0.8 topology/transport pairs and replace peer authority atomically; the most recent eight superseded non-null generations stay fenced against replay before authoritative plan fields, peers, or mesh revision change (bounded memory under generation churn; older replays degrade to fresh authoritative plans).
 Current-generation duplicates and generation-less Server 0.4 plans remain valid, while authoritative room/session teardown clears replay history.
 `supports_mesh()` reports negotiated WebRTC + Host/Mesh capability, not the
 selected plan. `MeshController` rebuilds retained pairs across generations or
@@ -356,7 +356,7 @@ Core tests additionally use full-featured `tokio` and `tracing-subscriber` (the 
 ### Framed Transport Agnosticism
 
 The `Transport` trait decouples protocol logic from framed network I/O. Tests use
-in-memory transports; Server 0.7 production I/O exposes only WebSocket. Custom
+in-memory transports; Server 0.8 production I/O exposes only WebSocket. Custom
 backends must provide one complete, ordered text/binary stream for the intended
 server and own trust/source binding plus raw stream/datagram policy.
 
@@ -377,8 +377,8 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
-v2 JSON protocol. Server 0.7.0 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the released runtime compatibility binding.
-The wire samples and AsyncAPI protocol authority include the post-0.7 room-correlation extension, advertised outbound limit, and room-session incompatibility error at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3`.
+v2 JSON protocol. Server 0.8.0 commit `1975db5d900221331a2abffb9fa6762fe9c6e502` is the released runtime compatibility binding.
+The samples and AsyncAPI authority (room-correlation extension, advertised outbound limit, room-session incompatibility error) are byte-identical to the earlier post-0.7 preview at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3`.
 Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
 ### Exhaustive Public Types
@@ -402,7 +402,7 @@ new authoritative room/reconnect snapshot. `Pong` remains connection-scoped
 while authentication and protocol negotiation are still in flight.
 
 Requested game-data format preserves omission; effective format resolves from
-the first canonical Server 0.7 `ProtocolInfo`, with unsupported requests using
+the first canonical Server 0.8 `ProtocolInfo`, with unsupported requests using
 JSON. V3 reconnects require replay, complete watermarks, and a rotated token;
 v2 exposes none. `Reconnected` fences peers until a fresh live `SessionPlan`.
 

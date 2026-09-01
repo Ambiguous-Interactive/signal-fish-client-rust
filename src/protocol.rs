@@ -95,7 +95,7 @@ mod canonical_room_operation_id {
 /// datagram framing. The core client continues to exchange complete
 /// text/binary signaling frames with its configured `Transport`.
 ///
-/// Signal Fish Server 0.7 accepts but ignores the `JoinRoom` field and carries
+/// Signal Fish Server 0.8 accepts but ignores the `JoinRoom` field and carries
 /// all signaling and relayed game data over the current WebSocket connection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -290,7 +290,7 @@ pub enum ConnectionInfo {
     },
     /// Legacy, self-declared relay metadata forwarded to room peers.
     ///
-    /// Neither this SDK nor Signal Fish Server 0.7 opens the endpoint or proves
+    /// Neither this SDK nor Signal Fish Server 0.8 opens the endpoint or proves
     /// its reachability or source identity.
     #[serde(rename = "relay")]
     Relay {
@@ -589,7 +589,7 @@ pub struct RoomJoinedPayload {
     pub is_authority: bool,
     pub lobby_state: LobbyState,
     pub ready_players: Vec<PlayerId>,
-    /// Legacy deployment relay label; protocol metadata only on Server 0.7.
+    /// Legacy deployment relay label; protocol metadata only on Server 0.8.
     pub relay_type: String,
     /// List of spectators currently watching (if any).
     #[serde(default)]
@@ -628,7 +628,7 @@ pub struct ReconnectedPayload {
     pub is_authority: bool,
     pub lobby_state: LobbyState,
     pub ready_players: Vec<PlayerId>,
-    /// Legacy deployment relay label; protocol metadata only on Server 0.7.
+    /// Legacy deployment relay label; protocol metadata only on Server 0.8.
     pub relay_type: String,
     /// List of spectators currently watching (if any).
     #[serde(default)]
@@ -764,7 +764,7 @@ pub enum ClientMessage {
         /// Optional legacy relay data-path descriptor.
         ///
         /// This wire value does not change the signaling [`Transport`](crate::Transport)
-        /// or make the client consume raw datagrams. Signal Fish Server 0.7
+        /// or make the client consume raw datagrams. Signal Fish Server 0.8
         /// accepts but ignores it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,

@@ -587,7 +587,7 @@ pub struct JoinRoomParams {
     ///
     /// This does not reconfigure the client's signaling
     /// [`crate::Transport`] or add raw datagram support. Signal Fish
-    /// Server 0.7 accepts but ignores it.
+    /// Server 0.8 accepts but ignores it.
     pub relay_transport: Option<RelayTransport>,
 }
 
@@ -625,7 +625,7 @@ impl JoinRoomParams {
     /// Set the legacy relay data-path descriptor serialized into `JoinRoom`.
     ///
     /// It does not reconfigure the client's signaling
-    /// [`crate::Transport`] or open a socket. Signal Fish Server 0.7
+    /// [`crate::Transport`] or open a socket. Signal Fish Server 0.8
     /// accepts but ignores this field.
     #[must_use]
     pub fn with_relay_transport(mut self, relay_transport: RelayTransport) -> Self {
@@ -713,7 +713,7 @@ pub struct ClientSnapshot {
     ///
     /// `None` until negotiation completes and after the connection ends. An
     /// unsupported preference resolves to `Some(GameDataEncoding::Json)` in
-    /// accordance with the Signal Fish Server 0.7 fallback contract.
+    /// accordance with the Signal Fish Server 0.8 fallback contract.
     pub effective_game_data_format: Option<GameDataEncoding>,
     /// Maximum complete application-payload size, in bytes, that the connected
     /// deployment advertises for its own outbound WebSocket messages.

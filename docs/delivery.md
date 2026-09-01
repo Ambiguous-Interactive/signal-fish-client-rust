@@ -155,7 +155,7 @@ Practical guidance:
   The driver authenticates/reassembles any underlying UDP traffic through its
   WebRTC stack before yielding assembled messages; this SDK does not expose raw
   datagrams. The `JoinRoom` use of `RelayTransport::Udp` is ignored legacy
-  metadata on Server 0.7, not an alternate path for `send_game_data`.
+  metadata on Server 0.8, not an alternate path for `send_game_data`.
 
 ## The wedged-consumer hazard
 

@@ -148,7 +148,7 @@ the capability you need:
 | `tls` | Native `wss://` connections |
 | `polling-client` | Caller-driven client for game loops |
 | `mesh` | Protocol-v3 WebRTC mesh state and controller APIs |
-| `token-binding` | Native Server 0.7 token-binding negotiation |
+| `token-binding` | Native Server 0.8 token-binding negotiation |
 | `transport-websocket-emscripten` | Advanced custom Emscripten hosts |
 
 The default `transport-websocket` feature also enables `tokio-runtime`, which

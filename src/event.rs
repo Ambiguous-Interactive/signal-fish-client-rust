@@ -288,12 +288,27 @@ pub enum SignalFishEvent {
 
     // ── Lobby ───────────────────────────────────────────────────────
     /// The lobby readiness state changed.
+    ///
+    /// `LobbyStateChanged` is emitted on readiness **toggles** only (plus the
+    /// one-time promotion snapshot inside the first member's join flow). A
+    /// player who joins later is always unready and triggers **no**
+    /// corrective broadcast, so a cached `all_ready: true` is stale after a
+    /// [`PlayerJoined`](Self::PlayerJoined): recompute it as "every current
+    /// player is present in `ready_players`" whenever membership changes, and
+    /// treat [`start_game`](crate::SignalFishClientApi::start_game) as the
+    /// only authoritative readiness gate (its `GAME_START_NOT_READY`
+    /// rejection is exact). A client that latches after a single attempt can
+    /// stall the lobby.
     LobbyStateChanged {
-        /// New lobby state.
+        /// New lobby state. Released servers broadcast only
+        /// [`LobbyState::Lobby`] (the finalized move is signaled by
+        /// [`GameStarting`](Self::GameStarting) itself); older values can
+        /// only come from nonconforming deployments.
         lobby_state: LobbyState,
         /// Players that have signaled readiness.
         ready_players: Vec<PlayerId>,
-        /// Whether all players are ready.
+        /// Advisory readiness snapshot over the members at broadcast time —
+        /// **not** a start guarantee. See the type-level notes.
         all_ready: bool,
     },
 

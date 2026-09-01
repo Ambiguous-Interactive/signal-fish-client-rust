@@ -92,7 +92,7 @@ admission hits, backend buffering, and accepted multi-frame bursts.
 The required `Godot Web` checks reuse one official Godot 4.5 no-thread export
 across clean, impaired, and soak jobs. Every job launches two independent
 Chromium processes and a real Signal Fish server. Clean, impaired, and soak
-run against server 0.7.0; a second clean job pins server 0.4.0 as the explicit
+run against server 0.8.0; a second clean job pins server 0.4.0 as the explicit
 legacy compatibility gate. The clean case advances 600 confirmed frames; the impaired case adds seeded bidirectional 40 ms delay,
 10 ms jitter, 0.2% correlated loss, a 10 Mbit/s rate, and a six-callback polling
 hitch at frame 240; the soak advances 3,600 confirmed frames under the same

@@ -37,7 +37,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `app_id` | `String` | *(required)* | Public App ID that identifies the game application. |
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
-| `game_data_format` | `Option<GameDataEncoding>` | `None` | Requested game-data encoding (`Json`, `MessagePack`, or reserved `Rkyv`). The effective wire format is resolved from the first authoritative `ProtocolInfo`; omission and unsupported requests resolve to JSON on Server 0.7. |
+| `game_data_format` | `Option<GameDataEncoding>` | `None` | Requested game-data encoding (`Json`, `MessagePack`, or reserved `Rkyv`). The effective wire format is resolved from the first authoritative `ProtocolInfo`; omission and unsupported requests resolve to JSON on Server 0.8. |
 | `protocol_version` | `Option<u16>` | `None` | Highest signaling protocol version advertised. `None` preserves the v2 relay floor. Prefer `enable_v3()` or `enable_mesh()` over setting this alone. |
 | `supported_transports` | `Option<Vec<TransportKind>>` | `None` | Protocol-v3 data-path transports the application can actually fulfill. |
 | `supported_topologies` | `Option<Vec<Topology>>` | `None` | Protocol-v3 session topologies the application can participate in. |
@@ -111,7 +111,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_room_code(code)` | `impl Into<String>` | Set an explicit room code to join. |
 | `.with_max_players(n)` | `u8` | Set the maximum number of players allowed in the room. The field is a `u8`, so values above 255 cannot be expressed; rooms larger than that are outside this SDK's model. |
 | `.with_supports_authority(flag)` | `bool` | Enable or disable authority delegation support. |
-| `.with_relay_transport(transport)` | `RelayTransport` | Set legacy relay metadata retained for wire compatibility; Server 0.7 ignores it and it does not reconfigure signaling. |
+| `.with_relay_transport(transport)` | `RelayTransport` | Set legacy relay metadata retained for wire compatibility; Server 0.8 ignores it and it does not reconfigure signaling. |
 
 ### Full Example
 
@@ -126,7 +126,7 @@ let params = JoinRoomParams::new("my-game", "Alice")
 ```
 
 `RelayTransport::Udp` is legacy descriptor metadata, not a raw UDP
-implementation in this SDK. Signal Fish Server 0.7 accepts but ignores this
+implementation in this SDK. Signal Fish Server 0.8 accepts but ignores this
 `JoinRoom` field, and continues to relay `GameData` over the WebSocket
 connection. An application/engine owns any self-declared relay metadata carried
 through `ConnectionInfo`; see the
@@ -431,7 +431,7 @@ They also require an effectively negotiated binary format; the default/JSON
 format returns `BinaryFormatNotNegotiated` before anything is queued. The
 client resolves this from `ProtocolInfo.game_data_formats`, not from the
 earlier advisory `UnsupportedGameDataFormat` error. An unsupported request
-(including Server 0.7's reserved `Rkyv`) resolves to JSON, so binary sends fail
+(including Server 0.8's reserved `Rkyv`) resolves to JSON, so binary sends fail
 locally even when that advisory arrives before `Authenticated` and
 `ProtocolInfo`.
 Inbound envelopes are decoded strictly; malformed maps, duplicate or missing
@@ -566,7 +566,7 @@ current-player snapshot. Malformed
 baselines are never applied, including under `ProtocolViolationPolicy::Observe`.
 
 Reconnect is also a hard session-plan boundary. The old generation and peer
-set are fenced immediately, and Server 0.7 follows `Reconnected` with a fresh
+set are fenced immediately, and Server 0.8 follows `Reconnected` with a fresh
 live `SessionPlan` for a finalized room. `ProtocolInfo`, `SessionPlan`, signals,
 and game data are not legal `missed_events` replay entries.
 

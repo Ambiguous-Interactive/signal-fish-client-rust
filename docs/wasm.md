@@ -350,7 +350,7 @@ The standard `connect` and `connect_with_options` paths configure Godot's
 `inbound_buffer_size` to 8 MiB and raise its independent
 `max_queued_packets` cap from 4,096 to 65,536 before starting the connection.
 The byte buffer is a protective client default sized above the roughly
-6.25 MiB aggregate snapshots that a default Server 0.7 deployment can legally
+6.25 MiB aggregate snapshots that a default Server 0.8 deployment can legally
 produce, not a protocol maximum or a guarantee that every larger message is
 rejected at exactly that boundary. Godot may reserve roughly twice that amount
 per peer across its receive ring and packet buffer, plus packet metadata.
@@ -366,9 +366,9 @@ Godot `WebSocketPeer`, call `connect_to_url`, and pass it through `from_peer` or
 byte-buffer and packet-cap choices. Browser and engine implementations still
 own frame/message assembly before the SDK receives a complete packet.
 
-!!! warning "Allow the browser's exact Origin on Server 0.7"
+!!! warning "Allow the browser's exact Origin on Server 0.8"
     Browsers attach an `Origin` header to the WebSocket upgrade, and Signal Fish
-    Server 0.7 validates it. Configure the server's `security.cors_origins`
+    Server 0.8 validates it. Configure the server's `security.cors_origins`
     (or `SIGNAL_FISH__SECURITY__CORS_ORIGINS`) with the exact HTTPS origin that
     serves the game. Use `'*'` only for isolated local or CI fixtures, never as
     the production default.

@@ -491,7 +491,7 @@ pub struct WebSocketConnectOptions {
     /// assembled message.
     ///
     /// Defaults to 8 MiB, substantially below tungstenite's 64 MiB assembled
-    /// message default while retaining headroom for ordinary Server 0.7 room
+    /// message default while retaining headroom for ordinary Server 0.8 room
     /// snapshots. This is a protective client policy, not a protocol maximum:
     /// deployments with larger player metadata, spectator rosters, replay
     /// buffers, or server message limits must raise it. Set it to `None` to
