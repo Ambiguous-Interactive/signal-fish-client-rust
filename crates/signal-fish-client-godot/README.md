@@ -23,8 +23,8 @@ directly:
 ```toml
 [dependencies]
 godot = { version = ">=0.4.5, <0.6" }
-signal-fish-client = { version = "0.11.0", default-features = false, features = ["polling-client"] }
-signal-fish-client-godot = { version = "0.11.0" }
+signal-fish-client = { version = "0.12.0", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = { version = "0.12.0" }
 ```
 
 ## Quick start
