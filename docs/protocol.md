@@ -646,7 +646,7 @@ pub enum ServerMessage { /* ... */ }
 | `PeerTransportStatus` | **(v3)** A peer's data-path transport state changed (informational). |
 | `DeliveryReport` | **(v3)** Cumulative per-class outcomes plus exact omitted sequence ranges. |
 | `RelayStats` | **(v3)** Optional cumulative connection-level relay diagnostics. |
-| `GoingAway` | **(v3)** Best-effort server drain advisory preceding a structured close. |
+| `GoingAway` | **(v3)** Best-effort server drain advisory (absolute Unix-epoch-ms deadline, optional seconds retry hint) preceding a structured close. |
 
 !!! note
     You don't parse `ServerMessage` directly. The `SignalFishClient` run loop

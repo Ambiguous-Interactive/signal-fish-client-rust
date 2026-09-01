@@ -17,8 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added root re-exports for `ProtocolInfoPayload`, `PlayerNameRulesPayload`,
   and `MeshWaker` (the latter requires the `mesh` and `tokio-runtime`
   features).
+- Added a deterministic-testing guide (`docs/testing.md`) covering paused-clock
+  and caller-cadence recipes for both drivers.
 
 ### Changed
+
+- `WebSocketTransport::connect_with_options` now logs a warning when a
+  token-binding offer proceeds over a plain `ws://` URL, where the resulting
+  proofs are forgeable by an on-path observer.
 
 - **Breaking:** `RateLimitInfo`'s `per_minute`, `per_hour`, and `per_day`
   are now `u64` instead of `u32`; a server reporting a limit above
@@ -45,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller on the polling driver, where `close()` heals.
 - Documented that a room creator already holds authority, so an immediate
   `request_authority(true)` is refused with `AuthorityConflict`.
+- Documented `GoingAway`'s absolute epoch-ms deadline and seconds retry hint,
+  `RelayStats`' validated invariants (violations report as
+  `ProtocolViolation { Counters }`), the `u8` `max_players` ceiling (oversized
+  values fail the frame as `DecodeFailed`), `PlayerNameRulesPayload`'s
+  unvalidated pass-through, and corrected the wasm docs' `tokio-runtime` /
+  `transport-websocket` guidance.
 
 ### Fixed
 

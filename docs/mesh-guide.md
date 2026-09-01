@@ -149,7 +149,8 @@ timer.
 
 `MeshController` drives the **entire** v3 handshake against your driver on top of
 an async `SignalFishClient` — it is unavailable on `tokio-runtime`-less builds
-(such as wasm) and there is no polling-client variant: `SignalFishPollingClient`
+(the SDK ships no WASM profile that drives the async client) and there is no
+polling-client variant: `SignalFishPollingClient`
 users integrate their own driver with the manual
 `send_signal_for_generation` / `report_transport_status` choreography described
 below. On a WebRTC `SessionPlan`/`NewPeer` it calls

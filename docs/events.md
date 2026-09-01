@@ -191,7 +191,7 @@ Events related to joining, failing to join, or leaving a room.
 | `room_code` | `String` | Human-readable room code. |
 | `player_id` | `PlayerId` | The local player's identifier. |
 | `game_name` | `String` | Name of the game this room is for. |
-| `max_players` | `u8` | Maximum number of players allowed. |
+| `max_players` | `u8` | Maximum number of players allowed. `u8` ceilings the model at 255: a server advertising a larger capacity fails the frame as `DecodeFailed` rather than truncating the value. |
 | `supports_authority` | `bool` | Whether the room supports authority delegation. |
 | `current_players` | `Vec<PlayerInfo>` | Players already present in the room. |
 | `is_authority` | `bool` | Whether the local player is the authority. |
@@ -469,8 +469,8 @@ match event {
 | Variant | Fields | Description |
 |---|---|---|
 | `DeliveryReport(payload)` | `DeliveryReportPayload` | Cumulative per-class outcomes and exact omitted sequence ranges. Exact ranges are the only authorization for continuing-connection gaps. |
-| `RelayStats` | `interval_ms`, `sent_to_you`, `dropped_for_you`, `backpressure_events` | Optional cumulative connection diagnostics; never gap authorization. |
-| `GoingAway` | `deadline_ms`, `retry_after_secs` | Best-effort graceful-drain advisory. The subsequent structured transport close remains authoritative. |
+| `RelayStats` | `interval_ms`, `sent_to_you`, `dropped_for_you`, `backpressure_events` | Optional cumulative connection diagnostics; never gap authorization. Counters are cumulative since this connection registered with the relay (they survive reconnection); the SDK validates the authority's invariants (positive constant interval, monotonic counters) and reports a violating frame as `ProtocolViolation { Counters }`. A rising `backpressure_events` predicts a `4002 slow_consumer` eviction. |
+| `GoingAway` | `deadline_ms`, `retry_after_secs` | Best-effort graceful-drain advisory. `deadline_ms` is an absolute Unix epoch timestamp in milliseconds; `retry_after_secs` is an operator hint in seconds. The subsequent structured transport close remains authoritative. |
 
 Applications normally let the SDK consume these for accountability and also
 record the typed events for telemetry. `GoingAway` is a cue to preserve the

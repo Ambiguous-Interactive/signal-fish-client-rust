@@ -491,6 +491,10 @@ pub struct ProtocolInfoPayload {
 }
 
 /// Describes the characters a deployment allows inside `player_name`.
+///
+/// Free-form advisory: the server authors these values and the SDK passes
+/// them through without coherence validation — for example, a `max_length`
+/// below `min_length` is surfaced verbatim rather than rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerNameRulesPayload {
     /// Maximum accepted `player_name` length.
@@ -576,6 +580,9 @@ pub struct RoomJoinedPayload {
     pub room_code: String,
     pub player_id: PlayerId,
     pub game_name: String,
+    /// Server-advertised room capacity ceiling. `u8` bounds the SDK's model
+    /// at 255: a server advertising a larger capacity fails the whole frame
+    /// as `DecodeFailed` rather than truncating the value.
     pub max_players: u8,
     pub supports_authority: bool,
     pub current_players: Vec<PlayerInfo>,
@@ -612,6 +619,9 @@ pub struct ReconnectedPayload {
     pub room_code: String,
     pub player_id: PlayerId,
     pub game_name: String,
+    /// Server-advertised room capacity ceiling. `u8` bounds the SDK's model
+    /// at 255: a server advertising a larger capacity fails the whole frame
+    /// as `DecodeFailed` rather than truncating the value.
     pub max_players: u8,
     pub supports_authority: bool,
     pub current_players: Vec<PlayerInfo>,
@@ -1214,15 +1224,30 @@ pub enum ServerMessage {
         connected: bool,
     },
     /// Periodic cumulative relay-delivery diagnostics (protocol v3 only).
+    /// Counters are cumulative since this connection registered with the
+    /// relay (they survive reconnection) and `interval_ms` must stay constant
+    /// for the whole connection; the SDK validates those invariants before
+    /// surfacing the frame.
     RelayStats {
+        /// Configured emission interval in milliseconds.
         interval_ms: u64,
+        /// Cumulative frames delivered to this connection.
         sent_to_you: u64,
+        /// Cumulative frames dropped instead of being delivered to this
+        /// connection.
         dropped_for_you: u64,
+        /// Cumulative intervals in which this connection's outbound queue
+        /// was observed full.
         backpressure_events: u64,
     },
-    /// Graceful server-shutdown advisory (protocol v3 only).
+    /// Graceful server-shutdown advisory (protocol v3 only). `deadline_ms` is
+    /// an absolute Unix epoch timestamp in milliseconds; `retry_after_secs` is
+    /// an operator retry hint in seconds.
     GoingAway {
+        /// Absolute Unix epoch timestamp, in milliseconds, at which the
+        /// server will force-close the connection.
         deadline_ms: u64,
+        /// Operator retry hint in seconds, if the deployment advertises one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retry_after_secs: Option<u64>,
     },
