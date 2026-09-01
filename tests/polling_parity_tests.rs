@@ -5223,8 +5223,12 @@ async fn parity_ensure_v3_relay_only_mode_after_v2_negotiation() {
 
 // ── PARITY 3: relay-only v3 negotiation does not claim mesh ──────────
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn parity_negotiated_version_after_v3() {
+    // Paused virtual time: the three scripted events arrive through the
+    // buffered channel, so the drain recvs complete without time passing;
+    // the 100ms drain windows are only a failure-path guard, where tokio
+    // auto-advance fires them deterministically instead of racing CI load.
     let async_mock = SharedMock::new(vec![AUTH, PI_V3]);
     let (client, mut events) = SignalFishClient::start(async_mock, SignalFishConfig::new("app"));
     for _ in 0..3 {
@@ -5242,8 +5246,12 @@ async fn parity_negotiated_version_after_v3() {
 
 // ── PARITY 4: reconnect replay restores v3 (downgrade-risk hunt) ──────
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn parity_reconnect_preserves_outer_v3_negotiation() {
+    // Paused virtual time: the four scripted events arrive through the
+    // buffered channel, so the drain recvs complete without time passing;
+    // the 100ms drain windows are only a failure-path guard, where tokio
+    // auto-advance fires them deterministically instead of racing CI load.
     let recon = reconnected_with_missed(vec![]);
 
     let async_mock = SharedMock::new(vec![AUTH, PI_V3, &recon]);
@@ -5705,8 +5713,14 @@ async fn parity_reconnected_baseline_is_planless_until_fresh_session_plan() {
 
 // ── PARITY 7: disconnect resets negotiated version in both ─────────────
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn parity_disconnect_resets_negotiated_version() {
+    // Paused virtual time: Connected/Authenticated/ProtocolInfo arrive
+    // through the buffered channel immediately and the terminal
+    // Disconnected is already queued behind them (the receive error is
+    // scripted), so the drain recvs complete without time passing. The
+    // 150ms windows are only a failure-path guard, where tokio auto-advance
+    // fires them deterministically instead of racing CI load.
     let poll_mock = SharedMock::new(vec![AUTH, PI_V3]);
     let mut poll_client =
         SignalFishPollingClient::new(poll_mock, SignalFishConfig::new("app").enable_mesh());
@@ -5739,8 +5753,12 @@ async fn parity_disconnect_resets_negotiated_version() {
 
 // ── PARITY 9: DecodeFailed surfacing is identical ─────────────────────
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn parity_decode_failed_async_vs_polling() {
+    // Paused virtual time: the events arrive through the buffered channel,
+    // so the drain recvs complete without time passing; the 150ms windows
+    // are only a failure-path guard, where tokio auto-advance fires them
+    // deterministically instead of racing CI load.
     const BAD_FRAME: &str =
         r#"{"type":"Error","data":{"message":"x","error_code":"FUTURE_CODE_XYZ"}}"#;
 
@@ -5796,8 +5814,13 @@ async fn parity_decode_failed_async_vs_polling() {
 
 // ── PARITY 10: Disconnected carries last_server_error identically ─────
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn parity_disconnected_carries_last_server_error() {
+    // Paused virtual time: the farewell and the terminal Disconnected are
+    // queued on the buffered channel, so the drain recvs complete without
+    // time passing; the 150ms windows are only a failure-path guard, where
+    // tokio auto-advance fires them deterministically instead of racing CI
+    // load.
     const FAREWELL: &str = r#"{"type":"Error","data":{"message":"Disconnected as a slow consumer","error_code":"SLOW_CONSUMER"}}"#;
 
     // Async: farewell then clean close.

@@ -497,13 +497,23 @@ pub fn finalized_reconnected_json() -> String {
 
 /// Wait until the mock transport records at least `expected_len` outgoing
 /// messages. This avoids fixed sleeps when testing queued async sends.
+///
+/// Clock-agnostic: bounded `yield_now` spins first (no timer), then parks on
+/// a 1 ms sleep — under paused (`start_paused`) virtual time a pure spin
+/// would starve auto-advance and the 1 s guard could never fire.
 pub async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: usize) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut spins = 0usize;
         loop {
             if sent.lock().unwrap().len() >= expected_len {
                 break;
             }
-            tokio::task::yield_now().await;
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
     })
     .await
@@ -520,10 +530,24 @@ pub async fn wait_for_sent_len(sent: &Arc<StdMutex<Vec<String>>>, expected_len: 
 /// requirement to await `SignalFishEvent::Authenticated` before room
 /// operations. Room operations refuse earlier with
 /// [`SignalFishError::NotAuthenticated`].
+///
+/// Clock-agnostic by construction: the first spins use `yield_now` (no
+/// timer), so the common case completes without touching the clock in real
+/// time and under paused (`start_paused`) virtual time alike. If the flag is
+/// still unset after a bounded spin, the loop parks on a 1ms sleep — that
+/// keeps real-time behavior unchanged and, under paused time, lets tokio's
+/// auto-advance walk the virtual clock so the `timeout` guard still fires
+/// (a pure spin would never park and could starve auto-advance forever).
 pub async fn wait_for_authentication(client: &signal_fish_client::SignalFishClient) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut spins = 0usize;
         while !client.is_authenticated() {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
     })
     .await
