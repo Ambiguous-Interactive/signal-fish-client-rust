@@ -116,11 +116,13 @@ jobs:
           --features transport-websocket-emscripten
           -- -D warnings
 
-      # On-target runtime coverage for the Emscripten transport (issue #194):
-      # the harness binary is linked against the transport and executed under
-      # Node.js against a loopback RFC 6455 server, pinning the send-after-
-      # close classification, ledger-bound fusion, close-metadata capture,
-      # and close→delete cleanup contracts that static lanes cannot execute.
+      # On-target runtime coverage for the Emscripten transport (issues #194
+      # and #212): the harness binary is linked against the transport and
+      # executed under Node.js against a loopback RFC 6455 server, pinning
+      # the send-after-close classification, ledger-bound fusion and
+      # drain-credit release, close-metadata capture, the rejected-handshake
+      # failure path, extended-length frames, abort, and close→delete cleanup
+      # contracts that static lanes cannot execute.
       - name: Run on-target Emscripten transport harness
         env:
           RUSTFLAGS: >-
@@ -130,7 +132,7 @@ jobs:
             -C link-arg=-sENVIRONMENT=node
             -C link-arg=-sEXIT_RUNTIME=0
             -C link-arg=-sWASM_ASYNC_COMPILATION=0
-            -C link-arg=-sEXPORTED_FUNCTIONS=_main,_sfh_begin,_sfh_step,_sfh_fail_reason,_malloc,_free
+            -C link-arg=-sEXPORTED_FUNCTIONS=_main,_sfh_begin,_sfh_step,_sfh_finish,_sfh_fail_reason,_malloc,_free
             -C link-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString
             -C llvm-args=-enable-emscripten-cxx-exceptions=0
         run: |

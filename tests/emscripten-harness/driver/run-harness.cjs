@@ -611,10 +611,10 @@ async function main() {
 
   const runScenario = (mode) => new Promise((resolve) => {
     server.script = SCRIPTS[mode];
-    // Scenario 0 pins the pre-open Pending retention contract, so its
-    // handshake is delayed to guarantee several CONNECTING steps; every
-    // other scenario opens immediately.
-    server.handshakeDelayMs = mode === 0 ? 10 : 0;
+    // Scenarios 0 and 5 pin pre-open send retention, so their handshakes are
+    // delayed to guarantee several CONNECTING steps; every other scenario
+    // opens immediately.
+    server.handshakeDelayMs = mode === 0 || mode === 5 ? 10 : 0;
     // Scenario 5 rejects the handshake itself (issue #212 M3).
     server.rejectHandshake = mode === 5;
     const begin = globalThis.Module.ccall(
@@ -671,6 +671,13 @@ async function main() {
   try {
     for (let mode = 0; mode < SCENARIO_COUNT; ++mode) {
       await runScenario(mode);
+    }
+    // The last transport is never dropped by an sfh_begin (no scenario
+    // follows), so tear it down explicitly: a cleanup failure during that
+    // Drop must fail the harness instead of vanishing at process exit.
+    const finish = globalThis.Module.ccall("sfh_finish", "number");
+    if (finish !== 1) {
+      fail("sfh_finish: the final transport's Drop logged a cleanup failure");
     }
   } finally {
     await server.close();

@@ -21,7 +21,8 @@
 //! Every scenario runs under an error-latching tracing subscriber: a
 //! `tracing::error!` between scenario boundaries — the Drop path's
 //! cleanup-failure signal — fails the next scheduling step instead of
-//! passing silently (issue #212 M4).
+//! passing silently (issue #212 M4); `sfh_finish` drops the final transport
+//! under the same latch so the last cleanup is observed too.
 //!
 //! Invalid-UTF-8 text fusion is deliberately absent: Emscripten's WebSocket
 //! shim only delivers text frames as JavaScript strings (which are always
@@ -668,6 +669,10 @@ struct LedgerDrainScenario {
     drained_frames: usize,
     /// Frame slot for the wave-2 request send.
     slot: Option<TransportFrame>,
+    /// The wave-2 request is sent exactly once; the server answers every
+    /// request with a fresh two-frame wave, so a re-send would stack waves
+    /// past the ledger bound and spuriously report an M2 regression.
+    sent_next: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -684,14 +689,18 @@ impl LedgerDrainScenario {
         match self.phase {
             LedgerDrainPhase::Draining => match poll_once(transport) {
                 Recv::Pending => {
-                    // Once wave 1 is fully drained, request wave 2. Pending
-                    // polls retain the caller-owned frame until accepted.
-                    if self.drained_frames == 2 {
+                    // Once wave 1 is fully drained, request wave 2 exactly
+                    // once. Pending polls retain the caller-owned frame
+                    // until accepted.
+                    if self.drained_frames == 2 && !self.sent_next {
                         if self.slot.is_none() {
                             self.slot = Some(TransportFrame::Text("next".into()));
                         }
                         match transport.poll_send(&mut ctx(), &mut self.slot) {
-                            Poll::Ready(Ok(())) => self.slot = None,
+                            Poll::Ready(Ok(())) => {
+                                self.slot = None;
+                                self.sent_next = true;
+                            }
                             Poll::Ready(Err(error)) => {
                                 return StepOutcome::Fail(format!("wave-2 request failed: {error}"))
                             }
@@ -916,6 +925,9 @@ struct AbortExtendedScenario {
     probe: Vec<u8>,
     server_text_seen: bool,
     server_binary_seen: bool,
+    /// The 70 KiB probe is installed and sent exactly once; a re-send would
+    /// put a second echo in flight whose bytes nothing compares.
+    probe_sent: bool,
 }
 
 enum AbortExtendedPhase {
@@ -970,12 +982,12 @@ impl AbortExtendedScenario {
                 Recv::Ended => StepOutcome::Fail("peer closed during server frames".into()),
             },
             AbortExtendedPhase::RoundTripLarge => {
-                if self.slot.is_none() {
-                    self.slot = Some(TransportFrame::Binary(extended_probe(LARGE_PROBE_LEN, 7)));
-                }
-                if self.slot.is_some() {
+                if !self.probe_sent {
+                    if self.slot.is_none() {
+                        self.slot = Some(TransportFrame::Binary(extended_probe(LARGE_PROBE_LEN, 7)));
+                    }
                     match transport.poll_send(&mut ctx(), &mut self.slot) {
-                        Poll::Ready(Ok(())) => {}
+                        Poll::Ready(Ok(())) => self.probe_sent = true,
                         Poll::Ready(Err(error)) => {
                             return StepOutcome::Fail(format!("probe send failed: {error}"))
                         }
@@ -1127,6 +1139,7 @@ pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
             phase: LedgerDrainPhase::Draining,
             drained_frames: 0,
             slot: None,
+            sent_next: false,
         }),
         5 => Scenario::PreOpenFailure(PreOpenFailureScenario {
             phase: PreOpenFailurePhase::Connecting,
@@ -1139,6 +1152,7 @@ pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
             probe: extended_probe(LARGE_PROBE_LEN, 7),
             server_text_seen: false,
             server_binary_seen: false,
+            probe_sent: false,
         }),
         other => return begin_fail(format!("unknown scenario mode {other}")),
     };
@@ -1200,6 +1214,27 @@ pub extern "C" fn sfh_fail_reason() -> *const c_char {
         .as_ref()
         .and_then(|harness| harness.fail_reason.as_ref())
         .map_or(NO_FAILURE.as_ptr().cast(), |reason| reason.as_ptr())
+}
+
+/// Tear the harness down: drop the last transport explicitly so its `Drop`
+/// cleanup runs while the error latch can still observe it (the driver stops
+/// stepping once the final scenario passes, so `store_harness` would never
+/// reclaim it).
+///
+/// Returns [`RESULT_FAIL`] when a `tracing::error!` fired during that drop —
+/// the transport's intentional-leak signal — otherwise [`RESULT_PASS`].
+#[no_mangle]
+pub extern "C" fn sfh_finish() -> i32 {
+    reset_error_latch();
+    // SAFETY: see the `HARNESS` static comment; the driver calls this exactly
+    // once, after every scenario completed.
+    let harness = unsafe { std::ptr::replace(ptr::addr_of_mut!(HARNESS), None) };
+    drop(harness);
+    if error_latched() {
+        RESULT_FAIL
+    } else {
+        RESULT_PASS
+    }
 }
 
 fn main() {

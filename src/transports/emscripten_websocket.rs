@@ -63,7 +63,8 @@
 //!   this transport does not register a waker, using it with
 //!   [`SignalFishClient::start()`](crate::SignalFishClient::start) or
 //!   any real executor will cause `poll_recv()` to remain pending indefinitely.
-//!   Waker misuse cannot be detected at runtime — [`Waker::will_wake`] is
+//!   Waker misuse cannot be detected at runtime —
+//!   [`Waker::will_wake`](std::task::Waker::will_wake) is
 //!   documented best-effort and compares vtable identities that duplicate
 //!   across crate boundaries — so this contract is documentation-enforced.
 //!

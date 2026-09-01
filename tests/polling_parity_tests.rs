@@ -1173,10 +1173,19 @@ impl Transport for SendFailureFarewellTransport {
     }
 }
 
+/// Clock-agnostic: bounded `yield_now` spins first, then parks on a 1 ms
+/// sleep — under paused (`start_paused`) virtual time a pure spin would
+/// starve auto-advance and the 1 s guard could never fire.
 async fn wait_until(condition: impl Fn() -> bool) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut spins = 0usize;
         while !condition() {
-            tokio::task::yield_now().await;
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
     })
     .await
@@ -1515,13 +1524,22 @@ fn reconnected_with_missed(missed: Vec<ServerMessage>) -> String {
     serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
 }
 
+/// Clock-agnostic: bounded `yield_now` spins first, then parks on a 1 ms
+/// sleep — under paused (`start_paused`) virtual time a pure spin would
+/// starve auto-advance and the 1 s guard could never fire.
 async fn wait_for_sent_len(mock: &SharedMock, expected_len: usize) {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut spins = 0usize;
         loop {
             if mock.sent.lock().unwrap().len() >= expected_len {
                 break;
             }
-            tokio::task::yield_now().await;
+            if spins < 64 {
+                spins += 1;
+                tokio::task::yield_now().await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
         }
     })
     .await
