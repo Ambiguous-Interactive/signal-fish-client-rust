@@ -244,16 +244,18 @@ class LoopbackServer {
         const request = handshake.subarray(0, end).toString("latin1");
         const key = /^sec-websocket-key:\s*(.+)\r?$/im.exec(request);
         if (this.rejectHandshake) {
-          // Flush the rejection, then close so the browser polyfill reports
-          // the failed handshake as an abnormal closure.
-          responding = true;
-          debug("server: rejecting handshake with HTTP 403");
-          socket.end(
-            "HTTP/1.1 403 Forbidden\r\n" +
-              "Connection: close\r\n" +
-              "Content-Length: 0\r\n" +
-              "\r\n",
-          );
+          // Flush the rejection after the configured handshake delay (same
+          // determinism knob as the 101 path), then close so the browser
+          // polyfill reports the failed handshake as an abnormal closure.
+          debug(`server: rejecting handshake with HTTP 403 in ${this.handshakeDelayMs}ms`);
+          setTimeout(() => {
+            socket.end(
+              "HTTP/1.1 403 Forbidden\r\n" +
+                "Connection: close\r\n" +
+                "Content-Length: 0\r\n" +
+                "\r\n",
+            );
+          }, this.handshakeDelayMs);
           return;
         }
         if (!/^get \/harness\s+http\/1\.[01]\r?$/i.test(request.split("\r\n")[0]) || key === null) {

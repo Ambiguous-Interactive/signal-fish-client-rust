@@ -267,10 +267,9 @@ can hide indefinitely.
 ### Rules
 
 1. **Always verify argument types for std API calls in cfg-guarded blocks.** The compiler
-   won't catch errors in code that's never compiled for CI targets.
-   — nightly clippy flags the explicit `&` as `needless_borrow`. The emscripten CI
-   job now runs clippy on the actual target, catching type errors directly.
-3. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
+   won't catch errors in code that's never compiled for CI targets; the emscripten
+   CI job now runs clippy on the actual target, catching type errors directly.
+2. **Consider adding static analysis checks** (in `check-ffi-safety.sh`) for known
    patterns that are prone to this class of bug.
 
 ## Target-Restricted Features
