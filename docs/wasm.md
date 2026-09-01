@@ -843,8 +843,10 @@ indefinitely when the callback queue is empty.
 **Explanation:** When no messages are buffered,
 `EmscriptenWebSocketTransport::poll_recv()` returns `Poll::Pending` without
 registering the supplied waker. Emscripten callbacks push to a
-`std::sync::mpsc` channel that has no waker integration. Debug builds log this
-misuse once when they observe a non-noop waker.
+`std::sync::mpsc` channel that has no waker integration. This misuse cannot be
+detected at runtime (`Waker::will_wake` is best-effort and its vtable identity
+check does not hold across crate boundaries), so the contract is
+documentation-enforced.
 
 **Solution:** Use `SignalFishPollingClient::poll()`, which calls the transport
 with a noop waker and correctly handles `Pending` by breaking out of the receive

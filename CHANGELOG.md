@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Debug builds of downstream crates no longer log a spurious
+  "must be driven by SignalFishPollingClient" error on the Emscripten
+  transport's first receive poll: the debug-only waker-misuse check relied on
+  best-effort waker identity that does not hold across crate boundaries and
+  was removed (the polling-only contract remains documented).
 - Token-binding connections are now robust against serde_json's
   `arbitrary_precision` feature being enabled by a consumer crate:
   previously that unification delivered numbers as private marker maps

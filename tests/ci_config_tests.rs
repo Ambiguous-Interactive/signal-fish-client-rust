@@ -8208,23 +8208,29 @@ mod ffi_safety_documentation {
         );
     }
 
-    /// The Emscripten callback channel has no wake integration. Debug builds
-    /// must diagnose accidental wake-driven polling instead of hanging silently.
+    /// The Emscripten callback channel has no wake integration. Runtime
+    /// waker-misuse detection was removed: `Waker::will_wake` is documented
+    /// best-effort and compares per-crate duplicated vtable identities, so
+    /// the check false-positived for every out-of-crate noop-waker caller in
+    /// debug builds (issue #212's on-target harness latch caught it). The
+    /// misuse contract is documentation-enforced instead; guard against the
+    /// fragile check returning.
     #[test]
-    fn emscripten_pending_recv_diagnoses_non_noop_waker() {
+    fn emscripten_pending_recv_contract_is_documentation_enforced() {
         let contents = read_project_file("src/transports/emscripten_websocket.rs");
 
         assert!(
-            contents.contains("will_wake(std::task::Waker::noop())"),
-            "Emscripten poll_recv must distinguish the polling client's noop waker"
+            !contents.contains("will_wake(std::task::Waker::noop())"),
+            "the will_wake misuse check false-positives across crate boundaries \
+             (best-effort vtable identity) and must not return"
         );
         assert!(
-            contents.contains("reported_non_noop_waker"),
-            "Emscripten poll_recv must report wake-driven misuse only once"
+            !contents.contains("reported_non_noop_waker"),
+            "the per-transport waker-diagnostic latch must not return with its check"
         );
         assert!(
-            contents.contains("SignalFishPollingClient with a noop waker"),
-            "Emscripten poll_recv must emit an actionable misuse diagnostic"
+            contents.contains("remain pending indefinitely"),
+            "Emscripten poll_recv must still document the wake-driven misuse contract"
         );
         assert!(
             contents.contains("_not_send: std::marker::PhantomData<*const ()>"),

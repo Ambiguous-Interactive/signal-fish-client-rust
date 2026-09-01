@@ -246,10 +246,17 @@ runtime, the result is a silent hang that is extremely difficult to diagnose --
 especially in Godot/Emscripten debugging scenarios where standard debugger support
 is limited.
 
-Add `cfg(debug_assertions)` guards that detect misuse at runtime. For example,
-check whether the waker provided to `poll()` is a noop waker; if not, panic with
-a clear message directing the developer to use `SignalFishPollingClient` instead.
-See the `transport-abstraction` skill for the `NoopWakerPending` pattern.
+**Do not attempt runtime waker-misuse detection.** `Waker::will_wake` is
+documented best-effort: it compares `RawWaker` data plus vtable pointer
+identity, and the noop waker's `#[inline] const` internals duplicate that
+identity per crate. A check like
+`cx.waker().will_wake(Waker::noop())` returned `false` for genuine noop wakers
+in a verified two-crate probe (and in the on-target harness), so the check
+that once shipped in `EmscriptenWebSocketTransport::poll_recv` false-positived
+for every out-of-crate caller in debug builds and was removed. Enforce the
+noop-waker contract through documentation and the driver design
+(`SignalFishPollingClient` constructs its own noop-waker contexts; see the
+`transport-abstraction` skill) instead of a runtime probe.
 
 ## Std API Calls in `cfg`-Guarded Code
 

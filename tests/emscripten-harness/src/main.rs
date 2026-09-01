@@ -14,6 +14,14 @@
 //! | 1    | send-after-close | sends on a socket the browser already closed fail terminally with the frame retained (round-24 fix), then peer close metadata |
 //! | 2    | ledger-bound     | inbound-byte bound admits two 50-byte frames, fuses on the third, drops flood frames afterwards |
 //! | 3    | abrupt-error     | `onerror` surfaces a terminal receive error and the queued `onclose` (1006, unclean) still reaches `close_info()` |
+//! | 4    | ledger-drain     | draining admitted frames releases ledger credit: a second admission wave against the same bound succeeds (issue #212 M2) |
+//! | 5    | pre-open-failure | a rejected handshake surfaces the terminal error before `is_ready()`, consumes the close tail, refuses post-terminal sends with the frame retained (issue #212 M3) |
+//! | 6    | abort-extended   | extended-length (126/127) frames round-trip byte-exact, `abort()` is idempotent, and post-abort sends/receives close cleanly (issue #212) |
+//!
+//! Every scenario runs under an error-latching tracing subscriber: a
+//! `tracing::error!` between scenario boundaries — the Drop path's
+//! cleanup-failure signal — fails the next scheduling step instead of
+//! passing silently (issue #212 M4).
 //!
 //! Invalid-UTF-8 text fusion is deliberately absent: Emscripten's WebSocket
 //! shim only delivers text frames as JavaScript strings (which are always
@@ -28,21 +36,91 @@ use signal_fish_client::{
 };
 use std::ffi::{c_char, CString};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Waker};
 
 const RESULT_RUNNING: i32 = 0;
 const RESULT_PASS: i32 = 1;
 const RESULT_FAIL: i32 = 2;
 
-/// Ledger bound for the `ledger-bound` scenario: two 50-byte frames charge
-/// 64 units each (the 64-byte minimum charge); the third 64-unit charge
-/// would exceed 160 and fuse.
+/// Ledger bound for the `ledger-bound` and `ledger-drain` scenarios: two
+/// 50-byte frames charge 64 units each (the 64-byte minimum charge); the
+/// third 64-unit charge would exceed 160 and fuse.
 const LEDGER_BOUND_BYTES: usize = 160;
 const LEDGER_FLOOD_FRAME_LEN: usize = 50;
+
+/// Text-frame length that forces the 2-byte extended-length encoding
+/// (payload lengths from 126 through 65535).
+const EXTENDED_TEXT_LEN: usize = 126;
+/// Binary-frame length well inside the 2-byte extended-length encoding.
+const EXTENDED_BINARY_LEN: usize = 300;
+/// Binary probe length that forces the 8-byte extended-length encoding
+/// (payload lengths above 65535).
+const LARGE_PROBE_LEN: usize = 70_000;
 
 /// Upper bound on scheduling steps for one scenario so a wedged callback
 /// bridge fails the harness instead of hanging CI.
 const MAX_STEPS: u32 = 4096;
+
+// ── Error-latch subscriber (issue #212 M4) ──────────────────────────────────
+
+/// Latches the first `tracing::error!` event.
+///
+/// The transport's `Drop` path logs an error-level event when cleanup fails
+/// and its callback state is intentionally leaked. `store_harness` drops the
+/// previous scenario's transport inside the next `sfh_begin`, so without this
+/// latch a delete failure between scenarios would pass silently.
+struct ErrorLatch {
+    latched: AtomicBool,
+    detail: std::sync::Mutex<Option<String>>,
+}
+
+impl tracing::Subscriber for ErrorLatch {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _attributes: &tracing::span::Attributes<'_>) -> tracing::Id {
+        // No spans are recorded by the transport; any id would do, and zero
+        // is the one value `Id::from_u64` rejects.
+        tracing::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().level() == &tracing::Level::ERROR {
+            self.latched.store(true, Ordering::Relaxed);
+            if let Ok(mut detail) = self.detail.lock() {
+                *detail = Some(event.metadata().name().to_owned());
+            }
+        }
+    }
+
+    fn enter(&self, _span: &tracing::Id) {}
+
+    fn exit(&self, _span: &tracing::Id) {}
+}
+
+static ERROR_LATCH: OnceLock<Arc<ErrorLatch>> = OnceLock::new();
+
+fn error_latch() -> &'static Arc<ErrorLatch> {
+    ERROR_LATCH.get_or_init(|| ErrorLatch {
+        latched: AtomicBool::new(false),
+        detail: std::sync::Mutex::new(None),
+    }.into())
+}
+
+fn reset_error_latch() {
+    error_latch().latched.store(false, Ordering::Relaxed);
+}
+
+fn error_latched() -> bool {
+    error_latch().latched.load(Ordering::Relaxed)
+}
 
 fn ctx() -> Context<'static> {
     Context::from_waker(Waker::noop())
@@ -78,6 +156,18 @@ impl Harness {
         if self.steps > MAX_STEPS {
             return self.fail(format!("scenario did not finish within {MAX_STEPS} steps"));
         }
+        if error_latched() {
+            let detail = error_latch()
+                .detail
+                .lock()
+                .ok()
+                .and_then(|detail| detail.clone())
+                .unwrap_or_default();
+            return self.fail(format!(
+                "a tracing error-level event was observed ({detail}); the Drop \
+                 path's cleanup-failure signal must never fire between scenarios"
+            ));
+        }
         let Some(transport) = self.transport.as_mut() else {
             return self.fail("step called before sfh_begin".into());
         };
@@ -87,6 +177,9 @@ impl Harness {
             Scenario::SendAfterClose(scenario) => scenario.step(transport),
             Scenario::LedgerBound(scenario) => scenario.step(transport),
             Scenario::AbruptError(scenario) => scenario.step(transport),
+            Scenario::LedgerDrain(scenario) => scenario.step(transport),
+            Scenario::PreOpenFailure(scenario) => scenario.step(transport),
+            Scenario::AbortExtended(scenario) => scenario.step(transport),
         };
         match outcome {
             StepOutcome::Running => RESULT_RUNNING,
@@ -561,11 +654,421 @@ impl AbruptErrorScenario {
     }
 }
 
+// ── Scenario 4: ledger drain-credit ─────────────────────────────────────────
+//
+// Mode 2 proves admission/fusion on one admission wave. It cannot detect a
+// regression where draining frames never returns their ledger credit,
+// because the single wave fuses before any drain matters. This scenario
+// admits wave 1 against the same 160-byte bound, drains it, then proves a
+// second wave is admitted: if `poll_recv` stopped releasing credit, wave 2's
+// first frame would fuse at the callback and surface a terminal error.
+
+struct LedgerDrainScenario {
+    phase: LedgerDrainPhase,
+    drained_frames: usize,
+    /// Frame slot for the wave-2 request send.
+    slot: Option<TransportFrame>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LedgerDrainPhase {
+    /// Drain wave 1 (two 50-byte frames; the open event is consumed inside
+    /// the same first drain) — drains release ledger credit.
+    Draining,
+    /// All four frames drained; close cleanly.
+    Closing,
+}
+
+impl LedgerDrainScenario {
+    fn step(&mut self, transport: &mut EmscriptenWebSocketTransport) -> StepOutcome {
+        match self.phase {
+            LedgerDrainPhase::Draining => match poll_once(transport) {
+                Recv::Pending => {
+                    // Once wave 1 is fully drained, request wave 2. Pending
+                    // polls retain the caller-owned frame until accepted.
+                    if self.drained_frames == 2 {
+                        if self.slot.is_none() {
+                            self.slot = Some(TransportFrame::Text("next".into()));
+                        }
+                        match transport.poll_send(&mut ctx(), &mut self.slot) {
+                            Poll::Ready(Ok(())) => self.slot = None,
+                            Poll::Ready(Err(error)) => {
+                                return StepOutcome::Fail(format!("wave-2 request failed: {error}"))
+                            }
+                            Poll::Pending => {}
+                        }
+                    }
+                    StepOutcome::Running
+                }
+                Recv::Frame(TransportFrame::Text(text)) => {
+                    if text.len() != LEDGER_FLOOD_FRAME_LEN {
+                        return StepOutcome::Fail(format!(
+                            "wave frame {} had {} bytes, expected {LEDGER_FLOOD_FRAME_LEN}",
+                            self.drained_frames + 1,
+                            text.len()
+                        ));
+                    }
+                    self.drained_frames += 1;
+                    if self.drained_frames == 4 {
+                        self.phase = LedgerDrainPhase::Closing;
+                    }
+                    StepOutcome::Running
+                }
+                Recv::Frame(frame) => {
+                    StepOutcome::Fail(format!("unexpected wave frame kind: {frame:?}"))
+                }
+                Recv::TerminalError(error) => {
+                    if self.drained_frames >= 2 {
+                        return StepOutcome::Fail(format!(
+                            "wave 2 fused after {} drained frames; draining did not \
+                             release ledger credit (issue #212 M2 regression): {error}",
+                            self.drained_frames
+                        ));
+                    }
+                    StepOutcome::Fail(format!("error during wave 1: {error}"))
+                }
+                Recv::Ended => {
+                    StepOutcome::Fail("peer closed before both waves drained".into())
+                }
+            },
+            LedgerDrainPhase::Closing => {
+                if self.drained_frames != 4 {
+                    return StepOutcome::Fail(format!(
+                        "closing with {} drained frames; expected 4 (two full waves)",
+                        self.drained_frames
+                    ));
+                }
+                match transport.poll_close(&mut ctx()) {
+                    Poll::Ready(Ok(())) => StepOutcome::Pass,
+                    Poll::Ready(Err(error)) => {
+                        StepOutcome::Fail(format!("post-drain poll_close failed: {error}"))
+                    }
+                    Poll::Pending => StepOutcome::Running,
+                }
+            }
+        }
+    }
+}
+
+// ── Scenario 5: pre-open failure ────────────────────────────────────────────
+//
+// No other scenario starts from a failing handshake, so the transport's
+// error-before-open path never executed on-target: a terminal receive error
+// while `is_ready()` was never true, the close-tail consume behind it, and
+// the post-terminal send refusal. Host unit tests cannot reach this
+// target-gated module.
+
+struct PreOpenFailureScenario {
+    phase: PreOpenFailurePhase,
+    /// Probe frame installed during CONNECTING; must survive both the
+    /// pre-open `Pending` window and the post-terminal refusal.
+    slot: Option<TransportFrame>,
+    /// How many `poll_send` calls observed the pre-open `Pending` retention;
+    /// the scenario refuses to pass if the window was never observed.
+    pre_open_pending_polls: u32,
+}
+
+enum PreOpenFailurePhase {
+    /// CONNECTING against a server that rejects the handshake.
+    Connecting,
+    /// Terminal error drained while never open; verify close metadata.
+    VerifyCloseMetadata,
+    /// Post-terminal sends refuse with the frame retained.
+    ExpectSendRefusal,
+    /// The receive stream ends after the terminal error.
+    ExpectEnded,
+}
+
+impl PreOpenFailureScenario {
+    fn step(&mut self, transport: &mut EmscriptenWebSocketTransport) -> StepOutcome {
+        match self.phase {
+            PreOpenFailurePhase::Connecting => match poll_once(transport) {
+                Recv::Pending => {
+                    if transport.is_ready() {
+                        return StepOutcome::Fail(
+                            "the handshake opened before the server rejected it".into(),
+                        );
+                    }
+                    if self.slot.is_none() {
+                        self.slot = Some(TransportFrame::Text("retained-into-failure".into()));
+                    }
+                    match transport.poll_send(&mut ctx(), &mut self.slot) {
+                        Poll::Pending => {
+                            if self.slot.is_none() {
+                                return StepOutcome::Fail(
+                                    "pre-open Pending poll_send consumed the caller frame".into(),
+                                );
+                            }
+                            self.pre_open_pending_polls += 1;
+                            StepOutcome::Running
+                        }
+                        Poll::Ready(Ok(())) => StepOutcome::Fail(
+                            "pre-open poll_send accepted a frame during a rejected handshake".into(),
+                        ),
+                        Poll::Ready(Err(error)) => {
+                            StepOutcome::Fail(format!("pre-open poll_send failed: {error}"))
+                        }
+                    }
+                }
+                Recv::TerminalError(error) => {
+                    if transport.is_ready() {
+                        return StepOutcome::Fail(
+                            "is_ready() was observed before the terminal error".into(),
+                        );
+                    }
+                    if !matches!(error, SignalFishError::TransportReceive(_)) {
+                        return StepOutcome::Fail(format!(
+                            "expected TransportReceive for the rejected handshake, got: {error}"
+                        ));
+                    }
+                    if self.pre_open_pending_polls == 0 {
+                        return StepOutcome::Fail(
+                            "the CONNECTING window was never observed; the pre-open \
+                             retention pin did not run"
+                                .into(),
+                        );
+                    }
+                    self.phase = PreOpenFailurePhase::VerifyCloseMetadata;
+                    StepOutcome::Running
+                }
+                Recv::Frame(frame) => {
+                    StepOutcome::Fail(format!("unexpected frame before rejection: {frame:?}"))
+                }
+                Recv::Ended => {
+                    StepOutcome::Fail("transport ended without the pre-open terminal error".into())
+                }
+            },
+            PreOpenFailurePhase::VerifyCloseMetadata => {
+                // The browser polyfill reports an abnormal closure (1006,
+                // unclean) for a rejected handshake: no close frame was ever
+                // received. The close-tail consume must have captured it.
+                let Some(info) = transport.close_info() else {
+                    return StepOutcome::Fail(
+                        "close_info missing after the pre-open terminal error".into(),
+                    );
+                };
+                if info.code != Some(1006) || info.clean != Some(false) || !info.initiated_by_peer
+                {
+                    return StepOutcome::Fail(format!(
+                        "rejected-handshake close metadata mismatch: {info:?}"
+                    ));
+                }
+                self.phase = PreOpenFailurePhase::ExpectSendRefusal;
+                StepOutcome::Running
+            }
+            PreOpenFailurePhase::ExpectSendRefusal => {
+                let Some(slot) = self.slot.as_ref() else {
+                    return StepOutcome::Fail("probe frame vanished before the refusal".into());
+                };
+                let _ = slot;
+                match transport.poll_send(&mut ctx(), &mut self.slot) {
+                    Poll::Ready(Err(SignalFishError::TransportClosed)) => {
+                        if self.slot.is_none() {
+                            return StepOutcome::Fail(
+                                "post-terminal refusal destroyed the caller-owned frame".into(),
+                            );
+                        }
+                        self.phase = PreOpenFailurePhase::ExpectEnded;
+                        StepOutcome::Running
+                    }
+                    Poll::Ready(Err(error)) => {
+                        StepOutcome::Fail(format!(
+                            "expected TransportClosed after the terminal error, got: {error}"
+                        ))
+                    }
+                    Poll::Ready(Ok(())) => StepOutcome::Fail(
+                        "poll_send accepted a frame on a terminally closed transport".into(),
+                    ),
+                    Poll::Pending => StepOutcome::Fail(
+                        "poll_send deferred on a terminally closed transport".into(),
+                    ),
+                }
+            }
+            PreOpenFailurePhase::ExpectEnded => match poll_once(transport) {
+                Recv::Ended => StepOutcome::Pass,
+                Recv::Pending => StepOutcome::Fail(
+                    "the receive stream must end after the terminal error".into(),
+                ),
+                Recv::Frame(frame) => {
+                    StepOutcome::Fail(format!("unexpected frame after the terminal error: {frame:?}"))
+                }
+                Recv::TerminalError(error) => StepOutcome::Fail(format!(
+                    "unexpected second terminal error: {error}"
+                )),
+            },
+        }
+    }
+}
+
+// ── Scenario 6: abort + extended-length frames ──────────────────────────────
+//
+// Server→client frames of 126/127-class lengths never executed on-target,
+// and neither did `Transport::abort()`. The codec's extended-length encodings
+// are probe-verified standalone; this scenario pins the whole on-target path:
+// exact byte content through the shim for both extended encodings, in both
+// directions, then abort idempotence and its post-abort refusals.
+
+struct AbortExtendedScenario {
+    phase: AbortExtendedPhase,
+    /// Frame slot for `poll_send`; retained across `Pending` and refusals.
+    slot: Option<TransportFrame>,
+    /// The exact 70 KiB probe payload; the echo must match byte-for-byte.
+    probe: Vec<u8>,
+    server_text_seen: bool,
+    server_binary_seen: bool,
+}
+
+enum AbortExtendedPhase {
+    /// Drain the server's 126-byte text and 300-byte binary frames.
+    ExpectServerFrames,
+    /// Send the 70 KiB binary probe and verify the exact echo.
+    RoundTripLarge,
+    /// `abort()` twice, then pin post-abort refusals and clean close.
+    AbortAndVerify,
+}
+
+fn extended_probe(len: usize, seed: u8) -> Vec<u8> {
+    (0..len).map(|offset| seed.wrapping_add(offset as u8)).collect()
+}
+
+impl AbortExtendedScenario {
+    fn step(&mut self, transport: &mut EmscriptenWebSocketTransport) -> StepOutcome {
+        match self.phase {
+            AbortExtendedPhase::ExpectServerFrames => match poll_once(transport) {
+                Recv::Pending => StepOutcome::Running,
+                Recv::Frame(TransportFrame::Text(text)) => {
+                    if self.server_text_seen {
+                        return StepOutcome::Fail("duplicate server text frame".into());
+                    }
+                    let expected = "x".repeat(EXTENDED_TEXT_LEN);
+                    if text != expected {
+                        return StepOutcome::Fail(format!(
+                            "126-byte text frame mismatched (got {} bytes)",
+                            text.len()
+                        ));
+                    }
+                    self.server_text_seen = true;
+                    StepOutcome::Running
+                }
+                Recv::Frame(TransportFrame::Binary(bytes)) => {
+                    if !self.server_text_seen || self.server_binary_seen {
+                        return StepOutcome::Fail("server frames arrived out of order".into());
+                    }
+                    if bytes != extended_probe(EXTENDED_BINARY_LEN, 0) {
+                        return StepOutcome::Fail(format!(
+                            "300-byte binary frame mismatched (got {} bytes)",
+                            bytes.len()
+                        ));
+                    }
+                    self.server_binary_seen = true;
+                    self.phase = AbortExtendedPhase::RoundTripLarge;
+                    StepOutcome::Running
+                }
+                Recv::TerminalError(error) => {
+                    StepOutcome::Fail(format!("error during server frames: {error}"))
+                }
+                Recv::Ended => StepOutcome::Fail("peer closed during server frames".into()),
+            },
+            AbortExtendedPhase::RoundTripLarge => {
+                if self.slot.is_none() {
+                    self.slot = Some(TransportFrame::Binary(extended_probe(LARGE_PROBE_LEN, 7)));
+                }
+                if self.slot.is_some() {
+                    match transport.poll_send(&mut ctx(), &mut self.slot) {
+                        Poll::Ready(Ok(())) => {}
+                        Poll::Ready(Err(error)) => {
+                            return StepOutcome::Fail(format!("probe send failed: {error}"))
+                        }
+                        Poll::Pending => {}
+                    }
+                }
+                match poll_once(transport) {
+                    Recv::Pending => StepOutcome::Running,
+                    Recv::Frame(TransportFrame::Binary(bytes)) => {
+                        if bytes != self.probe {
+                            return StepOutcome::Fail(format!(
+                                "70 KiB echo mismatched (got {} bytes, expected {})",
+                                bytes.len(),
+                                self.probe.len()
+                            ));
+                        }
+                        self.phase = AbortExtendedPhase::AbortAndVerify;
+                        StepOutcome::Running
+                    }
+                    Recv::Frame(frame) => {
+                        StepOutcome::Fail(format!("unexpected frame during probe echo: {frame:?}"))
+                    }
+                    Recv::TerminalError(error) => {
+                        StepOutcome::Fail(format!("error during probe echo: {error}"))
+                    }
+                    Recv::Ended => StepOutcome::Fail("peer closed during probe echo".into()),
+                }
+            }
+            AbortExtendedPhase::AbortAndVerify => {
+                // Required, prompt, nonblocking, idempotent: the second call
+                // must be a no-op rather than a panic or repeated cleanup.
+                transport.abort();
+                transport.abort();
+                if self.slot.is_none() {
+                    self.slot = Some(TransportFrame::Text("post-abort".into()));
+                }
+                match transport.poll_send(&mut ctx(), &mut self.slot) {
+                    Poll::Ready(Err(SignalFishError::TransportClosed)) => {
+                        if self.slot.is_none() {
+                            return StepOutcome::Fail(
+                                "post-abort refusal destroyed the caller-owned frame".into(),
+                            );
+                        }
+                    }
+                    Poll::Ready(Err(error)) => {
+                        return StepOutcome::Fail(format!(
+                            "expected TransportClosed after abort, got: {error}"
+                        ))
+                    }
+                    Poll::Ready(Ok(())) => {
+                        return StepOutcome::Fail("poll_send accepted a frame after abort".into())
+                    }
+                    Poll::Pending => {
+                        return StepOutcome::Fail("poll_send deferred after abort".into())
+                    }
+                }
+                match poll_once(transport) {
+                    Recv::Ended => {}
+                    Recv::Pending => {
+                        return StepOutcome::Fail("the receive stream must end after abort".into())
+                    }
+                    Recv::Frame(frame) => {
+                        return StepOutcome::Fail(format!(
+                            "unexpected frame after abort: {frame:?}"
+                        ))
+                    }
+                    Recv::TerminalError(error) => {
+                        return StepOutcome::Fail(format!("unexpected error after abort: {error}"))
+                    }
+                }
+                // Abort completed the cleanup; a later poll_close stays safe.
+                match transport.poll_close(&mut ctx()) {
+                    Poll::Ready(Ok(())) => StepOutcome::Pass,
+                    Poll::Ready(Err(error)) => {
+                        StepOutcome::Fail(format!("poll_close after abort failed: {error}"))
+                    }
+                    Poll::Pending => {
+                        StepOutcome::Fail("poll_close deferred after a completed abort".into())
+                    }
+                }
+            }
+        }
+    }
+}
+
 enum Scenario {
     Roundtrip(RoundtripScenario),
     SendAfterClose(SendAfterCloseScenario),
     LedgerBound(LedgerBoundScenario),
     AbruptError(AbruptErrorScenario),
+    LedgerDrain(LedgerDrainScenario),
+    PreOpenFailure(PreOpenFailureScenario),
+    AbortExtended(AbortExtendedScenario),
 }
 
 // ── Exported entry points ───────────────────────────────────────────────────
@@ -574,8 +1077,17 @@ enum Scenario {
 ///
 /// Returns [`RESULT_FAIL`] (with the reason readable through
 /// `sfh_fail_reason`) when setup fails, otherwise [`RESULT_RUNNING`].
+// The `url` pointer is only dereferenced through `CStr::from_ptr`, whose
+// validity the caller contract guarantees (a NUL-terminated string allocated
+// by the driver's `ccall`, valid for this call); clippy cannot see that
+// cross-language guarantee.
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
+    // Fresh attribution: an error latched by dropping the previous scenario's
+    // transport must fail the next scheduling step, not the previous scenario.
+    reset_error_latch();
+
     // SAFETY: the driver passes a NUL-terminated string allocated by the
     // Emscripten runtime (via `ccall`), valid for this call.
     let url = unsafe { std::ffi::CStr::from_ptr(url) };
@@ -584,11 +1096,13 @@ pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
         Err(error) => return begin_fail(format!("url was not valid UTF-8: {error}")),
     };
 
-    let options = if mode == 2 {
-        EmscriptenWebSocketConnectOptions::new()
-            .with_max_inbound_queue_bytes(Some(LEDGER_BOUND_BYTES))
-    } else {
-        EmscriptenWebSocketConnectOptions::new()
+    let options = match mode {
+        // The bounded scenarios share the 160-byte bound: two 64-unit charges
+        // fit, a third would fuse (mode 2) or require released drain credit
+        // (mode 4).
+        2 | 4 => EmscriptenWebSocketConnectOptions::new()
+            .with_max_inbound_queue_bytes(Some(LEDGER_BOUND_BYTES)),
+        _ => EmscriptenWebSocketConnectOptions::new(),
     };
 
     let transport = match EmscriptenWebSocketTransport::connect_with_options(&url, options) {
@@ -608,6 +1122,23 @@ pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
         }),
         3 => Scenario::AbruptError(AbruptErrorScenario {
             phase: AbruptPhase::Connecting,
+        }),
+        4 => Scenario::LedgerDrain(LedgerDrainScenario {
+            phase: LedgerDrainPhase::Draining,
+            drained_frames: 0,
+            slot: None,
+        }),
+        5 => Scenario::PreOpenFailure(PreOpenFailureScenario {
+            phase: PreOpenFailurePhase::Connecting,
+            slot: None,
+            pre_open_pending_polls: 0,
+        }),
+        6 => Scenario::AbortExtended(AbortExtendedScenario {
+            phase: AbortExtendedPhase::ExpectServerFrames,
+            slot: None,
+            probe: extended_probe(LARGE_PROBE_LEN, 7),
+            server_text_seen: false,
+            server_binary_seen: false,
         }),
         other => return begin_fail(format!("unknown scenario mode {other}")),
     };
@@ -671,4 +1202,13 @@ pub extern "C" fn sfh_fail_reason() -> *const c_char {
         .map_or(NO_FAILURE.as_ptr().cast(), |reason| reason.as_ptr())
 }
 
-fn main() {}
+fn main() {
+    // Install the error latch before any scenario can run: `main` executes
+    // during module initialization, before the driver's first `sfh_begin`.
+    if tracing::subscriber::set_global_default(Arc::clone(error_latch())).is_err() {
+        // A second install would mean a prior subscriber exists; the latch
+        // contract only holds under our own subscriber, so fail loudly.
+        eprintln!("harness FAIL: could not install the error-latch subscriber");
+        std::process::exit(1);
+    }
+}
