@@ -13,6 +13,7 @@ Defined in `src/error.rs` using `thiserror`. This enum is exhaustive.
 
 ```rust
 use crate::error_codes::ErrorCode;
+use crate::RoomRole;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -52,9 +53,36 @@ pub enum SignalFishError {
     #[error("outgoing command queue full (capacity {capacity}): ...")]
     SendBufferFull { capacity: usize },
 
+    /// Directed room operations are refused until the server's
+    /// `Authenticated` confirmation arrives.
+    #[error(
+        "not yet authenticated: wait for SignalFishEvent::Authenticated before room operations"
+    )]
+    NotAuthenticated,
+
     /// Not in a room.
     #[error("not in a room")]
     NotInRoom,
+
+    /// Attempted to join or reconnect while already in a room.
+    #[error("already in a room")]
+    AlreadyInRoom,
+
+    /// Attempted a room operation while a prior room transition awaits a
+    /// matching typed terminal response.
+    #[error("a room join, leave, or reconnect operation is already pending")]
+    RoomOperationPending,
+
+    /// Attempted an operation that is not valid for the current room role.
+    #[error("operation requires the {required} room role, but the current role is {actual}")]
+    WrongRoomRole {
+        required: RoomRole,
+        actual: RoomRole,
+    },
+
+    /// Attempted an operation reserved for the room's current authority.
+    #[error("operation requires the room's current authority role")]
+    AuthorityRequired,
 
     /// The server returned an error message.
     #[error("server error: {message}")]
@@ -69,7 +97,7 @@ pub enum SignalFishError {
     ProtocolUnsupported { mode: &'static str },
 
     /// Signaling was attempted before the current room's first SessionPlan.
-    #[error("WebRTC signaling requires an authoritative SessionPlan ...")]
+    #[error("no authoritative SessionPlan authorizes this WebRTC signal")]
     SessionPlanUnavailable,
 
     /// A generation-bound driver signal raced with a replacement plan.
@@ -83,8 +111,25 @@ pub enum SignalFishError {
     #[error("binary game data requires ...")]
     BinaryFormatNotNegotiated,
 
-    /// An operation timed out.
-    #[error("operation timed out")]
+    /// Caller payload nesting exceeds the maximum depth of `max_depth`
+    /// nested containers (currently 128, matching serde_json's own
+    /// deserialization recursion limit).
+    #[error(
+        "payload nesting exceeds the maximum depth of {max_depth} nested containers; \
+         flatten the payload"
+    )]
+    PayloadTooDeep { max_depth: usize },
+
+    /// Native WebSocket token-binding-v2 setup or outbound protection
+    /// failed. The structured reason contains no secret or proof material.
+    #[error("token binding error: {0}")]
+    TokenBinding(TokenBindingFailure),
+
+    /// The WebSocket handshake did not complete within the deadline given to
+    /// `WebSocketTransport::connect_with_timeout`.
+    #[error(
+        "the WebSocket handshake did not complete within its deadline; retry or raise the connect_with_timeout duration"
+    )]
     Timeout,
 
     /// A caller-supplied configuration value (or required build feature) was
