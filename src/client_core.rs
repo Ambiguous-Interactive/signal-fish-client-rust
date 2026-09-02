@@ -2144,6 +2144,7 @@ impl ClientCore {
         self.retired_signal_peers.clear();
         self.pending_room_operation = None;
         self.absorbed_spectator_leave = None;
+        self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -2168,6 +2169,13 @@ impl ClientCore {
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
         self.pending_room_operation = None;
+        // Clearing these two here is unobservable: the fence is cleared in
+        // tandem, every reader is fence-gated, and the SpectatorLeft caller
+        // overwrites the allowance immediately after. Owning the full
+        // room-scoped set locally keeps these transitions correct even if a
+        // future exit kind reaches them.
+        self.absorbed_spectator_leave = None;
+        self.pending_reconnects.clear();
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }

@@ -113,5 +113,5 @@ own migration notes:
 - The remaining API additions — pre-authentication refusals, token-binding
   connect options, generation-bound driver signaling, and the new error
   variants behind exhaustive matches — are enumerated under `CHANGELOG.md`'s
-  `[Unreleased]` **Breaking** bullets and in the
+  `[0.11.0]` **Breaking** bullets and in the
   [errors guide](errors.md) variant table.

@@ -412,19 +412,19 @@ pub struct PlayerNameRulesPayload {
     pub allow_unicode_alphanumeric: bool,
     pub allow_spaces: bool,
     pub allow_leading_trailing_whitespace: bool,
-    pub allowed_symbols: Vec<char>,
+    pub allowed_symbols: Vec<String>,
     pub additional_allowed_characters: Option<String>,
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `max_length` | `usize` | Maximum allowed length for a player name. |
-| `min_length` | `usize` | Minimum allowed length for a player name. |
+| `max_length` | `usize` | Maximum allowed length for a player name. Over-range or negative authority values fail the frame as `DecodeFailed` rather than truncating. |
+| `min_length` | `usize` | Minimum allowed length for a player name, bounded like `max_length`. |
 | `allow_unicode_alphanumeric` | `bool` | Whether Unicode alphanumeric characters are allowed. |
 | `allow_spaces` | `bool` | Whether spaces are allowed in the name. |
 | `allow_leading_trailing_whitespace` | `bool` | Whether leading/trailing whitespace is allowed. |
-| `allowed_symbols` | `Vec<char>` | Specific symbol characters that are permitted. |
+| `allowed_symbols` | `Vec<String>` | Symbol strings that are permitted (current servers emit one character per element). |
 | `additional_allowed_characters` | `Option<String>` | Extra characters beyond the base rules. |
 
 ---

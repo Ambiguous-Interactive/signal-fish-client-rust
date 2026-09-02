@@ -132,10 +132,12 @@ enable the advanced raw-FFI transport:
 signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["transport-websocket-emscripten"] }
 ```
 
-These snippets use `main` because the ownership, bounded-work, and admission
-guarantees documented below are listed under `Unreleased`. Use the published
-`0.12.0` dependency with its [versioned API docs](https://docs.rs/signal-fish-client/0.12.0/)
-when you do not need those fixes yet.
+These snippets use `main` so the ownership, bounded-work, and admission
+guarantees documented below stay current. The published `0.12.0` dependency
+with its [versioned API docs](https://docs.rs/signal-fish-client/0.12.0/)
+already contains them; the
+[changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
+says which release added each.
 
 The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94 or
 newer; the core remains compatible with Rust 1.87. After changing the direct
