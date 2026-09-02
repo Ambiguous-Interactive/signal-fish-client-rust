@@ -21,9 +21,9 @@ the framed-transport-agnostic core remains compatible with Rust 1.87. Keep the d
 `godot-*` families before passing `Gd` values across the adapter boundary,
 because bindings from different versions are distinct Rust types.
 
-The issue #61 polling and admission guarantees in this guide are currently on
-`main` under [`Unreleased`](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md);
-use the git dependency until the next crate release publishes them.
+The issue #61 polling and admission guarantees in this guide are published as
+of client release 0.12.0; a versioned
+`signal-fish-client = "0.12.0"` dependency is sufficient.
 
 ## Configure Signal Fish
 

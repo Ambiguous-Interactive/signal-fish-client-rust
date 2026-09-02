@@ -6,10 +6,11 @@
 # analyzer finds a defect or cannot execute, so a green run is usable evidence.
 #
 # Jobs:
-#   miri    — Miri undefined behavior detection (nightly, protocol tests)
-#   tsan    — ThreadSanitizer data-race detection (nightly, full workspace suite)
-#   fuzz    — Fuzz smoke tests for protocol and token-binding parsing (nightly)
-#   mutants — Mutation testing on pure-logic modules (stable)
+#   miri     — Miri undefined behavior detection (nightly, protocol tests)
+#   tsan     — ThreadSanitizer data-race detection (nightly, full workspace suite)
+#   fuzz     — Fuzz smoke tests for protocol and token-binding parsing (nightly)
+#   mutants  — Mutation testing on pure-logic modules (stable)
+#   campaign — Deterministic stateful hostility campaign (issue #219)
 #
 # Schedule: Weekdays at 04:00 UTC — staggered from unused-deps (05:00)
 # and security (06:00).
@@ -34,6 +35,7 @@ on:
       - tests/token-binding/**
       - tests/token_binding_conformance_tests.rs
       - tests/protocol_tests.rs
+      - tools/stateful-campaign/**
   schedule:
     # Weekdays at 04:00 UTC — staggered from unused-deps at 05:00 and security at 06:00
     - cron: "0 4 * * 1-5"
@@ -249,3 +251,40 @@ jobs:
           name: mutants-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: mutants.out/
           retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────
+  # Stateful hostility campaign (issue #219)
+  #
+  # The deterministic model-based campaign drives the real polling driver
+  # plus shared ClientCore through hostile-but-schema-valid server storms
+  # under a per-frame event-expectation oracle, stats/ledger equivalence
+  # checks, and a send-pressure archetype. One selftest proves the oracle
+  # detects known-bad streams before the campaign runs.
+  # ──────────────────────────────────────────────────────────────
+  campaign:
+    name: Stateful hostility campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Run oracle canaries
+        run: >-
+          cargo run --locked --release
+          -p signal-fish-client-stateful-campaign --bin stateful-campaign
+          -- --selftest
+
+      - name: Run the stateful hostility campaign
+        run: >-
+          cargo run --locked --release
+          -p signal-fish-client-stateful-campaign --bin stateful-campaign
+          -- --seeds 1500 --scripts 40 --budget-secs 900

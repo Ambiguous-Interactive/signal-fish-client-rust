@@ -4086,6 +4086,7 @@ mod safety_analysis_policy {
             "fuzz/**",
             "scripts/cargo-retry.sh",
             "tests/protocol_tests.rs",
+            "tools/stateful-campaign/**",
         ] {
             assert!(
                 workflow.contains(&format!("- {path}")),
@@ -4133,6 +4134,17 @@ mod safety_analysis_policy {
         assert!(local.contains("FUZZ_CORPUS=$(mktemp -d)"));
         assert!(local.contains("\"$corpus\" \"${seed_args[@]}\""));
         assert!(local.contains("cargo mutants --gitignore true"));
+
+        // The stateful hostility campaign (issue #219) is a fail-closed Deep
+        // Safety lane: canaries prove oracle sensitivity before the campaign
+        // runs, and the local check-all phase mirrors both.
+        assert!(workflow.contains("Stateful hostility campaign"));
+        assert!(workflow.contains("signal-fish-client-stateful-campaign"));
+        assert!(workflow.contains("-- --selftest"));
+        assert!(workflow.contains("--seeds 1500 --scripts 40"));
+        assert!(local.contains("stateful-campaign"));
+        assert!(local.contains("-- --selftest"));
+        assert!(local.contains("--seeds 24 --scripts 12"));
 
         let binary_target = read_project_file("fuzz/fuzz_targets/fuzz_binary_game_data.rs");
         assert!(binary_target.contains("decode_v2_binary_game_data"));

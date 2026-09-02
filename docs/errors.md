@@ -121,7 +121,7 @@ println!("{}", code.description());
 | `Unauthorized` | Access denied. Authentication credentials are missing or invalid. |
 | `InvalidToken` *(compatibility-only)* | The authentication token is invalid, malformed, or has expired. |
 | `AuthenticationRequired` *(compatibility-only)* | This operation requires authentication. |
-| `InvalidAppId` | The provided application ID is not recognized. |
+| `InvalidAppId` | The provided application ID is not recognized. Verify the app ID is correct and free of control characters (maximum 256 bytes). |
 | `AppIdExpired` *(compatibility-only)* | The application ID has expired. |
 | `AppIdRevoked` *(compatibility-only)* | The application ID has been revoked. |
 | `AppIdSuspended` *(compatibility-only)* | The application ID has been suspended. |
@@ -165,14 +165,14 @@ println!("{}", code.description());
 
 | Variant | Description |
 |---------|-------------|
-| `RateLimitExceeded` | Too many requests in a short time. Slow down and try again later. |
+| `RateLimitExceeded` | Too many requests in a short time. Room/spectator admission refusals leave the connection open; a refused handshake closes it. Wait out the window before retrying. |
 | `TooManyConnections` | You have too many active connections. |
 
 ### Reconnection (4)
 
 | Variant | Description |
 |---------|-------------|
-| `ReconnectionFailed` | Failed to reconnect to the room. |
+| `ReconnectionFailed` | Failed to reconnect — the session may have expired, the room closed, or the attempt landed on a socket the server had already scheduled to close. The token is not consumed by such a refusal; retry from a fresh connection while the window is open. |
 | `ReconnectionTokenInvalid` | The reconnection token is invalid or malformed. |
 | `ReconnectionExpired` | The reconnection window has expired. |
 | `PlayerAlreadyConnected` | This player is already connected from another session. |
@@ -210,7 +210,7 @@ Applications migrating from readiness-based auto-start must call it after an
 
 | Variant | Description |
 |---------|-------------|
-| `RoomSessionIncompatible` | The room already finalized a peer-to-peer session whose sticky topology/transport pair was not negotiated by this connection. Reconnect with compatible capabilities or join another room. |
+| `RoomSessionIncompatible` | The room already finalized a peer-to-peer session whose sticky topology/transport pair was not negotiated by this connection. Reconnect with compatible capabilities or join another room; rooms finalized to the relay floor remain open to everyone. |
 
 ### Signaling — protocol v3 (5)
 
@@ -237,18 +237,18 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 | Variant | Description |
 |---------|-------------|
 | `SlowConsumer` | The server evicted this connection because its outbound queue stayed full past the slow-consumer grace window (5 s by default): the client was not draining messages fast enough. The farewell frame carrying this code is written best-effort into an already-congested socket, so it may never arrive — a bare disconnect can be the only observable signal. |
-| `ActivityTimeout` | The server closed the connection after prolonged protocol inactivity. Send periodic pings to keep the connection alive. |
-| `ServerDraining` | The server is draining and will close the connection; preserve the current reconnect snapshot and honor retry guidance. |
-| `InvalidDeliveryClass` | A classified `GameData` request used an invalid class/key shape or unsupported delivery token. Prefer the invalid-state-proof `GameDataDelivery` API. |
+| `ActivityTimeout` | The server closed the connection after prolonged protocol inactivity. Send periodic pings to keep the connection alive; frames rejected for size or content do not refresh the window. |
+| `ServerDraining` | The server is draining and will close the connection; preserve the current reconnect snapshot and honor retry guidance. Existing sockets close with code 4000 at the drain deadline. |
+| `InvalidDeliveryClass` | A classified `GameData` request used an invalid class/key shape or unsupported delivery token. Latest requires a key; reliable and volatile forbid one. Prefer the invalid-state-proof `GameDataDelivery` API. |
 
 ### Protocol Negotiation (1)
 
 | Variant | Description |
 |---------|-------------|
-| `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum. |
+| `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. |
 
 !!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
-    The five `Signal*` codes plus `ConnectionIdleTimeout` are **server-sent**
+    The five v3 signaling codes plus `ConnectionIdleTimeout` are **server-sent**
     `ErrorCode`s that arrive inside `SignalFishEvent::Error`. They are distinct
     from the client-side `SignalFishError::ProtocolUnsupported`, which fails a
     v3-only send *locally* before it ever reaches the server.

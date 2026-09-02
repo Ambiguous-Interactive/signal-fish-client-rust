@@ -785,7 +785,10 @@ impl std::fmt::Debug for ClientSnapshot {
             .field("room_role", &self.room_role)
             .field("player_id", &self.player_id)
             .field("room_id", &self.room_id)
-            .field("room_code", &self.room_code)
+            // A room code is join-capability knowledge (a lobby-by-code
+            // credential), so the ambient Debug boundary reports presence
+            // and length only; the public field itself is unchanged.
+            .field("room_code", &self.room_code.as_ref().map(|code| code.len()))
             .field("session_generation", &self.session_generation)
             .field("session_topology", &self.session_topology)
             .field("session_transport", &self.session_transport)
@@ -2739,6 +2742,20 @@ mod tests {
         let debug = format!("{snapshot:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("top-secret-token"));
+    }
+
+    #[test]
+    fn snapshot_debug_redacts_room_code_capability() {
+        // A room code is join-capability knowledge: the ambient Debug
+        // boundary reports presence and length only, while the public field
+        // stays fully accessible.
+        let snapshot = ClientSnapshot {
+            room_code: Some("join-by-this-code\0\u{2028}".into()),
+            ..ClientSnapshot::default()
+        };
+        let debug = format!("{snapshot:?}");
+        assert!(debug.contains("room_code: Some(21)"), "{debug}"); // byte length
+        assert!(!debug.contains("join-by-this-code"), "{debug}");
     }
 
     // ── Mock transport ──────────────────────────────────────────────

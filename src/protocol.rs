@@ -500,7 +500,10 @@ pub struct PlayerNameRulesPayload {
     /// Maximum accepted `player_name` length. `usize` bounds the SDK's model
     /// at the target's unsigned range: an authority-valid negative or
     /// over-range value fails the whole frame as `DecodeFailed` rather than
-    /// truncating or sign-flipping the advisory.
+    /// truncating or sign-flipping the advisory. On 32-bit targets (such as
+    /// wasm32 web builds) values at or above 2^32 also fail as
+    /// `DecodeFailed` — still fail-closed, one advisory field never
+    /// truncates silently.
     pub max_length: usize,
     /// Minimum accepted `player_name` length, bounded like `max_length`.
     pub min_length: usize,
