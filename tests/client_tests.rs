@@ -18,8 +18,8 @@ mod common;
 use std::collections::VecDeque;
 
 use signal_fish_client::protocol::{
-    ClientMessage, ConnectionInfo, GameDataEncoding, RelayTransport, ServerMessage,
-    SpectatorStateChangeReason, TransportKind,
+    ClientMessage, ConnectionInfo, GameDataEncoding, LobbyState, PlayerInfo, RelayTransport,
+    RoomJoinedPayload, ServerMessage, SpectatorStateChangeReason, TransportKind,
 };
 use signal_fish_client::transport::TransportFrame;
 use signal_fish_client::{
@@ -389,6 +389,118 @@ async fn room_join_leave_rejoin_flow() {
 
     // After the final RoomJoined, state should reflect the room.
     assert_eq!(client.current_room_code().await.as_deref(), Some("ABC123"));
+
+    client.shutdown().await;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Sequential different-room journey: room A → leave → room B
+// ════════════════════════════════════════════════════════════════════
+
+/// A `RoomJoined` frame for a specific room identity, so the journey below
+/// exercises distinct room IDs rather than a re-baselined identical room.
+fn room_joined_json_for(room_id: uuid::Uuid, room_code: &str, player_id: uuid::Uuid) -> String {
+    let payload = RoomJoinedPayload {
+        room_id,
+        room_code: room_code.into(),
+        player_id,
+        game_name: "test-game".into(),
+        max_players: 8,
+        supports_authority: true,
+        current_players: vec![PlayerInfo {
+            id: player_id,
+            name: "Alice".into(),
+            is_authority: false,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        }],
+        is_authority: false,
+        lobby_state: LobbyState::Waiting,
+        ready_players: vec![],
+        relay_type: "auto".into(),
+        current_spectators: vec![],
+        ice_servers: vec![],
+        reconnection_token: None,
+    };
+    serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload)))
+        .expect("room joined serialization")
+}
+
+#[tokio::test]
+async fn leaving_and_joining_a_different_room_carries_only_connection_scoped_state() {
+    let room_a = uuid::Uuid::from_u128(0xA);
+    let room_b = uuid::Uuid::from_u128(0xB);
+    let player_a = uuid::Uuid::from_u128(0xA1);
+    let player_b = uuid::Uuid::from_u128(0xB1);
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(room_joined_json_for(room_a, "ROOMA", player_a))),
+        Some(Ok(room_left_json())),
+        Some(Ok(room_joined_json_for(room_b, "ROOMB", player_b))),
+        Some(Ok(room_left_json())),
+    ])
+    .await;
+
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+
+    // Room A baseline; one admitted send marks the connection-wide counter.
+    let ev = events.recv().await.expect("event");
+    match ev {
+        SignalFishEvent::RoomJoined { room_code, .. } => assert_eq!(room_code, "ROOMA"),
+        other => panic!("expected RoomJoined(ROOMA), got {other:?}"),
+    }
+    assert_eq!(client.snapshot().room_id, Some(room_a));
+    client
+        .send_game_data(serde_json::json!({"room": "A"}))
+        .expect("room A send must be admitted");
+
+    // Leave room A. The FIFO command queue sends the game data before the
+    // leave, so by the time the server-confirmed exit is observed the send
+    // is already counted.
+    client.leave_room().expect("leave must be admitted");
+    let ev = events.recv().await.expect("event");
+    assert!(matches!(ev, SignalFishEvent::RoomLeft));
+    assert_eq!(client.stats().game_data_sent, 1);
+
+    // Join a genuinely different room and observe its baseline.
+    client
+        .join_room(JoinRoomParams::new("test-game", "Alice"))
+        .expect("room B join must be admitted");
+    let ev = events.recv().await.expect("event");
+    match ev {
+        SignalFishEvent::RoomJoined { room_code, .. } => assert_eq!(room_code, "ROOMB"),
+        other => panic!("expected RoomJoined(ROOMB), got {other:?}"),
+    }
+
+    // The snapshot reflects room B only, with no quarantine carryover.
+    let snapshot = client.snapshot();
+    assert_eq!(snapshot.room_id, Some(room_b));
+    assert_eq!(snapshot.room_code.as_deref(), Some("ROOMB"));
+    assert_eq!(snapshot.player_id, Some(player_b));
+    assert!(!snapshot.quarantined);
+
+    // The connection-wide send counter persists across the room boundary by
+    // design, while room-scoped state must not: send once more in room B and
+    // fence it on the second server-confirmed exit.
+    client
+        .send_game_data(serde_json::json!({"room": "B"}))
+        .expect("room B send must be admitted");
+    client.leave_room().expect("second leave must be admitted");
+    let ev = events.recv().await.expect("event");
+    assert!(matches!(ev, SignalFishEvent::RoomLeft));
+    assert_eq!(client.stats().game_data_sent, 2);
+
+    // No further events (in particular no ProtocolViolation) are expected.
+    let ev = tokio::time::timeout(Duration::from_millis(100), events.recv()).await;
+    assert!(
+        ev.is_err(),
+        "no further events (in particular no ProtocolViolation) are expected: {ev:?}"
+    );
 
     client.shutdown().await;
 }

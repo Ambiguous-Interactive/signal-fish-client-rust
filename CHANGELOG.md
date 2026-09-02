@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `PlayerNameRulesPayload::allowed_symbols` widened from
+  `Vec<char>` to `Vec<String>`, so every schema-valid symbol list decodes
+  instead of failing the frame; update code that matched single `char`s.
+
+### Fixed
+
+- Corrected the WebAssembly guide's published-release guidance and the 0.11
+  migration guide's stale `[Unreleased]` changelog pointer.
+
 ## [0.12.0] - 2026-09-01
 
 <!-- semver-checks: major -->

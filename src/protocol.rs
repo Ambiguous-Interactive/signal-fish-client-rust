@@ -497,9 +497,12 @@ pub struct ProtocolInfoPayload {
 /// below `min_length` is surfaced verbatim rather than rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerNameRulesPayload {
-    /// Maximum accepted `player_name` length.
+    /// Maximum accepted `player_name` length. `usize` bounds the SDK's model
+    /// at the target's unsigned range: an authority-valid negative or
+    /// over-range value fails the whole frame as `DecodeFailed` rather than
+    /// truncating or sign-flipping the advisory.
     pub max_length: usize,
-    /// Minimum accepted `player_name` length.
+    /// Minimum accepted `player_name` length, bounded like `max_length`.
     pub min_length: usize,
     /// Whether Unicode alphanumeric characters are allowed.
     pub allow_unicode_alphanumeric: bool,
@@ -508,8 +511,12 @@ pub struct PlayerNameRulesPayload {
     /// Whether leading and trailing whitespace is allowed.
     pub allow_leading_trailing_whitespace: bool,
     /// Symbols accepted in addition to the base rules.
+    ///
+    /// Each element is an allowed symbol string passed through verbatim; the
+    /// wire authority types this as an array of strings, and current servers
+    /// emit one-character strings.
     #[serde(default)]
-    pub allowed_symbols: Vec<char>,
+    pub allowed_symbols: Vec<String>,
     /// Additional allowed characters as a free-form string, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_allowed_characters: Option<String>,

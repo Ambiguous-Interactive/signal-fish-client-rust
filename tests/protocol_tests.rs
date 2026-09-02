@@ -299,7 +299,7 @@ fn server_message_protocol_info_round_trip() {
             allow_unicode_alphanumeric: true,
             allow_spaces: true,
             allow_leading_trailing_whitespace: false,
-            allowed_symbols: vec!['-', '_'],
+            allowed_symbols: vec!["-".to_string(), "_".to_string()],
             additional_allowed_characters: None,
         }),
         protocol_version: None,
@@ -315,7 +315,10 @@ fn server_message_protocol_info_round_trip() {
         assert_eq!(payload.game_data_formats.len(), 2);
         let rules = payload.player_name_rules.expect("rules present");
         assert_eq!(rules.max_length, 32);
-        assert_eq!(rules.allowed_symbols, vec!['-', '_']);
+        assert_eq!(
+            rules.allowed_symbols,
+            vec!["-".to_string(), "_".to_string()]
+        );
     } else {
         panic!("expected ProtocolInfo variant");
     }
@@ -2611,15 +2614,54 @@ fn player_name_rules_payload_round_trip() {
         allow_unicode_alphanumeric: false,
         allow_spaces: false,
         allow_leading_trailing_whitespace: false,
-        allowed_symbols: vec!['_'],
+        allowed_symbols: vec!['_'.to_string()],
         additional_allowed_characters: Some("àé".into()),
     };
     let deser = round_trip(&rules);
     assert_eq!(deser.max_length, 20);
     assert_eq!(deser.min_length, 3);
     assert!(!deser.allow_unicode_alphanumeric);
-    assert_eq!(deser.allowed_symbols, vec!['_']);
+    assert_eq!(deser.allowed_symbols, vec!["_".to_string()]);
     assert_eq!(deser.additional_allowed_characters.as_deref(), Some("àé"));
+}
+
+#[test]
+fn player_name_rules_accepts_every_authority_valid_symbol_shape() {
+    // The AsyncAPI authority types `allowed_symbols` as an array of strings
+    // with no per-element length bound; every schema-valid element must
+    // decode instead of failing the whole ProtocolInfo frame.
+    let raw = r#"{
+        "max_length": 20,
+        "min_length": 3,
+        "allow_unicode_alphanumeric": false,
+        "allow_spaces": false,
+        "allow_leading_trailing_whitespace": false,
+        "allowed_symbols": ["-", "_", "ab", "", "★"]
+    }"#;
+    let rules: PlayerNameRulesPayload =
+        serde_json::from_str(raw).expect("authority-valid symbol strings decode");
+    assert_eq!(
+        rules.allowed_symbols,
+        vec![
+            "-".to_string(),
+            "_".to_string(),
+            "ab".to_string(),
+            String::new(),
+            "★".to_string()
+        ]
+    );
+    // Omission keeps the byte-compatible default.
+    let omitted: PlayerNameRulesPayload = serde_json::from_str(
+        r#"{
+        "max_length": 20,
+        "min_length": 3,
+        "allow_unicode_alphanumeric": false,
+        "allow_spaces": false,
+        "allow_leading_trailing_whitespace": false
+    }"#,
+    )
+    .expect("omitted allowed_symbols keeps the empty default");
+    assert!(omitted.allowed_symbols.is_empty());
 }
 
 // ════════════════════════════════════════════════════════════════════
