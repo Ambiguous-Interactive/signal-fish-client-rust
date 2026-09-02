@@ -55,7 +55,7 @@ secret-handling rules verified in session 070).
 ## CI/CD Action Reference Policy
 
 Use `owner/action@vN.N.N` (preferred) or `@vN`, not commit hashes. Exceptions:
-`dtolnay/rust-toolchain@stable|nightly|beta` and `emscripten-core/setup-emsdk@vN`.
+`dtolnay/rust-toolchain@stable|nightly|beta`, `emscripten-core/setup-emsdk@vN`, and `taiki-e/install-action@vN.N.N` (near-daily releases; exempt from the major-only-tag advisory).
 
 ## Changelog Policy
 
@@ -69,7 +69,7 @@ Only add `CHANGELOG.md` entries for user-visible changes.
 Production Rust is safe by default. The core manifest denies `unsafe_code`, the
 Godot adapter forbids it, and the target-gated Emscripten WebSocket module is
 the sole documented exception for the platform C API. Required WASM policy and
-50 checker self-tests enforce close-before-delete callback-state ownership;
+55 checker self-tests enforce close-before-delete callback-state ownership;
 terminal deletion failure intentionally leaks the small allocation instead of
 risking late-callback use-after-free. Change-scoped, scheduled, and manual
 Deep Safety runs Miri protocol tests, ThreadSanitizer, three raw-byte

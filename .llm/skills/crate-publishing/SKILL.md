@@ -120,39 +120,42 @@ formatting (`\`TypeName\``) instead. See the *ci-configuration* skill for detail
 
 ## cargo-deny Configuration (deny.toml)
 
-`deny.toml` at crate root enforces license, security, and duplicate dependency policies:
+`deny.toml` at the workspace root enforces license, security, and source
+policies. The checked-in file is the authority — keep this quote in sync with
+it:
 
 ```toml
-[graph]
-targets = []  # check all targets
-
 [advisories]
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
+ignore = []
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "ISC", "MPL-2.0", "Unicode-DFS-2016"]
-deny = ["GPL-3.0"]
-copyleft = "warn"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    # webpki-roots ships Mozilla's root-certificate bundle under
+    # CDLA-Permissive-2.0 (pulled by the optional `tls` feature).
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
-deny = [
-    # No chrono (use String timestamps)
-    { name = "chrono" },
-    # No bytes (use Vec<u8>)
-    { name = "bytes" },
-]
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 ```
+
+The no-`chrono` / no-`bytes` rules are repository design decisions (see
+`.llm/context.md`), not `cargo-deny` bans.
 
 Run: `cargo deny check`
 
@@ -246,8 +249,8 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 ### Added
 - Initial release
 - `SignalFishClient` with WebSocket transport
-- 26-variant `SignalFishEvent` enum
-- 50-variant `ErrorCode` enum
+- Typed `SignalFishEvent` event stream
+- Typed `ErrorCode` enum
 
 [Unreleased]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/Ambiguous-Interactive/signal-fish-client-rust/compare/v0.1.0...v0.2.0

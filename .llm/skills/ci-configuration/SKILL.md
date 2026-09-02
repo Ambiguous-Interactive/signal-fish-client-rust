@@ -280,7 +280,7 @@ A common MSRV breakage pattern: a transitive dependency publishes a new version 
 - uses: dtolnay/rust-toolchain@stable
   with:
     toolchain: 1.87.0
-- uses: Swatinem/rust-cache@v2.9.1
+- uses: Swatinem/rust-cache@v2.9.2
 - run: bash scripts/cargo-retry.sh generate-lockfile
 - run: cargo build --locked --all-features && cargo test --locked --all-features
 ```
@@ -319,7 +319,7 @@ Phase 7 emits non-blocking warnings for major-only pins. Verified by `ci_config_
 
 ### Action version consistency across workflow files
 
-All uses of the same action across workflow `.yml` files must use the same version tag (e.g., `actions/checkout@v6.0.2` everywhere, not `@v6.0.1` in one file). `dtolnay/rust-toolchain` is excluded (uses channel refs). Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
+All uses of the same action across workflow `.yml` files must use the same version tag (e.g., `actions/checkout@v7.0.1` everywhere, not `@v7.0.0` in one file). `dtolnay/rust-toolchain` is excluded (uses channel refs). Enforced by `ci_config_tests.rs::workflow_security::all_action_versions_are_consistent_across_workflows`.
 
 ### taiki-e/install-action: pin tool versions
 

@@ -198,10 +198,9 @@ has no trait-level `Send` bound. `SignalFishClient::start` adds
 
 ## Semver and Versioning
 
-This crate is pre-1.0 (0.1.0). Under semver:
+This crate is pre-1.0 (0.12.0). Under semver:
 
-- `0.MINOR.PATCH` — MINOR bumps are breaking changes
-- `0.1.PATCH` — patches only for bug fixes
+- `0.MINOR.PATCH` — MINOR bumps are breaking changes (e.g. 0.11 → 0.12)
 
 ### Breaking vs Non-Breaking
 
