@@ -180,7 +180,7 @@ pub(crate) enum TerminalCause {
 /// (the phase oracle owns them).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AllowedOutcome {
-    events: BTreeMap<&'static str, usize>,
+    pub(crate) events: BTreeMap<&'static str, usize>,
     pub(crate) violations: usize,
 }
 
@@ -255,34 +255,38 @@ fn event_or_violation(name: &'static str) -> Vec<AllowedOutcome> {
     ])
 }
 
-/// Well-formed game data: the documented stale-suppression and quarantine
-/// paths may silence it, but it can never double-deliver or fabricate.
-fn game_data_outcomes(name: &'static str) -> Vec<AllowedOutcome> {
-    one_of(vec![AllowedOutcome::event(name), AllowedOutcome::empty()])
-}
-
-/// Representation-mismatch faces (physical binary frames and v3
-/// text-delivered `GameDataBinary`): one violation always fires, a second can
-/// stack from the re-validated stamps, and the Observe policy delivers the
-/// decoded frame diagnostically through both.
-fn binary_representation_outcomes(policy: ProtocolViolationPolicy) -> Vec<AllowedOutcome> {
-    match policy {
-        ProtocolViolationPolicy::Observe => {
-            let mut two_violations = AllowedOutcome::violation();
-            two_violations.violations = 2;
-            let mut two_with_event = AllowedOutcome::violation_then_event("GameDataBinary");
-            two_with_event.violations = 2;
-            one_of(vec![
-                AllowedOutcome::violation(),
-                AllowedOutcome::violation_then_event("GameDataBinary"),
-                two_violations,
-                two_with_event,
-            ])
+impl Oracle {
+    /// Game data: the frame must surface its event. Silence is legal only
+    /// while a Quarantine-policy latch is active (the documented suppression
+    /// path); a client that drops game data outside that latch fails the
+    /// expectation oracle even though the stats counters stay honest.
+    pub(crate) fn game_data_outcomes(&self, name: &'static str) -> Vec<AllowedOutcome> {
+        if self.policy == ProtocolViolationPolicy::Quarantine && self.batch_quarantined {
+            one_of(vec![AllowedOutcome::event(name), AllowedOutcome::empty()])
+        } else {
+            exactly(name)
         }
-        _ => {
-            let mut two_violations = AllowedOutcome::violation();
-            two_violations.violations = 2;
-            one_of(vec![AllowedOutcome::violation(), two_violations])
+    }
+
+    /// Representation-mismatch faces (physical binary frames and v3
+    /// text-delivered `GameDataBinary`): the representation gate always fires
+    /// one violation. With well-formed stamps the re-validation cannot add
+    /// another, and the Observe policy always delivers the decoded frame
+    /// diagnostically; with invalid stamps a second violation can stack and
+    /// the Observe delivery stays optional.
+    pub(crate) fn binary_representation_outcomes(&self) -> Vec<AllowedOutcome> {
+        let mut two_violations = AllowedOutcome::violation();
+        two_violations.violations = 2;
+        match self.policy {
+            ProtocolViolationPolicy::Observe => {
+                let mut two_with_event = AllowedOutcome::violation_then_event("GameDataBinary");
+                two_with_event.violations = 2;
+                one_of(vec![
+                    AllowedOutcome::violation_then_event("GameDataBinary"),
+                    two_with_event,
+                ])
+            }
+            _ => one_of(vec![AllowedOutcome::violation(), two_violations]),
         }
     }
 }
@@ -559,13 +563,13 @@ impl Oracle {
                     return violation_only();
                 }
                 match (self.v3, seq.is_none() && epoch.is_none(), meta.stamp) {
-                    (false, true, _) => exactly("GameData"),
+                    (false, true, _) => self.game_data_outcomes("GameData"),
                     (false, false, _) => violation_only(),
                     (true, _, StampMode::Stale) => {
                         // Backward/replayed sequence: a stamp violation.
                         violation_outcomes(self.policy, Some("GameData"))
                     }
-                    (true, _, StampMode::Valid) => game_data_outcomes("GameData"),
+                    (true, _, StampMode::Valid) => self.game_data_outcomes("GameData"),
                     (true, _, _) => violation_outcomes(self.policy, Some("GameData")),
                 }
             }
@@ -582,7 +586,7 @@ impl Oracle {
                 // On v3 the text-delivered binary type is the documented
                 // representation-mismatch face; an invalid stamp can stack a
                 // second violation, and Observe delivers through both.
-                binary_representation_outcomes(self.policy)
+                self.binary_representation_outcomes()
             }
             M::AuthorityChanged { .. } => {
                 if !self.in_room() {
@@ -780,7 +784,7 @@ impl Oracle {
                 if self.self_sender(from) || !self.plan_peers.contains(from) {
                     return violation_only();
                 }
-                game_data_outcomes("SignalReceived")
+                exactly("SignalReceived")
             }
             M::NewPeer { peer_id, .. } => {
                 if !self.is_player() || !self.v3 {
@@ -869,10 +873,7 @@ impl Oracle {
                 _ => violation_only(),
             };
         }
-        match self.policy {
-            ProtocolViolationPolicy::Observe => binary_representation_outcomes(self.policy),
-            _ => violation_only(),
-        }
+        self.binary_representation_outcomes()
     }
 
     /// Whether a violating baseline retires its answered fence: the round-12
@@ -1419,6 +1420,23 @@ impl Oracle {
         };
         let (frame_name, fence_retired_on_violation, alternatives) = slot_data;
         if !alternatives.contains(&observed) {
+            // Drift: a later frame's outcome surfaced while an earlier frame
+            // produced nothing. Name the swallowed frame explicitly instead
+            // of misattributing the outcome to the front slot.
+            for (offset, slot) in self.slots.iter().enumerate().skip(1) {
+                if slot.alternatives.contains(&observed) {
+                    findings.push(Finding {
+                        category: "expectation-swallowed".into(),
+                        detail: format!(
+                            "frame {frame_name} produced no documented outcome; the observed \
+                             outcome belongs to frame {} (position {offset})",
+                            slot.frame
+                        ),
+                        step_index,
+                    });
+                    return;
+                }
+            }
             let expected: Vec<String> = alternatives.iter().map(|alt| format!("{alt:?}")).collect();
             findings.push(Finding {
                 category: "expectation-mismatch".into(),
@@ -1447,9 +1465,12 @@ impl Oracle {
         }
     }
 
-    /// Forgive every pending expectation (teardown abandons queued delivery).
-    pub(crate) fn forgive_pending(&mut self) {
-        self.slots.clear();
+    /// Frame names still awaiting their documented outcome at teardown. With
+    /// one-frame-per-poll scripts every delivered frame is polled before the
+    /// next step, so a slot pending at teardown is a swallow by construction;
+    /// there is no legitimately "queued but unsurfaced" delivery to forgive.
+    pub(crate) fn pending_frames(&self) -> Vec<&'static str> {
+        self.slots.iter().map(|slot| slot.frame).collect()
     }
 
     pub(crate) fn pending_slot_count(&self) -> usize {
@@ -1979,6 +2000,11 @@ pub(crate) fn run_prefix(
                 };
                 ScriptedTransport::push_text(&handles, json);
                 state.outcome.frames_fed = state.outcome.frames_fed.saturating_add(1);
+                if state.oracle.terminal {
+                    // Frames fed to a dead transport are never consumed; they
+                    // cannot carry a documented outcome.
+                    continue;
+                }
                 let kind_matched_fence = state
                     .oracle
                     .fence
@@ -2048,11 +2074,15 @@ pub(crate) fn run_prefix(
             }
             Step::Close => {
                 heartbeat();
-                // Pressure/ledger assertions run at the close boundary while
-                // the run state is still intact.
-                if script.archetype == "send_pressure" && state.outcome.findings.is_empty() {
+                // Ledger + pressure assertions run at the close boundary while
+                // the run state is still intact. The ledger covers every
+                // archetype: game-data-delivering scripts end in Close, so
+                // this is the one point their stats are still comparable.
+                if state.outcome.findings.is_empty() {
                     ledger_checks(&client, &mut state, &handles, idx);
-                    pressure_checks(&client, &mut state, &handles, idx);
+                    if script.archetype == "send_pressure" {
+                        pressure_checks(&client, &mut state, &handles, idx);
+                    }
                 }
                 client.close();
                 // Idempotence: a second close must be silent and cheap.
@@ -2127,10 +2157,12 @@ pub(crate) fn run_prefix(
                 step_index: limit,
             });
         }
-        // Unresolved expectations: a non-suppressible frame produced no event.
-        if state.oracle.pending_slot_count() > 0 && !state.oracle.disconnected_seen {
-            let pending: Vec<&'static str> =
-                state.oracle.slots.iter().map(|slot| slot.frame).collect();
+        // Unresolved expectations: a non-suppressible frame produced no
+        // event. This check runs at the end of EVERY run, including runs that
+        // ended in a terminal teardown (a teardown cannot strand a delivered
+        // frame's outcome in a one-frame-per-poll script).
+        if state.oracle.pending_slot_count() > 0 {
+            let pending = state.oracle.pending_frames();
             state.outcome.findings.push(Finding {
                 category: "expectation-swallowed".into(),
                 detail: format!(
@@ -2361,9 +2393,8 @@ fn drive_polls(
         if !state.outcome.findings.is_empty() {
             return;
         }
-        if terminal_in_batch {
-            // Teardown abandons queued delivery; pending slots are forgiven.
-            state.oracle.forgive_pending();
+        if terminal_in_batch && !state.outcome.findings.is_empty() {
+            return;
         }
         if let Err(detail) = state.oracle.end_batch() {
             state.outcome.findings.push(Finding {

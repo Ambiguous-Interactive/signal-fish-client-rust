@@ -311,6 +311,44 @@ fn run_direct_feed_canaries() -> Vec<DirectFeedVerdict> {
             }
             Err("strict oracle keeps the unresolved Pong slot pending (swallow detectable)".into())
         }),
+        // 13b. Game-data swallow: a fresh, valid, non-quarantined GameData
+        //      frame must surface its event; a silent batch must leave the
+        //      slot pending (the swallow is detectable end-of-run).
+        fed("expectation_swallowed_game_data", || {
+            let mut oracle = crate::run::test_support::fresh_oracle(
+                ProtocolViolationPolicy::Quarantine,
+                ConfigKind::V3,
+                false,
+            );
+            let (data, meta) = {
+                let mut ctx = Ctx::new_for_canary();
+                gen::canary_game_data(&mut ctx)
+            };
+            let expected = oracle.expectation_for(&data, &meta);
+            let requires_event = expected.len() == 1
+                && expected
+                    .first()
+                    .is_some_and(|outcome| !outcome.events.is_empty());
+            if !requires_event {
+                return Err("valid game data must require its event".into());
+            }
+            oracle
+                .slots
+                .push_back(crate::run::test_support::slot_with("GameData", expected));
+            let mut findings = Vec::new();
+            // The poll batch surfaced nothing (the swallow under test).
+            oracle.reconcile_batch(&[], 0, 0, &mut findings);
+            if !findings.is_empty() {
+                return Err("empty batch was misreported as a mismatch".into());
+            }
+            if oracle.pending_slot_count() != 1 {
+                return Err("pending GameData slot vanished without its event".into());
+            }
+            Err(
+                "strict oracle keeps the unresolved GameData slot pending (swallow detectable)"
+                    .into(),
+            )
+        }),
         // 14. Expectation fabrication: an event with no delivered frame must
         //     be reported; failing to report it accepts the bad stream.
         fed("expectation_fabricated_event", || {

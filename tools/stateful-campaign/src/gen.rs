@@ -429,7 +429,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
     )
 }
 
-fn relay_stats(rng: &mut Rng, mode: u8) -> (ServerMessage, FrameMeta) {
+fn relay_stats(_rng: &mut Rng, mode: u8) -> (ServerMessage, FrameMeta) {
     // Modes 1 (zero interval) and 2 (interval change plus saturated counters)
     // are bound-breaking hostile faces; modes 0 and 3 are valid heartbeats.
     let bound_breaking = matches!(mode, 1 | 2);
@@ -443,7 +443,6 @@ fn relay_stats(rng: &mut Rng, mode: u8) -> (ServerMessage, FrameMeta) {
         3 => (5, 3, 1),
         _ => (10, 0, 0),
     };
-    let _ = rng;
     (
         ServerMessage::RelayStats {
             interval_ms,
@@ -733,14 +732,13 @@ fn gamedata_binary(
     )
 }
 
-fn player_left(rng: &mut Rng, who: PlayerId, mode: u8) -> (ServerMessage, FrameMeta) {
+fn player_left(_rng: &mut Rng, who: PlayerId, mode: u8) -> (ServerMessage, FrameMeta) {
     let (epoch, final_seq) = match mode {
         0 => (Some(2), Some(u64::MAX)),
         1 => (Some(1), Some(0)),
         2 => (None, None),
         _ => (Some(0), Some(0)),
     };
-    let _ = rng;
     (
         ServerMessage::PlayerLeft {
             player_id: who,
@@ -952,6 +950,13 @@ fn arch_journey(
             authority_changed(rng, ctx),
             FrameMeta::default(),
         );
+    }
+    if !v3 {
+        // The v2 stampless game-data face (its stamped variants are the
+        // hostile UnexpectedMetadata face exercised by the accountability
+        // archetype's v2 branch).
+        let (msg, meta) = game_data(rng, ctx, ctx.peer_a, StampMode::None);
+        deliver(&mut steps, msg, meta);
     }
 
     // Readiness + start.
