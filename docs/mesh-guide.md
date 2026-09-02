@@ -15,7 +15,7 @@ drive the whole handshake for you.
     ```
 
     The generation-bearing protocol-v3 mesh APIs in this guide are all
-    published as of client release 0.11.0; the
+    published as of client release 0.12.0; the
     [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
     says which release added each.
 

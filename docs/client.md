@@ -9,11 +9,11 @@ For WebAssembly environments without an async runtime,
 game-loop-driven alternative.
 
 !!! note "Published crate versus this guide"
-    The stable crates.io release is **0.11.0**. This guide tracks the current
+    The stable crates.io release is **0.12.0**. This guide tracks the current
     `main` branch, which may include additions that have not reached a release
     yet; the [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
     lists what is new. Use the
-    [0.11.0 API docs](https://docs.rs/signal-fish-client/0.11.0/) for the
+    [0.12.0 API docs](https://docs.rs/signal-fish-client/0.12.0/) for the
     published surface, or a `git` dependency on `main` for the unreleased APIs.
 
 ---
@@ -81,7 +81,7 @@ use signal_fish_client::{GameDataEncoding, SignalFishConfig};
 
 let config = SignalFishConfig {
     app_id: "mb_app_abc123".into(),
-    sdk_version: Some("0.11.0".into()),
+    sdk_version: Some("0.12.0".into()),
     platform: Some("rust".into()),
     game_data_format: Some(GameDataEncoding::Json),
     ..SignalFishConfig::new("mb_app_abc123")

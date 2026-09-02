@@ -179,10 +179,10 @@ members = ["crates/signal-fish-client-godot", "tools/perf-lab"]
 resolver = "2"
 
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 
 [workspace.dependencies]
-signal-fish-client = { version = "=0.11.0", path = ".", default-features = false }
+signal-fish-client = { version = "=0.12.0", path = ".", default-features = false }
 
 # Release builds validate under the same arithmetic semantics as every debug
 # test, fuzz, and Miri run: integer overflow aborts loudly instead of wrapping
