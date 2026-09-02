@@ -889,7 +889,13 @@ fn prologue_with(
 }
 
 /// Join flow matching the negotiated envelope mode.
-fn join_flow(rng: &mut Rng, ctx: &Ctx, echo_room_ops: bool, steps: &mut Vec<Step>) {
+fn join_flow(
+    rng: &mut Rng,
+    ctx: &Ctx,
+    config: ConfigKind,
+    echo_room_ops: bool,
+    steps: &mut Vec<Step>,
+) {
     if echo_room_ops && rng.chance(80) {
         steps.push(Step::Cmd(Cmd::JoinRoom));
         steps.push(Step::Poll(1));
@@ -908,9 +914,25 @@ fn join_flow(rng: &mut Rng, ctx: &Ctx, echo_room_ops: bool, steps: &mut Vec<Step
     } else {
         steps.push(Step::Cmd(Cmd::JoinRoom));
         steps.push(Step::Poll(1));
+        // v3 baselines always carry a token (valid there) and paired roster
+        // stamps; v2 baselines alternate between the token/stamp hostile
+        // face (always a violation) and a valid, stampless baseline so the
+        // v2 in-room faces stay reachable.
+        // v3 baselines carry a token and paired roster stamps (valid); v2
+        // baselines alternate between the token/stamp hostile face (always a
+        // violation) and a valid, stampless baseline so the v2 in-room faces
+        // stay reachable.
+        let (with_token, roster) = if config.is_v3() || rng.chance(50) {
+            (true, vec![player_info_placeholder(ctx)])
+        } else {
+            (
+                false,
+                vec![player_info(ctx, ctx.self_id, "self", None, None)],
+            )
+        };
         deliver(
             steps,
-            room_joined(rng, ctx, &[player_info_placeholder(ctx)], 8, true),
+            room_joined(rng, ctx, &roster, 8, with_token),
             FrameMeta::default(),
         );
     }
@@ -931,7 +953,7 @@ fn arch_journey(
     let mut steps = Vec::new();
     let v3 = config.is_v3();
     prologue(rng, ctx, config, echo_room_ops, &mut steps);
-    join_flow(rng, ctx, echo_room_ops, &mut steps);
+    join_flow(rng, ctx, config, echo_room_ops, &mut steps);
 
     // Roster churn.
     for peer in [ctx.peer_a, ctx.peer_b] {
@@ -1112,7 +1134,7 @@ fn arch_roster_storm(
     let mut steps = Vec::new();
     let v3 = config.is_v3();
     prologue(rng, ctx, config, echo_room_ops, &mut steps);
-    join_flow(rng, ctx, echo_room_ops, &mut steps);
+    join_flow(rng, ctx, config, echo_room_ops, &mut steps);
 
     // Roster overflow: baseline self + several beyond max_players=2.
     for i in 0..8u32 {
@@ -1194,7 +1216,7 @@ fn arch_accountability(
     let mut steps = Vec::new();
     let v3 = config.is_v3();
     prologue(rng, ctx, config, echo_room_ops, &mut steps);
-    join_flow(rng, ctx, echo_room_ops, &mut steps);
+    join_flow(rng, ctx, config, echo_room_ops, &mut steps);
     deliver(
         &mut steps,
         ServerMessage::PlayerJoined {
@@ -1445,7 +1467,7 @@ fn arch_plan_churn(
     let mut steps = Vec::new();
     let v3 = config.is_v3();
     prologue(rng, ctx, config, echo_room_ops, &mut steps);
-    join_flow(rng, ctx, echo_room_ops, &mut steps);
+    join_flow(rng, ctx, config, echo_room_ops, &mut steps);
     deliver(
         &mut steps,
         ServerMessage::PlayerJoined {
@@ -1602,7 +1624,7 @@ fn arch_command_storm(
     let mut steps = Vec::new();
     prologue(rng, ctx, config, echo_room_ops, &mut steps);
     if rng.chance(70) {
-        join_flow(rng, ctx, echo_room_ops, &mut steps);
+        join_flow(rng, ctx, config, echo_room_ops, &mut steps);
     }
     for _ in 0..60usize.saturating_add(rng.below(80)) {
         steps.push(Step::Cmd(random_cmd(rng, ctx)));

@@ -268,12 +268,26 @@ impl Oracle {
         }
     }
 
+    /// v2 game data: no stamp state exists, so most stamp faces cannot be
+    /// predicted exactly; the frame must surface its event, an accountability
+    /// violation, or (under Quarantine) documented suppression — never two
+    /// events, never Observe silence.
+    pub(crate) fn v2_game_data_outcomes(&self, name: &'static str) -> Vec<AllowedOutcome> {
+        let mut alternatives = vec![AllowedOutcome::event(name)];
+        alternatives.extend(violation_outcomes(self.policy, Some(name)));
+        if self.policy == ProtocolViolationPolicy::Quarantine && self.batch_quarantined {
+            alternatives.push(AllowedOutcome::empty());
+        }
+        one_of(alternatives)
+    }
+
     /// Representation-mismatch faces (physical binary frames and v3
     /// text-delivered `GameDataBinary`): the representation gate always fires
-    /// one violation. With well-formed stamps the re-validation cannot add
-    /// another, and the Observe policy always delivers the decoded frame
-    /// diagnostically; with invalid stamps a second violation can stack and
-    /// the Observe delivery stays optional.
+    /// one violation, a second can stack from the re-validated stamps (an
+    /// invalid stamp, or a frontier shifted by an earlier apply-anyway frame
+    /// under Observe), and the Observe policy always delivers the decoded
+    /// frame diagnostically — apply and apply-anyway both reach the event
+    /// queue.
     pub(crate) fn binary_representation_outcomes(&self) -> Vec<AllowedOutcome> {
         let mut two_violations = AllowedOutcome::violation();
         two_violations.violations = 2;
@@ -505,12 +519,12 @@ impl Oracle {
                     // Unwrapped response while a correlated operation pends.
                     return violation_only();
                 }
-                if !baseline_roster_valid(
-                    self.v3,
+                if !baseline_roster_shape_valid(
                     payload.player_id,
                     payload.is_authority,
                     &payload.current_players,
-                ) {
+                ) || !baseline_roster_stamps_valid(self.v3, &payload.current_players)
+                {
                     return violation_only();
                 }
                 event_or_violation("RoomJoined")
@@ -550,11 +564,13 @@ impl Oracle {
                 if !self.in_room() {
                     return violation_only();
                 }
-                if self.v3 && (epoch.is_none() != final_seq.is_none() || epoch == &Some(0)) {
-                    return violation_only();
-                }
-                if !self.v3 && (epoch.is_some() || final_seq.is_some()) {
-                    return violation_only();
+                let shape_invalid = (self.v3
+                    && (epoch.is_none() != final_seq.is_none() || epoch == &Some(0)))
+                    || (!self.v3 && (epoch.is_some() || final_seq.is_some()));
+                if shape_invalid {
+                    // Stamp-shape violations are accountability faces: the
+                    // Observe policy delivers the frame diagnostically.
+                    return violation_outcomes(self.policy, Some("PlayerLeft"));
                 }
                 event_or_violation("PlayerLeft")
             }
@@ -563,7 +579,7 @@ impl Oracle {
                     return violation_only();
                 }
                 match (self.v3, seq.is_none() && epoch.is_none(), meta.stamp) {
-                    (false, true, _) => self.game_data_outcomes("GameData"),
+                    (false, true, _) => self.v2_game_data_outcomes("GameData"),
                     (false, false, _) => violation_only(),
                     (true, _, StampMode::Stale) => {
                         // Backward/replayed sequence: a stamp violation.
@@ -656,13 +672,13 @@ impl Oracle {
                 if !self.in_room() {
                     return violation_only();
                 }
-                if self.v3 && (epoch.is_none() || epoch == &Some(0)) {
-                    return violation_only();
+                let shape_invalid = (self.v3 && (epoch.is_none() || epoch == &Some(0)))
+                    || (!self.v3 && epoch.is_some());
+                if shape_invalid {
+                    violation_outcomes(self.policy, Some("PlayerReconnected"))
+                } else {
+                    event_or_violation("PlayerReconnected")
                 }
-                if !self.v3 && epoch.is_some() {
-                    return violation_only();
-                }
-                event_or_violation("PlayerReconnected")
             }
             M::SpectatorJoined(payload) => {
                 if !self.authenticated || self.membership.is_some() {
@@ -890,12 +906,12 @@ impl Oracle {
                 {
                     return None;
                 }
-                // v2 token/ICE exposure and roster-shape failures are definite
-                // lifecycle rejections.
+                // v2 token/ICE exposure and roster-shape failures are
+                // definite lifecycle rejections; stamp failures are the
+                // accountability layer and retire the answered fence.
                 if (!self.v3
                     && (payload.reconnection_token.is_some() || !payload.ice_servers.is_empty()))
-                    || !baseline_roster_valid(
-                        self.v3,
+                    || !baseline_roster_shape_valid(
                         payload.player_id,
                         payload.is_authority,
                         &payload.current_players,
@@ -1630,11 +1646,12 @@ fn echo_kind_matches_fence(kind: EchoKind, fence: FenceKind) -> bool {
     )
 }
 
-/// Baseline roster validity (mirror of `validate_local_player_snapshot`): the
-/// payload's player must appear exactly once with a consistent authority flag
-/// and at most one authority overall.
-fn baseline_roster_valid(
-    v3: bool,
+/// Baseline roster lifecycle shape (mirror of
+/// `validate_local_player_snapshot`, which runs in the lifecycle validator):
+/// the payload's player must appear exactly once with a consistent authority
+/// flag and at most one authority overall. Stamp validity is a separate,
+/// accountability-layer check.
+fn baseline_roster_shape_valid(
     local: PlayerId,
     local_is_authority: bool,
     players: &[signal_fish_client::protocol::PlayerInfo],
@@ -1648,13 +1665,19 @@ fn baseline_roster_valid(
     if entry.is_authority != local_is_authority {
         return false;
     }
-    if players.iter().filter(|p| p.is_authority).count() > 1 {
-        return false;
+    players.iter().filter(|p| p.is_authority).count() <= 1
+}
+
+/// Accountability-layer roster stamp validity for the negotiated dialect.
+fn baseline_roster_stamps_valid(
+    v3: bool,
+    players: &[signal_fish_client::protocol::PlayerInfo],
+) -> bool {
+    if v3 {
+        players.iter().all(|p| !v3_stamp_invalid(p.epoch, p.seq))
+    } else {
+        players.iter().all(|p| p.epoch.is_none() && p.seq.is_none())
     }
-    if v3 && players.iter().any(|p| v3_stamp_invalid(p.epoch, p.seq)) {
-        return false;
-    }
-    true
 }
 
 fn v3_stamp_invalid(epoch: Option<u32>, seq: Option<u64>) -> bool {
@@ -1888,6 +1911,8 @@ struct RunState {
     raw_frames_fed: usize,
     /// DecodeFailed events observed (checked against `raw_frames_fed`).
     decode_failed_events: usize,
+    /// `poll()` calls issued (for the `begin_poll_cycle` contract pin).
+    polls_made: usize,
 }
 
 pub(crate) fn run_prefix(
@@ -1906,6 +1931,7 @@ pub(crate) fn run_prefix(
         predicted_game_data_received: 0,
         raw_frames_fed: 0,
         decode_failed_events: 0,
+        polls_made: 0,
     };
 
     for (idx, step) in script.steps.iter().take(limit).enumerate() {
@@ -2082,6 +2108,20 @@ pub(crate) fn run_prefix(
                     ledger_checks(&client, &mut state, &handles, idx);
                     if script.archetype == "send_pressure" {
                         pressure_checks(&client, &mut state, &handles, idx);
+                    }
+                    // Transport-contract pin: `begin_poll_cycle` fires exactly
+                    // once per `poll()` call (the documented scheduling-cycle
+                    // contract for the polling driver).
+                    let cycles = handles.begin_cycles.load(Ordering::Relaxed);
+                    if cycles != state.polls_made {
+                        state.outcome.findings.push(Finding {
+                            category: "contract-begin-poll-cycle".into(),
+                            detail: format!(
+                                "begin_poll_cycle fired {cycles} times for {} poll() calls",
+                                state.polls_made
+                            ),
+                            step_index: idx,
+                        });
                     }
                 }
                 client.close();
@@ -2347,6 +2387,11 @@ fn drive_polls(
         heartbeat();
         let quarantined = client.snapshot().quarantined;
         state.oracle.begin_batch(quarantined);
+        if !state.oracle.terminal {
+            // Post-terminal polls short-circuit before the driver begins a
+            // scheduling cycle, so only live polls carry the contract.
+            state.polls_made = state.polls_made.saturating_add(1);
+        }
         let events = client.poll();
         state.outcome.events_seen = state.outcome.events_seen.saturating_add(events.len());
         let mut names: Vec<&'static str> = Vec::new();

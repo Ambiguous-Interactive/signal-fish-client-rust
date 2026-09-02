@@ -320,6 +320,13 @@ fn run_direct_feed_canaries() -> Vec<DirectFeedVerdict> {
                 ConfigKind::V3,
                 false,
             );
+            // Drive the oracle into the in-room, non-quarantined state via
+            // the same event sequence a clean journey produces, so the frame
+            // lands on the documented must-deliver path.
+            oracle.observe(&ev_connected())?;
+            oracle.observe(&ev_authenticated())?;
+            oracle.observe(&ev_protocol_info_v3())?;
+            oracle.observe(&ev_room_joined())?;
             let (data, meta) = {
                 let mut ctx = Ctx::new_for_canary();
                 gen::canary_game_data(&mut ctx)
@@ -330,7 +337,7 @@ fn run_direct_feed_canaries() -> Vec<DirectFeedVerdict> {
                     .first()
                     .is_some_and(|outcome| !outcome.events.is_empty());
             if !requires_event {
-                return Err("valid game data must require its event".into());
+                return Err("valid in-room game data must require its event".into());
             }
             oracle
                 .slots

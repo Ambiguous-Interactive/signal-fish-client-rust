@@ -176,6 +176,15 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// One-letter policy prefix used by the `--repro` CLI argument.
+fn policy_prefix(policy: ProtocolViolationPolicy) -> &'static str {
+    match policy {
+        ProtocolViolationPolicy::Quarantine => "Q",
+        ProtocolViolationPolicy::Observe => "O",
+        ProtocolViolationPolicy::Disconnect => "D",
+    }
+}
+
 fn format_failure(
     script: &Script,
     policy: ProtocolViolationPolicy,
@@ -197,10 +206,12 @@ fn format_failure(
         ));
     }
     out.push_str(&format!(
-        "  reduced failing prefix: {} of {} steps (repro: --seeds 1 --start-seed {})\n",
+        "  reduced failing prefix: {} of {} steps (repro: --repro {} {} {}:<PREFIX>)\n",
         failure.prefix_len,
         script.steps.len(),
-        script.seed
+        script.seed,
+        script.index,
+        policy_prefix(policy)
     ));
     out.push_str("  steps:\n");
     out.push_str(&render_prefix(script, failure.prefix_len, 60));
