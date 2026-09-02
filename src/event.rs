@@ -798,7 +798,15 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// itself is recovered separately and boundedly via `message_type`.
 #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 pub(crate) fn bounded_error_text(error: &serde_json::Error) -> String {
-    truncate_on_char_boundary(&error.to_string(), DECODE_FAILED_RAW_PREFIX_MAX).to_string()
+    bounded_text(&error.to_string())
+}
+
+/// Bounded diagnostic text at [`DECODE_FAILED_RAW_PREFIX_MAX`] on a UTF-8
+/// boundary, for error strings that embed wire-supplied tokens (the
+/// MessagePack binary decoders quote the hostile value, for example).
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+pub(crate) fn bounded_text(raw: &str) -> String {
+    truncate_on_char_boundary(raw, DECODE_FAILED_RAW_PREFIX_MAX).to_string()
 }
 
 // ── Conversion ──────────────────────────────────────────────────────
@@ -1426,8 +1434,8 @@ mod tests {
         let cases: [(&str, &str); 6] = [
             // Plain JSON: keys and values both mask; structure survives.
             (
-                r#"{"type":"Error","data":{}}"#,
-                r#"{"****":"*****","****":{}}"#,
+                r#"{"type":"Error","data":{"error_code":"abcdef"}}"#,
+                r#"{"****":"*****","****":{"**********":"******"}}"#,
             ),
             // Escape sequences mask in their raw source form, and the
             // closing quote placement is identical.

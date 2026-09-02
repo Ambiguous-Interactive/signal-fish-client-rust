@@ -79,9 +79,12 @@ treated as a terminal receive error and tears the session down before any
 decode work, so a hostile frame cannot amplify into parse memory and the
 behavior matches the built-in transport's own over-limit close (RFC 6455
 1009). The default (`None`) accepts every delivered frame. Keep the value
-stable for the lifetime of one connection, and only declare a bound your
-backend actually enforces — the driver treats the hint as a contract, which
-protects callers even when the backend's own enforcement is missing.
+stable for the lifetime of one connection. Declare the bound your backend is
+configured with even where its own enforcement is best-effort: the drivers
+treat the declaration as a contract and reject violations terminally
+themselves, so callers stay protected either way. (The Godot adapter's
+caller-owned peers declare no hint — the SDK cannot know a peer it did not
+configure.)
 
 ## Datagram and raw-stream scope
 

@@ -1306,9 +1306,12 @@ impl ClientCore {
             Err(error) => {
                 let disconnect = self.observe_undecodable(&mut outcome.events);
                 self.stats.messages_undecodable = self.stats.messages_undecodable.saturating_add(1);
+                // The binary decoders quote wire-supplied tokens verbatim
+                // (e.g. an unknown encoding string), so the stored text gets
+                // the same bound as the JSON path.
                 outcome.events.push(SignalFishEvent::DecodeFailed {
                     message_type: Some("BinaryGameData".into()),
-                    error,
+                    error: crate::event::bounded_text(&error),
                     raw_prefix: bounded_binary_preview(&bytes),
                 });
                 outcome.disconnect = disconnect;
@@ -4223,6 +4226,46 @@ mod tests {
             outcome.events.as_slice(),
             [SignalFishEvent::DecodeFailed { .. }]
         ));
+    }
+
+    /// The MessagePack decoders quote wire-supplied tokens verbatim (an
+    /// unknown encoding string, for example), so the stored `DecodeFailed`
+    /// error text gets the same 512-byte bound as the JSON path.
+    #[test]
+    fn binary_decode_error_text_is_bounded() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::MessagePack),
+            ProtocolViolationPolicy::Quarantine,
+            false,
+        );
+        let _ = process(&mut core, authenticated());
+        let ServerMessage::ProtocolInfo(mut protocol) = protocol_info(None) else {
+            unreachable!("protocol_info helper always returns ProtocolInfo")
+        };
+        protocol.game_data_formats = vec![GameDataEncoding::Json, GameDataEncoding::MessagePack];
+        let _ = process(&mut core, ServerMessage::ProtocolInfo(protocol));
+        core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
+        let _ = process(&mut core, room_joined_v2());
+
+        // Hostile envelope: a map whose `encoding` value is 1 MB of 'A' —
+        // the decode failure quotes the whole value.
+        let mut frame = Vec::new();
+        rmp::encode::write_map_len(&mut frame, 1).expect("map header must encode");
+        rmp::encode::write_str(&mut frame, "encoding").expect("key must encode");
+        rmp::encode::write_str(&mut frame, &"A".repeat(1_000_000))
+            .expect("hostile value must encode");
+        let outcome = core.process_frame(TransportFrame::Binary(frame));
+        let [SignalFishEvent::DecodeFailed { error, .. }] = outcome.events.as_slice() else {
+            panic!("expected one DecodeFailed event, got {:?}", outcome.events);
+        };
+        assert!(
+            error.len() <= crate::event::DECODE_FAILED_RAW_PREFIX_MAX,
+            "binary error text must stay bounded, got {} bytes",
+            error.len()
+        );
+        assert!(error.contains('A'), "a bounded prefix of the token stays");
     }
 
     #[test]

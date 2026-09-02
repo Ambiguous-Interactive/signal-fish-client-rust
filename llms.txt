@@ -19,6 +19,7 @@ repository git dependency when evaluating APIs and fixes listed under
 - [Getting started](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/getting-started/): Installation, features, and first client
 - [Basic lobby walkthrough](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/examples/): A complete lobby client with readiness, game start, and shutdown
 - [Client commands and state](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/client/): Async and polling clients, commands, work budgets, shutdown, and diagnostics
+- [Authentication & credentials](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/authentication/): Public app IDs, secret reconnection tokens, rotation, and log hygiene
 - [Events](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/events/): The event stream and every variant a game loop must handle
 - [Errors](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/errors/): Error types, codes, and recovery guidance
 - [Deterministic testing](https://Ambiguous-Interactive.github.io/signal-fish-client-rust/testing/): Paused-clock and caller-cadence recipes for both drivers

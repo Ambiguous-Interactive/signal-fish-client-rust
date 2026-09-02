@@ -96,7 +96,7 @@ SDK) or a corrupting middlebox — log `DecodeFailed` in production builds.
     credential-looking strings in it for exactly the application that logs
     decode failures verbatim. `Debug` formatting redacts it entirely; when
     you need the frame's shape for diagnostics, use
-    [`redacted_raw_prefix()`](https://docs.rs/signal-fish-client/latest/signal_fish_client/struct.SignalFishEvent.html#method.redacted_raw_prefix),
+    [`redacted_raw_prefix()`](https://docs.rs/signal-fish-client/latest/signal_fish_client/event/enum.SignalFishEvent.html#method.redacted_raw_prefix),
     which masks every string literal's content while preserving the JSON
     skeleton. Never log `raw_prefix` verbatim.
 

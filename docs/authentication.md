@@ -70,16 +70,17 @@ the mTLS fingerprint profile.
 
 The SDK treats ambient logs as a redaction boundary by design:
 
-- `Debug` impls for events, snapshots, protocol messages, close reasons, and
-  transport frames print variants, flags, and byte lengths — never payload
-  text, room codes, tokens, or credentials.
-- The one deliberate carve-out is
-  [`SignalFishEvent::DecodeFailed::raw_prefix`](events.md): undecodable frames
-  are attacker-influencable, and a hostile server can plant
-  credential-looking strings in them. Its `Debug` redacts the prefix
-  entirely; when you need the frame's shape for diagnostics, prefer the
-  `redacted_raw_prefix()` helper, which masks every string literal's content
-  while preserving the JSON skeleton.
+- SDK-internal `Debug` impls for events, snapshots, protocol messages, close
+  reasons, and transport frames print variants, flags, and byte lengths —
+  never payload text, room codes, tokens, or credentials. (Payload structs
+  such as player names format their tested non-secret fields; reconnect
+  tokens and key material are redacted everywhere.)
+- Undecodable inbound frames are attacker-influencable, so their
+  [`DecodeFailed`](events.md#decodefailed) diagnostics are handled with care:
+  the serde error text is capped at 512 bytes, `raw_prefix`'s `Debug` redacts
+  it entirely, and the `redacted_raw_prefix()` helper returns a
+  content-masked view that keeps the frame's shape. Never log `raw_prefix`
+  verbatim.
 
 Follow the same rules in your own code: persist secrets encrypted or in a
 keystore, and keep them out of logs, URLs, and error messages.

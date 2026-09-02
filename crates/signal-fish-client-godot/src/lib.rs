@@ -409,6 +409,12 @@ pub struct GodotWebSocketTransport {
     /// re-observe the same parked state do not inflate the deferred-send
     /// counters. Cleared when the frame is accepted (or the slot is empty).
     deferred_counted: bool,
+    /// Declared through [`Transport::max_frame_hint`] for SDK-created peers:
+    /// Godot's inbound byte buffer is a total bound, so a single frame larger
+    /// than it can never be delivered on either platform (web drops it at the
+    /// bound; native stalls instead of assembling it). Caller-owned peers
+    /// keep `None` because their configuration is unknown.
+    max_inbound_frame: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -476,6 +482,12 @@ impl GodotWebSocketTransport {
     /// how that bounds a single admitted frame. Use [`Self::from_peer`] when
     /// the application must choose any of these settings.
     ///
+    /// The transport declares the configured inbound buffer through
+    /// [`Transport::max_frame_hint`], so both client drivers refuse any frame
+    /// larger than it as a terminal receive error — a frame that size could
+    /// never be delivered anyway, and the refusal keeps it out of protocol
+    /// decoding.
+    ///
     /// # Errors
     ///
     /// Returns [`SignalFishError::InvalidConfig`] when Godot rejects the URL.
@@ -518,8 +530,12 @@ impl GodotWebSocketTransport {
     }
 
     /// Wrap a connected/configured peer with explicit backpressure options.
+    ///
+    /// The transport declares no `max_frame_hint`: the caller configured the
+    /// peer, so the SDK cannot know its inbound bound and the drivers perform
+    /// no per-frame refusal.
     pub fn from_peer_with_options(peer: Gd<WebSocketPeer>, options: GodotWebSocketOptions) -> Self {
-        Self::from_backend_with_options(Box::new(peer), options)
+        Self::from_backend_with_options(Box::new(peer), options, None)
     }
 
     fn connect_backend_with_options(
@@ -546,17 +562,23 @@ impl GodotWebSocketTransport {
                 "Godot WebSocketPeer connect_to_url failed with {other:?}"
             ))),
         })?;
-        Ok(Self::from_backend_with_options(backend, options))
+        let max_inbound_frame = usize::try_from(inbound_buffer_size).ok();
+        Ok(Self::from_backend_with_options(
+            backend,
+            options,
+            max_inbound_frame,
+        ))
     }
 
     #[cfg(test)]
     fn from_backend(backend: Box<dyn GodotWebSocketBackend>) -> Self {
-        Self::from_backend_with_options(backend, GodotWebSocketOptions::default())
+        Self::from_backend_with_options(backend, GodotWebSocketOptions::default(), None)
     }
 
     fn from_backend_with_options(
         backend: Box<dyn GodotWebSocketBackend>,
         options: GodotWebSocketOptions,
+        max_inbound_frame: Option<usize>,
     ) -> Self {
         let state = backend.state();
         // A peer already CLOSED with genuine post-open close metadata — a
@@ -595,6 +617,7 @@ impl GodotWebSocketTransport {
             one_frame_escape_frames: 0,
             one_frame_escape_bytes: 0,
             deferred_counted: false,
+            max_inbound_frame,
         };
         transport.sample_cycle_at(Instant::now());
         transport
@@ -992,6 +1015,10 @@ impl Transport for GodotWebSocketTransport {
     fn diagnostics(&self) -> TransportDiagnostics {
         self.diagnostics
     }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        self.max_inbound_frame
+    }
 }
 
 #[cfg(test)]
@@ -1348,6 +1375,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         let expected = TransportFrame::Text("abc".to_string());
         let mut frame = Some(expected.clone());
@@ -1453,6 +1481,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         let mut web_frame = Some(TransportFrame::Binary(vec![1, 2, 3]));
         assert!(matches!(
@@ -1470,6 +1499,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         let mut native_frame = Some(TransportFrame::Binary(vec![1, 2, 3]));
         assert!(matches!(
@@ -1489,7 +1519,7 @@ mod tests {
             },
         };
         let mut transport =
-            GodotWebSocketTransport::from_backend_with_options(Box::new(backend), options);
+            GodotWebSocketTransport::from_backend_with_options(Box::new(backend), options, None);
         let mut oversized = Some(TransportFrame::Binary(vec![0; 8 * 1024]));
 
         assert!(matches!(
@@ -1520,6 +1550,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         let mut frame = Some(TransportFrame::Binary(vec![3; 64 * 1024]));
 
@@ -1542,6 +1573,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         let expected = TransportFrame::Text("abc".to_string());
         let mut frame = Some(expected.clone());
@@ -1618,6 +1650,12 @@ mod tests {
             DEFAULT_MAX_QUEUED_PACKETS,
             "SDK-created peers must keep the packet-count bound from becoming the effective inbound limit"
         );
+        // The declared hint mirrors the configured buffer so both drivers
+        // refuse undeliverable oversized frames before decoding.
+        assert_eq!(
+            transport.max_frame_hint(),
+            usize::try_from(DEFAULT_INBOUND_BUFFER_SIZE).ok()
+        );
         assert_eq!(
             &*observed_steps.borrow(),
             &["configure_inbound", "configure_packets", "connect"]
@@ -1690,6 +1728,9 @@ mod tests {
         );
         assert!(observed_steps.borrow().is_empty());
         assert!(transport.is_ready());
+        // The SDK cannot know a caller-configured peer's inbound bound, so
+        // no hint is declared and the drivers perform no per-frame refusal.
+        assert_eq!(transport.max_frame_hint(), None);
     }
 
     #[test]
@@ -1721,6 +1762,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: GodotBackpressurePolicy::NativeCapacity,
             },
+            None,
         );
         assert_eq!(native.diagnostics().effective_watermark_bytes, 9);
 
@@ -1733,6 +1775,7 @@ mod tests {
                     ceiling_bytes: 10,
                 },
             },
+            None,
         );
         assert_eq!(reversed.diagnostics().effective_watermark_bytes, 10);
     }
@@ -1811,6 +1854,7 @@ mod tests {
                     ceiling_bytes: 1_000,
                 },
             },
+            None,
         );
         let base = Instant::now();
         transport.adaptive = AdaptiveState::default();
@@ -1834,6 +1878,7 @@ mod tests {
                     ceiling_bytes: 10_000,
                 },
             },
+            None,
         );
         let base = Instant::now();
         transport.adaptive = AdaptiveState::default();
@@ -2429,6 +2474,7 @@ mod tests {
             GodotWebSocketOptions {
                 backpressure_policy: policy,
             },
+            None,
         )
     }
 

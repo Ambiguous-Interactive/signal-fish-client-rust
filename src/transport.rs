@@ -241,7 +241,7 @@ pub trait Transport {
         TransportDiagnostics::default()
     }
 
-    /// Advisory maximum size in bytes for one complete inbound frame.
+    /// Declared maximum size in bytes for one complete inbound frame.
     ///
     /// Backends that enforce an inbound frame or assembled-message bound (as
     /// the built-in WebSocket transport does by default) return `Some(bound)`.
@@ -254,11 +254,12 @@ pub trait Transport {
     /// backend's enforcement cannot be structurally assumed.
     ///
     /// Return `None` (the default) when the backend enforces no bound; the
-    /// drivers then accept every delivered frame. A declared hint is a
+    /// drivers then accept every delivered frame. The declaration is a
     /// contract: the backend must never deliver a larger frame, and the value
-    /// must stay stable for the lifetime of one connection. A backend that
-    /// declares a hint but does not enforce it still gets driver-side
-    /// enforcement, so oversized frames fail fast instead of being decoded.
+    /// must stay stable for the lifetime of one connection. A backend whose
+    /// own enforcement is best-effort still protects its callers by
+    /// declaring the bound, because the drivers reject violations terminally
+    /// before any decode work.
     fn max_frame_hint(&self) -> Option<usize> {
         None
     }
