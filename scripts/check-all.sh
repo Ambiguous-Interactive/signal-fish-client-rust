@@ -31,6 +31,7 @@
 #  20. Rust test I/O unwrap   (delegates to scripts/check-test-io-unwrap.sh)
 #  21. Devcontainer compat    (delegates to check + fixture test scripts)
 #  22. Devcontainer Dockerfile (optional — docker buildx build --check)
+#  23. Stateful hostility campaign (canaries + reduced deterministic run)
 #
 # Notes:
 #   - MSRV (1.87.0) verification is CI-only (requires rustup toolchain override)
@@ -68,7 +69,7 @@ for arg in "$@"; do
 done
 
 # ── Phase tracking ───────────────────────────────────────────────────
-TOTAL_PHASES=22
+TOTAL_PHASES=23
 if [ "$QUICK" = true ]; then
     TOTAL_PHASES=4
 fi
@@ -98,6 +99,7 @@ PHASE_NAMES[19]="Shell portability"
 PHASE_NAMES[20]="Rust test I/O unwrap"
 PHASE_NAMES[21]="Devcontainer compatibility"
 PHASE_NAMES[22]="Devcontainer Dockerfile"
+PHASE_NAMES[23]="Stateful hostility campaign"
 
 for i in $(seq 1 "$TOTAL_PHASES"); do
     PHASE_RESULTS[i]="SKIP"
@@ -729,6 +731,29 @@ else
         echo -e "${RED}Phase 22: FAIL${NC}"
         mark_phase_fail 22
     fi
+fi
+echo ""
+
+# ── Phase 23: Stateful hostility campaign (issue #219) ────────────
+# Oracle canaries prove the campaign's oracle detects known-bad streams,
+# then a reduced deterministic campaign runs against the polling driver.
+# Pure cargo — no optional tooling, so this phase fails closed.
+echo -e "${YELLOW}Phase 23/$TOTAL_PHASES: Stateful hostility campaign (canaries + reduced run)...${NC}"
+if cargo run --locked --release \
+    -p signal-fish-client-stateful-campaign --bin stateful-campaign \
+    -- --selftest 2>&1; then
+    if cargo run --locked --release \
+        -p signal-fish-client-stateful-campaign --bin stateful-campaign \
+        -- --seeds 24 --scripts 12 --budget-secs 240 2>&1; then
+        echo -e "${GREEN}Phase 23: PASS${NC}"
+        PHASE_RESULTS[23]="PASS"
+    else
+        echo -e "${RED}Phase 23: FAIL (campaign findings)${NC}"
+        mark_phase_fail 23
+    fi
+else
+    echo -e "${RED}Phase 23: FAIL (oracle canaries)${NC}"
+    mark_phase_fail 23
 fi
 echo ""
 

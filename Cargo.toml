@@ -175,7 +175,7 @@ undocumented_unsafe_blocks = "deny"
 unsafe_code = "deny"
 
 [workspace]
-members = ["crates/signal-fish-client-godot", "tools/perf-lab"]
+members = ["crates/signal-fish-client-godot", "tools/perf-lab", "tools/stateful-campaign"]
 resolver = "2"
 
 [workspace.package]
