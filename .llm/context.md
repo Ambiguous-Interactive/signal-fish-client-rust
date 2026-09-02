@@ -133,7 +133,7 @@ admission and boundedly process immediately ready frames through `ClientCore` un
 `Pending`, terminal input, work bound, protocol stop, or deadline (the polling driver clamps this drain to
 its caller-configured receive budget). A ready farewell precedes `Disconnected`; only peer-close metadata replaces the send cause; native WebSocket retains buffered read state.
 
-Public `Debug`/tracing form an ambient-log boundary: reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data, buffered protocol frames, peer close reasons, and URL userinfo/query values are never formatted; safe diagnostics expose only variants, state flags, identifiers where appropriate, and byte lengths. Wire serialization and explicit public-field access remain unchanged.
+Public `Debug`/tracing form an ambient-log boundary: reconnect/relay/TURN credentials, WebRTC SDP/ICE, arbitrary application data, buffered protocol frames, peer close reasons, room codes, and URL userinfo/query values are never formatted; safe diagnostics expose only variants, state flags, identifiers where appropriate, and byte lengths (`ClientSnapshot.room_code` reports presence/length only). Deliberate carve-out: payload-struct field text (player/spectator names, notes) is tested non-secret and formats in payload `Debug` impls; SDK-internal tracing never formats it. Wire serialization and explicit public-field access remain unchanged.
 
 The Emscripten transport reports `Pending` while its browser WebSocket is still
 connecting and must not call `emscripten_websocket_send_*` or consume the

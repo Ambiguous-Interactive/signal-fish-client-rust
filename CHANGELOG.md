@@ -12,11 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `PlayerNameRulesPayload::allowed_symbols` widened from
   `Vec<char>` to `Vec<String>`, so every schema-valid symbol list decodes
   instead of failing the frame; update code that matched single `char`s.
+- `ClientSnapshot`'s `Debug` output now reports the room code as
+  presence and byte length instead of printing the value: a room code is
+  join-capability knowledge, so ambient logs no longer leak it. The public
+  `room_code` field is unchanged.
 
 ### Fixed
 
 - Corrected the WebAssembly guide's published-release guidance and the 0.11
   migration guide's stale `[Unreleased]` changelog pointer.
+- Restored the behavioral tails of seven `ErrorCode` descriptions in the
+  errors guide (connection-fate for `RateLimitExceeded`, token-consumption
+  for `ReconnectionFailed`, the 4000 drain deadline, and others), gave the
+  errors guide's `UnsupportedProtocolVersion` row its second trigger, and
+  pointed the concepts guide's `Timeout` row at its single producer.
+- Fixed the fortress guide's stale guidance that still directed readers to a
+  git dependency for APIs published in 0.12.0.
 
 ## [0.12.0] - 2026-09-01
 

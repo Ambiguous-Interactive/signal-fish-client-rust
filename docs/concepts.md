@@ -488,7 +488,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
 | `PayloadTooDeep { max_depth }` | A caller-supplied JSON payload was refused because its container nesting exceeds the outbound depth bound (128 nested containers, matching `serde_json`'s recursion limit). Applies to JSON game data, raw WebRTC signals, and `ConnectionInfo::Custom`; refused at the call site, before queuing, so flattening the payload is required. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
-| `Timeout` | An operation exceeded its time limit. |
+| `Timeout` | The WebSocket handshake did not complete within its `connect_with_timeout` deadline (see [Errors](errors.md)); this variant has that single producer. |
 | `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
