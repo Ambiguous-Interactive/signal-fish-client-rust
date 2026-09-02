@@ -31,6 +31,7 @@ pub trait Transport {
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
+    fn max_frame_hint(&self) -> Option<usize> { None }
 }
 ```
 
@@ -58,6 +59,29 @@ protocol-v2 or protocol-v3 game-data envelopes; the public physical binary-send
 APIs are gated on negotiated v3 plus MessagePack. A transport treats binary
 payloads as opaque bytes, preserves frame boundaries, and must not silently
 discard either kind.
+
+## Declaring an inbound frame bound
+
+The built-in WebSocket transport enforces a per-frame and assembled-message
+inbound bound (8 MiB by default) at the socket layer. A custom backend may
+have no such enforcement — in which case one delivered frame reaches
+protocol decoding with whatever size the server chose. Backends that enforce
+a bound should declare it:
+
+```rust,ignore
+fn max_frame_hint(&self) -> Option<usize> {
+    Some(self.max_inbound_frame_bytes)
+}
+```
+
+Both drivers then enforce the declared bound themselves: a larger frame is
+treated as a terminal receive error and tears the session down before any
+decode work, so a hostile frame cannot amplify into parse memory and the
+behavior matches the built-in transport's own over-limit close (RFC 6455
+1009). The default (`None`) accepts every delivered frame. Keep the value
+stable for the lifetime of one connection, and only declare a bound your
+backend actually enforces — the driver treats the hint as a contract, which
+protects callers even when the backend's own enforcement is missing.
 
 ## Datagram and raw-stream scope
 

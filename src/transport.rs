@@ -240,6 +240,28 @@ pub trait Transport {
     fn diagnostics(&self) -> TransportDiagnostics {
         TransportDiagnostics::default()
     }
+
+    /// Advisory maximum size in bytes for one complete inbound frame.
+    ///
+    /// Backends that enforce an inbound frame or assembled-message bound (as
+    /// the built-in WebSocket transport does by default) return `Some(bound)`.
+    /// The drivers then enforce that bound themselves before any frame reaches
+    /// protocol decoding: a larger frame is treated as a terminal receive
+    /// error and tears the session down, mirroring how the built-in transport's
+    /// own over-limit delivery ends the connection (RFC 6455 close 1009
+    /// semantics). This keeps a hostile or misbehaving peer from amplifying
+    /// one delivered frame into unbounded client-side parse memory when a
+    /// backend's enforcement cannot be structurally assumed.
+    ///
+    /// Return `None` (the default) when the backend enforces no bound; the
+    /// drivers then accept every delivered frame. A declared hint is a
+    /// contract: the backend must never deliver a larger frame, and the value
+    /// must stay stable for the lifetime of one connection. A backend that
+    /// declares a hint but does not enforce it still gets driver-side
+    /// enforcement, so oversized frames fail fast instead of being decoded.
+    fn max_frame_hint(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Gate a synchronous backend send without transferring caller ownership until

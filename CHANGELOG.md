@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Transport::max_frame_hint()`: backends that enforce an inbound frame bound
+  can declare it, and both client drivers then refuse larger frames as a
+  terminal receive error before any decoding — closing the path where a
+  custom transport with no inbound limit let one hostile frame amplify into
+  large parse memory. The default (`None`) preserves current behavior, and
+  the built-in WebSocket transport now reports its connect-time bound.
+- `SignalFishEvent::redacted_raw_prefix()`: a safe-path view of
+  `DecodeFailed`'s raw frame prefix that masks every string literal's
+  content while preserving the JSON skeleton, for diagnosing undecodable
+  frames without logging attacker-influenced text.
+- Added an Authentication & Credentials guide consolidating what is public
+  (the app ID), what is secret (reconnection tokens, key material), rotation
+  guidance, and log-hygiene rules.
+
 ### Changed
 
+- `SignalFishConfig::with_protocol_version` now logs a `tracing::warn!` for
+  versions outside the known-supported `2..=3` range. The value is still
+  sent unchanged; the server remains the negotiation authority.
 - **Breaking:** `PlayerNameRulesPayload::allowed_symbols` widened from
   `Vec<char>` to `Vec<String>`, so every schema-valid symbol list decodes
   instead of failing the frame; update code that matched single `char`s.
@@ -19,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DecodeFailed`'s `error` text and the SDK's inbound deserialization warning
+  are capped at 512 bytes: serde quotes hostile wire tokens verbatim (the
+  full `type` tag on unknown variants), which previously put unbounded
+  attacker-controlled text into ambient logs and the public event field.
 - Corrected the WebAssembly guide's published-release guidance and the 0.11
   migration guide's stale `[Unreleased]` changelog pointer.
 - Restored the behavioral tails of seven `ErrorCode` descriptions in the

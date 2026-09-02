@@ -27,6 +27,11 @@ use crate::transport::TransportFrame;
 pub(crate) struct FrameOutcome {
     pub(crate) events: Vec<SignalFishEvent>,
     pub(crate) disconnect: bool,
+    /// Set when the frame was refused before decoding because it exceeded the
+    /// transport's declared inbound bound. The input stream is unusable under
+    /// the backend's own contract, so both drivers treat this exactly like a
+    /// terminal transport receive error regardless of the violation policy.
+    pub(crate) input_error: Option<String>,
 }
 
 pub(crate) enum CoreCommand {
@@ -148,6 +153,7 @@ impl FrameOutcome {
         Self {
             events: Vec::new(),
             disconnect: false,
+            input_error: None,
         }
     }
 }
@@ -171,6 +177,11 @@ pub(crate) struct ClientCore {
     requested_room_operation_ids: bool,
     room_operation_ids: bool,
     mesh_capable: bool,
+    /// Inbound per-frame bound declared by the transport via
+    /// [`Transport::max_frame_hint`](crate::Transport::max_frame_hint).
+    /// `Some(bound)` makes `process_frame` refuse larger frames before any
+    /// decoding work, so a hostile frame cannot amplify into parse memory.
+    max_inbound_frame: Option<usize>,
     stats: ClientStats,
     // Latest backend-reported scheduling/buffering diagnostics. The async
     // driver refreshes the sample at loop-cycle start and after every
@@ -324,6 +335,7 @@ impl ClientCore {
             requested_room_operation_ids,
             room_operation_ids: false,
             mesh_capable,
+            max_inbound_frame: None,
             stats: ClientStats::default(),
             #[cfg(feature = "tokio-runtime")]
             transport_diagnostics: TransportDiagnostics::default(),
@@ -352,6 +364,12 @@ impl ClientCore {
 
     pub(crate) fn snapshot(&self) -> ClientSnapshot {
         self.snapshot.clone()
+    }
+
+    /// Record the transport's declared inbound frame bound once, at driver
+    /// construction, before any frame can be processed.
+    pub(crate) fn set_max_inbound_frame(&mut self, max_inbound_frame: Option<usize>) {
+        self.max_inbound_frame = max_inbound_frame;
     }
 
     pub(crate) fn stats(&self) -> ClientStats {
@@ -872,6 +890,29 @@ impl ClientCore {
     }
 
     pub(crate) fn process_frame(&mut self, frame: TransportFrame) -> FrameOutcome {
+        if let Some(max_bytes) = self.max_inbound_frame {
+            let frame_bytes = crate::terminal_drain::frame_payload_len(&frame);
+            if frame_bytes > max_bytes {
+                // The backend declared this bound via `max_frame_hint`, so a
+                // larger frame is a backend contract violation — and exactly
+                // the delivery the built-in WebSocket transport terminates on
+                // (RFC 6455 close 1009). Refuse before any decode work: the
+                // response surfaces as a terminal receive error on both
+                // drivers, independent of the protocol violation policy.
+                tracing::warn!(
+                    "inbound frame of {frame_bytes} bytes exceeds the transport \
+                     max frame hint of {max_bytes} bytes; terminating input"
+                );
+                return FrameOutcome {
+                    events: Vec::new(),
+                    disconnect: false,
+                    input_error: Some(format!(
+                        "inbound frame of {frame_bytes} bytes exceeds the \
+                         transport max frame hint of {max_bytes} bytes"
+                    )),
+                };
+            }
+        }
         match frame {
             TransportFrame::Text(text) => self.process_text(text),
             TransportFrame::Binary(bytes) => self.process_binary(bytes),
@@ -883,8 +924,12 @@ impl ClientCore {
         let server_msg = match serde_json::from_str::<ServerMessage>(&text) {
             Ok(message) => message,
             Err(error) => {
+                // serde quotes hostile wire tokens verbatim (the full
+                // `type` tag on unknown variants), so ambient logs get the
+                // same bounded text the public event stores.
+                let error_text = crate::event::bounded_error_text(&error);
                 tracing::warn!(
-                    "failed to deserialize server message ({} bytes): {error}",
+                    "failed to deserialize server message ({} bytes): {error_text}",
                     text.len()
                 );
                 let disconnect = self.observe_undecodable(&mut outcome.events);
@@ -4108,6 +4153,76 @@ mod tests {
         assert!(!core.room_operation_ids);
         assert!(core.pending_room_operation.is_none());
         assert!(core.pending_reconnects.is_empty());
+    }
+
+    #[test]
+    fn max_inbound_frame_refuses_oversized_frames_before_decoding() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Quarantine,
+            false,
+        );
+        core.set_max_inbound_frame(Some(16));
+
+        let outcome = core.process_frame(TransportFrame::Text("x".repeat(17)));
+        assert!(outcome.events.is_empty());
+        let reason = outcome
+            .input_error
+            .expect("an oversized text frame must be refused before decoding");
+        assert!(reason.contains("17 bytes"), "{reason}");
+        assert!(reason.contains("16 bytes"), "{reason}");
+        assert_eq!(core.stats.messages_undecodable, 0);
+
+        let outcome = core.process_frame(TransportFrame::Binary(vec![0x81; 17]));
+        assert!(outcome.events.is_empty());
+        assert!(outcome.input_error.is_some());
+        assert_eq!(core.stats.messages_undecodable, 0);
+        assert_eq!(core.stats.game_data_received, 0);
+    }
+
+    #[test]
+    fn max_inbound_frame_boundary_still_decodes() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Quarantine,
+            false,
+        );
+        core.set_max_inbound_frame(Some(16));
+
+        // Exactly at the declared bound the ordinary decode path runs:
+        // garbage surfaces as DecodeFailed, not as a terminal refusal.
+        let outcome = core.process_frame(TransportFrame::Text("not-json-at-all!".into()));
+        assert!(outcome.input_error.is_none());
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::DecodeFailed { .. }]
+        ));
+        assert_eq!(core.stats.messages_undecodable, 1);
+
+        // Binary frames pass the size gate and reach their normal
+        // pre-negotiation lifecycle rejection instead.
+        let outcome = core.process_frame(TransportFrame::Binary(vec![0x81; 16]));
+        assert!(outcome.input_error.is_none());
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::ProtocolViolation { .. }]
+        ));
+    }
+
+    #[test]
+    fn without_a_hint_large_frames_still_reach_decoding() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Quarantine,
+            false,
+        );
+
+        let outcome = core.process_frame(TransportFrame::Text("x".repeat(80_000)));
+        assert!(outcome.input_error.is_none());
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::DecodeFailed { .. }]
+        ));
     }
 
     #[test]

@@ -121,9 +121,13 @@ pub enum SignalFishEvent {
         /// [`DECODE_FAILED_RAW_PREFIX_MAX`] bytes on a UTF-8 boundary.
         ///
         /// This is verbatim frame content and can include sensitive data the
-        /// frame carried (for example SDP inside a signal relay). [`Debug`]
-        /// formatting of this event redacts it; treat the field itself as
-        /// diagnostic-only and never log it verbatim.
+        /// frame carried (for example SDP inside a signal relay) — treat it
+        /// as untrusted: a hostile server can plant credential-looking
+        /// strings for exactly the application that logs it verbatim.
+        /// [`Debug`] formatting of this event redacts it entirely, and
+        /// [`redacted_raw_prefix`](SignalFishEvent::redacted_raw_prefix)
+        /// returns a content-masked view that keeps the frame's shape; when
+        /// raw text is genuinely required, never log it verbatim.
         raw_prefix: String,
     },
 
@@ -713,9 +717,61 @@ impl SignalFishEvent {
         };
         Self::DecodeFailed {
             message_type,
-            error: error.to_string(),
+            error: bounded_error_text(error),
             raw_prefix: prefix.to_string(),
         }
+    }
+
+    /// Returns the [`DecodeFailed`](Self::DecodeFailed) raw frame prefix with
+    /// every string literal's content masked byte-for-byte, or `None` for
+    /// every other event kind.
+    ///
+    /// `raw_prefix` is verbatim frame text and can embed anything the frame
+    /// carried — including credential-looking strings a hostile server
+    /// planted for exactly the application that logs decode failures
+    /// verbatim. [`Debug`](std::fmt::Debug) formatting redacts it entirely;
+    /// when raw text is genuinely needed to diagnose the frame's shape, this
+    /// is the safe path: the JSON skeleton (field names as lengths, nesting,
+    /// punctuation) stays visible while every string literal's content is
+    /// replaced with same-length `*` bytes. Escapes are masked in their raw
+    /// source form and an unterminated final literal (the prefix is
+    /// truncated) masks to the end.
+    #[must_use]
+    pub fn redacted_raw_prefix(&self) -> Option<String> {
+        let Self::DecodeFailed { raw_prefix, .. } = self else {
+            return None;
+        };
+        // Byte-level lexical mask. Outside string literals bytes are copied
+        // verbatim (valid UTF-8 stays valid); inside them every content byte
+        // becomes `*`, so the output length always matches the input and an
+        // unterminated final literal (truncated prefix) masks to the end.
+        let mut masked: Vec<u8> = Vec::with_capacity(raw_prefix.len());
+        let mut in_string = false;
+        let mut escaped_next = false;
+        for byte in raw_prefix.bytes() {
+            if in_string {
+                if escaped_next {
+                    masked.push(b'*');
+                    escaped_next = false;
+                } else {
+                    match byte {
+                        b'"' => {
+                            in_string = false;
+                            masked.push(b'"');
+                        }
+                        b'\\' => {
+                            masked.push(b'*');
+                            escaped_next = true;
+                        }
+                        _ => masked.push(b'*'),
+                    }
+                }
+            } else {
+                masked.push(byte);
+                in_string = byte == b'"';
+            }
+        }
+        Some(String::from_utf8_lossy(&masked).into_owned())
     }
 }
 
@@ -731,6 +787,18 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
         end = end.saturating_sub(1);
     }
     s.get(..end).unwrap_or_default()
+}
+
+/// Bounded serde error text for the public event field and ambient logs.
+///
+/// serde embeds hostile wire tokens verbatim in several of its messages
+/// (`unknown variant` quotes the full `type` tag), so the rendered text is
+/// attacker-controlled and unbounded in the frame's size. Both consumers cap
+/// it at [`DECODE_FAILED_RAW_PREFIX_MAX`] on a UTF-8 boundary; the wire tag
+/// itself is recovered separately and boundedly via `message_type`.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+pub(crate) fn bounded_error_text(error: &serde_json::Error) -> String {
+    truncate_on_char_boundary(&error.to_string(), DECODE_FAILED_RAW_PREFIX_MAX).to_string()
 }
 
 // ── Conversion ──────────────────────────────────────────────────────
@@ -1329,5 +1397,78 @@ mod tests {
             }
             other => panic!("expected DecodeFailed, got {other:?}"),
         }
+    }
+
+    /// serde embeds hostile wire tokens verbatim (e.g. the full `type` tag on
+    /// unknown variants), so the stored error text and the ambient warn must
+    /// stay bounded instead of scaling with the frame.
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
+    #[test]
+    fn decode_failed_error_text_is_bounded() {
+        let hostile = format!(r#"{{"type":"{}"}}"#, "A".repeat(50_000));
+        let err = serde_json::from_str::<ServerMessage>(&hostile).unwrap_err();
+        match SignalFishEvent::decode_failed(&hostile, &err) {
+            SignalFishEvent::DecodeFailed { error, .. } => {
+                assert!(
+                    error.len() <= DECODE_FAILED_RAW_PREFIX_MAX,
+                    "error text must stay bounded, got {} bytes",
+                    error.len()
+                );
+            }
+            other => panic!("expected DecodeFailed, got {other:?}"),
+        }
+    }
+
+    /// The safe-path mask hides every string literal's content byte-for-byte
+    /// while keeping the JSON skeleton, escapes, and length intact.
+    #[test]
+    fn redacted_raw_prefix_masks_string_content_and_preserves_length() {
+        let cases: [(&str, &str); 6] = [
+            // Plain JSON: keys and values both mask; structure survives.
+            (
+                r#"{"type":"Error","data":{}}"#,
+                r#"{"****":"*****","****":{}}"#,
+            ),
+            // Escape sequences mask in their raw source form, and the
+            // closing quote placement is identical.
+            (r#"{"a":"x\"y\\z"}"#, r#"{"*":"*******"}"#),
+            // Multibyte content masks per byte so length stays equal.
+            ("\"héllo\"", "\"******\""),
+            // Numbers, booleans, and null stay readable.
+            (
+                r#"{"n":12,"t":true,"x":null}"#,
+                r#"{"*":12,"*":true,"*":null}"#,
+            ),
+            // A truncated final literal masks to the end.
+            (r#"{"type":"Err"#, r#"{"****":"***"#),
+            // Empty string literals stay recognizable.
+            (r#"{"a":""}"#, r#"{"*":""}"#),
+        ];
+        for (raw, expected) in cases {
+            let event = SignalFishEvent::DecodeFailed {
+                message_type: None,
+                error: "unused".into(),
+                raw_prefix: raw.to_string(),
+            };
+            let masked = event
+                .redacted_raw_prefix()
+                .expect("DecodeFailed must provide a mask");
+            assert_eq!(masked, expected, "masking {raw:?}");
+            assert_eq!(
+                masked.len(),
+                raw.len(),
+                "the mask must be byte-length-preserving"
+            );
+            // The known secret-looking fragments must not survive.
+            for leak in ["Error", "abcdef", "héllo"] {
+                if raw.contains(leak) {
+                    assert!(!masked.contains(leak), "{leak} leaked through {masked:?}");
+                }
+            }
+        }
+
+        // Every other event kind has no raw prefix to mask.
+        let other = SignalFishEvent::Connected;
+        assert_eq!(other.redacted_raw_prefix(), None);
     }
 }

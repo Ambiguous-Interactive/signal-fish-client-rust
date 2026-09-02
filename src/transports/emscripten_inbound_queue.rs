@@ -98,6 +98,13 @@ impl InboundQueueBound {
         }
     }
 
+    /// The configured inclusive byte ceiling, for `Transport::max_frame_hint`.
+    /// A delivered frame is always at or under this bound: over-limit input
+    /// fuses the queue instead of being admitted.
+    pub(super) const fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+
     /// Permanently fuses the queue without an over-limit refusal, for
     /// terminal corruption detected after a frame was admitted (the invalid
     /// UTF-8 text path). Later input reports
@@ -167,6 +174,12 @@ mod tests {
     #[test]
     fn default_limit_matches_native_eight_mib_policy() {
         assert_eq!(DEFAULT_MAX_INBOUND_QUEUE_BYTES, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn limit_accessor_reports_the_configured_ceiling() {
+        assert_eq!(InboundQueueBound::new(Some(LIMIT)).limit(), Some(LIMIT));
+        assert_eq!(InboundQueueBound::new(None).limit(), None);
     }
 
     #[test]
