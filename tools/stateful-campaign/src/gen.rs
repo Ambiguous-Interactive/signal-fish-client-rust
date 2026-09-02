@@ -1410,7 +1410,11 @@ fn arch_spectator_churn(
             }
         }
     }
-    // Authoritative exit then a late voluntary-leave echo (the absorbed-race face).
+    // The absorbed-race face: an admitted voluntary leave is pending when
+    // the authoritative exit overtakes it, so exactly one matching late
+    // reply is silently absorbed.
+    steps.push(Step::Cmd(Cmd::LeaveSpectator));
+    steps.push(Step::Poll(1));
     deliver(
         &mut steps,
         ServerMessage::SpectatorLeft {
@@ -1421,14 +1425,7 @@ fn arch_spectator_churn(
         },
         FrameMeta::default(),
     );
-    steps.push(Step::Cmd(Cmd::LeaveSpectator));
-    steps.push(Step::Poll(1));
-    let late_id = if rng.chance(50) {
-        EchoId::Match
-    } else {
-        EchoId::Wrong
-    };
-    steps.push(Step::DeliverEcho(EchoKind::SpectatorLeaveOk, late_id));
+    steps.push(Step::DeliverEcho(EchoKind::SpectatorLeaveOk, EchoId::Match));
     steps.push(Step::Poll(1));
     // Rejoin as spectator, then authoritative room-closed exit.
     steps.push(Step::Cmd(Cmd::JoinAsSpectator));
@@ -1815,16 +1812,18 @@ fn arch_send_pressure(rng: &mut Rng, ctx: &mut Ctx, config: ConfigKind) -> Vec<S
         other => other,
     };
     deliver(&mut steps, baseline, FrameMeta::default());
-    // Fill the (small) command queue past capacity: later sends must be
-    // refused gracefully while earlier ones stay queued in order.
+    // Arm the send-delay face FIRST: every frame is refused with `Pending`
+    // twice before acceptance, so the per-command polls cannot drain the
+    // queue and the 96-send storm genuinely overflows the 64-slot capacity.
+    steps.push(Step::SetSendDelay(6));
     for k in 0..96u32 {
         steps.push(Step::Cmd(Cmd::SendGameData(
             serde_json::json!({ "marker": k }),
         )));
     }
-    // Arm the send-delay face: every frame is refused with `Pending` twice
-    // before acceptance, so flushing takes multiple polls per frame.
-    steps.push(Step::SetSendDelay(2));
+    // Release the delay so the final bounded drain can complete; the wave
+    // sends below still flush through the (now direct) transport.
+    steps.push(Step::SetSendDelay(0));
     // Interleave drains with more sends (capacity frees up mid-drain).
     for wave in 0..3u32 {
         steps.push(Step::Poll(64));

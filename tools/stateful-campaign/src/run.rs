@@ -838,10 +838,14 @@ impl Oracle {
                 if !self.authenticated || !self.v3 {
                     return violation_only();
                 }
+                let counters = (*sent_to_you, *dropped_for_you, *backpressure_events);
+                let moved_backward = counters.0 < self.relay_counters.0
+                    || counters.1 < self.relay_counters.1
+                    || counters.2 < self.relay_counters.2;
                 if meta.bound_breaking
                     || *interval_ms == 0
                     || self.relay_interval.is_some_and(|seen| seen != *interval_ms)
-                    || (*sent_to_you, *dropped_for_you, *backpressure_events) < self.relay_counters
+                    || moved_backward
                 {
                     return violation_outcomes(self.policy, Some("RelayStats"));
                 }
@@ -2036,22 +2040,35 @@ pub(crate) fn run_prefix(
                     .fence
                     .is_some_and(|fence| echo_kind_matches_fence(*kind, fence));
                 let expected = state.oracle.expectation_for_echo(*kind, id_matches);
-                let slots_before = state.oracle.slots.len();
+                // A violating echo retires the answered fence only when the
+                // expectation was accountability-ambiguous (the round-12
+                // retire rule); definite lifecycle rejections keep it armed.
+                // Event outcomes release the fence through event tracking.
+                let accountability_ambiguous = expected
+                    .iter()
+                    .any(|alt| alt.violations > 0 && !alt.events.is_empty());
+                let fence_retired_on_violation = if accountability_ambiguous && kind_matched_fence {
+                    match kind {
+                        EchoKind::JoinOk | EchoKind::JoinFailed => Some(FenceKind::JoinPlayer),
+                        EchoKind::LeaveOk => Some(FenceKind::LeavePlayer),
+                        EchoKind::ReconnectOk | EchoKind::ReconnectFailed => {
+                            Some(FenceKind::ReconnectPlayer)
+                        }
+                        EchoKind::SpectatorJoinOk | EchoKind::SpectatorJoinFailed => {
+                            Some(FenceKind::JoinSpectator)
+                        }
+                        EchoKind::SpectatorLeaveOk => Some(FenceKind::LeaveSpectator),
+                        EchoKind::OperationFailed => state.oracle.fence,
+                    }
+                } else {
+                    None
+                };
                 state.oracle.slots.push_back(Slot {
                     alternatives: expected,
                     frame: "RoomOperationResult",
-                    fence_retired_on_violation: None,
+                    fence_retired_on_violation,
                 });
                 drive_polls(&mut client, &mut state, 1, idx);
-                // A kind/id-matching consumed result retires the fence
-                // (typed results release it in update_state; accountability-
-                // invalid baselines retire it via the round-12 fix; the
-                // OperationFailed early return releases any kind).
-                if state.oracle.slots.len() < slots_before
-                    && (*kind == EchoKind::OperationFailed || (kind_matched_fence && id_matches))
-                {
-                    state.oracle.fence = None;
-                }
                 if state.oracle.absorbed_leave_armed && state.oracle.absorbed_leave_id.is_none() {
                     state.oracle.absorbed_leave_id = last_sent_operation_id(&handles);
                 }
@@ -2334,6 +2351,18 @@ fn pressure_checks(
         state.outcome.findings.push(Finding {
             category: "pressure-liveness".into(),
             detail: "the Pending-refusal send face never fired; pacing unexercised".into(),
+            step_index,
+        });
+    }
+    // The 96-send storm against a 64-slot queue with a six-poll drain must
+    // overflow: SendBufferFull refusals are the archetype's own target.
+    if state.outcome.commands_refused < 16 {
+        state.outcome.findings.push(Finding {
+            category: "pressure-capacity".into(),
+            detail: format!(
+                "only {} commands were refused; the queue never overflowed its capacity",
+                state.outcome.commands_refused
+            ),
             step_index,
         });
     }
