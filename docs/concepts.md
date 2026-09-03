@@ -36,6 +36,7 @@ pub trait Transport {
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
+    fn max_frame_hint(&self) -> Option<usize> { None }
 }
 ```
 
@@ -45,6 +46,7 @@ pub trait Transport {
 | `poll_recv` | Poll the next text/binary frame; `Ready(None)` is a clean close. |
 | `poll_close` | Progress idempotent graceful shutdown across calls. |
 | `abort` | Immediately abandon backend work and end driver polling after a deadline, close error, or owner drop. |
+| `max_frame_hint` | Declare the backend's inbound frame bound; the drivers refuse larger frames terminally before decoding. |
 
 The required `abort` method enforces deadline abandonment. It releases or
 safely detaches backend resources, discards accepted sends, and makes later

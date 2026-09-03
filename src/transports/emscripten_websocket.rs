@@ -1046,6 +1046,10 @@ impl Transport for EmscriptenWebSocketTransport {
             );
         }
     }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        self.inbound_queue.get().limit()
+    }
 }
 // ── Drop Implementation ─────────────────────────────────────────────────────
 

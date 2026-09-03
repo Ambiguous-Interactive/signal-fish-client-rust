@@ -649,6 +649,11 @@ impl WebSocketConnectOptions {
 /// the connection and its retained frame.
 pub struct WebSocketTransport {
     state: WebSocketState<WsStream>,
+    /// The connect-time inbound frame/message bound the backend enforces via
+    /// tungstenite, reported through [`Transport::max_frame_hint`] so the
+    /// drivers enforce it too. `from_stream` callers own their codec limits,
+    /// so the transport cannot know one and reports `None`.
+    max_inbound_frame: Option<usize>,
 }
 
 struct WebSocketState<S> {
@@ -923,6 +928,7 @@ impl WebSocketTransport {
 
         Ok(Self {
             state: WebSocketState::new_with_token_binding(stream, token_binding),
+            max_inbound_frame: options.max_inbound_message_size,
         })
     }
 
@@ -1044,6 +1050,7 @@ impl WebSocketTransport {
         );
         Ok(Self {
             state: WebSocketState::new_with_token_binding(stream, token_binding),
+            max_inbound_frame: options.max_inbound_message_size,
         })
     }
 
@@ -1064,6 +1071,7 @@ impl WebSocketTransport {
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
             state: WebSocketState::new(stream),
+            max_inbound_frame: None,
         }
     }
 
@@ -1474,6 +1482,10 @@ impl Transport for WebSocketTransport {
 
     fn abort(&mut self) {
         self.state.abort();
+    }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        self.max_inbound_frame
     }
 }
 
@@ -3068,6 +3080,7 @@ mod tests {
     fn debug_omits_stream_contents_and_peer_close_reason() {
         let secret = "websocket-debug-secret";
         let transport = WebSocketTransport {
+            max_inbound_frame: None,
             state: WebSocketState {
                 stream: None,
                 closed: true,
@@ -3733,6 +3746,9 @@ mod tests {
                 .get_config();
             assert_eq!(live_config.max_frame_size, limit);
             assert_eq!(live_config.max_message_size, limit);
+            // The declared hint mirrors the enforced connect-time bound so
+            // the drivers can enforce it too; `None` stays `None`.
+            assert_eq!(Transport::max_frame_hint(&transport), limit);
 
             assert_eq!(
                 expect_received_frame(crate::transport::recv_frame(&mut transport).await),
@@ -4068,6 +4084,9 @@ mod tests {
             .expect("recv must return Some")
             .expect("recv must return Ok");
         assert_eq!(msg, TransportFrame::Text("from_stream_msg".into()));
+        // The caller owns the stream's codec limits, so the transport cannot
+        // know a bound and must not declare a false hint.
+        assert_eq!(Transport::max_frame_hint(&transport), None);
         drop(transport);
         finish_mock_server(server_task).await;
     }

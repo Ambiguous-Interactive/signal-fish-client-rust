@@ -85,11 +85,20 @@ increments [`ClientStats::messages_undecodable`](client.md#send-queue-and-traffi
 | Field | Type | Description |
 |-------|------|-------------|
 | `message_type` | `Option<String>` | The wire `type` tag when the frame was valid JSON and the failure position allowed tag recovery (frames larger than the 512-byte `raw_prefix` window report `None` even when valid JSON). `Some("Error")` plus a decode failure strongly implies an unknown `error_code`; `None` usually means the frame was not valid JSON at all. |
-| `error` | `String` | The deserialization error text. |
+| `error` | `String` | The deserialization error text, capped at 512 bytes (serde quotes hostile wire tokens verbatim, so the text is bounded). |
 | `raw_prefix` | `String` | The raw frame, truncated to `DECODE_FAILED_RAW_PREFIX_MAX` (512) bytes on a UTF-8 boundary. |
 
 Steady growth of `messages_undecodable` means protocol drift (upgrade this
 SDK) or a corrupting middlebox — log `DecodeFailed` in production builds.
+
+!!! warning "Handle raw_prefix as untrusted text"
+    `raw_prefix` is verbatim frame content: a hostile server can plant
+    credential-looking strings in it for exactly the application that logs
+    decode failures verbatim. `Debug` formatting redacts it entirely; when
+    you need the frame's shape for diagnostics, use
+    [`redacted_raw_prefix()`](https://docs.rs/signal-fish-client/latest/signal_fish_client/event/enum.SignalFishEvent.html#method.redacted_raw_prefix),
+    which masks every string literal's content while preserving the JSON
+    skeleton. Never log `raw_prefix` verbatim.
 
 `ProtocolViolation` is distinct from `DecodeFailed`: its frame decoded, but
 its sequence, epoch, lifecycle, gap, counter, or causal state contradicted the

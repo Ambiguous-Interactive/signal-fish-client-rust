@@ -275,6 +275,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
         });
 
         let shutdown_timeout = config.shutdown_timeout;
+        let max_inbound_frame = transport.max_frame_hint();
         let mut client = Self {
             transport,
             cmd_queue,
@@ -304,6 +305,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
             close_phase: ClosePhase::Open,
         };
         client.refresh_queue_diagnostics_at(now);
+        client.core.set_max_inbound_frame(max_inbound_frame);
         client
     }
 
@@ -449,6 +451,11 @@ impl<T: Transport> SignalFishPollingClient<T> {
                 }
             }
             let outcome = self.core.process_frame(frame);
+            if let Some(reason) = outcome.input_error {
+                error!("transport receive error: {reason}");
+                self.handle_disconnect_at(&mut events, Some(reason), &mut cx, now);
+                return events;
+            }
             events.extend(outcome.events);
             if outcome.disconnect {
                 self.handle_disconnect_at(
@@ -1244,7 +1251,10 @@ impl<T: Transport> SignalFishPollingClient<T> {
                             .receive_budget_exhaustions
                             .saturating_add(1);
                     }
-                    if outcome.disconnect || budget_reached {
+                    // An over-hint frame stops the drain like any other
+                    // terminal input; the send failure remains the
+                    // disconnect cause for the already-tearing-down session.
+                    if outcome.disconnect || outcome.input_error.is_some() || budget_reached {
                         break;
                     }
                 }
@@ -2049,6 +2059,83 @@ mod tests {
             epoch: None,
             seq: None,
         }
+    }
+
+    /// Declares an inbound hint and delivers exactly one scripted frame.
+    struct HintedTransport {
+        hint: Option<usize>,
+        frame: Option<TransportFrame>,
+    }
+
+    impl Transport for HintedTransport {
+        fn abort(&mut self) {}
+
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            let _ = frame.take();
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            match self.frame.take() {
+                Some(frame) => std::task::Poll::Ready(Some(Ok(frame))),
+                None => std::task::Poll::Pending,
+            }
+        }
+
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn max_frame_hint(&self) -> Option<usize> {
+            self.hint
+        }
+    }
+
+    #[test]
+    fn max_frame_hint_refuses_oversized_frames_as_a_terminal_receive_error() {
+        let transport = HintedTransport {
+            hint: Some(16),
+            frame: Some(TransportFrame::Text("x".repeat(17))),
+        };
+        let mut client = SignalFishPollingClient::new(transport, SignalFishConfig::new("hint"));
+
+        let events = client.poll();
+        assert!(matches!(events.first(), Some(SignalFishEvent::Connected)));
+        let [SignalFishEvent::Disconnected { reason, .. }] = &events[1..] else {
+            panic!("expected only a Disconnected event, got {events:?}");
+        };
+        let reason = reason.as_ref().expect("hint refusal carries a reason");
+        assert!(reason.contains("17 bytes"), "{reason}");
+        assert!(reason.contains("max frame hint"), "{reason}");
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, SignalFishEvent::DecodeFailed { .. })));
+    }
+
+    #[test]
+    fn max_frame_hint_boundary_frame_still_decodes() {
+        let transport = HintedTransport {
+            hint: Some(16),
+            frame: Some(TransportFrame::Text("not-json-at-all!".into())),
+        };
+        let mut client = SignalFishPollingClient::new(transport, SignalFishConfig::new("hint"));
+
+        let events = client.poll();
+        assert!(matches!(events.first(), Some(SignalFishEvent::Connected)));
+        let [SignalFishEvent::DecodeFailed { .. }] = &events[1..] else {
+            panic!("expected the boundary frame to decode (and fail), got {events:?}");
+        };
+        assert_eq!(events.len(), 2, "no terminal event at the boundary");
     }
 
     #[test]

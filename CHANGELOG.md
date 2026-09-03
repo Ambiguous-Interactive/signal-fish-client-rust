@@ -7,8 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Transport::max_frame_hint()`: backends that enforce an inbound frame bound
+  declare it, and both client drivers then refuse larger frames as a terminal
+  receive error before any decoding (the built-in WebSocket and Emscripten
+  transports report their bounds; the default `None` preserves current
+  behavior).
+- `SignalFishEvent::redacted_raw_prefix()`: a safe-path view of
+  `DecodeFailed`'s raw frame prefix that masks every string literal's content
+  while preserving the JSON skeleton.
+- Added an Authentication & Credentials guide consolidating the public app-ID
+  policy, secret reconnection tokens, rotation guidance, and log-hygiene
+  rules.
+
 ### Changed
 
+- `SignalFishConfig::with_protocol_version` now logs a `tracing::warn!` for
+  versions outside the known-supported `2..=3` range (the value is still sent
+  unchanged; the server stays the negotiation authority).
 - **Breaking:** `PlayerNameRulesPayload::allowed_symbols` widened from
   `Vec<char>` to `Vec<String>`, so every schema-valid symbol list decodes
   instead of failing the frame; update code that matched single `char`s.
@@ -19,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DecodeFailed`'s `error` text and the SDK's inbound deserialization warnings
+  (JSON and MessagePack paths) are capped at 512 bytes: decoders quote hostile
+  wire tokens verbatim, which previously put unbounded attacker-controlled
+  text into ambient logs and the public event field.
 - Corrected the WebAssembly guide's published-release guidance and the 0.11
   migration guide's stale `[Unreleased]` changelog pointer.
 - Restored the behavioral tails of seven `ErrorCode` descriptions in the

@@ -469,9 +469,19 @@ impl SignalFishConfig {
     /// instead. Setting a version without also setting transports/topologies keeps
     /// the room on the relay floor (the server requires both to form a session).
     /// Any `u16` is accepted here; an unknown version surfaces as the server's
-    /// own negotiation or error response.
+    /// own negotiation or error response. A [`tracing::warn!`] is logged at
+    /// builder time for versions outside the known-supported range
+    /// `2..=[PROTOCOL_VERSION](crate::PROTOCOL_VERSION)` — purely diagnostic,
+    /// the value is still sent unchanged and the server stays the authority.
     #[must_use]
     pub fn with_protocol_version(mut self, version: u16) -> Self {
+        if !(2..=crate::PROTOCOL_VERSION).contains(&version) {
+            tracing::warn!(
+                "protocol version {version} is outside the known-supported \
+                 range 2..={}; the server will negotiate it or reject the session",
+                crate::PROTOCOL_VERSION
+            );
+        }
         self.protocol_version = Some(version);
         self
     }
@@ -879,12 +889,14 @@ impl SignalFishClient {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let mesh_capable = config.advertises_mesh_capability();
-        let state = Arc::new(Mutex::new(ClientCore::new_with_room_operation_ids(
+        let mut core = ClientCore::new_with_room_operation_ids(
             config.game_data_format,
             config.protocol_violation_policy,
             mesh_capable,
             config.requests_room_operation_ids(),
-        )));
+        );
+        core.set_max_inbound_frame(transport.max_frame_hint());
+        let state = Arc::new(Mutex::new(core));
         let loop_state = Arc::clone(&state);
 
         // Send the Authenticate message through the command channel so the
@@ -1940,6 +1952,10 @@ impl<T: Transport> Transport for AbortOnDropTransport<T> {
     fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
         self.inner.diagnostics()
     }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        self.inner.max_frame_hint()
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]
@@ -2285,7 +2301,7 @@ async fn finish_send_failure(
         };
 
         let outcome = lock_core(state).process_frame(frame);
-        let protocol_stop = outcome.disconnect;
+        let protocol_stop = outcome.disconnect || outcome.input_error.is_some();
         if !emit_event_batch(event_tx, shutdown, deadline, outcome.events).await {
             debug!("terminal event delivery was preempted mid-batch after send failure");
             break;
@@ -2479,6 +2495,22 @@ async fn transport_loop(
                     }
                     TransportIo::Received(Some(Ok(frame))) => {
                         let outcome = lock_core(&state).process_frame(frame);
+                        // A frame exceeding the transport's declared inbound
+                        // bound is a terminal receive error regardless of the
+                        // violation policy: the backend's own contract makes
+                        // the input stream unusable, matching how the built-in
+                        // WebSocket transport ends over-limit connections.
+                        if let Some(reason) = outcome.input_error {
+                            emit_core_disconnected_or_shutdown(
+                                &mut transport,
+                                &mut pending_send,
+                                &event_tx,
+                                &mut shutdown,
+                                &state,
+                                TerminalTeardown::starting(shutdown_timeout, Some(reason)),
+                            ).await;
+                            break;
+                        }
                         let disconnect = outcome.disconnect;
                         // A policy-driven disconnect terminates the session,
                         // so its batch shares one shutdown budget with the
@@ -2809,6 +2841,8 @@ mod tests {
         sent_binary: Option<Arc<StdMutex<Vec<Vec<u8>>>>>,
         /// Diagnostics reported by the mocked backend.
         diagnostics: crate::transport::TransportDiagnostics,
+        /// Inbound bound declared through `Transport::max_frame_hint`.
+        max_frame_hint: Option<usize>,
     }
 
     impl MockTransport {
@@ -2861,6 +2895,7 @@ mod tests {
                 frames_taken: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 sent_binary: None,
                 diagnostics: crate::transport::TransportDiagnostics::default(),
+                max_frame_hint: None,
             };
             (
                 transport,
@@ -2898,6 +2933,10 @@ mod tests {
     impl Transport for MockTransport {
         fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
             self.diagnostics
+        }
+
+        fn max_frame_hint(&self) -> Option<usize> {
+            self.max_frame_hint
         }
 
         fn abort(&mut self) {
@@ -3520,6 +3559,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn max_frame_hint_is_enforced_by_the_async_driver() {
+        let (mut transport, _sent, closed) = MockTransport::new(vec![Some(Ok("x".repeat(17)))]);
+        transport.max_frame_hint = Some(16);
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_hint"));
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                let reason = reason.expect("the hint refusal must carry a reason");
+                assert!(reason.contains("17 bytes"), "{reason}");
+                assert!(reason.contains("max frame hint"), "{reason}");
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert!(
+            closed.load(Ordering::Relaxed),
+            "the transport must be torn down after the over-hint frame"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn max_frame_hint_boundary_frame_still_decodes() {
+        let (mut transport, _sent, _closed) =
+            MockTransport::new(vec![Some(Ok("not-json-at-all!".into()))]);
+        transport.max_frame_hint = Some(16);
+        let (mut client, mut events) =
+            SignalFishClient::start(transport, SignalFishConfig::new("mb_hint"));
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::DecodeFailed { .. })
+        ));
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn transport_diagnostics_mirror_the_driver_loop_sample() {
         let (mut transport, _sent, _closed) =
             MockTransport::new(vec![Some(Ok(authenticated_json()))]);
@@ -4028,6 +4112,82 @@ mod tests {
         assert_eq!(
             config.supported_topologies,
             Some(vec![Topology::Mesh, Topology::Relay])
+        );
+    }
+
+    /// Builder-time sanity warning: exactly one warn outside the
+    /// known-supported range, none inside — purely diagnostic, the value is
+    /// still sent unchanged.
+    #[test]
+    fn with_protocol_version_warns_only_outside_the_known_range() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct MessageVisitor(Option<String>);
+
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+
+        struct WarnCapture(Arc<std::sync::Mutex<Vec<String>>>);
+
+        impl<S> tracing_subscriber::layer::Layer<S> for WarnCapture
+        where
+            S: tracing::Subscriber,
+        {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _context: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if event.metadata().level() != &tracing::Level::WARN {
+                    return;
+                }
+                let mut visitor = MessageVisitor(None);
+                event.record(&mut visitor);
+                if let Some(message) = visitor.0 {
+                    self.0
+                        .lock()
+                        .expect("warn capture mutex must not be poisoned")
+                        .push(message);
+                }
+            }
+        }
+
+        let capture = Arc::new(std::sync::Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(WarnCapture(Arc::clone(&capture))),
+            || {
+                // Known-supported versions stay silent.
+                for version in [2, 3] {
+                    capture.lock().expect("capture mutex").clear();
+                    let config = SignalFishConfig::new("app").with_protocol_version(version);
+                    assert_eq!(config.protocol_version, Some(version));
+                    assert!(
+                        capture.lock().expect("capture mutex").is_empty(),
+                        "version {version} must not warn"
+                    );
+                }
+                // Unknown versions warn exactly once with the value and range.
+                for version in [1, 4, u16::MAX] {
+                    capture.lock().expect("capture mutex").clear();
+                    let config = SignalFishConfig::new("app").with_protocol_version(version);
+                    assert_eq!(config.protocol_version, Some(version));
+                    let messages = capture.lock().expect("capture mutex");
+                    assert_eq!(
+                        messages.len(),
+                        1,
+                        "version {version} must warn exactly once: {messages:?}"
+                    );
+                    assert!(
+                        messages[0].contains(&version.to_string()),
+                        "the warn must name the version: {messages:?}"
+                    );
+                }
+            },
         );
     }
 

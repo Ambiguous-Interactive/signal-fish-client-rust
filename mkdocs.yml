@@ -145,6 +145,7 @@ nav:
       - Basic Lobby Walkthrough: examples.md
   - Use the SDK:
       - Client API Reference: client.md
+      - Authentication & Credentials: authentication.md
       - Events: events.md
       - Errors: errors.md
       - Deterministic Testing: testing.md

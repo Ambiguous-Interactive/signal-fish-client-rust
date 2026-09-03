@@ -114,7 +114,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 The object-safe surface is pinned verbatim in
 `skills/transport-abstraction/SKILL.md`. Required methods are `poll_send`,
 `poll_recv`, `poll_close`, and `abort`; `begin_poll_cycle`, `diagnostics`,
-`is_ready`, and `close_info` have defaults.
+`is_ready`, `close_info`, and `max_frame_hint` (declared inbound bound the drivers enforce terminally) have defaults.
 
 The trait has no `Send` bound; `SignalFishClient::start` separately requires `Transport + Send + 'static`. Its boundary is one complete, ordered text/binary frame stream for one intended server, not raw bytes, datagrams, or server authentication.
 A backend owns framing, trust/source binding, and loss/duplicate/reorder policy. The SDK owns no UDP envelope; Server 0.8 ignores `RelayTransport::Udp` join metadata, `ConnectionInfo::Relay` is self-declared, and WebRTC drivers yield assembled messages after owning ICE/DTLS/SCTP/UDP.

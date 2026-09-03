@@ -39,8 +39,16 @@ pub trait Transport {
     fn diagnostics(&self) -> TransportDiagnostics { TransportDiagnostics::default() }
     fn is_ready(&self) -> bool { true }
     fn close_info(&self) -> Option<TransportCloseInfo> { None }
+    fn max_frame_hint(&self) -> Option<usize> { None }
 }
 ```
+
+`max_frame_hint` declares the backend's enforced inbound per-frame bound.
+Both drivers enforce a declared hint themselves: a larger frame is a terminal
+receive error that tears the session down before any decode work (matching
+the built-in WebSocket transport's over-limit close, RFC 6455 1009). Return
+`None` when the backend enforces no bound; keep the value stable per
+connection.
 
 `TransportFrame` has two variants:
 

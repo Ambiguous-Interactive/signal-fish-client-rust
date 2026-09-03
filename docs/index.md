@@ -91,6 +91,8 @@ accountability and mesh signaling when your game needs them.
 
 ## When you need more detail
 
+- [Authentication & credentials](authentication.md) separates the public app
+  ID from the secrets your game must protect.
 - [Events](events.md) and [errors](errors.md) describe what your event loop can
   receive.
 - [Protocol versioning](protocol-versioning.md) helps you choose v2 relay or
