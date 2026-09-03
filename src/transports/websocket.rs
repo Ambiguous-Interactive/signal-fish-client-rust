@@ -689,14 +689,19 @@ struct LazyHandshake {
     phase: LazyPhase,
 }
 
+/// The boxed deferred-handshake future.
+type LazyHandshakeFuture =
+    Pin<Box<dyn std::future::Future<Output = Result<WsStream, SignalFishError>> + Send>>;
+
 /// Lifecycle of one deferred handshake.
 enum LazyPhase {
     /// No handshake started yet; the first send/receive poll starts it.
     Idle,
-    /// The handshake future is being polled to completion.
-    Connecting(
-        Pin<Box<dyn std::future::Future<Output = Result<WsStream, SignalFishError>> + Send>>,
-    ),
+    /// The handshake future is being polled to completion. The mutex exists
+    /// only to keep `WebSocketTransport` `Sync` (a boxed future is `Send`
+    /// but never `Sync`); every access runs behind `&mut self`, so it is
+    /// always taken with `get_mut` and never actually locks.
+    Connecting(std::sync::Mutex<LazyHandshakeFuture>),
     /// The handshake failed or was abandoned (close/abort). Terminal: any
     /// handshake error was delivered exactly once before fusing, and every
     /// later poll is inert. `is_ready()` stays `false` — no connection ever
@@ -1305,7 +1310,7 @@ impl WebSocketTransport {
             }
             let url = lazy.url.clone();
             let timeout = lazy.timeout;
-            lazy.phase = LazyPhase::Connecting(Box::pin(async move {
+            lazy.phase = LazyPhase::Connecting(std::sync::Mutex::new(Box::pin(async move {
                 let connected = Self::connect_with_timeout(&url, timeout).await?;
                 // Success pins the disabled token-binding profile (default
                 // options), so moving the raw stream into a fresh state is
@@ -1321,7 +1326,7 @@ impl WebSocketTransport {
                     // transport or an error.
                     WebSocketInner::Lazy(_) => Err(SignalFishError::TransportClosed),
                 }
-            }));
+            })));
         }
         let WebSocketInner::Lazy(lazy) = &mut self.inner else {
             return LazyAdvance::Connected;
@@ -1331,7 +1336,17 @@ impl WebSocketTransport {
             // nothing left to drive.
             return LazyAdvance::FusedTerminal;
         };
-        match future.as_mut().poll(cx) {
+        // Take the future through the exclusive `&mut` reference: the mutex
+        // exists for `Sync` (a boxed future is `Send` but never `Sync`), not
+        // for locking; `get_mut` proves exclusivity without a lock, and the
+        // `LockResult` wrapper is unwrapped without panicking for signature
+        // compatibility (it can never actually be poisoned here).
+        let poll_result = future
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .poll(cx);
+        match poll_result {
             Poll::Pending => LazyAdvance::Pending,
             Poll::Ready(Ok(stream)) => {
                 self.inner = WebSocketInner::Connected(Box::new(WebSocketState::new(stream)));
@@ -1812,6 +1827,17 @@ mod tests {
     fn websocket_transport_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<WebSocketTransport>();
+    }
+
+    #[test]
+    fn websocket_transport_is_send_and_sync() {
+        // The lazy constructors hold a boxed handshake future (`Send` but
+        // never `Sync`), so `Sync` now depends on that future staying behind
+        // a mutex. Losing the auto trait is a semver-major change (the
+        // `API compatibility` gate would fail); this pin catches it in the
+        // ordinary suite first.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<WebSocketTransport>();
     }
 
     #[test]
