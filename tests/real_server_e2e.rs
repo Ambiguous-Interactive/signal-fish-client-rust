@@ -265,13 +265,17 @@ async fn raw_token_binding_connect(
             "signalfish.tokenbinding.v2",
         ),
     );
-    let (mut stream, response) = tokio_tungstenite::connect_async_tls_with_config(
-        request,
-        None,
-        true,
-        Some(tokio_tungstenite::Connector::Rustls(tls_config)),
-    )
+    let (mut stream, response) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio_tungstenite::connect_async_tls_with_config(
+            request,
+            None,
+            true,
+            Some(tokio_tungstenite::Connector::Rustls(tls_config)),
+        )
+        .await
+    })
     .await
+    .expect("raw token-binding handshake must complete within 10s")
     .expect("raw token-binding handshake must succeed");
     assert_eq!(
         response
@@ -498,7 +502,7 @@ async fn connect_authenticated(
     SignalFishClient,
     tokio::sync::mpsc::Receiver<SignalFishEvent>,
 ) {
-    let transport = WebSocketTransport::connect(url)
+    let transport = WebSocketTransport::connect_with_timeout(url, Duration::from_secs(10))
         .await
         .expect("connect to real server");
     let (client, mut events) = SignalFishClient::start(transport, config);
@@ -1063,7 +1067,7 @@ async fn e2e_server_080_rkyv_request_resolves_to_json() {
         },
     };
 
-    let transport = WebSocketTransport::connect(&url)
+    let transport = WebSocketTransport::connect_with_timeout(&url, Duration::from_secs(10))
         .await
         .expect("connect to real Server 0.8");
     let mut config = SignalFishConfig::new(app_id()).enable_v3();

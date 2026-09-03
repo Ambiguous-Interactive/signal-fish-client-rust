@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -32,18 +32,14 @@ jobs:
   panic-free-policy:
     name: Panic-free policy check
     runs-on: ubuntu-latest
+    # Pure grep/awk scan: no Rust toolchain or Cargo cache is needed, so the
+    # job stays a fast (~15 s) always-on gate on every PR and push.
     timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
 
       - name: Run panic-free policy check
         run: bash scripts/check-no-panics.sh

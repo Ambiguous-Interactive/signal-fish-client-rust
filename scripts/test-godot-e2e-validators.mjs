@@ -249,7 +249,7 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["startup proposal receipt", (value) => { value.startup_proposal_received = false; }],
     ["startup ack send", (value) => { value.startup_ack_sent = false; }],
     ["startup commit receipt", (value) => { value.startup_commit_received = false; }],
-    ["startup lateness", (value) => { value.startup_release_lateness_ms = 101; }],
+    ["startup lateness", (value) => { value.startup_release_lateness_ms = 301; }],
     ["simulation cadence", (value) => { value.observed_simulation_fps = 11; }],
     ["queue-depth schema", (value) => { delete value.peak_queue_depth; }],
     ["age schema", (value) => { delete value.peak_queue_age_ms; }],
@@ -261,12 +261,22 @@ test("Fortress oracle rejects each critical negative control", () => {
     mutation(corrupted);
     assert.equal(validateFortressPeer(corrupted, { requireHitch: true }).ok, false, label);
   }
+  // 250 ms of release lateness is inside the 300 ms per-peer bound (a few
+  // skipped rendered frames at the measured ~43.5 ms period) but 301 is not.
+  const lateButTolerated = structuredClone(first);
+  lateButTolerated.startup_release_lateness_ms = 250;
+  assert.equal(validateFortressPeer(lateButTolerated, { requireHitch: true }).ok, true, "startup lateness margin");
 
   const divergentStartup = structuredClone(second);
   divergentStartup.startup_start_unix_ms += 1;
   assert.equal(validateFortressPair(first, divergentStartup).ok, false, "startup deadline");
+  // The shared fixture carries lateness 20; 140 apart stays inside the 150 ms
+  // pair-divergence bound, 380 apart exceeds it.
+  const convergentReleasePhase = structuredClone(second);
+  convergentReleasePhase.startup_release_lateness_ms = 160;
+  assert.equal(validateFortressPair(first, convergentReleasePhase).ok, true, "startup phase margin");
   const divergentReleasePhase = structuredClone(second);
-  divergentReleasePhase.startup_release_lateness_ms = 80;
+  divergentReleasePhase.startup_release_lateness_ms = 400;
   assert.equal(validateFortressPair(first, divergentReleasePhase).ok, false, "startup phase");
   for (const [label, field] of [
     ["proposal send", "startup_proposal_sent"],

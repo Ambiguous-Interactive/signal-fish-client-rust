@@ -754,6 +754,23 @@ mod godot_issue_61_policy {
     }
 
     #[test]
+    fn wasm_lanes_share_one_pinned_emsdk_version() {
+        // Both wasm lanes link against Godot 4.5's emsdk-sensitive export
+        // toolchain; a one-sided bump would silently split the toolchains.
+        let godot_web = read_project_file(".github/workflows/godot-web.yml");
+        let wasm = read_project_file(".github/workflows/wasm.yml");
+        let godot_version = godot_web
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("EMSDK_VERSION: \""))
+            .and_then(|rest| rest.split('"').next())
+            .expect("godot-web.yml must pin EMSDK_VERSION");
+        assert!(
+            wasm.contains(&format!("version: {godot_version}")),
+            "wasm.yml must pin the same emsdk version as godot-web.yml ({godot_version})"
+        );
+    }
+
+    #[test]
     fn every_required_workflow_supports_app_free_dispatch() {
         let policy = read_project_file(".github/required-checks.json");
         let policy: serde_json::Value =
@@ -2049,6 +2066,28 @@ mod ci_workflow_policy {
         assert!(
             server_job.contains(checksum_command),
             "CI must verify the matrix-bound release digest"
+        );
+
+        // The Godot web lane downloads the same pinned server binaries; its
+        // digest constants must stay byte-identical to the compatibility
+        // seams above (drift there would let a lane trust a different binary).
+        let godot_web = read_project_file(".github/workflows/godot-web.yml");
+        for &(asset, version, _) in &pinned_seams {
+            let digest = release_artifacts[asset]
+                .as_str()
+                .unwrap_or_else(|| panic!("{asset} release digest must be a string"));
+            let constant = match version {
+                "0.4.0" => "SERVER_SHA256_040",
+                _ => "SERVER_SHA256_080",
+            };
+            assert!(
+                godot_web.contains(&format!("{constant}: \"{digest}\"")),
+                "godot-web.yml must pin {asset} ({version}) with digest {digest} in {constant}"
+            );
+        }
+        assert!(
+            !godot_web.contains(".sha256\""),
+            "godot-web.yml must not verify a server tarball against a same-origin .sha256 file"
         );
 
         let matrix_rows = server_job

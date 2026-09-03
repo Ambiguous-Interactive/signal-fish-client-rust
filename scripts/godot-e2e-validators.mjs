@@ -233,7 +233,7 @@ export function validateFortressPeer(summary, options = {}) {
     !isNonnegativeInteger(summary?.startup_start_unix_ms) || summary.startup_start_unix_ms === 0 ||
     !isNonnegativeNumber(summary?.startup_barrier_elapsed_ms) ||
     !isNonnegativeNumber(summary?.startup_release_lateness_ms) ||
-    summary.startup_release_lateness_ms > 100
+    summary.startup_release_lateness_ms > 300
   ) errors.push("causal startup barrier failed");
   if (
     summary?.multi_frame_poll !== true ||
@@ -310,10 +310,16 @@ export function validateFortressPair(first, second) {
   if (first?.startup_start_unix_ms !== second?.startup_start_unix_ms) {
     errors.push("peer startup deadlines diverged");
   }
+  // Release lateness is measured at the first rendered-frame callback at or
+  // after the shared deadline (~43.5 ms per frame at the fixture's measured
+  // ~23 fps under two Chromium processes), so one skipped callback already
+  // spends ~44-90 ms of budget. The bounds must tolerate a few skipped frames
+  // (GC, JIT, scheduler contention, netem softirq load) while still failing
+  // any systematic barrier mapping error, which is seconds-scale.
   if (
     !isNonnegativeNumber(first?.startup_release_lateness_ms) ||
     !isNonnegativeNumber(second?.startup_release_lateness_ms) ||
-    Math.abs(first.startup_release_lateness_ms - second.startup_release_lateness_ms) > 56
+    Math.abs(first.startup_release_lateness_ms - second.startup_release_lateness_ms) > 150
   ) errors.push("peer startup release phases diverged");
   if (
     first?.target_state_checksum !== second?.target_state_checksum ||

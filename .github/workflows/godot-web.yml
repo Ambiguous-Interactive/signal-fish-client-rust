@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -31,6 +31,12 @@ env:
   IPROUTE2_VERSION: "6.6.0"
   IPROUTE2_SHA256: "8738c804afd09f0bf756937f0c3de23117832a98d8cbbf50386cf5005cd613ce"
   NATIVE_SERVER_VERSION: "0.8.0"
+  # Digest-pinned like ci.yml's server-mesh-e2e matrix (whose values must stay
+  # byte-identical to tests/compatibility.toml): release assets are mutable, so
+  # verifying the tarball against a same-origin .sha256 would let a replaced
+  # asset attest itself.
+  SERVER_SHA256_080: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+  SERVER_SHA256_040: "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
 
 jobs:
   build-export:
@@ -106,8 +112,7 @@ jobs:
           asset="signal-fish-server-v${NATIVE_SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${NATIVE_SERVER_VERSION}"
           curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
-          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
-          sha256sum --check "${asset}.sha256"
+          printf '%s  %s\n' "${SERVER_SHA256_080}" "${asset}" | sha256sum --check
           native_fixture=".godot-native-project"
           mkdir -p .signal-fish-native-server "${native_fixture}"
           cp -R tests/godot-web-smoke/project/. "${native_fixture}/"
@@ -192,11 +197,30 @@ jobs:
             import { readFileSync } from "node:fs";
             import {
               validateLargeInboundMarkers,
+              validateLoadSummary,
             } from "./scripts/godot-e2e-validators.mjs";
             const lines = readFileSync("godot-native.log", "utf8").split(/\r?\n/);
             const largeInbound = validateLargeInboundMarkers(lines);
             if (!largeInbound.ok) {
               throw new Error("native large-inbound assertions failed: " + JSON.stringify(largeInbound));
+            }
+            // Oracle parity with the browser harness: a fixture whose load
+            // oracles failed still prints its summary (via godot_error!) and
+            // then completes every later marker, so the final grep sweep can
+            // never substitute for validating the summary itself.
+            const samples = lines
+              .filter((line) => line.includes("SIGNAL_FISH_LOAD sample "))
+              .map((line) => JSON.parse(line.slice(line.indexOf("SIGNAL_FISH_LOAD sample ") + 24)));
+            const summaryLine = lines.find((line) =>
+              line.includes("SIGNAL_FISH_SMOKE load-summary "));
+            if (summaryLine === undefined) {
+              throw new Error("native smoke never emitted its load summary");
+            }
+            const loadSummary = JSON.parse(summaryLine.slice(
+              summaryLine.indexOf("SIGNAL_FISH_SMOKE load-summary ") + 31));
+            const loadValidation = validateLoadSummary(loadSummary, samples);
+            if (!loadValidation.ok) {
+              throw new Error("native throughput assertions failed: " + JSON.stringify(loadValidation));
             }
           '
 
@@ -343,6 +367,12 @@ jobs:
           name: godot-web-export
           path: tests/godot-web-smoke/project
 
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ runner.arch }}-${{ env.PLAYWRIGHT_VERSION }}
+
       - name: Install pinned Chromium automation
         run: |
           npm install --no-save --no-package-lock "playwright@${PLAYWRIGHT_VERSION}"
@@ -351,13 +381,31 @@ jobs:
       - name: Download pinned Signal Fish server
         run: |
           set -euo pipefail
+          if [ "${SERVER_VERSION}" = "0.4.0" ]; then
+            server_sha256="${SERVER_SHA256_040}"
+          else
+            server_sha256="${SERVER_SHA256_080}"
+          fi
           asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
           curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
-          curl --fail --location --retry 5 --output "${asset}.sha256" "${base}/${asset}.sha256"
-          sha256sum --check "${asset}.sha256"
+          printf '%s  %s\n' "${server_sha256}" "${asset}" | sha256sum --check
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server
+
+      - name: Restore pinned netem tc build
+        if: matrix.scenario != 'clean'
+        uses: actions/cache@v6.1.0
+        with:
+          path: .netem-tools
+          key: netem-iproute2-${{ runner.os }}-${{ runner.arch }}-${{ env.IPROUTE2_VERSION }}
+        # Trust boundary: the restored tc binary is a build artifact of a
+        # same-repo branch run (fork PRs cannot write caches), so restoring it
+        # extends that branch's build provenance to this run. The `-Version`
+        # guard below is a liveness/wrong-version check, not a security
+        # control; contributors with branch rights already control the
+        # workflow source itself. GitHub's sha-pinned iproute2 tarball applies
+        # only on cache misses.
 
       - name: Run required browser scenario
         env:
@@ -397,17 +445,26 @@ jobs:
           trap cleanup EXIT
 
           if [ "${SCENARIO}" != "clean" ]; then
+            # iproute2 stays unconditional (the ip netns/link setup uses it);
+            # the compiler toolchain is only needed for a rebuild.
             sudo apt-get update
-            sudo apt-get install --yes bison build-essential flex iproute2 libmnl-dev pkg-config
+            sudo apt-get install --yes iproute2 libmnl-dev
+            # Rebuild only on a cache miss or version bump; the restored build
+            # is re-verified below before any qdisc trusts it.
             archive="iproute2-${IPROUTE2_VERSION}.tar.xz"
-            curl --fail --location --silent --show-error \
-              "https://www.kernel.org/pub/linux/utils/net/iproute2/${archive}" \
-              --output "${archive}"
-            echo "${IPROUTE2_SHA256}  ${archive}" | sha256sum --check
-            mkdir -p .netem-tools/iproute2
-            tar -xJf "${archive}" -C .netem-tools/iproute2 --strip-components=1
-            make -C .netem-tools/iproute2 --jobs=2 SUBDIRS="lib tc"
-            tc_netem="${PWD}/.netem-tools/iproute2/tc/tc"
+            built_tc="${PWD}/.netem-tools/iproute2/tc/tc"
+            if [ ! -x "${built_tc}" ] \
+              || ! "${built_tc}" -Version 2>/dev/null | grep -F "iproute2-${IPROUTE2_VERSION}"; then
+              sudo apt-get install --yes bison build-essential flex pkg-config
+              curl --fail --location --silent --show-error \
+                "https://www.kernel.org/pub/linux/utils/net/iproute2/${archive}" \
+                --output "${archive}"
+              echo "${IPROUTE2_SHA256}  ${archive}" | sha256sum --check
+              mkdir -p .netem-tools/iproute2
+              tar -xJf "${archive}" -C .netem-tools/iproute2 --strip-components=1
+              make -C .netem-tools/iproute2 --jobs=2 SUBDIRS="lib tc"
+            fi
+            tc_netem="${built_tc}"
             "${tc_netem}" -Version
             sudo modprobe ifb numifbs=2
             sudo ip netns add sf-server

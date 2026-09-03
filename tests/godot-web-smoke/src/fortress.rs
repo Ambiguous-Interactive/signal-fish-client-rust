@@ -1249,13 +1249,19 @@ impl FortressScenario {
                 self.target_frames.max(0) as f64 * 1_000.0 / elapsed as f64
             });
         let lag_limit = scenario_lag_limit(self.poll_hitch_frame, self.settlement_frame_limit);
+        // Release lateness is observed at the first rendered-frame callback at
+        // or after the deadline (~43.5 ms per frame at the measured ~23 fps
+        // under two Chromium processes), so a few skipped frames (GC, JIT,
+        // scheduler contention) spend ~44-90 ms each. The bound must tolerate
+        // them while still failing any systematic barrier mapping error, which
+        // is seconds-scale against the barrier's 2 s lead.
         let startup_barrier_valid = self.startup_barrier_completed
             && self.startup_barrier_release_local_frame == Some(0)
             && self.startup_start_unix_ms.is_some_and(|value| value > 0)
             && self.startup_barrier_elapsed_ms.is_some()
             && self
                 .startup_release_lateness_ms
-                .is_some_and(|value| value <= 100)
+                .is_some_and(|value| value <= 300)
             && match &*self.role {
                 "a" => {
                     self.startup_proposal_received
