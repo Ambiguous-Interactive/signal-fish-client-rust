@@ -396,8 +396,14 @@ pub struct ProtocolInfoPayload {
 | `protocol_version` | `Option<u16>` | **Protocol v3+.** The negotiated protocol version. `None` for a v2 negotiation, keeping v2 bytes identical. |
 | `min_protocol_version` | `Option<u16>` | **Protocol v3+.** Lowest version this deployment accepts. |
 | `max_protocol_version` | `Option<u16>` | **Protocol v3+.** Highest version this deployment speaks. |
-| `transports` | `Option<Vec<MessageTransport>>` | **Protocol v3+.** Server message transports available to this connection. |
+| `transports` | `Option<Vec<MessageTransport>>` | **Protocol v3+.** Server message transports available to this connection. The only defined value is `websocket` (RFC 6455 text/binary frames). The field must be present on every v3 `ProtocolInfo` (the client rejects a v3 negotiation without it) and every entry must be the `websocket` variant; the client advertises `["relay"]` support for signaling metadata but does not accept a server-side `relay` entry. |
 | `max_outbound_message_size` | `Option<usize>` | **Protocol v3+.** Maximum complete encoded application payload, in bytes, this deployment sends in one WebSocket message. A delivery over this limit is rejected whole and closes that connection with WebSocket close code 1009. Also mirrored into `ClientSnapshot::server_max_outbound_message_size`. |
+
+!!! warning "Optional means omitted, not `null`"
+    Every `Option<...>` field of `ProtocolInfo` uses
+    omit-if-absent semantics: omit the field entirely for `None`. An explicit
+    JSON `null` is rejected with a decode error (`invalid type: null`), so a
+    scripted test peer must never emit `"field": null` for these fields.
 
 ---
 

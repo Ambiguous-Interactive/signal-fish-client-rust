@@ -4,7 +4,7 @@ Decoded messages from the Signal Fish server, plus locally generated lifecycle
 and diagnostic events, are surfaced as [`SignalFishEvent`] variants through the
 event receiver returned by [`SignalFishClient::start`].
 
-This page documents all **36 variants** grouped by category, with field
+This page documents all **38 variants** grouped by category, with field
 descriptions and usage examples.
 
 !!! info "Protocol v2 relay + v3 mesh"
@@ -226,6 +226,18 @@ Events related to joining, failing to join, or leaving a room.
 | `current_spectators` | `Vec<SpectatorInfo>` | Spectators currently watching. |
 | `ice_servers` | `Vec<IceServer>` | Protocol-v3 STUN/TURN servers for early candidate gathering; empty on the v2 floor. |
 | `reconnection_token` | `Option<String>` | Server-issued v3 secret retained by `ClientSnapshot` for unexpected-disconnect recovery. |
+
+!!! warning "Scripted-peer contract for the join snapshot"
+    The client validates the authoritative snapshot before surfacing it.
+    A mock server driving this event must satisfy all of the following, or the
+    frame is quarantined (or rejected under `Disconnect` policy):
+
+    - the local `player_id` appears in `current_players` **exactly once**;
+    - on a negotiated v3 connection, every `PlayerInfo` carries **paired**
+      `epoch` and `seq` values (both present or both absent — a mixed pair is
+      a violation, despite the fields being optional in isolation);
+    - on a v2 connection, no `PlayerInfo` may carry `epoch`/`seq` at all
+      (a "v2 snapshot exposed delivery baseline" violation).
 
 ### `RoomJoinFailed`
 

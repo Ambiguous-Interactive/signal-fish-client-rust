@@ -793,6 +793,13 @@ impl SignalFishEvent {
     /// replaced with same-length `*` bytes. Escapes are masked in their raw
     /// source form and an unterminated final literal (the prefix is
     /// truncated) masks to the end.
+    ///
+    /// The masking is lexical, not semantic: a frame that is not JSON
+    /// (outside the decoder's dialects) has no recognizable string literals,
+    /// so its bytes pass through effectively verbatim. Treat the return value
+    /// as attacker-controlled text with structured fields hidden — never as
+    /// trusted, protocol-shaped output — and keep it out of contexts that
+    /// would render untrusted text as markup or code.
     #[must_use]
     pub fn redacted_raw_prefix(&self) -> Option<String> {
         let Self::DecodeFailed { raw_prefix, .. } = self else {

@@ -275,8 +275,9 @@ if all_ready && (!supports_authority || is_authority) && !start_request_sent {
 
 The server accepts the request only after every current player is ready. In an
 authority-enabled room, it accepts the request only from the authority.
-Rejected requests arrive as `GameStartNotReady` or `GameStartForbidden` server
-errors. Applications that previously relied on readiness auto-starting the
+Rejected requests surface through the `Error` event with the
+`GameStartNotReady` or `GameStartForbidden` error code. Applications that
+previously relied on readiness auto-starting the
 game must add this call; see [Migrating from 0.7 to 0.8](migration-0.8.md#explicit-game-start).
 
 ---
@@ -429,8 +430,10 @@ to every JSON delivery class equally.
 `send_binary_game_data(payload)` queues a physical WebSocket binary
 frame; `send_binary_game_data_reliable` waits for local queue capacity. Binary
 frames use the protocol-reliable delivery path and require v3 negotiation.
-They also require an effectively negotiated binary format; the default/JSON
-format returns `BinaryFormatNotNegotiated` before anything is queued. The
+They also require an effectively negotiated binary format. The v3 gate runs
+first: on a v2 connection the call returns `ProtocolUnsupported` before the
+format is considered; on a negotiated v3 connection the default/JSON format
+returns `BinaryFormatNotNegotiated` before anything is queued. The
 client resolves this from `ProtocolInfo.game_data_formats`, not from the
 earlier advisory `UnsupportedGameDataFormat` error. An unsupported request
 (including Server 0.8's reserved `Rkyv`) resolves to JSON, so binary sends fail
@@ -604,8 +607,12 @@ the transport-and-authentication core of it with a
 `SignalFishConfig::with_reconnect_policy`:
 
 ```rust,ignore
+// The factory returns a fresh, *unconnected* transport per attempt and must
+// not block. WebSocketTransport::connect is asynchronous, so wrap it in a
+// lazy transport that connects on first poll — see
+// examples/auto_reconnect.rs for a complete, compiling implementation.
 let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
-    ReconnectPolicy::new(|| Box::new(my_transport_factory.spawn())),
+    ReconnectPolicy::new(move || Box::new(LazyWebSocketTransport::new(url.clone()))),
 );
 
 let (mut client, events) = SignalFishClient::start(transport, config);
