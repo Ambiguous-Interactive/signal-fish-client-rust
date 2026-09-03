@@ -1945,6 +1945,16 @@ fn canonical_event(event: &SignalFishEvent) -> String {
         SignalFishEvent::RoomOperationFailed { reason, error_code } => {
             event_fields!("RoomOperationFailed", reason, error_code)
         }
+        SignalFishEvent::Reconnecting {
+            attempt,
+            next_backoff,
+        } => {
+            event_fields!("Reconnecting", attempt, next_backoff)
+        }
+        SignalFishEvent::ReconnectAbandoned {
+            attempts,
+            last_reason,
+        } => event_fields!("ReconnectAbandoned", attempts, last_reason),
     }
 }
 

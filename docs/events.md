@@ -45,6 +45,8 @@ Use these to track the raw connection lifecycle.
 |---------|--------|-------------|
 | `Connected` | — | The driver first observed `Transport::is_ready() == true` and marked `ClientSnapshot::transport_ready` true; a later terminal transition resets it. Synthetic — see [Connection timing](wasm.md#connection-timing) for details. |
 | `Disconnected` | `reason: Option<String>`, `last_server_error: Option<ServerErrorInfo>` | The transport connection was closed or errored. |
+| `Reconnecting` | `attempt: u32`, `next_backoff: Duration` | A configured [`ReconnectPolicy`](client.md#automatic-reconnection-opt-in) scheduled a fresh connection after a retryable disconnect. |
+| `ReconnectAbandoned` | `attempts: u32`, `last_reason: Option<String>` | The configured reconnect policy exhausted its attempts; the event stream ends after this event. |
 | `DecodeFailed` | `message_type: Option<String>`, `error: String`, `raw_prefix: String` | An inbound frame could not be decoded into a `ServerMessage`; the connection stays open. |
 | `ProtocolViolation` | `kind: ProtocolViolationKind`, `diagnostic: String` | A decoded message violated lifecycle, version, session-plan, signaling, or delivery-accountability invariants; configured policy decides quarantine, disconnect, or continued observation. Lifecycle/plan/signaling offenders are suppressed. |
 
@@ -73,6 +75,20 @@ the [Delivery Contract](delivery.md#the-wedged-consumer-hazard).
     channel closing (`recv()`
     returns `None`) is the guaranteed end-of-stream signal — rely on it, not
     on always observing a final `Disconnected`.
+
+### `Reconnecting` / `ReconnectAbandoned`
+
+Emitted only when a
+[`ReconnectPolicy`](client.md#automatic-reconnection-opt-in) is configured on
+the async client. `Reconnecting { attempt, next_backoff }` precedes each
+fresh-transport attempt (1-based `attempt`, deterministic exponential
+`next_backoff`); a successful attempt continues with a fresh `Connected` →
+`Authenticated` sequence and, when the client left a player room on the
+previous connection, an automatic directed reconnect. `ReconnectAbandoned {
+attempts, last_reason }` is the terminal event when the budget runs out;
+shutdown, a dropped handle, and `ProtocolViolationPolicy::Disconnect`
+teardowns end the client without attempting reconnection and never produce
+these events.
 
 ### `DecodeFailed`
 

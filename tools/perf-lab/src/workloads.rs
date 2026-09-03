@@ -517,6 +517,11 @@ impl EventAccumulator {
             SignalFishEvent::SpectatorDisconnected { .. } => 33,
             SignalFishEvent::Error { .. } => 34,
             SignalFishEvent::RoomOperationFailed { .. } => 35,
+            // The perf-lab fixtures never configure a reconnect policy, so
+            // these never fire; appended (not inserted) to keep every pinned
+            // event index stable.
+            SignalFishEvent::Reconnecting { .. } => 36,
+            SignalFishEvent::ReconnectAbandoned { .. } => 37,
         };
         let count = self
             .counts

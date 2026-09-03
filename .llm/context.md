@@ -169,8 +169,7 @@ SDK-created Godot peers set an 8 MiB inbound buffer and raise the independent qu
 blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
 3,600-frame soak jobs on Server 0.8 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
-6.6.0 for seeded netem rather
-than relying on the runner's older `tc`.
+6.6.0 for seeded netem rather than relying on the runner's older `tc`.
 The fixture uses a peer-independent fixed 18 Hz simulation cadence with a
 20-frame Fortress prediction window (60-frame renderer/JIT warm-up bounded by
 it; steady-state and final lag capped at eight frames clean or 13 impaired/soak),
@@ -196,8 +195,10 @@ counters.
 
 Connect a transport, construct `SignalFishConfig`, and pass both to `SignalFishClient::start`, which returns the handle and event receiver and
 queues `Authenticate`. Wait for `Authenticated` before room commands; drain
-events continuously and call `shutdown().await` for graceful teardown. The
-complete compiling example is `examples/basic_lobby.rs`.
+events continuously and call `shutdown().await` for graceful teardown (the
+complete compiling example is `examples/basic_lobby.rs`). Opt the async client
+into automatic reconnection (factory transport, exponential backoff, automatic
+player-room `reconnect`) with `.with_reconnect_policy`; polling stays manual.
 
 ### SignalFishConfig
 
@@ -357,7 +358,7 @@ Core tests additionally use full-featured `tokio` and `tracing-subscriber` (the 
 
 The `Transport` trait decouples protocol logic from framed network I/O. Tests use
 in-memory transports; Server 0.8 production I/O exposes only WebSocket. Custom
-backends must provide one complete, ordered text/binary stream for the intended
+backends provide one complete, ordered text/binary stream for the intended
 server and own trust/source binding plus raw stream/datagram policy.
 
 Concrete engine bindings live outside core. In particular, all Godot bindings,
@@ -415,9 +416,9 @@ exact gap ranges; roster inserts beyond the advertised `max_players`
 (wire-absolute `u8::MAX + 1` fallback when the latest baseline cannot
 advertise one) — servers swapping players on a full room must order the
 departure before the replacement join. Unknown-player `PlayerReconnected`
-sender cursors remain the
-one documented trusted-server envelope: containment gates would reject
-legitimate reconnects of players absent from the local roster snapshot.
+sender cursors remain the one documented trusted-server envelope:
+containment gates would reject legitimate reconnects of players absent from
+the local roster snapshot.
 
 ### No Heavy Dependencies
 
@@ -473,10 +474,10 @@ Planning records are local-only working notes: session logs/evidence under `prog
 ## Documentation Rendering (MkDocs)
 
 MkDocs Material + pymdownx powers Pages. `hooks/rustdoc_codeblocks.py` strips
-rustdoc fence annotations for Pygments; `hooks/llms_txt.py` generates model text.
+rustdoc fence annotations; `hooks/llms_txt.py` generates model text.
 Mermaid requires `custom_fences` in `mkdocs.yml`. Approved Vector assets use pinned provenance and local OFL fonts preloaded via `overrides/main.html`; both palettes retain AA contrast, visible focus, reduced-motion behavior, and responsive scrolling (`docs_brand_policy` pins these contracts; evidence under local-only `progress/assets/`). CI runs strict MkDocs
 (`.github/workflows/docs-deploy.yml`) and the 17 rendering checks in
-`scripts/check-docs-rendering.sh` (invoked by `.github/workflows/docs-validation.yml`); see `skills/markdown-and-doc-validation/SKILL.md`.
+`scripts/check-docs-rendering.sh` (invoked by `docs-validation.yml`); see `skills/markdown-and-doc-validation/SKILL.md`.
 
 ## Pre-commit Enforcement
 
@@ -495,6 +496,4 @@ A pre-commit hook enforces:
 10. MkDocs admonition/details titles are well-formed (`scripts/check-admonitions.py`) — no embedded double quotes
 
 `cargo test` runs on push, not every commit (too slow for a blocking hook) —
-run it manually before opening a PR.
-
-Install hooks with: `bash scripts/install-hooks.sh`
+run it manually before opening a PR. Install hooks with `bash scripts/install-hooks.sh`.

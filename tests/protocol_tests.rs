@@ -2688,6 +2688,7 @@ fn error_code_display_returns_description() {
 #[test]
 fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
     const SECRETS: &[&str] = &[
+        "room-secret",
         "reconnect-secret",
         "relay-secret",
         "unity-key-secret",
@@ -2788,12 +2789,26 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         sender_watermarks: vec![],
         reconnection_token: Some("reconnect-secret".into()),
     };
+    let spectator_joined = SpectatorJoinedPayload {
+        room_id: test_uuid(4),
+        room_code: "room-secret".into(),
+        spectator_id: test_uuid(6),
+        game_name: "game".into(),
+        current_players: vec![],
+        current_spectators: vec![],
+        lobby_state: LobbyState::Waiting,
+        reason: None,
+    };
+    let join_params =
+        signal_fish_client::JoinRoomParams::new("game", "player").with_room_code("room-secret");
 
     for (debug, safe_marker) in [
         (format!("{relay:?}"), "ConnectionInfo::Relay"),
         (format!("{ice:?}"), "IceServer"),
         (format!("{joined:?}"), "RoomJoinedPayload"),
         (format!("{reconnected:?}"), "ReconnectedPayload"),
+        (format!("{spectator_joined:?}"), "SpectatorJoinedPayload"),
+        (format!("{join_params:?}"), "JoinRoomParams"),
         (format!("{:?}", ClientMessage::Ping), "Ping"),
         (format!("{:?}", ServerMessage::Pong), "Pong"),
     ] {
@@ -2812,6 +2827,8 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         format!("{plan:?}"),
         format!("{joined:?}"),
         format!("{reconnected:?}"),
+        format!("{spectator_joined:?}"),
+        format!("{join_params:?}"),
         format!(
             "{:?}",
             ClientMessage::Reconnect {

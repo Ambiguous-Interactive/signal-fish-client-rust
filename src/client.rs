@@ -216,7 +216,7 @@ pub(crate) fn decode_binary_server_message(
 ///     .with_event_channel_capacity(512)
 ///     .with_shutdown_timeout(Duration::from_secs(5));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct SignalFishConfig {
     /// Public App ID that identifies the game application.
     pub app_id: String,
@@ -292,6 +292,76 @@ pub struct SignalFishConfig {
     pub shutdown_timeout: Duration,
     /// Response to a protocol-v3 delivery-accountability violation.
     pub protocol_violation_policy: ProtocolViolationPolicy,
+    /// Opt-in automatic reconnection policy for the async client.
+    ///
+    /// `None` (the default) keeps recovery fully manual. See
+    /// [`ReconnectPolicy`] for the automated behavior and
+    /// [`with_reconnect_policy`](Self::with_reconnect_policy) to opt in.
+    #[cfg(feature = "tokio-runtime")]
+    pub reconnect_policy: Option<ReconnectPolicy>,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl std::fmt::Debug for SignalFishConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalFishConfig")
+            .field("app_id", &self.app_id)
+            .field("sdk_version", &self.sdk_version)
+            .field("platform", &self.platform)
+            .field("game_data_format", &self.game_data_format)
+            .field("protocol_version", &self.protocol_version)
+            .field("supported_transports", &self.supported_transports)
+            .field("supported_topologies", &self.supported_topologies)
+            .field("event_channel_capacity", &self.event_channel_capacity)
+            .field("command_channel_capacity", &self.command_channel_capacity)
+            .field("shutdown_timeout", &self.shutdown_timeout)
+            .field("protocol_violation_policy", &self.protocol_violation_policy)
+            .field(
+                "reconnect_policy",
+                &self
+                    .reconnect_policy
+                    .as_ref()
+                    .map(|_| "ReconnectPolicy { .. }"),
+            )
+            .finish()
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl PartialEq for SignalFishConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.app_id == other.app_id
+            && self.sdk_version == other.sdk_version
+            && self.platform == other.platform
+            && self.game_data_format == other.game_data_format
+            && self.protocol_version == other.protocol_version
+            && self.supported_transports == other.supported_transports
+            && self.supported_topologies == other.supported_topologies
+            && self.event_channel_capacity == other.event_channel_capacity
+            && self.command_channel_capacity == other.command_channel_capacity
+            && self.shutdown_timeout == other.shutdown_timeout
+            && self.protocol_violation_policy == other.protocol_violation_policy
+            && Self::reconnect_tuning(self.reconnect_policy.as_ref())
+                == Self::reconnect_tuning(other.reconnect_policy.as_ref())
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl Eq for SignalFishConfig {}
+
+#[cfg(feature = "tokio-runtime")]
+impl SignalFishConfig {
+    /// Comparable view of a configured policy: the observable tuning without
+    /// the uncomparable transport factory.
+    fn reconnect_tuning(policy: Option<&ReconnectPolicy>) -> Option<(u32, Duration, Duration)> {
+        policy.map(|policy| {
+            (
+                policy.max_attempts,
+                policy.initial_backoff,
+                policy.max_backoff,
+            )
+        })
+    }
 }
 
 impl SignalFishConfig {
@@ -317,6 +387,8 @@ impl SignalFishConfig {
             command_channel_capacity: DEFAULT_COMMAND_CHANNEL_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             protocol_violation_policy: ProtocolViolationPolicy::Quarantine,
+            #[cfg(feature = "tokio-runtime")]
+            reconnect_policy: None,
         }
     }
 
@@ -357,6 +429,25 @@ impl SignalFishConfig {
     #[must_use]
     pub fn with_protocol_violation_policy(mut self, policy: ProtocolViolationPolicy) -> Self {
         self.protocol_violation_policy = policy;
+        self
+    }
+
+    /// Opt the async client into automatic reconnection with backoff.
+    ///
+    /// Without a policy (the default) a terminal disconnect ends the client
+    /// and recovery stays fully manual. See [`ReconnectPolicy`] for the
+    /// automated behavior: fresh transports from the configured factory,
+    /// deterministic exponential backoff, per-attempt
+    /// [`Reconnecting`](crate::SignalFishEvent::Reconnecting) events, and an
+    /// automatic directed `reconnect` for the player room the client was in
+    /// when the connection ended.
+    ///
+    /// The [polling client](crate::SignalFishPollingClient) is caller-driven
+    /// by design and ignores this option.
+    #[cfg(feature = "tokio-runtime")]
+    #[must_use]
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.reconnect_policy = Some(policy);
         self
     }
 
@@ -538,6 +629,219 @@ pub enum ProtocolViolationPolicy {
     Observe,
 }
 
+// ── ReconnectPolicy ─────────────────────────────────────────────────
+
+/// Default bound on reconnection attempts per episode:
+/// [`ReconnectPolicy::max_attempts`].
+const DEFAULT_RECONNECT_MAX_ATTEMPTS: u32 = 5;
+
+/// Default first-wait duration of the reconnection backoff schedule:
+/// [`ReconnectPolicy::initial_backoff`].
+const DEFAULT_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+
+/// Default ceiling of the reconnection backoff schedule:
+/// [`ReconnectPolicy::max_backoff`].
+const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
+
+/// Opt-in automatic reconnection policy for the async client.
+///
+/// Without a policy, a terminal disconnect ends the client and recovery is
+/// fully manual: the consumer rebuilds a transport, calls
+/// [`SignalFishClient::start`] again, re-authenticates, and — for a player
+/// room — issues [`reconnect`](crate::SignalFishClientApi::reconnect) with a
+/// server-issued token. With a policy (see
+/// [`with_reconnect_policy`](SignalFishConfig::with_reconnect_policy)), the
+/// transport loop itself rebuilds the connection:
+///
+/// 1. A retryable terminal disconnect still delivers
+///    [`Disconnected`](SignalFishEvent::Disconnected) and its full bounded
+///    teardown, exactly as today.
+/// 2. The loop emits [`Reconnecting`](SignalFishEvent::Reconnecting), waits
+///    the schedule's delay (tokio-timed, so paused clocks advance it in
+///    tests), then opens a fresh transport from the configured factory.
+/// 3. The fresh connection runs the normal
+///    [`Connected`](SignalFishEvent::Connected) →
+///    [`Authenticated`](SignalFishEvent::Authenticated) sequence.
+/// 4. If the client was a **player** in a room when the connection ended, the
+///    retained reconnection context is consumed automatically after
+///    re-authentication: the loop issues the same directed `reconnect`
+///    operation the documented manual procedure uses, so the server answers
+///    with [`Reconnected`](SignalFishEvent::Reconnected) (full v3 replay and
+///    watermark semantics, rotated token) or
+///    [`ReconnectionFailed`](SignalFishEvent::ReconnectionFailed). A failed
+///    automatic rejoin is **not** retried or replaced with an automatic
+///    `join_room` — the caller decides the fallback. Voluntarily leaving a
+///    room discards the context, so a policy never rejoins a room the caller
+///    chose to leave.
+///
+/// # Retryable terminal edges
+///
+/// Peer close, transport receive errors, terminal send failures, inbound
+/// frames violating the transport's declared
+/// [`max_frame_hint`](crate::Transport::max_frame_hint), and frames received
+/// before transport readiness are all retried: every one of them can be
+/// caused by a dead or misbehaving *backend*, which is exactly what a fresh
+/// transport from the factory replaces. Not retried — the client ends as
+/// today:
+///
+/// - [`shutdown`](SignalFishClient::shutdown) (at any point, including
+///   during a backoff wait),
+/// - a dropped client handle,
+/// - a [`ProtocolViolationPolicy::Disconnect`] teardown (a protocol
+///   violation is a correctness signal; automatic reconnection would mask
+///   it), and
+/// - an exhausted attempt budget, reported via
+///   [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned).
+///
+/// # Backoff schedule
+///
+/// The delay before attempt *n* is deterministic exponential backoff:
+/// `min(initial_backoff * 2^(n-1), max_backoff)`. There is deliberately **no
+/// jitter** (the SDK pins determinism and carries no RNG dependency); when a
+/// deployment needs de-synchronized retry storms, vary `initial_backoff`
+/// per client or add jitter inside the factory.
+///
+/// The attempt counter resets whenever a connection reaches the
+/// authenticated state again, so each *episode* (a run of failed attempts)
+/// gets the full budget.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
+///     ReconnectPolicy::new(|| Box::new(WebSocketTransport::connect(url))),
+/// );
+/// ```
+///
+/// The factory is called at most once per attempt and must not block; a
+/// panicking factory kills the transport loop task exactly like a panicking
+/// [`Transport`](crate::Transport) method (the documented panic-boundary
+/// contract).
+#[cfg(feature = "tokio-runtime")]
+pub struct ReconnectPolicy {
+    factory: std::sync::Arc<dyn Fn() -> Box<dyn Transport + Send> + Send + Sync>,
+    max_attempts: u32,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl Clone for ReconnectPolicy {
+    fn clone(&self) -> Self {
+        Self {
+            factory: std::sync::Arc::clone(&self.factory),
+            max_attempts: self.max_attempts,
+            initial_backoff: self.initial_backoff,
+            max_backoff: self.max_backoff,
+        }
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl std::fmt::Debug for ReconnectPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReconnectPolicy")
+            .field("max_attempts", &self.max_attempts)
+            .field("initial_backoff", &self.initial_backoff)
+            .field("max_backoff", &self.max_backoff)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl ReconnectPolicy {
+    /// Build a policy that rebuilds connections from `factory`.
+    ///
+    /// The factory returns a fresh, unconnected [`Transport`] and must be
+    /// `Send + Sync` because the transport loop invokes it. Defaults: 5
+    /// attempts, 250 ms initial backoff, 10 s maximum backoff.
+    pub fn new(factory: impl Fn() -> Box<dyn Transport + Send> + Send + Sync + 'static) -> Self {
+        Self {
+            factory: std::sync::Arc::new(factory),
+            max_attempts: DEFAULT_RECONNECT_MAX_ATTEMPTS,
+            initial_backoff: DEFAULT_RECONNECT_INITIAL_BACKOFF,
+            max_backoff: DEFAULT_RECONNECT_MAX_BACKOFF,
+        }
+    }
+
+    /// Bound the reconnection attempts per episode.
+    ///
+    /// Defaults to **5**. `0` never retries: the first disconnect beyond the
+    /// initial connection ends the client with a
+    /// [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned) event
+    /// carrying `attempts: 0`.
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
+        self.max_attempts = max_attempts;
+        self
+    }
+
+    /// Set the wait before the first reconnection attempt.
+    ///
+    /// Defaults to **250 ms**. `Duration::ZERO` retries immediately. Values
+    /// above [`max_backoff`](Self::with_max_backoff) are still scaled by the
+    /// schedule's ceiling, so the effective first wait is
+    /// `min(initial_backoff, max_backoff)`.
+    #[must_use]
+    pub fn with_initial_backoff(mut self, initial_backoff: Duration) -> Self {
+        self.initial_backoff = initial_backoff;
+        self
+    }
+
+    /// Set the ceiling of the backoff schedule.
+    ///
+    /// Defaults to **10 s**. Every computed delay is capped at this value.
+    #[must_use]
+    pub fn with_max_backoff(mut self, max_backoff: Duration) -> Self {
+        self.max_backoff = max_backoff;
+        self
+    }
+
+    /// The configured attempt budget per episode.
+    #[must_use]
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    /// The configured wait before the first reconnection attempt.
+    #[must_use]
+    pub fn initial_backoff(&self) -> Duration {
+        self.initial_backoff
+    }
+
+    /// The configured backoff ceiling.
+    #[must_use]
+    pub fn max_backoff(&self) -> Duration {
+        self.max_backoff
+    }
+
+    /// The deterministic delay before the 1-based `attempt`-th
+    /// reconnection: `min(initial_backoff * 2^(attempt-1), max_backoff)`.
+    ///
+    /// Exposed so callers can mirror the schedule (tests, progress UIs);
+    /// the driver uses the same computation.
+    #[must_use]
+    pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
+        // Doubling saturates instead of overflowing: attempt counts beyond
+        // the schedule's doubling horizon all produce the same capped delay.
+        let mut delay = self.initial_backoff;
+        let mut doublings = attempt.saturating_sub(1);
+        while doublings > 0 {
+            delay = delay.saturating_mul(2);
+            if delay >= self.max_backoff {
+                return self.max_backoff;
+            }
+            doublings = doublings.saturating_sub(1);
+        }
+        delay.min(self.max_backoff)
+    }
+
+    /// Open the next transport.
+    fn create_transport(&self) -> Box<dyn Transport + Send> {
+        (self.factory)()
+    }
+}
+
 /// The local client's authoritative role in its current room.
 ///
 /// A client outside a room has no role, represented by `None` in
@@ -581,7 +885,7 @@ impl std::fmt::Display for RoomRole {
 /// assert_eq!(params.game_name, "my-game");
 /// assert_eq!(params.max_players, Some(4));
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct JoinRoomParams {
     /// Name of the game to join.
     pub game_name: String,
@@ -599,6 +903,23 @@ pub struct JoinRoomParams {
     /// [`crate::Transport`] or add raw datagram support. Signal Fish
     /// Server 0.8 accepts but ignores it.
     pub relay_transport: Option<RelayTransport>,
+}
+
+impl std::fmt::Debug for JoinRoomParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A room code is join-capability knowledge (a lobby-by-code
+        // credential), so the ambient `Debug` path reports presence and byte
+        // length instead of the value — the same form
+        // [`ClientSnapshot`]'s `Debug` uses after a join.
+        f.debug_struct("JoinRoomParams")
+            .field("game_name", &self.game_name)
+            .field("player_name", &self.player_name)
+            .field("room_code", &self.room_code.as_ref().map(|code| code.len()))
+            .field("max_players", &self.max_players)
+            .field("supports_authority", &self.supports_authority)
+            .field("relay_transport", &self.relay_transport)
+            .finish()
+    }
 }
 
 impl JoinRoomParams {
@@ -896,6 +1217,12 @@ impl SignalFishClient {
             config.requests_room_operation_ids(),
         );
         core.set_max_inbound_frame(transport.max_frame_hint());
+        if config.reconnect_policy.is_some() {
+            // Opt-in retention: the player-room reconnection context
+            // survives a terminal disconnect so the policy can issue the
+            // automatic directed reconnect after re-authentication.
+            core.set_reconnect_retention(true);
+        }
         let state = Arc::new(Mutex::new(core));
         let loop_state = Arc::clone(&state);
 
@@ -908,15 +1235,20 @@ impl SignalFishClient {
 
         // Arm backend abandonment before constructing/spawning the future so
         // cancellation before its first poll cannot bypass `Transport::abort`.
-        let guarded_transport = AbortOnDropTransport::new(transport);
-        let task = tokio::spawn(transport_loop(
-            guarded_transport,
+        // The transport is boxed so reconnection rounds opened by the
+        // policy's factory (`Box<dyn Transport + Send>`) share one type.
+        let guarded_transport =
+            AbortOnDropTransport::new(Box::new(transport) as Box<dyn Transport + Send>);
+        let loop_ctx = LoopState::new(
             cmd_rx,
             event_tx,
             loop_state,
             shutdown_rx,
             config.shutdown_timeout,
-        ));
+            config.reconnect_policy.clone(),
+            ClientCore::authenticate_message(&config),
+        );
+        let task = tokio::spawn(transport_loop(guarded_transport, loop_ctx));
 
         let client = Self {
             cmd_tx,
@@ -2330,48 +2662,255 @@ async fn finish_send_failure(
     let ((), ()) = tokio::join!(deliver_disconnected, close);
 }
 
-/// Background transport loop that multiplexes send/receive via `tokio::select!`.
-///
-/// Exits when:
-/// - The command channel closes (client handle dropped or shutdown called)
-/// - The transport returns `None` (server closed connection)
-/// - A transport error occurs
+/// How one connection lifetime (one transport) ended inside the transport
+/// loop.
 #[cfg(feature = "tokio-runtime")]
-async fn transport_loop(
-    mut transport: impl Transport + Send + 'static,
-    mut cmd_rx: mpsc::Receiver<ClientCommand>,
+enum ConnectionRoundExit {
+    /// The client ended deliberately: shutdown was requested, the client
+    /// handle was dropped, or a protocol-violation teardown fired. The loop
+    /// must terminate.
+    Terminal,
+    /// The transport died without any client-side intent, so a configured
+    /// [`ReconnectPolicy`] may open a fresh connection. `reason` is the
+    /// farewell attribution already delivered via the
+    /// [`Disconnected`](SignalFishEvent::Disconnected) event; `authenticated`
+    /// records whether this round had reached the authenticated state (a
+    /// successful round resets the policy's attempt budget).
+    Retryable {
+        reason: Option<String>,
+        authenticated: bool,
+    },
+}
+
+/// Classify a teardown the loop just completed: an observed (sticky) shutdown
+/// signal always wins over retrying, because the client was asked to end.
+#[cfg(feature = "tokio-runtime")]
+fn classify_round_exit(
+    shutdown: &ShutdownSignal,
+    authenticated: bool,
+    reason: Option<String>,
+) -> ConnectionRoundExit {
+    if shutdown.is_observed() {
+        ConnectionRoundExit::Terminal
+    } else {
+        ConnectionRoundExit::Retryable {
+            reason,
+            authenticated,
+        }
+    }
+}
+
+/// Loop-carried state shared by every reconnection round of one client.
+#[cfg(feature = "tokio-runtime")]
+struct LoopState {
+    cmd_rx: mpsc::Receiver<ClientCommand>,
     event_tx: mpsc::Sender<SignalFishEvent>,
     state: Arc<Mutex<ClientCore>>,
-    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    shutdown: ShutdownSignal,
     shutdown_timeout: Duration,
+    reconnect: Option<ReconnectPolicy>,
+    auth_message: ClientMessage,
+}
+
+#[cfg(feature = "tokio-runtime")]
+impl LoopState {
+    fn new(
+        cmd_rx: mpsc::Receiver<ClientCommand>,
+        event_tx: mpsc::Sender<SignalFishEvent>,
+        state: Arc<Mutex<ClientCore>>,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+        shutdown_timeout: Duration,
+        reconnect: Option<ReconnectPolicy>,
+        auth_message: ClientMessage,
+    ) -> Self {
+        Self {
+            cmd_rx,
+            event_tx,
+            state,
+            shutdown: ShutdownSignal::new(shutdown_rx),
+            shutdown_timeout,
+            reconnect,
+            auth_message,
+        }
+    }
+}
+
+/// Background transport loop that multiplexes send/receive via `tokio::select!`.
+///
+/// Each connection lifetime is one *round* of [`connection_round`]. Exits
+/// when:
+/// - shutdown was requested (or the handle was dropped)
+/// - a [`ProtocolViolationPolicy::Disconnect`] teardown fires
+/// - a transport error occurs and no [`ReconnectPolicy`] is configured
+/// - a configured reconnect policy exhausts its attempt budget (after
+///   delivering [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned))
+///
+/// With a policy, a transport death without client-side intent instead
+/// schedules a fresh round: backoff wait, fresh transport from the factory,
+/// re-seeded `Authenticate`, and — when the previous connection ended inside
+/// a player room — an automatic directed `reconnect`.
+#[cfg(feature = "tokio-runtime")]
+async fn transport_loop(
+    mut transport: AbortOnDropTransport<Box<dyn Transport + Send>>,
+    mut loop_state: LoopState,
 ) {
     debug!("transport loop started");
 
-    let mut pending_send = None;
+    // Reconnection attempts made in the current episode. Reset whenever a
+    // round reaches the authenticated state, so each run of failed attempts
+    // gets the full budget.
+    let mut attempts: u32 = 0;
+    // First-round rounds reuse the Authenticate already seeded into the
+    // command channel; policy-opened rounds reseed it directly.
+    let mut seed: Option<PendingSend> = None;
+
+    loop {
+        let exit = connection_round(&mut transport, &mut loop_state, seed.take()).await;
+        let ConnectionRoundExit::Retryable {
+            reason,
+            authenticated,
+        } = exit
+        else {
+            break;
+        };
+        let Some(policy) = loop_state.reconnect.as_ref() else {
+            debug!("transport died without a reconnect policy; ending transport loop");
+            break;
+        };
+        if authenticated {
+            attempts = 0;
+        }
+        if attempts >= policy.max_attempts() {
+            debug!("reconnect policy exhausted after {attempts} attempt(s); ending transport loop");
+            let abandoned = SignalFishEvent::ReconnectAbandoned {
+                attempts,
+                last_reason: reason,
+            };
+            if matches!(
+                emit_event_or_shutdown(&loop_state.event_tx, &mut loop_state.shutdown, abandoned)
+                    .await,
+                EmitOutcome::ShutdownRequested
+            ) {
+                debug!("shutdown preempted the ReconnectAbandoned delivery");
+            }
+            break;
+        }
+        attempts = attempts.saturating_add(1);
+        let backoff = policy.backoff_for_attempt(attempts);
+        if matches!(
+            emit_event_or_shutdown(
+                &loop_state.event_tx,
+                &mut loop_state.shutdown,
+                SignalFishEvent::Reconnecting {
+                    attempt: attempts,
+                    next_backoff: backoff,
+                },
+            )
+            .await,
+            EmitOutcome::ShutdownRequested
+        ) {
+            debug!("shutdown preempted the reconnection wait");
+            break;
+        }
+        // Tokio-timed so paused-clock tests advance the wait and production
+        // runs scale with the runtime clock (docs/testing.md contract).
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            () = loop_state.shutdown.fired() => {
+                debug!("shutdown arrived during the reconnection backoff");
+                break;
+            }
+        }
+
+        let created = policy.create_transport();
+        {
+            let mut core = lock_core(&loop_state.state);
+            core.set_max_inbound_frame(created.max_frame_hint());
+            core.begin_connection_round();
+        }
+        // Commands still queued for the ended connection are discarded with
+        // it (`queued` is not `delivered`, surfaced by the `Disconnected`
+        // event); the fresh round starts from the re-seeded Authenticate.
+        while loop_state.cmd_rx.try_recv().is_ok() {}
+        let Ok(json) = serialize_client_message(&loop_state.auth_message) else {
+            error!("failed to serialize Authenticate for a reconnection round");
+            break;
+        };
+        transport = AbortOnDropTransport::new(created);
+        seed = Some(PendingSend {
+            frame: Some(TransportFrame::Text(json)),
+            is_game_data: false,
+        });
+    }
+    debug!("transport loop exited");
+}
+
+/// Run one connection lifetime to a terminal edge and classify it.
+///
+/// The body is the original single-connection transport loop, unchanged in
+/// behavior: a shutdown request, a dropped handle, or a protocol-violation
+/// teardown classify as [`ConnectionRoundExit::Terminal`]; a transport-level
+/// death classifies as [`ConnectionRoundExit::Retryable`] so the owning loop
+/// can consult the reconnect policy. When `reconnect_enabled`, the
+/// send-failure teardown leaves the command receiver open (the receiver
+/// cannot be unclosed for the next round) — the frozen admission and
+/// disconnected core still fail every send fast — and an authenticated
+/// player-room context is offered to the automatic reconnection after
+/// re-authentication.
+#[cfg(feature = "tokio-runtime")]
+async fn connection_round(
+    transport: &mut AbortOnDropTransport<Box<dyn Transport + Send>>,
+    loop_state: &mut LoopState,
+    mut pending_send: Option<PendingSend>,
+) -> ConnectionRoundExit {
+    let LoopState {
+        cmd_rx,
+        event_tx,
+        state,
+        shutdown,
+        shutdown_timeout,
+        reconnect,
+        auth_message: _,
+    } = loop_state;
+    let shutdown_timeout = *shutdown_timeout;
+    let reconnect_enabled = reconnect.is_some();
     let mut connected_emitted = false;
-    let mut shutdown = ShutdownSignal::new(shutdown_rx);
+    // The automatic room reconnection is staged here between its admission
+    // (right after `Authenticated` is observed) and the next free outbound
+    // slot, then handed to the transport like any dequeued command.
+    let mut queued_auto_reconnect: Option<ClientCommand> = None;
+    // Definite-assignment: every break below classifies the exit first.
+    let exit;
 
     loop {
         // One driver scheduling cycle per loop iteration, mirroring each
         // polling-client `poll` call: backends may sample once per cycle.
         transport.begin_poll_cycle();
         let diagnostics = transport.diagnostics();
-        lock_core(&state).record_transport_diagnostics(diagnostics);
-        if !connected_emitted && transport.is_ready() && lock_core(&state).mark_transport_ready() {
+        lock_core(state).record_transport_diagnostics(diagnostics);
+        if !connected_emitted && transport.is_ready() && lock_core(state).mark_transport_ready() {
             connected_emitted = true;
             if matches!(
-                emit_event_or_shutdown(&event_tx, &mut shutdown, SignalFishEvent::Connected).await,
+                emit_event_or_shutdown(event_tx, shutdown, SignalFishEvent::Connected).await,
                 EmitOutcome::ShutdownRequested
             ) {
                 finish_core_shutdown(
-                    &mut transport,
+                    transport,
                     &mut pending_send,
-                    &event_tx,
-                    &state,
+                    event_tx,
+                    state,
                     shutdown_timeout,
                 )
                 .await;
+                exit = ConnectionRoundExit::Terminal;
                 break;
+            }
+        }
+        // An automatic reconnect staged by a previous frame's admission goes
+        // out before anything newly dequeued.
+        if pending_send.is_none() {
+            if let Some(command) = queued_auto_reconnect.take() {
+                stage_command(command, &mut pending_send, state);
             }
         }
         // Arm selection among simultaneously-ready arms is deliberately
@@ -2386,91 +2925,74 @@ async fn transport_loop(
             command = cmd_rx.recv(), if pending_send.is_none() => {
                 let Some(command) = command else {
                     emit_core_disconnected_or_shutdown(
-                        &mut transport,
+                        transport,
                         &mut pending_send,
-                        &event_tx,
-                        &mut shutdown,
-                        &state,
+                        event_tx,
+                        shutdown,
+                        state,
                         TerminalTeardown::starting(
                             shutdown_timeout,
                             Some("client shut down".into()),
                         ),
                     ).await;
+                    exit = ConnectionRoundExit::Terminal;
                     break;
                 };
-                let (frame, is_game_data) = match command {
-                    ClientCommand::Message(message) => match serialize_client_message(&message) {
-                        Ok(json) => (
-                            Some(TransportFrame::Text(json)),
-                            matches!(message, ClientMessage::GameData { .. }),
-                        ),
-                        Err(error) => {
-                            error!("failed to serialize ClientMessage: {error}");
-                            lock_core(&state).dequeue_serialization_failed(&message);
-                            (None, false)
-                        }
-                    },
-                    ClientCommand::Binary(payload) => {
-                        (Some(TransportFrame::Binary(payload)), true)
-                    }
-                };
-                if let Some(frame) = frame {
-                    pending_send = Some(PendingSend {
-                        frame: Some(frame),
-                        is_game_data,
-                    });
-                }
+                stage_command(command, &mut pending_send, state);
             }
             _ = shutdown.fired() => {
                 finish_core_shutdown(
-                    &mut transport,
+                    transport,
                     &mut pending_send,
-                    &event_tx,
-                    &state,
+                    event_tx,
+                    state,
                     shutdown_timeout,
                 ).await;
+                exit = ConnectionRoundExit::Terminal;
                 break;
             }
             io = poll_transport_io(
-                &mut transport,
+                transport,
                 &mut pending_send,
-                &state,
+                state,
                 !connected_emitted,
             ) => {
                 if !connected_emitted
                     && transport.is_ready()
-                    && lock_core(&state).mark_transport_ready()
+                    && lock_core(state).mark_transport_ready()
                 {
                     connected_emitted = true;
                     if matches!(
-                        emit_event_or_shutdown(&event_tx, &mut shutdown, SignalFishEvent::Connected)
+                        emit_event_or_shutdown(event_tx, shutdown, SignalFishEvent::Connected)
                             .await,
                         EmitOutcome::ShutdownRequested
                     ) {
                         finish_core_shutdown(
-                            &mut transport,
+                            transport,
                             &mut pending_send,
-                            &event_tx,
-                            &state,
+                            event_tx,
+                            state,
                             shutdown_timeout,
                         ).await;
+                        exit = ConnectionRoundExit::Terminal;
                         break;
                     }
                 }
                 if !connected_emitted
                     && matches!(&io, TransportIo::Received(Some(Ok(_))))
                 {
+                    let authenticated = lock_core(state).is_authenticated();
+                    let reason: Option<String> =
+                        Some("transport received a protocol frame before readiness".into());
                     emit_core_disconnected_or_shutdown(
-                        &mut transport,
+                        transport,
                         &mut pending_send,
-                        &event_tx,
-                        &mut shutdown,
-                        &state,
-                        TerminalTeardown::starting(
-                            shutdown_timeout,
-                            Some("transport received a protocol frame before readiness".into()),
-                        ),
+                        event_tx,
+                        shutdown,
+                        state,
+                        TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                     ).await;
+                    exit = classify_round_exit(shutdown, authenticated, reason);
                     break;
                 }
                 match io {
@@ -2480,35 +3002,50 @@ async fn transport_loop(
                         // admission before processing any already-ready
                         // inbound farewell frames so no concurrent caller can
                         // enqueue work that will never be attempted.
-                        lock_core(&state).freeze_admission();
-                        cmd_rx.close();
+                        let authenticated = lock_core(state).is_authenticated();
+                        lock_core(state).freeze_admission();
+                        if reconnect_enabled {
+                            // The next round reuses this receiver, and a
+                            // tokio receiver cannot be unclosed. Admission
+                            // stays frozen and the core is disconnected by
+                            // the farewell below, so every concurrent send
+                            // still fails fast during the teardown window.
+                        } else {
+                            cmd_rx.close();
+                        }
+                        let error_text = error.to_string();
                         finish_send_failure(
-                            &mut transport,
+                            transport,
                             &mut pending_send,
-                            &event_tx,
-                            &mut shutdown,
-                            &state,
+                            event_tx,
+                            shutdown,
+                            state,
                             error,
                             shutdown_timeout,
                         ).await;
+                        let reason = peer_close_reason(transport).or(Some(error_text));
+                        exit = classify_round_exit(shutdown, authenticated, reason);
                         break;
                     }
                     TransportIo::Received(Some(Ok(frame))) => {
-                        let outcome = lock_core(&state).process_frame(frame);
+                        let outcome = lock_core(state).process_frame(frame);
                         // A frame exceeding the transport's declared inbound
                         // bound is a terminal receive error regardless of the
                         // violation policy: the backend's own contract makes
                         // the input stream unusable, matching how the built-in
                         // WebSocket transport ends over-limit connections.
                         if let Some(reason) = outcome.input_error {
+                            let authenticated = lock_core(state).is_authenticated();
+                            let reason_text = Some(reason.clone());
                             emit_core_disconnected_or_shutdown(
-                                &mut transport,
+                                transport,
                                 &mut pending_send,
-                                &event_tx,
-                                &mut shutdown,
-                                &state,
+                                event_tx,
+                                shutdown,
+                                state,
                                 TerminalTeardown::starting(shutdown_timeout, Some(reason)),
                             ).await;
+                            exit = classify_round_exit(shutdown, authenticated, reason_text);
                             break;
                         }
                         let disconnect = outcome.disconnect;
@@ -2525,19 +3062,20 @@ async fn transport_loop(
                             )
                         });
                         let delivered = emit_event_batch(
-                            &event_tx,
-                            &mut shutdown,
+                            event_tx,
+                            shutdown,
                             violation_teardown.as_ref().and_then(|t| t.deadline),
                             outcome.events,
                         ).await;
                         if !delivered && !disconnect {
                             finish_core_shutdown(
-                                &mut transport,
+                                transport,
                                 &mut pending_send,
-                                &event_tx,
-                                &state,
+                                event_tx,
+                                state,
                                 shutdown_timeout,
                             ).await;
+                            exit = ConnectionRoundExit::Terminal;
                             break;
                         }
                         if let Some(teardown) = violation_teardown {
@@ -2546,17 +3084,19 @@ async fn transport_loop(
                             // passed, so the farewell's bounded wait always
                             // collapses within one poll — exactly like the
                             // send-failure teardown — and never parks beside
-                            // the already-spent budget.
+                            // the already-spent budget. A violation teardown
+                            // never retries: a protocol violation is a
+                            // correctness signal the policy must not mask.
                             let TerminalTeardown {
                                 reason,
                                 deadline,
                                 timeout,
                             } = teardown;
-                            let event = lock_core(&state).disconnect(reason);
+                            let event = lock_core(state).disconnect(reason);
                             let deliver_farewell = async {
                                 if !emit_terminal_event(
-                                    &event_tx,
-                                    &mut shutdown,
+                                    event_tx,
+                                    shutdown,
                                     deadline,
                                     event.clone(),
                                 )
@@ -2566,43 +3106,110 @@ async fn transport_loop(
                                 }
                             };
                             let close = finish_send_and_close_bounded(
-                                &mut transport,
+                                transport,
                                 &mut pending_send,
-                                &state,
+                                state,
                                 remaining_shutdown_budget(timeout, deadline),
                             );
                             let ((), ()) = tokio::join!(deliver_farewell, close);
+                            exit = ConnectionRoundExit::Terminal;
                             break;
                         }
+                        // Freshly authenticated on a policy-opened round with
+                        // a retained player-room context: arm the directed
+                        // reconnect fence and stage the automatic operation.
+                        maybe_queue_auto_reconnect(state, &mut queued_auto_reconnect);
                     }
                     TransportIo::Received(Some(Err(error))) => {
+                        let authenticated = lock_core(state).is_authenticated();
+                        let reason = Some(error.to_string());
                         emit_core_disconnected_or_shutdown(
-                            &mut transport,
+                            transport,
                             &mut pending_send,
-                            &event_tx,
-                            &mut shutdown,
-                            &state,
-                            TerminalTeardown::starting(shutdown_timeout, Some(error.to_string())),
+                            event_tx,
+                            shutdown,
+                            state,
+                            TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                         ).await;
+                        exit = classify_round_exit(shutdown, authenticated, reason);
                         break;
                     }
                     TransportIo::Received(None) => {
-                        let reason = close_reason(&transport);
+                        let authenticated = lock_core(state).is_authenticated();
+                        let reason = close_reason(transport);
                         emit_core_disconnected_or_shutdown(
-                            &mut transport,
+                            transport,
                             &mut pending_send,
-                            &event_tx,
-                            &mut shutdown,
-                            &state,
-                            TerminalTeardown::starting(shutdown_timeout, reason),
+                            event_tx,
+                            shutdown,
+                            state,
+                            TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                         ).await;
+                        exit = classify_round_exit(shutdown, authenticated, reason);
                         break;
                     }
                 }
             }
         }
     }
-    debug!("transport loop exited");
+    exit
+}
+
+/// Convert one dequeued (or automatically staged) command into a pending
+/// outbound frame. Serialization failures release the operation's fence
+/// exactly like the dequeue path always has.
+#[cfg(feature = "tokio-runtime")]
+fn stage_command(
+    command: ClientCommand,
+    pending_send: &mut Option<PendingSend>,
+    state: &Arc<Mutex<ClientCore>>,
+) {
+    let (frame, is_game_data) = match command {
+        ClientCommand::Message(message) => match serialize_client_message(&message) {
+            Ok(json) => (
+                Some(TransportFrame::Text(json)),
+                matches!(message, ClientMessage::GameData { .. }),
+            ),
+            Err(error) => {
+                error!("failed to serialize ClientMessage: {error}");
+                lock_core(state).dequeue_serialization_failed(&message);
+                (None, false)
+            }
+        },
+        ClientCommand::Binary(payload) => (Some(TransportFrame::Binary(payload)), true),
+    };
+    if let Some(frame) = frame {
+        *pending_send = Some(PendingSend {
+            frame: Some(frame),
+            is_game_data,
+        });
+    }
+}
+
+/// After re-authentication on a policy-opened connection, consume the
+/// retained player-room reconnection context (if any) and stage the directed
+/// `reconnect` operation through the same admission/fence path as a caller
+/// command. A caller room operation that wins the race keeps the fence and
+/// the room-recovery decision.
+#[cfg(feature = "tokio-runtime")]
+fn maybe_queue_auto_reconnect(state: &Arc<Mutex<ClientCore>>, slot: &mut Option<ClientCommand>) {
+    if slot.is_some() {
+        return;
+    }
+    let mut core = lock_core(state);
+    let Some(operation) = core.take_auto_reconnect_operation() else {
+        return;
+    };
+    match core.prepare_with_admission(operation) {
+        Ok((command, admission)) => {
+            core.record_admission(admission);
+            *slot = Some(command);
+            debug!("staged automatic room reconnect after re-authentication");
+        }
+        Err(error) => {
+            debug!("automatic reconnect superseded by a caller room operation: {error}");
+        }
+    }
 }
 
 /// Result of racing an event delivery against the shutdown signal.
@@ -2668,6 +3275,13 @@ impl ShutdownSignal {
             self.observed,
             "ShutdownSignal state desynchronized"
         );
+        self.observed
+    }
+
+    /// Whether shutdown has already been observed. Never re-polls the
+    /// receiver; used after teardowns to distinguish a shutdown-driven exit
+    /// from a retryable transport death.
+    fn is_observed(&self) -> bool {
         self.observed
     }
 
@@ -7980,5 +8594,580 @@ mod tests {
             !closed.load(Ordering::Acquire),
             "dropping the shutdown future must not abort the transport"
         );
+    }
+
+    // ── ReconnectPolicy (issue #223 item 1) ────────────────────────────
+
+    fn room_joined_json_with_token(token: &str) -> String {
+        let player = crate::protocol::PlayerInfo {
+            id: uuid::Uuid::from_u128(42),
+            name: "local".into(),
+            is_authority: true,
+            is_ready: false,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: Some(1),
+            seq: Some(0),
+        };
+        let payload = RoomJoinedPayload {
+            room_id: uuid::Uuid::nil(),
+            room_code: "ABC123".into(),
+            player_id: uuid::Uuid::from_u128(42),
+            game_name: "test-game".into(),
+            max_players: 4,
+            supports_authority: true,
+            current_players: vec![player],
+            is_authority: true,
+            lobby_state: LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "auto".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            reconnection_token: Some(token.into()),
+        };
+        serde_json::to_string(&ServerMessage::RoomJoined(Box::new(payload))).unwrap()
+    }
+
+    fn reconnected_json_rotated(token: &str) -> String {
+        use crate::protocol::ReconnectedPayload;
+        let payload = ReconnectedPayload {
+            room_id: uuid::Uuid::nil(),
+            room_code: "ABC123".into(),
+            player_id: uuid::Uuid::from_u128(42),
+            game_name: "test-game".into(),
+            max_players: 4,
+            supports_authority: true,
+            current_players: vec![crate::protocol::PlayerInfo {
+                id: uuid::Uuid::from_u128(42),
+                name: "local".into(),
+                is_authority: true,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: Some(1),
+                seq: Some(0),
+            }],
+            is_authority: true,
+            lobby_state: LobbyState::Waiting,
+            ready_players: vec![],
+            relay_type: "auto".into(),
+            current_spectators: vec![],
+            ice_servers: vec![],
+            missed_events: vec![],
+            replay: Some(crate::protocol::ReplayStatus::Complete),
+            sender_watermarks: vec![crate::protocol::SenderWatermark {
+                player_id: uuid::Uuid::from_u128(42),
+                epoch: 1,
+                seq: 0,
+            }],
+            reconnection_token: Some(token.into()),
+        };
+        serde_json::to_string(&ServerMessage::Reconnected(Box::new(payload))).unwrap()
+    }
+
+    fn reconnection_failed_json() -> String {
+        serde_json::to_string(&ServerMessage::ReconnectionFailed {
+            reason: "session expired".into(),
+            error_code: crate::error_codes::ErrorCode::ReconnectionExpired,
+        })
+        .unwrap()
+    }
+
+    /// Pre-built transports handed to the reconnect factory one per round.
+    type TransportPool = Arc<StdMutex<VecDeque<MockTransport>>>;
+
+    fn transport_pool(transports: Vec<MockTransport>) -> TransportPool {
+        Arc::new(StdMutex::new(VecDeque::from(transports)))
+    }
+
+    fn pool_factory(pool: &TransportPool) -> impl Fn() -> Box<dyn Transport + Send> + Send + Sync {
+        let pool = Arc::clone(pool);
+        move || {
+            pool.lock()
+                .unwrap()
+                .pop_front()
+                .map(|transport| Box::new(transport) as Box<dyn Transport + Send>)
+                .expect("transport pool exhausted")
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_policy_rebuilds_connection_and_rejoins_room() {
+        // Round 1: authenticate, join a token-bearing player room, die.
+        let (transport1, _sent1, closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        // Round 2: authenticate again; the automatic directed reconnect uses
+        // the retained context and the server rotates the token.
+        let (transport2, sent2, _closed2) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(reconnected_json_rotated("tok-2"))),
+        ]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        match events.recv().await {
+            Some(SignalFishEvent::RoomJoined {
+                reconnection_token, ..
+            }) => {
+                assert_eq!(reconnection_token.as_deref(), Some("tok-1"));
+            }
+            other => panic!("expected RoomJoined, got {other:?}"),
+        }
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { .. }) => {}
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting {
+                attempt,
+                next_backoff,
+            }) => {
+                assert_eq!(attempt, 1);
+                assert_eq!(next_backoff, Duration::from_millis(50));
+            }
+            other => panic!("expected Reconnecting, got {other:?}"),
+        }
+        // The backoff sleep is tokio-timed, so paused time auto-advances it.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnected {
+                reconnection_token, ..
+            }) => {
+                assert_eq!(reconnection_token.as_deref(), Some("tok-2"));
+            }
+            other => panic!("expected automatic Reconnected, got {other:?}"),
+        }
+        assert!(closed1.load(Ordering::Acquire), "round-1 transport closed");
+        {
+            let sent2 = sent2.lock().unwrap();
+            assert_eq!(sent2.len(), 2, "round-2 wire: Authenticate then Reconnect");
+            let last = &sent2[1];
+            let message: serde_json::Value = serde_json::from_str(last).unwrap();
+            assert_eq!(message["type"], "Reconnect");
+            assert_eq!(message["data"]["auth_token"], "tok-1");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_policy_abandons_after_exhausted_attempts() {
+        let (transport1, _sent1, _closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        // The single retry also dies immediately.
+        let (transport2, _sent2, _closed2) = MockTransport::new(vec![None]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(1)
+            .with_initial_backoff(Duration::from_millis(10));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::ReconnectAbandoned {
+                attempts,
+                last_reason,
+            }) => {
+                assert_eq!(attempts, 1);
+                assert_eq!(last_reason, None, "plain close without close metadata");
+            }
+            other => panic!("expected ReconnectAbandoned, got {other:?}"),
+        }
+        // The loop ended with the policy, so the event channel closes.
+        assert!(events.recv().await.is_none());
+        // A later shutdown reconciles and returns immediately.
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_policy_with_zero_attempts_abandons_immediately() {
+        let (transport1, _sent1, _closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        let pool = transport_pool(vec![]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool)).with_max_attempts(0);
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::ReconnectAbandoned { attempts, .. }) => {
+                assert_eq!(attempts, 0);
+            }
+            other => panic!("expected ReconnectAbandoned, got {other:?}"),
+        }
+        assert!(events.recv().await.is_none());
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn violation_disconnect_teardown_is_never_retried() {
+        // A PlayerJoined outside any room is a lifecycle violation; under
+        // the Disconnect policy it tears the session down. (PlayerJoined is
+        // not one of the mock's command-gated directed responses, so the
+        // scripted frame actually reaches the core.)
+        let player_joined = serde_json::to_string(&ServerMessage::PlayerJoined {
+            player: crate::protocol::PlayerInfo {
+                id: uuid::Uuid::from_u128(7),
+                name: "peer-7".into(),
+                is_authority: false,
+                is_ready: false,
+                connected_at: "2026-01-01T00:00:00Z".into(),
+                connection_info: None,
+                epoch: None,
+                seq: None,
+            },
+        })
+        .unwrap();
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v2_json())),
+            Some(Ok(player_joined)),
+        ]);
+        let pool = transport_pool(vec![]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool)).with_max_attempts(5);
+        let config = SignalFishConfig::new("mb_reconnect")
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect)
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolViolation { .. })
+        ));
+        let ev = events.recv().await;
+        match ev {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert_eq!(reason.as_deref(), Some("protocol violation"));
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        // A protocol violation is a correctness signal: no retry is
+        // scheduled and the loop ends (the channel closes with no further
+        // event).
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            events.try_recv().is_err(),
+            "no event may follow the violation teardown"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_during_backoff_wait_ends_the_client() {
+        let (transport1, _sent1, closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        let pool = transport_pool(vec![]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(5)
+            .with_initial_backoff(Duration::from_secs(3_600));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // Shutdown wins the race against the backoff sleep without waiting
+        // for the (virtual) hour to pass.
+        client.shutdown().await;
+        assert!(closed1.load(Ordering::Acquire));
+        // The channel closes without any further event.
+        assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn voluntary_room_leave_discards_the_reconnect_context() {
+        // Round 1: join a token-bearing room, leave voluntarily, then die.
+        let room_left = serde_json::to_string(&ServerMessage::RoomLeft).unwrap();
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            Some(Ok(room_left)),
+            None,
+        ]);
+        // Round 2 re-authenticates but must NOT rejoin the left room.
+        let (transport2, sent2, _closed2) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(10));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        client.leave_room().unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomLeft)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        // Give the loop a deterministic virtual beat to (not) send a
+        // reconnect; only the Authenticate ever goes out.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(
+            sent2.lock().unwrap().len(),
+            1,
+            "a voluntarily left room must not be rejoined automatically"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnection_failed_stops_room_recovery_but_keeps_the_connection() {
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        let (transport2, sent2, _closed2) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(reconnection_failed_json())),
+        ]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(10));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ReconnectionFailed { .. })
+        ));
+        // Exactly one automatic reconnect was attempted; the connection
+        // stays up and the caller owns the fallback decision.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        {
+            let sent2 = sent2.lock().unwrap();
+            assert_eq!(sent2.len(), 2);
+            let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
+            assert_eq!(message["type"], "Reconnect");
+        }
+        client.shutdown().await;
+    }
+
+    #[test]
+    fn backoff_schedule_is_exponential_and_capped() {
+        let policy = ReconnectPolicy::new(|| {
+            Box::new(MockTransport::new(vec![]).0) as Box<dyn Transport + Send>
+        })
+        .with_initial_backoff(Duration::from_millis(250))
+        .with_max_backoff(Duration::from_secs(10));
+        assert_eq!(policy.backoff_for_attempt(1), Duration::from_millis(250));
+        assert_eq!(policy.backoff_for_attempt(2), Duration::from_millis(500));
+        assert_eq!(policy.backoff_for_attempt(3), Duration::from_secs(1));
+        assert_eq!(policy.backoff_for_attempt(4), Duration::from_secs(2));
+        assert_eq!(policy.backoff_for_attempt(6), Duration::from_secs(8));
+        // The ceiling caps every later attempt; huge attempt numbers
+        // saturate instead of overflowing.
+        assert_eq!(policy.backoff_for_attempt(7), Duration::from_secs(10));
+        assert_eq!(
+            policy.backoff_for_attempt(u32::MAX),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn reconnect_policy_config_equality_and_debug_hide_the_factory() {
+        let make_config = |marker: u8| {
+            SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+                ReconnectPolicy::new(move || {
+                    let _ = marker;
+                    Box::new(MockTransport::new(vec![]).0) as Box<dyn Transport + Send>
+                })
+                .with_max_attempts(7)
+                .with_initial_backoff(Duration::from_millis(5))
+                .with_max_backoff(Duration::from_secs(60)),
+            )
+        };
+        // Distinct factories, identical observable tuning: equal.
+        assert_eq!(make_config(1), make_config(2));
+        // Tuning differences are visible.
+        let mut changed = make_config(1);
+        changed.reconnect_policy = changed
+            .reconnect_policy
+            .map(|policy| policy.with_max_attempts(9));
+        assert_ne!(make_config(1), changed);
+        let debug = format!("{:?}", make_config(1));
+        assert!(
+            debug.contains("ReconnectPolicy { .. }"),
+            "factory must stay opaque in Debug: {debug}"
+        );
+        assert!(!debug.contains("MockTransport"));
     }
 }

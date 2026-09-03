@@ -668,7 +668,7 @@ impl std::fmt::Debug for ReconnectedPayload {
 
 /// Payload for the `SpectatorJoined` server message.
 /// Boxed in `ServerMessage` to reduce enum size.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SpectatorJoinedPayload {
     pub room_id: RoomId,
     pub room_code: String,
@@ -679,6 +679,15 @@ pub struct SpectatorJoinedPayload {
     pub lobby_state: LobbyState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<SpectatorStateChangeReason>,
+}
+
+impl std::fmt::Debug for SpectatorJoinedPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A room code is join-capability knowledge (a lobby-by-code
+        // credential), so the ambient `Debug` path redacts it exactly like
+        // the other room-baseline payloads.
+        f.write_str("SpectatorJoinedPayload { <credentials redacted> }")
+    }
 }
 
 /// Payload for the `SessionPlan` server message (protocol v3).

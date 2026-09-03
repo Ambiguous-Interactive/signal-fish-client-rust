@@ -173,6 +173,9 @@ pub use client::{
     ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
     RoomRole, SignalFishClient, SignalFishConfig,
 };
+
+#[cfg(feature = "tokio-runtime")]
+pub use client::ReconnectPolicy;
 pub use client_api::SignalFishClientApi;
 pub use error::{SignalFishError, TokenBindingFailure};
 pub use error_codes::ErrorCode;

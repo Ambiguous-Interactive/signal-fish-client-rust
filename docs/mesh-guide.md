@@ -83,7 +83,7 @@ pub trait WebRtcDriver {
     fn on_signal(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, signal: PeerSignal);
     fn send(&mut self, peer: PlayerId, data: &[u8]);
     fn disconnect(&mut self, peer: PlayerId);
-    fn poll(&mut self) -> Option<DriverEvent>; // do real I/O here
+    fn poll(&mut self) -> Option<DriverEvent>; // drain your backend's non-blocking event queue
 }
 ```
 

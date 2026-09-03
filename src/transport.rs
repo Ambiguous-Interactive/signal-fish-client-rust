@@ -265,6 +265,55 @@ pub trait Transport {
     }
 }
 
+/// Forwarding impl so owned trait objects can flow through the same driver
+/// plumbing as concrete transports — in particular the reconnect policy's
+/// `Box<dyn Transport + Send>` factory products and the async loop's initial
+/// transport, which must share one type across reconnection rounds.
+impl Transport for Box<dyn Transport + Send> {
+    fn begin_poll_cycle(&mut self) {
+        (**self).begin_poll_cycle();
+    }
+
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        frame: &mut Option<TransportFrame>,
+    ) -> Poll<Result<(), SignalFishError>> {
+        (**self).poll_send(cx, frame)
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
+        (**self).poll_recv(cx)
+    }
+
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
+        (**self).poll_close(cx)
+    }
+
+    fn abort(&mut self) {
+        (**self).abort();
+    }
+
+    fn is_ready(&self) -> bool {
+        (**self).is_ready()
+    }
+
+    fn close_info(&self) -> Option<TransportCloseInfo> {
+        (**self).close_info()
+    }
+
+    fn diagnostics(&self) -> TransportDiagnostics {
+        (**self).diagnostics()
+    }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        (**self).max_frame_hint()
+    }
+}
+
 /// Gate a synchronous backend send without transferring caller ownership until
 /// the backend accepts the borrowed frame.
 #[cfg(any(test, target_os = "emscripten"))]

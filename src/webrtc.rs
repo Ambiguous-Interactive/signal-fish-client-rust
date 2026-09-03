@@ -31,6 +31,21 @@ use crate::signal::PeerSignal;
 /// methods to drive connection setup, then repeatedly calls [`poll`](Self::poll)
 /// to drain outbound signals, connection-state changes, and received data. All
 /// methods are non-blocking; do real I/O inside [`poll`](Self::poll).
+///
+/// # Panic boundary
+///
+/// A panicking driver method unwinds through [`MeshController::recv`] into the
+/// consumer's task (the controller holds no panic guard), leaving the mesh view
+/// partially updated. This mirrors the `Transport` seam's contract-violation
+/// class; drivers must not panic on contract-compliant input.
+///
+/// # Duplicate output
+///
+/// Duplicate [`DriverEvent::Connected`] / [`DriverEvent::Disconnected`]
+/// outputs for an already-connected (or already-disconnected) peer surface as
+/// duplicate [`MeshEvent`]s to the consumer; only the wire's
+/// `TransportStatus` edge is deduplicated to one latest-state transition.
+/// Drivers should emit each edge once.
 pub trait WebRtcDriver {
     /// Apply the ICE (STUN/TURN) servers for subsequent connections. Called when
     /// a `SessionPlan` (or ICE pre-gather on join) provides them.
@@ -63,8 +78,14 @@ pub trait WebRtcDriver {
     /// Tear down the connection to `peer` (the peer left or was re-planned away).
     fn disconnect(&mut self, peer: PlayerId);
 
-    /// Drain the next driver output, or `None` when idle. The controller calls
-    /// this in a loop until it returns `None`.
+    /// Drain the next driver output, or `None` when idle.
+    ///
+    /// The controller drains opportunistically rather than to exhaustion: it
+    /// stops at the first surfacing event (a connection edge or data message)
+    /// or at a buffered signal, so controller-to-driver calls
+    /// ([`connect`](Self::connect), [`on_signal`](Self::on_signal), …) can
+    /// interleave between two `poll` calls. Do not assume the queue is empty
+    /// when the next driver method arrives.
     ///
     /// Implementations must guarantee forward progress toward `None`: every
     /// call must either return an event or retire it internally. Returning
@@ -75,10 +96,13 @@ pub trait WebRtcDriver {
     /// it has output ready to be polled — e.g. a trickled ICE candidate or
     /// inbound data became available *between* signaling events.
     ///
-    /// A driver that wakes on readiness is pumped on demand, so trickle ICE and
-    /// data surface immediately instead of waiting up to one pump interval. The
-    /// default implementation ignores the waker; such drivers are still pumped on
-    /// every signaling event and on the controller's periodic timer (see
+    /// Called exactly once, from [`MeshController::start`], before any other
+    /// driver method; the waker stays bound to that controller instance for
+    /// its lifetime. A driver that wakes on readiness is pumped on demand, so
+    /// trickle ICE and data surface immediately instead of waiting up to one
+    /// pump interval. The default implementation ignores the waker; such
+    /// drivers are still pumped on every signaling event and on the
+    /// controller's periodic timer (see
     /// [`MeshController::with_pump_interval`]), so this is purely a latency
     /// optimization and entirely optional to implement.
     #[cfg(feature = "tokio-runtime")]
@@ -357,7 +381,8 @@ mod controller {
         }
 
         /// Override the interval at which the driver is pumped for trickle ICE /
-        /// data between signaling events. Defaults to 20ms.
+        /// data between signaling events. Defaults to 20ms; values below 1ms
+        /// clamp to a 1ms floor.
         #[must_use]
         pub fn with_pump_interval(mut self, interval: Duration) -> Self {
             self.pump_interval = interval.max(Duration::from_millis(1));
@@ -385,6 +410,16 @@ mod controller {
         /// method returns a signaling [`SignalFishEvent::Disconnected`], that
         /// same teardown has already happened before the event reaches the
         /// caller, and the next call returns `None`.
+        ///
+        /// # Plan catch-up
+        ///
+        /// Until `recv` has observed the client's current session-plan
+        /// revision, it surfaces **only** signaling events: driver output is
+        /// not pumped during catch-up. Driver events earned before a room
+        /// teardown (for example a `Connected` edge queued just before the
+        /// signaling `Disconnected`) are therefore neither surfaced nor
+        /// relayed once the terminal boundary passes — the same deliberate
+        /// discard that applies to signals on a fused controller.
         ///
         /// # Cancel safety
         ///
