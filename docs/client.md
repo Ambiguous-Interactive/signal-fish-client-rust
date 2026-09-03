@@ -611,9 +611,10 @@ let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
 let (mut client, events) = SignalFishClient::start(transport, config);
 ```
 
-With a policy configured, a terminal disconnect that the client did not cause
-(shutdown, dropped handle, or a `ProtocolViolationPolicy::Disconnect`
-teardown) becomes a retryable edge:
+With a policy configured, a terminal disconnect **other than** shutdown, a
+dropped handle, or a `ProtocolViolationPolicy::Disconnect` teardown (a
+protocol violation is a correctness signal, never masked) becomes a
+retryable edge:
 
 1. The usual bounded teardown delivers `Disconnected`, exactly as without a
    policy.
@@ -624,13 +625,22 @@ teardown) becomes a retryable edge:
 3. The fresh connection runs the normal `Connected` → `Authenticated`
    sequence, and queued-but-unsent commands of the dead connection stay
    discarded with it.
-4. If the client was a **player** in a room, the retained
-   `player_id`/`room_id`/token context is consumed automatically: the client
-   issues the same directed `reconnect` as step 3 of the manual procedure,
-   and the server answers with `Reconnected` or `ReconnectionFailed`. The
-   context refreshes from every `RoomJoined`/`Reconnected` baseline and is
-   discarded by a voluntary `leave_room`, so a policy never rejoins a room
-   you chose to leave.
+4. If the client was a **player** in a room when the connection ended, the
+   retained `player_id`/`room_id`/token context is consumed automatically:
+   the client issues the same directed `reconnect` as step 3 of the manual
+   procedure, and the server answers with `Reconnected` or
+   `ReconnectionFailed`. The context refreshes from every
+   `RoomJoined`/`Reconnected` baseline and is discarded by a voluntary
+   `leave_room`, so a policy never rejoins a room you chose to leave. One
+   deliberate gap: if the connection dies again *before* the automatic
+   reconnect is answered, that attempt is lost with the round and the next
+   round is connection-only — recovery then continues manually.
+
+The `Reconnecting`/`ReconnectAbandoned` deliveries share the terminal
+farewell's bounded budget: a consumer that stops draining delays each round
+by at most `shutdown_timeout` instead of parking the loop, and an undelivered
+scheduling event falls back to one nonblocking attempt (so a wedged consumer
+may miss a `Reconnecting` marker while reconnection itself continues).
 
 On `ReconnectionFailed` the connection stays up but room recovery stops —
 apply the same `error_code` decision tree as the manual flow (fall back to

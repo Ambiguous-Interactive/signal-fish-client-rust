@@ -130,15 +130,17 @@ pub enum SignalFishError {
     ///
     /// # Ambient-log safety invariant
     ///
-    /// Every `SignalFishError` `Display` arm carrying free text must contain
-    /// only bounded, non-secret text (static strings, wire-code labels, or
-    /// the ≤512-byte bounded serde prefix) so callers can format any error
-    /// in logs. This variant currently has no production constructor: its
-    /// `#[from] serde_json::Error` impl must not be aimed at *inbound*
+    /// SDK-authored `Display` text (static strings, wire-code labels,
+    /// identifiers, counts) is non-secret by construction. This variant
+    /// currently has no production constructor, and that is load-bearing:
+    /// its `#[from] serde_json::Error` impl must not be aimed at *inbound*
     /// frames, because serde deserialization errors quote hostile wire
     /// tokens verbatim — inbound text may flow only through the bounded
-    /// `DecodeFailed` path. `ServerError` carries the same invariant (no
-    /// production constructor today).
+    /// (≤512-byte) `DecodeFailed` path. `ServerError` carries the same
+    /// no-production-constructor invariant. The deliberate exception is the
+    /// `TransportSend`/`TransportReceive`/`Io` family, whose text is the
+    /// backend's own cause message — documented, but not bounded by the
+    /// SDK.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

@@ -36,8 +36,9 @@ use crate::signal::PeerSignal;
 ///
 /// A panicking driver method unwinds through [`MeshController::recv`] into the
 /// consumer's task (the controller holds no panic guard), leaving the mesh view
-/// partially updated. This mirrors the `Transport` seam's contract-violation
-/// class; drivers must not panic on contract-compliant input.
+/// partially updated — the same contract-violation policy as the `Transport`
+/// seam, though mechanically the panic surfaces in the consumer's task rather
+/// than a spawned loop. Drivers must not panic on contract-compliant input.
 ///
 /// # Duplicate output
 ///
@@ -81,11 +82,12 @@ pub trait WebRtcDriver {
     /// Drain the next driver output, or `None` when idle.
     ///
     /// The controller drains opportunistically rather than to exhaustion: it
-    /// stops at the first surfacing event (a connection edge or data message)
-    /// or at a buffered signal, so controller-to-driver calls
-    /// ([`connect`](Self::connect), [`on_signal`](Self::on_signal), …) can
-    /// interleave between two `poll` calls. Do not assume the queue is empty
-    /// when the next driver method arrives.
+    /// stops at the first surfacing event (a connection edge or data
+    /// message), at a relay the transport refused (the signal stays buffered
+    /// as a fence), or when `poll` returns `None`, so controller-to-driver
+    /// calls ([`connect`](Self::connect), [`on_signal`](Self::on_signal), …)
+    /// can interleave between two `poll` calls. Do not assume the queue is
+    /// empty when the next driver method arrives.
     ///
     /// Implementations must guarantee forward progress toward `None`: every
     /// call must either return an event or retire it internally. Returning

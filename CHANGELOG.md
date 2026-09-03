@@ -9,14 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Opt-in automatic reconnection for the async client:
-  `ReconnectPolicy` (via `SignalFishConfig::with_reconnect_policy`)
-  rebuilds the transport from a caller factory with deterministic
-  exponential backoff, emits per-attempt events, re-authenticates, and —
-  when the client left a player room on the dead connection — issues the
-  directed `reconnect` automatically. Exhaustion ends the client with a
-  terminal event; shutdown, dropped handles, and `Disconnect`-policy
-  teardowns are never retried. The polling client stays caller-driven.
+- Opt-in automatic reconnection for the async client: `ReconnectPolicy`
+  (via **Breaking:** new `SignalFishConfig` field
+  `reconnect_policy` — exhaustive struct literals must add the field,
+  usually `reconnect_policy: None`) rebuilds the transport from a caller
+  factory with deterministic exponential backoff, re-authenticates, and
+  issues the directed `reconnect` automatically when the dead connection
+  ended inside a player room; shutdown, dropped handles, and
+  `Disconnect`-policy teardowns are never retried, and the polling client
+  stays caller-driven.
+- **Breaking:** the exhaustive `SignalFishEvent` enum gains `Reconnecting {
+  attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
+  (the reconnect policy's per-attempt and terminal events); add two arms to
+  exhaustive matches.
+- `impl Transport for Box<dyn Transport + Send>` so owned trait objects
+  (including the reconnect factory's products) flow through the same driver
+  plumbing as concrete transports.
 - `Transport::max_frame_hint()`: backends that enforce an inbound frame bound
   declare it, and both client drivers then refuse larger frames as a terminal
   receive error before any decoding (the built-in WebSocket and Emscripten
@@ -31,15 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** the exhaustive `SignalFishEvent` enum gains `Reconnecting {
-  attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
-  (the opt-in reconnect policy's per-attempt and terminal events); add two
-  arms to exhaustive matches.
-- **Breaking:** `SpectatorJoinedPayload` and `JoinRoomParams` `Debug` output
-  now redact the room code (presence/length only, matching
-  `ClientSnapshot`): a room code is join-capability knowledge, so ambient
-  logs no longer leak it from a payload or a builder. Public fields and wire
-  serialization are unchanged.
+- **Breaking:** `JoinRoomParams`'s `Debug` output now reports its room code
+  as presence and byte length (the `ClientSnapshot` form), and
+  **Breaking:** `SpectatorJoinedPayload`'s `Debug` is now fully opaque
+  (matching the other room-baseline payloads): a room code is
+  join-capability knowledge, so ambient logs no longer leak it from a
+  payload or a builder. Public fields and wire serialization are unchanged.
 - `SignalFishConfig::with_protocol_version` now logs a `tracing::warn!` for
   versions outside the known-supported `2..=3` range (the value is still sent
   unchanged; the server stays the negotiation authority).
@@ -66,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointed the concepts guide's `Timeout` row at its single producer.
 - Fixed the fortress guide's stale guidance that still directed readers to a
   git dependency for APIs published in 0.12.0.
+- Documented the `WebRtcDriver` seam's drain contract (the controller stops
+  at the first surfacing event, refused relay, or idle poll — not at
+  exhaustion), its panic boundary, the one-time `set_ready_waker` timing,
+  the plan catch-up suppression of driver output, duplicate edge surfacing,
+  and the `with_pump_interval` 1 ms floor.
 
 ## [0.12.0] - 2026-09-01
 

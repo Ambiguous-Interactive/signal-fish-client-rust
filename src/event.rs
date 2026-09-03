@@ -106,9 +106,13 @@ pub enum SignalFishEvent {
     /// policy's factory. A successful attempt continues with a fresh
     /// [`Connected`](Self::Connected) →
     /// [`Authenticated`](Self::Authenticated) sequence (and, when the client
-    /// left a player room on the previous connection, an automatic
-    /// [`Reconnected`](Self::Reconnected) attempt); an exhausted policy ends
-    /// the client with [`ReconnectAbandoned`](Self::ReconnectAbandoned).
+    /// was a player in a room when the previous connection ended, an
+    /// automatic [`Reconnected`](Self::Reconnected) attempt); an exhausted
+    /// policy ends the client with
+    /// [`ReconnectAbandoned`](Self::ReconnectAbandoned). Like the terminal
+    /// farewell, this delivery is bounded by the configured shutdown
+    /// timeout: a wedged consumer delays the round instead of parking the
+    /// loop.
     Reconnecting {
         /// 1-based ordinal of this reconnection attempt within the current
         /// episode. The counter resets whenever a connection reaches the

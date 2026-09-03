@@ -117,8 +117,9 @@ use crate::signal::PeerSignal;
 use crate::terminal_drain::{
     close_reason, peer_close_reason, ReadyFrameDrain, ReadyFrameDrainBudget, ReadyFrameDrainPoll,
 };
+use crate::transport::Transport;
 #[cfg(feature = "tokio-runtime")]
-use crate::transport::{close_transport, Transport, TransportDiagnostics, TransportFrame};
+use crate::transport::{close_transport, TransportDiagnostics, TransportFrame};
 
 /// Default capacity of the bounded event channel.
 const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -195,6 +196,10 @@ pub(crate) fn decode_binary_server_message(
 ///
 /// Must be supplied to [`SignalFishClient::start`]. The only required field is
 /// `app_id`; all others have sensible defaults.
+///
+/// `PartialEq` compares a configured [`ReconnectPolicy`] by its observable
+/// tuning (attempts and backoff windows); the uncomparable transport factory
+/// is deliberately not part of the comparison.
 ///
 /// # Example
 ///
@@ -296,12 +301,11 @@ pub struct SignalFishConfig {
     ///
     /// `None` (the default) keeps recovery fully manual. See
     /// [`ReconnectPolicy`] for the automated behavior and
-    /// [`with_reconnect_policy`](Self::with_reconnect_policy) to opt in.
-    #[cfg(feature = "tokio-runtime")]
+    /// [`with_reconnect_policy`](Self::with_reconnect_policy) to opt in. The
+    /// polling client is caller-driven by design and ignores this option.
     pub reconnect_policy: Option<ReconnectPolicy>,
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl std::fmt::Debug for SignalFishConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SignalFishConfig")
@@ -327,7 +331,6 @@ impl std::fmt::Debug for SignalFishConfig {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl PartialEq for SignalFishConfig {
     fn eq(&self, other: &Self) -> bool {
         self.app_id == other.app_id
@@ -346,10 +349,8 @@ impl PartialEq for SignalFishConfig {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl Eq for SignalFishConfig {}
 
-#[cfg(feature = "tokio-runtime")]
 impl SignalFishConfig {
     /// Comparable view of a configured policy: the observable tuning without
     /// the uncomparable transport factory.
@@ -387,7 +388,6 @@ impl SignalFishConfig {
             command_channel_capacity: DEFAULT_COMMAND_CHANNEL_CAPACITY,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             protocol_violation_policy: ProtocolViolationPolicy::Quarantine,
-            #[cfg(feature = "tokio-runtime")]
             reconnect_policy: None,
         }
     }
@@ -440,11 +440,8 @@ impl SignalFishConfig {
     /// deterministic exponential backoff, per-attempt
     /// [`Reconnecting`](crate::SignalFishEvent::Reconnecting) events, and an
     /// automatic directed `reconnect` for the player room the client was in
-    /// when the connection ended.
-    ///
-    /// The [polling client](crate::SignalFishPollingClient) is caller-driven
-    /// by design and ignores this option.
-    #[cfg(feature = "tokio-runtime")]
+    /// when the connection ended. The polling client is caller-driven by
+    /// design and ignores this option.
     #[must_use]
     pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
         self.reconnect_policy = Some(policy);
@@ -672,7 +669,9 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 ///    automatic rejoin is **not** retried or replaced with an automatic
 ///    `join_room` — the caller decides the fallback. Voluntarily leaving a
 ///    room discards the context, so a policy never rejoins a room the caller
-///    chose to leave.
+///    chose to leave. One deliberate gap: a round that dies again before the
+///    automatic reconnect is answered loses that attempt with the round; the
+///    next round is connection-only.
 ///
 /// # Retryable terminal edges
 ///
@@ -717,7 +716,12 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// panicking factory kills the transport loop task exactly like a panicking
 /// [`Transport`](crate::Transport) method (the documented panic-boundary
 /// contract).
-#[cfg(feature = "tokio-runtime")]
+///
+/// The `Reconnecting` and `ReconnectAbandoned` deliveries are bounded by
+/// [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) like the terminal
+/// farewell: a consumer that stops draining delays each round by at most one
+/// budget instead of parking the loop (or the reliable senders parked on the
+/// command queue) forever.
 pub struct ReconnectPolicy {
     factory: std::sync::Arc<dyn Fn() -> Box<dyn Transport + Send> + Send + Sync>,
     max_attempts: u32,
@@ -725,7 +729,6 @@ pub struct ReconnectPolicy {
     max_backoff: Duration,
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl Clone for ReconnectPolicy {
     fn clone(&self) -> Self {
         Self {
@@ -737,7 +740,6 @@ impl Clone for ReconnectPolicy {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl std::fmt::Debug for ReconnectPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReconnectPolicy")
@@ -748,7 +750,6 @@ impl std::fmt::Debug for ReconnectPolicy {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
 impl ReconnectPolicy {
     /// Build a policy that rebuilds connections from `factory`.
     ///
@@ -837,6 +838,10 @@ impl ReconnectPolicy {
     }
 
     /// Open the next transport.
+    ///
+    /// Only the async transport loop invokes the factory; the polling client
+    /// never re-opens connections.
+    #[cfg(feature = "tokio-runtime")]
     fn create_transport(&self) -> Box<dyn Transport + Send> {
         (self.factory)()
     }
@@ -2735,6 +2740,25 @@ impl LoopState {
     }
 }
 
+/// Deliver one reconnection-scheduling event with the same bounded budget as
+/// a terminal farewell: a wedged consumer delays each round by at most one
+/// [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) instead of
+/// parking the transport loop (and every parked reliable sender) forever. On
+/// budget expiry the event falls back to one nonblocking attempt, exactly
+/// like the terminal-disconnect deliveries.
+#[cfg(feature = "tokio-runtime")]
+async fn emit_reconnect_event_bounded(
+    event_tx: &mpsc::Sender<SignalFishEvent>,
+    shutdown: &mut ShutdownSignal,
+    timeout: Duration,
+    event: SignalFishEvent,
+) {
+    let deadline = tokio::time::Instant::now().checked_add(timeout);
+    if !emit_terminal_event(event_tx, shutdown, deadline, event.clone()).await {
+        let _ = event_tx.try_send(event);
+    }
+}
+
 /// Background transport loop that multiplexes send/receive via `tokio::select!`.
 ///
 /// Each connection lifetime is one *round* of [`connection_round`]. Exits
@@ -2786,29 +2810,28 @@ async fn transport_loop(
                 attempts,
                 last_reason: reason,
             };
-            if matches!(
-                emit_event_or_shutdown(&loop_state.event_tx, &mut loop_state.shutdown, abandoned)
-                    .await,
-                EmitOutcome::ShutdownRequested
-            ) {
-                debug!("shutdown preempted the ReconnectAbandoned delivery");
-            }
+            emit_reconnect_event_bounded(
+                &loop_state.event_tx,
+                &mut loop_state.shutdown,
+                loop_state.shutdown_timeout,
+                abandoned,
+            )
+            .await;
             break;
         }
         attempts = attempts.saturating_add(1);
         let backoff = policy.backoff_for_attempt(attempts);
-        if matches!(
-            emit_event_or_shutdown(
-                &loop_state.event_tx,
-                &mut loop_state.shutdown,
-                SignalFishEvent::Reconnecting {
-                    attempt: attempts,
-                    next_backoff: backoff,
-                },
-            )
-            .await,
-            EmitOutcome::ShutdownRequested
-        ) {
+        emit_reconnect_event_bounded(
+            &loop_state.event_tx,
+            &mut loop_state.shutdown,
+            loop_state.shutdown_timeout,
+            SignalFishEvent::Reconnecting {
+                attempt: attempts,
+                next_backoff: backoff,
+            },
+        )
+        .await;
+        if loop_state.shutdown.is_observed() {
             debug!("shutdown preempted the reconnection wait");
             break;
         }
@@ -2823,19 +2846,24 @@ async fn transport_loop(
         }
 
         let created = policy.create_transport();
+        // Commands still queued for the ended connection are discarded with
+        // it (`queued` is not `delivered`, surfaced by the `Disconnected`
+        // event). Draining happens while the core is still disconnected, so
+        // nothing validated against the fresh round can slip in between the
+        // re-arm below and the drain.
+        while loop_state.cmd_rx.try_recv().is_ok() {}
+        let Ok(json) = serialize_client_message(&loop_state.auth_message) else {
+            // Unreachable for the owned-string `Authenticate`, but never
+            // leave the snapshot claiming a live connection.
+            error!("failed to serialize Authenticate for a reconnection round");
+            lock_core(&loop_state.state).disconnect(Some("client shut down".into()));
+            break;
+        };
         {
             let mut core = lock_core(&loop_state.state);
             core.set_max_inbound_frame(created.max_frame_hint());
             core.begin_connection_round();
         }
-        // Commands still queued for the ended connection are discarded with
-        // it (`queued` is not `delivered`, surfaced by the `Disconnected`
-        // event); the fresh round starts from the re-seeded Authenticate.
-        while loop_state.cmd_rx.try_recv().is_ok() {}
-        let Ok(json) = serialize_client_message(&loop_state.auth_message) else {
-            error!("failed to serialize Authenticate for a reconnection round");
-            break;
-        };
         transport = AbortOnDropTransport::new(created);
         seed = Some(PendingSend {
             frame: Some(TransportFrame::Text(json)),
@@ -9118,6 +9146,148 @@ mod tests {
             let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
             assert_eq!(message["type"], "Reconnect");
         }
+        client.shutdown().await;
+    }
+
+    /// A transport whose first outbound send fails terminally, then recovers
+    /// — pins the send-failure edge's retryable classification and the
+    /// policy path's open command receiver.
+    struct FirstSendFailsTransport {
+        incoming: std::sync::Mutex<std::collections::VecDeque<String>>,
+        first_send_attempted: std::sync::atomic::AtomicBool,
+    }
+
+    impl Transport for FirstSendFailsTransport {
+        fn abort(&mut self) {}
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            if !self.first_send_attempted.swap(true, Ordering::Relaxed) {
+                return Poll::Ready(Err(SignalFishError::TransportSend(
+                    "scripted first-send failure".into(),
+                )));
+            }
+            let _ = frame.take();
+            Poll::Ready(Ok(()))
+        }
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            match self.incoming.lock().unwrap().pop_front() {
+                Some(text) => Poll::Ready(Some(Ok(TransportFrame::Text(text)))),
+                None => Poll::Pending,
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_failure_edge_is_retryable_and_frees_the_command_queue() {
+        let transport1 = FirstSendFailsTransport {
+            incoming: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                authenticated_json(),
+            ])),
+            first_send_attempted: std::sync::atomic::AtomicBool::new(false),
+        };
+        let (transport2, sent2, _closed2) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(2)
+            .with_initial_backoff(Duration::from_millis(10));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        // The very first outbound frame (the channel-seeded Authenticate)
+        // fails terminally, classifying the round retryable.
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert!(
+                    reason
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("scripted first-send failure"),
+                    "send-failure cause expected, got {reason:?}"
+                );
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // The fresh round re-seeds Authenticate and re-authenticates.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert_eq!(
+            sent2.lock().unwrap().len(),
+            1,
+            "round 2 must re-seed Authenticate"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn receive_error_edge_is_retryable() {
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Err(SignalFishError::TransportClosed)),
+        ]);
+        let (transport2, _sent2, _closed2) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(2)
+            .with_initial_backoff(Duration::from_millis(10));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
         client.shutdown().await;
     }
 

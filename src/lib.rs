@@ -171,11 +171,8 @@ pub const PROTOCOL_VERSION: u16 = 3;
 // Re-export primary types for ergonomic imports.
 pub use client::{
     ClientSnapshot, ClientStats, GameDataDelivery, JoinRoomParams, ProtocolViolationPolicy,
-    RoomRole, SignalFishClient, SignalFishConfig,
+    ReconnectPolicy, RoomRole, SignalFishClient, SignalFishConfig,
 };
-
-#[cfg(feature = "tokio-runtime")]
-pub use client::ReconnectPolicy;
 pub use client_api::SignalFishClientApi;
 pub use error::{SignalFishError, TokenBindingFailure};
 pub use error_codes::ErrorCode;
