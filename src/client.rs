@@ -722,7 +722,14 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// budget instead of parking the loop (or the reliable senders parked on the
 /// command queue) forever.
 pub struct ReconnectPolicy {
-    factory: std::sync::Arc<dyn Fn() -> Box<dyn Transport + Send> + Send + Sync>,
+    // `AssertUnwindSafe` keeps `SignalFishConfig`'s historical
+    // `UnwindSafe`/`RefUnwindSafe` auto traits: a panicking factory kills the
+    // transport loop task (the documented panic boundary), so there is no
+    // state to protect across unwinding — only the config's own surface to
+    // preserve.
+    factory: std::panic::AssertUnwindSafe<
+        std::sync::Arc<dyn Fn() -> Box<dyn Transport + Send> + Send + Sync>,
+    >,
     max_attempts: u32,
     initial_backoff: Duration,
     max_backoff: Duration,
@@ -731,7 +738,7 @@ pub struct ReconnectPolicy {
 impl Clone for ReconnectPolicy {
     fn clone(&self) -> Self {
         Self {
-            factory: std::sync::Arc::clone(&self.factory),
+            factory: std::panic::AssertUnwindSafe(std::sync::Arc::clone(&self.factory)),
             max_attempts: self.max_attempts,
             initial_backoff: self.initial_backoff,
             max_backoff: self.max_backoff,
@@ -757,7 +764,7 @@ impl ReconnectPolicy {
     /// attempts, 250 ms initial backoff, 10 s maximum backoff.
     pub fn new(factory: impl Fn() -> Box<dyn Transport + Send> + Send + Sync + 'static) -> Self {
         Self {
-            factory: std::sync::Arc::new(factory),
+            factory: std::panic::AssertUnwindSafe(std::sync::Arc::new(factory)),
             max_attempts: DEFAULT_RECONNECT_MAX_ATTEMPTS,
             initial_backoff: DEFAULT_RECONNECT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_RECONNECT_MAX_BACKOFF,
