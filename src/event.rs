@@ -32,6 +32,8 @@ use crate::protocol::{
 /// |---|---|
 /// | [`Connected`](Self::Connected) | Transport layer opened successfully |
 /// | [`Disconnected`](Self::Disconnected) | Transport layer closed or errored |
+/// | [`Reconnecting`](Self::Reconnecting) | Configured [`ReconnectPolicy`](crate::ReconnectPolicy) scheduled a fresh connection |
+/// | [`ReconnectAbandoned`](Self::ReconnectAbandoned) | The configured reconnect policy exhausted its attempts |
 /// | [`DecodeFailed`](Self::DecodeFailed) | An inbound frame could not be decoded |
 /// | [`ProtocolViolation`](Self::ProtocolViolation) | A decoded frame contradicted negotiated protocol state |
 ///
@@ -88,6 +90,59 @@ pub enum SignalFishEvent {
         /// be attributed. The farewell may never arrive (the socket is
         /// congested by definition), in which case this is `None`.
         last_server_error: Option<ServerErrorInfo>,
+    },
+
+    /// The client is about to re-establish the signaling connection after a
+    /// terminal disconnect.
+    ///
+    /// This is a **synthetic event** — it is only emitted when a
+    /// [`ReconnectPolicy`](crate::ReconnectPolicy) is configured on
+    /// [`SignalFishConfig`](crate::SignalFishConfig). Without one, a terminal
+    /// disconnect ends the client and recovery stays fully manual.
+    ///
+    /// Emitted after the matching
+    /// [`Disconnected`](Self::Disconnected) event and before the client
+    /// waits `next_backoff` and then opens a fresh transport from the
+    /// policy's factory. A successful attempt continues with a fresh
+    /// [`Connected`](Self::Connected) →
+    /// [`Authenticated`](Self::Authenticated) sequence (and, when the client
+    /// was a player in a room when the previous connection ended, an
+    /// automatic [`Reconnected`](Self::Reconnected) attempt); an exhausted
+    /// policy ends the client with
+    /// [`ReconnectAbandoned`](Self::ReconnectAbandoned). Like the terminal
+    /// farewell, this delivery is bounded by the configured shutdown
+    /// timeout: a wedged consumer delays the round instead of parking the
+    /// loop.
+    Reconnecting {
+        /// 1-based ordinal of this reconnection attempt within the current
+        /// episode. The counter resets whenever a connection reaches the
+        /// authenticated state again.
+        attempt: u32,
+        /// How long the client waits before opening the new transport.
+        ///
+        /// `Duration::ZERO` retries immediately. The value follows the
+        /// policy's documented exponential schedule and never exceeds
+        /// [`max_backoff`](crate::ReconnectPolicy::max_backoff).
+        next_backoff: std::time::Duration,
+    },
+
+    /// Every configured reconnection attempt was exhausted; the client has
+    /// given up and the event stream ends after this event.
+    ///
+    /// This is a **synthetic event** — it is only emitted when a
+    /// [`ReconnectPolicy`](crate::ReconnectPolicy) is configured and its
+    /// attempt budget ran out without a successful reconnection. Shutdown,
+    /// a dropped client handle, and
+    /// [`ProtocolViolationPolicy::Disconnect`](crate::ProtocolViolationPolicy::Disconnect)
+    /// teardowns end the client without attempting reconnection and
+    /// therefore never produce this event.
+    ReconnectAbandoned {
+        /// How many reconnection attempts were made in this episode. `0`
+        /// means the policy allowed no attempts at all.
+        attempts: u32,
+        /// Reason text of the final disconnect, in the same ambient-log-safe
+        /// form as [`Disconnected`](Self::Disconnected)'s `reason`.
+        last_reason: Option<String>,
     },
 
     /// An inbound server frame could not be decoded into a
@@ -575,6 +630,8 @@ impl std::fmt::Debug for SignalFishEvent {
         f.write_str(match self {
             Self::Connected => "Connected",
             Self::Disconnected { .. } => "Disconnected",
+            Self::Reconnecting { .. } => "Reconnecting",
+            Self::ReconnectAbandoned { .. } => "ReconnectAbandoned",
             Self::DecodeFailed { .. } => "DecodeFailed",
             Self::ProtocolViolation { .. } => "ProtocolViolation",
             Self::Authenticated { .. } => "Authenticated",

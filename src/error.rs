@@ -126,7 +126,21 @@ pub enum SignalFishError {
     #[error("transport connection closed")]
     TransportClosed,
 
-    /// Failed to serialize or deserialize a protocol message.
+    /// Failed to serialize an outbound protocol message.
+    ///
+    /// # Ambient-log safety invariant
+    ///
+    /// SDK-authored `Display` text (static strings, wire-code labels,
+    /// identifiers, counts) is non-secret by construction. This variant
+    /// currently has no production constructor, and that is load-bearing:
+    /// its `#[from] serde_json::Error` impl must not be aimed at *inbound*
+    /// frames, because serde deserialization errors quote hostile wire
+    /// tokens verbatim — inbound text may flow only through the bounded
+    /// (≤512-byte) `DecodeFailed` path. `ServerError` carries the same
+    /// no-production-constructor invariant. The deliberate exception is the
+    /// `TransportSend`/`TransportReceive`/`Io` family, whose text is the
+    /// backend's own cause message — documented, but not bounded by the
+    /// SDK.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

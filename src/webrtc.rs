@@ -31,6 +31,22 @@ use crate::signal::PeerSignal;
 /// methods to drive connection setup, then repeatedly calls [`poll`](Self::poll)
 /// to drain outbound signals, connection-state changes, and received data. All
 /// methods are non-blocking; do real I/O inside [`poll`](Self::poll).
+///
+/// # Panic boundary
+///
+/// A panicking driver method unwinds through [`MeshController::recv`] into the
+/// consumer's task (the controller holds no panic guard), leaving the mesh view
+/// partially updated — the same contract-violation policy as the `Transport`
+/// seam, though mechanically the panic surfaces in the consumer's task rather
+/// than a spawned loop. Drivers must not panic on contract-compliant input.
+///
+/// # Duplicate output
+///
+/// Duplicate [`DriverEvent::Connected`] / [`DriverEvent::Disconnected`]
+/// outputs for an already-connected (or already-disconnected) peer surface as
+/// duplicate [`MeshEvent`]s to the consumer; only the wire's
+/// `TransportStatus` edge is deduplicated to one latest-state transition.
+/// Drivers should emit each edge once.
 pub trait WebRtcDriver {
     /// Apply the ICE (STUN/TURN) servers for subsequent connections. Called when
     /// a `SessionPlan` (or ICE pre-gather on join) provides them.
@@ -63,8 +79,15 @@ pub trait WebRtcDriver {
     /// Tear down the connection to `peer` (the peer left or was re-planned away).
     fn disconnect(&mut self, peer: PlayerId);
 
-    /// Drain the next driver output, or `None` when idle. The controller calls
-    /// this in a loop until it returns `None`.
+    /// Drain the next driver output, or `None` when idle.
+    ///
+    /// The controller drains opportunistically rather than to exhaustion: it
+    /// stops at the first surfacing event (a connection edge or data
+    /// message), at a relay the transport refused (the signal stays buffered
+    /// as a fence), or when `poll` returns `None`, so controller-to-driver
+    /// calls ([`connect`](Self::connect), [`on_signal`](Self::on_signal), …)
+    /// can interleave between two `poll` calls. Do not assume the queue is
+    /// empty when the next driver method arrives.
     ///
     /// Implementations must guarantee forward progress toward `None`: every
     /// call must either return an event or retire it internally. Returning
@@ -75,10 +98,13 @@ pub trait WebRtcDriver {
     /// it has output ready to be polled — e.g. a trickled ICE candidate or
     /// inbound data became available *between* signaling events.
     ///
-    /// A driver that wakes on readiness is pumped on demand, so trickle ICE and
-    /// data surface immediately instead of waiting up to one pump interval. The
-    /// default implementation ignores the waker; such drivers are still pumped on
-    /// every signaling event and on the controller's periodic timer (see
+    /// Called exactly once, from [`MeshController::start`], before any other
+    /// driver method; the waker stays bound to that controller instance for
+    /// its lifetime. A driver that wakes on readiness is pumped on demand, so
+    /// trickle ICE and data surface immediately instead of waiting up to one
+    /// pump interval. The default implementation ignores the waker; such
+    /// drivers are still pumped on every signaling event and on the
+    /// controller's periodic timer (see
     /// [`MeshController::with_pump_interval`]), so this is purely a latency
     /// optimization and entirely optional to implement.
     #[cfg(feature = "tokio-runtime")]
@@ -357,7 +383,8 @@ mod controller {
         }
 
         /// Override the interval at which the driver is pumped for trickle ICE /
-        /// data between signaling events. Defaults to 20ms.
+        /// data between signaling events. Defaults to 20ms; values below 1ms
+        /// clamp to a 1ms floor.
         #[must_use]
         pub fn with_pump_interval(mut self, interval: Duration) -> Self {
             self.pump_interval = interval.max(Duration::from_millis(1));
@@ -379,12 +406,32 @@ mod controller {
         }
 
         /// Receive the next high-level mesh event. Returns `None` once the
-        /// underlying transport closes. At that boundary the controller clears
-        /// its session, disconnects every known driver peer, and becomes fused:
-        /// later calls also return `None` without pumping the driver. When this
-        /// method returns a signaling [`SignalFishEvent::Disconnected`], that
-        /// same teardown has already happened before the event reaches the
-        /// caller, and the next call returns `None`.
+        /// underlying event stream ends (the transport loop exited — client
+        /// shutdown, dropped handle, or an exhausted reconnect policy). At
+        /// that boundary the controller clears its session, disconnects every
+        /// known driver peer, and becomes fused: later calls also return
+        /// `None` without pumping the driver. When this method returns a
+        /// signaling [`SignalFishEvent::Disconnected`], the data plane of
+        /// that connection has already been cleared (every known peer
+        /// disconnected, pending work dropped) before the event reaches the
+        /// caller.
+        ///
+        /// A configured
+        /// [`ReconnectPolicy`](crate::ReconnectPolicy) continues the same
+        /// client and event stream across a `Disconnected`: the controller
+        /// keeps draining and rebuilds its view when the fresh connection's
+        /// `Reconnected`/`SessionPlan` events arrive, so mesh consumers keep
+        /// calling `recv` instead of treating the disconnect as end-of-stream.
+        ///
+        /// # Plan catch-up
+        ///
+        /// Until `recv` has observed the client's current session-plan
+        /// revision, it surfaces **only** signaling events: driver output is
+        /// not pumped during catch-up. Driver events earned before a room
+        /// teardown (for example a `Connected` edge queued just before the
+        /// signaling `Disconnected`) are therefore neither surfaced nor
+        /// relayed once the terminal boundary passes — the same deliberate
+        /// discard that applies to signals on a fused controller.
         ///
         /// # Cancel safety
         ///
@@ -583,7 +630,7 @@ mod controller {
                         self.disconnect_peer(peer.id);
                     }
                 }
-                SignalFishEvent::Disconnected { .. } => self.terminate(),
+                SignalFishEvent::Disconnected { .. } => self.clear_data_plane(),
                 SignalFishEvent::RoomJoined { ice_servers, .. } if !ice_servers.is_empty() => {
                     self.driver.set_ice_servers(ice_servers);
                 }
@@ -619,13 +666,13 @@ mod controller {
             self.mark_disconnected(peer);
         }
 
-        /// End the controller's data plane exactly once without emitting a
-        /// room-scoped transport-status edge after signaling has terminated.
-        fn terminate(&mut self) {
-            if self.terminated {
-                return;
-            }
-            self.terminated = true;
+        /// Tear down the data plane of the current connection: clear the
+        /// mesh view, disconnect every known driver peer, and drop pending
+        /// fenced work. Unlike [`Self::terminate`], the controller keeps
+        /// draining: a configured reconnect policy continues the same client
+        /// and event stream, and the next connection's `Reconnected`/`Session
+        /// Plan` rebuilds the view.
+        fn clear_data_plane(&mut self) {
             self.pending_signal = None;
             self.pending_transport_status = None;
             self.connected_peers.clear();
@@ -633,6 +680,16 @@ mod controller {
             for peer in std::mem::take(&mut self.known_peers) {
                 self.driver.disconnect(peer.id);
             }
+        }
+
+        /// End the controller's data plane exactly once without emitting a
+        /// room-scoped transport-status edge after signaling has terminated.
+        fn terminate(&mut self) {
+            if self.terminated {
+                return;
+            }
+            self.terminated = true;
+            self.clear_data_plane();
         }
 
         /// Ensure the driver holds the server's current offerer role for `peer`.
@@ -2649,7 +2706,85 @@ mod tests {
         mesh.shutdown().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn mesh_controller_keeps_draining_across_reconnection_rounds() {
+        // A configured ReconnectPolicy continues the same client after a
+        // `Disconnected`; the controller must keep draining the shared event
+        // stream (clearing the data plane of the dead connection) instead of
+        // fusing and starving the transport loop on an undrained channel.
+        let driver = SharedDriver::default();
+        let (transport1, _sent1) = MockTransport::new(vec![
+            Some(Ok(authed())),
+            Some(Ok(protocol_info_v3())),
+            // Peer close ends round 1.
+            None,
+        ]);
+        let (transport2, _sent2) = MockTransport::new(vec![Some(Ok(authed()))]);
+        let pool: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<_>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from([
+                (Box::new(transport2) as Box<dyn crate::transport::Transport + Send>),
+            ])));
+        let factory_pool = std::sync::Arc::clone(&pool);
+        let policy = crate::client::ReconnectPolicy::new(move || {
+            factory_pool
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("round-2 transport scripted")
+        })
+        .with_max_attempts(2)
+        .with_initial_backoff(std::time::Duration::from_millis(10));
+        let config = SignalFishConfig::new("app").with_reconnect_policy(policy);
+        let mut mesh = MeshController::start(transport1, config, driver.clone());
+        wait_for_authenticated(&mut mesh).await;
+
+        let signaling_sequence = async {
+            let mut sequence = Vec::new();
+            while let Some(event) = mesh.recv().await {
+                if let MeshEvent::Signaling(signaling) = event {
+                    let name = match *signaling {
+                        SignalFishEvent::ProtocolInfo(_) => "ProtocolInfo",
+                        SignalFishEvent::Disconnected { .. } => "Disconnected",
+                        SignalFishEvent::Reconnecting { .. } => "Reconnecting",
+                        SignalFishEvent::Connected => "Connected",
+                        SignalFishEvent::Authenticated { .. } => "Authenticated",
+                        _ => "other",
+                    };
+                    if name != "other" {
+                        sequence.push(name);
+                    }
+                    if sequence.len() == 5 {
+                        break;
+                    }
+                }
+            }
+            sequence
+        };
+        let sequence = tokio::time::timeout(std::time::Duration::from_secs(5), signaling_sequence)
+            .await
+            .expect("controller must keep draining across the reconnection round");
+        assert_eq!(
+            sequence,
+            [
+                "ProtocolInfo",
+                "Disconnected",
+                "Reconnecting",
+                "Connected",
+                "Authenticated"
+            ],
+            "the controller must surface the full reconnect sequence, not fuse on Disconnected"
+        );
+        // The controller is still live: it parks on the idle stream instead
+        // of fusing (a fused controller would return `None` immediately).
+        let park = tokio::time::timeout(std::time::Duration::from_millis(50), mesh.recv()).await;
+        assert!(
+            park.is_err(),
+            "a live controller parks on the drained stream; a fused one returns None"
+        );
+        mesh.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn plain_drop_aborts_signaling_but_never_disconnects_driver_peers() {
         // Plain `Drop` (no `shutdown()`) runs the signaling transport's abort
         // fallback exactly once and never calls driver `Disconnect` — graceful
@@ -3918,7 +4053,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnected_event_is_immediately_terminal_before_the_next_recv() {
+    async fn disconnected_event_clears_the_data_plane_before_the_next_recv() {
         let peer = uuid(54);
         let driver = SharedDriver::default();
         let (transport, _sent) = MockTransport::new_in_room(vec![
@@ -3952,20 +4087,15 @@ mod tests {
                 if matches!(**event, SignalFishEvent::Disconnected { .. })
         ));
 
-        // Returning Disconnected is itself the terminal boundary: callers do
-        // not need another recv() to trigger cleanup or suppress data-plane I/O.
+        // Returning Disconnected already cleared the dead connection's data
+        // plane: callers do not need another recv() for the teardown. The
+        // controller itself only fuses at end-of-stream — a configured
+        // reconnect policy continues the same stream, so the controller keeps
+        // draining (pinned by
+        // `mesh_controller_keeps_draining_across_reconnection_rounds`).
         assert!(mesh.session().peers().is_empty());
         assert!(mesh.session().generation().is_none());
         assert!(mesh.session().transport().is_none());
-        mesh.send_to(peer, b"stale-after-disconnected");
-        let polls_at_terminal = count_calls(&driver, |call| matches!(call, DriverCall::Poll));
-
-        driver.emit_and_wake(DriverEvent::Data {
-            peer,
-            generation: Some(uuid(12)),
-            data: vec![7],
-        });
-        assert!(mesh.recv().await.is_none());
 
         let calls = driver.calls();
         assert_eq!(
@@ -3976,19 +4106,19 @@ mod tests {
             1,
             "Disconnected must tear down each known peer exactly once"
         );
-        assert_eq!(
-            count_calls(&driver, |call| matches!(call, DriverCall::Poll)),
-            polls_at_terminal,
-            "a fused controller must not poll its driver after Disconnected"
-        );
-        assert!(
-            !calls.iter().any(|call| matches!(
-                call,
-                DriverCall::Send(id, data)
-                    if *id == peer && data == b"stale-after-disconnected"
-            )),
-            "send_to must not forward data after Disconnected"
-        );
+        // Driver output for the dead connection's generation is fenced: the
+        // session view is cleared, so the stale Data never surfaces, and the
+        // next scripted event (or the stream end reached below) is what the
+        // consumer sees next.
+        driver.emit_and_wake(DriverEvent::Data {
+            peer,
+            generation: Some(uuid(12)),
+            data: vec![7],
+        });
+        // The scripted stream ended with the Disconnected, so the controller
+        // reaches end-of-stream here and fuses.
+        assert!(mesh.recv().await.is_none());
+        assert!(mesh.recv().await.is_none(), "fused recv stays None");
     }
 
     #[tokio::test]

@@ -237,6 +237,18 @@ pub(crate) struct ClientCore {
     pending_reconnects: VecDeque<PendingReconnect>,
     #[cfg(feature = "tokio-runtime")]
     admission_frozen: bool,
+    // Opt-in retention of the last player-room reconnection context across a
+    // terminal disconnect, enabled only when a `ReconnectPolicy` is
+    // configured. While a room is live the token already lives in the
+    // snapshot; retaining it past `clear_session` is the deliberate,
+    // documented exception that lets the async driver issue the automatic
+    // directed `reconnect` after re-authentication. Voluntary room exits
+    // (`clear_room`) discard it, so a policy never rejoins a room the caller
+    // chose to leave.
+    #[cfg(feature = "tokio-runtime")]
+    reconnect_retention: bool,
+    #[cfg(feature = "tokio-runtime")]
+    auto_reconnect: Option<AutoReconnectContext>,
     #[cfg(feature = "tokio-runtime")]
     session_plan_revision: u64,
     #[cfg(feature = "tokio-runtime")]
@@ -257,6 +269,19 @@ struct RoomBaseline {
 }
 
 pub(crate) struct PendingReconnect {
+    player_id: PlayerId,
+    room_id: RoomId,
+    token: String,
+}
+
+/// Player-room identity retained across a terminal disconnect for the
+/// opt-in automatic reconnection ([`ReconnectPolicy`]).
+///
+/// The token is exactly the value the server last issued on this room
+/// (freshened by every `RoomJoined`/`Reconnected` baseline). It must never
+/// reach `Debug`/tracing; the type deliberately derives nothing.
+#[cfg(feature = "tokio-runtime")]
+struct AutoReconnectContext {
     player_id: PlayerId,
     room_id: RoomId,
     token: String,
@@ -291,7 +316,14 @@ pub(crate) struct ClientOperationAdmission {
 
 impl ClientCore {
     pub(crate) fn authenticate(config: &SignalFishConfig) -> CoreCommand {
-        CoreCommand::Message(ClientMessage::Authenticate {
+        CoreCommand::Message(Self::authenticate_message(config))
+    }
+
+    /// The initial `Authenticate` wire message for `config`. Kept separate so
+    /// the async loop can re-seed authentication on reconnection-round
+    /// connections without routing through the command channel.
+    pub(crate) fn authenticate_message(config: &SignalFishConfig) -> ClientMessage {
+        ClientMessage::Authenticate {
             app_id: config.app_id.clone(),
             sdk_version: config.sdk_version.clone(),
             platform: config.platform.clone(),
@@ -302,7 +334,7 @@ impl ClientCore {
             requested_capabilities: config
                 .requests_room_operation_ids()
                 .then(|| vec![ROOM_OPERATION_IDS_CAPABILITY.to_string()]),
-        })
+        }
     }
 
     #[cfg(test)]
@@ -356,6 +388,10 @@ impl ClientCore {
             #[cfg(feature = "tokio-runtime")]
             admission_frozen: false,
             #[cfg(feature = "tokio-runtime")]
+            reconnect_retention: false,
+            #[cfg(feature = "tokio-runtime")]
+            auto_reconnect: None,
+            #[cfg(feature = "tokio-runtime")]
             session_plan_revision: 0,
             #[cfg(feature = "tokio-runtime")]
             room_revision: 0,
@@ -366,8 +402,10 @@ impl ClientCore {
         self.snapshot.clone()
     }
 
-    /// Record the transport's declared inbound frame bound once, at driver
-    /// construction, before any frame can be processed.
+    /// Record the transport's declared inbound frame bound before any frame
+    /// of the current connection can be processed. Called at driver
+    /// construction and again each time the reconnect policy opens a fresh
+    /// transport (the declared bound is a per-backend property).
     pub(crate) fn set_max_inbound_frame(&mut self, max_inbound_frame: Option<usize>) {
         self.max_inbound_frame = max_inbound_frame;
     }
@@ -610,6 +648,54 @@ impl ClientCore {
     #[cfg(feature = "tokio-runtime")]
     pub(crate) fn freeze_admission(&mut self) {
         self.admission_frozen = true;
+    }
+
+    /// Enable retention of the player-room reconnection context across a
+    /// terminal disconnect. Called once by the async driver when a
+    /// [`ReconnectPolicy`](crate::ReconnectPolicy) is configured; the
+    /// polling driver never enables it.
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn set_reconnect_retention(&mut self, enabled: bool) {
+        self.reconnect_retention = enabled;
+        if !enabled {
+            self.auto_reconnect = None;
+        }
+    }
+
+    /// Re-arm connection-level state for a fresh transport opened by the
+    /// reconnect policy's factory: the new handshake counts as a live
+    /// (pre-ready) connection again, and a send-failure teardown's admission
+    /// freeze ends with the old connection.
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn begin_connection_round(&mut self) {
+        self.snapshot.connected = true;
+        self.snapshot.transport_ready = false;
+        self.admission_frozen = false;
+    }
+
+    /// Consume the retained player-room reconnection context after
+    /// re-authentication on a policy-opened connection.
+    ///
+    /// Returns the directed [`ClientOperation::Reconnect`] the documented
+    /// manual procedure would issue, exactly once, only when the fresh
+    /// connection is authenticated, outside any room, and the context
+    /// survived from the previous connection. Any other state keeps the
+    /// context for a later qualifying moment (the caller retries per loop
+    /// cycle) — except that a *room exit* or a fresh join replaces it.
+    #[cfg(feature = "tokio-runtime")]
+    pub(crate) fn take_auto_reconnect_operation(&mut self) -> Option<ClientOperation> {
+        if !self.reconnect_retention
+            || !self.snapshot.authenticated
+            || self.snapshot.room_role.is_some()
+        {
+            return None;
+        }
+        let context = self.auto_reconnect.take()?;
+        Some(ClientOperation::Reconnect(
+            context.player_id,
+            context.room_id,
+            context.token,
+        ))
     }
 
     #[cfg(feature = "tokio-runtime")]
@@ -874,6 +960,10 @@ impl ClientCore {
         self.pending_room_operation = None;
         self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
+        // Deliberately NOT clearing `auto_reconnect`: this is the disconnect
+        // path, and the retained player-room context is exactly what lets a
+        // configured reconnect policy issue the automatic directed
+        // `reconnect` after re-authentication on the next connection.
         #[cfg(feature = "tokio-runtime")]
         self.advance_session_plan_revision();
     }
@@ -2177,7 +2267,7 @@ impl ClientCore {
         self.snapshot.room_id = Some(baseline.room_id);
         self.snapshot.room_code = Some(baseline.room_code);
         self.snapshot.room_role = Some(baseline.room_role);
-        self.snapshot.reconnection_token = baseline.reconnection_token;
+        self.snapshot.reconnection_token = baseline.reconnection_token.clone();
         self.snapshot.session_generation = None;
         self.snapshot.session_topology = None;
         self.snapshot.session_transport = None;
@@ -2193,6 +2283,24 @@ impl ClientCore {
         self.pending_room_operation = None;
         self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
+        // A fresh authoritative baseline replaces any retained reconnection
+        // context: player rooms store the identity + freshest token so a
+        // later disconnect can rejoin automatically (reconnect retention),
+        // while spectator baselines (no token) clear it — the protocol has
+        // no spectator reconnect.
+        #[cfg(feature = "tokio-runtime")]
+        {
+            self.auto_reconnect = match baseline.reconnection_token {
+                Some(token) if baseline.room_role == RoomRole::Player => {
+                    Some(AutoReconnectContext {
+                        player_id: baseline.player_id,
+                        room_id: baseline.room_id,
+                        token,
+                    })
+                }
+                _ => None,
+            };
+        }
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }
@@ -2224,6 +2332,14 @@ impl ClientCore {
         // future exit kind reaches them.
         self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
+        // A voluntary room exit ends automatic room recovery: the caller
+        // chose to leave, so a later disconnect must not rejoin this room.
+        // The retained context is also retired here (if any), while
+        // `clear_session` — the disconnect path — deliberately keeps it.
+        #[cfg(feature = "tokio-runtime")]
+        {
+            self.auto_reconnect = None;
+        }
         #[cfg(feature = "tokio-runtime")]
         self.advance_room_revision();
     }

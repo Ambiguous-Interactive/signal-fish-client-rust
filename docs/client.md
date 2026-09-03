@@ -45,6 +45,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. |
 | `shutdown_timeout` | `Duration` | `1 second` | Deadline for async shutdown and polling-client close (including optional queued-work flush). A zero timeout aborts immediately. |
 | `protocol_violation_policy` | `ProtocolViolationPolicy` | `Quarantine` | Response to invalid v3 delivery-accountability state: quarantine room data, disconnect, or observe. |
+| `reconnect_policy` | `Option<ReconnectPolicy>` | `None` | Opt the async client into automatic reconnection with backoff (`None` keeps recovery fully manual). See [Automatic reconnection](#automatic-reconnection-opt-in). |
 
 ### Builder Methods
 
@@ -61,6 +62,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_transports(values)` | `impl IntoIterator<Item = TransportKind>` | Advertise data-path transports the application can fulfill. Power-user API. |
 | `.with_topologies(values)` | `impl IntoIterator<Item = Topology>` | Advertise supported session topologies. Power-user API. |
 | `.with_protocol_violation_policy(policy)` | `ProtocolViolationPolicy` | Select `Quarantine` (default), `Disconnect`, or `Observe`. |
+| `.with_reconnect_policy(policy)` | `ReconnectPolicy` | Automate fresh transports, backoff, re-authentication, and player-room reconnects after retryable disconnects. Async client only. |
 
 ### Full Example
 
@@ -593,6 +595,65 @@ writing down as one procedure:
 
 Peers stay fenced against your signals until the post-reconnect
 `SessionPlan` arrives, so gate mesh/relay work on it as on a first join.
+
+##### Automatic reconnection (opt-in)
+
+The procedure above is fully manual by default. The async client can automate
+the transport-and-authentication core of it with a
+`ReconnectPolicy` on
+`SignalFishConfig::with_reconnect_policy`:
+
+```rust,ignore
+let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
+    ReconnectPolicy::new(|| Box::new(my_transport_factory.spawn())),
+);
+
+let (mut client, events) = SignalFishClient::start(transport, config);
+```
+
+With a policy configured, a terminal disconnect **other than** shutdown, a
+dropped handle, or a `ProtocolViolationPolicy::Disconnect` teardown (a
+protocol violation is a correctness signal, never masked) becomes a
+retryable edge:
+
+1. The usual bounded teardown delivers `Disconnected`, exactly as without a
+   policy.
+2. The loop emits `Reconnecting { attempt, next_backoff }`, waits the
+   deterministic exponential delay (`min(initial_backoff * 2^(n-1),
+   max_backoff)`, tokio-timed so paused clocks advance it in tests), then
+   opens a fresh transport from the policy's factory.
+3. The fresh connection runs the normal `Connected` → `Authenticated`
+   sequence, and queued-but-unsent commands of the dead connection stay
+   discarded with it.
+4. If the client was a **player** in a room when the connection ended, the
+   retained `player_id`/`room_id`/token context is consumed automatically:
+   the client issues the same directed `reconnect` as step 3 of the manual
+   procedure, and the server answers with `Reconnected` or
+   `ReconnectionFailed`. The context refreshes from every
+   `RoomJoined`/`Reconnected` baseline and is discarded by a voluntary
+   `leave_room`, so a policy never rejoins a room you chose to leave. One
+   deliberate gap: if the connection dies again *before* the automatic
+   reconnect is answered, that attempt is lost with the round and the next
+   round is connection-only — recovery then continues manually.
+
+The `Reconnecting`/`ReconnectAbandoned` deliveries share the terminal
+farewell's bounded budget: a consumer that stops draining delays each round
+by at most `shutdown_timeout` instead of parking the loop, and an undelivered
+scheduling event falls back to one nonblocking attempt (so a wedged consumer
+may miss a `Reconnecting` marker while reconnection itself continues).
+
+On `ReconnectionFailed` the connection stays up but room recovery stops —
+apply the same `error_code` decision tree as the manual flow (fall back to
+`join_room`, wait out `PlayerAlreadyConnected`, or give up). When the attempt
+budget (`max_attempts`, reset whenever a connection reaches `Authenticated`)
+runs out, the client emits `ReconnectAbandoned { attempts, last_reason }` and
+the event stream ends.
+
+The polling client is caller-driven by design and ignores this option —
+recover it by constructing a new client inside your game loop. There is
+deliberately **no jitter**: the SDK pins determinism and carries no RNG
+dependency; de-synchronize retry storms by varying `initial_backoff` per
+client or add jitter inside your factory.
 
 ---
 

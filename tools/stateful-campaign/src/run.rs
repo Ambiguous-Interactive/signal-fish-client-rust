@@ -154,6 +154,8 @@ pub fn event_name(ev: &SignalFishEvent) -> &'static str {
         SignalFishEvent::NewSpectatorJoined { .. } => "NewSpectatorJoined",
         SignalFishEvent::SpectatorDisconnected { .. } => "SpectatorDisconnected",
         SignalFishEvent::Error { .. } => "Error",
+        SignalFishEvent::Reconnecting { .. } => "Reconnecting",
+        SignalFishEvent::ReconnectAbandoned { .. } => "ReconnectAbandoned",
     }
 }
 
@@ -1364,6 +1366,14 @@ impl Oracle {
                 phase(self.authenticated)?;
             }
             SignalFishEvent::Pong | SignalFishEvent::Error { .. } => {}
+            // The campaign drives the polling client, which is caller-driven
+            // by design and can never configure a reconnect policy.
+            SignalFishEvent::Reconnecting { .. } | SignalFishEvent::ReconnectAbandoned { .. } => {
+                return Err(format!(
+                    "impossible reconnect-policy event `{}`",
+                    event_name(ev)
+                ));
+            }
         }
         // Game-data suppression under quarantine.
         if oracle_strict()

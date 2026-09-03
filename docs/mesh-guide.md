@@ -83,7 +83,7 @@ pub trait WebRtcDriver {
     fn on_signal(&mut self, peer: PlayerId, generation: Option<SessionGeneration>, signal: PeerSignal);
     fn send(&mut self, peer: PlayerId, data: &[u8]);
     fn disconnect(&mut self, peer: PlayerId);
-    fn poll(&mut self) -> Option<DriverEvent>; // do real I/O here
+    fn poll(&mut self) -> Option<DriverEvent>; // drain your backend's non-blocking event queue
 }
 ```
 
@@ -170,8 +170,11 @@ a transport-status boundary, the controller retains one coalescing latest-state
 report and retries it on later pumps; this never blocks signaling events or
 driver data, and room/connection teardown discards obsolete status.
 
-`Disconnected` and signaling-stream closure are terminal controller boundaries.
-Before returning `MeshEvent::Signaling(Disconnected)`, or returning `None` for
+Signaling-stream closure is the terminal controller boundary; a `Disconnected`
+event clears the dead connection's data plane but — with a
+[`ReconnectPolicy`](client.md#automatic-reconnection-opt-in) continuing the
+same client — the controller keeps draining and rebuilds on the fresh
+connection's plan. Before returning `None` for
 stream closure, the controller clears its session view and disconnects every
 known driver peer. It is then fused: later `recv()` calls return `None` without
 polling the driver, and `send_to` ignores data. Explicit `shutdown()` performs
@@ -222,7 +225,7 @@ mesh.shutdown().await;
 | API | Purpose |
 |-----|---------|
 | `MeshController::start(transport, config, driver)` | Build the controller; ensure v3, WebRTC, and a P2P topology while preserving compatible custom choices. |
-| `recv().await -> Option<MeshEvent>` | Drive the handshake and yield the next high-level event. A returned `Disconnected` has already cleared the session and disconnected known peers; after it or stream closure, the controller is fused and returns `None` without polling the driver. |
+| `recv().await -> Option<MeshEvent>` | Drive the handshake and yield the next high-level event. A returned `Disconnected` has already cleared the session and disconnected known peers; stream closure fuses the controller (`None` forever), while a configured reconnect policy keeps it draining across reconnect rounds. |
 | `send_to(peer, &[u8])` | Send application bytes to a peer over its data channel; ignored after the controller becomes terminal. |
 | `with_pump_interval(Duration)` | Tune the periodic driver pump (default 20 ms). |
 | `join_room` / `set_ready` / `start_game` / `leave_room` / `client()` | Room-lifecycle delegations to the inner client. |
