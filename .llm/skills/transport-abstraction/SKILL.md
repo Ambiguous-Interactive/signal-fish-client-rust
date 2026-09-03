@@ -194,7 +194,9 @@ logical detach; a later `abort` or `Drop` may retry the failed cleanup.
 `is_ready()` is cheap and non-blocking. The default `true` fits transports
 whose constructor completes the handshake. Async-handshake transports return
 `false` until ready; both clients defer their synthetic `Connected` event.
-Once true, readiness remains true for that physical connection. If readiness
+Once true, readiness remains true for that physical connection. A transport
+that fused terminally before readiness (a failed deferred handshake) stays
+`false` while its polls deliver the terminal error or EOF. If readiness
 changes while the async driver is blocked, wake a waker registered by
 `poll_send` or `poll_recv`, because `is_ready()` cannot register one itself.
 

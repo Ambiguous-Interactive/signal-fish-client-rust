@@ -1009,6 +1009,28 @@ impl ClientCore {
         }
     }
 
+    /// Process one frame surfaced by a terminal teardown drain.
+    ///
+    /// The send-failure teardown drains already-ready inbound frames so a
+    /// backend's farewell is not lost, but a transport that never reported
+    /// [`is_ready`](crate::Transport::is_ready) must not serve complete
+    /// frames at all — the main loops tear the round down on exactly that
+    /// contract violation. This drain runs while the round is already
+    /// tearing down, so the same violation only discards the frame: no state
+    /// is applied and no event is emitted, and the original send failure
+    /// remains the disconnect cause.
+    pub(crate) fn process_drained_frame(&mut self, frame: TransportFrame) -> FrameOutcome {
+        if self.is_transport_ready() {
+            self.process_frame(frame)
+        } else {
+            FrameOutcome {
+                events: Vec::new(),
+                disconnect: false,
+                input_error: None,
+            }
+        }
+    }
+
     fn process_text(&mut self, text: String) -> FrameOutcome {
         let mut outcome = FrameOutcome::new();
         let server_msg = match serde_json::from_str::<ServerMessage>(&text) {

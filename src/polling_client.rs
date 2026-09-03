@@ -384,6 +384,15 @@ impl<T: Transport> SignalFishPollingClient<T> {
         if let Err(error) = self.drive_outbound(&mut cx, now) {
             error!(%error, "transport send failed");
             self.abandon_client_owned(false, now);
+            // A lazy handshake may complete inside the failing `poll_send`
+            // (the contract lets a pre-ready transport deliver its terminal
+            // error from the very poll that completes the handshake):
+            // re-sample readiness so the round still emits `Connected` and
+            // the drain can apply the backend's farewell frames, matching
+            // the async driver's re-sample before its teardown drain.
+            if self.transport.is_ready() && self.core.mark_transport_ready() {
+                events.push(SignalFishEvent::Connected);
+            }
             self.drain_ready_after_send_failure(&mut events, &mut cx, now, &mut terminal_now);
             let reason = peer_close_reason(&self.transport).or_else(|| Some(error.to_string()));
             let close_now = terminal_now().max(now);
@@ -1243,7 +1252,7 @@ impl<T: Transport> SignalFishPollingClient<T> {
                     frame,
                     budget_reached,
                 } => {
-                    let outcome = core.process_frame(frame);
+                    let outcome = core.process_drained_frame(frame);
                     events.extend(outcome.events);
                     if budget_reached {
                         self.polling_stats.receive_budget_exhaustions = self
@@ -3692,6 +3701,102 @@ mod tests {
             self.close_calls = self.close_calls.saturating_add(1);
             std::task::Poll::Pending
         }
+    }
+
+    /// A hostile backend that never reports readiness yet fails every send
+    /// (after taking the frame) and serves complete protocol frames from the
+    /// teardown drain: the drain must discard, not apply, those frames.
+    struct NeverReadySendFailsTransport {
+        incoming: VecDeque<String>,
+        ready_on_send: bool,
+        ready: std::cell::Cell<bool>,
+    }
+
+    impl NeverReadySendFailsTransport {
+        fn never_ready(incoming: VecDeque<String>) -> Self {
+            Self {
+                incoming,
+                ready_on_send: false,
+                ready: std::cell::Cell::new(false),
+            }
+        }
+    }
+
+    impl Transport for NeverReadySendFailsTransport {
+        fn abort(&mut self) {}
+        fn is_ready(&self) -> bool {
+            self.ready.get()
+        }
+        fn poll_send(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            if self.ready_on_send {
+                self.ready.set(true);
+            }
+            let _ = frame.take();
+            std::task::Poll::Ready(Err(SignalFishError::TransportSend(
+                "hostile send failure".into(),
+            )))
+        }
+        fn poll_recv(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            match self.incoming.pop_front() {
+                Some(text) => std::task::Poll::Ready(Some(Ok(TransportFrame::Text(text)))),
+                None => std::task::Poll::Pending,
+            }
+        }
+        fn poll_close(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::result::Result<(), SignalFishError>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn teardown_drain_discards_frames_from_a_transport_that_never_became_ready() {
+        let transport =
+            NeverReadySendFailsTransport::never_ready(std::collections::VecDeque::from(vec![
+                authenticated_json_str().to_string(),
+                authenticated_json_str().to_string(),
+            ]));
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let events = client.poll();
+
+        // No `Connected` (never ready) and no `Authenticated` (drained frames
+        // from a never-ready transport are contract violations, not session
+        // progress): the send failure is the round's whole story.
+        assert!(matches!(
+            events.as_slice(),
+            [SignalFishEvent::Disconnected { .. }]
+        ));
+    }
+
+    #[test]
+    fn send_failure_after_a_handshake_completed_inside_poll_send_still_emits_connected() {
+        let transport = NeverReadySendFailsTransport {
+            incoming: std::collections::VecDeque::from(vec![r#"{"type":"Pong"}"#.to_string()]),
+            ready_on_send: true,
+            ready: std::cell::Cell::new(false),
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let events = client.poll();
+
+        // The handshake completed inside the failing `poll_send`: the round
+        // emits `Connected`, and the drain applies the ready backend's
+        // farewell frame before the `Disconnected` farewell.
+        assert!(matches!(
+            events.as_slice(),
+            [
+                SignalFishEvent::Connected,
+                SignalFishEvent::Pong,
+                SignalFishEvent::Disconnected { .. }
+            ]
+        ));
     }
 
     /// A transport whose `poll_send` always returns `Pending`.

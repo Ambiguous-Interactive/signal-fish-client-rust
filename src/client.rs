@@ -707,16 +707,19 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// # Example
 ///
 /// The factory returns a fresh, *unconnected* transport per attempt and must
-/// not block. Because [`WebSocketTransport::connect`](crate::WebSocketTransport::connect)
-/// is asynchronous, wrap it in a lazy transport that starts the handshake on
-/// first poll — the complete, compiling pattern lives in
-/// `examples/auto_reconnect.rs`:
+/// not block. [`WebSocketTransport::connect_lazy`](crate::WebSocketTransport::connect_lazy)
+/// exists exactly for this: it returns the built-in WebSocket transport
+/// immediately and starts the handshake on the first driver poll:
 ///
 /// ```rust,ignore
 /// let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
-///     ReconnectPolicy::new(move || Box::new(LazyWebSocketTransport::new(url.clone()))),
+///     ReconnectPolicy::new(move || Box::new(WebSocketTransport::connect_lazy(url.clone()))),
 /// );
 /// ```
+///
+/// Custom transports implement [`Transport`] directly, eagerly or lazily; the
+/// reconnect flow with the built-in transport — including its built-in
+/// handshake deadline — is shown in `examples/auto_reconnect.rs`.
 ///
 /// The factory is called at most once per attempt and must not block; a
 /// panicking factory kills the transport loop task exactly like a panicking
@@ -2649,7 +2652,7 @@ async fn finish_send_failure(
             break;
         };
 
-        let outcome = lock_core(state).process_frame(frame);
+        let outcome = lock_core(state).process_drained_frame(frame);
         let protocol_stop = outcome.disconnect || outcome.input_error.is_some();
         if !emit_event_batch(event_tx, shutdown, deadline, outcome.events).await {
             debug!("terminal event delivery was preempted mid-batch after send failure");
@@ -9158,6 +9161,138 @@ mod tests {
             let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
             assert_eq!(message["type"], "Reconnect");
         }
+        client.shutdown().await;
+    }
+
+    /// A hostile backend that never reports readiness yet fails the first
+    /// send (after taking the frame) and serves complete protocol frames from
+    /// the teardown drain: the exact double violation the pre-ready frame
+    /// guards exist for. The drain must discard, not apply, those frames.
+    struct NeverReadyHostileTransport {
+        incoming: std::sync::Mutex<std::collections::VecDeque<String>>,
+        first_send_attempted: std::sync::atomic::AtomicBool,
+        ready_on_send: bool,
+        ready: std::sync::atomic::AtomicBool,
+    }
+
+    impl Transport for NeverReadyHostileTransport {
+        fn abort(&mut self) {}
+        fn is_ready(&self) -> bool {
+            self.ready.load(Ordering::Relaxed)
+        }
+        fn poll_close(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_send(
+            &mut self,
+            _cx: &mut Context<'_>,
+            frame: &mut Option<TransportFrame>,
+        ) -> Poll<std::result::Result<(), SignalFishError>> {
+            self.first_send_attempted.store(true, Ordering::Relaxed);
+            if self.ready_on_send {
+                self.ready.store(true, Ordering::Relaxed);
+            }
+            let _ = frame.take();
+            Poll::Ready(Err(SignalFishError::TransportSend(
+                "hostile send failure".into(),
+            )))
+        }
+        fn poll_recv(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<std::result::Result<TransportFrame, SignalFishError>>> {
+            // Surface the frames only after the send failed, so they reach
+            // the core through the teardown drain and not the main loop's
+            // own pre-ready guard.
+            if !self.first_send_attempted.load(Ordering::Relaxed) {
+                return Poll::Pending;
+            }
+            match self.incoming.lock().unwrap().pop_front() {
+                Some(text) => Poll::Ready(Some(Ok(TransportFrame::Text(text)))),
+                None => Poll::Pending,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn teardown_drain_discards_frames_from_a_transport_that_never_became_ready() {
+        let transport = NeverReadyHostileTransport {
+            incoming: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                authenticated_json(),
+                authenticated_json(),
+            ])),
+            first_send_attempted: std::sync::atomic::AtomicBool::new(false),
+            ready_on_send: false,
+            ready: std::sync::atomic::AtomicBool::new(false),
+        };
+        let config = SignalFishConfig::new("mb_hostile_pre_ready");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // No `Connected` (never ready) and no `Authenticated` (drained frames
+        // from a never-ready transport are contract violations, not session
+        // progress): the send failure is the round's whole story.
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert!(
+                    reason
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("hostile send failure"),
+                    "send-failure cause expected, got {reason:?}"
+                );
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert!(
+            events.recv().await.is_none(),
+            "no further events may follow"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn send_failure_after_a_handshake_completed_inside_poll_send_still_emits_connected() {
+        let transport = NeverReadyHostileTransport {
+            incoming: std::sync::Mutex::new(std::collections::VecDeque::from(vec![
+                authenticated_json(),
+            ])),
+            first_send_attempted: std::sync::atomic::AtomicBool::new(false),
+            ready_on_send: true,
+            ready: std::sync::atomic::AtomicBool::new(false),
+        };
+        let config = SignalFishConfig::new("mb_lazy_ready_on_send");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+
+        // The handshake completed inside the failing `poll_send`: the round
+        // emits `Connected`, and the drain applies the ready backend's
+        // farewell frame before the `Disconnected` farewell.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert!(
+                    reason
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("hostile send failure"),
+                    "send-failure cause expected, got {reason:?}"
+                );
+            }
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        assert!(
+            events.recv().await.is_none(),
+            "no further events may follow"
+        );
         client.shutdown().await;
     }
 

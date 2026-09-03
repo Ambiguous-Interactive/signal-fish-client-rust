@@ -220,7 +220,11 @@ pub trait Transport {
     /// blocked must wake a waker previously registered by `poll_send` or
     /// `poll_recv`, because this accessor does not receive a waker itself.
     /// While this returns `false`, `poll_send` must return `Pending` without
-    /// taking a caller-owned frame.
+    /// taking a caller-owned frame. The one exception is a transport that
+    /// fused terminally before readiness (for example a failed deferred
+    /// handshake): it stays not-ready while its polls deliver the terminal
+    /// error or EOF, so the drivers observe an ordinary teardown instead of
+    /// parking forever.
     /// Complete protocol frames must not be returned by `poll_recv` before
     /// readiness.
     fn is_ready(&self) -> bool {

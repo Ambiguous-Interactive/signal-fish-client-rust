@@ -608,11 +608,12 @@ the transport-and-authentication core of it with a
 
 ```rust,ignore
 // The factory returns a fresh, *unconnected* transport per attempt and must
-// not block. WebSocketTransport::connect is asynchronous, so wrap it in a
-// lazy transport that connects on first poll — see
-// examples/auto_reconnect.rs for a complete, compiling implementation.
+// not block. WebSocketTransport::connect_lazy exists exactly for this: it
+// returns immediately and starts the handshake on the first driver poll,
+// with a built-in 10-second handshake deadline so a server that never
+// completes the upgrade is a retryable failure instead of a hang.
 let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
-    ReconnectPolicy::new(move || Box::new(LazyWebSocketTransport::new(url.clone()))),
+    ReconnectPolicy::new(move || Box::new(WebSocketTransport::connect_lazy(url.clone()))),
 );
 
 let (mut client, events) = SignalFishClient::start(transport, config);
