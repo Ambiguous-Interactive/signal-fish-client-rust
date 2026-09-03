@@ -45,6 +45,11 @@ use signal_fish_client::{
 /// Default server URL when `SIGNAL_FISH_URL` is not set.
 const DEFAULT_URL: &str = "ws://localhost:3536/v2/ws";
 
+/// Handshake deadline for the lazy connect. Without it, a peer that accepts
+/// TCP but never completes the upgrade parks the attempt in `Pending`
+/// forever, and a reconnect policy never observes a failure to retry.
+const HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 // ─────────────────────────────────────────────────────────────────────
 // Step 1: A lazy WebSocket transport for the reconnect factory
 // ─────────────────────────────────────────────────────────────────────
@@ -82,11 +87,14 @@ impl LazyWebSocketTransport {
     fn ensure_connecting(&mut self) {
         if let Self::Idle { url } = self {
             // The future must own the URL: the stored future outlives this
-            // `&mut self` call.
+            // `&mut self` call. The deadline turns a black-holed route or a
+            // TCP peer that never finishes the upgrade into a terminal
+            // error, so a reconnect policy can count the attempt and apply
+            // backoff instead of waiting forever.
             let url = url.clone();
-            *self = Self::Connecting(Box::pin(
-                async move { WebSocketTransport::connect(&url).await },
-            ));
+            *self = Self::Connecting(Box::pin(async move {
+                WebSocketTransport::connect_with_timeout(&url, HANDSHAKE_DEADLINE).await
+            }));
         }
     }
 
@@ -171,7 +179,17 @@ impl Transport for LazyWebSocketTransport {
 
     fn abort(&mut self) {
         // Required to be prompt, non-blocking, non-panicking, and idempotent.
-        *self = Self::Aborted;
+        // Delegate to the connected inner transport's own abort (equally
+        // prompt and idempotent) so it releases its socket AND retains its
+        // close metadata: the driver may still call `close_info()` after
+        // `abort` to attribute the disconnect. A pending handshake is
+        // cancelled by dropping the future; there is no connection whose
+        // close could be attributed, so the wrapper becomes terminal.
+        if let Self::Ready(transport) = self {
+            transport.abort();
+        } else {
+            *self = Self::Aborted;
+        }
     }
 
     fn is_ready(&self) -> bool {
