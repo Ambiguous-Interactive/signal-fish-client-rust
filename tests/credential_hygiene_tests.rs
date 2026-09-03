@@ -14,8 +14,11 @@
 //! the SDK — the hygiene failure the future credential API must never
 //! reintroduce.
 //!
-//! The scan is repository-relative and skips itself when the documentation
-//! tree is absent (published crates carry library source only).
+//! The scan is repository-relative and fails loudly when the documentation
+//! tree cannot be found: layout drift must fix the guard, not skip it. (The
+//! published packages exclude `tests/`, so crate-packaging test runs never
+//! execute this file.) Known limitation: a credential wrapped across a line
+//! break stays under the per-line hex-run threshold.
 
 use std::path::{Path, PathBuf};
 
@@ -25,16 +28,19 @@ const CREDENTIAL_PREFIX: &str = "sfk_";
 /// defines the credential story) do not match.
 const MIN_HEX_RUN: usize = 8;
 
-fn repo_root() -> Option<PathBuf> {
+fn repo_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut candidate = Some(manifest);
     while let Some(root) = candidate {
         if root.join("docs").is_dir() && root.join("examples").is_dir() {
-            return Some(root);
+            return root;
         }
         candidate = root.parent().map(Path::to_path_buf);
     }
-    None
+    panic!(
+        "credential scan could not locate the repository tree: layout drift \
+         must be fixed, not silently skipped"
+    );
 }
 
 fn is_credential_literal(line: &str) -> bool {
@@ -90,7 +96,18 @@ fn scanned_targets(root: &Path) -> Vec<PathBuf> {
     files.retain(|path| {
         matches!(
             path.extension().and_then(|ext| ext.to_str()),
-            Some("md" | "rs" | "toml" | "yml" | "yaml" | "html" | "js" | "sh" | "py")
+            Some(
+                "md" | "rs"
+                    | "toml"
+                    | "yml"
+                    | "yaml"
+                    | "html"
+                    | "js"
+                    | "sh"
+                    | "py"
+                    | "json"
+                    | "txt"
+            )
         )
     });
     files
@@ -98,10 +115,7 @@ fn scanned_targets(root: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn no_secret_credential_literals_in_examples_or_docs() {
-    let Some(root) = repo_root() else {
-        // Published-crate test runs have no repository tree to scan.
-        return;
-    };
+    let root = repo_root();
     let files = scanned_targets(&root);
     assert!(
         !files.is_empty(),

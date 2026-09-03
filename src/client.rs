@@ -1952,6 +1952,10 @@ impl<T: Transport> Transport for AbortOnDropTransport<T> {
     fn diagnostics(&self) -> crate::transport::TransportDiagnostics {
         self.inner.diagnostics()
     }
+
+    fn max_frame_hint(&self) -> Option<usize> {
+        self.inner.max_frame_hint()
+    }
 }
 
 #[cfg(feature = "tokio-runtime")]
