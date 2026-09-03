@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
   (the reconnect policy's per-attempt and terminal events); add two arms to
   exhaustive matches.
+- `MeshController` now keeps draining across a reconnect-policy round: a
+  `Disconnected` event clears the data plane (peers disconnected, view
+  cleared) but only true end-of-stream fuses the controller, so mesh
+  consumers survive automatic reconnection.
 - `impl Transport for Box<dyn Transport + Send>` so owned trait objects
   (including the reconnect factory's products) flow through the same driver
   plumbing as concrete transports.
