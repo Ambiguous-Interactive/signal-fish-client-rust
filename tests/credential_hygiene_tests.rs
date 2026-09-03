@@ -87,7 +87,7 @@ fn scanned_targets(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_files(root, "docs", &mut files);
     collect_files(root, "examples", &mut files);
-    for readme in ["README.md", "CHANGELOG.md"] {
+    for readme in ["README.md", "CHANGELOG.md", "llms.txt"] {
         let path = root.join(readme);
         if path.is_file() {
             files.push(path);
