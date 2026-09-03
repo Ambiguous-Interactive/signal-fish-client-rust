@@ -714,8 +714,7 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 ///
 /// The factory is called at most once per attempt and must not block; a
 /// panicking factory kills the transport loop task exactly like a panicking
-/// [`Transport`](crate::Transport) method (the documented panic-boundary
-/// contract).
+/// [`Transport`] method (the documented panic-boundary contract).
 ///
 /// The `Reconnecting` and `ReconnectAbandoned` deliveries are bounded by
 /// [`shutdown_timeout`](SignalFishConfig::shutdown_timeout) like the terminal
