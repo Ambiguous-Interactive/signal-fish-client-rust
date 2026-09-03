@@ -108,6 +108,7 @@ impl PairKind {
 struct SmokePair {
     kind: PairKind,
     server_url: String,
+    expect_multi_frame_poll: bool,
     first: Option<Client>,
     second: Option<Client>,
     room_code: Option<String>,
@@ -158,10 +159,11 @@ struct SmokePair {
 }
 
 impl SmokePair {
-    fn new(kind: PairKind, server_url: &str) -> Self {
+    fn new(kind: PairKind, server_url: &str, expect_multi_frame_poll: bool) -> Self {
         Self {
             kind,
             server_url: server_url.to_string(),
+            expect_multi_frame_poll,
             first: connect_client(kind, "a", server_url),
             second: None,
             room_code: None,
@@ -713,7 +715,11 @@ impl SmokePair {
             && per_client_peak_depth
                 .into_iter()
                 .all(|depth| depth <= LOAD_MAX_QUEUE_DEPTH_PER_CLIENT)
-            && self.multi_frame_poll
+            // Only a host loop that batches frame arrival (browser RAF)
+            // observes multi-frame polls; an uncapped native headless loop
+            // legitimately drains one frame per poll (the launch flag opts
+            // the expectation out there).
+            && (!self.expect_multi_frame_poll || self.multi_frame_poll)
             && self.max_poll_work_frames <= 64
             && self.max_poll_work_bytes <= 64 * 1024
             && self.max_poll_receive_frames <= 64
@@ -849,10 +855,19 @@ impl INode for SignalFishSmoke {
         let fortress = FortressScenario::from_user_args(&args);
         let regular_smoke = fortress.is_none();
         let server_url = user_argument(&args, "--server-url").unwrap_or_else(|| SERVER_URL.into());
+        // Whether the host loop's cadence should batch multiple inbound
+        // frames into single driver polls (browser RAF does; an uncapped
+        // native headless loop drains one frame per poll). Opt out per
+        // launch with `--no-expect-multi-frame-poll`.
+        let expect_multi_frame_poll = !args.iter().any(|arg| arg == "--no-expect-multi-frame-poll");
         Self {
             base,
-            json: regular_smoke.then(|| SmokePair::new(PairKind::Json, &server_url)),
-            binary: regular_smoke.then(|| SmokePair::new(PairKind::Binary, &server_url)),
+            json: regular_smoke.then(|| {
+                SmokePair::new(PairKind::Json, &server_url, expect_multi_frame_poll)
+            }),
+            binary: regular_smoke.then(|| {
+                SmokePair::new(PairKind::Binary, &server_url, expect_multi_frame_poll)
+            }),
             fortress,
             complete: false,
         }

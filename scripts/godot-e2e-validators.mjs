@@ -41,7 +41,13 @@ function isFixedLengthArray(value, length, predicate) {
 
 const LOAD_TARGET_PER_CLIENT = 2_176;
 
-export function validateLoadSummary(summary, samples) {
+export function validateLoadSummary(summary, samples, options = {}) {
+  // Multi-frame polling is a host-loop scheduling property: a browser RAF
+  // loop batches frame arrival, while an uncapped native headless loop
+  // drains one frame per poll. Launches that opt out
+  // (`--no-expect-multi-frame-poll`) must pass `expectMultiFramePoll: false`
+  // here; every other oracle is environment-independent and always applies.
+  const { expectMultiFramePoll = true } = options;
   const errors = [];
   const depth = validateFinalSlope(samples, "command_depth");
   const age = validateFinalSlope(samples, "current_queue_age_ms");
@@ -106,7 +112,7 @@ export function validateLoadSummary(summary, samples) {
     summary.peak_aggregate_queue_depth > 64 ||
     !isFixedLengthArray(summary?.per_client_peak_queue_depth, 2, isNonnegativeInteger) ||
     summary.per_client_peak_queue_depth.some((depth) => depth > 32) ||
-    summary?.multi_frame_poll !== true
+    (expectMultiFramePoll && summary?.multi_frame_poll !== true)
   ) errors.push("queue-depth or multi-frame-poll evidence failed");
   if (
     summary?.buffered_bytes !== 0 ||

@@ -161,8 +161,12 @@ jobs:
             sleep 0.1
           done
 
+          # The uncapped native headless loop drains one frame per poll, so
+          # the browser-RAF multi-frame-poll expectation is opted out; the
+          # validator below mirrors that with expectMultiFramePoll: false.
           "${GODOT4_BIN}" --headless --path "${native_fixture}" -- \
-            --server-url ws://127.0.0.1:3536/v2/ws >godot-native.log 2>&1 &
+            --server-url ws://127.0.0.1:3536/v2/ws \
+            --no-expect-multi-frame-poll >godot-native.log 2>&1 &
           godot_pid=$!
 
           wait_for_godot_marker() {
@@ -218,7 +222,9 @@ jobs:
             }
             const loadSummary = JSON.parse(summaryLine.slice(
               summaryLine.indexOf("SIGNAL_FISH_SMOKE load-summary ") + 31));
-            const loadValidation = validateLoadSummary(loadSummary, samples);
+            const loadValidation = validateLoadSummary(loadSummary, samples, {
+              expectMultiFramePoll: false,
+            });
             if (!loadValidation.ok) {
               throw new Error("native throughput assertions failed: " + JSON.stringify(loadValidation));
             }

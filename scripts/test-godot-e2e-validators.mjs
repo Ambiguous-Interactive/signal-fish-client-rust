@@ -95,6 +95,22 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     send_budget_exhaustions: 0, receive_budget_exhaustions: 0,
   }));
   assert.equal(validateLoadSummary(summary, samples).ok, true);
+  // The native lane opts out of the multi-frame-poll expectation only; every
+  // other oracle still applies (the fixture arms the expectation per launch
+  // with --no-expect-multi-frame-poll).
+  const nativeLike = structuredClone(summary);
+  nativeLike.multi_frame_poll = false;
+  assert.equal(validateLoadSummary(nativeLike, samples).ok, false);
+  assert.equal(
+    validateLoadSummary(nativeLike, samples, { expectMultiFramePoll: false }).ok,
+    true,
+  );
+  const nativeLikeShallow = structuredClone(nativeLike);
+  nativeLikeShallow.peak_queue_age_ms = 501;
+  assert.equal(
+    validateLoadSummary(nativeLikeShallow, samples, { expectMultiFramePoll: false }).ok,
+    false,
+  );
   const preemptedLoad = structuredClone(summary);
   preemptedLoad.max_poll_us = 80_000;
   preemptedLoad.slow_poll_count = 1;
