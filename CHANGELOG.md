@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an Authentication & Credentials guide consolidating the public app-ID
   policy, secret reconnection tokens, rotation guidance, and log-hygiene
   rules.
+- Added an `auto_reconnect` example: a complete, compiling auto-reconnection
+  client including the lazy WebSocket transport wrapper the
+  `ReconnectPolicy` factory needs (the built-in `WebSocketTransport`
+  connects asynchronously and cannot be constructed inside the synchronous
+  factory), plus the same corrected pattern in the reconnect rustdoc and
+  guide.
 
 ### Changed
 
@@ -62,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documentation accuracy: `docs/events.md` now counts the 38 (not 36)
+  `SignalFishEvent` variants and documents the scripted-peer join-snapshot
+  contract (unique local player entry, v3 `epoch`/`seq` pairing, v2
+  baseline omission); `docs/client.md` now routes `start_game` rejections
+  through the `Error` event's error codes and documents the binary-send
+  error precedence (v3 `ProtocolUnsupported` gate before
+  `BinaryFormatNotNegotiated`); `docs/concepts.md` matches that precedence;
+  `docs/protocol.md` documents the `websocket`-only `MessageTransport`
+  value set and that `ProtocolInfo`'s optional fields must be omitted
+  rather than sent as `null`; the `redacted_raw_prefix()` contract now
+  states that non-JSON frames pass through effectively verbatim.
 - `DecodeFailed`'s `error` text and the SDK's inbound deserialization warnings
   (JSON and MessagePack paths) are capped at 512 bytes: decoders quote hostile
   wire tokens verbatim, which previously put unbounded attacker-controlled

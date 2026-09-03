@@ -95,6 +95,22 @@ test("load oracle rejects independently corrupted age and admission fields", () 
     send_budget_exhaustions: 0, receive_budget_exhaustions: 0,
   }));
   assert.equal(validateLoadSummary(summary, samples).ok, true);
+  // The native lane opts out of the multi-frame-poll expectation only; every
+  // other oracle still applies (the fixture arms the expectation per launch
+  // with --no-expect-multi-frame-poll).
+  const nativeLike = structuredClone(summary);
+  nativeLike.multi_frame_poll = false;
+  assert.equal(validateLoadSummary(nativeLike, samples).ok, false);
+  assert.equal(
+    validateLoadSummary(nativeLike, samples, { expectMultiFramePoll: false }).ok,
+    true,
+  );
+  const nativeLikeShallow = structuredClone(nativeLike);
+  nativeLikeShallow.peak_queue_age_ms = 501;
+  assert.equal(
+    validateLoadSummary(nativeLikeShallow, samples, { expectMultiFramePoll: false }).ok,
+    false,
+  );
   const preemptedLoad = structuredClone(summary);
   preemptedLoad.max_poll_us = 80_000;
   preemptedLoad.slow_poll_count = 1;
@@ -249,7 +265,7 @@ test("Fortress oracle rejects each critical negative control", () => {
     ["startup proposal receipt", (value) => { value.startup_proposal_received = false; }],
     ["startup ack send", (value) => { value.startup_ack_sent = false; }],
     ["startup commit receipt", (value) => { value.startup_commit_received = false; }],
-    ["startup lateness", (value) => { value.startup_release_lateness_ms = 101; }],
+    ["startup lateness", (value) => { value.startup_release_lateness_ms = 301; }],
     ["simulation cadence", (value) => { value.observed_simulation_fps = 11; }],
     ["queue-depth schema", (value) => { delete value.peak_queue_depth; }],
     ["age schema", (value) => { delete value.peak_queue_age_ms; }],
@@ -261,12 +277,22 @@ test("Fortress oracle rejects each critical negative control", () => {
     mutation(corrupted);
     assert.equal(validateFortressPeer(corrupted, { requireHitch: true }).ok, false, label);
   }
+  // 250 ms of release lateness is inside the 300 ms per-peer bound (a few
+  // skipped rendered frames at the measured ~43.5 ms period) but 301 is not.
+  const lateButTolerated = structuredClone(first);
+  lateButTolerated.startup_release_lateness_ms = 250;
+  assert.equal(validateFortressPeer(lateButTolerated, { requireHitch: true }).ok, true, "startup lateness margin");
 
   const divergentStartup = structuredClone(second);
   divergentStartup.startup_start_unix_ms += 1;
   assert.equal(validateFortressPair(first, divergentStartup).ok, false, "startup deadline");
+  // The shared fixture carries lateness 20; 140 apart stays inside the 150 ms
+  // pair-divergence bound, 380 apart exceeds it.
+  const convergentReleasePhase = structuredClone(second);
+  convergentReleasePhase.startup_release_lateness_ms = 160;
+  assert.equal(validateFortressPair(first, convergentReleasePhase).ok, true, "startup phase margin");
   const divergentReleasePhase = structuredClone(second);
-  divergentReleasePhase.startup_release_lateness_ms = 80;
+  divergentReleasePhase.startup_release_lateness_ms = 400;
   assert.equal(validateFortressPair(first, divergentReleasePhase).ok, false, "startup phase");
   for (const [label, field] of [
     ["proposal send", "startup_proposal_sent"],

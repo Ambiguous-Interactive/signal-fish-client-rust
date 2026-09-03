@@ -41,7 +41,13 @@ function isFixedLengthArray(value, length, predicate) {
 
 const LOAD_TARGET_PER_CLIENT = 2_176;
 
-export function validateLoadSummary(summary, samples) {
+export function validateLoadSummary(summary, samples, options = {}) {
+  // Multi-frame polling is a host-loop scheduling property: a browser RAF
+  // loop batches frame arrival, while an uncapped native headless loop
+  // drains one frame per poll. Launches that opt out
+  // (`--no-expect-multi-frame-poll`) must pass `expectMultiFramePoll: false`
+  // here; every other oracle is environment-independent and always applies.
+  const { expectMultiFramePoll = true } = options;
   const errors = [];
   const depth = validateFinalSlope(samples, "command_depth");
   const age = validateFinalSlope(samples, "current_queue_age_ms");
@@ -106,7 +112,7 @@ export function validateLoadSummary(summary, samples) {
     summary.peak_aggregate_queue_depth > 64 ||
     !isFixedLengthArray(summary?.per_client_peak_queue_depth, 2, isNonnegativeInteger) ||
     summary.per_client_peak_queue_depth.some((depth) => depth > 32) ||
-    summary?.multi_frame_poll !== true
+    (expectMultiFramePoll && summary?.multi_frame_poll !== true)
   ) errors.push("queue-depth or multi-frame-poll evidence failed");
   if (
     summary?.buffered_bytes !== 0 ||
@@ -233,7 +239,7 @@ export function validateFortressPeer(summary, options = {}) {
     !isNonnegativeInteger(summary?.startup_start_unix_ms) || summary.startup_start_unix_ms === 0 ||
     !isNonnegativeNumber(summary?.startup_barrier_elapsed_ms) ||
     !isNonnegativeNumber(summary?.startup_release_lateness_ms) ||
-    summary.startup_release_lateness_ms > 100
+    summary.startup_release_lateness_ms > 300
   ) errors.push("causal startup barrier failed");
   if (
     summary?.multi_frame_poll !== true ||
@@ -310,10 +316,16 @@ export function validateFortressPair(first, second) {
   if (first?.startup_start_unix_ms !== second?.startup_start_unix_ms) {
     errors.push("peer startup deadlines diverged");
   }
+  // Release lateness is measured at the first rendered-frame callback at or
+  // after the shared deadline (~43.5 ms per frame at the fixture's measured
+  // ~23 fps under two Chromium processes), so one skipped callback already
+  // spends ~44-90 ms of budget. The bounds must tolerate a few skipped frames
+  // (GC, JIT, scheduler contention, netem softirq load) while still failing
+  // any systematic barrier mapping error, which is seconds-scale.
   if (
     !isNonnegativeNumber(first?.startup_release_lateness_ms) ||
     !isNonnegativeNumber(second?.startup_release_lateness_ms) ||
-    Math.abs(first.startup_release_lateness_ms - second.startup_release_lateness_ms) > 56
+    Math.abs(first.startup_release_lateness_ms - second.startup_release_lateness_ms) > 150
   ) errors.push("peer startup release phases diverged");
   if (
     first?.target_state_checksum !== second?.target_state_checksum ||

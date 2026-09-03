@@ -487,7 +487,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `ProtocolUnsupported { mode }` | A protocol-v3-only send was attempted before v3 was negotiated. See [Protocol versioning and topology](#protocol-versioning-and-topology). |
 | `SessionPlanUnavailable` | A WebRTC signal was attempted but no authoritative session plan currently authorizes it (before a plan, targeting self, unknown, or departed players, or the negotiated session transport is not WebRTC). |
 | `StaleSessionGeneration { .. }` | A WebRTC signal was produced under an already-replaced session-plan generation; the newer plan remains authoritative. |
-| `BinaryFormatNotNegotiated` | Binary game data was requested while the connection uses JSON. |
+| `BinaryFormatNotNegotiated` | Binary game data was requested on a negotiated v3 connection whose effective format is JSON. (On a v2 connection the v3 gate refuses first with `ProtocolUnsupported`.) |
 | `PayloadTooDeep { max_depth }` | A caller-supplied JSON payload was refused because its container nesting exceeds the outbound depth bound (128 nested containers, matching `serde_json`'s recursion limit). Applies to JSON game data, raw WebRTC signals, and `ConnectionInfo::Custom`; refused at the call site, before queuing, so flattening the payload is required. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
 | `Timeout` | The WebSocket handshake did not complete within its `connect_with_timeout` deadline (see [Errors](errors.md)); this variant has that single producer. |

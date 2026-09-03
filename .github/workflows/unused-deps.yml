@@ -56,8 +56,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+      # No rust-cache: the heuristic source scan compiles nothing and writes
+      # no target/ directory, so a cache snapshot would be dead weight in the
+      # repository's shared cache budget.
 
       - name: Install cargo-machete
         uses: taiki-e/install-action@v2.87.1

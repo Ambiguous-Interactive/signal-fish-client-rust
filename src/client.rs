@@ -706,9 +706,15 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 ///
 /// # Example
 ///
+/// The factory returns a fresh, *unconnected* transport per attempt and must
+/// not block. Because [`WebSocketTransport::connect`](crate::WebSocketTransport::connect)
+/// is asynchronous, wrap it in a lazy transport that starts the handshake on
+/// first poll — the complete, compiling pattern lives in
+/// `examples/auto_reconnect.rs`:
+///
 /// ```rust,ignore
 /// let config = SignalFishConfig::new("mb_app_abc123").with_reconnect_policy(
-///     ReconnectPolicy::new(|| Box::new(WebSocketTransport::connect(url))),
+///     ReconnectPolicy::new(move || Box::new(LazyWebSocketTransport::new(url.clone()))),
 /// );
 /// ```
 ///

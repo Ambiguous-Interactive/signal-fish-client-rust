@@ -296,6 +296,18 @@ try {
     () => peer.lines.some((line) => line.includes("SIGNAL_FISH_SHELL game-complete")),
     "game completion",
   )));
+  // The runtime's exit status is part of the oracle: a runtime that exits
+  // nonzero after emitting its summary must fail the scenario.
+  for (const peer of peers) {
+    const completionLine = peer.lines
+      .find((line) => line.includes("SIGNAL_FISH_SHELL game-complete"));
+    const exitCode = Number.parseInt(completionLine.trim().split(/\s+/).pop(), 10);
+    if (!Number.isInteger(exitCode) || exitCode !== 0) {
+      throw new Error(
+        `Fortress runtime exited nonzero: ${JSON.stringify({ line: completionLine })}`,
+      );
+    }
+  }
   for (const peer of peers) assertPeerDiagnostics(peer);
 
   metricsAfter = await fetchMetrics();

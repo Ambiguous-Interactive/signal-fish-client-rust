@@ -128,6 +128,10 @@ name = "basic_lobby"
 required-features = ["transport-websocket"]
 
 [[example]]
+name = "auto_reconnect"
+required-features = ["transport-websocket"]
+
+[[example]]
 name = "custom_transport"
 required-features = ["tokio-runtime"]
 

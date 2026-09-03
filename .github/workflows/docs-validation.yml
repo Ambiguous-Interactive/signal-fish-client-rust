@@ -24,7 +24,7 @@ env:
   PLAYWRIGHT_VERSION: "1.61.1"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -102,6 +102,12 @@ jobs:
 
       - name: Run docs rendering check
         run: bash scripts/check-docs-rendering.sh
+
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ runner.arch }}-${{ env.PLAYWRIGHT_VERSION }}
 
       - name: Install pinned Chromium automation
         run: |
