@@ -633,6 +633,12 @@ impl WebSocketConnectOptions {
 /// an already-completed handshake, it cannot enable token binding and retains
 /// the caller's WebSocket codec limits.
 ///
+/// For the synchronous [`ReconnectPolicy`](crate::ReconnectPolicy) factory —
+/// which must return a fresh, unconnected transport without blocking — use
+/// [`WebSocketTransport::connect_lazy`]: the handshake starts on the first
+/// poll and the transport reports `is_ready() == false` until it completes.
+/// Like `from_stream`, the lazy constructors cannot enable token binding.
+///
 /// # Polling Safety
 ///
 /// [`poll_recv`](Transport::poll_recv) preserves the WebSocket stream's partial
@@ -648,12 +654,72 @@ impl WebSocketConnectOptions {
 /// including a restored `WriteBufferFull`, to a terminal disconnect that drops
 /// the connection and its retained frame.
 pub struct WebSocketTransport {
-    state: WebSocketState<WsStream>,
+    inner: WebSocketInner,
     /// The connect-time inbound frame/message bound the backend enforces via
     /// tungstenite, reported through [`Transport::max_frame_hint`] so the
     /// drivers enforce it too. `from_stream` callers own their codec limits,
-    /// so the transport cannot know one and reports `None`.
+    /// so the transport cannot know one and reports `None`. The lazy
+    /// constructors pin the default bound so it is declared before the
+    /// deferred handshake runs.
     max_inbound_frame: Option<usize>,
+}
+
+/// Internal state of one [`WebSocketTransport`].
+enum WebSocketInner {
+    /// The handshake completed (or the physical connection reached a terminal
+    /// state); all transport behavior lives in the shared [`WebSocketState`].
+    /// Boxed so the lazy variant stays small (the stream is large and the
+    /// allocation happens once, at connect time).
+    Connected(Box<WebSocketState<WsStream>>),
+    /// The handshake is deferred to the first send/receive poll.
+    Lazy(LazyHandshake),
+}
+
+/// Default handshake deadline for [`WebSocketTransport::connect_lazy`].
+///
+/// Without it, a peer that accepts TCP but never completes the upgrade parks
+/// the attempt in `Pending` forever and a reconnect policy never observes a
+/// failure to retry.
+const DEFAULT_LAZY_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Deferred WebSocket handshake behind the lazy constructors.
+struct LazyHandshake {
+    url: String,
+    timeout: std::time::Duration,
+    phase: LazyPhase,
+}
+
+/// The boxed deferred-handshake future.
+type LazyHandshakeFuture =
+    Pin<Box<dyn std::future::Future<Output = Result<WsStream, SignalFishError>> + Send>>;
+
+/// Lifecycle of one deferred handshake.
+enum LazyPhase {
+    /// No handshake started yet; the first send/receive poll starts it.
+    Idle,
+    /// The handshake future is being polled to completion. The mutex exists
+    /// only to keep `WebSocketTransport` `Sync` (a boxed future is `Send`
+    /// but never `Sync`); every access runs behind `&mut self`, so it is
+    /// always taken with `get_mut` and never actually locks.
+    Connecting(std::sync::Mutex<LazyHandshakeFuture>),
+    /// The handshake failed or was abandoned (close/abort). Terminal: any
+    /// handshake error was delivered exactly once before fusing, and every
+    /// later poll is inert. `is_ready()` stays `false` — no connection ever
+    /// existed, so no synthetic `Connected` edge may fire.
+    Fused,
+}
+
+/// Outcome of advancing a deferred handshake.
+enum LazyAdvance {
+    /// The handshake is still running; the caller returns `Pending`.
+    Pending,
+    /// The handshake completed; the transport is now connected.
+    Connected,
+    /// The handshake failed; the transport fused and the caller must deliver
+    /// this terminal error exactly once.
+    Failed(SignalFishError),
+    /// The transport fused without an error to deliver (close/abort race).
+    FusedTerminal,
 }
 
 struct WebSocketState<S> {
@@ -730,17 +796,33 @@ impl WebSocketTokenBinding {
 impl std::fmt::Debug for WebSocketTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The stream codec can retain raw inbound/outbound protocol frames,
-        // and close reasons are peer-controlled. Expose state only.
-        f.debug_struct("WebSocketTransport")
-            .field("has_stream", &self.state.stream.is_some())
-            .field("closed", &self.state.closed)
-            .field("has_close_info", &self.state.close_info.is_some())
-            .field("send_started", &self.state.send_started)
-            .field("send_failed", &self.state.send_failed)
-            .field("control_flush_pending", &self.state.control_flush_pending)
-            .field("peer_close_pending", &self.state.peer_close_pending)
-            .field("token_binding", &self.state.token_binding.status())
-            .finish()
+        // and close reasons are peer-controlled. Expose state only; the lazy
+        // URL is connection information and is never formatted.
+        match &self.inner {
+            WebSocketInner::Connected(state) => f
+                .debug_struct("WebSocketTransport")
+                .field("has_stream", &state.stream.is_some())
+                .field("closed", &state.closed)
+                .field("has_close_info", &state.close_info.is_some())
+                .field("send_started", &state.send_started)
+                .field("send_failed", &state.send_failed)
+                .field("control_flush_pending", &state.control_flush_pending)
+                .field("peer_close_pending", &state.peer_close_pending)
+                .field("token_binding", &state.token_binding.status())
+                .finish(),
+            WebSocketInner::Lazy(lazy) => f
+                .debug_struct("WebSocketTransport")
+                .field("has_stream", &false)
+                .field(
+                    "lazy_handshake",
+                    &match lazy.phase {
+                        LazyPhase::Idle => "idle",
+                        LazyPhase::Connecting(_) => "connecting",
+                        LazyPhase::Fused => "fused",
+                    },
+                )
+                .finish(),
+        }
     }
 }
 
@@ -927,7 +1009,10 @@ impl WebSocketTransport {
         );
 
         Ok(Self {
-            state: WebSocketState::new_with_token_binding(stream, token_binding),
+            inner: WebSocketInner::Connected(Box::new(WebSocketState::new_with_token_binding(
+                stream,
+                token_binding,
+            ))),
             max_inbound_frame: options.max_inbound_message_size,
         })
     }
@@ -1049,7 +1134,10 @@ impl WebSocketTransport {
             "WebSocket connection established"
         );
         Ok(Self {
-            state: WebSocketState::new_with_token_binding(stream, token_binding),
+            inner: WebSocketInner::Connected(Box::new(WebSocketState::new_with_token_binding(
+                stream,
+                token_binding,
+            ))),
             max_inbound_frame: options.max_inbound_message_size,
         })
     }
@@ -1070,15 +1158,22 @@ impl WebSocketTransport {
     /// extension must own the full handshake/proof wrapper or use a connect API.
     pub fn from_stream(stream: WsStream) -> Self {
         Self {
-            state: WebSocketState::new(stream),
+            inner: WebSocketInner::Connected(Box::new(WebSocketState::new(stream))),
             max_inbound_frame: None,
         }
     }
 
     /// Return the negotiated token-binding state for this physical connection.
+    ///
+    /// A lazy transport reports [`TokenBindingStatus::Disabled`] until the
+    /// deferred handshake completes; the lazy constructors pin the disabled
+    /// profile.
     #[must_use]
     pub fn token_binding_status(&self) -> TokenBindingStatus {
-        self.state.token_binding.status()
+        match self.connected_state() {
+            Some(state) => state.token_binding.status(),
+            None => TokenBindingStatus::Disabled,
+        }
     }
 
     /// Return the validated server challenge when token binding is active.
@@ -1087,7 +1182,8 @@ impl WebSocketTransport {
     /// application frame. Callers normally need only [`token_binding_status`](Self::token_binding_status).
     #[must_use]
     pub fn token_binding_challenge(&self) -> Option<&TokenBindingChallenge> {
-        self.state.token_binding.challenge()
+        self.connected_state()
+            .and_then(|state| state.token_binding.challenge())
     }
 
     /// Establish a new WebSocket connection with a timeout.
@@ -1111,6 +1207,168 @@ impl WebSocketTransport {
         tokio::time::timeout(timeout, Self::connect(url))
             .await
             .map_err(|_| SignalFishError::Timeout)?
+    }
+
+    /// Create a transport that starts the WebSocket handshake on first use.
+    ///
+    /// Unlike [`connect`](Self::connect), this never blocks and never performs
+    /// network I/O at construction time, so it can run inside the synchronous
+    /// [`ReconnectPolicy`](crate::ReconnectPolicy) factory, which must return
+    /// a fresh, unconnected transport immediately. The handshake starts on the
+    /// first [`poll_send`](Transport::poll_send) or
+    /// [`poll_recv`](Transport::poll_recv) call; until it completes, the
+    /// transport reports `is_ready() == false` and defers every send
+    /// (`Pending` keeps the caller's frame intact).
+    ///
+    /// The deferred handshake uses the default connect profile: disabled token
+    /// binding, `TCP_NODELAY`, and the default 8 MiB inbound frame/message
+    /// bound. Token binding cannot be offered here by design — the handshake
+    /// (and with it the exact `Sec-WebSocket-Key` a proof binds to) has not
+    /// started when the constructor returns, matching the
+    /// [`from_stream`](Self::from_stream) precedent.
+    ///
+    /// A handshake deadline of **10 seconds** applies so a peer that accepts
+    /// TCP but never completes the upgrade becomes a terminal
+    /// [`Timeout`](SignalFishError::Timeout) instead of parking the attempt in
+    /// `Pending` forever — a reconnect policy can only count attempts it can
+    /// observe failing. Use
+    /// [`connect_lazy_with_timeout`](Self::connect_lazy_with_timeout) to tune
+    /// it.
+    ///
+    /// The declared [`max_frame_hint`](Transport::max_frame_hint) is stable
+    /// for the transport's whole life: the drivers sample it once per
+    /// connection round, before the handshake runs, and this constructor
+    /// declares the default 8 MiB bound immediately.
+    ///
+    /// An invalid URL is not rejected at construction time; it surfaces as a
+    /// terminal [`InvalidConfig`](SignalFishError::InvalidConfig) on the first
+    /// poll, exactly like any other handshake failure. The same poll also
+    /// requires a live tokio runtime on the polling thread (as every WebSocket
+    /// connect does): without one, the handshake fails with a classified
+    /// `InvalidConfig` instead of panicking inside the reactor.
+    #[must_use]
+    pub fn connect_lazy(url: String) -> Self {
+        Self::connect_lazy_with_timeout(url, DEFAULT_LAZY_HANDSHAKE_TIMEOUT)
+    }
+
+    /// Create a lazy transport with an explicit handshake deadline.
+    ///
+    /// Behaves like [`connect_lazy`](Self::connect_lazy) but fails the
+    /// deferred handshake with [`SignalFishError::Timeout`] if it has not
+    /// completed within the given duration.
+    #[must_use]
+    pub fn connect_lazy_with_timeout(url: String, timeout: std::time::Duration) -> Self {
+        Self {
+            inner: WebSocketInner::Lazy(LazyHandshake {
+                url,
+                timeout,
+                phase: LazyPhase::Idle,
+            }),
+            max_inbound_frame: Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE),
+        }
+    }
+
+    /// The connected backend state, when the handshake has completed.
+    fn connected_state(&self) -> Option<&WebSocketState<WsStream>> {
+        match &self.inner {
+            WebSocketInner::Connected(state) => Some(state),
+            WebSocketInner::Lazy(_) => None,
+        }
+    }
+
+    fn connected_state_mut(&mut self) -> Option<&mut WebSocketState<WsStream>> {
+        match &mut self.inner {
+            WebSocketInner::Connected(state) => Some(state.as_mut()),
+            WebSocketInner::Lazy(_) => None,
+        }
+    }
+
+    /// Start the handshake if it has not started yet, then drive it.
+    ///
+    /// The future owns the URL: it outlives the `&mut self` borrow that
+    /// created it. Fusing on failure keeps later polls inert while
+    /// `is_ready()` stays `false` — a handshake that never completed must not
+    /// produce the synthetic `Connected` edge.
+    fn advance_lazy(&mut self, cx: &mut Context<'_>) -> LazyAdvance {
+        let WebSocketInner::Lazy(lazy) = &mut self.inner else {
+            return LazyAdvance::Connected;
+        };
+        if matches!(lazy.phase, LazyPhase::Idle) {
+            // The deferred handshake needs the tokio reactor (timer and TCP
+            // connect), which must be entered on the polling thread. Without
+            // it the tokio primitives would panic mid-poll; classify the
+            // environment problem as a terminal configuration error instead
+            // so the drivers observe an ordinary handshake failure.
+            if tokio::runtime::Handle::try_current().is_err() {
+                self.fuse_lazy();
+                return LazyAdvance::Failed(SignalFishError::InvalidConfig {
+                    field: "runtime",
+                    problem: "the deferred WebSocket handshake requires a \
+                              live tokio runtime on the polling thread"
+                        .into(),
+                });
+            }
+            let url = lazy.url.clone();
+            let timeout = lazy.timeout;
+            lazy.phase = LazyPhase::Connecting(std::sync::Mutex::new(Box::pin(async move {
+                let connected = Self::connect_with_timeout(&url, timeout).await?;
+                // Success pins the disabled token-binding profile (default
+                // options), so moving the raw stream into a fresh state is
+                // equivalent. The transport wrapper itself is not needed.
+                match connected.inner {
+                    WebSocketInner::Connected(mut state) => match state.stream.take() {
+                        Some(stream) => Ok(stream),
+                        // Unreachable on a successful connect; still fused
+                        // terminal rather than panicking.
+                        None => Err(SignalFishError::TransportClosed),
+                    },
+                    // Unreachable: `connect_with_timeout` returns a connected
+                    // transport or an error.
+                    WebSocketInner::Lazy(_) => Err(SignalFishError::TransportClosed),
+                }
+            })));
+        }
+        let WebSocketInner::Lazy(lazy) = &mut self.inner else {
+            return LazyAdvance::Connected;
+        };
+        let LazyPhase::Connecting(future) = &mut lazy.phase else {
+            // Fused between polls (close/abort raced the observing poll);
+            // nothing left to drive.
+            return LazyAdvance::FusedTerminal;
+        };
+        // Take the future through the exclusive `&mut` reference: the mutex
+        // exists for `Sync` (a boxed future is `Send` but never `Sync`), not
+        // for locking; `get_mut` proves exclusivity without a lock, and the
+        // `LockResult` wrapper is unwrapped without panicking for signature
+        // compatibility (it can never actually be poisoned here).
+        let poll_result = future
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .poll(cx);
+        match poll_result {
+            Poll::Pending => LazyAdvance::Pending,
+            Poll::Ready(Ok(stream)) => {
+                self.inner = WebSocketInner::Connected(Box::new(WebSocketState::new(stream)));
+                LazyAdvance::Connected
+            }
+            Poll::Ready(Err(error)) => {
+                self.fuse_lazy();
+                LazyAdvance::Failed(error)
+            }
+        }
+    }
+
+    /// Fuse the lazy transport without delivering a handshake error.
+    ///
+    /// Used by `poll_close` and `abort` before or while the handshake runs:
+    /// there is no connection to close gracefully, so dropping the handshake
+    /// future cancels it (a socket that races to completion underneath is
+    /// dropped with the future) and the transport becomes inert.
+    fn fuse_lazy(&mut self) {
+        if let WebSocketInner::Lazy(lazy) = &mut self.inner {
+            lazy.phase = LazyPhase::Fused;
+        }
     }
 }
 
@@ -1462,26 +1720,80 @@ impl Transport for WebSocketTransport {
         cx: &mut Context<'_>,
         frame: &mut Option<TransportFrame>,
     ) -> Poll<Result<(), SignalFishError>> {
-        self.state.poll_send(cx, frame)
+        if matches!(self.inner, WebSocketInner::Lazy(_)) {
+            match self.advance_lazy(cx) {
+                LazyAdvance::Pending => return Poll::Pending,
+                LazyAdvance::Failed(error) => return Poll::Ready(Err(error)),
+                LazyAdvance::FusedTerminal => {
+                    return Poll::Ready(Err(SignalFishError::TransportClosed));
+                }
+                LazyAdvance::Connected => {}
+            }
+        }
+        match self.connected_state_mut() {
+            Some(state) => state.poll_send(cx, frame),
+            // Unreachable: `advance_lazy` leaves the transport connected or
+            // returned above.
+            None => Poll::Ready(Err(SignalFishError::TransportClosed)),
+        }
     }
 
     fn poll_recv(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<TransportFrame, SignalFishError>>> {
-        self.state.poll_recv(cx)
+        if matches!(self.inner, WebSocketInner::Lazy(_)) {
+            match self.advance_lazy(cx) {
+                LazyAdvance::Pending => return Poll::Pending,
+                LazyAdvance::Failed(error) => return Poll::Ready(Some(Err(error))),
+                LazyAdvance::FusedTerminal => return Poll::Ready(None),
+                LazyAdvance::Connected => {}
+            }
+        }
+        match self.connected_state_mut() {
+            Some(state) => state.poll_recv(cx),
+            // Unreachable: `advance_lazy` leaves the transport connected or
+            // returned above.
+            None => Poll::Ready(None),
+        }
     }
 
     fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), SignalFishError>> {
-        self.state.poll_close(cx)
+        if matches!(self.inner, WebSocketInner::Lazy(_)) {
+            // Nothing was ever connected: there is no socket to close
+            // gracefully. Cancel the pending handshake and report the close
+            // as complete; later polls observe the fused terminal state.
+            self.fuse_lazy();
+            return Poll::Ready(Ok(()));
+        }
+        match self.connected_state_mut() {
+            Some(state) => state.poll_close(cx),
+            // Unreachable: non-lazy transports always carry connected state.
+            None => Poll::Ready(Ok(())),
+        }
     }
 
     fn close_info(&self) -> Option<TransportCloseInfo> {
-        self.state.close_info()
+        self.connected_state().and_then(|state| state.close_info())
     }
 
     fn abort(&mut self) {
-        self.state.abort();
+        match &mut self.inner {
+            WebSocketInner::Connected(state) => state.abort(),
+            WebSocketInner::Lazy(_) => {
+                // No connection exists whose close could be attributed; drop
+                // the handshake future and become inert. Idempotent: repeated
+                // calls re-fuse the same terminal phase.
+                self.fuse_lazy();
+            }
+        }
+    }
+
+    /// Ready once the deferred handshake has completed. Stays `false` when a
+    /// handshake failed or was abandoned: no connection ever existed, so the
+    /// drivers must not emit the synthetic `Connected` edge.
+    fn is_ready(&self) -> bool {
+        self.connected_state().is_some()
     }
 
     fn max_frame_hint(&self) -> Option<usize> {
@@ -1515,6 +1827,17 @@ mod tests {
     fn websocket_transport_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<WebSocketTransport>();
+    }
+
+    #[test]
+    fn websocket_transport_is_send_and_sync() {
+        // The lazy constructors hold a boxed handshake future (`Send` but
+        // never `Sync`), so `Sync` now depends on that future staying behind
+        // a mutex. Losing the auto trait is a semver-major change (the
+        // `API compatibility` gate would fail); this pin catches it in the
+        // ordinary suite first.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<WebSocketTransport>();
     }
 
     #[test]
@@ -3056,10 +3379,11 @@ mod tests {
 
     fn plain_tcp_stream(transport: &WebSocketTransport) -> &tokio::net::TcpStream {
         match transport
-            .state
+            .connected_state()
+            .expect("transport must hold a live stream after connect")
             .stream
             .as_ref()
-            .expect("transport must hold a live stream after connect")
+            .expect("connected state must hold the WebSocket stream")
             .get_ref()
         {
             tokio_tungstenite::MaybeTlsStream::Plain(tcp) => tcp,
@@ -3081,7 +3405,7 @@ mod tests {
         let secret = "websocket-debug-secret";
         let transport = WebSocketTransport {
             max_inbound_frame: None,
-            state: WebSocketState {
+            inner: WebSocketInner::Connected(Box::new(WebSocketState {
                 stream: None,
                 closed: true,
                 close_info: Some(TransportCloseInfo {
@@ -3093,7 +3417,7 @@ mod tests {
                 control_flush_pending: false,
                 peer_close_pending: false,
                 token_binding: WebSocketTokenBinding::Disabled,
-            },
+            })),
         };
 
         let output = format!("{transport:?}");
@@ -3688,8 +4012,8 @@ mod tests {
                 .expect("server task must report whether it received the response"),
             "client must flush a matching close response before recv returns None"
         );
-        assert!(transport.state.closed);
-        assert!(!transport.state.peer_close_pending);
+        assert!(transport.connected_state().unwrap().closed);
+        assert!(!transport.connected_state().unwrap().peer_close_pending);
         finish_mock_server(server_task).await;
     }
 
@@ -3739,10 +4063,11 @@ mod tests {
                 .expect("custom inbound policy must connect");
 
             let live_config = transport
-                .state
+                .connected_state()
+                .expect("connected transport must retain its WebSocket stream")
                 .stream
                 .as_ref()
-                .expect("connected transport must retain its WebSocket stream")
+                .expect("connected state must hold the WebSocket stream")
                 .get_config();
             assert_eq!(live_config.max_frame_size, limit);
             assert_eq!(live_config.max_message_size, limit);
@@ -3780,10 +4105,11 @@ mod tests {
             .expect("explicit rustls connect path must support a plain ws endpoint");
 
         let live_config = transport
-            .state
+            .connected_state()
+            .expect("connected transport must retain its WebSocket stream")
             .stream
             .as_ref()
-            .expect("connected transport must retain its WebSocket stream")
+            .expect("connected state must hold the WebSocket stream")
             .get_config();
         assert_eq!(live_config.max_frame_size, Some(256));
         assert_eq!(live_config.max_message_size, Some(256));
@@ -3811,8 +4137,8 @@ mod tests {
             crate::transport::recv_frame(&mut transport).await,
             Some(Err(SignalFishError::TransportReceive(_)))
         ));
-        assert!(transport.state.closed);
-        assert!(transport.state.stream.is_none());
+        assert!(transport.connected_state().unwrap().closed);
+        assert!(transport.connected_state().unwrap().stream.is_none());
         assert!(crate::transport::recv_frame(&mut transport).await.is_none());
 
         let expected = TransportFrame::Text("caller-retains-oversize-retry".into());
@@ -3890,11 +4216,11 @@ mod tests {
             first,
             Some(Err(SignalFishError::TransportReceive(_)))
         ));
-        assert!(transport.state.closed);
-        assert!(transport.state.stream.is_none());
-        assert!(!transport.state.send_started);
-        assert!(!transport.state.control_flush_pending);
-        assert!(!transport.state.peer_close_pending);
+        assert!(transport.connected_state().unwrap().closed);
+        assert!(transport.connected_state().unwrap().stream.is_none());
+        assert!(!transport.connected_state().unwrap().send_started);
+        assert!(!transport.connected_state().unwrap().control_flush_pending);
+        assert!(!transport.connected_state().unwrap().peer_close_pending);
 
         assert!(crate::transport::recv_frame(&mut transport).await.is_none());
         let expected = TransportFrame::Text("must-remain-caller-owned".into());
@@ -3928,9 +4254,10 @@ mod tests {
         .await
         .expect("reset socket must wake the send poll");
         assert!(matches!(first, Err(SignalFishError::TransportSend(_))));
-        assert!(transport.state.send_failed);
-        assert!(!transport.state.closed);
-        assert!(transport.state.stream.is_some());
+        let state = transport.connected_state().unwrap();
+        assert!(state.send_failed);
+        assert!(!state.closed);
+        assert!(state.stream.is_some());
 
         let expected = TransportFrame::Text("second".into());
         let mut offered = Some(expected.clone());
@@ -3938,8 +4265,8 @@ mod tests {
         assert!(matches!(second, Err(SignalFishError::TransportClosed)));
         assert_eq!(offered, Some(expected));
         let _ = crate::transport::recv_frame(&mut transport).await;
-        assert!(transport.state.closed);
-        assert!(transport.state.stream.is_none());
+        assert!(transport.connected_state().unwrap().closed);
+        assert!(transport.connected_state().unwrap().stream.is_none());
         crate::transport::close_transport(&mut transport)
             .await
             .expect("close after send failure must be idempotent");
@@ -4004,8 +4331,8 @@ mod tests {
         transport.abort();
         transport.abort();
 
-        assert!(transport.state.closed);
-        assert!(transport.state.stream.is_none());
+        assert!(transport.connected_state().unwrap().closed);
+        assert!(transport.connected_state().unwrap().stream.is_none());
         let expected = TransportFrame::Text("caller still owns this".into());
         let mut offered = Some(expected.clone());
         let waker = std::task::Waker::noop();
@@ -4166,5 +4493,289 @@ mod tests {
 
         assert!(crate::transport::recv_frame(&mut transport).await.is_none());
         finish_mock_server(server_task).await;
+    }
+
+    // ── Lazy constructors (issue #227) ────────────────────────────────
+
+    /// A listener that never accepts: the TCP connect completes through the
+    /// backlog while the upgrade can never finish, parking the handshake in
+    /// `Pending` deterministically.
+    fn stalled_listener() -> (String, std::net::TcpListener) {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("stalled listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("stalled listener must have a local address");
+        (format!("ws://{addr}"), listener)
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_reports_pending_and_retains_the_caller_frame_before_connect() {
+        let (url, _listener) = stalled_listener();
+        let mut transport = WebSocketTransport::connect_lazy(url);
+        assert!(!Transport::is_ready(&transport));
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut frame = Some(TransportFrame::Text("queued".into()));
+        assert!(matches!(
+            Transport::poll_send(&mut transport, &mut cx, &mut frame),
+            Poll::Pending
+        ));
+        assert_eq!(
+            frame.as_ref(),
+            Some(&TransportFrame::Text("queued".into())),
+            "pre-ready poll_send must leave the frame in the caller slot"
+        );
+        assert!(!Transport::is_ready(&transport));
+        assert!(Transport::close_info(&transport).is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_poll_send_drives_the_handshake_to_completion() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            ws.send(Message::Text("server-hello".into()))
+                .await
+                .expect("server must send the probe frame");
+            while let Some(Ok(_)) = ws.next().await {}
+        })
+        .await;
+
+        // The async driver's first I/O on every round is the seeded
+        // Authenticate send, so `poll_send` is the production path that must
+        // start the deferred handshake and complete once connected.
+        let mut transport = WebSocketTransport::connect_lazy(url);
+        assert!(!Transport::is_ready(&transport));
+        crate::transport::send_frame(&mut transport, TransportFrame::Text("seed".into()))
+            .await
+            .expect("poll_send must drive the deferred handshake to completion");
+        assert!(Transport::is_ready(&transport));
+
+        let received = crate::transport::recv_frame(&mut transport).await;
+        assert_eq!(
+            expect_received_frame(received),
+            TransportFrame::Text("server-hello".into())
+        );
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("lazy transport close must succeed after connecting");
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_connects_on_first_poll_and_carries_traffic() {
+        let (url, server_task) = start_mock_server(|mut ws| async move {
+            ws.send(Message::Binary(vec![1, 2, 3].into()))
+                .await
+                .expect("server must send the probe frame");
+            while let Some(Ok(_)) = ws.next().await {}
+        })
+        .await;
+
+        let mut transport = WebSocketTransport::connect_lazy(url.clone());
+        assert_eq!(
+            Transport::max_frame_hint(&transport),
+            Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE),
+            "the lazy constructor declares the default inbound bound up front"
+        );
+        assert_eq!(
+            transport.token_binding_status(),
+            TokenBindingStatus::Disabled,
+            "the lazy constructors pin the disabled token-binding profile"
+        );
+
+        // `recv_frame` drives the deferred handshake through the real tokio
+        // waker: the first poll starts it, later polls run only when the
+        // handshake future wakes us, proving waker delivery. The timeout
+        // bounds a lost-waker regression as a test failure instead of a
+        // hung CI job.
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::transport::recv_frame(&mut transport),
+        )
+        .await
+        .expect("the handshake waker must be delivered promptly");
+        assert_eq!(
+            expect_received_frame(received),
+            TransportFrame::Binary(vec![1, 2, 3])
+        );
+        assert!(Transport::is_ready(&transport));
+
+        crate::transport::send_frame(&mut transport, TransportFrame::Text("hi".into()))
+            .await
+            .expect("post-handshake send must succeed");
+        assert_eq!(
+            Transport::max_frame_hint(&transport),
+            Some(DEFAULT_MAX_INBOUND_MESSAGE_SIZE),
+            "the declared hint must stay stable across the handshake"
+        );
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("lazy transport close must succeed after connecting");
+        finish_mock_server(server_task).await;
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_handshake_failure_is_delivered_once_then_fuses() {
+        // Port 1 is not listening (house precedent for a guaranteed refusal
+        // without a droppable-listener port-reuse race).
+        let mut transport = WebSocketTransport::connect_lazy("ws://127.0.0.1:1".into());
+        let error = crate::transport::recv_frame(&mut transport)
+            .await
+            .expect("handshake failure must surface as a terminal receive error")
+            .expect_err("the handshake must fail against a closed port");
+        assert!(
+            matches!(error, SignalFishError::Io(_)),
+            "unexpected: {error:?}"
+        );
+
+        // The transport is now fused: inert forever, still not ready.
+        assert!(!Transport::is_ready(&transport));
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        assert!(matches!(
+            crate::transport::send_frame(&mut transport, TransportFrame::Text("x".into())).await,
+            Err(SignalFishError::TransportClosed)
+        ));
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close on a fused transport must succeed");
+        Transport::abort(&mut transport);
+        assert!(!Transport::is_ready(&transport));
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_invalid_url_fails_on_first_poll_not_at_construction() {
+        let mut transport = WebSocketTransport::connect_lazy("not-a-valid-url".into());
+        assert!(!Transport::is_ready(&transport));
+        let error = crate::transport::recv_frame(&mut transport)
+            .await
+            .expect("handshake failure must surface as a terminal receive error")
+            .expect_err("an invalid URL must fail the deferred handshake");
+        assert!(
+            matches!(error, SignalFishError::InvalidConfig { .. }),
+            "unexpected: {error:?}"
+        );
+        assert!(!Transport::is_ready(&transport));
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_zero_timeout_fails_the_handshake_with_timeout() {
+        let (url, _listener) = stalled_listener();
+        let mut transport =
+            WebSocketTransport::connect_lazy_with_timeout(url, std::time::Duration::ZERO);
+        let error = crate::transport::recv_frame(&mut transport)
+            .await
+            .expect("handshake failure must surface as a terminal receive error")
+            .expect_err("a zero deadline must fail the handshake immediately");
+        assert!(
+            matches!(error, SignalFishError::Timeout),
+            "unexpected: {error:?}"
+        );
+        assert!(!Transport::is_ready(&transport));
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_close_during_handshake_completes_and_fuses() {
+        let (url, _listener) = stalled_listener();
+        let mut transport = WebSocketTransport::connect_lazy(url);
+
+        // Close before the handshake ever starts.
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close on an untouched lazy transport must complete");
+        assert!(!Transport::is_ready(&transport));
+        assert!(Transport::close_info(&transport).is_none());
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        assert!(matches!(
+            crate::transport::send_frame(&mut transport, TransportFrame::Text("x".into())).await,
+            Err(SignalFishError::TransportClosed)
+        ));
+
+        // Close while a handshake is running: the future is cancelled and the
+        // close reports complete.
+        let (url, _listener) = stalled_listener();
+        let mut transport = WebSocketTransport::connect_lazy(url);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut frame = Some(TransportFrame::Text("queued".into()));
+        assert!(matches!(
+            Transport::poll_send(&mut transport, &mut cx, &mut frame),
+            Poll::Pending
+        ));
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close during the handshake must complete");
+        assert!(!Transport::is_ready(&transport));
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_transport_abort_during_handshake_is_prompt_idempotent_and_inert() {
+        let (url, _listener) = stalled_listener();
+        let mut transport = WebSocketTransport::connect_lazy(url);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut frame = Some(TransportFrame::Text("queued".into()));
+        assert!(matches!(
+            Transport::poll_send(&mut transport, &mut cx, &mut frame),
+            Poll::Pending
+        ));
+
+        Transport::abort(&mut transport);
+        Transport::abort(&mut transport);
+        assert!(!Transport::is_ready(&transport));
+        assert!(Transport::close_info(&transport).is_none());
+        assert_eq!(
+            frame.as_ref(),
+            Some(&TransportFrame::Text("queued".into())),
+            "abort must not fabricate acceptance of a frame the backend never took"
+        );
+        assert!(crate::transport::recv_frame(&mut transport).await.is_none());
+        crate::transport::close_transport(&mut transport)
+            .await
+            .expect("close after abort must succeed");
+    }
+
+    #[test]
+    fn lazy_transport_debug_never_formats_the_url() {
+        let transport =
+            WebSocketTransport::connect_lazy("ws://secret-host:3536/v2/ws?token=secret".into());
+        let rendered = format!("{transport:?}");
+        assert!(rendered.contains("lazy_handshake"));
+        assert!(
+            !rendered.contains("secret"),
+            "the lazy URL is connection information: {rendered}"
+        );
+    }
+
+    #[test]
+    fn lazy_transport_without_a_tokio_runtime_fails_classified_not_panicking() {
+        // No `#[tokio::test]`: this thread deliberately has no runtime.
+        let mut transport = WebSocketTransport::connect_lazy("ws://127.0.0.1:1".into());
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let error = match Transport::poll_recv(&mut transport, &mut cx) {
+            Poll::Ready(Some(Err(error))) => error,
+            other => panic!("expected a classified handshake failure, got {other:?}"),
+        };
+        assert!(
+            matches!(error, SignalFishError::InvalidConfig { .. }),
+            "unexpected: {error:?}"
+        );
+        assert!(!Transport::is_ready(&transport));
+        assert!(matches!(
+            Transport::poll_recv(&mut transport, &mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn reconnect_factory_accepts_the_lazy_constructor() {
+        let url = "ws://localhost:3536/v2/ws".to_string();
+        let _policy = crate::ReconnectPolicy::new(move || {
+            Box::new(WebSocketTransport::connect_lazy(url.clone())) as Box<dyn Transport + Send>
+        });
     }
 }

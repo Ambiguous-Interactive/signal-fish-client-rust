@@ -41,11 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy, secret reconnection tokens, rotation guidance, and log-hygiene
   rules.
 - Added an `auto_reconnect` example: a complete, compiling auto-reconnection
-  client including the lazy WebSocket transport wrapper the
-  `ReconnectPolicy` factory needs (the built-in `WebSocketTransport`
-  connects asynchronously and cannot be constructed inside the synchronous
-  factory), plus the same corrected pattern in the reconnect rustdoc and
+  client showing the `ReconnectPolicy` factory pattern for the built-in
+  `WebSocketTransport`, plus the same pattern in the reconnect rustdoc and
   guide.
+- `WebSocketTransport::connect_lazy(url)` and `connect_lazy_with_timeout`:
+  first-class lazy constructors for the `ReconnectPolicy` factory — the
+  handshake starts on the first driver poll instead of at construction.
+  They declare the default 8 MiB inbound frame bound immediately (so both
+  drivers enforce it from the first round), pin the disabled token-binding
+  profile, and fail a stalled handshake as a retryable `Timeout` after 10
+  seconds (configurable) instead of hanging forever; the example ships this
+  constructor instead of a hand-written lazy wrapper.
 
 ### Changed
 
@@ -68,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The send-failure teardown drain no longer applies frames served by a
+  transport that never reported readiness: such frames are a backend
+  contract violation (the main connection loops already tear the round down
+  on them), so both drivers now discard them instead of emitting protocol
+  events and mutating state from a hostile backend during teardown. The
+  polling driver also re-samples transport readiness after a send failure,
+  so a round whose deferred (`connect_lazy`) handshake completed inside the
+  failing `poll_send` still emits `Connected` and delivers the backend's
+  farewell frames exactly like the async driver.
 - Documentation accuracy: `docs/events.md` now counts the 38 (not 36)
   `SignalFishEvent` variants and documents the scripted-peer join-snapshot
   contract (unique local player entry, v3 `epoch`/`seq` pairing, v2
