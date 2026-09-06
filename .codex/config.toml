@@ -1,0 +1,29 @@
+[mcp_servers.github]
+command = "signal-fish-mcp"
+args = ["github"]
+env_vars = ["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT", "CONTAINER_WORKSPACE_FOLDER"]
+startup_timeout_sec = 60
+
+[mcp_servers.zai-vision]
+command = "signal-fish-mcp"
+args = ["zai-vision"]
+env_vars = ["Z_AI_API_KEY", "Z_AI_MODE", "CONTAINER_WORKSPACE_FOLDER"]
+startup_timeout_sec = 60
+
+[mcp_servers.zai-web-search]
+command = "signal-fish-mcp"
+args = ["zai-web-search"]
+env_vars = ["Z_AI_API_KEY", "CONTAINER_WORKSPACE_FOLDER"]
+startup_timeout_sec = 60
+
+[mcp_servers.zai-web-reader]
+command = "signal-fish-mcp"
+args = ["zai-web-reader"]
+env_vars = ["Z_AI_API_KEY", "CONTAINER_WORKSPACE_FOLDER"]
+startup_timeout_sec = 60
+
+[mcp_servers.zai-zread]
+command = "signal-fish-mcp"
+args = ["zai-zread"]
+env_vars = ["Z_AI_API_KEY", "CONTAINER_WORKSPACE_FOLDER"]
+startup_timeout_sec = 60

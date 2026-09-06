@@ -84,6 +84,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     bat \
     jq \
     fzf \
+    xz-utils \
     # Fast linker (clang required as linker driver for mold)
     # Note: mold and clang are unpinned to receive security updates.
     # Debian's exact versions change frequently and vary by architecture.
@@ -293,6 +294,79 @@ RUN --mount=type=cache,target=/home/vscode/.cargo/registry,uid=1000,gid=1000 \
     && if [ ${#failed_tools[@]} -gt 0 ]; then \
     echo "WARNING: Optional cargo tools not installed: ${failed_tools[*]}"; \
     fi
+
+# =============================================================================
+# Layer 7: Node.js and Agentic Coding Toolchain
+# =============================================================================
+# Node 22 is the lowest active LTS line accepted by Nanocoder and Z.AI's MCP
+# server. Downloading the official archive is faster and more deterministic
+# than adding another APT repository. Both supported devcontainer architectures
+# are checksum-pinned.
+
+USER root
+
+ARG TARGETARCH
+ARG NODE_VERSION=22.23.2
+ARG NODE_X64_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
+ARG NODE_ARM64_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8
+RUN case "$TARGETARCH" in \
+    amd64) NODE_ARCH="x64"; NODE_SHA256="$NODE_X64_SHA256" ;; \
+    arm64) NODE_ARCH="arm64"; NODE_SHA256="$NODE_ARM64_SHA256" ;; \
+    *) printf 'ERROR: unsupported Node.js architecture: %s\n' "$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && node_archive=/tmp/node.tar.xz \
+    && curl -fsSL --retry 3 --retry-delay 2 \
+    "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    -o "$node_archive" \
+    && printf '%s  %s\n' "$NODE_SHA256" "$node_archive" | sha256sum -c - \
+    && tar -xJf "$node_archive" --strip-components=1 -C /usr/local \
+    && rm -f "$node_archive" \
+    && node --version \
+    && npm --version
+
+# GitHub's native MCP binary can authenticate with an inherited token, the VS
+# Code Git credential bridge, or its own OAuth/device flow. The native binary
+# avoids requiring Docker-in-Docker merely to start an MCP server.
+ARG GITHUB_MCP_SERVER_VERSION=1.12.0
+ARG GITHUB_MCP_X64_SHA256=f34de295acd8f1012c7f2c0e3b909d87361d0993b9489b57ee92ac72b85d7cca
+ARG GITHUB_MCP_ARM64_SHA256=51f2411e93d981eb7038ca23229aa960006209ce82a4dd80a92d7875a7931a5c
+RUN case "$TARGETARCH" in \
+    amd64) GITHUB_MCP_ARCH="x86_64"; GITHUB_MCP_SHA256="$GITHUB_MCP_X64_SHA256" ;; \
+    arm64) GITHUB_MCP_ARCH="arm64"; GITHUB_MCP_SHA256="$GITHUB_MCP_ARM64_SHA256" ;; \
+    *) printf 'ERROR: unsupported GitHub MCP architecture: %s\n' "$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && github_mcp_archive=/tmp/github-mcp-server.tar.gz \
+    && curl -fsSL --retry 3 --retry-delay 2 \
+    "https://github.com/github/github-mcp-server/releases/download/v${GITHUB_MCP_SERVER_VERSION}/github-mcp-server_Linux_${GITHUB_MCP_ARCH}.tar.gz" \
+    -o "$github_mcp_archive" \
+    && printf '%s  %s\n' "$GITHUB_MCP_SHA256" "$github_mcp_archive" | sha256sum -c - \
+    && tar -xzf "$github_mcp_archive" -C /usr/local/bin github-mcp-server \
+    && chmod 0755 /usr/local/bin/github-mcp-server \
+    && rm -f "$github_mcp_archive" \
+    && github-mcp-server --version
+
+RUN install -d -o vscode -g vscode \
+    /home/vscode/.local \
+    /home/vscode/.local/bin \
+    /home/vscode/.cache \
+    /home/vscode/.cache/npm
+
+COPY --chmod=0755 .devcontainer/scripts/install-agent-tools.sh /usr/local/bin/install-agent-tools.sh
+COPY --chmod=0755 .devcontainer/scripts/mcp-launch.sh /usr/local/bin/signal-fish-mcp
+COPY .devcontainer/scripts/mcp-env.cjs /usr/local/bin/mcp-env.cjs
+
+# A user-owned prefix fixes both global installs (`npm install -g`) and npm's
+# cache without weakening permissions on /usr/local. Ordinary project-local
+# `npm install` remains local to the current workspace as usual.
+ENV NPM_CONFIG_PREFIX="/home/vscode/.local" \
+    NPM_CONFIG_CACHE="/home/vscode/.cache/npm" \
+    PATH="/home/vscode/.local/bin:${PATH}"
+
+USER vscode
+
+RUN --mount=type=cache,target=/home/vscode/.cache/npm,uid=1000,gid=1000 \
+    install-agent-tools.sh \
+    && signal-fish-mcp --check
 
 # =============================================================================
 # Shell Aliases

@@ -100,3 +100,4 @@ pre-commit.txt
 pre-push.txt
 /pr-description.md
 GOAL.md
+.env*

@@ -68,6 +68,17 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --no-default-features --locked
       - name: Clippy check for WASM target
         run: cargo clippy --target wasm32-unknown-unknown --no-default-features --locked -- -D warnings
+      - name: Build for WASM target (polling client + mesh)
+        # The documented WASM mesh story (docs/wasm.md feature table,
+        # docs/mesh-guide.md manual choreography): polling client plus the
+        # MeshSession tracker and WebRtcDriver seam, without tokio-runtime.
+        run: >-
+          cargo build --target wasm32-unknown-unknown
+          --no-default-features --features polling-client,mesh --locked
+      - name: Clippy check for WASM target (polling client + mesh)
+        run: >-
+          cargo clippy --target wasm32-unknown-unknown
+          --no-default-features --features polling-client,mesh --locked -- -D warnings
 
   emscripten:
     name: Build (wasm32-unknown-emscripten)

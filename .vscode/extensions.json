@@ -24,7 +24,9 @@
     "GitHub.copilot-chat",
 
     // AI Assistants
+    "openai.chatgpt",
     "Anthropic.claude-code",          // Official Anthropic Claude Code extension
+    "sst-dev.opencode",               // Official OpenCode terminal integration
     "saoudrizwan.claude-dev",          // Cline (community extension, formerly Claude Dev)
 
     // Code Quality & Visualization

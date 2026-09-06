@@ -77,6 +77,13 @@ pub trait WebRtcDriver {
     fn send(&mut self, peer: PlayerId, data: &[u8]);
 
     /// Tear down the connection to `peer` (the peer left or was re-planned away).
+    ///
+    /// Retire any queued-but-unpolled output for `peer`'s torn-down connection
+    /// (an abandoned handshake's offer/answer/ICE, late connection edges,
+    /// buffered data): it belongs to the dead round, and a replacement plan
+    /// without a session generation cannot fence it — surfacing it would cross
+    /// the teardown boundary. A later [`connect`](Self::connect) for the same
+    /// peer starts a fresh handshake whose own output surfaces normally.
     fn disconnect(&mut self, peer: PlayerId);
 
     /// Drain the next driver output, or `None` when idle.
@@ -431,7 +438,11 @@ mod controller {
         /// teardown (for example a `Connected` edge queued just before the
         /// signaling `Disconnected`) are therefore neither surfaced nor
         /// relayed once the terminal boundary passes — the same deliberate
-        /// discard that applies to signals on a fused controller.
+        /// discard that applies to signals on a fused controller. The
+        /// [`WebRtcDriver::disconnect`](WebRtcDriver::disconnect) contract
+        /// retires each torn-down peer's queued output, so no stale event
+        /// survives the boundary even when the replacement plan carries no
+        /// session generation to fence with.
         ///
         /// # Cancel safety
         ///
@@ -1171,6 +1182,11 @@ mod tests {
         }
         fn disconnect(&mut self, peer: PlayerId) {
             self.calls.push(DriverCall::Disconnect(peer));
+            // The seam contract: retire the torn-down peer's queued, unpollled
+            // output. It belongs to the abandoned connection, and a generationless
+            // replacement plan could not fence it after a reconnect.
+            self.outputs
+                .retain(|event| driver_event_peer(event) != peer);
         }
         fn poll(&mut self) -> Option<DriverEvent> {
             self.calls.push(DriverCall::Poll);
@@ -1484,6 +1500,17 @@ mod tests {
         uuid::Uuid::from_u128(n)
     }
 
+    /// The peer a driver output belongs to (the disconnect contract retires
+    /// every output shape by peer).
+    fn driver_event_peer(event: &DriverEvent) -> PlayerId {
+        match event {
+            DriverEvent::Signal { peer, .. }
+            | DriverEvent::Connected { peer, .. }
+            | DriverEvent::Disconnected { peer, .. }
+            | DriverEvent::Data { peer, .. } => *peer,
+        }
+    }
+
     fn authed() -> String {
         serde_json::to_string(&ServerMessage::Authenticated {
             app_name: "t".into(),
@@ -1514,9 +1541,22 @@ mod tests {
         initiate: bool,
         generation: SessionGeneration,
     ) -> String {
+        session_plan_with_optional_generation(peer, initiate, Some(generation))
+    }
+
+    /// The Server 0.4 generationless v3 dialect: a plan with no generation.
+    fn session_plan_generationless(peer: PlayerId, initiate: bool) -> String {
+        session_plan_with_optional_generation(peer, initiate, None)
+    }
+
+    fn session_plan_with_optional_generation(
+        peer: PlayerId,
+        initiate: bool,
+        generation: Option<SessionGeneration>,
+    ) -> String {
         use crate::protocol::{SessionPeer, SessionPlanPayload, Topology, TransportKind};
         let payload = SessionPlanPayload {
-            generation: Some(generation),
+            generation,
             topology: Topology::Mesh,
             transport: TransportKind::WebRtc,
             host: None,
@@ -4049,6 +4089,88 @@ mod tests {
             .calls()
             .contains(&DriverCall::ConnectGeneration(peer, Some(new_generation))));
         assert_eq!(mesh.session().generation(), Some(new_generation));
+        mesh.shutdown().await;
+    }
+
+    /// Issue #229: when both the dead and the replacement round use legacy
+    /// generationless plans, `None == None` cannot fence rounds. The
+    /// [`WebRtcDriver::disconnect`] purge obligation is the barrier: output
+    /// queued inside a retaining driver for the dead round must not surface
+    /// after the fresh round re-adds the same peer.
+    #[tokio::test]
+    async fn generationless_pair_stale_driver_output_cannot_cross_reconnect_barrier() {
+        let peer = uuid(55);
+        let driver = SharedDriver::default();
+        let (transport, _sent) = MockTransport::new(vec![]);
+        let mut mesh =
+            MeshController::start(transport, SignalFishConfig::new("app"), driver.clone());
+        assert!(matches!(
+            mesh.recv().await,
+            Some(MeshEvent::Signaling(event))
+                if matches!(*event, SignalFishEvent::Connected)
+        ));
+
+        // First legacy round: a generationless plan adds the peer.
+        let plan = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&session_plan_generationless(peer, false))
+                .unwrap(),
+        );
+        mesh.handle_event(&plan);
+        assert!(driver
+            .calls()
+            .contains(&DriverCall::ConnectGeneration(peer, None)));
+
+        // The driver earns output for this round but keeps it queued: a
+        // retaining driver between controller pumps.
+        driver.emit(DriverEvent::Connected {
+            peer,
+            generation: None,
+        });
+        driver.emit(DriverEvent::Data {
+            peer,
+            generation: None,
+            data: vec![1],
+        });
+
+        // The connection tears down and a reconnect policy re-establishes the
+        // room; the replacement round re-adds the same peer — still without a
+        // generation, so no stamp can distinguish the rounds.
+        mesh.handle_event(&SignalFishEvent::Disconnected {
+            reason: None,
+            last_server_error: None,
+        });
+        let reconnect = SignalFishEvent::from(
+            serde_json::from_str::<ServerMessage>(&reconnected_with_players(&[uuid(0), peer]))
+                .unwrap(),
+        );
+        mesh.handle_event(&reconnect);
+        mesh.handle_event(&plan);
+        assert_eq!(
+            count_calls(
+                &driver,
+                |call| matches!(call, DriverCall::ConnectGeneration(id, None) if *id == peer)
+            ),
+            2,
+            "the fresh round must re-add the peer"
+        );
+
+        // Fresh-round output earned after the re-add surfaces; the dead
+        // round's queued Connected/Data must not surface ahead of it.
+        driver.emit(DriverEvent::Data {
+            peer,
+            generation: None,
+            data: vec![2],
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_millis(500), mesh.recv())
+            .await
+            .expect("fresh-round driver output must surface promptly");
+        assert!(
+            matches!(
+                event,
+                Some(MeshEvent::Data { from, ref data }) if from == peer && data == &vec![2]
+            ),
+            "stale queued output must not cross the reconnect barrier: {event:?}"
+        );
         mesh.shutdown().await;
     }
 

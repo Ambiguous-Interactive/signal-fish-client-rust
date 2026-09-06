@@ -93,7 +93,7 @@ pub trait WebRtcDriver {
 | `connect` | Begin a connection owned by `generation`. If `initiate` is `true`, create an offer; otherwise wait. **Obey `initiate` verbatim.** |
 | `on_signal` | Apply a remote signal only to the connection for the supplied generation. |
 | `send` | Send application bytes over `peer`'s data channel. |
-| `disconnect` | Tear down the connection to `peer`. |
+| `disconnect` | Tear down the connection to `peer`, and retire its queued, unpollled output — it belongs to the abandoned connection, and a replacement plan without a session generation cannot fence it. |
 | `poll` | Pump your stack's I/O and return the next `DriverEvent` (see below), or `None` when idle. |
 
 `poll` returns a `DriverEvent`:
@@ -283,6 +283,54 @@ edge) and `TransportStatus(WebRtc, false)` when the last peer disconnects (the
 
 ---
 
+## Manual choreography without `MeshController` (polling / WASM)
+
+On a `tokio-runtime`-less build (WASM), combine `SignalFishPollingClient` with
+the `mesh` feature's `MeshSession` tracker and drive your `WebRtcDriver`
+yourself from your game loop. Everything needed is public API; the polling
+client already performs the wire fencing internally: outbound signals are
+refused with `StaleSessionGeneration` if a replacement plan arrived, and in
+generation-carrying sessions stale-generation inbound signals never surface
+(legacy generationless pairs can only fence by peer retirement, which re-opens
+when a fresh plan re-pairs the peer). Your loop owns four duties the controller
+would otherwise do:
+
+1. **Fold and drive.** Drain `poll()` events, fold them with
+   `MeshSession::apply`, and choreograph the driver exactly like the
+   controller: `set_ice_servers` from `RoomJoined`/`Reconnected`/`SessionPlan`
+   (plans replace the list wholesale), `connect(peer, generation, initiate)`
+   for each planned peer (re-connect when the plan changes its generation or
+   role), `on_signal` for `SignalReceived`, and `disconnect` — retiring the
+   peer's queued driver output — when the plan drops the peer, on
+   `PlayerLeft`, on `Reconnected` (the old plan is fenced immediately; the
+   fresh one re-drives), on room exits, and on `Disconnected`.
+2. **Relay driver output.** Poll your driver and send every
+   `DriverEvent::Signal` with `send_signal_for_generation(peer, generation,
+   signal)`. A `SendBufferFull`/`RoomOperationPending` refusal means retry the
+   same event later (a lost offer or ICE candidate stalls the handshake);
+   any other refusal — `StaleSessionGeneration`,
+   `SessionPlanUnavailable`, `NotInRoom`, `WrongRoomRole`,
+   `ProtocolUnsupported`, `NotConnected` — is terminal for that signal:
+   discard it and stop relaying for the session. Do not pop further driver
+   output past a to-be-retried signal if you want wire order preserved.
+3. **Report the 0↔1 edge.** Track how many peers report an open channel and
+   call `report_transport_status(TransportKind::WebRtc, connected)` when that
+   count crosses between zero and nonzero. Retry only while the command
+   queue refuses (`SendBufferFull`/`RoomOperationPending`), keeping the
+   newest state; once the room exits or the client disconnects, drop the
+   pending edge — status is coalescible, so only the latest live report
+   matters.
+4. **Retire dead-round output.** On every `disconnect`, drop the peer's
+   queued, unpollled driver output (the seam contract). A legacy plan pair
+   without `generation`s cannot fence rounds, so this is what keeps a stale
+   `Connected`/`Data` from surfacing after a reconnect.
+
+`MeshSession` remains the source of truth for topology, generation, host, and
+peer liveness; the polling client's `snapshot()` exposes the negotiated
+generation and transport when you need them outside the tracker.
+
+---
+
 ## Fallback to relay
 
 The relay is always the floor. Every `SessionPlan` carries a `fallback` field,
@@ -305,7 +353,9 @@ non-replayable nested variants and waits for the fresh top-level plan.
     is how host re-election and topology changes work. Peers absent from the new
     plan are dropped. When `generation` changes, every surviving physical pair
     is also disconnected and rebuilt even if its `initiate` role is unchanged.
-    Queued and late driver outputs from the prior generation are discarded.
+    Queued and late driver outputs from the prior generation are discarded —
+    including when the plans carry no `generation` at all, because
+    `WebRtcDriver::disconnect` retires each torn-down peer's queued output.
 
 !!! note "Direct and relay plans are not WebRTC"
     `MeshController` disconnects its WebRTC state for `Direct` and `Relay`

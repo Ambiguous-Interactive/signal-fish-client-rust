@@ -49,6 +49,12 @@ role is unchanged keeps its live connection only within the same generation.
 Every generation change rebuilds all retained physical pairs, drops buffered
 signals, and rejects late driver output from the prior generation.
 
+Legacy generationless (Server 0.4 v3 dialect) plan pairs cannot fence rounds by
+generation (`None == None`), so the `WebRtcDriver::disconnect` contract requires
+implementors to retire the torn-down peer's queued, unpollled output at every
+teardown (issue #229): no queued stale event can cross a reconnect barrier
+regardless of the replacement plan's generation.
+
 ## MeshSession Tracker (no WebRTC)
 
 `MeshSession` folds the v3 events into a consistent view (`topology`/`transport`/

@@ -293,3 +293,28 @@ fn spectator_server_wire_fixtures_conform() {
 "#;
     assert_conformance::<ServerMessage>("spectator-server-fixtures", SPECTATOR_SERVER_MESSAGES);
 }
+
+/// The `fuzz_binary_game_data` seed corpus must stay decodable.
+///
+/// The fuzz target keeps two canonical envelopes inline; the seed files under
+/// `fuzz/seeds/` are a second, independently consumed copy (the Deep Safety
+/// lane feeds the directory to libFuzzer). If the MessagePack wire shape ever
+/// drifts, this pin forces the corpus to move with it instead of silently
+/// degrading to error-string coverage past the map-header frontier.
+#[test]
+fn fuzz_binary_game_data_seed_corpus_decodes() {
+    use signal_fish_client::protocol::{decode_v2_binary_game_data, decode_v3_binary_game_data};
+
+    let v2 = std::fs::read("fuzz/seeds/fuzz_binary_game_data/v2_canonical.msgpack")
+        .unwrap_or_else(|e| panic!("missing fuzz seed corpus v2_canonical.msgpack: {e}"));
+    let v3 = std::fs::read("fuzz/seeds/fuzz_binary_game_data/v3_canonical.msgpack")
+        .unwrap_or_else(|e| panic!("missing fuzz seed corpus v3_canonical.msgpack: {e}"));
+    assert!(
+        decode_v2_binary_game_data(&v2).is_ok(),
+        "v2_canonical.msgpack must remain a decodable canonical envelope; refresh the fuzz seed corpus"
+    );
+    assert!(
+        decode_v3_binary_game_data(&v3).is_ok(),
+        "v3_canonical.msgpack must remain a decodable canonical envelope; refresh the fuzz seed corpus"
+    );
+}
