@@ -131,6 +131,7 @@ jobs:
           scripts/test_release.py
           scripts/test_required_checks.py
           scripts/test_audit_repository_rules.py
+          scripts/test_check_devcontainer_agents.py
 
       - name: Test admonition validation
         run: python3 scripts/test_check_admonitions.py

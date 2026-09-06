@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "github": {
+      "type": "local",
+      "command": ["signal-fish-mcp", "github"],
+      "enabled": true
+    },
+    "zai-vision": {
+      "type": "local",
+      "command": ["signal-fish-mcp", "zai-vision"],
+      "enabled": true
+    },
+    "zai-web-search": {
+      "type": "local",
+      "command": ["signal-fish-mcp", "zai-web-search"],
+      "enabled": true
+    },
+    "zai-web-reader": {
+      "type": "local",
+      "command": ["signal-fish-mcp", "zai-web-reader"],
+      "enabled": true
+    },
+    "zai-zread": {
+      "type": "local",
+      "command": ["signal-fish-mcp", "zai-zread"],
+      "enabled": true
+    }
+  }
+}

@@ -56,7 +56,12 @@
     // the devcontainer runtime, but it is NOT automatically exported as a shell
     // variable. Declaring it here in remoteEnv makes it available as $CONTAINER_WORKSPACE_FOLDER
     // inside bash scripts without any extra plumbing.
-    "CONTAINER_WORKSPACE_FOLDER": "${containerWorkspaceFolder}"
+    "CONTAINER_WORKSPACE_FOLDER": "${containerWorkspaceFolder}",
+    // Z.AI services are configured everywhere but activate only when this
+    // host/Codespaces environment variable is present. Secrets are never
+    // committed to the image or repository.
+    "Z_AI_API_KEY": "${localEnv:Z_AI_API_KEY}",
+    "Z_AI_MODE": "ZAI"
   },
   // =============================================================================
   // VS Code Customizations
@@ -78,6 +83,7 @@
         "GitHub.copilot",
         "GitHub.copilot-chat",
         "openai.chatgpt",
+        "sst-dev.opencode", // Official OpenCode terminal integration
         // AI Assistants
         "Anthropic.claude-code", // Official Anthropic Claude Code extension
         "saoudrizwan.claude-dev", // Cline (community extension, formerly Claude Dev)

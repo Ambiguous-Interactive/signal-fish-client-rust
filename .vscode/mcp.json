@@ -1,0 +1,24 @@
+{
+  "servers": {
+    "github": {
+      "command": "signal-fish-mcp",
+      "args": ["github"]
+    },
+    "zai-vision": {
+      "command": "signal-fish-mcp",
+      "args": ["zai-vision"]
+    },
+    "zai-web-search": {
+      "command": "signal-fish-mcp",
+      "args": ["zai-web-search"]
+    },
+    "zai-web-reader": {
+      "command": "signal-fish-mcp",
+      "args": ["zai-web-reader"]
+    },
+    "zai-zread": {
+      "command": "signal-fish-mcp",
+      "args": ["zai-zread"]
+    }
+  }
+}

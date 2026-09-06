@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `WebRtcDriver::disconnect` contract now requires drivers to retire the
+  torn-down peer's queued, unpollled output, so stale events cannot cross a
+  reconnect barrier when legacy generationless plans leave no generation to
+  fence with (issue #229).
 - **Breaking:** `JoinRoomParams`'s `Debug` output now reports its room code
   as presence and byte length (the `ClientSnapshot` form), and
   **Breaking:** `SpectatorJoinedPayload`'s `Debug` is now fully opaque
@@ -74,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The devcontainer now opens with a user-owned npm installation, current Codex,
+  Claude Code, Copilot, OpenCode, and Nanocoder CLIs, and durable GitHub and Z.AI
+  MCP configuration with shared `.env.local` credentials, explicit Codex
+  credential forwarding, and a rebuild diagnostic for outdated images.
 - The send-failure teardown drain no longer applies frames served by a
   transport that never reported readiness: such frames are a backend
   contract violation (the main connection loops already tear the round down

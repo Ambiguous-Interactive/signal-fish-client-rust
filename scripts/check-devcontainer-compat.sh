@@ -630,6 +630,19 @@ if printf '%s\n' "$VALUE" | grep -qF '.devcontainer/scripts/initialize-host.sh';
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Check agent tools, npm ownership, and MCP frontend configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+AGENT_CHECK="$REPO_ROOT/scripts/check_devcontainer_agents.py"
+if [ -f "$AGENT_CHECK" ]; then
+    if python3 "$AGENT_CHECK" "$REPO_ROOT"; then
+        echo -e "${GREEN}PASS: Agent toolchain and MCP configuration are complete.${NC}"
+    else
+        VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Final result
 # ─────────────────────────────────────────────────────────────────────────────
 

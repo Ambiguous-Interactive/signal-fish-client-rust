@@ -48,6 +48,117 @@ Cargo extension installation is **best-effort** during image build. If a specifi
 - `gh` - GitHub CLI
 - `jq` - JSON processor
 
+### Agentic Coding Frontends
+
+The image installs current releases of the following CLIs as the unprivileged
+`vscode` user:
+
+- OpenAI Codex (`codex`)
+- Claude Code (`claude`)
+- GitHub Copilot CLI (`copilot`)
+- OpenCode (`opencode`)
+- Nanocoder (`nanocoder`)
+
+Node.js 22 is checksum-pinned for compatibility with Nanocoder and Z.AI's MCP
+server. Image creation installs `@latest` releases; each container start checks
+the registry versions in parallel and only runs npm when an update exists. If
+the registry is temporarily unavailable, startup continues with the complete
+versions already baked into the image.
+
+Global npm packages use `/home/vscode/.local` and the npm cache uses
+`/home/vscode/.cache/npm`, both owned by `vscode`. Both `npm install` in a
+project and `npm install --global <package>` therefore work without `sudo`.
+
+### MCP Servers
+
+Codex, Claude Code, GitHub Copilot CLI, VS Code/Copilot Chat, OpenCode, and
+Nanocoder are preconfigured with the same servers:
+
+| Server | Capability |
+|--------|------------|
+| `github` | Official GitHub repositories, issues, pull requests, and Actions tools |
+| `zai-vision` | Z.AI image, screenshot, diagram, chart, and video understanding |
+| `zai-web-search` | Z.AI real-time web search |
+| `zai-web-reader` | Z.AI webpage extraction and structured reading |
+| `zai-zread` | Z.AI open-source repository documentation and code reading |
+
+The committed project configs are `.codex/config.toml`, `.mcp.json`,
+`.vscode/mcp.json`, and `opencode.json`. They contain no credentials. A shared
+stdio launcher adapts the same definitions to every frontend, so the setup
+survives image rebuilds and fresh clones without rewriting home-directory
+configuration.
+
+Put credentials in the repository root's gitignored `.env.local`:
+
+```dotenv
+Z_AI_API_KEY=your-zai-key
+# Optional if GitHub credentials are not already available through VS Code:
+GITHUB_PERSONAL_ACCESS_TOKEN=your-github-token
+```
+
+Every configured frontend uses the same launcher, which reads `.env.local`
+at server startup. Restart the frontend's MCP servers after editing it; no
+image rebuild is needed for credential changes. Dotenv quoting and comments
+are supported; shell commands and variable expansion are not evaluated.
+Only the Z.AI/GitHub credential variables and `Z_AI_MODE` are loaded.
+The file is excluded from Git and the Docker build context.
+
+Alternatively, set `Z_AI_API_KEY` in the environment that launches VS Code
+(or as a Codespaces secret). The devcontainer forwards it at runtime;
+nonempty inherited values take precedence over `.env.local`, while empty
+values fall back to the file. Restart the container after changing host
+environment variables. CLI launches outside VS Code locate `.env.local`
+through the current Git repository; Dev Containers provides the workspace
+path explicitly for extension hosts.
+
+GitHub authentication is automatic when `GITHUB_PERSONAL_ACCESS_TOKEN`,
+`GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_PAT` is already present. Otherwise the
+launcher reuses VS Code's Git credential helper. If neither is available, the
+official GitHub MCP server starts its browser/device OAuth flow on first use.
+Each frontend may ask once to trust the committed project MCP configuration.
+
+#### Recovering from `program not found`
+
+The MCP configs launch `signal-fish-mcp`, which is installed **inside the
+devcontainer image** along with Node and the server binaries. After pulling
+changes to the Dockerfile or agent installation scripts, run **Dev Containers:
+Rebuild Container** in VS Code, then restart your agent in that container's
+terminal. Restarting an old container or updating npm packages does not apply
+Dockerfile changes. These configs do not install servers on the Windows,
+macOS, or Linux host; a frontend running on the host needs its own MCP setup.
+
+Run this inside the container to check the installation without exposing
+credentials or making network requests:
+
+```shell
+signal-fish-mcp --check
+```
+
+If the launcher itself is missing, the workspace copy can diagnose the old
+image:
+
+```shell
+bash .devcontainer/scripts/mcp-launch.sh --check
+```
+
+The image build and startup hook also check the executables. A passing check
+only confirms local installation; use the frontend's MCP status view (for
+example, Codex `/mcp`) to verify authentication and tool discovery. Codex's
+configuration explicitly forwards the Z.AI/GitHub credential environment
+variables and allows 60 seconds for MCP startup. A missing `Z_AI_API_KEY`
+produces a credential error after startup reaches the launcher, rather than
+`program not found`.
+
+To verify all five servers with your credentials, run:
+
+```shell
+python3 scripts/check_mcp_servers.py
+```
+
+This performs MCP initialization and tool discovery through the configured
+launcher. It does not call any tools or print credentials/server logs, and
+returns a failure status if any server cannot connect within its timeout.
+
 ### VS Code Extensions
 
 Pre-configured extensions for Rust development, debugging, GitHub integration, and code quality.
@@ -144,6 +255,23 @@ Run `cargo fetch` manually if you want strict verification.
 Cargo extension installs during image build are also best-effort. If a specific extension
 tool is missing, install it manually inside the container with `cargo install --locked <tool>`.
 
+The required agent CLIs and MCP bridges are installed strictly during image
+creation, so a successfully built image is complete. Launch-time updates are
+best-effort and preserve those working image-installed versions on network
+failure. Registry checks are parallel and do not reinstall unchanged packages.
+
+To verify the complete setup without contacting model providers, run:
+
+```bash
+python3 scripts/check_devcontainer_agents.py
+codex --version
+claude --version
+copilot --version
+opencode --version
+nanocoder --version
+github-mcp-server --version
+```
+
 ### Rebuild Reports "removal is already in progress"
 
 VS Code can briefly race its own rebuild cleanup when Docker takes several
@@ -220,3 +348,8 @@ After modifying `Dockerfile` or `devcontainer.json`:
 
 1. Command Palette: `Dev Containers: Rebuild Container`
 2. Or: `Dev Containers: Rebuild Without Cache` for a clean rebuild
+
+A normal rebuild may reuse the cached `@latest` npm layer; the first
+`postStartCommand` version check closes that cache gap. Use **Rebuild Without
+Cache** only when diagnosing an image-build problem, not for routine agent
+updates.

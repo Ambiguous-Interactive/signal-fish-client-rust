@@ -340,6 +340,15 @@ _run_mount_case \
 
 echo ""
 
+# The structured agent/MCP checker has its own fixture suite. Keep it behind the
+# established devcontainer compatibility test entry point so CI and hooks cannot
+# validate only host portability while silently skipping agent integration.
+if python3 "$REPO_ROOT/scripts/test_check_devcontainer_agents.py" >/dev/null; then
+    _pass "Agent toolchain and MCP structured validation fixtures"
+else
+    _fail "Agent toolchain and MCP structured validation fixtures"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 echo -e "${BOLD}${YELLOW}=== Summary ===${NC}"
