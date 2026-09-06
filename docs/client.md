@@ -41,7 +41,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | `protocol_version` | `Option<u16>` | `None` | Highest signaling protocol version advertised. `None` preserves the v2 relay floor. Prefer `enable_v3()` or `enable_mesh()` over setting this alone. |
 | `supported_transports` | `Option<Vec<TransportKind>>` | `None` | Protocol-v3 data-path transports the application can actually fulfill. |
 | `supported_topologies` | `Option<Vec<Topology>>` | `None` | Protocol-v3 session topologies the application can participate in. |
-| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. |
+| `event_channel_capacity` | `usize` | `256` | Capacity of the bounded event channel. Events are never dropped on overflow — a full channel pauses the transport loop (backpressure), so this only controls buffering before backpressure kicks in. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. Async driver only: the polling client ignores it (events come from `poll()`). |
 | `command_channel_capacity` | `usize` | `1024` | Capacity of the bounded outgoing command queue. When full, the synchronous send methods fail fast with [`SignalFishError::SendBufferFull`](errors.md#handling-sendbufferfull); the `*_reliable` variants wait for a slot instead. Values below 1 are clamped to 1; values above tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to that ceiling. |
 | `shutdown_timeout` | `Duration` | `1 second` | Deadline for async shutdown and polling-client close (including optional queued-work flush). A zero timeout aborts immediately. |
 | `protocol_violation_policy` | `ProtocolViolationPolicy` | `Quarantine` | Response to invalid v3 delivery-accountability state: quarantine room data, disconnect, or observe. |
@@ -993,7 +993,7 @@ All accessors are **synchronous** (no async, no mutex):
 | `current_player_id()` | `Option<PlayerId>` | Legacy name for the local player-or-spectator participant ID. |
 | `current_room_id()` | `Option<RoomId>` | Current room ID, if in a room. |
 | `current_room_code()` | `Option<&str>` | Current room code, if in a room. |
-| `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. |
+| `send_capacity()` | `usize` | Messages that can still be queued before `SendBufferFull`. Queue-space only, not liveness: on a closed or disconnected client the queue is cleared, so this reads full capacity while sends fail with `NotConnected` — pair with `is_connected()`. |
 | `max_send_capacity()` | `usize` | Configured command-queue capacity. |
 | `stats()` | `ClientStats` | Cumulative `game_data_sent` / `game_data_received` / `messages_undecodable` counters (see [Send Queue and Traffic Stats](#send-queue-and-traffic-stats)). |
 | `snapshot()` | `ClientSnapshot` | Coherent connection readiness, room, reconnect-token, negotiation, selected-plan, and quarantine state. |

@@ -10,8 +10,8 @@ Add the rollback library beside the SDK in the Godot GDExtension crate:
 fortress-rollback = "=0.13.0"
 godot = { version = "0.5.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 serde = { version = "1.0", features = ["derive"] }
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", default-features = false, features = ["polling-client"] }
-signal-fish-client-godot = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust" }
+signal-fish-client = { version = "0.12.0", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = "0.12.0"
 ```
 
 The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94;

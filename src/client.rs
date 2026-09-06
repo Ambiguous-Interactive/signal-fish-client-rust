@@ -266,6 +266,10 @@ pub struct SignalFishConfig {
     /// Defaults to **256**. Values below 1 are clamped to 1; values above
     /// tokio's semaphore permit ceiling (`usize::MAX >> 3`) are clamped to
     /// that ceiling.
+    ///
+    /// Async driver only. The polling client (and the Godot adapter built on
+    /// it) deliver events synchronously from [`SignalFishPollingClient::poll`]
+    /// and ignore this value.
     pub event_channel_capacity: usize,
     /// Capacity of the bounded outgoing command queue.
     ///
@@ -838,12 +842,17 @@ impl ReconnectPolicy {
     /// the driver uses the same computation.
     #[must_use]
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
-        // Doubling saturates instead of overflowing: attempt counts beyond
-        // the schedule's doubling horizon all produce the same capped delay.
+        // Doubling saturates instead of overflowing, and a saturated or zero
+        // delay never grows: both end the loop, so the work per call is
+        // bounded no matter how large `attempt` is.
         let mut delay = self.initial_backoff;
         let mut doublings = attempt.saturating_sub(1);
         while doublings > 0 {
-            delay = delay.saturating_mul(2);
+            let doubled = delay.saturating_mul(2);
+            if doubled <= delay {
+                break;
+            }
+            delay = doubled;
             if delay >= self.max_backoff {
                 return self.max_backoff;
             }
@@ -9457,6 +9466,29 @@ mod tests {
             policy.backoff_for_attempt(u32::MAX),
             Duration::from_secs(10)
         );
+    }
+
+    #[test]
+    fn backoff_schedule_zero_initial_and_saturation_stay_constant_work() {
+        // A zero initial backoff never grows: every attempt waits zero,
+        // and huge attempt numbers must not walk the whole doubling loop.
+        let zero = ReconnectPolicy::new(|| {
+            Box::new(MockTransport::new(vec![]).0) as Box<dyn Transport + Send>
+        })
+        .with_initial_backoff(Duration::ZERO)
+        .with_max_backoff(Duration::from_secs(10));
+        assert_eq!(zero.backoff_for_attempt(1), Duration::ZERO);
+        assert_eq!(zero.backoff_for_attempt(1_000), Duration::ZERO);
+        assert_eq!(zero.backoff_for_attempt(u32::MAX), Duration::ZERO);
+
+        // A saturated initial backoff stops growing in one doubling step.
+        let saturated = ReconnectPolicy::new(|| {
+            Box::new(MockTransport::new(vec![]).0) as Box<dyn Transport + Send>
+        })
+        .with_initial_backoff(Duration::MAX)
+        .with_max_backoff(Duration::MAX);
+        assert_eq!(saturated.backoff_for_attempt(1), Duration::MAX);
+        assert_eq!(saturated.backoff_for_attempt(u32::MAX), Duration::MAX);
     }
 
     #[test]

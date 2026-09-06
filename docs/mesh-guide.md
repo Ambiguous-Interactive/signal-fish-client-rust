@@ -11,7 +11,7 @@ drive the whole handshake for you.
     `tokio-runtime` feature.
 
     ```toml
-    signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", features = ["mesh"] }
+    signal-fish-client = { version = "0.12.0", features = ["mesh"] }
     ```
 
     The generation-bearing protocol-v3 mesh APIs in this guide are all

@@ -7,7 +7,7 @@ feature.
 
 ```toml
 [dependencies]
-signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fish-client-rust", features = ["token-binding", "tls"] }
+signal-fish-client = { version = "0.12.0", features = ["token-binding", "tls"] }
 ```
 
 `token-binding` is not a default feature. Ordinary builds therefore keep the

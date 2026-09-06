@@ -9,15 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Opt-in automatic reconnection for the async client: `ReconnectPolicy`
-  (via **Breaking:** new `SignalFishConfig` field
-  `reconnect_policy` — exhaustive struct literals must add the field,
-  usually `reconnect_policy: None`) rebuilds the transport from a caller
-  factory with deterministic exponential backoff, re-authenticates, and
-  issues the directed `reconnect` automatically when the dead connection
-  ended inside a player room; shutdown, dropped handles, and
-  `Disconnect`-policy teardowns are never retried, and the polling client
-  stays caller-driven.
+- **Breaking:** `SignalFishConfig` gains a `reconnect_policy` field;
+  exhaustive struct literals must add it, usually `reconnect_policy: None`.
+  The opt-in `ReconnectPolicy` auto-reconnects the async client with
+  deterministic exponential backoff — re-authenticating and reissuing the
+  directed `reconnect` after a room disconnect; shutdown, dropped handles,
+  and `Disconnect`-policy teardowns are never retried, and the polling
+  client stays caller-driven.
 - **Breaking:** the exhaustive `SignalFishEvent` enum gains `Reconnecting {
   attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
   (the reconnect policy's per-attempt and terminal events); add two arms to
@@ -29,11 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `impl Transport for Box<dyn Transport + Send>` so owned trait objects
   (including the reconnect factory's products) flow through the same driver
   plumbing as concrete transports.
-- `Transport::max_frame_hint()`: backends that enforce an inbound frame bound
-  declare it, and both client drivers then refuse larger frames as a terminal
-  receive error before any decoding (the built-in WebSocket and Emscripten
-  transports report their bounds, as does the Godot adapter for SDK-created
-  peers; the default `None` preserves current behavior).
+- `Transport::max_frame_hint()`: a backend can declare its inbound frame
+  bound, and both drivers then reject larger frames as a terminal receive
+  error before decoding. The WebSocket, Emscripten, and Godot (SDK-created
+  peers) transports declare their bounds; the default `None` keeps current
+  behavior.
 - `SignalFishEvent::redacted_raw_prefix()`: a safe-path view of
   `DecodeFailed`'s raw frame prefix that masks every string literal's content
   while preserving the JSON skeleton.
@@ -45,13 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebSocketTransport`, plus the same pattern in the reconnect rustdoc and
   guide.
 - `WebSocketTransport::connect_lazy(url)` and `connect_lazy_with_timeout`:
-  first-class lazy constructors for the `ReconnectPolicy` factory — the
-  handshake starts on the first driver poll instead of at construction.
-  They declare the default 8 MiB inbound frame bound immediately (so both
-  drivers enforce it from the first round), pin the disabled token-binding
-  profile, and fail a stalled handshake as a retryable `Timeout` after 10
-  seconds (configurable) instead of hanging forever; the example ships this
-  constructor instead of a hand-written lazy wrapper.
+  the handshake starts on the first driver poll, not at construction. They
+  declare the default 8 MiB frame bound up front, pin token binding off, and
+  turn a stalled handshake (10 s default, configurable) into a retryable
+  `Timeout`; the `auto_reconnect` example ships this constructor.
 
 ### Changed
 
@@ -60,11 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reconnect barrier when legacy generationless plans leave no generation to
   fence with (issue #229).
 - **Breaking:** `JoinRoomParams`'s `Debug` output now reports its room code
-  as presence and byte length (the `ClientSnapshot` form), and
-  **Breaking:** `SpectatorJoinedPayload`'s `Debug` is now fully opaque
-  (matching the other room-baseline payloads): a room code is
-  join-capability knowledge, so ambient logs no longer leak it from a
-  payload or a builder. Public fields and wire serialization are unchanged.
+  as presence and byte length (the `ClientSnapshot` form). Public fields and
+  wire serialization are unchanged.
+- **Breaking:** `SpectatorJoinedPayload`'s `Debug` is now fully opaque,
+  matching the other room-baseline payloads: a room code is join-capability
+  knowledge, so ambient logs no longer leak it from a payload or a builder.
 - `SignalFishConfig::with_protocol_version` now logs a `tracing::warn!` for
   versions outside the known-supported `2..=3` range (the value is still sent
   unchanged; the server stays the negotiation authority).
@@ -93,15 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   farewell frames exactly like the async driver.
 - Documentation accuracy: `docs/events.md` now counts the 38 (not 36)
   `SignalFishEvent` variants and documents the scripted-peer join-snapshot
-  contract (unique local player entry, v3 `epoch`/`seq` pairing, v2
-  baseline omission); `docs/client.md` now routes `start_game` rejections
-  through the `Error` event's error codes and documents the binary-send
-  error precedence (v3 `ProtocolUnsupported` gate before
-  `BinaryFormatNotNegotiated`); `docs/concepts.md` matches that precedence;
-  `docs/protocol.md` documents the `websocket`-only `MessageTransport`
-  value set and that `ProtocolInfo`'s optional fields must be omitted
-  rather than sent as `null`; the `redacted_raw_prefix()` contract now
-  states that non-JSON frames pass through effectively verbatim.
+  contract; `docs/client.md` routes `start_game` rejections through the
+  `Error` event's error codes and documents the binary-send error
+  precedence; `docs/concepts.md` matches that precedence; `docs/protocol.md`
+  documents the `websocket`-only `MessageTransport` value set and that
+  `ProtocolInfo`'s optional fields must be omitted rather than sent as
+  `null`; the `redacted_raw_prefix()` contract states that non-JSON frames
+  pass through effectively verbatim.
 - The mesh guide documents the complete manual driver-choreography contract
   for `tokio-runtime`-less (WASM) builds — fold/drive, signal relay with
   exact retry-versus-terminal semantics, the 0↔1 transport-status edge, and
@@ -118,13 +111,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for `ReconnectionFailed`, the 4000 drain deadline, and others), gave the
   errors guide's `UnsupportedProtocolVersion` row its second trigger, and
   pointed the concepts guide's `Timeout` row at its single producer.
-- Fixed the fortress guide's stale guidance that still directed readers to a
-  git dependency for APIs published in 0.12.0.
+- The fortress, mesh, and token-binding guides now show versioned `0.12.0`
+  dependencies for APIs that 0.12.0 already published; their install
+  snippets no longer point at `main`.
 - Documented the `WebRtcDriver` seam's drain contract (the controller stops
   at the first surfacing event, refused relay, or idle poll — not at
   exhaustion), its panic boundary, the one-time `set_ready_waker` timing,
   the plan catch-up suppression of driver output, duplicate edge surfacing,
   and the `with_pump_interval` 1 ms floor.
+- `ReconnectPolicy::backoff_for_attempt` now returns every attempt's delay
+  in bounded time: a zero initial backoff no longer walks the whole doubling
+  schedule once per attempt on the driver loop.
+- Documented that `event_channel_capacity` is async-driver only; the polling
+  client delivers events synchronously and ignores it.
+- Documented the polling `send_capacity()` trap: after close or disconnect
+  the queue is cleared, so it reads full capacity while sends fail.
+- `Transport::is_ready`'s contract now documents the pre-ready fused
+  terminal-delivery carve-out.
 
 ## [0.12.0] - 2026-09-01
 
