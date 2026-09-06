@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 import subprocess
@@ -252,8 +253,15 @@ def _tracked_mode(root: Path, path: Path) -> int | None:
 
     A fresh checkout materializes the index mode, so validating the index —
     not the local disk — is what predicts CI. Disk mode hides a committed
-    file whose executable bit was never staged.
+    file whose executable bit was never staged. Hook-exported overrides
+    (GIT_DIR/GIT_INDEX_FILE/…) are scrubbed so the call always reads the
+    repository that `root` belongs to, never a hook's redirected index.
     """
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
     try:
         listing = subprocess.run(
             ["git", "-C", str(root), "ls-files", "-s", "--", str(path)],
@@ -261,6 +269,7 @@ def _tracked_mode(root: Path, path: Path) -> int | None:
             text=True,
             timeout=10,
             check=True,
+            env=environment,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None

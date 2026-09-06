@@ -118,40 +118,31 @@ RUN install-agent-tools.sh
         """CI checks out the index, not the working disk: a tracked script
         staged without its executable bit must fail even when the local file
         is executable (the mode that hid this exact regression in CI)."""
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        # A hook (pre-commit) exports GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE
+        # pointing at the real repository; git -C does not override them.
+        # Scrub them so every call below operates only on the fixture repo.
+        git_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+
+        def git(*arguments: str) -> None:
+            subprocess.run(
+                ["git", "-C", str(self.root), *arguments], check=True, env=git_env
+            )
+
+        git("init", "-q")
         try:
-            subprocess.run(
-                ["git", "-C", str(self.root), "add", ".devcontainer/scripts"],
-                check=True,
-            )
+            git("add", ".devcontainer/scripts")
             # Disk stays 0o755 (setUp); strip the staged bit only.
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    "update-index",
-                    "--chmod=-x",
-                    ".devcontainer/scripts/install-agent-tools.sh",
-                ],
-                check=True,
-            )
+            git("update-index", "--chmod=-x", ".devcontainer/scripts/install-agent-tools.sh")
             errors = CHECKER.validate(self.root)
             self.assertTrue(
                 any("git index mode" in error for error in errors),
                 f"index-mode divergence must fail the check: {errors}",
             )
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(self.root),
-                    "update-index",
-                    "--chmod=+x",
-                    ".devcontainer/scripts/install-agent-tools.sh",
-                ],
-                check=True,
-            )
+            git("update-index", "--chmod=+x", ".devcontainer/scripts/install-agent-tools.sh")
             self.assertEqual(CHECKER.validate(self.root), [])
         finally:
             shutil.rmtree(self.root / ".git", ignore_errors=True)

@@ -65,7 +65,7 @@ launch_github() {
 
 launch_zai_remote() {
     local endpoint="$1"
-    local runtime_dir header_file status
+    local runtime_dir header_file status child
     require_command node
     require_command mcp-remote
     if [ -z "${Z_AI_API_KEY:-}" ]; then
@@ -80,11 +80,25 @@ launch_zai_remote() {
     cleanup_header() {
         rm -f "$header_file"
     }
-    trap cleanup_header EXIT HUP INT TERM
+    # mcp-remote runs in the background so a frontend stop (SIGTERM to this
+    # launcher) is not deferred until the child exits on its own: bash defers
+    # trapped signals it catches while a foreground command runs, but a signal
+    # arriving during `wait` runs the handler immediately.
+    stop_child() {
+        if [ -n "${child:-}" ]; then
+            kill -TERM "$child" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_header EXIT
+    trap stop_child HUP INT TERM
     chmod 600 "$header_file"
     printf 'Authorization: Bearer %s\n' "$Z_AI_API_KEY" > "$header_file"
     status=0
-    mcp-remote "$endpoint" --header-file "$header_file" || status=$?
+    child=
+    mcp-remote "$endpoint" --header-file "$header_file" &
+    child=$!
+    wait "$child" || status=$?
+    child=
     cleanup_header
     trap - EXIT HUP INT TERM
     return "$status"
