@@ -95,7 +95,10 @@ launch_zai_remote() {
     printf 'Authorization: Bearer %s\n' "$Z_AI_API_KEY" > "$header_file"
     status=0
     child=
-    mcp-remote "$endpoint" --header-file "$header_file" &
+    # `<&0` is load-bearing: bash redirects a background job's stdin to
+    # /dev/null in a non-interactive shell, and mcp-remote speaks MCP over
+    # stdio — it would read EOF and exit immediately without this redirect.
+    mcp-remote "$endpoint" --header-file "$header_file" <&0 &
     child=$!
     wait "$child" || status=$?
     child=
