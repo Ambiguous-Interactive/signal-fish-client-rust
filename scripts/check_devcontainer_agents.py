@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import stat
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -246,18 +247,46 @@ def _check_dockerfile(root: Path, errors: list[str]) -> None:
         errors.append(f"{path}: must explicitly create /home/vscode/.cache owned by vscode")
 
 
+def _tracked_mode(root: Path, path: Path) -> int | None:
+    """Return the git index mode for `path`, or None when not tracked.
+
+    A fresh checkout materializes the index mode, so validating the index —
+    not the local disk — is what predicts CI. Disk mode hides a committed
+    file whose executable bit was never staged.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-s", "--", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    entry = listing.split(" ")
+    if len(entry) < 2 or not entry[0].isdigit():
+        return None
+    return int(entry[0], 8)
+
+
 def _check_scripts(root: Path, errors: list[str]) -> None:
     installer = root / ".devcontainer" / "scripts" / "install-agent-tools.sh"
     launcher = root / ".devcontainer" / "scripts" / "mcp-launch.sh"
     post_start = root / ".devcontainer" / "scripts" / "post-start.sh"
     for path in (installer, launcher, post_start):
-        try:
-            mode = path.stat().st_mode
-        except OSError as error:
-            errors.append(f"{path}: cannot stat: {error}")
-            continue
+        mode = _tracked_mode(root, path)
+        if mode is None:
+            try:
+                mode = path.stat().st_mode
+            except OSError as error:
+                errors.append(f"{path}: cannot stat: {error}")
+                continue
         if not mode & stat.S_IXUSR:
-            errors.append(f"{path}: must be executable")
+            errors.append(
+                f"{path}: must be executable (git index mode 0{mode:o} "
+                "loses the bit on checkout; run `git update-index --chmod=+x`)"
+            )
 
     try:
         installer_text = installer.read_text(encoding="utf-8")
