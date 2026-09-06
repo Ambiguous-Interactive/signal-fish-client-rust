@@ -268,7 +268,8 @@ pub struct SignalFishConfig {
     /// that ceiling.
     ///
     /// Async driver only. The polling client (and the Godot adapter built on
-    /// it) deliver events synchronously from [`SignalFishPollingClient::poll`]
+    /// it) deliver events synchronously from
+    /// [`SignalFishPollingClient::poll`](crate::polling_client::SignalFishPollingClient::poll)
     /// and ignore this value.
     pub event_channel_capacity: usize,
     /// Capacity of the bounded outgoing command queue.
