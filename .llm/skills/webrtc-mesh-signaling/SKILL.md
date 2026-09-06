@@ -52,8 +52,8 @@ signals, and rejects late driver output from the prior generation.
 Legacy generationless (Server 0.4 v3 dialect) plan pairs cannot fence rounds by
 generation (`None == None`), so the `WebRtcDriver::disconnect` contract requires
 implementors to retire the torn-down peer's queued, unpollled output at every
-teardown (issue #229): no stale event can cross a reconnect barrier regardless
-of the replacement plan's generation.
+teardown (issue #229): no queued stale event can cross a reconnect barrier
+regardless of the replacement plan's generation.
 
 ## MeshSession Tracker (no WebRTC)
 

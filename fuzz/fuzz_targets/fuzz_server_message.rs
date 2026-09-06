@@ -11,4 +11,13 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
         let _ = serde_json::from_str::<signal_fish_client::protocol::ServerMessage>(s);
     }
+
+    // Peer-authored signal shapes are a separate inbound parse boundary
+    // (PeerSignal::try_from rejects everything but the three externally
+    // tagged Offer/Answer/IceCandidate objects). A hostile `signal` value
+    // inside a server envelope reaches it through the mesh choreography, so
+    // drive the parser directly on the raw input as well.
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+        let _ = signal_fish_client::PeerSignal::try_from(&value);
+    }
 });

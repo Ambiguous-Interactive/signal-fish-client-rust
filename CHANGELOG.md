@@ -32,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Transport::max_frame_hint()`: backends that enforce an inbound frame bound
   declare it, and both client drivers then refuse larger frames as a terminal
   receive error before any decoding (the built-in WebSocket and Emscripten
-  transports report their bounds; the default `None` preserves current
-  behavior).
+  transports report their bounds, as does the Godot adapter for SDK-created
+  peers; the default `None` preserves current behavior).
 - `SignalFishEvent::redacted_raw_prefix()`: a safe-path view of
   `DecodeFailed`'s raw frame prefix that masks every string literal's content
   while preserving the JSON skeleton.
@@ -102,6 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value set and that `ProtocolInfo`'s optional fields must be omitted
   rather than sent as `null`; the `redacted_raw_prefix()` contract now
   states that non-JSON frames pass through effectively verbatim.
+- The mesh guide documents the complete manual driver-choreography contract
+  for `tokio-runtime`-less (WASM) builds — fold/drive, signal relay with
+  exact retry-versus-terminal semantics, the 0↔1 transport-status edge, and
+  dead-round output retirement — alongside a CI cell that keeps the
+  `polling-client,mesh` pair building on `wasm32-unknown-unknown`.
 - `DecodeFailed`'s `error` text and the SDK's inbound deserialization warnings
   (JSON and MessagePack paths) are capped at 512 bytes: decoders quote hostile
   wire tokens verbatim, which previously put unbounded attacker-controlled

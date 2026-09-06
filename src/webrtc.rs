@@ -4161,7 +4161,9 @@ mod tests {
             generation: None,
             data: vec![2],
         });
-        let event = mesh.recv().await;
+        let event = tokio::time::timeout(std::time::Duration::from_millis(500), mesh.recv())
+            .await
+            .expect("fresh-round driver output must surface promptly");
         assert!(
             matches!(
                 event,

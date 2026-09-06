@@ -4216,6 +4216,13 @@ mod safety_analysis_policy {
         let wasm = read_project_file(".github/workflows/wasm.yml");
         assert!(wasm.contains("bash scripts/test_check_ffi_safety.sh"));
         assert!(wasm.contains("bash scripts/check-ffi-safety.sh"));
+        // The documented WASM mesh story (polling client + MeshSession +
+        // WebRtcDriver, no tokio-runtime) must keep a building CI cell; a
+        // silent regression here breaks every documented wasm mesh consumer.
+        assert!(
+            wasm.contains("--features polling-client,mesh"),
+            "wasm.yml must build the polling-client,mesh feature pair on wasm32-unknown-unknown"
+        );
 
         let protocol_sync = read_project_file(".github/workflows/protocol-sync.yml");
         assert!(protocol_sync.contains("pull_request:"));
