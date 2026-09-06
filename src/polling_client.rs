@@ -956,6 +956,13 @@ impl<T: Transport> SignalFishPollingClient<T> {
     ///
     /// The queue drains on every [`poll()`](Self::poll) while the transport
     /// accepts writes, so a shrinking value means the transport is congested.
+    ///
+    /// This is a *queue-space* diagnostic, not a liveness signal: on a closed
+    /// or disconnected client the queue is abandoned and cleared, so this
+    /// reports full capacity while every send fails with
+    /// [`SignalFishError::NotConnected`]. Pair it with
+    /// [`is_connected`](Self::is_connected) or [`is_closing`](Self::is_closing)
+    /// to observe connection health.
     #[must_use = "this diagnostic view is discarded if not used"]
     pub fn send_capacity(&self) -> usize {
         self.command_capacity.saturating_sub(self.cmd_queue.len())
