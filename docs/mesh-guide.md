@@ -93,7 +93,7 @@ pub trait WebRtcDriver {
 | `connect` | Begin a connection owned by `generation`. If `initiate` is `true`, create an offer; otherwise wait. **Obey `initiate` verbatim.** |
 | `on_signal` | Apply a remote signal only to the connection for the supplied generation. |
 | `send` | Send application bytes over `peer`'s data channel. |
-| `disconnect` | Tear down the connection to `peer`. |
+| `disconnect` | Tear down the connection to `peer`, and retire its queued, unpollled output — it belongs to the abandoned connection, and a replacement plan without a session generation cannot fence it. |
 | `poll` | Pump your stack's I/O and return the next `DriverEvent` (see below), or `None` when idle. |
 
 `poll` returns a `DriverEvent`:

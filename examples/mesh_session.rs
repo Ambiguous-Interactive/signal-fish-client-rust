@@ -50,6 +50,16 @@ struct DemoDriver {
     outbox: VecDeque<DriverEvent>,
 }
 
+/// The peer a [`DriverEvent`] belongs to.
+fn driver_event_peer(event: &DriverEvent) -> uuid::Uuid {
+    match event {
+        DriverEvent::Signal { peer, .. }
+        | DriverEvent::Connected { peer, .. }
+        | DriverEvent::Disconnected { peer, .. }
+        | DriverEvent::Data { peer, .. } => *peer,
+    }
+}
+
 impl WebRtcDriver for DemoDriver {
     fn set_ice_servers(&mut self, servers: &[IceServer]) {
         // REAL DRIVER: configure your RTCPeerConnection with these STUN/TURN servers.
@@ -102,6 +112,10 @@ impl WebRtcDriver for DemoDriver {
     fn disconnect(&mut self, peer: PlayerId) {
         // REAL DRIVER: close the RTCPeerConnection for `peer`.
         println!("  driver: disconnect {peer}");
+        // Contract: retire the torn-down peer's queued, unpollled output —
+        // it belongs to the abandoned handshake and a generationless
+        // replacement plan could not fence it after a reconnect.
+        self.outbox.retain(|event| driver_event_peer(event) != peer);
     }
 
     fn poll(&mut self) -> Option<DriverEvent> {
