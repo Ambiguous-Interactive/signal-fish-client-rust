@@ -1088,6 +1088,55 @@ mod workflow_existence {
             }
         }
     }
+
+    /// The scheduled Portability lanes (issue #235) must keep pinning the
+    /// exact round-51 evidence shape: both desktop targets, the workspace
+    /// default and max NON-crypto feature cells, a `--locked` check
+    /// invocation on its staggered weekly slot, and no `tls` (its `ring`
+    /// needs the target C toolchain and stays upstream-covered). Drift in
+    /// any of these silently turns the lane into something the audited
+    /// evidence no longer describes.
+    #[test]
+    fn portability_workflow_pins_cross_target_check_lanes() {
+        let workflow = read_project_file(".github/workflows/portability.yml");
+        for target in ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"] {
+            assert!(
+                workflow.contains(&format!("- {target}")),
+                "portability.yml must check the {target} desktop target"
+            );
+        }
+        assert!(
+            workflow.contains(
+                "flags: --workspace --no-default-features --features transport-websocket,polling-client,mesh,token-binding,tokio-runtime",
+            ),
+            "portability.yml must run the max non-crypto feature cell"
+        );
+        assert!(
+            workflow.contains("flags: --workspace\n"),
+            "portability.yml must run the workspace-default feature cell"
+        );
+        assert!(
+            !workflow.contains("--features tls") && !workflow.contains(",tls"),
+            "portability.yml must stay on the non-crypto set (ring needs the target C toolchain)"
+        );
+        assert!(
+            workflow.contains("--all-targets --locked --target"),
+            "portability.yml must run the check with --locked against the matrix target"
+        );
+        assert!(
+            workflow.contains("cron: \"30 6 * * 1\""),
+            "portability.yml must keep its Monday 06:30 UTC slot (staggered after \
+             protocol-sync 05:30 and off security-supply-chain 06:00)"
+        );
+        assert!(
+            workflow.contains("  workflow_dispatch:"),
+            "portability.yml must support app-free explicit dispatch"
+        );
+        assert!(
+            workflow.contains("persist-credentials: false"),
+            "portability.yml checkouts must not persist credentials"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

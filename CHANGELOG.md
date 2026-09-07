@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Disconnected` event clears the data plane (peers disconnected, view
   cleared) but only true end-of-stream fuses the controller, so mesh
   consumers survive automatic reconnection.
+- A reconnect round whose farewell cannot be delivered — the consumer wedged
+  past `shutdown_timeout` on a full event channel — now ends the client
+  instead of retrying, so a missed barrier event can no longer desynchronize
+  mesh catch-up accounting.
 - `impl Transport for Box<dyn Transport + Send>` so owned trait objects
   (including the reconnect factory's products) flow through the same driver
   plumbing as concrete transports.
@@ -53,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Protocol v3 room snapshots on upstream Server `main` (post-0.8.0) no longer echo `connection_info`; the client decodes both shapes unchanged, and the protocol guide's `PlayerInfo` fields (`epoch`/`seq`, visibility contract) now document the omission.
 - The `WebRtcDriver::disconnect` contract now requires drivers to retire the
   torn-down peer's queued, unpollled output, so stale events cannot cross a
   reconnect barrier when legacy generationless plans leave no generation to

@@ -699,7 +699,12 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// - a dropped client handle,
 /// - a [`ProtocolViolationPolicy::Disconnect`] teardown (a protocol
 ///   violation is a correctness signal; automatic reconnection would mask
-///   it), and
+///   it),
+/// - a teardown whose terminal farewell could not be delivered because the
+///   consumer wedged past [`shutdown_timeout`](SignalFishConfig::shutdown_timeout):
+///   the consumer missed a barrier event, and a mesh controller's
+///   catch-up accounting can never resynchronize a lost edge, so the loop
+///   ends instead of retrying into a wedged consumer, and
 /// - an exhausted attempt budget, reported via
 ///   [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned).
 ///
@@ -2375,12 +2380,15 @@ async fn emit_core_disconnected_or_shutdown(
     shutdown: &mut ShutdownSignal,
     state: &Arc<Mutex<ClientCore>>,
     teardown: TerminalTeardown,
-) {
+) -> bool {
     // Peer-close delivery is bounded by the same budget as graceful
     // termination: a wedged consumer must not leak the task holding the
     // command receiver, which would park every waiting reliable sender
     // forever. On expiry the terminal event falls back to a nonblocking
-    // attempt before the loop terminates.
+    // attempt before the loop terminates. The fallback's outcome decides
+    // whether the loop may retry: a farewell abandoned on a full channel
+    // means the consumer missed a barrier event, so returning `false` ends
+    // the loop instead of opening a round that can never resynchronize it.
     let TerminalTeardown {
         reason,
         deadline,
@@ -2389,7 +2397,18 @@ async fn emit_core_disconnected_or_shutdown(
     let event = lock_core(state).disconnect(reason);
     let deliver_event = async {
         if !emit_terminal_event(event_tx, shutdown, deadline, event.clone()).await {
-            let _ = event_tx.try_send(event);
+            match event_tx.try_send(event) {
+                Ok(()) => true,
+                // The consumer still lives but wedged past the budget: the
+                // farewell barrier event is lost, so the loop must not
+                // retry.
+                Err(mpsc::error::TrySendError::Full(_)) => false,
+                // The consumer is gone; nothing can resynchronize and
+                // retrying is harmless.
+                Err(mpsc::error::TrySendError::Closed(_)) => true,
+            }
+        } else {
+            true
         }
     };
     let close = finish_send_and_close_bounded(
@@ -2398,7 +2417,8 @@ async fn emit_core_disconnected_or_shutdown(
         state,
         remaining_shutdown_budget(timeout, deadline),
     );
-    let ((), ()) = tokio::join!(deliver_event, close);
+    let (farewell_delivered, ()) = tokio::join!(deliver_event, close);
+    farewell_delivered
 }
 
 /// One terminal disconnect's attribution and shared shutdown budget: every
@@ -2645,7 +2665,7 @@ async fn finish_send_failure(
     state: &Arc<Mutex<ClientCore>>,
     error: SignalFishError,
     timeout: Duration,
-) {
+) -> bool {
     let deadline = tokio::time::Instant::now().checked_add(timeout);
     let mut drain = ReadyFrameDrain::new(None, ReadyFrameDrainBudget::standard());
     loop {
@@ -2696,10 +2716,19 @@ async fn finish_send_failure(
     let disconnected = lock_core(state).disconnect(reason);
     // A preempted batch means the sticky signal was observed or the shared
     // deadline has passed, so this bounded wait always collapses within one
-    // poll instead of parking beside the already-spent budget.
+    // poll instead of parking beside the already-spent budget. A farewell
+    // abandoned on a full channel returns `false` so the loop ends instead
+    // of retrying a round whose barrier event the consumer never saw (the
+    // same lost-barrier class as `emit_core_disconnected_or_shutdown`).
     let deliver_disconnected = async {
         if !emit_terminal_event(event_tx, shutdown, deadline, disconnected.clone()).await {
-            let _ = event_tx.try_send(disconnected);
+            match event_tx.try_send(disconnected) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Full(_)) => false,
+                Err(mpsc::error::TrySendError::Closed(_)) => true,
+            }
+        } else {
+            true
         }
     };
     let close = finish_send_and_close_bounded(
@@ -2708,7 +2737,8 @@ async fn finish_send_failure(
         state,
         remaining_shutdown_budget(timeout, deadline),
     );
-    let ((), ()) = tokio::join!(deliver_disconnected, close);
+    let (farewell_delivered, ()) = tokio::join!(deliver_disconnected, close);
+    farewell_delivered
 }
 
 /// How one connection lifetime (one transport) ended inside the transport
@@ -2732,14 +2762,21 @@ enum ConnectionRoundExit {
 }
 
 /// Classify a teardown the loop just completed: an observed (sticky) shutdown
-/// signal always wins over retrying, because the client was asked to end.
+/// signal always wins over retrying, because the client was asked to end. A
+/// blocked farewell (`farewell_unblocked == false`: a living consumer wedged
+/// past the budget on a full channel) also terminates: the consumer missed a
+/// barrier event, and a retried round can never resynchronize a
+/// mesh controller whose catch-up accounting counts one delivered event
+/// per authoritative edge. `true` covers delivery and a gone consumer alike —
+/// in neither case does a retry face a blocked barrier.
 #[cfg(feature = "tokio-runtime")]
 fn classify_round_exit(
     shutdown: &ShutdownSignal,
+    farewell_unblocked: bool,
     authenticated: bool,
     reason: Option<String>,
 ) -> ConnectionRoundExit {
-    if shutdown.is_observed() {
+    if shutdown.is_observed() || !farewell_unblocked {
         ConnectionRoundExit::Terminal
     } else {
         ConnectionRoundExit::Retryable {
@@ -3056,15 +3093,21 @@ async fn connection_round(
                     let authenticated = lock_core(state).is_authenticated();
                     let reason: Option<String> =
                         Some("transport received a protocol frame before readiness".into());
-                    emit_core_disconnected_or_shutdown(
+                    let farewell_unblocked = emit_core_disconnected_or_shutdown(
                         transport,
                         &mut pending_send,
                         event_tx,
                         shutdown,
                         state,
                         TerminalTeardown::starting(shutdown_timeout, reason.clone()),
-                    ).await;
-                    exit = classify_round_exit(shutdown, authenticated, reason);
+                    )
+                    .await;
+                    exit = classify_round_exit(
+                        shutdown,
+                        farewell_unblocked,
+                        authenticated,
+                        reason,
+                    );
                     break;
                 }
                 match io {
@@ -3086,7 +3129,7 @@ async fn connection_round(
                             cmd_rx.close();
                         }
                         let error_text = error.to_string();
-                        finish_send_failure(
+                        let farewell_unblocked = finish_send_failure(
                             transport,
                             &mut pending_send,
                             event_tx,
@@ -3094,9 +3137,15 @@ async fn connection_round(
                             state,
                             error,
                             shutdown_timeout,
-                        ).await;
+                        )
+                        .await;
                         let reason = peer_close_reason(transport).or(Some(error_text));
-                        exit = classify_round_exit(shutdown, authenticated, reason);
+                        exit = classify_round_exit(
+                            shutdown,
+                            farewell_unblocked,
+                            authenticated,
+                            reason,
+                        );
                         break;
                     }
                     TransportIo::Received(Some(Ok(frame))) => {
@@ -3109,15 +3158,21 @@ async fn connection_round(
                         if let Some(reason) = outcome.input_error {
                             let authenticated = lock_core(state).is_authenticated();
                             let reason_text = Some(reason.clone());
-                            emit_core_disconnected_or_shutdown(
+                            let farewell_unblocked = emit_core_disconnected_or_shutdown(
                                 transport,
                                 &mut pending_send,
                                 event_tx,
                                 shutdown,
                                 state,
                                 TerminalTeardown::starting(shutdown_timeout, Some(reason)),
-                            ).await;
-                            exit = classify_round_exit(shutdown, authenticated, reason_text);
+                            )
+                            .await;
+                            exit = classify_round_exit(
+                                shutdown,
+                                farewell_unblocked,
+                                authenticated,
+                                reason_text,
+                            );
                             break;
                         }
                         let disconnect = outcome.disconnect;
@@ -3195,29 +3250,41 @@ async fn connection_round(
                     TransportIo::Received(Some(Err(error))) => {
                         let authenticated = lock_core(state).is_authenticated();
                         let reason = Some(error.to_string());
-                        emit_core_disconnected_or_shutdown(
+                        let farewell_unblocked = emit_core_disconnected_or_shutdown(
                             transport,
                             &mut pending_send,
                             event_tx,
                             shutdown,
                             state,
                             TerminalTeardown::starting(shutdown_timeout, reason.clone()),
-                        ).await;
-                        exit = classify_round_exit(shutdown, authenticated, reason);
+                        )
+                        .await;
+                        exit = classify_round_exit(
+                            shutdown,
+                            farewell_unblocked,
+                            authenticated,
+                            reason,
+                        );
                         break;
                     }
                     TransportIo::Received(None) => {
                         let authenticated = lock_core(state).is_authenticated();
                         let reason = close_reason(transport);
-                        emit_core_disconnected_or_shutdown(
+                        let farewell_unblocked = emit_core_disconnected_or_shutdown(
                             transport,
                             &mut pending_send,
                             event_tx,
                             shutdown,
                             state,
                             TerminalTeardown::starting(shutdown_timeout, reason.clone()),
-                        ).await;
-                        exit = classify_round_exit(shutdown, authenticated, reason);
+                        )
+                        .await;
+                        exit = classify_round_exit(
+                            shutdown,
+                            farewell_unblocked,
+                            authenticated,
+                            reason,
+                        );
                         break;
                     }
                 }
@@ -9424,6 +9491,82 @@ mod tests {
             factory_calls.load(Ordering::SeqCst),
             0,
             "the factory must not be consulted after the handle drop"
+        );
+    }
+
+    /// A reconnect round whose terminal farewell could not be delivered —
+    /// the consumer wedged past `shutdown_timeout` on a full event channel —
+    /// ends the loop instead of opening a replacement round. The consumer
+    /// missed the `Disconnected` barrier event, and a mesh controller's
+    /// catch-up accounting counts exactly one delivered event per
+    /// authoritative edge, so a lost farewell would permanently desynchronize
+    /// it while the data plane silently stopped being polled (round-52
+    /// audit).
+    #[tokio::test(start_paused = true)]
+    async fn abandoned_farewell_ends_the_loop_instead_of_retrying() {
+        // Capacity 1: the consumer drains only `Connected`, so the buffered
+        // `Authenticated` event keeps the channel full while the transport
+        // dies (peer close) and the farewell delivery races its deadline.
+        let (transport1, _sent1, closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        let pool = transport_pool(vec![]);
+        let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inner = pool_factory(&pool);
+        let calls = Arc::clone(&factory_calls);
+        let policy = ReconnectPolicy::new(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            inner()
+        })
+        .with_max_attempts(5)
+        .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .with_event_channel_capacity(1)
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        // Keep the test task from draining while virtual time advances: the
+        // buffered `Authenticated` stays in the channel, so the transport
+        // death's farewell delivery (1 s shared budget, virtual) expires
+        // against a still-full channel, the nonblocking fallback fails, and
+        // the loop must terminate instead of opening a replacement round.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        // The wedge lifted: the buffered `Authenticated` is the last readable
+        // event — no `Reconnecting` round, and the abandoned farewell never
+        // surfaces.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        let observed = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .expect("channel close must be prompt");
+        assert!(
+            observed.is_none(),
+            "the loop must end without further events, got {observed:?}"
+        );
+        assert_eq!(
+            factory_calls.load(Ordering::SeqCst),
+            0,
+            "the factory must never be consulted after an abandoned farewell"
+        );
+        assert!(
+            matches!(
+                client.send_game_data(serde_json::json!({ "n": 1 })),
+                Err(SignalFishError::NotConnected)
+            ),
+            "the ended loop must fail commands fast"
+        );
+        tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("shutdown after an abandoned farewell must complete promptly");
+        assert!(!client.is_connected());
+        assert!(
+            closed1.load(Ordering::Acquire),
+            "the dead round's transport must have been closed during teardown"
         );
     }
 
