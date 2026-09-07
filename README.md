@@ -130,6 +130,13 @@ from the onboarding path.
 The core crate supports Rust 1.87.0 and newer. The Godot adapter requires Rust
 1.94.0 because of its godot-rust dependency.
 
+Desktop targets are first-class: `cargo check` passes for every target
+(including tests) on Windows (MSVC and GNU) and macOS ARM64, and the full
+build-and-test matrix runs on Linux CI. The opt-in `tls` feature uses
+`ring`, which supports those targets when its target C toolchain is
+available. Browser (wasm32-unknown-unknown) and Emscripten builds are
+covered by dedicated CI lanes.
+
 <details>
 <summary>AI disclosure</summary>
 

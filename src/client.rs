@@ -8763,6 +8763,29 @@ mod tests {
         }
     }
 
+    /// Pre-built boxed transports (mixed concrete types) handed to the
+    /// reconnect factory one per round.
+    #[cfg(feature = "transport-websocket")]
+    type BoxedTransportPool = Arc<StdMutex<VecDeque<Box<dyn Transport + Send>>>>;
+
+    #[cfg(feature = "transport-websocket")]
+    fn boxed_transport_pool(transports: Vec<Box<dyn Transport + Send>>) -> BoxedTransportPool {
+        Arc::new(StdMutex::new(VecDeque::from(transports)))
+    }
+
+    #[cfg(feature = "transport-websocket")]
+    fn boxed_pool_factory(
+        pool: &BoxedTransportPool,
+    ) -> impl Fn() -> Box<dyn Transport + Send> + Send + Sync {
+        let pool = Arc::clone(pool);
+        move || {
+            pool.lock()
+                .unwrap()
+                .pop_front()
+                .expect("transport pool exhausted")
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn reconnect_policy_rebuilds_connection_and_rejoins_room() {
         // Round 1: authenticate, join a token-bearing player room, die.
@@ -9271,6 +9294,217 @@ mod tests {
         assert!(closed1.load(Ordering::Acquire));
         // The channel closes without any further event.
         assert!(events.recv().await.is_none());
+    }
+
+    /// A panicking reconnect factory is the same contract-violation class as
+    /// a panicking `Transport` method (documented on [`ReconnectPolicy`]):
+    /// the loop task dies on the factory call, the event channel closes
+    /// without further events, parked reliable senders resolve
+    /// `NotConnected`, the previous round transport's `abort` still runs
+    /// from the loop's drop guard, and a later `shutdown()` reconciles the
+    /// snapshot.
+    #[tokio::test(start_paused = true)]
+    async fn panicking_reconnect_factory_kills_the_loop_like_a_panicking_transport() {
+        let (transport1, _sent1, closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        let policy = ReconnectPolicy::new(|| -> Box<dyn Transport + Send> {
+            panic!("factory exploded");
+        })
+        .with_max_attempts(3)
+        .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // Paused time advances the 50 ms backoff, the loop calls the
+        // factory, and the panic unwinds the task: the channel closes with
+        // no further event (no `ReconnectAbandoned`, no second
+        // `Disconnected`).
+        let observed = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("channel close must be prompt");
+        assert!(
+            observed.is_none(),
+            "the loop must die without further events, got {observed:?}"
+        );
+
+        // Same boundary as the panicking-Transport contract: commands fail
+        // fast and parked reliable senders resolve. Unlike the mid-round
+        // Transport-panic face, the core is already disconnected here: the
+        // round ended (peer close) before the factory was consulted, and
+        // its `Disconnected` event was the last event delivered.
+        assert!(matches!(
+            client.send_game_data(serde_json::json!({ "n": 1 })),
+            Err(SignalFishError::NotConnected)
+        ));
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.send_game_data_reliable(serde_json::json!({ "n": 2 })),
+        )
+        .await
+        .expect("parked reliable send must resolve promptly");
+        assert!(matches!(result, Err(SignalFishError::NotConnected)));
+        assert!(
+            !client.is_connected(),
+            "the round ended before the factory ran, so the core is already disconnected"
+        );
+        assert!(
+            closed1.load(Ordering::Acquire),
+            "abort must run on the previous round's transport during unwind"
+        );
+        tokio::time::timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("shutdown after factory panic must complete promptly");
+        assert!(!client.is_connected());
+    }
+
+    /// Dropping the handle during a reconnection backoff wait tears down the
+    /// parked loop promptly: the factory is never consulted, and the event
+    /// channel closes without further events. (The mid-round drop-guard
+    /// `abort` face is pinned separately by the panicking-Transport test;
+    /// during backoff the previous round's *connection* has already ended in
+    /// a peer close, and the idle transport sits inside the loop's
+    /// drop-guard.)
+    #[tokio::test(start_paused = true)]
+    async fn handle_drop_during_backoff_aborts_the_parked_loop() {
+        let (transport1, _sent1, _closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        let pool = transport_pool(vec![]);
+        let factory_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::clone(&factory_calls);
+        let inner = pool_factory(&pool);
+        let policy = ReconnectPolicy::new(move || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            inner()
+        })
+        .with_max_attempts(5)
+        .with_initial_backoff(Duration::from_secs(3_600));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // Drop while the loop is parked on the (virtual) hour-long backoff:
+        // no await in between, so time cannot advance and the factory can
+        // never be reached.
+        drop(client);
+        // The channel closes once the aborted task's future drops, and the
+        // factory was never consulted.
+        assert!(events.recv().await.is_none());
+        assert_eq!(
+            factory_calls.load(Ordering::SeqCst),
+            0,
+            "the factory must not be consulted after the handle drop"
+        );
+    }
+
+    /// The built-in lazy constructor's stalled-handshake `Timeout` is an
+    /// ordinary retryable round death at the driver level: the never-ready
+    /// round emits `Disconnected` without a `Connected`, the attempt budget
+    /// is consumed (no reset — the round never authenticated), and the next
+    /// factory product reconnects normally.
+    #[cfg(feature = "transport-websocket")]
+    #[tokio::test(start_paused = true)]
+    async fn lazy_handshake_timeout_is_an_ordinary_retryable_round() {
+        // Round 1: authenticate, then die.
+        let (transport1, _sent1, _closed1) =
+            MockTransport::new(vec![Some(Ok(authenticated_json())), None]);
+        // Round 2: a lazy transport whose handshake fails at a zero
+        // deadline. The zero deadline elapses on the handshake future's
+        // first poll — before any dial outcome is observable — so the
+        // failure is the deadline regardless; the bound listener merely
+        // models the stalled peer.
+        let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stalled listener");
+        let stalled_port = stalled.local_addr().expect("local addr").port();
+        let lazy = Box::new(
+            crate::transports::WebSocketTransport::connect_lazy_with_timeout(
+                format!("ws://127.0.0.1:{stalled_port}/ws"),
+                Duration::ZERO,
+            ),
+        ) as Box<dyn Transport + Send>;
+        // Round 3: a normal round re-authenticates.
+        let (transport3, _sent3, _closed3) =
+            MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let pool = boxed_transport_pool(vec![lazy, Box::new(transport3)]);
+        let policy = ReconnectPolicy::new(boxed_pool_factory(&pool))
+            .with_max_attempts(5)
+            .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // The lazy round never becomes ready, so no `Connected` is emitted
+        // for it; its terminal `Timeout` surfaces as a plain retryable
+        // `Disconnected`.
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert_eq!(
+                    reason.as_deref(),
+                    Some(SignalFishError::Timeout.to_string().as_str()),
+                    "the stalled handshake must surface the Timeout face"
+                );
+            }
+            other => panic!("expected Timeout Disconnected, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 2, .. })
+        ));
+        // Round 3 reconnects normally.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        client.shutdown().await;
+        drop(stalled);
     }
 
     #[tokio::test(start_paused = true)]

@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declare the default 8 MiB frame bound up front, pin token binding off, and
   turn a stalled handshake (10 s default, configurable) into a retryable
   `Timeout`; the `auto_reconnect` example ships this constructor.
+- Documented desktop platform support in the README: `cargo check` passes
+  for every target (including tests) on Windows (MSVC and GNU) and macOS
+  ARM64, with browser and Emscripten builds covered by dedicated CI lanes.
 
 ### Changed
 

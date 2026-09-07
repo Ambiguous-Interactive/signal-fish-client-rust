@@ -4036,9 +4036,13 @@ mod tests {
         abort_calls: usize,
         send_pending: bool,
         close_pending: bool,
+        poll_cycles: usize,
     }
 
     impl Transport for RecordingFrameTransport {
+        fn begin_poll_cycle(&mut self) {
+            self.poll_cycles += 1;
+        }
         fn poll_send(
             &mut self,
             _cx: &mut std::task::Context<'_>,
@@ -5599,6 +5603,41 @@ mod tests {
     }
 
     #[test]
+    fn begin_poll_cycle_runs_exactly_once_per_poll_even_when_budget_skips() {
+        let options = PollingClientOptions {
+            work_budget: PollingWorkBudget {
+                send_frames: 1,
+                send_bytes: usize::MAX,
+                receive_frames: 64,
+                receive_bytes: 64 * 1024,
+            },
+            close_policy: PollingClosePolicy::Abandon,
+        };
+        let transport = RecordingFrameTransport::default();
+        let mut client =
+            SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        let _ = client.poll(); // flush the automatic Authenticate
+        for _ in 0..2 {
+            enqueue_direct(&mut client, PollingCommand::Message(ClientMessage::Ping));
+        }
+
+        // Every poll runs exactly one backend cycle (plus the Authenticate
+        // flush poll above): the poll that parks the second ping behind the
+        // frame budget, the poll that drains it, and the idle poll with no
+        // work at all.
+        let _ = client.poll();
+        assert_eq!(client.transport.sent.len(), 2);
+        assert_eq!(client.polling_stats().current_queue_depth, 1);
+        let _ = client.poll();
+        let _ = client.poll();
+        assert_eq!(client.transport.sent.len(), 3);
+        assert_eq!(
+            client.transport.poll_cycles, 4,
+            "exactly one begin_poll_cycle per poll, even when the budget skips work"
+        );
+    }
+
+    #[test]
     fn send_byte_budget_retains_fifo_work_for_later_polls() {
         let options = PollingClientOptions {
             work_budget: PollingWorkBudget {
@@ -5756,6 +5795,71 @@ mod tests {
 
         assert_eq!(ids, vec![1, 2]);
         assert!(client.polling_stats().receive_budget_exhaustions >= 1);
+        assert!(client.pending_inbound.is_none());
+    }
+
+    #[test]
+    fn oversized_inbound_frame_gets_single_frame_escape() {
+        // A complete inbound frame strictly larger than the entire receive
+        // byte budget is still admitted on its own poll (first-frame
+        // escape); the next frame parks and leads the following poll.
+        let from = uuid::Uuid::from_u128(78);
+        let frame = |id| {
+            TransportFrame::Text(
+                serde_json::to_string(&ServerMessage::GameData {
+                    from_player: from,
+                    data: serde_json::json!({ "id": id, "padding": "x".repeat(64) }),
+                    seq: None,
+                    epoch: None,
+                    class: None,
+                    key: None,
+                })
+                .expect("GameData should serialize"),
+            )
+        };
+        let first = frame(1);
+        let second = frame(2);
+        assert!(
+            frame_payload_len(&first) > 8,
+            "test frame must strictly exceed the 8-byte budget"
+        );
+        let transport = RecordingFrameTransport {
+            incoming: [first, second].into_iter().collect(),
+            ..RecordingFrameTransport::default()
+        };
+        let options = PollingClientOptions {
+            work_budget: PollingWorkBudget {
+                send_frames: 8,
+                send_bytes: usize::MAX,
+                receive_frames: 8,
+                receive_bytes: 8,
+            },
+            close_policy: PollingClosePolicy::Abandon,
+        };
+        let mut client =
+            SignalFishPollingClient::new_with_options(transport, default_config(), options);
+        prime_room(&mut client);
+
+        let first_events = client.poll();
+        assert_eq!(
+            first_events
+                .iter()
+                .filter(|event| matches!(event, SignalFishEvent::GameData { data, .. } if data["id"] == 1))
+                .count(),
+            1,
+            "the strictly oversized first frame is admitted on its own poll"
+        );
+        assert_eq!(client.polling_stats().receive_budget_exhaustions, 1);
+
+        let second_events = client.poll();
+        assert_eq!(
+            second_events
+                .iter()
+                .filter(|event| matches!(event, SignalFishEvent::GameData { data, .. } if data["id"] == 2))
+                .count(),
+            1,
+            "the parked follower leads the next poll without loss or reordering"
+        );
         assert!(client.pending_inbound.is_none());
     }
 
