@@ -34,9 +34,11 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`11e165cecb9179378f53d65971bd39a2f4e3baab`, advanced from the Server 0.8.0
-release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive-only
-prose drift (the wire samples are byte-identical across both commits).
+`ceb47cbc86c88d321b778596f195b68a7bd03aea`, advanced from the Server 0.8.0
+release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
+plus one deliberate v3 schema change (the v3 room-member snapshot excludes the
+legacy `connection_info` echo — server issue #529; the v2 snapshot shape is
+frozen and the wire samples are byte-identical across all three commits).
 Released runtime compatibility stays bound to the Server 0.8.0 release in
 `tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to
 upstream `main` at every refresh — descriptive prose drift is absorbed

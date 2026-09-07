@@ -281,6 +281,8 @@ pub struct PlayerInfo {
     pub is_ready: bool,
     pub connected_at: String,
     pub connection_info: Option<ConnectionInfo>,
+    pub epoch: Option<u32>,
+    pub seq: Option<u64>,
 }
 ```
 
@@ -291,7 +293,9 @@ pub struct PlayerInfo {
 | `is_authority` | `bool` | Whether this player is the room authority. |
 | `is_ready` | `bool` | Whether the player has signaled readiness. |
 | `connected_at` | `String` | ISO 8601 timestamp of when the player connected. |
-| `connection_info` | `Option<ConnectionInfo>` | P2P connection info (present when the player is ready). |
+| `connection_info` | `Option<ConnectionInfo>` | Legacy self-declared P2P metadata. Protocol-v2 room snapshots may include it; protocol-v3 room snapshots omit it (the authoritative copy reaches peers via `GameStarting`'s `PeerConnectionInfo`). |
+| `epoch` | `Option<u32>` | Protocol v3 only: the player's current incarnation epoch. |
+| `seq` | `Option<u64>` | Protocol v3 only: the player's exact relay baseline; delivery obligations start at `seq + 1`. |
 
 ---
 
