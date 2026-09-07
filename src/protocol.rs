@@ -387,7 +387,10 @@ pub struct PlayerInfo {
     pub is_authority: bool,
     pub is_ready: bool,
     pub connected_at: String,
-    /// Connection info for P2P establishment (provided when player is ready).
+    /// Legacy self-declared connection info for P2P establishment. Protocol
+    /// v2 room snapshots may include it (when the player provided it);
+    /// protocol v3 room snapshots omit it — the authoritative copy reaches
+    /// peers via `GameStarting`'s `PeerConnectionInfo`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_info: Option<ConnectionInfo>,
     /// Current server-tracked incarnation epoch (protocol v3 only).
