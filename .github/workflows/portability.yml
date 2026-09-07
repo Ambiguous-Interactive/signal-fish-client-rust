@@ -50,7 +50,7 @@ jobs:
   # check — cargo check per desktop target × feature cell
   # ──────────────────────────────────────────────────────────────
   check:
-    name: cargo check (${{ matrix.target }}, ${{ matrix.cell }})
+    name: cargo check (${{ matrix.target }}, ${{ matrix.cell.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

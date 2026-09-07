@@ -2578,7 +2578,7 @@ mod tests {
     }
 
     /// While the command queue refuses every report, a connect/disconnect
-    /// flap must coalesce in the single latest-state slot instead of queueing
+    /// flap must coalesce in the single latest-state slot instead of queuing
     /// edges: releasing capacity afterward sends exactly the final aggregate
     /// state, never the superseded intermediate snapshots (round-52 audit).
     ///
