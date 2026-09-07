@@ -61,7 +61,7 @@ jobs:
       # repository's shared cache budget.
 
       - name: Install cargo-machete
-        uses: taiki-e/install-action@v2.87.1
+        uses: taiki-e/install-action@v2.87.5
         with:
           tool: cargo-machete@0.9.2
 
@@ -97,7 +97,7 @@ jobs:
         run: bash scripts/cargo-retry.sh generate-lockfile
 
       - name: Install cargo-udeps
-        uses: taiki-e/install-action@v2.87.1
+        uses: taiki-e/install-action@v2.87.5
         with:
           tool: cargo-udeps@0.1.61
 
