@@ -64,7 +64,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run typos spell checker
-        uses: crate-ci/typos@v1.50.0
+        uses: crate-ci/typos@v1.50.1
         with:
           config: .typos.toml
 
