@@ -33,11 +33,15 @@ enum covers the spec's error-code token space in both directions. This closes
 the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
-The canonical corpus currently pins released protocol-authority commit
-`d79dcdc7549777c8c2bd9fcb2d132641532d8c86` (Server 0.8.0; the wire samples and
-AsyncAPI spec are byte-identical to the earlier post-0.7 preview this corpus
-previously pinned). Released runtime compatibility is bound to that same
-Server 0.8.0 release in `tests/compatibility.toml`; the older Server 0.7.0
+The canonical corpus pins protocol-authority commit
+`11e165cecb9179378f53d65971bd39a2f4e3baab`, advanced from the Server 0.8.0
+release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive-only
+prose drift (the wire samples are byte-identical across both commits).
+Released runtime compatibility stays bound to the Server 0.8.0 release in
+`tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to
+upstream `main` at every refresh — descriptive prose drift is absorbed
+without wire impact, and any schema/message/error-code change triggers the
+full reconciliation below. The older Server 0.7.0
 commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the prior released
 binding in history. The client retains six legacy
 `ErrorCode::NON_EMITTED` variants outside the 0.7 emitted-token set; conformance
@@ -79,6 +83,14 @@ In `tests/ci_config_tests.rs` (`protocol_wire_conformance_policy`):
 - `server_spec_files_exist_and_are_non_empty`, `server_spec_provenance_marker_is_valid`,
   `server_spec_provenance_checksum_matches_vendored_file` — the same discipline
   for the vendored AsyncAPI spec in `tests/server-spec/`.
+
+`tests/compatibility_manifest_tests.rs`
+(`compatibility_manifest_binds_exact_server_artifacts`) additionally enforces
+corpus coherence: both PROVENANCE `commit`/`synced` values must equal
+`compatibility.toml`'s `[protocol_authority]`, and every vendored file hash
+must equal the manifest's. A refresh advances all of them together (the
+authority commit literal there is review-forced); the released runtime
+binding (`server_commit`, tags, release-artifact hashes) stays at the release.
 
 ## Drift Detection
 
