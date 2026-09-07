@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exhaustive struct literals must add it, usually `reconnect_policy: None`.
   The opt-in `ReconnectPolicy` auto-reconnects the async client with
   deterministic exponential backoff — re-authenticating and reissuing the
-  directed `reconnect` after a room disconnect; shutdown, dropped handles,
-  and `Disconnect`-policy teardowns are never retried, and the polling
-  client stays caller-driven.
+  directed `reconnect` after a player-room disconnect; shutdown, dropped
+  handles, and `Disconnect`-policy teardowns are never retried, and the
+  polling client stays caller-driven.
 - **Breaking:** the exhaustive `SignalFishEvent` enum gains `Reconnecting {
   attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
   (the reconnect policy's per-attempt and terminal events); add two arms to
@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   presence and byte length instead of printing the value: a room code is
   join-capability knowledge, so ambient logs no longer leak it. The public
   `room_code` field is unchanged.
+- Rustdoc now documents every `ErrorCode` variant plus the previously bare
+  `ClientSnapshot`, `DeliveryGapReason`, `DeliveryGap`, `ReplayStatus`,
+  `ProtocolViolationKind`, and `GameDataDelivery::Latest::key` members, with
+  intra-doc links for `TransportFrame`, `ServerMessage`, `WebSocketTransport`,
+  and `SignalFishEvent`.
 
 ### Fixed
 
@@ -128,6 +133,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the queue is cleared, so it reads full capacity while sends fail.
 - `Transport::is_ready`'s contract now documents the pre-ready fused
   terminal-delivery carve-out.
+- Corrected the `auto_reconnect` example's header: the default v2 endpoint
+  re-authenticates but never auto-rejoins (auto-rejoin needs a v3
+  token-bearing player room), and a duplicate `join_room` there is refused
+  with `RoomOperationPending` or displaces the automatic rejoin — it is not
+  "requested twice per round".
 
 ## [0.12.0] - 2026-09-01
 

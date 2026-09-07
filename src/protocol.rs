@@ -93,7 +93,8 @@ mod canonical_room_operation_id {
 /// and in self-declared [`ConnectionInfo::Relay`] metadata. It does not select
 /// the [`Transport`](crate::Transport) used by this crate, open a socket, or add
 /// datagram framing. The core client continues to exchange complete
-/// text/binary signaling frames with its configured `Transport`.
+/// text/binary signaling frames with its configured
+/// [`Transport`](crate::Transport).
 ///
 /// Signal Fish Server 0.8 accepts but ignores the `JoinRoom` field and carries
 /// all signaling and relayed game data over the current WebSocket connection.
@@ -150,19 +151,32 @@ pub enum DeliveryClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryGapReason {
+    /// A keyed-latest value was superseded by a newer value for the same key
+    /// before delivery.
     LatestSuperseded,
+    /// A keyed-latest value was dropped because the key's retention slot was
+    /// full.
     LatestDroppedFull,
+    /// A volatile (best-effort) value was dropped without delivery.
     VolatileDropped,
+    /// The value was undeliverable because its game-data format is
+    /// unsupported for the recipient. Servers may coalesce consecutive
+    /// unsupported-format omissions into one range.
     UnsupportedFormat,
 }
 
 /// Exact inclusive sequence range omitted for one recipient.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryGap {
+    /// The player whose stream was omitted.
     pub from_player: PlayerId,
+    /// Sender epoch the omitted range belongs to.
     pub epoch: u32,
+    /// Inclusive first sequence of the omitted range.
     pub from_seq: u64,
+    /// Inclusive last sequence of the omitted range.
     pub to_seq: u64,
+    /// Why the range was omitted.
     pub reason: DeliveryGapReason,
 }
 
@@ -216,8 +230,14 @@ pub const DELIVERY_REPORT_MAX_GAPS: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayStatus {
+    /// Every replayable control event missed during the disconnect was
+    /// replayed.
     Complete,
+    /// The bounded replay ring evicted some missed events, so
+    /// `missed_events` is a suffix — resync from the snapshot.
     Truncated,
+    /// Event replay is not active on this deployment; treat the reconnection
+    /// as a full resync from the snapshot.
     Unavailable,
 }
 
@@ -583,7 +603,7 @@ pub struct DirectEndpoint {
 // ── Payload structs ─────────────────────────────────────────────────
 
 /// Payload for the `RoomJoined` server message.
-/// Boxed in `ServerMessage` to reduce enum size.
+/// Boxed in [`ServerMessage`] to reduce enum size.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RoomJoinedPayload {
     pub room_id: RoomId,
@@ -622,7 +642,7 @@ impl std::fmt::Debug for RoomJoinedPayload {
 }
 
 /// Payload for the `Reconnected` server message.
-/// Boxed in `ServerMessage` to reduce enum size.
+/// Boxed in [`ServerMessage`] to reduce enum size.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ReconnectedPayload {
     pub room_id: RoomId,
@@ -667,7 +687,7 @@ impl std::fmt::Debug for ReconnectedPayload {
 }
 
 /// Payload for the `SpectatorJoined` server message.
-/// Boxed in `ServerMessage` to reduce enum size.
+/// Boxed in [`ServerMessage`] to reduce enum size.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SpectatorJoinedPayload {
     pub room_id: RoomId,
@@ -691,7 +711,7 @@ impl std::fmt::Debug for SpectatorJoinedPayload {
 }
 
 /// Payload for the `SessionPlan` server message (protocol v3).
-/// Boxed in `ServerMessage` to reduce enum size.
+/// Boxed in [`ServerMessage`] to reduce enum size.
 ///
 /// Sent per-recipient when a room finalizes and again for relay resets, late
 /// joins, host re-election, or reconnect replay. Each recipient receives a plan

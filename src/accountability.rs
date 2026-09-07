@@ -1350,6 +1350,80 @@ mod tests {
     }
 
     #[test]
+    fn dropped_full_and_volatile_gap_reasons_align_with_their_counter_buckets() {
+        // Every gap reason must sum into its own counter bucket: a bucket
+        // swap (or a dropped mapping arm) would mis-validate server loss
+        // accounting, so both `LatestDroppedFull` and `VolatileDropped` are
+        // pinned in the accepted pairing and against a mis-bucketed pairing.
+        for (reason, fill_bucket) in [
+            (
+                DeliveryGapReason::LatestDroppedFull,
+                (|c: &mut DeliveryCountersByClass, n: u64| c.latest.dropped_full = n)
+                    as fn(&mut DeliveryCountersByClass, u64),
+            ),
+            (
+                DeliveryGapReason::VolatileDropped,
+                (|c: &mut DeliveryCountersByClass, n: u64| c.volatile.dropped = n)
+                    as fn(&mut DeliveryCountersByClass, u64),
+            ),
+        ] {
+            let sender = id(1);
+
+            // Accepted pairing: the causal gap count lands in its own bucket.
+            let mut state = DeliveryAccountability::default();
+            state.note_player_joined(&player(sender, 1)).unwrap();
+            state
+                .record_game_data(sender, Some(1), Some(1), None, None)
+                .unwrap();
+            let mut bucket_counters = counters(0);
+            fill_bucket(&mut bucket_counters, 2);
+            state
+                .record_report(&DeliveryReportPayload {
+                    per_class: bucket_counters,
+                    gaps: vec![DeliveryGap {
+                        from_player: sender,
+                        epoch: 1,
+                        from_seq: 2,
+                        to_seq: 3,
+                        reason,
+                    }],
+                })
+                .unwrap_or_else(|error| panic!("{reason:?} pairing must be accepted: {error}"));
+            // The covered range authorizes the next sequence.
+            state
+                .record_game_data(sender, Some(4), Some(1), None, None)
+                .unwrap_or_else(|error| {
+                    panic!("{reason:?} coverage must authorize seq 4: {error}")
+                });
+
+            // Mis-bucketed pairing: the same gap units reported against a
+            // different bucket must violate.
+            let mut state = DeliveryAccountability::default();
+            state.note_player_joined(&player(sender, 1)).unwrap();
+            state
+                .record_game_data(sender, Some(1), Some(1), None, None)
+                .unwrap();
+            let mut bucket_counters = counters(0);
+            bucket_counters.latest.superseded = 2;
+            assert!(
+                state
+                    .record_report(&DeliveryReportPayload {
+                        per_class: bucket_counters,
+                        gaps: vec![DeliveryGap {
+                            from_player: sender,
+                            epoch: 1,
+                            from_seq: 2,
+                            to_seq: 3,
+                            reason,
+                        }],
+                    })
+                    .is_err(),
+                "{reason:?} gaps must not validate against another bucket's counters"
+            );
+        }
+    }
+
+    #[test]
     fn same_socket_frontiers_survive_reconnect_watermark_rebaseline() {
         let sender = id(2);
         let mut state = DeliveryAccountability::default();

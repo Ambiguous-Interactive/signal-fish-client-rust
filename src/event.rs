@@ -673,12 +673,30 @@ impl std::fmt::Debug for SignalFishEvent {
 /// Category of a decoded protocol-state violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolViolationKind {
+    /// A delivery-accountability snapshot contradicted the client's tracked
+    /// state (baseline, watermark, or incarnation view).
     Snapshot,
+    /// A message arrived outside its valid lifecycle window or was otherwise
+    /// inconsistent with the connection's lifecycle state (unknown or
+    /// departed player, out-of-transition reply, roster or authority
+    /// mismatch).
     Lifecycle,
+    /// An exact gap range was invalid: out of order, beyond a terminal
+    /// watermark, oversized, overlapping, unexplained, or inconsistent with
+    /// prior reports.
     DeliveryGap,
+    /// Cumulative delivery counters moved backward or disagreed with the
+    /// reported outcomes.
     Counters,
+    /// A causal report (unsupported-format ranges and their supplemental
+    /// advisory) violated ordering or authorization rules.
     Causality,
+    /// A sender epoch/sequence stamp was malformed or moved backward (the
+    /// classifier's fallback category).
     Stamp,
+    /// A frame carried metadata inconsistent with the negotiated protocol
+    /// surface, delivery class, or encoding (for example v3-only fields on a
+    /// v2 message).
     UnexpectedMetadata,
 }
 

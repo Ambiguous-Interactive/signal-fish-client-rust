@@ -486,4 +486,23 @@ mod tests {
              flatten the payload"
         );
     }
+
+    #[test]
+    fn serialization_display_prefixes_the_cause_and_source_reaches_it() {
+        use std::error::Error as _;
+
+        // Constructed through the `#[from]` conversion; production code has
+        // deliberately no constructor for this variant (see the variant's
+        // ambient-log invariant), so this pin exercises the conversion and
+        // display contract only.
+        let error = SignalFishError::from(serde_json::from_str::<String>("123").unwrap_err());
+        assert!(
+            error.to_string().starts_with("serialization error: "),
+            "{error:?} must keep the serialization display prefix: {error}"
+        );
+        assert!(
+            error.source().is_some(),
+            "the boxed serde_json cause must stay reachable through source()"
+        );
+    }
 }

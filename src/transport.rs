@@ -110,7 +110,7 @@ pub struct TransportDiagnostics {
 /// Bidirectional framed transport for the Signal Fish signaling protocol.
 ///
 /// Each successful receive yields exactly one complete text or binary frame in
-/// protocol order from the one intended server connection. `TransportFrame`
+/// protocol order from the one intended server connection. [`TransportFrame`]
 /// carries no source address or peer identity, so the client attributes every
 /// yielded frame to that server. This trait does not authenticate the server or
 /// turn arbitrary stream/datagram bytes into frames; the backend must apply an

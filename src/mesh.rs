@@ -24,7 +24,7 @@ use crate::protocol::{
 pub struct MeshPeer {
     /// The peer's identifier.
     pub player_id: PlayerId,
-    /// The peer's display name (empty until a `SessionPlan` names it).
+    /// The peer's display name (empty until a [`SessionPlan`](crate::protocol::SessionPlanPayload) names it).
     pub player_name: String,
     /// Whether the peer is the session's authoritative host.
     pub is_authority: bool,
@@ -222,9 +222,11 @@ impl MeshSession {
         }
     }
 
-    /// Fold an ICE pre-gather set (from `RoomJoined`/`Reconnected`). An empty set
-    /// preserves the existing one and an identical set is a no-op; either way it
-    /// reports `false` so `apply` only signals a real change.
+    /// Fold an ICE pre-gather set (from
+    /// [`RoomJoined`](crate::SignalFishEvent::RoomJoined) and
+    /// [`Reconnected`](crate::SignalFishEvent::Reconnected)). An empty set
+    /// preserves the existing one and an identical set is a no-op; either way
+    /// it reports `false` so `apply` only signals a real change.
     fn apply_pre_gather(&mut self, ice_servers: &[IceServer]) -> bool {
         if ice_servers.is_empty() || self.ice_servers.as_slice() == ice_servers {
             false

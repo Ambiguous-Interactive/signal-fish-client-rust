@@ -16,6 +16,7 @@ use std::fmt;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // Authentication errors
+    /// Authentication credentials were missing or invalid.
     Unauthorized,
     /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
     /// longer emitted by Server 0.7+; retained so older deployments stay
@@ -25,6 +26,7 @@ pub enum ErrorCode {
     /// longer emitted by Server 0.7+; retained so older deployments stay
     /// decodable.
     AuthenticationRequired,
+    /// The provided application ID is unrecognized or unacceptable.
     InvalidAppId,
     /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
     /// longer emitted by Server 0.7+; retained so older deployments stay
@@ -38,51 +40,88 @@ pub enum ErrorCode {
     /// longer emitted by Server 0.7+; retained so older deployments stay
     /// decodable.
     AppIdSuspended,
+    /// No application ID was provided; the server requires one.
     MissingAppId,
+    /// Authentication did not complete within the server's time limit.
     AuthenticationTimeout,
+    /// This SDK version is no longer supported by the server.
     SdkVersionUnsupported,
+    /// The requested game-data format is unsupported; the server falls back
+    /// to JSON.
     UnsupportedGameDataFormat,
 
     // Validation errors
+    /// A request parameter was invalid or malformed.
     InvalidInput,
+    /// The game name violates the server's naming requirements.
     InvalidGameName,
+    /// The room code is invalid or malformed.
     InvalidRoomCode,
+    /// The player name violates the server's naming requirements.
     InvalidPlayerName,
+    /// The requested maximum player count is invalid or out of range.
     InvalidMaxPlayers,
+    /// The message exceeds the server's size limit.
     MessageTooLarge,
 
     // Room errors
+    /// The requested room does not exist (closed, or wrong code).
     RoomNotFound,
+    /// The room has reached its advertised player capacity.
     RoomFull,
+    /// The connection is already a participant of a room.
     AlreadyInRoom,
+    /// The operation requires room membership the connection does not have.
     NotInRoom,
+    /// The server failed to create the requested room.
     RoomCreationFailed,
+    /// The game already has the maximum number of rooms the server allows.
     MaxRoomsPerGameExceeded,
+    /// The room's state does not permit this operation.
     InvalidRoomState,
 
     // Authority errors
+    /// The server does not support authority handoff at all.
     AuthorityNotSupported,
+    /// Another participant already holds the room's authority.
     AuthorityConflict,
+    /// The connection may not claim the room's authority.
     AuthorityDenied,
 
     // Rate limiting
+    /// Too many requests in the current window; retry later. Room/spectator
+    /// admission refusals leave the connection open; a refused handshake
+    /// closes it.
     RateLimitExceeded,
+    /// The deployment's connection limit for this client was reached.
     TooManyConnections,
 
     // Reconnection errors
+    /// The directed reconnect failed; the token is not consumed by such a
+    /// refusal, so retry from a fresh connection while the window is open.
     ReconnectionFailed,
+    /// The reconnection token is invalid or malformed; join the room again.
     ReconnectionTokenInvalid,
+    /// The reconnection window has expired; join the room again as a new
+    /// player.
     ReconnectionExpired,
+    /// The player is already connected to the room from another session.
     PlayerAlreadyConnected,
 
     // Spectator errors
+    /// The room does not permit spectators.
     SpectatorNotAllowed,
+    /// The room has reached its spectator capacity.
     TooManySpectators,
+    /// The connection is not a spectator in this room.
     NotASpectator,
+    /// The spectator join failed (room full or spectating disabled).
     SpectatorJoinFailed,
 
     // Server errors
+    /// An internal server error occurred; retry or contact the operator.
     InternalError,
+    /// A server-side storage error occurred while handling the request.
     StorageError,
     /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
     /// longer emitted by Server 0.7+; retained so older deployments stay
@@ -90,20 +129,30 @@ pub enum ErrorCode {
     ServiceUnavailable,
 
     // Game-start errors (protocol v2)
+    /// Not every player in the room is ready yet.
     GameStartNotReady,
+    /// Only the room's authority may start the game.
     GameStartForbidden,
     /// The room already finalized a peer-to-peer session whose sticky
     /// topology and transport were not negotiated by this connection.
     RoomSessionIncompatible,
 
     // Signaling errors (protocol v3)
+    /// The signal's target is not a participant of this room.
     CrossRoomSignal,
+    /// The requested data-path transport is unsupported or was not
+    /// negotiated for this connection.
     UnsupportedTransport,
+    /// The signal's target peer could not be found in the room.
     SignalTargetNotFound,
+    /// Too many signaling messages were sent in the current window.
     SignalRateLimited,
+    /// The signal payload exceeds the server's size limit.
     SignalTooLarge,
 
     // Connection lifecycle (protocol v3)
+    /// The server closed the connection after it stayed idle for too long.
+    /// See also [`ActivityTimeout`](ErrorCode::ActivityTimeout).
     ConnectionIdleTimeout,
 
     // Delivery & liveness
