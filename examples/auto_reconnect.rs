@@ -21,12 +21,14 @@
 //!
 //! Try killing and restarting the server while the example runs: every
 //! retryable disconnect prints a `Reconnecting` event and the client
-//! re-authenticates and re-joins its room automatically.
+//! re-authenticates on the fresh connection automatically.
 //!
-//! On protocol v3 (`.enable_v3()`) the driver additionally auto-rejoins a
-//! player room after reconnecting; drop this template's
-//! `join_room`-on-`Authenticated` call in that configuration, or the seat is
-//! requested twice per round.
+//! On protocol v3 (`.enable_v3()`), a disconnect inside a *player* room also
+//! reissues the directed `reconnect` automatically — spectator rooms never
+//! auto-rejoin, because the protocol issues no spectator token. In that
+//! configuration drop this template's `join_room`-on-`Authenticated` call:
+//! one room operation may be admitted per round, so the manual join is
+//! refused with `RoomOperationPending` or displaces the automatic rejoin.
 
 use signal_fish_client::{
     JoinRoomParams, ReconnectPolicy, SignalFishClient, SignalFishConfig, SignalFishEvent,

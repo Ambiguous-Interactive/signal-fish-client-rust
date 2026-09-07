@@ -15,8 +15,8 @@
 //! - **Wire-compatible** — all protocol types match the server's v2 format exactly
 //! - **Protocol v2 relay + v3 mesh** — v3 is additive and opt-in; a default client
 //!   stays byte-identical to v2 (see [Protocol versions](#protocol-versions))
-//! - **WebSocket built-in** — default `transport-websocket` feature provides `WebSocketTransport`
-//! - **Event-driven** — receive typed `SignalFishEvent`s via a channel
+//! - **WebSocket built-in** — default `transport-websocket` feature provides [`WebSocketTransport`]
+//! - **Event-driven** — receive typed [`SignalFishEvent`]s via a channel
 //! - **No silent loss** — events are delivered with backpressure and sends are
 //!   bounded with explicit congestion signals (see
 //!   [Delivery guarantees](client#delivery-guarantees))

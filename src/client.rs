@@ -611,7 +611,13 @@ pub enum GameDataDelivery {
     #[default]
     Reliable,
     /// Retain only the newest undelivered value for this sender-defined key.
-    Latest { key: u32 },
+    ///
+    /// The key is caller-chosen; the server coalesces per (sender, key), so
+    /// a newer value on the same key supersedes an undelivered older one.
+    Latest {
+        /// The caller-chosen coalescing key.
+        key: u32,
+    },
     /// Deliver opportunistically without sender backpressure.
     Volatile,
 }
@@ -1061,6 +1067,10 @@ pub struct ClientSnapshot {
     pub transport_ready: bool,
     /// Whether the server has confirmed authentication for this connection.
     pub authenticated: bool,
+    /// Protocol version negotiated with the server: `Some(v)` with `v >= 3`
+    /// once the server's [`ProtocolInfo`](SignalFishEvent::ProtocolInfo)
+    /// reports its version. `None` while un-negotiated, for frozen-v2
+    /// servers, and after the connection ends.
     pub negotiated_protocol_version: Option<u16>,
     /// Exact game-data preference supplied in [`SignalFishConfig`].
     ///
@@ -1099,7 +1109,16 @@ pub struct ClientSnapshot {
     /// Cleared together with [`room_role`](Self::room_role) on every confirmed
     /// room or spectator exit.
     pub player_id: Option<PlayerId>,
+    /// Authoritative room ID of the joined room.
+    ///
+    /// Cleared together with [`room_role`](Self::room_role) on every
+    /// confirmed room or spectator exit.
     pub room_id: Option<RoomId>,
+    /// Room code of the joined room, as join-capability knowledge.
+    ///
+    /// Cleared together with [`room_role`](Self::room_role) on every
+    /// confirmed room or spectator exit, and [`Debug`]-redacted to presence
+    /// and byte length like every other ambient-log surface.
     pub room_code: Option<String>,
     /// Generation from the latest authoritative session plan.
     ///
@@ -8835,6 +8854,237 @@ mod tests {
             let message: serde_json::Value = serde_json::from_str(last).unwrap();
             assert_eq!(message["type"], "Reconnect");
             assert_eq!(message["data"]["auth_token"], "tok-1");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_policy_spectator_rooms_never_auto_rejoin() {
+        // Round 1: authenticate, join as a spectator (no reconnection token
+        // exists for spectators), die.
+        let (transport1, _sent1, closed1, controls1) = MockTransport::new_shared(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(spectator_joined_json())),
+        ]);
+        // Round 2: authenticate again; nothing else may be sent — the
+        // protocol has no spectator reconnect, so the retained context must
+        // not exist.
+        let (transport2, sent2, _closed2) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_as_spectator("spec-game".into(), "SPEC1".into(), "viewer".into())
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::SpectatorJoined { .. })
+        ));
+        // The loop is parked here (nothing scripted), so the snapshot is
+        // race-free.
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.room_role, Some(RoomRole::Spectator));
+        assert_eq!(
+            snapshot.reconnection_token, None,
+            "spectator baselines carry no reconnection token"
+        );
+
+        controls1.close_peer();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting { attempt, .. }) => {
+                assert_eq!(attempt, 1);
+            }
+            other => panic!("expected Reconnecting, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        {
+            let sent2 = sent2.lock().unwrap();
+            assert_eq!(
+                sent2.len(),
+                1,
+                "round-2 wire must carry only the reseeded Authenticate"
+            );
+            let message: serde_json::Value = serde_json::from_str(&sent2[0]).unwrap();
+            assert_eq!(message["type"], "Authenticate");
+        }
+        // A virtual beat later the wire is unchanged: no automatic room
+        // operation ever fires for a spectator baseline.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(sent2.lock().unwrap().len(), 1);
+        assert!(closed1.load(Ordering::Acquire), "round-1 transport closed");
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_budget_resets_after_reauth_and_retained_context_is_single_use() {
+        // Round 1: authenticate, join a token-bearing player room, die.
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        // Round 2: re-authenticates (resetting the attempt budget), stages
+        // the automatic reconnect — consuming the retained context — and
+        // dies before any reply.
+        let (transport2, sent2, _closed2) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            None,
+        ]);
+        // Round 3 exists only because the budget reset after round 2's
+        // re-authentication: max_attempts is 1.
+        let (transport3, sent3, _closed3) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
+        let pool = transport_pool(vec![transport2, transport3]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(1)
+            .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        match events.recv().await {
+            Some(SignalFishEvent::RoomJoined {
+                reconnection_token, ..
+            }) => {
+                assert_eq!(reconnection_token.as_deref(), Some("tok-1"));
+            }
+            other => panic!("expected RoomJoined, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting {
+                attempt,
+                next_backoff,
+            }) => {
+                assert_eq!(attempt, 1);
+                assert_eq!(next_backoff, Duration::from_millis(50));
+            }
+            other => panic!("expected Reconnecting, got {other:?}"),
+        }
+        // Round 2: the automatic reconnect is staged the moment the fresh
+        // connection authenticates.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        // The staged automatic reconnect reached the wire before the round
+        // died (`poll_transport_io` flushes pending sends before polling
+        // receives), with the retained token.
+        {
+            let sent2 = sent2.lock().unwrap();
+            assert_eq!(sent2.len(), 2, "round-2 wire: Authenticate then Reconnect");
+            let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
+            assert_eq!(message["type"], "Reconnect");
+            assert_eq!(message["data"]["auth_token"], "tok-1");
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        // The documented deliberate gap: the context was consumed when the
+        // round-2 reconnect was staged, so this round is connection-only.
+        // The attempt ordinal reset to 1 because round 2 reached the
+        // authenticated state — with `max_attempts(1)` this round proves
+        // the budget was refreshed instead of abandoned.
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting {
+                attempt,
+                next_backoff,
+            }) => {
+                assert_eq!(attempt, 1);
+                assert_eq!(next_backoff, Duration::from_millis(50));
+            }
+            other => panic!("expected Reconnecting after the budget reset, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        {
+            let sent3 = sent3.lock().unwrap();
+            assert_eq!(
+                sent3.len(),
+                1,
+                "round-3 wire must be connection-only: the retained context was consumed at staging"
+            );
+            let message: serde_json::Value = serde_json::from_str(&sent3[0]).unwrap();
+            assert_eq!(message["type"], "Authenticate");
         }
         client.shutdown().await;
     }

@@ -3157,6 +3157,53 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tokio-runtime")]
+    fn auto_reconnect_operation_requires_authenticated_roomless_state_and_is_single_use() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        core.set_reconnect_retention(true);
+        let _ = process(&mut core, authenticated());
+        let _ = process(&mut core, protocol_info(Some(3)));
+
+        // Authenticated and roomless, but nothing retained yet.
+        assert!(core.take_auto_reconnect_operation().is_none());
+
+        // A token-bearing player room retains the reconnect context.
+        core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
+        let _ = process(&mut core, room_joined());
+
+        // Still inside the room: the guard keeps the context for a later
+        // qualifying moment.
+        assert!(core.take_auto_reconnect_operation().is_none());
+
+        // A transport death clears the session (including authentication)
+        // but deliberately keeps the retained context.
+        core.clear_session();
+        assert!(core.take_auto_reconnect_operation().is_none());
+
+        // A fresh policy round re-authenticates; the qualifying moment
+        // consumes the retained context exactly once.
+        let _ = process(&mut core, authenticated());
+        let Some(ClientOperation::Reconnect(player_id, room_id, token)) =
+            core.take_auto_reconnect_operation()
+        else {
+            panic!("expected the retained reconnect context to be consumed");
+        };
+        assert_eq!(player_id, PlayerId::from_u128(LOCAL));
+        assert_eq!(room_id, RoomId::from_u128(10));
+        assert_eq!(token, "token");
+        assert!(
+            core.take_auto_reconnect_operation().is_none(),
+            "the retained context is single use"
+        );
+    }
+
+    #[test]
     fn room_operation_capability_requires_request_and_echo_with_legacy_fallback() {
         let join = || ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
 
