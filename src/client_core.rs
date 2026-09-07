@@ -3157,6 +3157,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tokio-runtime")]
     fn auto_reconnect_operation_requires_authenticated_roomless_state_and_is_single_use() {
         let mut core = ClientCore::new(
             Some(GameDataEncoding::Json),
