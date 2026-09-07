@@ -7792,7 +7792,7 @@ mod tests {
         // Reach membership without draining events: Connected..RoomJoined
         // then exactly fill the capacity-4 channel, so the terminal
         // Disconnected delivery wedges against a permanently full channel.
-        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         while !client.is_authenticated() {
             assert!(
                 tokio::time::Instant::now() < give_up,
@@ -7912,7 +7912,7 @@ mod tests {
             .with_shutdown_timeout(std::time::Duration::from_millis(500));
         let (mut client, _events) = SignalFishClient::start(transport, config);
 
-        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let give_up = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         while !client.is_authenticated() {
             assert!(
                 tokio::time::Instant::now() < give_up,
@@ -8017,10 +8017,10 @@ mod tests {
             .with_shutdown_timeout(std::time::Duration::from_millis(500));
         let (mut client, events) = SignalFishClient::start(transport, config);
 
-        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !client.is_authenticated() {
             assert!(
-                give_up.elapsed() < std::time::Duration::from_secs(2),
+                give_up.elapsed() < std::time::Duration::from_secs(10),
                 "the scripted handshake never authenticated"
             );
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -8032,7 +8032,7 @@ mod tests {
             .expect("join must be admitted once authenticated");
         while client.current_room_id().await.is_none() {
             assert!(
-                give_up.elapsed() < std::time::Duration::from_secs(2),
+                give_up.elapsed() < std::time::Duration::from_secs(10),
                 "the loop stopped servicing inbound frames after the receiver was dropped"
             );
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;

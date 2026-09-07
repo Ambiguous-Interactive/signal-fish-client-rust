@@ -379,7 +379,7 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
 v2 JSON protocol. Server 0.8.0 commit `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` is the released runtime compatibility binding.
-The samples and AsyncAPI authority (room-correlation extension, advertised outbound limit, room-session incompatibility error) are byte-identical to the earlier post-0.7 preview at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3`.
+The samples are byte-identical to the earlier post-0.7 preview at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3` (room-correlation extension, advertised outbound limit, room-session incompatibility error); the vendored AsyncAPI authority re-syncs to upstream `main` prose only.
 Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
 ### Exhaustive Public Types

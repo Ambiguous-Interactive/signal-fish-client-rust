@@ -1699,8 +1699,8 @@ async fn e2e_server_040_generationless_mesh_signal() {
 }
 
 /// Smoke check that a flooding sender's own control plane stays healthy:
-/// Pings sent during a sustained GameData flood still get Pongs promptly
-/// (the sender's outbound queue is not the congested one).
+/// Pings sent during a sustained GameData flood still get Pongs within the
+/// bounded wait (the sender's outbound queue is not the congested one).
 #[tokio::test]
 #[ignore = "requires a live signal-fish server; set SIGNAL_FISH_SERVER_BIN or SIGNAL_FISH_E2E_URL"]
 async fn e2e_sender_ping_survives_own_game_data_flood() {
@@ -1761,10 +1761,10 @@ async fn e2e_sender_ping_survives_own_game_data_flood() {
         "every substantial pre-ping flood batch must be accepted"
     );
     assert_eq!(pongs, PING_ROUNDS);
-    assert!(
-        worst_rtt < Duration::from_secs(2),
-        "sender-side Pong RTT should stay low during its own flood; got {worst_rtt:?}"
-    );
+    // Timing stays diagnostic by policy: the 3 s `wait_for_event` bound is the
+    // survival oracle, and the SMOKE DATA line above reports the worst RTT for
+    // trend inspection instead of gating on it (round-50 audit; throughput
+    // gating is deliberately rejected in blocking CI).
     a.shutdown().await;
 }
 

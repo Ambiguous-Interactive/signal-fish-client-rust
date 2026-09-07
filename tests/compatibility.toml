@@ -5,9 +5,13 @@ server_tag = "v0.8.0"
 server_commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
 synced = "2026-09-01"
 
+# The evidence authority all vendored protocol artifacts are synced to.
+# Descriptive-only upstream spec drift advances this (and both PROVENANCE
+# files) without touching the released runtime binding above; any schema,
+# message, or error-code change triggers full type reconciliation.
 [protocol_authority]
-commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
-synced = "2026-09-01"
+commit = "11e165cecb9179378f53d65971bd39a2f4e3baab"
+synced = "2026-09-07"
 
 [legacy_server]
 version = "0.4.0"
@@ -26,4 +30,4 @@ generation = "omitted"
 "v3-server-messages.jsonl" = "21ed576f61cc042eee9c463363bde5a4b38a9285d0560666423afd6c930588b2"
 
 [server_spec]
-"signal-fish-protocol.asyncapi.yaml" = "77a9556079899cc291082ae9570a5186b645ec821a033edd7a0bfee8772489a3"
+"signal-fish-protocol.asyncapi.yaml" = "26542caf25adcf0638e87faca8def19a02da6e4ce2c73165092dd2228c7f312d"
