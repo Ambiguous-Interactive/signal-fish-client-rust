@@ -1352,9 +1352,10 @@ mod tests {
     #[test]
     fn dropped_full_and_volatile_gap_reasons_align_with_their_counter_buckets() {
         // Every gap reason must sum into its own counter bucket: a bucket
-        // swap (or a dropped mapping arm) would mis-validate server loss
-        // accounting, so both `LatestDroppedFull` and `VolatileDropped` are
-        // pinned in the accepted pairing and against a mis-bucketed pairing.
+        // swap (or a dropped mapping arm) would corrupt server loss
+        // accounting validation, so both `LatestDroppedFull` and
+        // `VolatileDropped` are pinned in the accepted pairing and against
+        // a wrong-bucket pairing.
         for (reason, fill_bucket) in [
             (
                 DeliveryGapReason::LatestDroppedFull,
@@ -1396,7 +1397,7 @@ mod tests {
                     panic!("{reason:?} coverage must authorize seq 4: {error}")
                 });
 
-            // Mis-bucketed pairing: the same gap units reported against a
+            // Wrong-bucket pairing: the same gap units reported against a
             // different bucket must violate.
             let mut state = DeliveryAccountability::default();
             state.note_player_joined(&player(sender, 1)).unwrap();
