@@ -2518,6 +2518,136 @@ mod tests {
         mesh.shutdown().await;
     }
 
+    /// A terminal `Disconnected` edge runs the same authoritative teardown as
+    /// a room exit, so a refused room-scoped status retained across it must
+    /// also be discarded (round-52 audit): releasing queue capacity afterward
+    /// must never leak the stale snapshot of a dead connection.
+    ///
+    /// Runs on paused virtual time for the same reasons as
+    /// [`congestion_buffers_driver_signal_and_relays_exactly_once`]: the
+    /// permit/counter/channel seams carry all progress, and the bounded
+    /// waits resolve deterministically via auto-advance instead of racing
+    /// CI scheduling.
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_discards_congested_transport_status() {
+        let peer = uuid(12);
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 2, protocol_info_v3(), false).await;
+
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .expect("first filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
+        })
+        .await
+        .expect("transport loop never parked in the congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .expect("second filler should occupy the command queue");
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+
+        mesh.handle_event(&SignalFishEvent::Disconnected {
+            reason: Some("closed by transport".into()),
+            last_server_error: None,
+        });
+        assert!(driver.calls().contains(&DriverCall::Disconnect(peer)));
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            0,
+            "a status refused before Disconnected must not reach the wire afterward"
+        );
+
+        permits.add_permits(8);
+        mesh.shutdown().await;
+    }
+
+    /// While the command queue refuses every report, a connect/disconnect
+    /// flap must coalesce in the single latest-state slot instead of queueing
+    /// edges: releasing capacity afterward sends exactly the final aggregate
+    /// state, never the superseded intermediate snapshots (round-52 audit).
+    ///
+    /// Runs on paused virtual time for the same reasons as
+    /// [`congestion_buffers_driver_signal_and_relays_exactly_once`].
+    #[tokio::test(start_paused = true)]
+    async fn congested_status_flap_coalesces_to_latest_state() {
+        let peer = uuid(13);
+        let GatedAnswerer {
+            mut mesh,
+            driver,
+            permits,
+            entered,
+            sent,
+            generation,
+        } = start_gated_answerer(peer, 2, protocol_info_v3(), false).await;
+
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 1 }))
+            .expect("first filler should enter the transport");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            spin_until(|| entered.load(std::sync::atomic::Ordering::Acquire) >= 3).await;
+        })
+        .await
+        .expect("transport loop never parked in the congested send");
+        mesh.client_mut()
+            .send_game_data(serde_json::json!({ "filler": 2 }))
+            .expect("second filler should occupy the command queue");
+
+        // The flap happens entirely inside the congestion window: every edge
+        // is refused and overwrites the slot; none reaches the wire.
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+        driver.emit_and_wake(DriverEvent::Disconnected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerDisconnected(id))) if id == peer
+        ));
+        driver.emit_and_wake(DriverEvent::Connected { peer, generation });
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), mesh.recv()).await,
+            Ok(Some(MeshEvent::PeerConnected(id))) if id == peer
+        ));
+
+        permits.add_permits(3);
+        for _ in 0..8 {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(25), mesh.recv()).await;
+            if sent_count(&sent, &["TransportStatus", "webrtc", "true"]) == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "true"]),
+            1,
+            "only the final aggregate state must reach the wire"
+        );
+        assert_eq!(
+            sent_count(&sent, &["TransportStatus", "webrtc", "false"]),
+            0,
+            "intermediate flap edges must never surface after congestion clears"
+        );
+
+        permits.add_permits(8);
+        mesh.shutdown().await;
+    }
+
     /// A leave fence is also transient when the correlated operation later
     /// fails. The last-channel down edge must survive `RoomOperationPending`
     /// and be reported after the failure leaves this client in the room.

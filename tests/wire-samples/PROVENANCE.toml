@@ -8,9 +8,11 @@ repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
 # Exact server commit the .jsonl bytes were copied from. The bytes are
 # byte-identical from the Server 0.8.0 release pin (d79dcdc7549777c8c2bd9fcb2d132641532d8c86)
-# through this commit; the evidence authority advances together across
+# through this commit (the v3 `connection_info` snapshot echo removal landed
+# only in the AsyncAPI spec and server code; these published samples never
+# carried it); the evidence authority advances together across
 # compatibility.toml and both PROVENANCE files.
-commit = "11e165cecb9179378f53d65971bd39a2f4e3baab"
+commit = "ceb47cbc86c88d321b778596f195b68a7bd03aea"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3

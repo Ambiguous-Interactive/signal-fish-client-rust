@@ -1,0 +1,79 @@
+# Cross-platform compile portability gate (issue #235).
+#
+# Weekly scheduled `cargo check` lanes for the desktop targets that round 51
+# verified by hand (Windows MSVC and macOS ARM64), so a Windows-only or
+# macOS-only compile break surfaces within seven days instead of at the next
+# cross-platform session audit. Scheduled only, by design: per-PR Windows or
+# macOS runners would contradict the measured CI-cost policy (issue #225) for
+# a regression class that has never failed. Promotion to a required check
+# additionally needs the ruleset plumbing in `.github/required-checks.json`.
+#
+# The opt-in `tls` feature's `ring` needs the target C toolchain, so lanes
+# run the max NON-crypto feature set and leave `tls` to upstream ring
+# coverage (ring 0.17 officially supports all three targets).
+#
+# The concurrency group includes the event name so scheduled and manual runs
+# on the same ref do not cancel each other.
+
+name: Portability
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/portability.yml
+      - Cargo.toml
+      - Cargo.lock
+      - crates/*/Cargo.toml
+      - tools/*/Cargo.toml
+  schedule:
+    # Mondays at 06:30 UTC — after protocol-sync (05:30) and off the
+    # security-supply-chain slot (06:00) so scheduled runs never start
+    # simultaneously.
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # check — cargo check per desktop target × feature cell
+  # ──────────────────────────────────────────────────────────────
+  check:
+    name: cargo check (${{ matrix.target }}, ${{ matrix.cell }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-apple-darwin
+        cell:
+          - name: workspace default
+            flags: --workspace
+          - name: max non-crypto
+            flags: --workspace --no-default-features --features transport-websocket,polling-client,mesh,token-binding,tokio-runtime
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain with cross target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Check workspace compiles for target
+        run: cargo check ${{ matrix.cell.flags }} --all-targets --locked --target ${{ matrix.target }}
