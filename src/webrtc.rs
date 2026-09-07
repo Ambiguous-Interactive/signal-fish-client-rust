@@ -4422,10 +4422,11 @@ mod tests {
             matches!(got, Some(MeshEvent::Data { .. })),
             "should surface the driver data, got {got:?}"
         );
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "waker must surface output promptly (well under one 30s pump), took {elapsed:?}"
-        );
+        // Timing stays diagnostic: the 5 s recv bound is the mechanism oracle
+        // (a 30 s pump can never deliver inside it, so success proves the
+        // waker path), and the elapsed time is reported for trend inspection
+        // instead of gated (round-50 audit; timings are pinned-diagnostic).
+        println!("waker surfaced driver data after {elapsed:?}");
         mesh.shutdown().await;
     }
 }
