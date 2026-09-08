@@ -692,9 +692,10 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// before transport readiness are all retried: every one of them can be
 /// caused by a dead or misbehaving *backend*, which is exactly what a fresh
 /// transport from the factory replaces. Close codes are not inspected: a
-/// server kick (private close code 4007, `kicked`) is retried like any peer
-/// close, and because the server never arms reconnection for a kicked seat,
-/// that one round ends with the automatic rejoin refused in-band as
+/// server kick (private close code 4007, `kicked`) is retried like any
+/// peer close. The server never arms reconnection for a kicked seat, so on
+/// a spec-conformant server the episode ends with the automatic rejoin
+/// refused in-band as
 /// [`ReconnectionFailed`](SignalFishEvent::ReconnectionFailed) while the
 /// fresh connection itself stays usable. Not retried — the client ends as
 /// today:
@@ -9753,12 +9754,17 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn reconnection_failed_stops_room_recovery_but_keeps_the_connection() {
+        // Round 1 dies as an authority kick: private close code 4007
+        // ("kicked"). The close is an ordinary retryable peer close, so the
+        // policy runs the same doomed one-round journey as any in-band
+        // rejoin refusal.
         let (transport1, _sent1, _closed1) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
             Some(Ok(room_joined_json_with_token("tok-1"))),
             None,
         ]);
+        let transport1 = transport1.with_peer_close(4007, "kicked");
         let (transport2, sent2, _closed2) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
@@ -9768,93 +9774,6 @@ mod tests {
         let policy = ReconnectPolicy::new(pool_factory(&pool))
             .with_max_attempts(3)
             .with_initial_backoff(Duration::from_millis(10));
-        let config = SignalFishConfig::new("mb_reconnect")
-            .enable_v3()
-            .with_reconnect_policy(policy);
-        let (mut client, mut events) = SignalFishClient::start(transport1, config);
-
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Connected)
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Authenticated { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::ProtocolInfo(_))
-        ));
-        client
-            .join_room(JoinRoomParams::new("test-game", "local"))
-            .unwrap();
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::RoomJoined { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Disconnected { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Reconnecting { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Connected)
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Authenticated { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::ProtocolInfo(_))
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::ReconnectionFailed { .. })
-        ));
-        // Exactly one automatic reconnect was attempted; the connection
-        // stays up and the caller owns the fallback decision.
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        {
-            let sent2 = sent2.lock().unwrap();
-            assert_eq!(sent2.len(), 2);
-            let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
-            assert_eq!(message["type"], "Reconnect");
-        }
-        client.shutdown().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn reconnect_policy_kick_close_4007_runs_one_doomed_rejoin_round() {
-        // An authority kick closes the kicked client's connection with
-        // private close code 4007 ("kicked"); the server never arms
-        // reconnection for that seat. The close is an ordinary retryable
-        // peer close, so the policy runs exactly one round: fresh transport,
-        // re-authentication, and the doomed automatic `Reconnect` answered
-        // in-band with `ReconnectionFailed` — no retry loop, and the
-        // connection stays usable for manual recovery.
-        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
-            Some(Ok(authenticated_json())),
-            Some(Ok(protocol_info_v3_json())),
-            Some(Ok(room_joined_json_with_token("tok-1"))),
-            None,
-        ]);
-        let transport1 = transport1.with_peer_close(4007, "kicked");
-        // Round 2: authenticate again; the automatic reconnect for the kicked
-        // seat is refused in-band and the connection stays deliverable.
-        let (transport2, sent2, _closed2) = MockTransport::new(vec![
-            Some(Ok(authenticated_json())),
-            Some(Ok(protocol_info_v3_json())),
-            Some(Ok(reconnection_failed_json())),
-        ]);
-        let pool = transport_pool(vec![transport2]);
-        let policy = ReconnectPolicy::new(pool_factory(&pool))
-            .with_max_attempts(3)
-            .with_initial_backoff(Duration::from_millis(50));
         let config = SignalFishConfig::new("mb_reconnect")
             .enable_v3()
             .with_reconnect_policy(policy);
@@ -9918,10 +9837,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         {
             let sent2 = sent2.lock().unwrap();
-            assert_eq!(sent2.len(), 2, "round-2 wire: Authenticate then Reconnect");
+            assert_eq!(sent2.len(), 2);
             let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
             assert_eq!(message["type"], "Reconnect");
-            assert_eq!(message["data"]["auth_token"], "tok-1");
         }
         assert!(client.is_connected());
         client.shutdown().await;

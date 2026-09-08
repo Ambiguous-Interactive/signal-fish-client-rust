@@ -654,9 +654,10 @@ On `ReconnectionFailed` the connection stays up but room recovery stops —
 apply the same `error_code` decision tree as the manual flow (fall back to
 `join_room`, wait out `PlayerAlreadyConnected`, or give up). Close codes are
 not inspected, so a server kick (private close code 4007, `kicked`) is
-retried like any peer close: one round that re-authenticates, sends the
-doomed automatic `reconnect` for the kicked seat, and ends in
-`ReconnectionFailed` on the still-usable fresh connection. When the attempt
+retried like any peer close: the server never arms reconnection for a
+kicked seat, so on a spec-conformant server the episode ends with the
+doomed automatic `reconnect` refused in-band as `ReconnectionFailed` on a
+still-usable fresh connection. When the attempt
 budget (`max_attempts`, reset whenever a connection reaches `Authenticated`)
 runs out, the client emits `ReconnectAbandoned { attempts, last_reason }` and
 the event stream ends.

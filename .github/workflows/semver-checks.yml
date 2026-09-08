@@ -91,8 +91,18 @@ jobs:
           # the live title instead, failing closed when it cannot be read.
           # Explicitly dispatched candidates keep their `pr_title` input.
           if [ -n "$PR_NUMBER" ]; then
-            if ! live_title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)" \
-              || [ -z "$live_title" ]; then
+            live_title=""
+            for attempt in 1 2 3; do
+              if live_title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)" \
+                && [ -n "$live_title" ]; then
+                break
+              fi
+              live_title=""
+              if [ "$attempt" -lt 3 ]; then
+                sleep 2
+              fi
+            done
+            if [ -z "$live_title" ]; then
               printf '::error::Could not read the live title of pull request %s.\n' "$PR_NUMBER"
               exit 1
             fi
