@@ -238,6 +238,12 @@ jobs:
           tool: cargo-mutants@27.1.0
 
       - name: Run mutation tests
+        # Tuning is measured, not guessed (session 116, 4-core hosted
+        # emulation): `--copy-target true` was slower than the scratch
+        # default (cargo invalidates most copied artifacts anyway — 2m17s vs
+        # 1m55s locally) and `-j 3` lost to `-j 2` (3m09s vs 2m40s: the
+        # extra scratch tree's dependency build outweighs the added
+        # parallelism). Re-measure before changing either.
         run: >-
           cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2
           --file src/protocol.rs --file src/protocol/binary.rs
