@@ -3820,6 +3820,9 @@ mod tests {
                                 RoomOperationRequest::Reconnect { .. } => Some(2),
                                 RoomOperationRequest::JoinAsSpectator { .. } => Some(3),
                                 RoomOperationRequest::LeaveSpectator => Some(4),
+                                // The SDK sends no moderation operations.
+                                RoomOperationRequest::KickPlayer { .. }
+                                | RoomOperationRequest::RegenerateRoomCode => None,
                             }
                         }
                         _ => None,

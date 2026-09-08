@@ -957,6 +957,25 @@ pub enum RoomOperationRequest {
         spectator_name: String,
     },
     LeaveSpectator,
+    /// Authority-only: remove a seated player from the room.
+    ///
+    /// Only the room's designated authority is accepted; the target must be a
+    /// current seated member and cannot be the sender. The server removes the
+    /// seat, broadcasts the usual `PlayerLeft` roster delta to the remaining
+    /// members, and closes the target's connection with private close code
+    /// 4007 (`kicked`); reconnection is never armed for a kicked seat.
+    KickPlayer {
+        /// The seated player to remove.
+        player_id: PlayerId,
+    },
+    /// Authority-only: replace the room code with a freshly generated one.
+    ///
+    /// The old code stops resolving to this room immediately; joins naming it
+    /// behave like any unknown code. Existing members stay connected and
+    /// reconnection tokens are unaffected. The
+    /// [`RoomOperationResult::RoomCodeRegenerated`] response carries the new
+    /// code for the authority to distribute to future invitees.
+    RegenerateRoomCode,
 }
 
 impl std::fmt::Debug for RoomOperationRequest {
@@ -967,6 +986,8 @@ impl std::fmt::Debug for RoomOperationRequest {
             Self::Reconnect { .. } => "Reconnect",
             Self::JoinAsSpectator { .. } => "JoinAsSpectator",
             Self::LeaveSpectator => "LeaveSpectator",
+            Self::KickPlayer { .. } => "KickPlayer",
+            Self::RegenerateRoomCode => "RegenerateRoomCode",
         })
     }
 }
@@ -1012,6 +1033,21 @@ pub enum RoomOperationResult {
         #[serde(skip_serializing_if = "Option::is_none")]
         error_code: Option<ErrorCode>,
     },
+    /// The requested `KickPlayer` moderation operation succeeded: the target
+    /// seat was removed and its connection is being closed with close code
+    /// 4007 (`kicked`). The remaining members receive the usual `PlayerLeft`
+    /// roster delta.
+    PlayerKicked {
+        /// The seated player that was removed.
+        player_id: PlayerId,
+    },
+    /// The requested `RegenerateRoomCode` moderation operation succeeded:
+    /// distribute the new code to future invitees, as the old code no longer
+    /// resolves to this room.
+    RoomCodeRegenerated {
+        /// The room's freshly generated code.
+        room_code: String,
+    },
 }
 
 impl std::fmt::Debug for RoomOperationResult {
@@ -1026,6 +1062,8 @@ impl std::fmt::Debug for RoomOperationResult {
             Self::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
             Self::SpectatorLeft { .. } => "SpectatorLeft",
             Self::OperationFailed { .. } => "OperationFailed",
+            Self::PlayerKicked { .. } => "PlayerKicked",
+            Self::RoomCodeRegenerated { .. } => "RoomCodeRegenerated",
         })
     }
 }
@@ -1059,6 +1097,26 @@ impl RoomOperationResult {
             },
             Self::OperationFailed { reason, error_code } => {
                 return Err((reason, error_code));
+            }
+            // The moderation results have no legacy top-level face and can
+            // never match a pending operation of this SDK (it issues no
+            // moderation operations); the public message→event conversion
+            // renders them as no-effect operation failures.
+            Self::PlayerKicked { .. } => {
+                return Err((
+                    "the room authority removed a player (PlayerKicked); this SDK does not \
+                     issue moderation operations"
+                        .to_string(),
+                    None,
+                ));
+            }
+            Self::RoomCodeRegenerated { .. } => {
+                return Err((
+                    "the room authority regenerated the room code (RoomCodeRegenerated); this \
+                     SDK does not issue moderation operations"
+                        .to_string(),
+                    None,
+                ));
             }
         })
     }

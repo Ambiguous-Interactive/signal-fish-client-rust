@@ -500,8 +500,8 @@ migration](migration-0.11.md#structured-transport-error-causes).
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 54-variant enum that arrives inside events. The post-0.7
-protocol authority declares 48 variants; six compatibility variants remain
+`ErrorCode` is a 57-variant enum that arrives inside events. The post-0.7
+protocol authority declares 51 variants; six compatibility variants remain
 decodable for older servers. The wire uses `SCREAMING_SNAKE_CASE` strings
 (e.g., `"ROOM_NOT_FOUND"`).
 
@@ -534,6 +534,7 @@ Error codes are grouped by category:
 | **Connection Lifecycle (v3)** | `ConnectionIdleTimeout` |
 | **Delivery & Liveness** | `SlowConsumer`, `ActivityTimeout`, `ServerDraining`, `InvalidDeliveryClass` |
 | **Protocol Negotiation** | `UnsupportedProtocolVersion` |
+| **Moderation** | `NotRoomAuthority`, `KickTargetNotFound`, `Kicked` |
 
 See [Errors](errors.md) for the full table with descriptions.
 

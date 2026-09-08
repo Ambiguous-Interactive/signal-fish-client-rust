@@ -96,7 +96,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
 | `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 54 variants from server (48 in the post-0.7 authority, 6 compatibility-only) |
+| `src/error_codes.rs` | `ErrorCode` enum — 57 variants from server (51 in the post-0.7 authority, 6 compatibility-only) |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |

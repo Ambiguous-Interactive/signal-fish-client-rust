@@ -95,9 +95,9 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **54 variants** representing
+`ErrorCode` is a protocol-level enum with **57 variants** representing
 structured error codes returned by compatible Signal Fish servers. The
-post-0.7 protocol authority declares 48 of them; six variants remain decodable
+post-0.7 protocol authority declares 51 of them; six variants remain decodable
 for older servers and are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
@@ -247,7 +247,19 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 |---------|-------------|
 | `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. |
 
-!!! note "The six new v3 *server* codes vs. `SignalFishError::ProtocolUnsupported`"
+### Moderation (3)
+
+Authority-only room operations (`KickPlayer`, `RegenerateRoomCode`) reject with
+these codes. The SDK exposes their wire types but issues no moderation
+operations itself.
+
+| Variant | Description |
+|---------|-------------|
+| `NotRoomAuthority` | A moderation operation was sent by a connection that is not the room's designated authority player. |
+| `KickTargetNotFound` | The player named by `KickPlayer` is not a seated member of the room. |
+| `Kicked` | This connection was removed from its room by the room's authority player. The WebSocket closed with private close code 4007 (`kicked`); reconnection is not offered. |
+
+!!! note "The v3-era *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five v3 signaling codes plus `ConnectionIdleTimeout` are **server-sent**
     `ErrorCode`s that arrive inside `SignalFishEvent::Error`. They are distinct
     from the client-side `SignalFishError::ProtocolUnsupported`, which fails a

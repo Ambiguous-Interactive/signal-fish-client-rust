@@ -34,11 +34,15 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`ceb47cbc86c88d321b778596f195b68a7bd03aea`, advanced from the Server 0.8.0
+`9534d0e61e0217b768048274deb9a79ede3b47a5`, advanced from the Server 0.8.0
 release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
-plus one deliberate v3 schema change (the v3 room-member snapshot excludes the
-legacy `connection_info` echo — server issue #529; the v2 snapshot shape is
-frozen and the wire samples are byte-identical across all three commits).
+plus two deliberate additive changes (the v3 room-member snapshot excludes the
+legacy `connection_info` echo — server issue #529; and the authority-only
+moderation surface — server issue #525 — added the NOT_ROOM_AUTHORITY /
+KICK_TARGET_NOT_FOUND / KICKED error codes, the KickPlayer / RegenerateRoomCode
+operations, and the PlayerKicked / RoomCodeRegenerated results; the v2 shapes
+are frozen and the v3 sample additions are append-only, so pre-existing sample
+lines stay byte-identical to the release pin).
 Released runtime compatibility stays bound to the Server 0.8.0 release in
 `tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to
 upstream `main` at every refresh — descriptive prose drift is absorbed
