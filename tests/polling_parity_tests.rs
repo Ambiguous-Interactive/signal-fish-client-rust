@@ -194,7 +194,11 @@ fn advance_room_command_requirements(json: &str, gate: &mut RoomCommandRequireme
             | RoomOperationResult::SpectatorJoinFailed { .. }
             | RoomOperationResult::OperationFailed { .. }
             | RoomOperationResult::PlayerKicked { .. }
-            | RoomOperationResult::RoomCodeRegenerated { .. } => return,
+            | RoomOperationResult::RoomCodeRegenerated { .. }
+            | RoomOperationResult::RoomAccessUpdated { .. }
+            | RoomOperationResult::PlayerBanned { .. }
+            | RoomOperationResult::PlayerUnbanned { .. }
+            | RoomOperationResult::AuthorityTransferred { .. } => return,
         },
         message => message,
     };
@@ -1929,16 +1933,25 @@ fn canonical_event(event: &SignalFishEvent) -> String {
             spectator,
             current_spectators,
             reason,
-        } => event_fields!("NewSpectatorJoined", spectator, current_spectators, reason),
+            spectator_count,
+        } => event_fields!(
+            "NewSpectatorJoined",
+            spectator,
+            current_spectators,
+            reason,
+            spectator_count
+        ),
         SignalFishEvent::SpectatorDisconnected {
             spectator_id,
             reason,
             current_spectators,
+            spectator_count,
         } => event_fields!(
             "SpectatorDisconnected",
             spectator_id,
             reason,
-            current_spectators
+            current_spectators,
+            spectator_count
         ),
         SignalFishEvent::Error {
             message,

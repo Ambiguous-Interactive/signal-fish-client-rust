@@ -95,9 +95,9 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **57 variants** representing
+`ErrorCode` is a protocol-level enum with **60 variants** representing
 structured error codes returned by compatible Signal Fish servers. The
-post-0.7 protocol authority declares 51 of them; six variants remain decodable
+post-0.7 protocol authority declares 54 of them; six variants remain decodable
 for older servers and are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
@@ -258,6 +258,20 @@ operations itself.
 | `NotRoomAuthority` | A moderation operation was sent by a connection that is not the room's designated authority player. |
 | `KickTargetNotFound` | The player named by `KickPlayer` is not a seated member of the room. |
 | `Kicked` | This connection was removed from its room by the room's authority player. The WebSocket closed with private close code 4007 (`kicked`); the server never arms reconnection for a kicked seat (a configured `ReconnectPolicy` retries the close like any peer close unless the deployment listed 4007 in `with_terminal_close_codes`, and on a spec-conformant server the automatic rejoin is refused in-band). |
+
+### Access control (3)
+
+Authority-only room access-control operations (`SetRoomAccess`, `BanPlayer`,
+`UnbanPlayer`, `TransferAuthority`) and joins into password-protected rooms
+refuse with these codes. The SDK exposes their wire types but issues no
+access-control operations itself; `join_room` can present a password with
+`JoinRoomParams::with_password`.
+
+| Variant | Description |
+|---------|-------------|
+| `PasswordRequired` | The room requires a join password and the request presented none, the wrong one, or a password for an open room; the server does not distinguish the three cases. |
+| `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. |
+| `TransferTargetNotFound` | The player named by `TransferAuthority` is not a seated member of the room. |
 
 !!! note "The v3-era *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five v3 signaling codes plus `ConnectionIdleTimeout` are **server-sent**

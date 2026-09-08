@@ -4977,6 +4977,7 @@ mod tests {
             },
             current_spectators: vec![],
             reason: Some(crate::protocol::SpectatorStateChangeReason::Joined),
+            spectator_count: None,
         })
         .expect("NewSpectatorJoined ServerMessage must serialize to JSON");
 
@@ -4997,6 +4998,7 @@ mod tests {
             spectator_id: spec_id,
             reason: Some(crate::protocol::SpectatorStateChangeReason::Disconnected),
             current_spectators: vec![],
+            spectator_count: None,
         })
         .expect("SpectatorDisconnected ServerMessage must serialize to JSON");
 

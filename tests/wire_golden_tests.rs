@@ -199,6 +199,7 @@ fn quick_match_join_room_omits_every_unset_optional_member() {
         max_players: None,
         supports_authority: None,
         relay_transport: None,
+        password: None,
     };
     let value = serde_json::to_value(&plain).expect("plain join serializes");
     let data = value
@@ -220,6 +221,7 @@ fn quick_match_join_room_omits_every_unset_optional_member() {
             max_players: None,
             supports_authority: None,
             relay_transport: None,
+            password: None,
         }),
     };
     let value = serde_json::to_value(&negotiated).expect("negotiated join serializes");
@@ -231,6 +233,26 @@ fn quick_match_join_room_omits_every_unset_optional_member() {
         operation.keys().collect::<Vec<_>>(),
         ["game_name", "player_name"],
         "unset optionals must be omitted inside the envelope too: {value}"
+    );
+
+    // A set password serializes into both forms; the omission contract above
+    // keeps unset joins byte-identical to the pre-access-control wire.
+    let sealed = ClientMessage::JoinRoom {
+        game_name: "game".to_string(),
+        room_code: None,
+        player_name: "Alice".to_string(),
+        max_players: None,
+        supports_authority: None,
+        relay_transport: None,
+        password: Some("secret".to_string()),
+    };
+    let value = serde_json::to_value(&sealed).expect("sealed join serializes");
+    assert_eq!(
+        value
+            .pointer("/data/password")
+            .and_then(serde_json::Value::as_str),
+        Some("secret"),
+        "a set password must serialize under data: {value}"
     );
 }
 

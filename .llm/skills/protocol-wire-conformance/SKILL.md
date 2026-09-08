@@ -34,14 +34,19 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`9534d0e61e0217b768048274deb9a79ede3b47a5`, advanced from the Server 0.8.0
+`af4e6795fac0681e0079b7b5672d141ae91a2e6b`, advanced from the Server 0.8.0
 release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
-plus two deliberate additive changes (the v3 room-member snapshot excludes the
-legacy `connection_info` echo — server issue #529; and the authority-only
+plus three deliberate additive changes (the v3 room-member snapshot excludes the
+legacy `connection_info` echo — server issue #529; the authority-only
 moderation surface — server issue #525 — added the NOT_ROOM_AUTHORITY /
 KICK_TARGET_NOT_FOUND / KICKED error codes, the KickPlayer / RegenerateRoomCode
-operations, and the PlayerKicked / RoomCodeRegenerated results; the v2 shapes
-are frozen and the v3 sample additions are append-only, so pre-existing sample
+operations, and the PlayerKicked / RoomCodeRegenerated results; and the room
+access-control tier — server PR #545 — added the PASSWORD_REQUIRED / BANNED /
+TRANSFER_TARGET_NOT_FOUND error codes, the SetRoomAccess / BanPlayer /
+UnbanPlayer / TransferAuthority operations and their four results, the additive
+join `password` field, and the v3-only additive `spectator_count` delta-count
+field; the v2 shapes
+are frozen and no access-control wire samples exist yet, so pre-existing sample
 lines stay byte-identical to the release pin).
 Released runtime compatibility stays bound to the Server 0.8.0 release in
 `tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to

@@ -147,6 +147,9 @@ fn all_client_error_codes() -> Vec<ErrorCode> {
         ErrorCode::NotRoomAuthority,
         ErrorCode::KickTargetNotFound,
         ErrorCode::Kicked,
+        ErrorCode::PasswordRequired,
+        ErrorCode::Banned,
+        ErrorCode::TransferTargetNotFound,
     ]
 }
 
@@ -212,7 +215,10 @@ fn exhaustiveness_guard(code: &ErrorCode) {
         | ErrorCode::UnsupportedProtocolVersion
         | ErrorCode::NotRoomAuthority
         | ErrorCode::KickTargetNotFound
-        | ErrorCode::Kicked => {}
+        | ErrorCode::Kicked
+        | ErrorCode::PasswordRequired
+        | ErrorCode::Banned
+        | ErrorCode::TransferTargetNotFound => {}
     }
 }
 

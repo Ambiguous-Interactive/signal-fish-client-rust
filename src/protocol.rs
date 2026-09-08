@@ -810,6 +810,18 @@ pub enum ClientMessage {
         /// accepts but ignores it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,
+        /// Join password for password-protected rooms.
+        ///
+        /// Required when the target room carries an authority-set password.
+        /// A password presented to an open room is refused (upstream issue
+        /// #546): the join states the intent to enter a sealed room, and the
+        /// room under that code was created by someone else. When the join
+        /// creates the room, this password seals it from birth. A wrong and
+        /// a missing password are indistinguishable to the sender: both are
+        /// refused in-band. The server stores only a salted hash and never
+        /// logs or echoes the value. Omitted on the wire when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     /// Leave the current room.
     LeaveRoom,
@@ -849,6 +861,14 @@ pub enum ClientMessage {
         game_name: String,
         room_code: String,
         spectator_name: String,
+        /// Join password for password-protected rooms.
+        ///
+        /// Required when the room carries an authority-set password. A
+        /// password presented to an open room is refused (upstream issue
+        /// #546). The server never logs or echoes the value. Omitted on the
+        /// wire when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     /// Leave spectator mode.
     LeaveSpectator,
@@ -944,6 +964,11 @@ pub enum RoomOperationRequest {
         supports_authority: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,
+        /// Join password for password-protected rooms; see
+        /// [`ClientMessage::JoinRoom`]: a password presented to an open room
+        /// is refused (upstream issue #546).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     LeaveRoom,
     Reconnect {
@@ -955,6 +980,11 @@ pub enum RoomOperationRequest {
         game_name: String,
         room_code: String,
         spectator_name: String,
+        /// Join password for password-protected rooms; see
+        /// [`ClientMessage::JoinAsSpectator`]: a password presented to an
+        /// open room is refused (upstream issue #546).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
     },
     LeaveSpectator,
     /// Authority-only: remove a seated player from the room.
@@ -980,6 +1010,54 @@ pub enum RoomOperationRequest {
     /// [`RoomOperationResult::RoomCodeRegenerated`] response carries the new
     /// code for the authority to distribute to future invitees.
     RegenerateRoomCode,
+    // Authority-only room access control (upstream server issue #525 tier).
+    // The SDK issues none of these operations and never arms a fence for
+    // them; the variants exist so a spec-conformant newer server's frames
+    // decode into typed values instead of `DecodeFailed`.
+    /// Authority-only: set or clear the room's join password.
+    ///
+    /// `Some(password)` seals the room: every later seated or spectator join
+    /// must present the same password or is refused with
+    /// [`ErrorCode::PasswordRequired`] (the server never distinguishes a
+    /// missing from a mismatched password). `None` reopens the room. Current
+    /// members and their reconnection tokens are unaffected. The password is
+    /// stored only as a salted hash and is never logged or echoed.
+    SetRoomAccess {
+        /// `None` opens the room; a non-empty value (at most 256 bytes) sets
+        /// the join password.
+        password: Option<String>,
+    },
+    /// Authority-only: ban a seated player from the room.
+    ///
+    /// The target is removed exactly as by [`RoomOperationRequest::KickPlayer`]
+    /// (close code 4007, no reconnection) and additionally recorded in the
+    /// room's in-memory ban list: while this room lives, the banned player id
+    /// cannot rejoin it as a player or spectator
+    /// ([`ErrorCode::Banned`]). The ban is room-scoped and dies with the
+    /// room.
+    BanPlayer {
+        /// Seated player to ban. Must be a current room member other than
+        /// the sender.
+        player_id: PlayerId,
+    },
+    /// Authority-only: lift a room ban (idempotent).
+    ///
+    /// The named player may join the room again; unbanning an id that is not
+    /// banned succeeds.
+    UnbanPlayer {
+        /// Player id whose ban should be lifted.
+        player_id: PlayerId,
+    },
+    /// Authority-only: hand the authority role to a seated member.
+    ///
+    /// Every member receives the usual `AuthorityChanged` broadcast
+    /// (personalized `you_are_authority` per recipient); the sender receives
+    /// [`RoomOperationResult::AuthorityTransferred`] and loses the ability
+    /// to start the game or moderate the room.
+    TransferAuthority {
+        /// Seated member that becomes the room's authority.
+        player_id: PlayerId,
+    },
 }
 
 impl std::fmt::Debug for RoomOperationRequest {
@@ -992,6 +1070,10 @@ impl std::fmt::Debug for RoomOperationRequest {
             Self::LeaveSpectator => "LeaveSpectator",
             Self::KickPlayer { .. } => "KickPlayer",
             Self::RegenerateRoomCode => "RegenerateRoomCode",
+            Self::SetRoomAccess { .. } => "SetRoomAccess",
+            Self::BanPlayer { .. } => "BanPlayer",
+            Self::UnbanPlayer { .. } => "UnbanPlayer",
+            Self::TransferAuthority { .. } => "TransferAuthority",
         })
     }
 }
@@ -1052,6 +1134,36 @@ pub enum RoomOperationResult {
         /// The room's freshly generated code.
         room_code: String,
     },
+    // Authority-only access-control results (upstream server issue #525
+    // tier). This SDK never issues those operations, so no pending fence can
+    // ever match these results; they decode as typed values and are then
+    // classified like any unsolicited terminal response.
+    /// The requested `SetRoomAccess` operation succeeded.
+    RoomAccessUpdated {
+        /// Whether the room now requires a join password (`true`) or is open
+        /// (`false`).
+        requires_password: bool,
+    },
+    /// The requested `BanPlayer` operation succeeded: the target seat was
+    /// removed (as by `PlayerKicked`) and the player id was recorded in the
+    /// room's ban list for the room's remaining lifetime.
+    PlayerBanned {
+        /// The banned player.
+        player_id: PlayerId,
+    },
+    /// The requested `UnbanPlayer` operation succeeded: the player may join
+    /// the room again. Idempotent.
+    PlayerUnbanned {
+        /// The unbanned player.
+        player_id: PlayerId,
+    },
+    /// The requested `TransferAuthority` operation succeeded: the named
+    /// member now holds the authority role. All members received the usual
+    /// `AuthorityChanged` broadcast.
+    AuthorityTransferred {
+        /// The member that now holds the authority role.
+        player_id: PlayerId,
+    },
 }
 
 impl std::fmt::Debug for RoomOperationResult {
@@ -1068,6 +1180,10 @@ impl std::fmt::Debug for RoomOperationResult {
             Self::OperationFailed { .. } => "OperationFailed",
             Self::PlayerKicked { .. } => "PlayerKicked",
             Self::RoomCodeRegenerated { .. } => "RoomCodeRegenerated",
+            Self::RoomAccessUpdated { .. } => "RoomAccessUpdated",
+            Self::PlayerBanned { .. } => "PlayerBanned",
+            Self::PlayerUnbanned { .. } => "PlayerUnbanned",
+            Self::AuthorityTransferred { .. } => "AuthorityTransferred",
         })
     }
 }
@@ -1117,7 +1233,43 @@ impl RoomOperationResult {
             Self::RoomCodeRegenerated { .. } => {
                 return Err((
                     "the room authority regenerated the room code (RoomCodeRegenerated); this \
-                     SDK does not issue moderation operations"
+                      SDK does not issue moderation operations"
+                        .to_string(),
+                    None,
+                ));
+            }
+            // The access-control results have no legacy top-level face and
+            // can never match a pending operation of this SDK (it issues no
+            // access-control operations); the public message→event
+            // conversion renders them as no-effect operation failures.
+            Self::RoomAccessUpdated { .. } => {
+                return Err((
+                    "the room authority updated the room access (RoomAccessUpdated); this SDK \
+                     does not issue access-control operations"
+                        .to_string(),
+                    None,
+                ));
+            }
+            Self::PlayerBanned { .. } => {
+                return Err((
+                    "the room authority banned a player (PlayerBanned); this SDK does not issue \
+                     access-control operations"
+                        .to_string(),
+                    None,
+                ));
+            }
+            Self::PlayerUnbanned { .. } => {
+                return Err((
+                    "the room authority unbanned a player (PlayerUnbanned); this SDK does not \
+                     issue access-control operations"
+                        .to_string(),
+                    None,
+                ));
+            }
+            Self::AuthorityTransferred { .. } => {
+                return Err((
+                    "the room authority transferred the authority role (AuthorityTransferred); \
+                     this SDK does not issue access-control operations"
                         .to_string(),
                     None,
                 ));
@@ -1265,6 +1417,14 @@ pub enum ServerMessage {
         current_spectators: Vec<SpectatorInfo>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<SpectatorStateChangeReason>,
+        /// Total spectators in the room after this join.
+        ///
+        /// Present on v3+ connections of servers with the spectator fan-out
+        /// slimming tier (where `current_spectators` is an empty delta); the
+        /// full-roster face omits it. Additive and optional, so both shapes
+        /// decode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spectator_count: Option<u32>,
     },
     /// Another spectator left the room.
     SpectatorDisconnected {
@@ -1273,6 +1433,14 @@ pub enum ServerMessage {
         reason: Option<SpectatorStateChangeReason>,
         #[serde(default)]
         current_spectators: Vec<SpectatorInfo>,
+        /// Total spectators in the room after this departure.
+        ///
+        /// Present on v3+ connections of servers with the spectator fan-out
+        /// slimming tier (where `current_spectators` is an empty delta); the
+        /// full-roster face omits it. Additive and optional, so both shapes
+        /// decode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spectator_count: Option<u32>,
     },
     /// Error message.
     Error {

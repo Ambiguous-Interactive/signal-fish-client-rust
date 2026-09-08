@@ -776,6 +776,7 @@ impl ClientCore {
                 max_players: params.max_players,
                 supports_authority: params.supports_authority,
                 relay_transport: params.relay_transport,
+                password: params.password,
             },
             ClientOperation::LeaveRoom => ClientMessage::LeaveRoom,
             ClientOperation::GameData(data, delivery) => {
@@ -809,6 +810,11 @@ impl ClientCore {
                     game_name,
                     room_code,
                     spectator_name,
+                    // The public spectator-join API predates the
+                    // access-control tier and carries no password; a
+                    // password-protected room refuses the join in-band with
+                    // `PASSWORD_REQUIRED`.
+                    password: None,
                 }
             }
             ClientOperation::LeaveSpectator => ClientMessage::LeaveSpectator,
@@ -1355,10 +1361,14 @@ impl ClientCore {
                 RoomOperationRequest::Reconnect { .. } => PendingRoomOperation::ReconnectPlayer,
                 RoomOperationRequest::JoinAsSpectator { .. } => PendingRoomOperation::JoinSpectator,
                 RoomOperationRequest::LeaveSpectator => PendingRoomOperation::LeaveSpectator,
-                // The SDK issues no moderation operations, so no fence can
-                // ever be keyed to their request kinds.
+                // The SDK issues no moderation or access-control operations,
+                // so no fence can ever be keyed to their request kinds.
                 RoomOperationRequest::KickPlayer { .. }
-                | RoomOperationRequest::RegenerateRoomCode => {
+                | RoomOperationRequest::RegenerateRoomCode
+                | RoomOperationRequest::SetRoomAccess { .. }
+                | RoomOperationRequest::BanPlayer { .. }
+                | RoomOperationRequest::UnbanPlayer { .. }
+                | RoomOperationRequest::TransferAuthority { .. } => {
                     return;
                 }
             },
@@ -2446,6 +2456,7 @@ fn correlate_room_operation(
             max_players,
             supports_authority,
             relay_transport,
+            password,
         } => RoomOperationRequest::JoinRoom {
             game_name,
             room_code,
@@ -2453,6 +2464,7 @@ fn correlate_room_operation(
             max_players,
             supports_authority,
             relay_transport,
+            password,
         },
         ClientMessage::LeaveRoom => RoomOperationRequest::LeaveRoom,
         ClientMessage::Reconnect {
@@ -2468,10 +2480,12 @@ fn correlate_room_operation(
             game_name,
             room_code,
             spectator_name,
+            password,
         } => RoomOperationRequest::JoinAsSpectator {
             game_name,
             room_code,
             spectator_name,
+            password,
         },
         ClientMessage::LeaveSpectator => RoomOperationRequest::LeaveSpectator,
         other => return other,
@@ -2610,6 +2624,10 @@ fn room_operation_result_name(result: &RoomOperationResult) -> &'static str {
         RoomOperationResult::OperationFailed { .. } => "OperationFailed",
         RoomOperationResult::PlayerKicked { .. } => "PlayerKicked",
         RoomOperationResult::RoomCodeRegenerated { .. } => "RoomCodeRegenerated",
+        RoomOperationResult::RoomAccessUpdated { .. } => "RoomAccessUpdated",
+        RoomOperationResult::PlayerBanned { .. } => "PlayerBanned",
+        RoomOperationResult::PlayerUnbanned { .. } => "PlayerUnbanned",
+        RoomOperationResult::AuthorityTransferred { .. } => "AuthorityTransferred",
     }
 }
 
@@ -4932,6 +4950,32 @@ mod tests {
                 reason: "late failure".into(),
                 error_code: crate::ErrorCode::ReconnectionFailed,
             },
+            // Access-control results: the SDK issues none of these
+            // operations, so no fence can ever match them.
+            ServerMessage::RoomOperationResult {
+                operation_id: RoomOperationId::from_u128(0xfee1),
+                result: Box::new(RoomOperationResult::RoomAccessUpdated {
+                    requires_password: true,
+                }),
+            },
+            ServerMessage::RoomOperationResult {
+                operation_id: RoomOperationId::from_u128(0xfee2),
+                result: Box::new(RoomOperationResult::PlayerBanned {
+                    player_id: PlayerId::from_u128(0xfee3),
+                }),
+            },
+            ServerMessage::RoomOperationResult {
+                operation_id: RoomOperationId::from_u128(0xfee4),
+                result: Box::new(RoomOperationResult::PlayerUnbanned {
+                    player_id: PlayerId::from_u128(0xfee3),
+                }),
+            },
+            ServerMessage::RoomOperationResult {
+                operation_id: RoomOperationId::from_u128(0xfee5),
+                result: Box::new(RoomOperationResult::AuthorityTransferred {
+                    player_id: PlayerId::from_u128(0xfee6),
+                }),
+            },
         ];
 
         for response in outside_responses {
@@ -7130,6 +7174,7 @@ mod tests {
                     max_players: None,
                     supports_authority: None,
                     relay_transport: None,
+                    password: None,
                 },
             ),
             (
@@ -7157,6 +7202,7 @@ mod tests {
                     game_name: "game".into(),
                     room_code: "ROOM".into(),
                     spectator_name: "viewer".into(),
+                    password: None,
                 },
             ),
             (
@@ -7248,6 +7294,7 @@ mod tests {
                         max_players: None,
                         supports_authority: None,
                         relay_transport: None,
+                        password: None,
                     },
                 },
                 RoomOperationId::from_u128(0xbbbb),

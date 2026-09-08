@@ -8,19 +8,21 @@ repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
 # Exact server commit the .jsonl bytes were copied from. The bytes are
 # byte-identical from the Server 0.8.0 release pin (d79dcdc7549777c8c2bd9fcb2d132641532d8c86)
-# through the 2026-09-07 refresh, which appended the authority-only moderation
-# samples (KickPlayer / RegenerateRoomCode operations, PlayerKicked /
-# RoomCodeRegenerated results — server issue #525) at upstream's positions;
-# pre-existing lines are unchanged. The 0.8.0 release never declared the
-# moderation surface, so the released runtime compatibility binding stays at
-# that release; the evidence authority advances together across
-# compatibility.toml and both PROVENANCE files.
-commit = "9534d0e61e0217b768048274deb9a79ede3b47a5"
+# through the 2026-09-08 refresh: upstream's room access-control tier (server
+# PR #545) added no wire samples — the four files are unchanged from the
+# 2026-09-07 moderation-surface refresh, so the pre-existing lines stay
+# byte-identical to the release pin. The 0.8.0 release never declared the
+# moderation or access-control surfaces, so the released runtime
+# compatibility binding stays at that release; the evidence authority
+# advances together across compatibility.toml and both PROVENANCE files.
+# (The 2026-09-08 b602fc1d follow-up is spec-prose only; the samples are
+# unchanged there too.)
+commit = "b602fc1d6138c06836a2b5101f4e04b7838a6292"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
 # ISO 8601 date of the last refresh.
-synced = "2026-09-07"
+synced = "2026-09-08"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so a sample
 # cannot be edited without also updating this marker (keeps provenance honest).

@@ -599,8 +599,8 @@ full spectator lifecycle.
 | `SpectatorJoined` | `room_id`, `spectator_id`, `current_players`, `current_spectators`, … | Successfully joined a room as a spectator. |
 | `SpectatorJoinFailed` | `reason: String`, `error_code: Option<ErrorCode>` | Failed to join as a spectator. |
 | `SpectatorLeft` | `room_id: Option<RoomId>`, `room_code: Option<String>`, `reason`, `current_spectators` | The spectator left the room: either the answer to this client's admitted voluntary leave, or an authoritative exit (server removal, spectator disconnect, or room close). |
-| `NewSpectatorJoined` | `spectator: SpectatorInfo`, `current_spectators`, `reason` | Another spectator joined the room. |
-| `SpectatorDisconnected` | `spectator_id: PlayerId`, `reason`, `current_spectators` | Another spectator disconnected. |
+| `NewSpectatorJoined` | `spectator: SpectatorInfo`, `current_spectators`, `reason`, `spectator_count: Option<u32>` | Another spectator joined the room. `spectator_count` carries the room total on servers with the v3 spectator fan-out slimming tier (where `current_spectators` is an empty delta) and is `None` on the full-roster face. |
+| `SpectatorDisconnected` | `spectator_id: PlayerId`, `reason`, `current_spectators`, `spectator_count: Option<u32>` | Another spectator disconnected. `spectator_count` carries the room total on servers with the v3 spectator fan-out slimming tier and is `None` on the full-roster face. |
 
 ### `SpectatorJoined`
 
