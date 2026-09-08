@@ -256,7 +256,7 @@ jobs:
           set -euo pipefail
           asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
-          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
           printf '%s  %s\n' "${SERVER_SHA256}" "${asset}" | sha256sum --check
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server

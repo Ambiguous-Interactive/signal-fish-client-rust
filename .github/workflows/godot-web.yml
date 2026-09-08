@@ -76,11 +76,11 @@ jobs:
           set -euo pipefail
           release="${GODOT_VERSION}-stable"
           base="https://github.com/godotengine/godot/releases/download/${release}"
-          curl --fail --location --retry 5 --output godot.zip \
+          curl --fail --location --retry 5 --retry-all-errors --output godot.zip \
             "${base}/Godot_v${release}_linux.x86_64.zip"
-          curl --fail --location --retry 5 --output templates.tpz \
+          curl --fail --location --retry 5 --retry-all-errors --output templates.tpz \
             "${base}/Godot_v${release}_export_templates.tpz"
-          curl --fail --location --retry 5 --output SHA512-SUMS.txt \
+          curl --fail --location --retry 5 --retry-all-errors --output SHA512-SUMS.txt \
             "${base}/SHA512-SUMS.txt"
           awk -v editor="Godot_v${release}_linux.x86_64.zip" \
             '$2 == editor { print $1, "godot.zip" }' SHA512-SUMS.txt | sha512sum --check
@@ -111,7 +111,7 @@ jobs:
           set -euo pipefail
           asset="signal-fish-server-v${NATIVE_SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${NATIVE_SERVER_VERSION}"
-          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
           printf '%s  %s\n' "${SERVER_SHA256_080}" "${asset}" | sha256sum --check
           native_fixture=".godot-native-project"
           mkdir -p .signal-fish-native-server "${native_fixture}"
@@ -394,7 +394,7 @@ jobs:
           fi
           asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"
-          curl --fail --location --retry 5 --output "${asset}" "${base}/${asset}"
+          curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
           printf '%s  %s\n' "${server_sha256}" "${asset}" | sha256sum --check
           mkdir -p .signal-fish-server
           tar -xzf "${asset}" -C .signal-fish-server
@@ -462,7 +462,7 @@ jobs:
             if [ ! -x "${built_tc}" ] \
               || ! "${built_tc}" -Version 2>/dev/null | grep -F "iproute2-${IPROUTE2_VERSION}"; then
               sudo apt-get install --yes bison build-essential flex pkg-config
-              curl --fail --location --silent --show-error \
+              curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
                 "https://www.kernel.org/pub/linux/utils/net/iproute2/${archive}" \
                 --output "${archive}"
               echo "${IPROUTE2_SHA256}  ${archive}" | sha256sum --check
