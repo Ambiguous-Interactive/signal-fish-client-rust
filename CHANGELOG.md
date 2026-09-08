@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   form) via the new additive `password` field and omitted when unset, so
   existing joins keep byte-identical wire behavior; the value is redacted
   from `Debug` output.
+- **Breaking:** `join_as_spectator_with_password` on both drivers and the
+  `SignalFishClientApi` trait (implementors add one method) presents a sealed
+  room's join password on `JoinAsSpectator`, so spectator entry into
+  password-protected rooms is no longer impossible.
 - **Breaking:** `SignalFishEvent::NewSpectatorJoined` and
   `SignalFishEvent::SpectatorDisconnected` gain the additive
   `spectator_count: Option<u32>` field, carrying the room's spectator total

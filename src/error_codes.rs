@@ -206,7 +206,8 @@ pub enum ErrorCode {
     PasswordRequired,
     /// This player id is banned from the room by its authority player and
     /// cannot join it (as a player or spectator) while the room lives. The
-    /// ban is room-scoped and expires with the room.
+    /// ban is room-scoped and expires with the room. Banning a seated member
+    /// removes them exactly like a kick (close code `4007`/`kicked`).
     Banned,
     /// The player named by `TransferAuthority` is not a seated member of the
     /// room.

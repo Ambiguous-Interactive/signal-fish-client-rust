@@ -307,6 +307,33 @@ client.join_as_spectator(
 
 Spectators receive game events but cannot send game data or affect room state.
 
+Sealed rooms (ones whose authority set a join password) refuse a passwordless
+spectator join with `PASSWORD_REQUIRED`; use
+`join_as_spectator_with_password` to present it:
+
+```rust,ignore
+fn join_as_spectator_with_password(
+    &mut self,
+    game_name: String,
+    room_code: String,
+    spectator_name: String,
+    password: impl Into<String>,
+) -> Result<()>
+```
+
+```rust,ignore
+client.join_as_spectator_with_password(
+    "my-game".into(),
+    "ABCD".into(),
+    "Watcher".into(),
+    "hunter2".into(),
+)?;
+```
+
+A missing or wrong password is indistinguishable to the sender: both arrive
+as `SpectatorJoinFailed` carrying `PASSWORD_REQUIRED`. Presenting a password
+to an open room is refused the same way (see [Errors](errors.md#access-control-3)).
+
 ---
 
 #### `leave_spectator`
@@ -785,7 +812,7 @@ additionally require server-confirmed authentication:
 | Local state | Allowed room operations |
 |---|---|
 | Unauthenticated connection | None of them — they return `NotAuthenticated` (wait for the `Authenticated` event) |
-| Authenticated, outside a room | `join_room`, `join_as_spectator`, or `reconnect` |
+| Authenticated, outside a room | `join_room`, `join_as_spectator` (or its `_with_password` form), or `reconnect` |
 | `RoomRole::Player` | leave, game-data, readiness/game-start, authority, connection-info, signaling, and transport-status operations |
 | `RoomRole::Spectator` | `leave_spectator` |
 | Any nonterminal connection | `ping` |
@@ -973,6 +1000,7 @@ configured capacity.
 | `reconnect(player_id, room_id, auth_token)` | Reconnect to a previous session. |
 | `ping()` | Send a heartbeat ping. |
 | `join_as_spectator(game, room, name)` | Join a room as a spectator. |
+| `join_as_spectator_with_password(game, room, name, password)` | Join a room as a spectator, presenting a sealed room's join password. |
 | `leave_spectator()` | Leave spectator mode. |
 | `send_signal(to, signal)` / `send_offer` / `send_answer` / `send_ice_candidate` | Send typed protocol-v3 WebRTC signaling using the current plan generation. |
 | `send_signal_for_generation(to, generation, signal)` | Send driver-produced signaling only if its originating plan generation is still current. |

@@ -265,12 +265,13 @@ Authority-only room access-control operations (`SetRoomAccess`, `BanPlayer`,
 `UnbanPlayer`, `TransferAuthority`) and joins into password-protected rooms
 refuse with these codes. The SDK exposes their wire types but issues no
 access-control operations itself; `join_room` can present a password with
-`JoinRoomParams::with_password`.
+`JoinRoomParams::with_password`, and sealed-room spectator joins with
+`join_as_spectator_with_password`.
 
 | Variant | Description |
 |---------|-------------|
 | `PasswordRequired` | The room requires a join password and the request presented none, the wrong one, or a password for an open room; the server does not distinguish the three cases. |
-| `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. |
+| `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. Banning a seated member removes them exactly like a kick: close code 4007 (`kicked`), no reconnection. |
 | `TransferTargetNotFound` | The player named by `TransferAuthority` is not a seated member of the room. |
 
 !!! note "The v3-era *server* codes vs. `SignalFishError::ProtocolUnsupported`"

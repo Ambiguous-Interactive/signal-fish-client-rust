@@ -1760,6 +1760,35 @@ impl SignalFishClient {
             game_name,
             room_code,
             spectator_name,
+            None,
+        ))
+    }
+
+    /// Join a room as a read-only spectator, presenting a join password.
+    ///
+    /// Use this for rooms sealed by the authority's
+    /// [`SetRoomAccess`](crate::protocol::RoomOperationRequest::SetRoomAccess)
+    /// operation; a password presented to an open room is refused in-band
+    /// with [`ErrorCode::PasswordRequired`](crate::error_codes::ErrorCode::PasswordRequired). A missing or wrong password is
+    /// indistinguishable to the sender: both arrive as
+    /// [`SignalFishEvent::SpectatorJoinFailed`] carrying
+    /// [`ErrorCode::PasswordRequired`](crate::error_codes::ErrorCode::PasswordRequired).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same refusals as [`SignalFishClient::join_as_spectator`].
+    pub fn join_as_spectator_with_password(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+        password: impl Into<String>,
+    ) -> Result<()> {
+        self.send_operation(ClientOperation::JoinAsSpectator(
+            game_name,
+            room_code,
+            spectator_name,
+            Some(password.into()),
         ))
     }
 
@@ -2294,6 +2323,22 @@ impl crate::client_api::SignalFishClientApi for SignalFishClient {
         spectator_name: String,
     ) -> Result<()> {
         SignalFishClient::join_as_spectator(self, game_name, room_code, spectator_name)
+    }
+
+    fn join_as_spectator_with_password(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+        password: String,
+    ) -> Result<()> {
+        SignalFishClient::join_as_spectator_with_password(
+            self,
+            game_name,
+            room_code,
+            spectator_name,
+            password,
+        )
     }
 
     fn leave_spectator(&mut self) -> Result<()> {
@@ -4448,6 +4493,32 @@ mod tests {
     // ── Tests ───────────────────────────────────────────────────────
 
     #[tokio::test]
+    async fn join_as_spectator_with_password_sends_sealed_wire() {
+        let (transport, sent, _closed) = MockTransport::new(vec![Some(Ok(authenticated_json()))]);
+        let config = SignalFishConfig::new("mb_test_123");
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        let _ = events.recv().await; // Connected
+        let _ = events.recv().await; // Authenticated
+
+        client
+            .join_as_spectator_with_password(
+                "spec-game".into(),
+                "SPEC1".into(),
+                "viewer".into(),
+                "hunter2",
+            )
+            .expect("sealed spectator join should be admitted");
+        // Authenticate (from start) + the queued sealed spectator join.
+        wait_for_sent_len(&sent, 2).await;
+        client.shutdown().await;
+
+        let messages = sent.lock().unwrap();
+        let val: serde_json::Value = serde_json::from_str(&messages[messages.len() - 1]).unwrap();
+        assert_eq!(val["type"], "JoinAsSpectator");
+        assert_eq!(val["data"]["password"], "hunter2");
+    }
+
+    #[tokio::test]
     async fn start_sends_authenticate_message() {
         let (transport, sent, _closed) = MockTransport::new(vec![Some(Ok(authenticated_json()))]);
 
@@ -6459,7 +6530,7 @@ mod tests {
         core_leave_room(client);
         let mut core = lock_core(&client.state);
         core.record_admission(ClientCore::admission_for(
-            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "local".into()),
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "local".into(), None),
         ));
     }
 

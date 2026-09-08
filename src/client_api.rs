@@ -58,6 +58,21 @@ pub trait SignalFishClientApi {
         room_code: String,
         spectator_name: String,
     ) -> Result<()>;
+    /// Join a room as a spectator, presenting a join password.
+    ///
+    /// Use this for rooms sealed by the authority's `SetRoomAccess`
+    /// operation; a password presented to an open room is refused in-band
+    /// with [`ErrorCode::PasswordRequired`](crate::error_codes::ErrorCode::PasswordRequired).
+    /// A missing or wrong password is indistinguishable to the sender: both
+    /// arrive as [`SignalFishEvent::SpectatorJoinFailed`](crate::event::SignalFishEvent::SpectatorJoinFailed) carrying that
+    /// code.
+    fn join_as_spectator_with_password(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+        password: String,
+    ) -> Result<()>;
     /// Leave spectator mode.
     fn leave_spectator(&mut self) -> Result<()>;
     /// Send an application heartbeat.

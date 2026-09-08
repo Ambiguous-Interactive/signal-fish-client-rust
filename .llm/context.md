@@ -264,7 +264,7 @@ client.start_game() -> Result<()>           // protocol v2: explicit game start
 client.request_authority(become_authority: bool) -> Result<()>
 client.provide_connection_info(info: ConnectionInfo) -> Result<()>
 client.reconnect(player_id, room_id, auth_token) -> Result<()>
-client.join_as_spectator(game_name, room_code, spectator_name) -> Result<()>
+client.join_as_spectator(game_name, room_code, spectator_name) -> Result<()> // sealed rooms: join_as_spectator_with_password(..., password)
 client.leave_spectator() -> Result<()>
 client.ping() -> Result<()>
 client.send_signal_reliable(to, signal).await // v3 only; waiting send_signal

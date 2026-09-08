@@ -489,6 +489,7 @@ until v3 is negotiated. Room commands additionally fail fast with
 | `provide_connection_info(info)` | `fn provide_connection_info(&mut self, info: ConnectionInfo) -> Result<()>` | Provide P2P connection info. |
 | `reconnect(player_id, room_id, auth_token)` | `fn reconnect(&mut self, player_id: PlayerId, room_id: RoomId, auth_token: String) -> Result<()>` | Reconnect to a room after disconnection. |
 | `join_as_spectator(game, room, name)` | `fn join_as_spectator(&mut self, game_name: String, room_code: String, spectator_name: String) -> Result<()>` | Join a room as a spectator. |
+| `join_as_spectator_with_password(game, room, name, password)` | `fn join_as_spectator_with_password(&mut self, game_name: String, room_code: String, spectator_name: String, password: impl Into<String>) -> Result<()>` | Join a room as a spectator, presenting a sealed room's join password. |
 | `leave_spectator()` | `fn leave_spectator(&mut self) -> Result<()>` | Leave spectator mode. |
 | `send_signal(to, signal)` | `fn send_signal(&mut self, to: PlayerId, signal: impl Into<PeerSignal>) -> Result<()>` | Relay a typed WebRTC signal on protocol v3. |
 | `send_signal_for_generation(to, generation, signal)` | `fn send_signal_for_generation(&mut self, to: PlayerId, generation: Option<SessionGeneration>, signal: impl Into<PeerSignal>) -> Result<()>` | Relay driver output only while its authoritative plan generation remains current. |
