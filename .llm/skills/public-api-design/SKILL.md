@@ -220,6 +220,18 @@ sealing analysis, and plain-struct field type changes have no lint at all.
 For those classes the `**Breaking:**` changelog marker is the only working
 gate — and it drives Prepare Release's bump policy, so it is mandatory.
 
+### The `!:` Title Marker and the Semver Gate
+
+A breaking PR title must carry `!:` (e.g. `feat!: …`). The Semver Checks
+workflow classifies from the **live** PR title via the API (issue #241), so
+retitling works: after the retitle, "Re-run failed jobs" picks up the new
+title. If a PR was opened before the fix or the gate still shows a stale
+classification, the clean retrigger is one empty commit (a fresh
+`synchronize` event regenerates every check run under the current title) —
+not a `workflow_dispatch`, whose check runs join a mixed history on the same
+head SHA and can leave the PR blocked for minutes. Prefer carrying the
+marker from PR-open time so the first run classifies correctly.
+
 ## Documenting Public API
 
 Every public item should have a doc comment:

@@ -2232,6 +2232,16 @@ mod ci_workflow_policy {
                 && contents.contains("if [ \"$RELEASE_TYPE\" = major ]; then"),
             "Semver CI must use major policy only for explicitly marked breaking PRs and retain inferred checks otherwise"
         );
+        // The event payload freezes the PR title at event time, so
+        // classification must read the live title through the API (issue
+        // #241): a retitle to add `!:` must reach re-runs instead of
+        // replaying the stale title, and a failed read must fail closed.
+        assert!(
+            contents.contains("pull-requests: read")
+                && contents.contains(r#"gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title"#)
+                && contents.contains("::error::Could not read the live title of pull request"),
+            "Semver CI must classify from the live PR title (fail-closed) instead of the frozen event payload"
+        );
     }
 
     #[test]

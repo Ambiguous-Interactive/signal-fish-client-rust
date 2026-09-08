@@ -188,7 +188,9 @@ pub enum ErrorCode {
     KickTargetNotFound,
     /// This connection was removed from its room by the room's authority
     /// player. The WebSocket closed with private close code `4007`
-    /// (`kicked`); reconnection is not offered.
+    /// (`kicked`); the server never arms reconnection for a kicked seat (a
+    /// configured `ReconnectPolicy` still retries the close once, and the
+    /// automatic rejoin is refused in-band).
     Kicked,
 }
 
