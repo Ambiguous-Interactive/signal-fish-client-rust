@@ -621,9 +621,10 @@ let (mut client, events) = SignalFishClient::start(transport, config);
 
 With a policy configured, a terminal disconnect **other than** shutdown, a
 dropped handle, a `ProtocolViolationPolicy::Disconnect` teardown (a
-protocol violation is a correctness signal, never masked), or a peer close
-whose code the policy classifies terminal (`with_terminal_close_codes`,
-below) becomes a retryable edge:
+protocol violation is a correctness signal, never masked), a teardown whose
+farewell could not be delivered (the consumer wedged past the shutdown
+budget), or a peer close whose code the policy classifies terminal
+(`with_terminal_close_codes`, below) becomes a retryable edge:
 
 1. The usual bounded teardown delivers `Disconnected`, exactly as without a
    policy.
