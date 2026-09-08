@@ -1355,6 +1355,12 @@ impl ClientCore {
                 RoomOperationRequest::Reconnect { .. } => PendingRoomOperation::ReconnectPlayer,
                 RoomOperationRequest::JoinAsSpectator { .. } => PendingRoomOperation::JoinSpectator,
                 RoomOperationRequest::LeaveSpectator => PendingRoomOperation::LeaveSpectator,
+                // The SDK issues no moderation operations, so no fence can
+                // ever be keyed to their request kinds.
+                RoomOperationRequest::KickPlayer { .. }
+                | RoomOperationRequest::RegenerateRoomCode => {
+                    return;
+                }
             },
             _ => return,
         };
@@ -2602,6 +2608,8 @@ fn room_operation_result_name(result: &RoomOperationResult) -> &'static str {
         RoomOperationResult::SpectatorJoinFailed { .. } => "SpectatorJoinFailed",
         RoomOperationResult::SpectatorLeft { .. } => "SpectatorLeft",
         RoomOperationResult::OperationFailed { .. } => "OperationFailed",
+        RoomOperationResult::PlayerKicked { .. } => "PlayerKicked",
+        RoomOperationResult::RoomCodeRegenerated { .. } => "RoomCodeRegenerated",
     }
 }
 

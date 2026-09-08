@@ -7,21 +7,21 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-07 refresh: the protocol-v3 room-member snapshot (V3PlayerInfo)
-# deliberately excludes the legacy `connection_info` echo (server issue #529),
-# and the ConnectionInfo/SpectatorInfo/V2PlayerInfo descriptions were updated
-# to record that visibility contract; the v2 snapshot shape is frozen and the
-# wire samples remain byte-identical to the Server 0.8.0 release pin
-# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86). This evidence authority advances
-# together with tests/compatibility.toml's [protocol_authority] and the
-# wire-samples PROVENANCE, while the released runtime compatibility binding
-# (server_commit + release artifacts in tests/compatibility.toml) stays at the
-# 0.8.0 release.
-commit = "ceb47cbc86c88d321b778596f195b68a7bd03aea"
+# 2026-09-07 refresh: upstream added the authority-only moderation surface
+# (server issue #525) — the NOT_ROOM_AUTHORITY / KICK_TARGET_NOT_FOUND /
+# KICKED error codes, the KickPlayer / RegenerateRoomCode operations, and the
+# PlayerKicked / RoomCodeRegenerated results (additive only; existing
+# schema lines untouched). The Server 0.8.0 release pin
+# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the moderation
+# surface, so the released runtime compatibility binding stays at that
+# release. This evidence authority advances together with
+# tests/compatibility.toml's [protocol_authority] and the wire-samples
+# PROVENANCE.
+commit = "9534d0e61e0217b768048274deb9a79ede3b47a5"
 # ISO 8601 date of the last refresh.
 synced = "2026-09-07"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "ff00245e15d61826a0bf93aa94856ff249952f6f04f3d86c58a438651b51328f"
+"signal-fish-protocol.asyncapi.yaml" = "e57fd4cd233312ea07a005653febb61f8c0f0f16d8d87cc4e0b494d8961eb060"

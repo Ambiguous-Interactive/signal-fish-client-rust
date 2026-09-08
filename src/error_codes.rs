@@ -179,6 +179,17 @@ pub enum ErrorCode {
     /// requires a newer protocol surface (such as the v3 `RoomOperation`
     /// envelope).
     UnsupportedProtocolVersion,
+
+    // Moderation errors (authority-only room operations)
+    /// A moderation operation (`KickPlayer` / `RegenerateRoomCode`) was sent
+    /// by a connection that is not the room's designated authority player.
+    NotRoomAuthority,
+    /// The player named by `KickPlayer` is not a seated member of the room.
+    KickTargetNotFound,
+    /// This connection was removed from its room by the room's authority
+    /// player. The WebSocket closed with private close code `4007`
+    /// (`kicked`); reconnection is not offered.
+    Kicked,
 }
 
 impl ErrorCode {
@@ -383,6 +394,17 @@ impl ErrorCode {
             }
             Self::UnsupportedProtocolVersion => {
                 "The client's highest supported protocol version is below this server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment."
+            }
+
+            // Moderation errors (authority-only room operations)
+            Self::NotRoomAuthority => {
+                "Only the room's authority player may perform this moderation operation."
+            }
+            Self::KickTargetNotFound => {
+                "The player to kick is not a current member of this room."
+            }
+            Self::Kicked => {
+                "You were removed from the room by its authority player. Reconnection is not offered; join again with a valid room code."
             }
         }
     }

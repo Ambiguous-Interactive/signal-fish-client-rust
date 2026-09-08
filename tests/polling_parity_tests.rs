@@ -192,7 +192,9 @@ fn advance_room_command_requirements(json: &str, gate: &mut RoomCommandRequireme
             RoomOperationResult::RoomJoinFailed { .. }
             | RoomOperationResult::ReconnectionFailed { .. }
             | RoomOperationResult::SpectatorJoinFailed { .. }
-            | RoomOperationResult::OperationFailed { .. } => return,
+            | RoomOperationResult::OperationFailed { .. }
+            | RoomOperationResult::PlayerKicked { .. }
+            | RoomOperationResult::RoomCodeRegenerated { .. } => return,
         },
         message => message,
     };

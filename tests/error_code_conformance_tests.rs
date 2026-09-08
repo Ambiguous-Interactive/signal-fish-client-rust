@@ -144,6 +144,9 @@ fn all_client_error_codes() -> Vec<ErrorCode> {
         ErrorCode::ServerDraining,
         ErrorCode::InvalidDeliveryClass,
         ErrorCode::UnsupportedProtocolVersion,
+        ErrorCode::NotRoomAuthority,
+        ErrorCode::KickTargetNotFound,
+        ErrorCode::Kicked,
     ]
 }
 
@@ -206,7 +209,10 @@ fn exhaustiveness_guard(code: &ErrorCode) {
         | ErrorCode::ActivityTimeout
         | ErrorCode::ServerDraining
         | ErrorCode::InvalidDeliveryClass
-        | ErrorCode::UnsupportedProtocolVersion => {}
+        | ErrorCode::UnsupportedProtocolVersion
+        | ErrorCode::NotRoomAuthority
+        | ErrorCode::KickTargetNotFound
+        | ErrorCode::Kicked => {}
     }
 }
 

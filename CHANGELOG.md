@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** the wire types gained the upstream authority-moderation
+  surface — exhaustive `ErrorCode` adds `NotRoomAuthority`, `KickTargetNotFound`,
+  and `Kicked`; `RoomOperationRequest` adds `KickPlayer { player_id }` and
+  `RegenerateRoomCode`; `RoomOperationResult` adds `PlayerKicked { player_id }`
+  and `RoomCodeRegenerated { room_code }` — so every moderation frame a newer
+  server sends decodes (add arms to exhaustive matches; the SDK still issues
+  no moderation operations, and its pending-operation fences never match
+  these results).
 - **Breaking:** `SignalFishConfig` gains a `reconnect_policy` field;
   exhaustive struct literals must add it, usually `reconnect_policy: None`.
   The opt-in `ReconnectPolicy` auto-reconnects the async client with

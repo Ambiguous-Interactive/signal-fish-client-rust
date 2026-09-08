@@ -598,7 +598,7 @@ pub enum ClientMessage { /* ... */ }
 | `Reconnect` | Reconnect to a room after a disconnection. |
 | `JoinAsSpectator` | Join a room as a read-only spectator. |
 | `LeaveSpectator` | Leave spectator mode. |
-| `RoomOperation` | **(negotiated v3)** Wrap one of the five directed room commands with a fresh canonical UUID after `room_operation_ids` is echoed. |
+| `RoomOperation` | **(negotiated v3)** Wrap one of the five directed room commands with a fresh canonical UUID after `room_operation_ids` is echoed. The wire envelope also carries the upstream authority-only `KickPlayer`/`RegenerateRoomCode` operations, which this SDK types but never issues. |
 | `StartGame` | **(v2)** Explicitly start the game, finalizing the lobby (via `client.start_game()`). |
 | `Signal` | **(v3)** Relay an opaque WebRTC signal to a single peer (via `client.send_signal(...)`). |
 | `TransportStatus` | **(v3)** Report whether a data-path transport is established (via `client.report_transport_status(...)`). |
@@ -685,7 +685,11 @@ safely ignores any of these it doesn't recognize.
 form. After `room_operation_ids` is requested and echoed on v3, `JoinRoom`,
 `LeaveRoom`, `Reconnect`, `JoinAsSpectator`, and `LeaveSpectator` are carried in
 `RoomOperation`; their terminal response arrives in `RoomOperationResult` with
-the identical ID. IDs are correlation fences, not idempotency keys: the server
+the identical ID. (The wire envelope also carries the upstream authority-only
+`KickPlayer`/`RegenerateRoomCode` operations and their `PlayerKicked`/
+`RoomCodeRegenerated` results; the SDK types them for decoding but issues no
+moderation operations, and its operation fences never match those results.)
+IDs are correlation fences, not idempotency keys: the server
 echoes them but does not deduplicate operations. A fresh physical connection
 negotiates a new scope. Autonomous spectator removal, disconnection, and room
 closure remain top-level `SpectatorLeft` messages.
