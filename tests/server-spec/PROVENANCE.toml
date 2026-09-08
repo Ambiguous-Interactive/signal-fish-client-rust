@@ -14,17 +14,22 @@ path = "spec"
 # RoomOperationResult responses, the additive JoinRoom / JoinAsSpectator
 # `password` field, and the v3-only additive `spectator_count`
 # delta-count field on NewSpectatorJoined / SpectatorDisconnected (additive
-# only; existing schema lines untouched). The Server 0.8.0 release pin
+# only; existing schema lines untouched). The 2026-09-08 follow-up refresh
+# at b602fc1d (server PR #548, issue #546) is descriptive-only: a password
+# presented to an open room is now also refused with PASSWORD_REQUIRED
+# (previously "ignored"), so the password/PasswordRequired prose changed on
+# both sides; zero schema-shape, token, or sample changes. The Server 0.8.0
+# release pin
 # (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
 # access-control surface, so the released runtime compatibility binding stays
 # at that release. This evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "af4e6795fac0681e0079b7b5672d141ae91a2e6b"
+commit = "b602fc1d6138c06836a2b5101f4e04b7838a6292"
 # ISO 8601 date of the last refresh.
 synced = "2026-09-08"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "7297441cc68bd11925fa7e2ed465ae1987ed37e51035e0c91f61bb7fef7493dc"
+"signal-fish-protocol.asyncapi.yaml" = "fa0b3b6ecb63a8155dcff18933dd31818562ce2a0b7a1dd981300fb383bb5630"

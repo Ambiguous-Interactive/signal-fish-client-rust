@@ -15,7 +15,9 @@ path = ".llm/code-samples/protocol"
 # moderation or access-control surfaces, so the released runtime
 # compatibility binding stays at that release; the evidence authority
 # advances together across compatibility.toml and both PROVENANCE files.
-commit = "af4e6795fac0681e0079b7b5672d141ae91a2e6b"
+# (The 2026-09-08 b602fc1d follow-up is spec-prose only; the samples are
+# unchanged there too.)
+commit = "b602fc1d6138c06836a2b5101f4e04b7838a6292"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3

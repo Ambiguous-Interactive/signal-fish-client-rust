@@ -1030,11 +1030,13 @@ pub struct JoinRoomParams {
     /// Join password for password-protected rooms.
     ///
     /// Required when the target room carries an authority-set password
-    /// (`PASSWORD_REQUIRED` otherwise); ignored for open rooms. When the
-    /// join creates the room, this password seals it from birth. The wire
-    /// accepts a non-empty value of at most 256 bytes; violations are
-    /// refused by the server in-band. Omitted from the serialized `JoinRoom`
-    /// frame when unset, so unset params keep byte-identical wire behavior.
+    /// (`PASSWORD_REQUIRED` otherwise). A password presented to an open room
+    /// is also refused: the join states the intent to enter a sealed room,
+    /// and the refusal is indistinguishable from a mismatch. When the join
+    /// creates the room, this password seals it from birth. The wire accepts
+    /// a non-empty value of at most 256 bytes; violations are refused by the
+    /// server in-band. Omitted from the serialized `JoinRoom` frame when
+    /// unset, so unset params keep byte-identical wire behavior.
     pub password: Option<String>,
 }
 
@@ -1102,11 +1104,11 @@ impl JoinRoomParams {
 
     /// Set the join password for password-protected rooms.
     ///
-    /// Required when the target room carries an authority-set password and
-    /// ignored otherwise; when this join creates the room, the password
-    /// seals it from birth. The server stores only a salted hash and never
-    /// logs the value. It is also redacted from this params struct's `Debug`
-    /// output.
+    /// Required when the target room carries an authority-set password. A
+    /// password presented to an open room is refused (upstream issue #546);
+    /// when this join creates the room, the password seals it from birth.
+    /// The server stores only a salted hash and never logs the value. It is
+    /// also redacted from this params struct's `Debug` output.
     #[must_use]
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(password.into());

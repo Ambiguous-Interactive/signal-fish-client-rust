@@ -812,12 +812,14 @@ pub enum ClientMessage {
         relay_transport: Option<RelayTransport>,
         /// Join password for password-protected rooms.
         ///
-        /// Required when the target room carries an authority-set password;
-        /// ignored otherwise. When the join creates the room, this password
-        /// seals it from birth. A wrong and a missing password are
-        /// indistinguishable to the sender: both are refused in-band. The
-        /// server stores only a salted hash and never logs or echoes the
-        /// value. Omitted on the wire when unset.
+        /// Required when the target room carries an authority-set password.
+        /// A password presented to an open room is refused (upstream issue
+        /// #546): the join states the intent to enter a sealed room, and the
+        /// room under that code was created by someone else. When the join
+        /// creates the room, this password seals it from birth. A wrong and
+        /// a missing password are indistinguishable to the sender: both are
+        /// refused in-band. The server stores only a salted hash and never
+        /// logs or echoes the value. Omitted on the wire when unset.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },
@@ -861,9 +863,10 @@ pub enum ClientMessage {
         spectator_name: String,
         /// Join password for password-protected rooms.
         ///
-        /// Required when the room carries an authority-set password. The
-        /// server never logs or echoes the value. Omitted on the wire when
-        /// unset.
+        /// Required when the room carries an authority-set password. A
+        /// password presented to an open room is refused (upstream issue
+        /// #546). The server never logs or echoes the value. Omitted on the
+        /// wire when unset.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },
@@ -962,7 +965,8 @@ pub enum RoomOperationRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_transport: Option<RelayTransport>,
         /// Join password for password-protected rooms; see
-        /// [`ClientMessage::JoinRoom`].
+        /// [`ClientMessage::JoinRoom`]: a password presented to an open room
+        /// is refused (upstream issue #546).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },
@@ -977,7 +981,8 @@ pub enum RoomOperationRequest {
         room_code: String,
         spectator_name: String,
         /// Join password for password-protected rooms; see
-        /// [`ClientMessage::JoinAsSpectator`].
+        /// [`ClientMessage::JoinAsSpectator`]: a password presented to an
+        /// open room is refused (upstream issue #546).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },

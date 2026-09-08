@@ -200,8 +200,9 @@ pub enum ErrorCode {
     // the moderation block, matching the upstream token order. Raised by the
     // room access-control tier (SetRoomAccess / BanPlayer / TransferAuthority
     // and password-protected joins).
-    /// The room requires a join password and the request presented none or
-    /// the wrong one. The server does not distinguish the two cases.
+    /// The room requires a join password and the request presented none,
+    /// the wrong one, or a password for an open room (upstream issue #546).
+    /// The server does not distinguish the three cases.
     PasswordRequired,
     /// This player id is banned from the room by its authority player and
     /// cannot join it (as a player or spectator) while the room lives. The
@@ -427,7 +428,7 @@ impl ErrorCode {
                 "You were removed from the room by its authority player. The kicked seat cannot be reconnected; join again with a valid room code."
             }
             Self::PasswordRequired => {
-                "This room is password-protected. Send the join password chosen by its authority player."
+                "This room is password-protected, or the join presented a password to an open room. Send the password chosen by the room's authority player, or join without one."
             }
             Self::Banned => {
                 "This player id is banned from the room by its authority player and cannot join it while the room lives."

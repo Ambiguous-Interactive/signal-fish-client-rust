@@ -114,7 +114,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_max_players(n)` | `u8` | Set the maximum number of players allowed in the room. The field is a `u8`, so values above 255 cannot be expressed; rooms larger than that are outside this SDK's model. |
 | `.with_supports_authority(flag)` | `bool` | Enable or disable authority delegation support. |
 | `.with_relay_transport(transport)` | `RelayTransport` | Set legacy relay metadata retained for wire compatibility; Server 0.8 ignores it and it does not reconfigure signaling. |
-| `.with_password(password)` | `impl Into<String>` | Set the join password for password-protected rooms. Required when the room carries an authority-set password, ignored for open rooms, and seals a room this join creates. Redacted from `Debug` output. |
+| `.with_password(password)` | `impl Into<String>` | Set the join password for password-protected rooms. Required when the room carries an authority-set password, refused for open rooms (a password states the intent to enter a sealed room), and seals a room this join creates. Redacted from `Debug` output. |
 
 ### Full Example
 

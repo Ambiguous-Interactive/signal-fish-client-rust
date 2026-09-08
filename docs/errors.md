@@ -269,7 +269,7 @@ access-control operations itself; `join_room` can present a password with
 
 | Variant | Description |
 |---------|-------------|
-| `PasswordRequired` | The room requires a join password and the request presented none or the wrong one; the server does not distinguish the two cases. |
+| `PasswordRequired` | The room requires a join password and the request presented none, the wrong one, or a password for an open room; the server does not distinguish the three cases. |
 | `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. |
 | `TransferTargetNotFound` | The player named by `TransferAuthority` is not a seated member of the room. |
 
