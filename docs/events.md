@@ -84,10 +84,13 @@ the async client. `Reconnecting { attempt, next_backoff }` precedes each
 fresh-transport attempt (1-based `attempt`, deterministic exponential
 `next_backoff`); a successful attempt continues with a fresh `Connected` →
 `Authenticated` sequence and, when the client was a player in a room when
-the previous connection ended, an automatic directed reconnect. `ReconnectAbandoned {
+the previous connection ended, an automatic directed reconnect.
+`ReconnectAbandoned {
 attempts, last_reason }` is the terminal event when the budget runs out;
-shutdown, a dropped handle, and `ProtocolViolationPolicy::Disconnect`
-teardowns end the client without attempting reconnection and never produce
+shutdown, a dropped handle, a `ProtocolViolationPolicy::Disconnect`
+teardown, a peer close whose code the policy classifies terminal
+(`with_terminal_close_codes`), and a farewell the consumer never drained
+end the client without attempting reconnection and never produce
 these events.
 
 ### `DecodeFailed`

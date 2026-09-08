@@ -132,10 +132,13 @@ pub enum SignalFishEvent {
     /// This is a **synthetic event** — it is only emitted when a
     /// [`ReconnectPolicy`](crate::ReconnectPolicy) is configured and its
     /// attempt budget ran out without a successful reconnection. Shutdown,
-    /// a dropped client handle, and
+    /// a dropped client handle, a
     /// [`ProtocolViolationPolicy::Disconnect`](crate::ProtocolViolationPolicy::Disconnect)
-    /// teardowns end the client without attempting reconnection and
-    /// therefore never produce this event.
+    /// teardown, a peer close whose code the policy classifies terminal
+    /// ([`with_terminal_close_codes`](crate::ReconnectPolicy::with_terminal_close_codes)),
+    /// and a teardown whose farewell could not be delivered (the consumer
+    /// wedged past the shutdown budget) all end the client without
+    /// attempting reconnection and therefore never produce this event.
     ReconnectAbandoned {
         /// How many reconnection attempts were made in this episode. `0`
         /// means the policy allowed no attempts at all.

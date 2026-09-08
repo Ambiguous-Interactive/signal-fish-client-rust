@@ -198,8 +198,8 @@ pub(crate) fn decode_binary_server_message(
 /// `app_id`; all others have sensible defaults.
 ///
 /// `PartialEq` compares a configured [`ReconnectPolicy`] by its observable
-/// tuning (attempts and backoff windows); the uncomparable transport factory
-/// is deliberately not part of the comparison.
+/// tuning (attempts, backoff windows, and terminal close codes); the
+/// uncomparable transport factory is deliberately not part of the comparison.
 ///
 /// # Example
 ///
@@ -359,12 +359,15 @@ impl Eq for SignalFishConfig {}
 impl SignalFishConfig {
     /// Comparable view of a configured policy: the observable tuning without
     /// the uncomparable transport factory.
-    fn reconnect_tuning(policy: Option<&ReconnectPolicy>) -> Option<(u32, Duration, Duration)> {
+    fn reconnect_tuning(
+        policy: Option<&ReconnectPolicy>,
+    ) -> Option<(u32, Duration, Duration, Vec<u16>)> {
         policy.map(|policy| {
             (
                 policy.max_attempts,
                 policy.initial_backoff,
                 policy.max_backoff,
+                policy.terminal_close_codes.clone(),
             )
         })
     }
@@ -691,14 +694,24 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// [`max_frame_hint`](crate::Transport::max_frame_hint), and frames received
 /// before transport readiness are all retried: every one of them can be
 /// caused by a dead or misbehaving *backend*, which is exactly what a fresh
-/// transport from the factory replaces. Close codes are not inspected: a
-/// server kick (private close code 4007, `kicked`) is retried like any
-/// peer close. The server never arms reconnection for a kicked seat, so on
-/// a spec-conformant server the episode ends with the automatic rejoin
-/// refused in-band as
+/// transport from the factory replaces. Close codes are not inspected by
+/// default: a server kick (private close code 4007, `kicked`) is retried
+/// like any peer close. The server never arms reconnection for a kicked
+/// seat, so on a spec-conformant server the episode ends with the automatic
+/// rejoin refused in-band as
 /// [`ReconnectionFailed`](SignalFishEvent::ReconnectionFailed) while the
-/// fresh connection itself stays usable. Not retried — the client ends as
-/// today:
+/// fresh connection itself stays usable.
+///
+/// Deployments that would rather treat *known-permanent* close codes as
+/// terminal can opt in with
+/// [`with_terminal_close_codes`](Self::with_terminal_close_codes): a
+/// peer-initiated close whose code is configured ends the client after the
+/// ordinary [`Disconnected`](SignalFishEvent::Disconnected) farewell,
+/// skipping the doomed round (and its
+/// [`Reconnecting`](SignalFishEvent::Reconnecting) event) entirely. Codes
+/// not configured stay retryable, so a plain list such as `[4007]` keeps
+/// `4000` (server going away) and other transient closes reconnecting.
+/// Not retried — the client ends as today:
 ///
 /// - [`shutdown`](SignalFishClient::shutdown) (at any point, including
 ///   during a backoff wait),
@@ -710,7 +723,10 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 ///   consumer wedged past [`shutdown_timeout`](SignalFishConfig::shutdown_timeout):
 ///   the consumer missed a barrier event, and a mesh controller's
 ///   catch-up accounting can never resynchronize a lost edge, so the loop
-///   ends instead of retrying into a wedged consumer, and
+///   ends instead of retrying into a wedged consumer,
+/// - a peer close classified terminal by
+///   [`with_terminal_close_codes`](Self::with_terminal_close_codes) (no
+///   attempt is spent, so the budget machinery never runs), and
 /// - an exhausted attempt budget, reported via
 ///   [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned).
 ///
@@ -764,6 +780,7 @@ pub struct ReconnectPolicy {
     max_attempts: u32,
     initial_backoff: Duration,
     max_backoff: Duration,
+    terminal_close_codes: Vec<u16>,
 }
 
 impl Clone for ReconnectPolicy {
@@ -773,6 +790,7 @@ impl Clone for ReconnectPolicy {
             max_attempts: self.max_attempts,
             initial_backoff: self.initial_backoff,
             max_backoff: self.max_backoff,
+            terminal_close_codes: self.terminal_close_codes.clone(),
         }
     }
 }
@@ -783,6 +801,7 @@ impl std::fmt::Debug for ReconnectPolicy {
             .field("max_attempts", &self.max_attempts)
             .field("initial_backoff", &self.initial_backoff)
             .field("max_backoff", &self.max_backoff)
+            .field("terminal_close_codes", &self.terminal_close_codes)
             .finish_non_exhaustive()
     }
 }
@@ -799,6 +818,7 @@ impl ReconnectPolicy {
             max_attempts: DEFAULT_RECONNECT_MAX_ATTEMPTS,
             initial_backoff: DEFAULT_RECONNECT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_RECONNECT_MAX_BACKOFF,
+            terminal_close_codes: Vec::new(),
         }
     }
 
@@ -835,6 +855,37 @@ impl ReconnectPolicy {
         self
     }
 
+    /// Treat the listed WebSocket close codes as **terminal** when the peer
+    /// initiated the close: the client ends after the ordinary
+    /// [`Disconnected`](SignalFishEvent::Disconnected) farewell instead of
+    /// spending a reconnection round on a close the deployment knows is
+    /// permanent.
+    ///
+    /// The canonical member is the authority kick, private code **4007**
+    /// (`kicked`): the server will never arm reconnection for a kicked seat,
+    /// so the default retry only produces one doomed round that the server
+    /// refuses in-band. Keep transient codes out of the list — `4000`
+    /// (`going away`) is how a server announces a restart and must stay
+    /// retryable — and the SDK never hard-codes server policy: an empty list
+    /// (the default) retries every peer close as today.
+    ///
+    /// Matching is deliberately narrow: the close must report
+    /// `initiated_by_peer` (a local transport failure is never a server
+    /// verdict) *and* carry a code, and only exact configured codes match.
+    /// The list is normalized (sorted, deduplicated), so equality and
+    /// [`Debug`](std::fmt::Debug) reflect the configured set, not its
+    /// spelling. A terminal close skips the attempt budget entirely — the
+    /// loop ends with no [`Reconnecting`](SignalFishEvent::Reconnecting) and
+    /// no [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned) event.
+    #[must_use]
+    pub fn with_terminal_close_codes(mut self, codes: impl IntoIterator<Item = u16>) -> Self {
+        let mut normalized: Vec<u16> = codes.into_iter().collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        self.terminal_close_codes = normalized;
+        self
+    }
+
     /// The configured attempt budget per episode.
     #[must_use]
     pub fn max_attempts(&self) -> u32 {
@@ -851,6 +902,13 @@ impl ReconnectPolicy {
     #[must_use]
     pub fn max_backoff(&self) -> Duration {
         self.max_backoff
+    }
+
+    /// The close codes configured as terminal via
+    /// [`with_terminal_close_codes`](Self::with_terminal_close_codes).
+    #[must_use]
+    pub fn terminal_close_codes(&self) -> &[u16] {
+        &self.terminal_close_codes
     }
 
     /// The deterministic delay before the 1-based `attempt`-th
@@ -886,6 +944,25 @@ impl ReconnectPolicy {
     #[cfg(feature = "tokio-runtime")]
     fn create_transport(&self) -> Box<dyn Transport + Send> {
         (self.factory)()
+    }
+
+    /// Whether this close metadata names a configured terminal code. Only a
+    /// *peer-initiated* close with a code can be a server verdict the
+    /// deployment asked to honor; local transport failures and code-less
+    /// closes stay retryable.
+    #[cfg(feature = "tokio-runtime")]
+    fn classifies_peer_close_terminal(
+        &self,
+        close: Option<&crate::transport::TransportCloseInfo>,
+    ) -> bool {
+        let Some(info) = close else {
+            return false;
+        };
+        if !info.initiated_by_peer {
+            return false;
+        }
+        info.code
+            .is_some_and(|code| self.terminal_close_codes.contains(&code))
     }
 }
 
@@ -2767,6 +2844,20 @@ enum ConnectionRoundExit {
     },
 }
 
+/// Whether the configured policy (if any) classifies the transport's current
+/// close metadata as a terminal peer close (issue #242). Evaluated at every
+/// edge that can classify the round retryable: a peer close can surface
+/// through whichever I/O arm observed the dead socket first.
+#[cfg(feature = "tokio-runtime")]
+fn peer_close_is_terminal(
+    reconnect: &Option<ReconnectPolicy>,
+    transport: &AbortOnDropTransport<Box<dyn Transport + Send>>,
+) -> bool {
+    reconnect.as_ref().is_some_and(|policy| {
+        policy.classifies_peer_close_terminal(transport.close_info().as_ref())
+    })
+}
+
 /// Classify a teardown the loop just completed: an observed (sticky) shutdown
 /// signal always wins over retrying, because the client was asked to end. A
 /// blocked farewell (`farewell_unblocked == false`: a living consumer wedged
@@ -2774,15 +2865,19 @@ enum ConnectionRoundExit {
 /// barrier event, and a retried round can never resynchronize a
 /// mesh controller whose catch-up accounting counts one delivered event
 /// per authoritative edge. `true` covers delivery and a gone consumer alike —
-/// in neither case does a retry face a blocked barrier.
+/// in neither case does a retry face a blocked barrier. A peer-initiated
+/// close whose code the policy classifies as terminal ends the client after
+/// the delivered farewell instead of spending a round the deployment knows
+/// is doomed (issue #242).
 #[cfg(feature = "tokio-runtime")]
 fn classify_round_exit(
     shutdown: &ShutdownSignal,
     farewell_unblocked: bool,
     authenticated: bool,
     reason: Option<String>,
+    peer_close_terminal: bool,
 ) -> ConnectionRoundExit {
-    if shutdown.is_observed() || !farewell_unblocked {
+    if shutdown.is_observed() || !farewell_unblocked || peer_close_terminal {
         ConnectionRoundExit::Terminal
     } else {
         ConnectionRoundExit::Retryable {
@@ -3108,11 +3203,13 @@ async fn connection_round(
                         TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                     )
                     .await;
+                    let peer_close_terminal = peer_close_is_terminal(reconnect, transport);
                     exit = classify_round_exit(
                         shutdown,
                         farewell_unblocked,
                         authenticated,
                         reason,
+                        peer_close_terminal,
                     );
                     break;
                 }
@@ -3146,11 +3243,13 @@ async fn connection_round(
                         )
                         .await;
                         let reason = peer_close_reason(transport).or(Some(error_text));
+                        let peer_close_terminal = peer_close_is_terminal(reconnect, transport);
                         exit = classify_round_exit(
                             shutdown,
                             farewell_unblocked,
                             authenticated,
                             reason,
+                            peer_close_terminal,
                         );
                         break;
                     }
@@ -3173,11 +3272,14 @@ async fn connection_round(
                                 TerminalTeardown::starting(shutdown_timeout, Some(reason)),
                             )
                             .await;
+                            let peer_close_terminal =
+                                peer_close_is_terminal(reconnect, transport);
                             exit = classify_round_exit(
                                 shutdown,
                                 farewell_unblocked,
                                 authenticated,
                                 reason_text,
+                                peer_close_terminal,
                             );
                             break;
                         }
@@ -3265,11 +3367,13 @@ async fn connection_round(
                             TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                         )
                         .await;
+                        let peer_close_terminal = peer_close_is_terminal(reconnect, transport);
                         exit = classify_round_exit(
                             shutdown,
                             farewell_unblocked,
                             authenticated,
                             reason,
+                            peer_close_terminal,
                         );
                         break;
                     }
@@ -3285,11 +3389,13 @@ async fn connection_round(
                             TerminalTeardown::starting(shutdown_timeout, reason.clone()),
                         )
                         .await;
+                        let peer_close_terminal = peer_close_is_terminal(reconnect, transport);
                         exit = classify_round_exit(
                             shutdown,
                             farewell_unblocked,
                             authenticated,
                             reason,
+                            peer_close_terminal,
                         );
                         break;
                     }
@@ -3700,6 +3806,13 @@ mod tests {
                 clean: Some(true),
                 initiated_by_peer: true,
             });
+            self
+        }
+
+        /// Report arbitrary close metadata from `Transport::close_info` once
+        /// the scripted queue ends.
+        fn with_close_info(mut self, close: crate::transport::TransportCloseInfo) -> Self {
+            self.close_info = Some(close);
             self
         }
     }
@@ -9843,6 +9956,316 @@ mod tests {
         }
         assert!(client.is_connected());
         client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_close_code_ends_the_client_without_retrying() {
+        // Issue #242: a policy that classifies the authority kick (private
+        // close code 4007) as terminal ends the client after the ordinary
+        // `Disconnected` farewell — no doomed rejoin round, no `Reconnecting`,
+        // no `ReconnectAbandoned`.
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        let transport1 = transport1.with_peer_close(4007, "kicked");
+        // The pool stays empty: a retried round would panic the factory, so
+        // a regression cannot pass by silently retrying into nothing.
+        let pool = transport_pool(Vec::new());
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_terminal_close_codes([4007]);
+        assert_eq!(policy.terminal_close_codes(), [4007]);
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert_eq!(
+                    reason.as_deref(),
+                    Some("closed by server: code=Some(4007), reason=Some(\"kicked\")")
+                );
+            }
+            other => panic!("expected kicked Disconnected, got {other:?}"),
+        }
+        // The loop ended without scheduling anything: the very next item is
+        // channel closure, not a `Reconnecting` event.
+        assert!(events.recv().await.is_none());
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_close_codes_leave_unlisted_codes_retryable() {
+        // 4000 (server going away) is a transient close: it must keep
+        // reconnecting even while 4007 and 4999 are configured terminal.
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        let transport1 = transport1.with_peer_close(4000, "draining");
+        let (transport2, sent2, _closed2) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+        ]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(10))
+            .with_terminal_close_codes([4007, 4999]);
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        // Everything else about the round is unchanged: the retained
+        // player-room context still arms the automatic rejoin.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        {
+            let sent2 = sent2.lock().unwrap();
+            assert_eq!(sent2.len(), 2);
+            let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
+            assert_eq!(message["type"], "Reconnect");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_close_codes_match_only_peer_initiated_coded_closes() {
+        // Matching is deliberately narrow: a transport-initiated close
+        // carrying a configured code is a local backend failure, and a
+        // peer-initiated close without a code names no verdict — both stay
+        // retryable, and the budget machinery still runs (one remaining
+        // attempt is consumed, then `ReconnectAbandoned`).
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            None,
+        ]);
+        let transport1 = transport1.with_close_info(crate::transport::TransportCloseInfo {
+            code: Some(4007),
+            reason: Some("backend reset".into()),
+            clean: Some(false),
+            initiated_by_peer: false,
+        });
+        // The scripted `None` ends the round through the ordinary stream-end
+        // edge so the close metadata is consulted.
+        let (transport2, _sent2, _closed2) = MockTransport::new(vec![None]);
+        let transport2 = transport2.with_close_info(crate::transport::TransportCloseInfo {
+            code: None,
+            reason: None,
+            clean: Some(false),
+            initiated_by_peer: true,
+        });
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(1)
+            .with_initial_backoff(Duration::from_millis(10))
+            .with_terminal_close_codes([4007]);
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. })
+        ));
+        // Round 2 never authenticates, so the episode ends in the budget.
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        match events.recv().await {
+            Some(SignalFishEvent::ReconnectAbandoned {
+                attempts,
+                last_reason,
+            }) => {
+                assert_eq!(attempts, 1);
+                assert_eq!(
+                    last_reason.as_deref(),
+                    Some("closed by server: code=None, reason=None")
+                );
+            }
+            other => panic!("expected ReconnectAbandoned, got {other:?}"),
+        }
+        assert!(events.recv().await.is_none());
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_close_skips_the_attempt_budget_entirely() {
+        // `max_attempts(0)` would report `ReconnectAbandoned` for any
+        // retryable close; a terminal-classified close ends before the
+        // budget machinery runs at all.
+        let (transport1, _sent1, _closed1) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(room_joined_json_with_token("tok-1"))),
+            None,
+        ]);
+        let transport1 = transport1.with_peer_close(4007, "kicked");
+        let policy = ReconnectPolicy::new(pool_factory(&transport_pool(Vec::new())))
+            .with_max_attempts(0)
+            .with_terminal_close_codes([4007]);
+        let config = SignalFishConfig::new("mb_reconnect")
+            .enable_v3()
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::ProtocolInfo(_))
+        ));
+        client
+            .join_room(JoinRoomParams::new("test-game", "local"))
+            .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::RoomJoined { .. })
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Disconnected { .. })
+        ));
+        assert!(events.recv().await.is_none());
+        client.shutdown().await;
+    }
+
+    #[test]
+    fn reconnect_policy_terminal_close_codes_are_observable_tuning() {
+        let factory =
+            || -> Box<dyn Transport + Send> { Box::new(MockTransport::new(Vec::new()).0) };
+        let base = SignalFishConfig::new("mb_reconnect")
+            .with_reconnect_policy(ReconnectPolicy::new(factory).with_terminal_close_codes([4007]));
+        let same = SignalFishConfig::new("mb_reconnect")
+            .with_reconnect_policy(ReconnectPolicy::new(factory).with_terminal_close_codes([4007]));
+        let different = SignalFishConfig::new("mb_reconnect")
+            .with_reconnect_policy(ReconnectPolicy::new(factory).with_terminal_close_codes([4000]));
+        let default_codes = SignalFishConfig::new("mb_reconnect")
+            .with_reconnect_policy(ReconnectPolicy::new(factory));
+        assert_eq!(base, same);
+        assert_ne!(base, different);
+        assert_ne!(base, default_codes);
+        // The list is normalized: order and duplicates are not observable
+        // tuning, so they never affect equality or the accessor.
+        let reordered = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4999, 4007]),
+        );
+        let duplicated = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4007, 4007, 4999]),
+        );
+        let normalized = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4007, 4999]),
+        );
+        assert_eq!(reordered, normalized);
+        assert_eq!(duplicated, normalized);
+        assert_eq!(
+            ReconnectPolicy::new(factory)
+                .with_terminal_close_codes([4999, 4007, 4007])
+                .terminal_close_codes(),
+            [4007, 4999]
+        );
+        // The codes are visible diagnostics, not secrets.
+        let debug = format!(
+            "{:?}",
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4007])
+        );
+        assert!(
+            debug.contains("terminal_close_codes: [4007]"),
+            "unexpected ReconnectPolicy Debug: {debug}"
+        );
     }
 
     /// A hostile backend that never reports readiness yet fails the first

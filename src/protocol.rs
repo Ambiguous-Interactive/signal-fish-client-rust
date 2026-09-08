@@ -964,9 +964,10 @@ pub enum RoomOperationRequest {
     /// seat, broadcasts the usual `PlayerLeft` roster delta to the remaining
     /// members, and closes the target's connection with private close code
     /// 4007 (`kicked`); the server never arms reconnection for a kicked seat
-    /// (a client-side `ReconnectPolicy` still classifies that close as an
-    /// ordinary retryable peer close; on a spec-conformant server the
-    /// automatic rejoin is refused in-band).
+    /// (a client-side `ReconnectPolicy` classifies that close as an ordinary
+    /// retryable peer close unless the deployment listed 4007 in
+    /// [`with_terminal_close_codes`](crate::client::ReconnectPolicy::with_terminal_close_codes);
+    /// on a spec-conformant server the automatic rejoin is refused in-band).
     KickPlayer {
         /// The seated player to remove.
         player_id: PlayerId,

@@ -29,6 +29,11 @@
 //! configuration drop this template's `join_room`-on-`Authenticated` call:
 //! one room operation may be admitted per round, so the manual join is
 //! refused with `RoomOperationPending` or displaces the automatic rejoin.
+//!
+//! A kick (private close code 4007) is retried like any peer close by
+//! default; add `.with_terminal_close_codes([4007])` to the policy to end
+//! the client right after the farewell instead of spending the doomed
+//! round.
 
 use signal_fish_client::{
     JoinRoomParams, ReconnectPolicy, SignalFishClient, SignalFishConfig, SignalFishEvent,
