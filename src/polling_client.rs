@@ -678,6 +678,35 @@ impl<T: Transport> SignalFishPollingClient<T> {
             game_name,
             room_code,
             spectator_name,
+            None,
+        ))
+    }
+
+    /// Join a room as a read-only spectator, presenting a join password.
+    ///
+    /// Use this for rooms sealed by the authority's `SetRoomAccess`
+    /// operation; a password presented to an open room is refused in-band
+    /// with [`ErrorCode::PasswordRequired`](crate::error_codes::ErrorCode::PasswordRequired). A missing or wrong password is
+    /// indistinguishable to the sender: both arrive as
+    /// [`SignalFishEvent::SpectatorJoinFailed`] carrying
+    /// [`ErrorCode::PasswordRequired`](crate::error_codes::ErrorCode::PasswordRequired).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same refusals as
+    /// [`SignalFishPollingClient::join_as_spectator`].
+    pub fn join_as_spectator_with_password(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+        password: impl Into<String>,
+    ) -> Result<()> {
+        self.queue_operation(ClientOperation::JoinAsSpectator(
+            game_name,
+            room_code,
+            spectator_name,
+            Some(password.into()),
         ))
     }
 
@@ -1559,6 +1588,22 @@ impl<T: Transport> crate::client_api::SignalFishClientApi for SignalFishPollingC
         SignalFishPollingClient::join_as_spectator(self, game_name, room_code, spectator_name)
     }
 
+    fn join_as_spectator_with_password(
+        &mut self,
+        game_name: String,
+        room_code: String,
+        spectator_name: String,
+        password: String,
+    ) -> Result<()> {
+        SignalFishPollingClient::join_as_spectator_with_password(
+            self,
+            game_name,
+            room_code,
+            spectator_name,
+            password,
+        )
+    }
+
     fn leave_spectator(&mut self) -> Result<()> {
         SignalFishPollingClient::leave_spectator(self)
     }
@@ -2020,7 +2065,12 @@ mod tests {
 
     fn admit_spectator_join<T: Transport>(client: &mut SignalFishPollingClient<T>) {
         client.core.record_admission(ClientCore::admission_for(
-            &ClientOperation::JoinAsSpectator("test-game".into(), "SPEC1".into(), "local".into()),
+            &ClientOperation::JoinAsSpectator(
+                "test-game".into(),
+                "SPEC1".into(),
+                "local".into(),
+                None,
+            ),
         ));
     }
 
@@ -4395,6 +4445,38 @@ mod tests {
         assert_eq!(sent_json["data"]["game_name"], "my-game");
         assert_eq!(sent_json["data"]["room_code"], "ROOM1");
         assert_eq!(sent_json["data"]["spectator_name"], "Spectator1");
+        assert!(
+            sent_json["data"].get("password").is_none(),
+            "the plain spectator join must keep the password off the wire: {sent_json}"
+        );
+    }
+
+    #[test]
+    fn join_as_spectator_with_password_queues_sealed_wire() {
+        let transport = MockTransport::new()
+            .with_incoming(vec![Some(Ok(authenticated_json_str().to_string()))]);
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let _ = client.poll(); // flush auth
+
+        client
+            .join_as_spectator_with_password(
+                "my-game".into(),
+                "ROOM1".into(),
+                "Spectator1".into(),
+                "hunter2",
+            )
+            .expect("sealed spectator join must succeed on authenticated client");
+        let _ = client.poll();
+
+        let last_sent = client
+            .transport
+            .sent
+            .last()
+            .expect("transport must have at least one sent message");
+        let sent_json: serde_json::Value =
+            serde_json::from_str(last_sent).expect("sent message must be valid JSON");
+        assert_eq!(sent_json["type"], "JoinAsSpectator");
+        assert_eq!(sent_json["data"]["password"], "hunter2");
     }
 
     #[test]
@@ -4874,29 +4956,40 @@ mod tests {
 
     #[test]
     fn poll_receives_room_join_failed_event() {
-        let json = serde_json::to_string(&ServerMessage::RoomJoinFailed {
-            reason: "room full".into(),
-            error_code: Some(crate::error_codes::ErrorCode::RoomFull),
-        })
-        .expect("RoomJoinFailed ServerMessage must serialize to JSON");
+        // Data-driven over the refusal codes whose journeys applications
+        // actually branch on, including the round-56 access-control pair.
+        for (expected_reason, code) in [
+            ("room full", crate::error_codes::ErrorCode::RoomFull),
+            (
+                "password required",
+                crate::error_codes::ErrorCode::PasswordRequired,
+            ),
+            ("banned", crate::error_codes::ErrorCode::Banned),
+        ] {
+            let json = serde_json::to_string(&ServerMessage::RoomJoinFailed {
+                reason: expected_reason.to_string(),
+                error_code: Some(code.clone()),
+            })
+            .expect("RoomJoinFailed ServerMessage must serialize to JSON");
 
-        let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
-        let mut client = SignalFishPollingClient::new(transport, default_config());
-        admit_player_join(&mut client);
-        let events = client.poll();
+            let transport = MockTransport::new().with_incoming(authenticated_incoming(json));
+            let mut client = SignalFishPollingClient::new(transport, default_config());
+            admit_player_join(&mut client);
+            let events = client.poll();
 
-        let rjf = events
-            .iter()
-            .find(|e| matches!(e, SignalFishEvent::RoomJoinFailed { .. }));
-        assert!(
-            rjf.is_some(),
-            "expected RoomJoinFailed event, got: {events:?}"
-        );
-        if let SignalFishEvent::RoomJoinFailed { reason, error_code } =
-            rjf.expect("RoomJoinFailed event must exist (verified by preceding assert)")
-        {
-            assert_eq!(reason, "room full");
-            assert_eq!(*error_code, Some(crate::error_codes::ErrorCode::RoomFull));
+            let rjf = events
+                .iter()
+                .find(|e| matches!(e, SignalFishEvent::RoomJoinFailed { .. }));
+            assert!(
+                rjf.is_some(),
+                "expected RoomJoinFailed event, got: {events:?}"
+            );
+            if let SignalFishEvent::RoomJoinFailed { reason, error_code } =
+                rjf.expect("RoomJoinFailed event must exist (verified by preceding assert)")
+            {
+                assert_eq!(reason, expected_reason);
+                assert_eq!(*error_code, Some(code));
+            }
         }
     }
 

@@ -124,7 +124,7 @@ pub(crate) enum ClientOperation {
     RequestAuthority(bool),
     ProvideConnectionInfo(ConnectionInfo),
     Reconnect(PlayerId, RoomId, String),
-    JoinAsSpectator(String, String, String),
+    JoinAsSpectator(String, String, String, Option<String>),
     LeaveSpectator,
     Ping,
     Signal(PlayerId, SignalGeneration, PeerSignal),
@@ -805,16 +805,12 @@ impl ClientCore {
                     auth_token,
                 }
             }
-            ClientOperation::JoinAsSpectator(game_name, room_code, spectator_name) => {
+            ClientOperation::JoinAsSpectator(game_name, room_code, spectator_name, password) => {
                 ClientMessage::JoinAsSpectator {
                     game_name,
                     room_code,
                     spectator_name,
-                    // The public spectator-join API predates the
-                    // access-control tier and carries no password; a
-                    // password-protected room refuses the join in-band with
-                    // `PASSWORD_REQUIRED`.
-                    password: None,
+                    password,
                 }
             }
             ClientOperation::LeaveSpectator => ClientMessage::LeaveSpectator,
@@ -3176,7 +3172,7 @@ mod tests {
         let _ = process(&mut core, authenticated());
         let _ = process(&mut core, protocol_info(Some(3)));
         core.record_admission(ClientCore::admission_for(
-            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         ));
         let _ = process(&mut core, spectator_joined());
         core
@@ -3666,6 +3662,129 @@ mod tests {
     }
 
     #[test]
+    fn access_control_join_refusals_surface_codes_and_release_the_fence_in_every_admission_form() {
+        // The round-56 access-control codes must behave exactly like the
+        // older join refusals: an ordinary RoomJoinFailed/SpectatorJoinFailed
+        // event carrying the code, no violation latch, and a fully released
+        // join fence in every admission form (legacy player, legacy
+        // spectator, negotiated player, sealed negotiated spectator).
+        for code in [
+            crate::ErrorCode::PasswordRequired,
+            crate::ErrorCode::Banned,
+            crate::ErrorCode::RoomFull,
+        ] {
+            let legacy_reason = format!("refused with {code:?}");
+            let mut legacy = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut legacy, authenticated());
+            let _ = process(&mut legacy, protocol_info(Some(3)));
+            legacy.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+                JoinRoomParams::new("game", "local"),
+            )));
+            let outcome = process(
+                &mut legacy,
+                ServerMessage::RoomJoinFailed {
+                    reason: legacy_reason,
+                    error_code: Some(code.clone()),
+                },
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::RoomJoinFailed { error_code: Some(received), .. }] if *received == code
+                ),
+                "legacy join refusal must carry the code: {code:?}"
+            );
+            assert_eq!(legacy.pending_room_operation, None);
+
+            let mut legacy_spectator = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut legacy_spectator, authenticated());
+            let _ = process(&mut legacy_spectator, protocol_info(Some(3)));
+            legacy_spectator.record_admission(ClientCore::admission_for(
+                &ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    Some("pw".into()),
+                ),
+            ));
+            let outcome = process(
+                &mut legacy_spectator,
+                ServerMessage::SpectatorJoinFailed {
+                    reason: "sealed".into(),
+                    error_code: Some(code.clone()),
+                },
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::SpectatorJoinFailed { error_code: Some(received), .. }] if *received == code
+                ),
+                "legacy sealed-spectator refusal must carry the code: {code:?}"
+            );
+            assert_eq!(legacy_spectator.pending_room_operation, None);
+
+            let mut correlated = correlated_outside(ProtocolViolationPolicy::Observe);
+            let join = || ClientOperation::JoinRoom(JoinRoomParams::new("game", "local"));
+            let (_, id) = prepare_and_admit(&mut correlated, join());
+            let outcome = process(
+                &mut correlated,
+                correlated_result(
+                    id,
+                    RoomOperationResult::RoomJoinFailed {
+                        reason: "sealed".into(),
+                        error_code: Some(code.clone()),
+                    },
+                ),
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::RoomJoinFailed { error_code: Some(received), .. }] if *received == code
+                ),
+                "correlated join refusal must carry the code: {code:?}"
+            );
+            assert_eq!(correlated.pending_room_operation, None);
+
+            let mut spectator = correlated_outside(ProtocolViolationPolicy::Observe);
+            let spectator_join = || {
+                ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    Some("pw".into()),
+                )
+            };
+            let (_, id) = prepare_and_admit(&mut spectator, spectator_join());
+            let outcome = process(
+                &mut spectator,
+                correlated_result(
+                    id,
+                    RoomOperationResult::SpectatorJoinFailed {
+                        reason: "sealed".into(),
+                        error_code: Some(code.clone()),
+                    },
+                ),
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::SpectatorJoinFailed { error_code: Some(received), .. }] if *received == code
+                ),
+                "sealed-spectator refusal must carry the code: {code:?}"
+            );
+            assert_eq!(spectator.pending_room_operation, None);
+        }
+    }
+
+    #[test]
     fn correlated_result_kind_matrix_covers_every_room_operation() {
         let room_joined = match room_joined() {
             ServerMessage::RoomJoined(payload) => RoomOperationResult::RoomJoined(payload),
@@ -3790,7 +3909,7 @@ mod tests {
         let mut core = correlated_outside(ProtocolViolationPolicy::Quarantine);
         let (_, join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
             unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -3844,7 +3963,12 @@ mod tests {
                 let mut core = correlated_outside(policy);
                 let (_, join_id) = prepare_and_admit(
                     &mut core,
-                    ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                    ClientOperation::JoinAsSpectator(
+                        "game".into(),
+                        "ROOM".into(),
+                        "viewer".into(),
+                        None,
+                    ),
                 );
                 let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
                     unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -3913,7 +4037,7 @@ mod tests {
         let mut core = correlated_outside(ProtocolViolationPolicy::Disconnect);
         let (_, initial_join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let ServerMessage::SpectatorJoined(initial_payload) = spectator_joined() else {
             unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -3938,7 +4062,7 @@ mod tests {
 
         let (_, fresh_join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let absorbed = process(
             &mut core,
@@ -3982,7 +4106,7 @@ mod tests {
         let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
         let (_, join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
             unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -4045,7 +4169,7 @@ mod tests {
         let mut core = correlated_outside(ProtocolViolationPolicy::Observe);
         let (_, join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
             unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -4131,6 +4255,7 @@ mod tests {
                 "game".into(),
                 "ROOM".into(),
                 "viewer".into(),
+                None,
             ))
             .expect("spectator join should prepare");
         assert!(matches!(
@@ -4192,6 +4317,7 @@ mod tests {
                 "game".into(),
                 "ROOM".into(),
                 "viewer".into(),
+                None,
             ))
             .expect("a fresh spectator join should prepare");
         assert!(matches!(
@@ -4275,7 +4401,7 @@ mod tests {
         let mut core = correlated_outside(ProtocolViolationPolicy::Quarantine);
         let (_, join_id) = prepare_and_admit(
             &mut core,
-            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
         );
         let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
             unreachable!("spectator_joined helper always returns SpectatorJoined")
@@ -4727,7 +4853,12 @@ mod tests {
             ),
             (
                 "join spectator",
-                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    None,
+                ),
                 MembershipError::None,
                 MembershipError::AlreadyInRoom,
                 MembershipError::AlreadyInRoom,
@@ -4824,7 +4955,12 @@ mod tests {
             ),
             (
                 "join spectator",
-                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    None,
+                ),
             ),
             ("leave spectator", ClientOperation::LeaveSpectator),
         ];
@@ -5192,7 +5328,8 @@ mod tests {
         );
         let _ = process(&mut spectator_join, authenticated());
         let _ = process(&mut spectator_join, protocol_info(Some(3)));
-        let join = ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into());
+        let join =
+            ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None);
         spectator_join.record_admission(ClientCore::admission_for(&join));
         let before = spectator_join.snapshot();
         let outcome = process(&mut spectator_join, room_joined());
@@ -7197,7 +7334,12 @@ mod tests {
             ),
             (
                 "spectator join",
-                ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into()),
+                ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    None,
+                ),
                 ClientMessage::JoinAsSpectator {
                     game_name: "game".into(),
                     room_code: "ROOM".into(),

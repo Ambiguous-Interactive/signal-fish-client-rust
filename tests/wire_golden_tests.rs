@@ -254,6 +254,84 @@ fn quick_match_join_room_omits_every_unset_optional_member() {
         Some("secret"),
         "a set password must serialize under data: {value}"
     );
+    let sealed_negotiated = ClientMessage::RoomOperation {
+        operation_id: uuid::Uuid::from_u128(0xaaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa),
+        operation: Box::new(RoomOperationRequest::JoinRoom {
+            game_name: "game".to_string(),
+            room_code: None,
+            player_name: "Alice".to_string(),
+            max_players: None,
+            supports_authority: None,
+            relay_transport: None,
+            password: Some("secret".to_string()),
+        }),
+    };
+    let value =
+        serde_json::to_value(&sealed_negotiated).expect("sealed negotiated join serializes");
+    assert_eq!(
+        value
+            .pointer("/data/operation/data/password")
+            .and_then(serde_json::Value::as_str),
+        Some("secret"),
+        "a set password must serialize inside the negotiated envelope: {value}"
+    );
+}
+
+#[test]
+fn sealed_spectator_join_serializes_password_in_both_forms() {
+    // The spectator-join password face (spec: JoinAsSpectator.password) must
+    // serialize in both the legacy and negotiated forms, and the plain
+    // spectator join must keep omitting the member entirely.
+    let plain = ClientMessage::JoinAsSpectator {
+        game_name: "game".to_string(),
+        room_code: "ABC123".to_string(),
+        spectator_name: "Watcher".to_string(),
+        password: None,
+    };
+    let value = serde_json::to_value(&plain).expect("plain spectator join serializes");
+    assert!(
+        !value
+            .pointer("/data")
+            .expect("data object")
+            .as_object()
+            .expect("object")
+            .contains_key("password"),
+        "unset spectator password must be omitted, not null: {value}"
+    );
+
+    let sealed = ClientMessage::JoinAsSpectator {
+        game_name: "game".to_string(),
+        room_code: "ABC123".to_string(),
+        spectator_name: "Watcher".to_string(),
+        password: Some("hunter2".to_string()),
+    };
+    let value = serde_json::to_value(&sealed).expect("sealed spectator join serializes");
+    assert_eq!(
+        value
+            .pointer("/data/password")
+            .and_then(serde_json::Value::as_str),
+        Some("hunter2"),
+        "a set spectator password must serialize under data: {value}"
+    );
+
+    let sealed_negotiated = ClientMessage::RoomOperation {
+        operation_id: uuid::Uuid::from_u128(0xaaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa_aaaa),
+        operation: Box::new(RoomOperationRequest::JoinAsSpectator {
+            game_name: "game".to_string(),
+            room_code: "ABC123".to_string(),
+            spectator_name: "Watcher".to_string(),
+            password: Some("hunter2".to_string()),
+        }),
+    };
+    let value = serde_json::to_value(&sealed_negotiated)
+        .expect("sealed negotiated spectator join serializes");
+    assert_eq!(
+        value
+            .pointer("/data/operation/data/password")
+            .and_then(serde_json::Value::as_str),
+        Some("hunter2"),
+        "a set spectator password must serialize inside the negotiated envelope: {value}"
+    );
 }
 
 #[test]

@@ -95,7 +95,7 @@ stateDiagram-v2
 | **Disconnected → Connecting** | Constructing either client transfers ownership of a nonterminal transport attempt; `is_connected()` is true while `is_transport_ready()` remains false. |
 | **Connecting → Connected** | Both drivers emit `Connected` on their first observation that `Transport::is_ready()` is true. For the polling client, observation occurs only while the application calls `poll()`. |
 | **Connected → Authenticated** | The SDK auto-sends an `Authenticate` message. On success the server replies and `SignalFishEvent::Authenticated` is emitted. |
-| **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)`. The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
+| **Authenticated → InRoom** | Call `client.join_room(params)` or `client.join_as_spectator(...)` (or the sealed-room `join_as_spectator_with_password` form). The server responds with `SignalFishEvent::RoomJoined` (or `SpectatorJoined`). |
 | **InRoom → Authenticated** | Call `client.leave_room()` or `client.leave_spectator()`. The server confirms with `SignalFishEvent::RoomLeft`. |
 | **Any → Disconnected** | Call `client.shutdown().await`, drop the client, or encounter an unrecoverable transport error. `SignalFishEvent::Disconnected` is the final event (best-effort; see [Events](events.md) for delivery caveats). |
 
@@ -535,6 +535,7 @@ Error codes are grouped by category:
 | **Delivery & Liveness** | `SlowConsumer`, `ActivityTimeout`, `ServerDraining`, `InvalidDeliveryClass` |
 | **Protocol Negotiation** | `UnsupportedProtocolVersion` |
 | **Moderation** | `NotRoomAuthority`, `KickTargetNotFound`, `Kicked` |
+| **Access control** | `PasswordRequired`, `Banned`, `TransferTargetNotFound` |
 
 See [Errors](errors.md) for the full table with descriptions.
 

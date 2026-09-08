@@ -156,6 +156,20 @@ fn correlated_client_operations_have_exact_nested_shapes() {
             "82a474797065ad526f6f6d4f7065726174696f6ea46461746182ac6f7065726174696f6e5f6964c410aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa96f7065726174696f6e82a474797065af4a6f696e4173537065637461746f72a46461746183a967616d655f6e616d65a467616d65a9726f6f6d5f636f6465a6414243313233ae737065637461746f725f6e616d65a757617463686572",
         ),
         (
+            "join_as_spectator_sealed",
+            ClientMessage::RoomOperation {
+                operation_id: OPERATION_ID,
+                operation: Box::new(RoomOperationRequest::JoinAsSpectator {
+                    game_name: "game".to_string(),
+                    room_code: "ABC123".to_string(),
+                    spectator_name: "Watcher".to_string(),
+                    password: Some("hunter2".to_string()),
+                }),
+            },
+            json!({"type":"RoomOperation","data":{"operation_id":OPERATION_ID_STR,"operation":{"type":"JoinAsSpectator","data":{"game_name":"game","room_code":"ABC123","spectator_name":"Watcher","password":"hunter2"}}}}),
+            "82a474797065ad526f6f6d4f7065726174696f6ea46461746182ac6f7065726174696f6e5f6964c410aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa96f7065726174696f6e82a474797065af4a6f696e4173537065637461746f72a46461746184a967616d655f6e616d65a467616d65a9726f6f6d5f636f6465a6414243313233ae737065637461746f725f6e616d65a757617463686572a870617373776f7264a768756e74657232",
+        ),
+        (
             "leave_spectator",
             ClientMessage::RoomOperation {
                 operation_id: OPERATION_ID,
