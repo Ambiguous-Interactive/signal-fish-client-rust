@@ -23,10 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deterministic exponential backoff — re-authenticating and reissuing the
   directed `reconnect` after a player-room disconnect; shutdown, dropped
   handles, and `Disconnect`-policy teardowns are never retried, and the
-  polling client stays caller-driven. Close codes are not special-cased: an
-  authority kick (close 4007) is retried like any peer close, and on a
-  spec-conformant server the kicked seat's automatic rejoin is refused
-  in-band as `ReconnectionFailed` on a still usable connection.
+  polling client stays caller-driven. Close codes are not special-cased by
+  default: an authority kick (close 4007) is retried like any peer close,
+  and on a spec-conformant server the kicked seat's automatic rejoin is
+  refused in-band as `ReconnectionFailed` on a still usable connection;
+  `ReconnectPolicy::with_terminal_close_codes` can instead list
+  known-permanent codes (peer-initiated only) that end the client right
+  after the `Disconnected` farewell.
 - **Breaking:** the exhaustive `SignalFishEvent` enum gains `Reconnecting {
   attempt, next_backoff }` and `ReconnectAbandoned { attempts, last_reason }`
   (the reconnect policy's per-attempt and terminal events); add two arms to

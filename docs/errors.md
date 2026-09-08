@@ -257,7 +257,7 @@ operations itself.
 |---------|-------------|
 | `NotRoomAuthority` | A moderation operation was sent by a connection that is not the room's designated authority player. |
 | `KickTargetNotFound` | The player named by `KickPlayer` is not a seated member of the room. |
-| `Kicked` | This connection was removed from its room by the room's authority player. The WebSocket closed with private close code 4007 (`kicked`); the server never arms reconnection for a kicked seat (a configured `ReconnectPolicy` still retries the close like any peer close, and on a spec-conformant server the automatic rejoin is refused in-band). |
+| `Kicked` | This connection was removed from its room by the room's authority player. The WebSocket closed with private close code 4007 (`kicked`); the server never arms reconnection for a kicked seat (a configured `ReconnectPolicy` retries the close like any peer close unless the deployment listed 4007 in `with_terminal_close_codes`, and on a spec-conformant server the automatic rejoin is refused in-band). |
 
 !!! note "The v3-era *server* codes vs. `SignalFishError::ProtocolUnsupported`"
     The five v3 signaling codes plus `ConnectionIdleTimeout` are **server-sent**
