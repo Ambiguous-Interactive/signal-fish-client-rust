@@ -189,8 +189,10 @@ pub enum ErrorCode {
     /// This connection was removed from its room by the room's authority
     /// player. The WebSocket closed with private close code `4007`
     /// (`kicked`); the server never arms reconnection for a kicked seat (a
-    /// configured `ReconnectPolicy` still retries the close like any peer
-    /// close, and on a spec-conformant server the automatic rejoin is
+    /// configured `ReconnectPolicy` retries the close like any peer close
+    /// unless the deployment listed 4007 in
+    /// [`with_terminal_close_codes`](crate::client::ReconnectPolicy::with_terminal_close_codes),
+    /// and on a spec-conformant server the automatic rejoin is
     /// refused in-band).
     Kicked,
 }

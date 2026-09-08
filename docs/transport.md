@@ -484,6 +484,9 @@ the [WebAssembly guide](wasm.md) for target and linker requirements.
 - Make close multi-poll and idempotent.
 - Implement prompt, non-blocking, non-panicking, idempotent `abort` cleanup;
   clear retained work and make failed backend cleanup safe to retry.
-- Record close code/reason/initiator before returning `None`.
+- Record close code/reason/initiator before returning `None`; async-driver
+  callers consult this metadata after the farewell to honor
+  `ReconnectPolicy::with_terminal_close_codes`, so a late or missing record
+  degrades a terminal verdict into an ordinary retry.
 - Keep `is_ready` cheap and monotonic for one physical connection.
 - Put connection-specific construction outside the trait.

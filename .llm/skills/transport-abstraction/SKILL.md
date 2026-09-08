@@ -302,7 +302,10 @@ dropping it each call.
 
 - maps WebSocket text and binary messages without discarding either;
 - retains an accepted outbound message until `poll_flush` completes;
-- records close code/reason in `TransportCloseInfo`;
+- records close code/reason in `TransportCloseInfo` before returning `None`
+  (async-driver callers consult it after the farewell to honor
+  `ReconnectPolicy::with_terminal_close_codes`; a late or missing record
+  degrades a terminal verdict into an ordinary retry);
 - drives `poll_close` idempotently;
 - flushes tungstenite's automatically queued Pong before reading again;
 - bounds skipped control frames per receive poll and self-wakes to resume;

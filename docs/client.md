@@ -620,9 +620,10 @@ let (mut client, events) = SignalFishClient::start(transport, config);
 ```
 
 With a policy configured, a terminal disconnect **other than** shutdown, a
-dropped handle, or a `ProtocolViolationPolicy::Disconnect` teardown (a
-protocol violation is a correctness signal, never masked) becomes a
-retryable edge:
+dropped handle, a `ProtocolViolationPolicy::Disconnect` teardown (a
+protocol violation is a correctness signal, never masked), or a peer close
+whose code the policy classifies terminal (`with_terminal_close_codes`,
+below) becomes a retryable edge:
 
 1. The usual bounded teardown delivers `Disconnected`, exactly as without a
    policy.
@@ -662,10 +663,9 @@ would rather skip that doomed round can classify known-permanent closes as
 terminal with `ReconnectPolicy::with_terminal_close_codes` — a peer-initiated
 close whose code is listed ends the client right after the `Disconnected`
 farewell, while every unlisted code (notably `4000`, a server going away)
-keeps reconnecting. When the attempt
-budget (`max_attempts`, reset whenever a connection reaches `Authenticated`)
-runs out, the client emits `ReconnectAbandoned { attempts, last_reason }` and
-the event stream ends.
+keeps reconnecting. When the attempt budget (`max_attempts`, reset whenever
+a connection reaches `Authenticated`) runs out, the client emits
+`ReconnectAbandoned { attempts, last_reason }` and the event stream ends.
 
 The polling client is caller-driven by design and ignores this option —
 recover it by constructing a new client inside your game loop. There is

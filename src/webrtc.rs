@@ -414,7 +414,11 @@ mod controller {
 
         /// Receive the next high-level mesh event. Returns `None` once the
         /// underlying event stream ends (the transport loop exited — client
-        /// shutdown, dropped handle, or an exhausted reconnect policy). At
+        /// shutdown, dropped handle, a `ProtocolViolationPolicy::Disconnect`
+        /// teardown, an exhausted reconnect policy, a peer close classified
+        /// terminal by the policy's `with_terminal_close_codes`, or a
+        /// farewell the consumer never
+        /// drained). At
         /// that boundary the controller clears its session, disconnects every
         /// known driver peer, and becomes fused: later calls also return
         /// `None` without pumping the driver. When this method returns a

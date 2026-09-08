@@ -723,7 +723,10 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 ///   consumer wedged past [`shutdown_timeout`](SignalFishConfig::shutdown_timeout):
 ///   the consumer missed a barrier event, and a mesh controller's
 ///   catch-up accounting can never resynchronize a lost edge, so the loop
-///   ends instead of retrying into a wedged consumer, and
+///   ends instead of retrying into a wedged consumer,
+/// - a peer close classified terminal by
+///   [`with_terminal_close_codes`](Self::with_terminal_close_codes) (no
+///   attempt is spent, so the budget machinery never runs), and
 /// - an exhausted attempt budget, reported via
 ///   [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned).
 ///
@@ -869,12 +872,17 @@ impl ReconnectPolicy {
     /// Matching is deliberately narrow: the close must report
     /// `initiated_by_peer` (a local transport failure is never a server
     /// verdict) *and* carry a code, and only exact configured codes match.
-    /// A terminal close skips the attempt budget entirely — the loop ends
-    /// with no [`Reconnecting`](SignalFishEvent::Reconnecting) and no
-    /// [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned) event.
+    /// The list is normalized (sorted, deduplicated), so equality and
+    /// [`Debug`](std::fmt::Debug) reflect the configured set, not its
+    /// spelling. A terminal close skips the attempt budget entirely — the
+    /// loop ends with no [`Reconnecting`](SignalFishEvent::Reconnecting) and
+    /// no [`ReconnectAbandoned`](SignalFishEvent::ReconnectAbandoned) event.
     #[must_use]
     pub fn with_terminal_close_codes(mut self, codes: impl IntoIterator<Item = u16>) -> Self {
-        self.terminal_close_codes = codes.into_iter().collect();
+        let mut normalized: Vec<u16> = codes.into_iter().collect();
+        normalized.sort_unstable();
+        normalized.dedup();
+        self.terminal_close_codes = normalized;
         self
     }
 
@@ -2838,8 +2846,8 @@ enum ConnectionRoundExit {
 
 /// Whether the configured policy (if any) classifies the transport's current
 /// close metadata as a terminal peer close (issue #242). Evaluated at every
-/// round-exit edge: a peer close can surface through whichever I/O arm
-/// observed the dead socket first.
+/// edge that can classify the round retryable: a peer close can surface
+/// through whichever I/O arm observed the dead socket first.
 #[cfg(feature = "tokio-runtime")]
 fn peer_close_is_terminal(
     reconnect: &Option<ReconnectPolicy>,
@@ -10230,6 +10238,25 @@ mod tests {
         assert_eq!(base, same);
         assert_ne!(base, different);
         assert_ne!(base, default_codes);
+        // The list is normalized: order and duplicates are not observable
+        // tuning, so they never affect equality or the accessor.
+        let reordered = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4999, 4007]),
+        );
+        let duplicated = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4007, 4007, 4999]),
+        );
+        let normalized = SignalFishConfig::new("mb_reconnect").with_reconnect_policy(
+            ReconnectPolicy::new(factory).with_terminal_close_codes([4007, 4999]),
+        );
+        assert_eq!(reordered, normalized);
+        assert_eq!(duplicated, normalized);
+        assert_eq!(
+            ReconnectPolicy::new(factory)
+                .with_terminal_close_codes([4999, 4007, 4007])
+                .terminal_close_codes(),
+            [4007, 4999]
+        );
         // The codes are visible diagnostics, not secrets.
         let debug = format!(
             "{:?}",
