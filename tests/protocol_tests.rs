@@ -16,9 +16,10 @@ use signal_fish_client::error_codes::ErrorCode;
 use signal_fish_client::protocol::{
     ClientMessage, ConnectionInfo, DirectEndpoint, GameDataEncoding, IceServer, LobbyState,
     PeerConnectionInfo, PlayerInfo, PlayerNameRulesPayload, ProtocolInfoPayload, RateLimitInfo,
-    ReconnectedPayload, RelayTransport, RoomJoinedPayload, ServerMessage, SessionPeer,
-    SessionPlanPayload, SpectatorInfo, SpectatorJoinedPayload, SpectatorStateChangeReason,
-    Topology, TransportKind, V2BinaryGameDataFrame, V3BinaryGameDataFrame,
+    ReconnectedPayload, RelayTransport, RoomJoinedPayload, RoomOperationRequest,
+    RoomOperationResult, ServerMessage, SessionPeer, SessionPlanPayload, SpectatorInfo,
+    SpectatorJoinedPayload, SpectatorStateChangeReason, Topology, TransportKind,
+    V2BinaryGameDataFrame, V3BinaryGameDataFrame,
 };
 use signal_fish_client::PeerSignal;
 use signal_fish_client::TransportCloseInfo;
@@ -94,6 +95,7 @@ fn client_message_join_room_round_trip() {
         max_players: Some(4),
         supports_authority: Some(true),
         relay_transport: Some(RelayTransport::Udp),
+        password: None,
     };
     let deser = round_trip(&msg);
     if let ClientMessage::JoinRoom {
@@ -103,11 +105,13 @@ fn client_message_join_room_round_trip() {
         max_players,
         supports_authority,
         relay_transport,
+        password,
     } = deser
     {
         assert_eq!(game_name, "my-game");
         assert_eq!(room_code.as_deref(), Some("ABC123"));
         assert_eq!(player_name, "Alice");
+        assert_eq!(password, None);
         assert_eq!(max_players, Some(4));
         assert_eq!(supports_authority, Some(true));
         assert!(matches!(relay_transport, Some(RelayTransport::Udp)));
@@ -227,17 +231,20 @@ fn client_message_join_as_spectator_round_trip() {
         game_name: "game1".into(),
         room_code: "ROOM1".into(),
         spectator_name: "Watcher".into(),
+        password: None,
     };
     let deser = round_trip(&msg);
     if let ClientMessage::JoinAsSpectator {
         game_name,
         room_code,
         spectator_name,
+        password,
     } = deser
     {
         assert_eq!(game_name, "game1");
         assert_eq!(room_code, "ROOM1");
         assert_eq!(spectator_name, "Watcher");
+        assert_eq!(password, None);
     } else {
         panic!("expected JoinAsSpectator variant");
     }
@@ -249,6 +256,182 @@ fn client_message_leave_spectator_round_trip() {
     let json = serde_json::to_string(&msg).expect("serialize");
     let deser: ClientMessage = serde_json::from_str(&json).expect("deserialize");
     assert!(matches!(deser, ClientMessage::LeaveSpectator));
+}
+
+#[test]
+fn access_control_surface_round_trips_with_exact_wire_tokens() {
+    // The room access-control tier (upstream server PR #545) has no vendored
+    // wire samples yet; these pins freeze the client's typed shapes against
+    // the vendored AsyncAPI authority (adjacent tagging, PascalCase variants,
+    // snake_case members) so a future sample refresh cannot silently drift.
+    let cases: Vec<(ClientMessage, serde_json::Value)> = vec![
+        (
+            ClientMessage::RoomOperation {
+                operation_id: test_uuid(0x51),
+                operation: Box::new(RoomOperationRequest::SetRoomAccess {
+                    password: Some("secret".into()),
+                }),
+            },
+            serde_json::json!({
+                "type": "RoomOperation",
+                "data": {
+                    "operation_id": test_uuid(0x51).to_string(),
+                    "operation": {
+                        "type": "SetRoomAccess",
+                        "data": { "password": "secret" }
+                    }
+                }
+            }),
+        ),
+        (
+            ClientMessage::RoomOperation {
+                operation_id: test_uuid(0x52),
+                operation: Box::new(RoomOperationRequest::SetRoomAccess { password: None }),
+            },
+            serde_json::json!({
+                "type": "RoomOperation",
+                "data": {
+                    "operation_id": test_uuid(0x52).to_string(),
+                    "operation": {
+                        "type": "SetRoomAccess",
+                        "data": { "password": serde_json::Value::Null }
+                    }
+                }
+            }),
+        ),
+        (
+            ClientMessage::RoomOperation {
+                operation_id: test_uuid(0x53),
+                operation: Box::new(RoomOperationRequest::BanPlayer {
+                    player_id: test_uuid(0x54),
+                }),
+            },
+            serde_json::json!({
+                "type": "RoomOperation",
+                "data": {
+                    "operation_id": test_uuid(0x53).to_string(),
+                    "operation": {
+                        "type": "BanPlayer",
+                        "data": { "player_id": test_uuid(0x54).to_string() }
+                    }
+                }
+            }),
+        ),
+        (
+            ClientMessage::RoomOperation {
+                operation_id: test_uuid(0x55),
+                operation: Box::new(RoomOperationRequest::UnbanPlayer {
+                    player_id: test_uuid(0x54),
+                }),
+            },
+            serde_json::json!({
+                "type": "RoomOperation",
+                "data": {
+                    "operation_id": test_uuid(0x55).to_string(),
+                    "operation": {
+                        "type": "UnbanPlayer",
+                        "data": { "player_id": test_uuid(0x54).to_string() }
+                    }
+                }
+            }),
+        ),
+        (
+            ClientMessage::RoomOperation {
+                operation_id: test_uuid(0x56),
+                operation: Box::new(RoomOperationRequest::TransferAuthority {
+                    player_id: test_uuid(0x57),
+                }),
+            },
+            serde_json::json!({
+                "type": "RoomOperation",
+                "data": {
+                    "operation_id": test_uuid(0x56).to_string(),
+                    "operation": {
+                        "type": "TransferAuthority",
+                        "data": { "player_id": test_uuid(0x57).to_string() }
+                    }
+                }
+            }),
+        ),
+    ];
+    for (msg, expected) in cases {
+        let json = serde_json::to_value(&msg).expect("access-control op serializes");
+        assert_eq!(json, expected, "exact wire shape for {msg:?}");
+        let deser: ClientMessage =
+            serde_json::from_value(json).expect("access-control op deserializes");
+        assert_eq!(
+            serde_json::to_value(&deser).expect("re-serialize"),
+            expected,
+            "round-trip is shape-stable for {msg:?}"
+        );
+    }
+
+    let results: Vec<(RoomOperationResult, serde_json::Value)> = vec![
+        (
+            RoomOperationResult::RoomAccessUpdated {
+                requires_password: true,
+            },
+            serde_json::json!({
+                "type": "RoomAccessUpdated",
+                "data": { "requires_password": true }
+            }),
+        ),
+        (
+            RoomOperationResult::PlayerBanned {
+                player_id: test_uuid(0x58),
+            },
+            serde_json::json!({
+                "type": "PlayerBanned",
+                "data": { "player_id": test_uuid(0x58).to_string() }
+            }),
+        ),
+        (
+            RoomOperationResult::PlayerUnbanned {
+                player_id: test_uuid(0x59),
+            },
+            serde_json::json!({
+                "type": "PlayerUnbanned",
+                "data": { "player_id": test_uuid(0x59).to_string() }
+            }),
+        ),
+        (
+            RoomOperationResult::AuthorityTransferred {
+                player_id: test_uuid(0x5a),
+            },
+            serde_json::json!({
+                "type": "AuthorityTransferred",
+                "data": { "player_id": test_uuid(0x5a).to_string() }
+            }),
+        ),
+    ];
+    for (result, expected) in results {
+        let json = serde_json::to_value(&result).expect("access-control result serializes");
+        assert_eq!(json, expected, "exact wire shape for {result:?}");
+        let deser: RoomOperationResult =
+            serde_json::from_value(json).expect("access-control result deserializes");
+        assert_eq!(
+            serde_json::to_value(&deser).expect("re-serialize"),
+            expected,
+            "round-trip is shape-stable for {result:?}"
+        );
+    }
+}
+
+#[test]
+fn access_control_error_codes_use_the_spec_wire_tokens() {
+    for (code, token) in [
+        (ErrorCode::PasswordRequired, "PASSWORD_REQUIRED"),
+        (ErrorCode::Banned, "BANNED"),
+        (
+            ErrorCode::TransferTargetNotFound,
+            "TRANSFER_TARGET_NOT_FOUND",
+        ),
+    ] {
+        let json = serde_json::to_string(&code).expect("ErrorCode serializes");
+        assert_eq!(json, format!("\"{token}\""));
+        let deser: ErrorCode = serde_json::from_str(&json).expect("ErrorCode deserializes");
+        assert_eq!(deser, code);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -746,17 +929,21 @@ fn server_message_new_spectator_joined_round_trip() {
         },
         current_spectators: vec![],
         reason: None,
+        // The v3 delta-count face of the spectator fan-out slimming tier.
+        spectator_count: Some(2),
     };
     let deser = round_trip(&msg);
     if let ServerMessage::NewSpectatorJoined {
         spectator,
         current_spectators,
         reason,
+        spectator_count,
     } = deser
     {
         assert_eq!(spectator.name, "NewSpec");
         assert!(current_spectators.is_empty());
         assert!(reason.is_none());
+        assert_eq!(spectator_count, Some(2));
     } else {
         panic!("expected NewSpectatorJoined variant");
     }
@@ -768,12 +955,15 @@ fn server_message_spectator_disconnected_round_trip() {
         spectator_id: test_uuid(95),
         reason: Some(SpectatorStateChangeReason::Disconnected),
         current_spectators: vec![],
+        // Omitted on the full-roster face; the field must decode as None.
+        spectator_count: None,
     };
     let deser = round_trip(&msg);
     if let ServerMessage::SpectatorDisconnected {
         spectator_id,
         reason,
         current_spectators,
+        spectator_count,
     } = deser
     {
         assert_eq!(spectator_id, test_uuid(95));
@@ -782,6 +972,7 @@ fn server_message_spectator_disconnected_round_trip() {
             Some(SpectatorStateChangeReason::Disconnected)
         ));
         assert!(current_spectators.is_empty());
+        assert_eq!(spectator_count, None);
     } else {
         panic!("expected SpectatorDisconnected variant");
     }
@@ -2799,8 +2990,9 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         lobby_state: LobbyState::Waiting,
         reason: None,
     };
-    let join_params =
-        signal_fish_client::JoinRoomParams::new("game", "player").with_room_code("room-secret");
+    let join_params = signal_fish_client::JoinRoomParams::new("game", "player")
+        .with_room_code("room-secret")
+        .with_password("join-secret");
 
     for (debug, safe_marker) in [
         (format!("{relay:?}"), "ConnectionInfo::Relay"),

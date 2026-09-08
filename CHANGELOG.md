@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** the wire types gained the upstream room access-control tier —
+  exhaustive `ErrorCode` adds `PasswordRequired`, `Banned`, and
+  `TransferTargetNotFound`; `RoomOperationRequest` adds `SetRoomAccess`,
+  `BanPlayer`, `UnbanPlayer`, and `TransferAuthority`;
+  `RoomOperationResult` adds `RoomAccessUpdated { requires_password }`,
+  `PlayerBanned { player_id }`, `PlayerUnbanned { player_id }`, and
+  `AuthorityTransferred { player_id }` — so every access-control frame a
+  newer server sends decodes (add arms to exhaustive matches; the SDK issues
+  no access-control operations, and its pending-operation fences never match
+  these results).
+- **Breaking:** `JoinRoomParams::with_password` sets the join password for
+  password-protected rooms, serialized into `JoinRoom` (and its negotiated
+  form) via the new additive `password` field and omitted when unset, so
+  existing joins keep byte-identical wire behavior; the value is redacted
+  from `Debug` output.
+- **Breaking:** `SignalFishEvent::NewSpectatorJoined` and
+  `SignalFishEvent::SpectatorDisconnected` gain the additive
+  `spectator_count: Option<u32>` field, carrying the room's spectator total
+  on servers with the v3 spectator fan-out slimming tier (`None` on the
+  full-roster face and older servers).
 - **Breaking:** the wire types gained the upstream authority-moderation
   surface — exhaustive `ErrorCode` adds `NotRoomAuthority`, `KickTargetNotFound`,
   and `Kicked`; `RoomOperationRequest` adds `KickPlayer { player_id }` and

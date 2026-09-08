@@ -7,21 +7,24 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-07 refresh: upstream added the authority-only moderation surface
-# (server issue #525) — the NOT_ROOM_AUTHORITY / KICK_TARGET_NOT_FOUND /
-# KICKED error codes, the KickPlayer / RegenerateRoomCode operations, and the
-# PlayerKicked / RoomCodeRegenerated results (additive only; existing
-# schema lines untouched). The Server 0.8.0 release pin
-# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the moderation
-# surface, so the released runtime compatibility binding stays at that
-# release. This evidence authority advances together with
+# 2026-09-08 refresh: upstream added the room access-control tier (server
+# issue #525 follow-up, PR #545) — the PASSWORD_REQUIRED / BANNED /
+# TRANSFER_TARGET_NOT_FOUND error codes, the authority-only SetRoomAccess /
+# BanPlayer / UnbanPlayer / TransferAuthority operations, their four
+# RoomOperationResult responses, the additive JoinRoom / JoinAsSpectator /
+# Reconnect `password` field, and the v3-only additive `spectator_count`
+# delta-count field on NewSpectatorJoined / SpectatorDisconnected (additive
+# only; existing schema lines untouched). The Server 0.8.0 release pin
+# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
+# access-control surface, so the released runtime compatibility binding stays
+# at that release. This evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "9534d0e61e0217b768048274deb9a79ede3b47a5"
+commit = "af4e6795fac0681e0079b7b5672d141ae91a2e6b"
 # ISO 8601 date of the last refresh.
-synced = "2026-09-07"
+synced = "2026-09-08"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "e57fd4cd233312ea07a005653febb61f8c0f0f16d8d87cc4e0b494d8961eb060"
+"signal-fish-protocol.asyncapi.yaml" = "7297441cc68bd11925fa7e2ed465ae1987ed37e51035e0c91f61bb7fef7493dc"

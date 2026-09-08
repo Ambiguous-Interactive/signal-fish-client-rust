@@ -195,6 +195,21 @@ pub enum ErrorCode {
     /// and on a spec-conformant server the automatic rejoin is
     /// refused in-band).
     Kicked,
+
+    // Access-control errors (authority-only room operations). Appended after
+    // the moderation block, matching the upstream token order. Raised by the
+    // room access-control tier (SetRoomAccess / BanPlayer / TransferAuthority
+    // and password-protected joins).
+    /// The room requires a join password and the request presented none or
+    /// the wrong one. The server does not distinguish the two cases.
+    PasswordRequired,
+    /// This player id is banned from the room by its authority player and
+    /// cannot join it (as a player or spectator) while the room lives. The
+    /// ban is room-scoped and expires with the room.
+    Banned,
+    /// The player named by `TransferAuthority` is not a seated member of the
+    /// room.
+    TransferTargetNotFound,
 }
 
 impl ErrorCode {
@@ -410,6 +425,15 @@ impl ErrorCode {
             }
             Self::Kicked => {
                 "You were removed from the room by its authority player. The kicked seat cannot be reconnected; join again with a valid room code."
+            }
+            Self::PasswordRequired => {
+                "This room is password-protected. Send the join password chosen by its authority player."
+            }
+            Self::Banned => {
+                "This player id is banned from the room by its authority player and cannot join it while the room lives."
+            }
+            Self::TransferTargetNotFound => {
+                "The player to transfer authority to is not a current member of this room."
             }
         }
     }

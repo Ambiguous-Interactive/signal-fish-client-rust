@@ -192,14 +192,14 @@ fn do_thing(&mut self) -> Result<(), SignalFishError> {
 
 ## ErrorCode Enum
 
-The post-0.7 protocol authority declares 51 emitted tokens. The public client
-enum has 57 variants: `RoomSessionIncompatible` and the three moderation codes
-are current, while the six
+The post-0.7 protocol authority declares 54 emitted tokens. The public client
+enum has 60 variants: `RoomSessionIncompatible`, the three moderation codes,
+and the three access-control codes are current, while the six
 values in `ErrorCode::NON_EMITTED` are retained for older-server decoding.
 Conformance must use that explicit compatibility set rather than removing
 public variants.
 
-Defined in `src/error_codes.rs`. This enum is exhaustive. 57 variants:
+Defined in `src/error_codes.rs`. This enum is exhaustive. 60 variants:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +250,9 @@ pub enum ErrorCode {
 
     // Moderation, authority-only operations (3)
     NotRoomAuthority, KickTargetNotFound, Kicked,
+
+    // Access control, authority-only operations (3)
+    PasswordRequired, Banned, TransferTargetNotFound,
 }
 ```
 

@@ -870,8 +870,10 @@ async fn join_as_spectator_sends_correct_message() {
                 game_name,
                 room_code,
                 spectator_name,
+                password,
             } = cm
             {
+                assert_eq!(password, None);
                 Some((game_name, room_code, spectator_name))
             } else {
                 None
@@ -1546,8 +1548,10 @@ async fn join_room_with_all_options_sends_correct_message() {
                 max_players,
                 supports_authority,
                 relay_transport,
+                password,
             } = cm
             {
+                assert_eq!(password, None);
                 Some((
                     game_name,
                     room_code,
@@ -1817,6 +1821,7 @@ async fn new_spectator_joined_event() {
         },
         current_spectators: vec![],
         reason: Some(signal_fish_client::protocol::SpectatorStateChangeReason::Joined),
+        spectator_count: Some(3),
     })
     .expect("serialize");
 
@@ -1837,7 +1842,10 @@ async fn new_spectator_joined_event() {
 
     let ev = events.recv().await.expect("event");
     if let SignalFishEvent::NewSpectatorJoined {
-        spectator, reason, ..
+        spectator,
+        reason,
+        spectator_count,
+        ..
     } = ev
     {
         assert_eq!(spectator.name, "NewViewer");
@@ -1845,6 +1853,7 @@ async fn new_spectator_joined_event() {
             reason,
             Some(signal_fish_client::protocol::SpectatorStateChangeReason::Joined)
         ));
+        assert_eq!(spectator_count, Some(3));
     } else {
         panic!("expected NewSpectatorJoined event, got {ev:?}");
     }
@@ -1858,6 +1867,7 @@ async fn spectator_disconnected_event() {
         spectator_id: uuid::Uuid::from_u128(600),
         reason: Some(signal_fish_client::protocol::SpectatorStateChangeReason::Disconnected),
         current_spectators: vec![],
+        spectator_count: None,
     })
     .expect("serialize");
 
@@ -1880,6 +1890,7 @@ async fn spectator_disconnected_event() {
     if let SignalFishEvent::SpectatorDisconnected {
         spectator_id,
         reason,
+        spectator_count,
         ..
     } = ev
     {
@@ -1888,6 +1899,7 @@ async fn spectator_disconnected_event() {
             reason,
             Some(signal_fish_client::protocol::SpectatorStateChangeReason::Disconnected)
         ));
+        assert_eq!(spectator_count, None);
     } else {
         panic!("expected SpectatorDisconnected event, got {ev:?}");
     }

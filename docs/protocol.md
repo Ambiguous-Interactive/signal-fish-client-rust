@@ -598,7 +598,7 @@ pub enum ClientMessage { /* ... */ }
 | `Reconnect` | Reconnect to a room after a disconnection. |
 | `JoinAsSpectator` | Join a room as a read-only spectator. |
 | `LeaveSpectator` | Leave spectator mode. |
-| `RoomOperation` | **(negotiated v3)** Wrap one of the five directed room commands with a fresh canonical UUID after `room_operation_ids` is echoed. The wire envelope also carries the upstream authority-only `KickPlayer`/`RegenerateRoomCode` operations, which this SDK types but never issues. |
+| `RoomOperation` | **(negotiated v3)** Wrap one of the five directed room commands with a fresh canonical UUID after `room_operation_ids` is echoed. The wire envelope also carries the upstream authority-only `KickPlayer`/`RegenerateRoomCode` and access-control (`SetRoomAccess`/`BanPlayer`/`UnbanPlayer`/`TransferAuthority`) operations, which this SDK types but never issues. |
 | `StartGame` | **(v2)** Explicitly start the game, finalizing the lobby (via `client.start_game()`). |
 | `Signal` | **(v3)** Relay an opaque WebRTC signal to a single peer (via `client.send_signal(...)`). |
 | `TransportStatus` | **(v3)** Report whether a data-path transport is established (via `client.report_transport_status(...)`). |
@@ -675,6 +675,8 @@ safely ignores any of these it doesn't recognize.
 | Message | New field(s) | Purpose |
 |---------|--------------|---------|
 | `ClientMessage::Authenticate` | `protocol_version`, `supported_transports`, `supported_topologies`, `requested_capabilities` | Advertise the highest version, data-path transports, topologies, and additive tokens the client can fulfill. V3-capable configurations request `room_operation_ids`; default and explicit-v2 configurations omit it. |
+| `ClientMessage::JoinRoom` / `JoinAsSpectator` (and their negotiated forms) | `password` | Join password for password-protected rooms (upstream access-control tier). Omitted when unset, so existing joins keep byte-identical wire behavior; set it with `JoinRoomParams::with_password`. |
+| `ServerMessage::NewSpectatorJoined` / `SpectatorDisconnected` | `spectator_count` | Total spectators after the change on servers with the v3 spectator fan-out slimming tier (where `current_spectators` is an empty delta); absent on the full-roster face. |
 | `ServerMessage::ProtocolInfo` | `protocol_version`, `min_protocol_version`, `max_protocol_version`, `capabilities` | The negotiated version and exact enabled capability tokens. A requested capability is inactive until echoed. |
 | `RoomJoinedPayload` / `ReconnectedPayload` | `ice_servers: Vec<IceServer>` | ICE pre-gather: STUN/TURN servers delivered during the lobby wait so WebRTC candidate gathering can start early. Empty (and absent from the wire) for v2. |
 | `ReconnectedPayload` | `replay`, `sender_watermarks`, `reconnection_token` | Required v3 authoritative replay/accountability baseline and rotated reconnect credential. All are absent/empty under v2. |
@@ -686,9 +688,10 @@ form. After `room_operation_ids` is requested and echoed on v3, `JoinRoom`,
 `LeaveRoom`, `Reconnect`, `JoinAsSpectator`, and `LeaveSpectator` are carried in
 `RoomOperation`; their terminal response arrives in `RoomOperationResult` with
 the identical ID. (The wire envelope also carries the upstream authority-only
-`KickPlayer`/`RegenerateRoomCode` operations and their `PlayerKicked`/
-`RoomCodeRegenerated` results; the SDK types them for decoding but issues no
-moderation operations, and its operation fences never match those results.)
+`KickPlayer`/`RegenerateRoomCode` and access-control operations and their
+results; the SDK types them for decoding but issues no moderation or
+access-control operations, and its operation fences never match those
+results.)
 IDs are correlation fences, not idempotency keys: the server
 echoes them but does not deduplicate operations. A fresh physical connection
 negotiates a new scope. Autonomous spectator removal, disconnection, and room

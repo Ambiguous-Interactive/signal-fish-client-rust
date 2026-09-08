@@ -87,7 +87,7 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     // descriptive drift plus reviewed deliberate schema changes; the released
     // runtime binding above stays at the 0.8.0 release commit. Keep this
     // literal review-forced.
-    assert_eq!(protocol_commit, "9534d0e61e0217b768048274deb9a79ede3b47a5");
+    assert_eq!(protocol_commit, "af4e6795fac0681e0079b7b5672d141ae91a2e6b");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)

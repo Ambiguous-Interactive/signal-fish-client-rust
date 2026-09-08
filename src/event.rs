@@ -603,6 +603,10 @@ pub enum SignalFishEvent {
         current_spectators: Vec<SpectatorInfo>,
         /// Reason for the state change, if available.
         reason: Option<SpectatorStateChangeReason>,
+        /// Total spectators in the room after this join, when the server
+        /// sends the v3 delta-count face (where `current_spectators` is
+        /// empty); `None` on the full-roster face and older servers.
+        spectator_count: Option<u32>,
     },
 
     /// Another spectator disconnected from the room.
@@ -613,6 +617,10 @@ pub enum SignalFishEvent {
         reason: Option<SpectatorStateChangeReason>,
         /// Remaining spectators in the room, as reported by the server.
         current_spectators: Vec<SpectatorInfo>,
+        /// Total spectators in the room after this departure, when the
+        /// server sends the v3 delta-count face (where `current_spectators`
+        /// is empty); `None` on the full-roster face and older servers.
+        spectator_count: Option<u32>,
     },
 
     // ── Errors ──────────────────────────────────────────────────────
@@ -1071,19 +1079,23 @@ impl From<ServerMessage> for SignalFishEvent {
                 spectator,
                 current_spectators,
                 reason,
+                spectator_count,
             } => Self::NewSpectatorJoined {
                 spectator,
                 current_spectators,
                 reason,
+                spectator_count,
             },
             ServerMessage::SpectatorDisconnected {
                 spectator_id,
                 reason,
                 current_spectators,
+                spectator_count,
             } => Self::SpectatorDisconnected {
                 spectator_id,
                 reason,
                 current_spectators,
+                spectator_count,
             },
             ServerMessage::Error {
                 message,

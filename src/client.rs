@@ -1027,6 +1027,15 @@ pub struct JoinRoomParams {
     /// [`crate::Transport`] or add raw datagram support. Signal Fish
     /// Server 0.8 accepts but ignores it.
     pub relay_transport: Option<RelayTransport>,
+    /// Join password for password-protected rooms.
+    ///
+    /// Required when the target room carries an authority-set password
+    /// (`PASSWORD_REQUIRED` otherwise); ignored for open rooms. When the
+    /// join creates the room, this password seals it from birth. The wire
+    /// accepts a non-empty value of at most 256 bytes; violations are
+    /// refused by the server in-band. Omitted from the serialized `JoinRoom`
+    /// frame when unset, so unset params keep byte-identical wire behavior.
+    pub password: Option<String>,
 }
 
 impl std::fmt::Debug for JoinRoomParams {
@@ -1042,6 +1051,9 @@ impl std::fmt::Debug for JoinRoomParams {
             .field("max_players", &self.max_players)
             .field("supports_authority", &self.supports_authority)
             .field("relay_transport", &self.relay_transport)
+            // A join password is a secret credential: like the room code, the
+            // ambient `Debug` path reports presence and byte length only.
+            .field("password", &self.password.as_ref().map(|p| p.len()))
             .finish()
     }
 }
@@ -1085,6 +1097,19 @@ impl JoinRoomParams {
     #[must_use]
     pub fn with_relay_transport(mut self, relay_transport: RelayTransport) -> Self {
         self.relay_transport = Some(relay_transport);
+        self
+    }
+
+    /// Set the join password for password-protected rooms.
+    ///
+    /// Required when the target room carries an authority-set password and
+    /// ignored otherwise; when this join creates the room, the password
+    /// seals it from birth. The server stores only a salted hash and never
+    /// logs the value. It is also redacted from this params struct's `Debug`
+    /// output.
+    #[must_use]
+    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(password.into());
         self
     }
 }
@@ -3958,9 +3983,14 @@ mod tests {
                                 RoomOperationRequest::Reconnect { .. } => Some(2),
                                 RoomOperationRequest::JoinAsSpectator { .. } => Some(3),
                                 RoomOperationRequest::LeaveSpectator => Some(4),
-                                // The SDK sends no moderation operations.
+                                // The SDK sends no moderation or access-control
+                                // operations.
                                 RoomOperationRequest::KickPlayer { .. }
-                                | RoomOperationRequest::RegenerateRoomCode => None,
+                                | RoomOperationRequest::RegenerateRoomCode
+                                | RoomOperationRequest::SetRoomAccess { .. }
+                                | RoomOperationRequest::BanPlayer { .. }
+                                | RoomOperationRequest::UnbanPlayer { .. }
+                                | RoomOperationRequest::TransferAuthority { .. } => None,
                             }
                         }
                         _ => None,
