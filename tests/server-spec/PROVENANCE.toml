@@ -11,8 +11,8 @@ path = "spec"
 # issue #525 follow-up, PR #545) — the PASSWORD_REQUIRED / BANNED /
 # TRANSFER_TARGET_NOT_FOUND error codes, the authority-only SetRoomAccess /
 # BanPlayer / UnbanPlayer / TransferAuthority operations, their four
-# RoomOperationResult responses, the additive JoinRoom / JoinAsSpectator /
-# Reconnect `password` field, and the v3-only additive `spectator_count`
+# RoomOperationResult responses, the additive JoinRoom / JoinAsSpectator
+# `password` field, and the v3-only additive `spectator_count`
 # delta-count field on NewSpectatorJoined / SpectatorDisconnected (additive
 # only; existing schema lines untouched). The Server 0.8.0 release pin
 # (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
