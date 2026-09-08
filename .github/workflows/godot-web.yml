@@ -70,6 +70,17 @@ jobs:
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
+        with:
+          # The fixture workspaces build into their manifest-adjacent target
+          # dirs, but rust-cache only cleans/saves workspaces listed here and
+          # archive paths given via cache-directories; listing them keeps
+          # their artifacts (godot dep trees, -Zbuild-std std, host test
+          # builds) out of the save-time clean of the root workspace, which
+          # would otherwise delete everything it cannot attribute to the
+          # root manifest's package list.
+          cache-directories: |
+            tests/godot-web-smoke/target
+            tests/godot-compat-min/target
 
       - name: Install official Godot editor and templates
         run: |
@@ -291,21 +302,21 @@ jobs:
           set -euo pipefail
           export GODOT4_BIN="${PWD}/.godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           export BINDGEN_EXTRA_CLANG_ARGS_wasm32_unknown_emscripten="--target=wasm32-unknown-emscripten --sysroot=${EMSDK}/upstream/emscripten/cache/sysroot -D__EMSCRIPTEN__"
+          # The fixture builds use their manifest-adjacent default target
+          # dirs (tests/*/target) so the rust-cache cache-directories above
+          # persist their artifacts across runs.
           cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
             --manifest-path tests/godot-compat-min/Cargo.toml \
-            --target-dir target/godot-compat-min \
             --target wasm32-unknown-emscripten \
             --release --locked
           cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
             --manifest-path tests/godot-web-smoke/Cargo.toml \
-            --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
             --release --locked --features raw-emscripten-proof
-          cp target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm \
-            target/godot-web-smoke/raw-emscripten-proof.wasm
+          cp tests/godot-web-smoke/target/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm \
+            tests/godot-web-smoke/target/wasm32-unknown-emscripten/release/raw-emscripten-proof.wasm
           cargo +"${RUST_NIGHTLY}" build -Zbuild-std=std \
             --manifest-path tests/godot-web-smoke/Cargo.toml \
-            --target-dir target/godot-web-smoke \
             --target wasm32-unknown-emscripten \
             --release --locked
 
@@ -314,13 +325,13 @@ jobs:
           set -euo pipefail
           fixture="tests/godot-web-smoke"
           mkdir -p "${fixture}/project/bin" "${fixture}/project/build-negative"
-          cp "target/godot-web-smoke/raw-emscripten-proof.wasm" \
+          cp "${fixture}/target/wasm32-unknown-emscripten/release/raw-emscripten-proof.wasm" \
             "${fixture}/project/bin/signal_fish_godot_smoke.wasm"
           ".godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
             --headless --path "${fixture}/project" \
             --export-release Web build-negative/index.html
           mkdir -p "${fixture}/project/build"
-          cp "target/godot-web-smoke/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm" \
+          cp "${fixture}/target/wasm32-unknown-emscripten/release/signal_fish_godot_smoke.wasm" \
             "${fixture}/project/bin/signal_fish_godot_smoke.wasm"
           ".godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
             --headless --path "${fixture}/project" --import
