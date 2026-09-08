@@ -44,9 +44,32 @@ fn exercise_session(challenge_text: &str, payload: &[u8], fingerprint: Option<&s
     let text_frame = TransportFrame::Text(String::from_utf8_lossy(payload).into_owned());
     let binary_frame = TransportFrame::Binary(payload.to_vec());
     for frame in [text_frame, binary_frame] {
-        if session.prepare(&frame).is_ok() {
-            let _ = session.commit();
+        // A pending (uncommitted) prepare must not consume the sequence:
+        // repeating it must render byte-identical protection, proving the
+        // failed-or-pending-prepare-leaves-the-sequence-untouched contract.
+        if let Ok(pending_once) = session.prepare(&frame) {
+            if let Ok(pending_twice) = session.prepare(&frame) {
+                assert_eq!(
+                    pending_twice, pending_once,
+                    "pending prepare advanced the token-binding sequence"
+                );
+            }
         }
+
+        // A committed sequence must advance: the same frame protected after
+        // a successful commit can never be byte-identical to the pre-commit
+        // protection, or every frame would share one replayable proof.
+        if let Ok(before) = session.prepare(&frame) {
+            if session.commit().is_ok() {
+                if let Ok(after) = session.prepare(&frame) {
+                    assert_ne!(
+                        after, before,
+                        "commit did not advance the token-binding sequence"
+                    );
+                }
+            }
+        }
+
         // A failed or pending prepare leaves the sequence untouched, so this
         // retry reuses it; after a successful commit the retry exercises the
         // next sequence instead.

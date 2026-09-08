@@ -93,8 +93,11 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Verify the tracked lock instead of regenerating from the live
+      # registry, so unused-dependency analysis sees the dependency graph the
+      # other lanes validated.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-udeps
         uses: taiki-e/install-action@v2.87.5

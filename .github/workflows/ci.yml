@@ -411,8 +411,12 @@ jobs:
           toolchain: ${{ env.RELEASE_RUST }}
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
-      - name: Generate workspace lockfile
-        run: bash scripts/cargo-retry.sh +"${RELEASE_RUST}" generate-lockfile
+      # Regenerating here would rewrite the tracked lock from the live
+      # registry, so the --locked flags below would validate a graph nothing
+      # else pinned. Verify the tracked lock instead, failing closed on
+      # manifest/lock drift and keeping every lane on one dependency graph.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh +"${RELEASE_RUST}" metadata --locked > /dev/null
       - name: Verify deterministic workload ledgers
         run: cargo +"${RELEASE_RUST}" run --locked -p signal-fish-client-perf-lab --features perf --bin perf-smoke
       - name: Enforce debug allocation ceilings

@@ -73,8 +73,10 @@ jobs:
         with:
           tool: cargo-semver-checks@0.50.0
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # The tracked lock pins the HEAD-side build; regeneration from the
+      # live registry would measure against a graph nothing else validated.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Classify PR release type
         id: pr-release-type

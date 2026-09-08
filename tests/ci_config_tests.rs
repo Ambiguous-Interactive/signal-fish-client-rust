@@ -1041,6 +1041,7 @@ const REQUIRED_WORKFLOW_PATHS: &[&str] = &[
     ".github/workflows/prepare-release.yml",
     ".github/workflows/repository-policy.yml",
     ".github/workflows/protocol-sync.yml",
+    ".github/workflows/portability.yml",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1330,7 +1331,7 @@ esac
         blocks
     }
 
-    fn retry_wrapper_generates_lockfile(line: &str) -> bool {
+    fn retry_wrapper_verifies_lockfile(line: &str) -> bool {
         let tokens: Vec<_> = line.split_whitespace().collect();
         let Some(wrapper) = tokens
             .iter()
@@ -1340,11 +1341,12 @@ esac
         };
         let cargo_args = &tokens[wrapper + 1..];
 
-        cargo_args.first() == Some(&"generate-lockfile")
-            || cargo_args
+        (cargo_args.first() == Some(&"metadata") && cargo_args.contains(&"--locked"))
+            || (cargo_args
                 .first()
                 .is_some_and(|token| token.starts_with('+'))
-                && cargo_args.get(1) == Some(&"generate-lockfile")
+                && cargo_args.get(1) == Some(&"metadata")
+                && cargo_args.contains(&"--locked"))
     }
 
     #[test]
@@ -1443,61 +1445,106 @@ esac
     }
 
     #[test]
-    fn workflows_use_retry_wrapper_for_lockfile_generation() {
-        let mut violations = Vec::new();
+    fn workflows_verify_instead_of_regenerating_lockfiles() {
+        let mut regeneration = Vec::new();
+        let mut unverified = Vec::new();
+        let mut unwrapped = Vec::new();
 
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
             let contents = read_project_file(workflow_path);
             for (line_num, line) in contents.lines().enumerate() {
-                if line.contains("generate-lockfile") && !retry_wrapper_generates_lockfile(line) {
-                    violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                let code_portion = line.split('#').next().unwrap_or("");
+                if code_portion.contains("generate-lockfile") {
+                    // Regenerating rewrites the tracked lock from the live
+                    // registry, so any later `--locked` flag validates a
+                    // graph nothing else pinned and every lane could measure
+                    // or audit a different dependency set. Verification keeps
+                    // all lanes on the tracked graph and fails closed on
+                    // manifest/lock drift.
+                    regeneration.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                } else if code_portion.contains("metadata") && code_portion.contains("--locked") {
+                    // Only the fail-closed *verification* idiom (discarding
+                    // stdout) must go through the wrapper; plain metadata
+                    // consumers (e.g. the MSRV job's JSON extraction) are
+                    // exempt.
+                    if code_portion.contains("> /dev/null")
+                        && !code_portion.contains("scripts/cargo-retry.sh")
+                    {
+                        unwrapped.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                    }
+                    if code_portion.contains("> /dev/null")
+                        && !retry_wrapper_verifies_lockfile(code_portion)
+                    {
+                        unverified.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                    }
                 }
             }
         }
 
         assert!(
-            violations.is_empty(),
-            "Workflow lockfile generation must use scripts/cargo-retry.sh so \
-             transient crates.io sparse-index EOFs do not fail CI immediately.\n\
+            regeneration.is_empty(),
+            "Workflows must verify the tracked lockfile (`cargo metadata --locked`), \
+             never regenerate it: a live re-resolution silently moves every later \
+             `--locked` lane onto a dependency graph no other lane pinned.\n\
              Violations:\n{}",
-            violations.join("\n")
+            regeneration.join("\n")
+        );
+        assert!(
+            unverified.is_empty(),
+            "Lockfile verification must run `cargo metadata --locked` through \
+             scripts/cargo-retry.sh.\nViolations:\n{}",
+            unverified.join("\n")
+        );
+        assert!(
+            unwrapped.is_empty(),
+            "Lockfile verification must go through scripts/cargo-retry.sh so \
+             transient registry failures do not fail CI immediately.\n\
+             Violations:\n{}",
+            unwrapped.join("\n")
         );
     }
 
     #[test]
     fn lockfile_retry_policy_accepts_optional_cargo_toolchain_selector() {
-        assert!(retry_wrapper_generates_lockfile(
-            "run: bash scripts/cargo-retry.sh generate-lockfile"
+        assert!(retry_wrapper_verifies_lockfile(
+            "run: bash scripts/cargo-retry.sh metadata --locked > /dev/null"
         ));
-        assert!(retry_wrapper_generates_lockfile(
-            "run: bash scripts/cargo-retry.sh +1.96.1 generate-lockfile"
+        assert!(retry_wrapper_verifies_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 metadata --locked > /dev/null"
         ));
-        assert!(!retry_wrapper_generates_lockfile(
-            "run: cargo +1.96.1 generate-lockfile"
+        assert!(!retry_wrapper_verifies_lockfile(
+            "run: cargo +1.96.1 metadata --locked"
         ));
-        assert!(!retry_wrapper_generates_lockfile(
-            "run: bash scripts/cargo-retry.sh +1.96.1 metadata # generate-lockfile"
+        assert!(!retry_wrapper_verifies_lockfile(
+            "run: bash scripts/cargo-retry.sh +1.96.1 metadata"
         ));
     }
 
     #[test]
-    fn workflows_restore_cargo_cache_before_generating_lockfiles() {
+    fn workflows_restore_cargo_cache_before_lockfile_verification() {
         let mut violations = Vec::new();
 
         for workflow_path in REQUIRED_WORKFLOW_PATHS {
             let contents = read_project_file(workflow_path);
             for (job_name, job_block) in workflow_job_blocks(&contents) {
-                let Some(lockfile_pos) = job_block.find("generate-lockfile") else {
+                // Compare positions in a comment-stripped copy so a comment
+                // mentioning either marker cannot spoof the ordering.
+                let code_only: String = job_block
+                    .lines()
+                    .map(|line| line.split('#').next().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let Some(verify_pos) = code_only.find("metadata --locked") else {
                     continue;
                 };
-                match job_block.find("Swatinem/rust-cache@") {
-                    Some(cache_pos) if cache_pos < lockfile_pos => {}
+                match code_only.find("Swatinem/rust-cache@") {
+                    Some(cache_pos) if cache_pos < verify_pos => {}
                     Some(_) => violations.push(format!(
-                        "{workflow_path} job '{job_name}' generates a lockfile before \
+                        "{workflow_path} job '{job_name}' verifies the lockfile before \
                          restoring the Cargo cache."
                     )),
                     None => violations.push(format!(
-                        "{workflow_path} job '{job_name}' generates a lockfile without \
+                        "{workflow_path} job '{job_name}' verifies the lockfile without \
                          restoring the Cargo cache first."
                     )),
                 }
@@ -1506,9 +1553,9 @@ esac
 
         assert!(
             violations.is_empty(),
-            "Jobs that generate ephemeral Cargo.lock files must restore the \
-             Cargo registry cache first. This makes CI faster and reduces \
-             exposure to transient crates.io fetch failures.\nViolations:\n{}",
+            "Jobs that verify the tracked lockfile must restore the Cargo \
+             cache first. This keeps the verification path warm and reduces \
+             exposure to transient registry fetch failures.\nViolations:\n{}",
             violations.join("\n")
         );
     }
@@ -1532,6 +1579,97 @@ esac
             "Workflow crates.io searches must use scripts/cargo-retry.sh so \
              transient registry query failures do not masquerade as package \
              publication state.\nViolations:\n{}",
+            violations.join("\n")
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module: workflow_cache_and_download_hardening
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod workflow_cache_and_download_hardening {
+    use super::*;
+
+    /// The #246 fix: Godot fixture workspaces build into manifest-adjacent
+    /// target dirs so rust-cache's save-time cleaning cannot delete their
+    /// artifacts (a broken cache here cost a full cold `-Zbuild-std` wasm
+    /// rebuild on every Godot Web run). Both fixture target dirs must stay
+    /// listed under `cache-directories`.
+    #[test]
+    fn godot_web_cache_archives_fixture_target_dirs() {
+        let workflow = read_project_file(".github/workflows/godot-web.yml");
+        assert!(
+            workflow.contains("cache-directories:"),
+            "godot-web.yml must pass cache-directories to rust-cache"
+        );
+        assert!(
+            workflow.contains("tests/godot-web-smoke/target")
+                && workflow.contains("tests/godot-compat-min/target"),
+            "godot-web.yml rust-cache must archive both fixture target dirs; \
+             dropping them resurrects the cold-wasm-rebuild-per-run failure mode"
+        );
+    }
+
+    /// Version-pinned cache keys keep stale artifacts from outliving a
+    /// toolchain bump: a key without the version expression would keep
+    /// serving the previous toolchain's content after a bump.
+    #[test]
+    fn version_pinned_caches_carry_their_version_in_the_key() {
+        let godot_web = read_project_file(".github/workflows/godot-web.yml");
+        let docs_validation = read_project_file(".github/workflows/docs-validation.yml");
+        for workflow in [godot_web.clone(), docs_validation] {
+            assert!(
+                workflow
+                    .lines()
+                    .any(|line| line.contains("key: playwright-chromium-")
+                        && line.contains("${{ env.PLAYWRIGHT_VERSION }}")),
+                "every Playwright Chromium cache key must include the pinned \
+                 PLAYWRIGHT_VERSION so a bump cannot keep restoring the old \
+                 browser"
+            );
+        }
+        assert!(
+            godot_web
+                .lines()
+                .any(|line| line.contains("key: netem-iproute2-")
+                    && line.contains("${{ env.IPROUTE2_VERSION }}")),
+            "the netem tc cache key must include the pinned IPROUTE2_VERSION"
+        );
+    }
+
+    /// The #245 hardening: curl exit 35 (TLS handshake) is non-transient to
+    /// curl, so plain `--retry` does not cover it. Every download site must
+    /// carry `--retry-all-errors`.
+    #[test]
+    fn every_workflow_download_retries_all_errors() {
+        let mut violations = Vec::new();
+        let mut sites = 0;
+        for workflow_path in REQUIRED_WORKFLOW_PATHS {
+            let contents = read_project_file(workflow_path);
+            // Shell backslash continuations fold one command across several
+            // lines; join them so a wrapped `--retry` (or a wrapped
+            // `--retry-all-errors`) cannot escape either half of the scan.
+            let joined = contents.replace("\\\n", " ");
+            for (line_num, line) in joined.lines().enumerate() {
+                let code_portion = line.split('#').next().unwrap_or("");
+                if code_portion.contains("curl ") && code_portion.contains("--retry") {
+                    sites += 1;
+                    if !code_portion.contains("--retry-all-errors") {
+                        violations.push(format!("{workflow_path}:{}: {line}", line_num + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            sites > 0,
+            "expected at least one pinned workflow download site"
+        );
+        assert!(
+            violations.is_empty(),
+            "Every `curl --fail --location --retry` download must also pass \
+             `--retry-all-errors`: exit 35 (TLS handshake) is non-transient to \
+             curl and burned a main-branch run before #245.\nViolations:\n{}",
             violations.join("\n")
         );
     }
@@ -3252,6 +3390,11 @@ mod workflow_security {
                     break;
                 }
 
+                // Only the code portion of a line (before any `#`) counts:
+                // a commented-out `# timeout-minutes: 30` must not satisfy
+                // the requirement for a real declaration.
+                let code_portion = line.split('#').next().unwrap_or("");
+
                 if in_jobs_section {
                     // Job definitions are at exactly 2-space indentation:
                     //   `  job-name:`
@@ -3268,7 +3411,7 @@ mod workflow_security {
                         }
                     }
 
-                    if line.contains("timeout-minutes:") {
+                    if code_portion.contains("timeout-minutes:") {
                         timeout_count += 1;
                     }
                 }
@@ -3287,6 +3430,48 @@ mod workflow_security {
                  set a timeout to prevent hung runners from consuming CI minutes \
                  indefinitely."
             );
+
+            // A job delegating its timeout to the matrix expression
+            // (`timeout-minutes: ${{ matrix.timeout }}`) satisfies the count
+            // above while silently falling back to GitHub's 360-minute
+            // default for any matrix row that forgets its `timeout:` value.
+            // Every such row must define one.
+            if contents.contains("timeout-minutes: ${{ matrix.timeout }}") {
+                let mut in_matrix_rows = false;
+                let mut row_count: usize = 0;
+                let mut row_timeout_count: usize = 0;
+                for line in contents.lines() {
+                    let code_portion = line.split('#').next().unwrap_or("");
+                    let trimmed = code_portion.trim_start();
+                    if code_portion.contains("include:") {
+                        in_matrix_rows = true;
+                        continue;
+                    }
+                    if in_matrix_rows {
+                        // The rows end where the job's `steps:` key begins.
+                        if trimmed == "steps:" {
+                            break;
+                        }
+                        if trimmed.starts_with("- ") && trimmed.contains(':') {
+                            row_count += 1;
+                        }
+                        if trimmed.starts_with("timeout:") {
+                            row_timeout_count += 1;
+                        }
+                    }
+                }
+                assert!(
+                    row_count > 0,
+                    "Workflow '{workflow_path}' uses a matrix timeout but has no \
+                     detectable matrix rows."
+                );
+                assert!(
+                    row_timeout_count >= row_count,
+                    "Workflow '{workflow_path}' has {row_count} matrix row(s) but only \
+                     {row_timeout_count} `timeout:` value(s); every row must define one \
+                     or GitHub applies its 360-minute default to the missing rows."
+                );
+            }
         }
     }
 
@@ -4225,7 +4410,7 @@ mod safety_analysis_policy {
             );
         }
         assert!(!workflow.contains("miri test --test ci_config_tests"));
-        assert!(workflow.contains("miri test --test protocol_tests --all-features"));
+        assert!(workflow.contains("miri test --locked --test protocol_tests --all-features"));
         assert!(
             workflow.contains("-Zsanitizer=thread") && workflow.contains("-Zbuild-std"),
             "Deep Safety must run the ThreadSanitizer workspace lane"
@@ -4258,11 +4443,32 @@ mod safety_analysis_policy {
         assert!(binary_target.contains("V2_ENVELOPE"));
         assert!(binary_target.contains("V3_ENVELOPE"));
 
+        // Detection power of the oracles themselves: every target must
+        // assert at least one semantic invariant beyond crash-freedom, and
+        // the meta-guard must know about every declared target so a new or
+        // renamed target cannot silently run zero fuzz executions.
+        let fuzz_manifest = read_project_file("fuzz/Cargo.toml");
+        let declared_targets: Vec<String> = fuzz_manifest
+            .lines()
+            .filter_map(|line| line.strip_prefix("name = \"fuzz_"))
+            .filter_map(|rest| rest.strip_suffix('"'))
+            .map(|name| format!("fuzz_{name}"))
+            .collect();
+        assert!(
+            declared_targets.len() >= 4,
+            "fuzz/Cargo.toml must declare at least the four protocol fuzz targets, found {declared_targets:?}"
+        );
+
         for target in [
             "fuzz_server_message",
             "fuzz_client_message",
             "fuzz_binary_game_data",
+            "fuzz_token_binding",
         ] {
+            assert!(
+                declared_targets.iter().any(|declared| declared == target),
+                "fuzz/Cargo.toml must declare {target}"
+            );
             assert!(
                 workflow.contains(target),
                 "Deep Safety must execute {target}"
@@ -4272,6 +4478,97 @@ mod safety_analysis_policy {
                 "scripts/check-all.sh must execute {target}"
             );
         }
+
+        // The workflow's target loop must name every declared target on the
+        // loop line itself; a containment check satisfied by a stray comment
+        // mention would let a renamed target run zero executions.
+        let workflow_loop_line = workflow
+            .lines()
+            .find(|line| line.contains("for target in fuzz_server_message"))
+            .expect("Deep Safety fuzz target loop line");
+        for target in &declared_targets {
+            assert!(
+                workflow_loop_line.contains(target),
+                "Deep Safety fuzz loop must name {target} explicitly"
+            );
+        }
+        let local_loop_line = local
+            .lines()
+            .find(|line| line.contains("for target in fuzz_server_message"))
+            .expect("check-all.sh fuzz target loop line");
+        for target in &declared_targets {
+            assert!(
+                local_loop_line.contains(target),
+                "check-all.sh fuzz loop must name {target} explicitly"
+            );
+        }
+
+        // Fuzz budgets are pinned so a parameter edit that would gut the
+        // detection budget (or hang the job) cannot merge silently.
+        assert!(
+            workflow.contains("-- -max_total_time=30"),
+            "Deep Safety fuzz targets must run with the pinned 30-second budget"
+        );
+        assert!(
+            local.contains("-max_total_time=10"),
+            "check-all.sh fuzz targets must run with the pinned 10-second budget"
+        );
+
+        // Every target ships a non-empty seed corpus: seeds are loaded only
+        // when their directory exists, so a deleted or emptied directory
+        // would silently drop the fuzzer past the parser frontier for the
+        // whole 30-second budget.
+        for target in &declared_targets {
+            let seed_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fuzz")
+                .join("seeds")
+                .join(target);
+            let seed_count = std::fs::read_dir(&seed_dir)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "fuzz seeds directory {} must exist: {error}",
+                        seed_dir.display()
+                    )
+                })
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_file())
+                .count();
+            assert!(
+                seed_count > 0,
+                "fuzz seeds directory {} must contain at least one seed file",
+                seed_dir.display()
+            );
+        }
+
+        // Semantic-oracle strength pins: crash-only fuzz targets would let
+        // silent mis-encodes and state corruption pass 100% of fuzz minutes.
+        assert!(
+            binary_target.contains("decode/encode identity broken"),
+            "fuzz_binary_game_data must pin the decode/encode fixpoint"
+        );
+        let server_target = read_project_file("fuzz/fuzz_targets/fuzz_server_message.rs");
+        assert!(
+            server_target.contains("render/re-parse not idempotent"),
+            "fuzz_server_message must pin render/re-parse idempotence"
+        );
+        assert!(
+            server_target.contains("PeerSignal parse/render identity broken"),
+            "fuzz_server_message must pin the PeerSignal fixpoint"
+        );
+        let client_target = read_project_file("fuzz/fuzz_targets/fuzz_client_message.rs");
+        assert!(
+            client_target.contains("render/re-parse not idempotent"),
+            "fuzz_client_message must pin render/re-parse idempotence"
+        );
+        let token_target = read_project_file("fuzz/fuzz_targets/fuzz_token_binding.rs");
+        assert!(
+            token_target.contains("pending prepare advanced the token-binding sequence"),
+            "fuzz_token_binding must pin pending-prepare sequence preservation"
+        );
+        assert!(
+            token_target.contains("commit did not advance the token-binding sequence"),
+            "fuzz_token_binding must pin commit sequence advancement"
+        );
 
         for phase in [15, 16, 17] {
             assert!(

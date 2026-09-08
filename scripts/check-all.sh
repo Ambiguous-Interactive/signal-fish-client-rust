@@ -32,6 +32,7 @@
 #  21. Devcontainer compat    (delegates to check + fixture test scripts)
 #  22. Devcontainer Dockerfile (optional — docker buildx build --check)
 #  23. Stateful hostility campaign (canaries + reduced deterministic run)
+#  24. Perf-lab enforcement   (perf-smoke — protocol ledger + allocation pins)
 #
 # Notes:
 #   - MSRV (1.87.0) verification is CI-only (requires rustup toolchain override)
@@ -69,7 +70,7 @@ for arg in "$@"; do
 done
 
 # ── Phase tracking ───────────────────────────────────────────────────
-TOTAL_PHASES=23
+TOTAL_PHASES=24
 if [ "$QUICK" = true ]; then
     TOTAL_PHASES=4
 fi
@@ -100,6 +101,7 @@ PHASE_NAMES[20]="Rust test I/O unwrap"
 PHASE_NAMES[21]="Devcontainer compatibility"
 PHASE_NAMES[22]="Devcontainer Dockerfile"
 PHASE_NAMES[23]="Stateful hostility campaign"
+PHASE_NAMES[24]="Perf-lab enforcement"
 
 for i in $(seq 1 "$TOTAL_PHASES"); do
     PHASE_RESULTS[i]="SKIP"
@@ -299,14 +301,14 @@ if ! command -v cargo-audit &>/dev/null; then
     echo "  Install: cargo install cargo-audit"
     PHASE_RESULTS[7]="SKIP"
 else
-    LOCKFILE_READY=true
-    # Fallback for fresh checkouts that predate the tracked root lockfile
-    if [ ! -f Cargo.lock ]; then
-        if ! "$SCRIPT_DIR/cargo-retry.sh" generate-lockfile 2>&1; then
-            echo -e "${RED}Phase 7: FAIL (could not generate Cargo.lock)${NC}"
-            mark_phase_fail 7
-            LOCKFILE_READY=false
-        fi
+    # Fail closed on a missing or stale tracked lock: regenerating here
+    # would silently move the local audit onto an unpinned dependency graph.
+    if ! "$SCRIPT_DIR/cargo-retry.sh" metadata --locked > /dev/null 2>&1; then
+        echo -e "${RED}Phase 7: FAIL (tracked Cargo.lock missing or stale; run cargo metadata to reconcile)${NC}"
+        mark_phase_fail 7
+        LOCKFILE_READY=false
+    else
+        LOCKFILE_READY=true
     fi
     if [ "$LOCKFILE_READY" = true ] && cargo audit 2>&1; then
         echo -e "${GREEN}Phase 7: PASS${NC}"
@@ -536,7 +538,7 @@ if ! rustup run nightly cargo miri --version &>/dev/null 2>&1; then
     echo "  Install: rustup component add miri --toolchain nightly"
     PHASE_RESULTS[15]="SKIP"
 else
-    if MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --test protocol_tests --all-features 2>&1; then
+    if MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked --test protocol_tests --all-features 2>&1; then
         echo -e "${GREEN}  Miri (protocol_tests): PASS${NC}"
         PHASE_RESULTS[15]="PASS"
     else
@@ -573,7 +575,7 @@ else
                 rm -rf "$FUZZ_CORPUS"
             }
             trap cleanup_fuzz_corpus EXIT
-            for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data; do
+            for target in fuzz_server_message fuzz_client_message fuzz_binary_game_data fuzz_token_binding; do
                 corpus="$FUZZ_CORPUS/$target"
                 mkdir -p "$corpus"
                 seed_args=()
@@ -754,6 +756,27 @@ if cargo run --locked --release \
 else
     echo -e "${RED}Phase 23: FAIL (oracle canaries)${NC}"
     mark_phase_fail 23
+fi
+echo ""
+
+# ── Phase 24: Perf-lab protocol/allocation enforcement ─────────────
+# Local mirror of CI's performance-contract lane. The enforcement suite
+# runs in well under a second once built; without it, allocation-ceiling
+# regressions surface only after a full CI round-trip. Protocol ledger
+# pins also execute through the workspace test suite (phase 4), but the
+# bin path is the only place the parent/child allocation machinery runs.
+echo -e "${YELLOW}Phase 24/$TOTAL_PHASES: Perf-lab enforcement (perf-smoke)...${NC}"
+if [ ! -f "$REPO_ROOT/tools/perf-lab/Cargo.toml" ]; then
+    echo -e "${YELLOW}SKIP: tools/perf-lab not found.${NC}"
+    PHASE_RESULTS[24]="SKIP"
+else
+    if cargo run --locked -p signal-fish-client-perf-lab --features perf --bin perf-smoke 2>&1; then
+        echo -e "${GREEN}Phase 24: PASS${NC}"
+        PHASE_RESULTS[24]="PASS"
+    else
+        echo -e "${RED}Phase 24: FAIL (perf-lab enforcement failed)${NC}"
+        mark_phase_fail 24
+    fi
 fi
 echo ""
 
