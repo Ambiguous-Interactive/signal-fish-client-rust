@@ -188,7 +188,10 @@ pub enum ErrorCode {
     KickTargetNotFound,
     /// This connection was removed from its room by the room's authority
     /// player. The WebSocket closed with private close code `4007`
-    /// (`kicked`); reconnection is not offered.
+    /// (`kicked`); the server never arms reconnection for a kicked seat (a
+    /// configured `ReconnectPolicy` still retries the close like any peer
+    /// close, and on a spec-conformant server the automatic rejoin is
+    /// refused in-band).
     Kicked,
 }
 
@@ -404,7 +407,7 @@ impl ErrorCode {
                 "The player to kick is not a current member of this room."
             }
             Self::Kicked => {
-                "You were removed from the room by its authority player. Reconnection is not offered; join again with a valid room code."
+                "You were removed from the room by its authority player. The kicked seat cannot be reconnected; join again with a valid room code."
             }
         }
     }

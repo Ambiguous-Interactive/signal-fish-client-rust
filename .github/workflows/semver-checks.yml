@@ -33,6 +33,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -79,8 +80,34 @@ jobs:
         id: pr-release-type
         if: github.event_name != 'push'
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_TITLE: ${{ github.event.pull_request.title || inputs.pr_title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # A pull_request event payload freezes the PR title as it was when
+          # the event fired, so re-running this workflow after a retitle
+          # (typically adding the breaking `!:` marker) classified against a
+          # stale title and stayed red forever (issue #241). Classify from
+          # the live title instead, failing closed when it cannot be read.
+          # Explicitly dispatched candidates keep their `pr_title` input.
+          if [ -n "$PR_NUMBER" ]; then
+            live_title=""
+            for attempt in 1 2 3; do
+              if live_title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)" \
+                && [ -n "$live_title" ]; then
+                break
+              fi
+              live_title=""
+              if [ "$attempt" -lt 3 ]; then
+                sleep 2
+              fi
+            done
+            if [ -z "$live_title" ]; then
+              printf '::error::Could not read the live title of pull request %s.\n' "$PR_NUMBER"
+              exit 1
+            fi
+            PR_TITLE="$live_title"
+          fi
           if [[ "$PR_TITLE" == *"!:"* ]]; then
             echo "release-type=major" >> "$GITHUB_OUTPUT"
             echo "Conventional breaking-change marker found; checking with major compatibility policy."

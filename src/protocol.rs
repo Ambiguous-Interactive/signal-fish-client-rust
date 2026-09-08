@@ -963,7 +963,10 @@ pub enum RoomOperationRequest {
     /// current seated member and cannot be the sender. The server removes the
     /// seat, broadcasts the usual `PlayerLeft` roster delta to the remaining
     /// members, and closes the target's connection with private close code
-    /// 4007 (`kicked`); reconnection is never armed for a kicked seat.
+    /// 4007 (`kicked`); the server never arms reconnection for a kicked seat
+    /// (a client-side `ReconnectPolicy` still classifies that close as an
+    /// ordinary retryable peer close; on a spec-conformant server the
+    /// automatic rejoin is refused in-band).
     KickPlayer {
         /// The seated player to remove.
         player_id: PlayerId,

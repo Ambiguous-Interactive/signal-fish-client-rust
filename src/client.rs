@@ -691,7 +691,13 @@ const DEFAULT_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// [`max_frame_hint`](crate::Transport::max_frame_hint), and frames received
 /// before transport readiness are all retried: every one of them can be
 /// caused by a dead or misbehaving *backend*, which is exactly what a fresh
-/// transport from the factory replaces. Not retried — the client ends as
+/// transport from the factory replaces. Close codes are not inspected: a
+/// server kick (private close code 4007, `kicked`) is retried like any
+/// peer close. The server never arms reconnection for a kicked seat, so on
+/// a spec-conformant server the episode ends with the automatic rejoin
+/// refused in-band as
+/// [`ReconnectionFailed`](SignalFishEvent::ReconnectionFailed) while the
+/// fresh connection itself stays usable. Not retried — the client ends as
 /// today:
 ///
 /// - [`shutdown`](SignalFishClient::shutdown) (at any point, including
@@ -3596,6 +3602,8 @@ mod tests {
         diagnostics: crate::transport::TransportDiagnostics,
         /// Inbound bound declared through `Transport::max_frame_hint`.
         max_frame_hint: Option<usize>,
+        /// Close metadata reported once the scripted queue ends.
+        close_info: Option<crate::transport::TransportCloseInfo>,
     }
 
     impl MockTransport {
@@ -3649,6 +3657,7 @@ mod tests {
                 sent_binary: None,
                 diagnostics: crate::transport::TransportDiagnostics::default(),
                 max_frame_hint: None,
+                close_info: None,
             };
             (
                 transport,
@@ -3681,6 +3690,18 @@ mod tests {
             let frames_taken = Arc::clone(&transport.frames_taken);
             (transport, sent, closed, controls, gate, frames_taken)
         }
+
+        /// Report this close metadata from `Transport::close_info` once the
+        /// scripted queue ends (a peer-initiated close).
+        fn with_peer_close(mut self, code: u16, reason: &'static str) -> Self {
+            self.close_info = Some(crate::transport::TransportCloseInfo {
+                code: Some(code),
+                reason: Some(reason.into()),
+                clean: Some(true),
+                initiated_by_peer: true,
+            });
+            self
+        }
     }
 
     impl Transport for MockTransport {
@@ -3690,6 +3711,10 @@ mod tests {
 
         fn max_frame_hint(&self) -> Option<usize> {
             self.max_frame_hint
+        }
+
+        fn close_info(&self) -> Option<crate::transport::TransportCloseInfo> {
+            self.close_info.clone()
         }
 
         fn abort(&mut self) {
@@ -9729,12 +9754,17 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn reconnection_failed_stops_room_recovery_but_keeps_the_connection() {
+        // Round 1 dies as an authority kick: private close code 4007
+        // ("kicked"). The close is an ordinary retryable peer close, so the
+        // policy runs the same doomed one-round journey as any in-band
+        // rejoin refusal.
         let (transport1, _sent1, _closed1) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
             Some(Ok(room_joined_json_with_token("tok-1"))),
             None,
         ]);
+        let transport1 = transport1.with_peer_close(4007, "kicked");
         let (transport2, sent2, _closed2) = MockTransport::new(vec![
             Some(Ok(authenticated_json())),
             Some(Ok(protocol_info_v3_json())),
@@ -9768,14 +9798,19 @@ mod tests {
             events.recv().await,
             Some(SignalFishEvent::RoomJoined { .. })
         ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Disconnected { .. })
-        ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::Reconnecting { .. })
-        ));
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { reason, .. }) => {
+                assert_eq!(
+                    reason.as_deref(),
+                    Some("closed by server: code=Some(4007), reason=Some(\"kicked\")")
+                );
+            }
+            other => panic!("expected kicked Disconnected, got {other:?}"),
+        }
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting { attempt, .. }) => assert_eq!(attempt, 1),
+            other => panic!("expected Reconnecting, got {other:?}"),
+        }
         assert!(matches!(
             events.recv().await,
             Some(SignalFishEvent::Connected)
@@ -9788,12 +9823,17 @@ mod tests {
             events.recv().await,
             Some(SignalFishEvent::ProtocolInfo(_))
         ));
-        assert!(matches!(
-            events.recv().await,
-            Some(SignalFishEvent::ReconnectionFailed { .. })
-        ));
-        // Exactly one automatic reconnect was attempted; the connection
-        // stays up and the caller owns the fallback decision.
+        match events.recv().await {
+            Some(SignalFishEvent::ReconnectionFailed { error_code, .. }) => {
+                assert_eq!(
+                    error_code,
+                    crate::error_codes::ErrorCode::ReconnectionExpired
+                );
+            }
+            other => panic!("expected ReconnectionFailed, got {other:?}"),
+        }
+        // The budget is untouched by the in-band refusal: no further rounds,
+        // no ReconnectAbandoned, and the connection stays up.
         tokio::time::sleep(Duration::from_millis(5)).await;
         {
             let sent2 = sent2.lock().unwrap();
@@ -9801,6 +9841,7 @@ mod tests {
             let message: serde_json::Value = serde_json::from_str(&sent2[1]).unwrap();
             assert_eq!(message["type"], "Reconnect");
         }
+        assert!(client.is_connected());
         client.shutdown().await;
     }
 
