@@ -394,6 +394,43 @@ fn spectator_server_wire_fixtures_conform() {
     assert_conformance::<ServerMessage>("spectator-server-fixtures", SPECTATOR_SERVER_MESSAGES);
 }
 
+/// Hand-built authority/relay/reconnect server-message wire fixtures.
+///
+/// The upstream server publishes no `AuthorityChanged`, `RelayStats`,
+/// `PlayerReconnected`, `RoomJoinFailed`, or v3 `PlayerLeft` sample lines, so
+/// the vendored `.jsonl` corpus is blind to every one of those frames: a serde
+/// shape drift there could only ever surface on a live server (network-gated)
+/// or through mock frames the test suite built itself from the same types
+/// under test — the exact blindness class the spectator fixtures above closed
+/// for the spectator lifecycle.
+///
+/// These fixtures are hand-built to the **vendored AsyncAPI authority**
+/// (`tests/server-spec/signal-fish-protocol.asyncapi.yaml`, checksum-pinned):
+/// `AuthorityChanged` (peer/you/`null`-vacated authority), `RelayStats`
+/// (cumulative counters), `PlayerReconnected` (v2 epoch-less and v3 `epoch`
+/// faces), `PlayerLeft` (v3 terminal-watermark face), `RoomJoinFailed` (with
+/// and without the schema-optional `error_code`), and the spectator
+/// fan-out-slimming v3 faces (`current_spectators: []` + `spectator_count`).
+/// Every line must deserialize into `ServerMessage` and round-trip to a
+/// semantically identical JSON object, exactly like the complete v3 samples.
+#[test]
+fn authority_relay_reconnect_server_wire_fixtures_conform() {
+    const SERVER_MESSAGES: &str = r#"
+{"type": "AuthorityChanged", "data": {"authority_player": "00000000-0000-0000-0000-00000000000b", "you_are_authority": false}}
+{"type": "AuthorityChanged", "data": {"authority_player": "00000000-0000-0000-0000-00000000000a", "you_are_authority": true}}
+{"type": "AuthorityChanged", "data": {"authority_player": null, "you_are_authority": false}}
+{"type": "RelayStats", "data": {"interval_ms": 5000, "sent_to_you": 1234, "dropped_for_you": 0, "backpressure_events": 2}}
+{"type": "PlayerReconnected", "data": {"player_id": "00000000-0000-0000-0000-00000000000a"}}
+{"type": "PlayerReconnected", "data": {"player_id": "00000000-0000-0000-0000-00000000000a", "epoch": 2}}
+{"type": "PlayerLeft", "data": {"player_id": "00000000-0000-0000-0000-00000000000a", "epoch": 1, "final_seq": 42}}
+{"type": "RoomJoinFailed", "data": {"reason": "room is full", "error_code": "ROOM_FULL"}}
+{"type": "RoomJoinFailed", "data": {"reason": "room not found"}}
+{"type": "NewSpectatorJoined", "data": {"spectator": {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}, "current_spectators": [], "reason": "joined", "spectator_count": 3}}
+{"type": "SpectatorDisconnected", "data": {"spectator_id": "00000000-0000-0000-0000-0000000000c2", "reason": "disconnected", "current_spectators": [], "spectator_count": 0}}
+"#;
+    assert_conformance::<ServerMessage>("authority-relay-reconnect-fixtures", SERVER_MESSAGES);
+}
+
 /// The `fuzz_binary_game_data` seed corpus must stay decodable.
 ///
 /// The fuzz target keeps two canonical envelopes inline; the seed files under

@@ -36,18 +36,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version: stable
-          cache: false
-
-      - name: Install actionlint
-        # Pinned version — bump manually; not covered by Dependabot
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Download checksum-verified actionlint binary
+        env:
+          # Pinned version + digest — bump manually; go-module installs are
+          # not covered by Dependabot, and a release binary skips the ~1 min
+          # compile-from-source of the previous `go install` step.
+          ACTIONLINT_VERSION: "1.7.7"
+          ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+        run: |
+          set -euo pipefail
+          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
+          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${asset}" | sha256sum --check
+          tar -xzf "${asset}" actionlint
+          install -m 0755 actionlint "${HOME}/.local/bin/actionlint"
+          "${HOME}/.local/bin/actionlint" --version | grep -Fx "${ACTIONLINT_VERSION}"
 
       - name: Run actionlint
-        run: actionlint -color
+        run: '"${HOME}/.local/bin/actionlint" -color'
 
   # ──────────────────────────────────────────────────────────────
   # yamllint — validate YAML style and syntax of workflow files
