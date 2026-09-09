@@ -100,6 +100,18 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src, clippy
+      # cargo fingerprints -Zbuild-std std sources by mtime; the fresh
+      # toolchain install every run stamps them newer than any restored
+      # artifact, forcing a full std + dependent rebuild despite the warm
+      # cache. Pinning the sources to a fixed epoch keeps restored artifacts
+      # fresh while the rust-cache key (which includes the nightly's rustc
+      # commit hash) is unchanged; an upstream nightly bump still keys a new
+      # scope and seeds it.
+      - name: Pin std source mtimes for build-std cache reuse
+        run: |
+          set -euo pipefail
+          find "$(rustc +nightly --print sysroot)/lib/rustlib/src/rust" \
+            -type f -exec touch -d '@0' {} +
       - name: Install Emscripten SDK
         uses: emscripten-core/setup-emsdk@v16
         with:

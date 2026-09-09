@@ -29,6 +29,15 @@
 use serde::{de::DeserializeOwned, Serialize};
 use signal_fish_client::protocol::{ClientMessage, RoomOperationRequest, ServerMessage};
 
+/// Fixed identifier for the pin inventory (a wire token, not a semantic value).
+fn probe_player_id() -> signal_fish_client::protocol::PlayerId {
+    uuid::Uuid::from_u128(0x0b0b)
+}
+
+fn probe_operation_id() -> signal_fish_client::protocol::RoomOperationId {
+    uuid::Uuid::from_u128(0x0d0d)
+}
+
 const V2_CLIENT: &str = include_str!("wire-samples/v2-client-messages.jsonl");
 const V2_SERVER: &str = include_str!("wire-samples/v2-server-messages.jsonl");
 const V3_CLIENT: &str = include_str!("wire-samples/v3-client-messages.jsonl");
@@ -467,23 +476,162 @@ fn binary_game_data_server_wire_fixtures_conform() {
 ///
 /// The vendored v2 client samples are illustrative placeholders that the
 /// corpus tests only check for JSON validity (`assert_structural`), so
-/// `AuthorityRequest`, `PlayerReady`, `ProvideConnectionInfo`, and `Ping`
-/// had no wire-shaped deserialize coverage — only struct round-trips built
-/// from the types under test. These lines are the authority's complete v2
-/// shapes: the no-payload schemas (`Ping`, `PlayerReady`) require only the
-/// `type` tag (our serializer likewise omits `data`; the tolerant
+/// `AuthorityRequest`, `PlayerReady`, `Ping`, `LeaveRoom`, `LeaveSpectator`,
+/// `JoinAsSpectator`, and `ProvideConnectionInfo` had no wire-shaped
+/// deserialize coverage — only struct round-trips built from the types under
+/// test. These lines are the authority's complete v2 shapes: the no-payload
+/// schemas (`Ping`, `PlayerReady`, `LeaveRoom`, `LeaveSpectator`) require
+/// only the `type` tag (our serializer likewise omits `data`; the tolerant
 /// `"data": null` input face is a serde detail, not the pinned wire form),
-/// and `ProvideConnectionInfo` wraps an internally-tagged `direct` info
-/// object.
+/// the `JoinAsSpectator` line pins the full open-room spectator face, and
+/// `ProvideConnectionInfo` wraps an internally-tagged `direct` info object.
 #[test]
 fn v2_client_message_wire_fixtures_conform() {
     const V2_CLIENT_MESSAGES: &str = r#"
 {"type": "AuthorityRequest", "data": {"become_authority": true}}
 {"type": "PlayerReady"}
 {"type": "Ping"}
+{"type": "LeaveRoom"}
+{"type": "LeaveSpectator"}
+{"type": "JoinAsSpectator", "data": {"game_name": "my-game", "room_code": "ABC123", "spectator_name": "Watcher"}}
 {"type": "ProvideConnectionInfo", "data": {"connection_info": {"type": "direct", "host": "127.0.0.1", "port": 7777}}}
 "#;
     assert_conformance::<ClientMessage>("v2-client-fixtures", V2_CLIENT_MESSAGES);
+}
+
+/// Every outbound wire face must be pinned by a non-co-drifting fixture or
+/// sample pin.
+///
+/// Round-trip tests are self-referential (a serde-attribute rename moves both
+/// faces together), and perf-lab ledger digests only fail on byte drift until
+/// deliberately refreshed, so the pins named here are the durable nets for
+/// each outbound face: hand-built, authority-derived fixtures that fail on a
+/// one-sided outbound drift, or byte-exact ledgers checked on every CI run.
+/// Both matches below are deliberately exhaustive and wildcard-free:
+/// adding a `ClientMessage` or `RoomOperationRequest` variant fails to
+/// compile until this inventory (and a real wire pin) covers its outbound
+/// face.
+fn client_message_outbound_pin(message: &ClientMessage) -> &'static str {
+    match message {
+        ClientMessage::Authenticate { .. } => {
+            "v3-client corpus `Authenticate` line (both faces) plus the perf-lab lobby ledgers"
+        }
+        ClientMessage::JoinRoom { .. } => {
+            "`quick_match_join_room_omits_every_unset_optional_member` (omission and \
+             password faces, both forms) plus the perf-lab lobby ledgers"
+        }
+        ClientMessage::LeaveRoom => "`v2_client_message_wire_fixtures_conform` (`LeaveRoom` line)",
+        ClientMessage::GameData { .. } => {
+            "the perf-lab json/out ledgers (plain face, byte-exact) plus the v3-client \
+             corpus `GameData` lines (classified faces, both directions)"
+        }
+        ClientMessage::AuthorityRequest { .. } => {
+            "`v2_client_message_wire_fixtures_conform` (`AuthorityRequest` line)"
+        }
+        ClientMessage::PlayerReady => {
+            "`v2_client_message_wire_fixtures_conform` (`PlayerReady` line)"
+        }
+        ClientMessage::ProvideConnectionInfo { .. } => {
+            "`v2_client_message_wire_fixtures_conform` (`ProvideConnectionInfo` line)"
+        }
+        ClientMessage::Ping => "`v2_client_message_wire_fixtures_conform` (`Ping` line)",
+        ClientMessage::Reconnect { .. } => {
+            "the perf-lab reconnect ledgers (byte-exact, checked on every CI run)"
+        }
+        ClientMessage::JoinAsSpectator { .. } => {
+            "`v2_client_message_wire_fixtures_conform` (`JoinAsSpectator` line, full \
+             shape) plus `sealed_spectator_join_serializes_password_in_both_forms` \
+             (password faces)"
+        }
+        ClientMessage::LeaveSpectator => {
+            "`v2_client_message_wire_fixtures_conform` (`LeaveSpectator` line)"
+        }
+        ClientMessage::RoomOperation { operation, .. } => room_operation_outbound_pin(operation),
+        ClientMessage::StartGame => "`client_message_start_game_unit_variant_has_no_data`",
+        ClientMessage::Signal { .. } => "v3-client corpus `Signal` lines (both faces)",
+        ClientMessage::TransportStatus { .. } => {
+            "v3-client corpus `TransportStatus` line (both faces)"
+        }
+    }
+}
+
+fn room_operation_outbound_pin(operation: &RoomOperationRequest) -> &'static str {
+    match operation {
+        RoomOperationRequest::JoinRoom { .. } => {
+            "`correlated_client_operations_have_exact_nested_shapes` (join_room case)"
+        }
+        RoomOperationRequest::LeaveRoom => {
+            "`correlated_client_operations_have_exact_nested_shapes` (leave_room case)"
+        }
+        RoomOperationRequest::Reconnect { .. } => {
+            "`correlated_client_operations_have_exact_nested_shapes` (reconnect case)"
+        }
+        RoomOperationRequest::JoinAsSpectator { .. } => {
+            "`correlated_client_operations_have_exact_nested_shapes` (open and sealed cases)"
+        }
+        RoomOperationRequest::LeaveSpectator => {
+            "`correlated_client_operations_have_exact_nested_shapes` (leave_spectator case)"
+        }
+        RoomOperationRequest::KickPlayer { .. } => {
+            "v3-client corpus `RoomOperation`/`KickPlayer` line (both faces)"
+        }
+        RoomOperationRequest::RegenerateRoomCode => {
+            "v3-client corpus `RoomOperation`/`RegenerateRoomCode` line (both faces)"
+        }
+        RoomOperationRequest::SetRoomAccess { .. } => {
+            "`access_control_surface_round_trips_with_exact_wire_tokens` (SetRoomAccess cases)"
+        }
+        RoomOperationRequest::BanPlayer { .. } => {
+            "`access_control_surface_round_trips_with_exact_wire_tokens` (BanPlayer case)"
+        }
+        RoomOperationRequest::UnbanPlayer { .. } => {
+            "`access_control_surface_round_trips_with_exact_wire_tokens` (UnbanPlayer case)"
+        }
+        RoomOperationRequest::TransferAuthority { .. } => {
+            "`access_control_surface_round_trips_with_exact_wire_tokens` (TransferAuthority case)"
+        }
+    }
+}
+
+#[test]
+fn every_outbound_wire_face_has_a_named_pin() {
+    // The enforcement is the wildcard-free matches above (a new variant fails
+    // to compile until it names a pin); exercising representative arms here
+    // keeps both functions live and documents the inventory in runnable form.
+    let kick_player_id = probe_player_id();
+    let messages = [
+        ClientMessage::Ping,
+        ClientMessage::LeaveRoom,
+        ClientMessage::LeaveSpectator,
+        ClientMessage::PlayerReady,
+        ClientMessage::StartGame,
+        ClientMessage::RoomOperation {
+            operation_id: probe_operation_id(),
+            operation: Box::new(RoomOperationRequest::LeaveRoom),
+        },
+        ClientMessage::RoomOperation {
+            operation_id: probe_operation_id(),
+            operation: Box::new(RoomOperationRequest::KickPlayer {
+                player_id: kick_player_id,
+            }),
+        },
+        ClientMessage::RoomOperation {
+            operation_id: probe_operation_id(),
+            operation: Box::new(RoomOperationRequest::RegenerateRoomCode),
+        },
+    ];
+    for message in &messages {
+        let _ = client_message_outbound_pin(message);
+    }
+
+    let operations = [
+        RoomOperationRequest::LeaveRoom,
+        RoomOperationRequest::LeaveSpectator,
+        RoomOperationRequest::RegenerateRoomCode,
+    ];
+    for operation in &operations {
+        let _ = room_operation_outbound_pin(operation);
+    }
 }
 
 /// The binary game-data envelopes must decode from hand-assembled bytes.

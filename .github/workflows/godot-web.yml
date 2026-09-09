@@ -58,6 +58,17 @@ jobs:
           toolchain: ${{ env.RUST_NIGHTLY }}
           components: rust-src
 
+      # cargo fingerprints -Zbuild-std std sources by mtime; the fresh
+      # toolchain install every run stamps them newer than any restored
+      # artifact, forcing a full std + dependent rebuild despite the warm
+      # cache (~2 min per fixture build, measured). Pinning the sources to a
+      # fixed epoch keeps restored artifacts fresh.
+      - name: Pin std source mtimes for build-std cache reuse
+        run: |
+          set -euo pipefail
+          find "$(rustc +"${RUST_NIGHTLY}" --print sysroot)/lib/rustlib/src/rust" \
+            -type f -exec touch -d '@0' {} +
+
       - name: Install Rust stable with Clippy
         uses: dtolnay/rust-toolchain@stable
         with:
