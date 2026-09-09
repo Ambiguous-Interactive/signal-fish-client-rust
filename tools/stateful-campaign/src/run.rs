@@ -1517,7 +1517,7 @@ impl Oracle {
     /// Close-info attribution: the `Disconnected` reason must agree with the
     /// armed transport face. `transport_peer_closed` mirrors
     /// `Transport::close_info()` at the end of the run.
-    #[allow(clippy::collapsible_match)]
+    #[expect(clippy::collapsible_match)]
     pub(crate) fn verify_close_attribution(
         &self,
         transport_peer_closed: bool,

@@ -808,7 +808,7 @@ impl GodotWebSocketTransport {
 /// is bounded by `8 * (u64::MAX - 1) + u64::MAX`, far below `u128::MAX`, so
 /// neither the multiply-add nor the division can overflow and the only
 /// fallible step is the narrowing conversion handled by `unwrap_or`.
-#[allow(clippy::arithmetic_side_effects)]
+#[expect(clippy::arithmetic_side_effects)]
 fn ewma_one_eighth(previous: u64, sample: u64) -> u64 {
     u64::try_from((u128::from(previous) * 7 + u128::from(sample)) / 8).unwrap_or(u64::MAX)
 }

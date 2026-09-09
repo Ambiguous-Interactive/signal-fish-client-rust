@@ -114,17 +114,17 @@ use crate::transport::{
 // ── FFI Bindings ────────────────────────────────────────────────────────────
 
 // These type aliases mirror Emscripten's C naming conventions exactly.
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 type EMSCRIPTEN_WEBSOCKET_T = c_int;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 type EM_BOOL = c_int;
 
 // Verified against Emscripten 3.1.74 system/include/emscripten/websocket.h:
 // WebSocket event structs and creation attributes use C `bool` fields. On
 // wasm32-unknown-emscripten that ABI type is one byte. Callback return values
 // remain `EM_BOOL` (`c_int`) in this binding and must not use this field alias.
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
 type C_BOOL = u8;
 
 /// Emscripten result code indicating success.

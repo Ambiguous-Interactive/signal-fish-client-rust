@@ -271,7 +271,7 @@ access-control operations itself; `join_room` can present a password with
 | Variant | Description |
 |---------|-------------|
 | `PasswordRequired` | The room requires a join password and the request presented none, the wrong one, or a password for an open room; the server does not distinguish the three cases. |
-| `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. Banning a seated member removes them exactly like a kick: close code 4007 (`kicked`), no reconnection. |
+| `Banned` | This player id is banned from the room by its authority player and cannot join it (as a player or spectator) while the room lives; the ban is room-scoped and expires with the room. Banning a seated member removes them exactly like a kick: close code 4007 (`kicked`), no reconnection. Newer upstream servers also refuse a banned seat's reconnection restore with this code on `ReconnectionFailed`, keeping the pending record so a mid-window unban lets the token work again. |
 | `TransferTargetNotFound` | The player named by `TransferAuthority` is not a seated member of the room. |
 
 !!! note "The v3-era *server* codes vs. `SignalFishError::ProtocolUnsupported`"

@@ -111,7 +111,7 @@ pub(crate) fn peer_close_reason<T: Transport + ?Sized>(transport: &T) -> Option<
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#[expect(clippy::panic)]
 mod tests {
     use super::*;
     use crate::transport::TransportCloseInfo;

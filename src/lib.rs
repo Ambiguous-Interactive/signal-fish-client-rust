@@ -228,5 +228,5 @@ pub use webrtc::MeshController;
 
 // Re-export only on the correct target (see transports/mod.rs for rationale).
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
-#[allow(deprecated)]
+#[expect(deprecated)]
 pub use transports::{EmscriptenWebSocketConnectOptions, EmscriptenWebSocketTransport};

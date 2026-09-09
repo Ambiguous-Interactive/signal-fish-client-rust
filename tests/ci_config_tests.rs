@@ -2741,7 +2741,6 @@ mod ci_workflow_policy {
     /// as Cargo.toml. Prevents drift where Cargo.toml is bumped but docs or
     /// scripts are left with the old version.
     #[test]
-    #[allow(clippy::indexing_slicing)]
     fn msrv_consistent_across_key_files() {
         let version = cargo_msrv_version();
 

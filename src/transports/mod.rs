@@ -54,5 +54,5 @@ mod emscripten_inbound_queue;
 pub mod emscripten_websocket;
 
 #[cfg(all(feature = "transport-websocket-emscripten", target_os = "emscripten"))]
-#[allow(deprecated)]
+#[expect(deprecated)]
 pub use emscripten_websocket::{EmscriptenWebSocketConnectOptions, EmscriptenWebSocketTransport};

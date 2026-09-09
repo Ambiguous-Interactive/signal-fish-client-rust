@@ -207,7 +207,10 @@ pub enum ErrorCode {
     /// This player id is banned from the room by its authority player and
     /// cannot join it (as a player or spectator) while the room lives. The
     /// ban is room-scoped and expires with the room. Banning a seated member
-    /// removes them exactly like a kick (close code `4007`/`kicked`).
+    /// removes them exactly like a kick (close code `4007`/`kicked`). Newer
+    /// upstream servers also refuse a banned seat's reconnection restore
+    /// with this code on `ReconnectionFailed`, keeping the pending record so
+    /// a mid-window unban lets the token work again.
     Banned,
     /// The player named by `TransferAuthority` is not a seated member of the
     /// room.
@@ -432,7 +435,7 @@ impl ErrorCode {
                 "This room is password-protected, or the join presented a password to an open room. Send the password chosen by the room's authority player, or join without one."
             }
             Self::Banned => {
-                "This player id is banned from the room by its authority player and cannot join it while the room lives."
+                "This player id is banned from the room by its authority player and cannot join it while the room lives. Newer upstream servers also refuse a banned seat's reconnection restore with this code, keeping the pending record so a mid-window unban lets the token work again."
             }
             Self::TransferTargetNotFound => {
                 "The player to transfer authority to is not a current member of this room."

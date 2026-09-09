@@ -49,7 +49,7 @@ impl Rng {
     /// array and `below` returns an index in `0..len`, so the fallback below
     /// is unreachable; the scoped allow carries that proof (repo precedent:
     /// provably-total indexing carries a scoped proof).
-    #[allow(clippy::indexing_slicing)]
+    #[expect(clippy::indexing_slicing)]
     pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         let index = self.below(items.len());
         &items[index.min(items.len().saturating_sub(1))]
