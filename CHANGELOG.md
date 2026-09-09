@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an Authentication & Credentials guide consolidating the public app-ID
   policy, secret reconnection tokens, rotation guidance, and log-hygiene
   rules.
+- Documented that newer upstream servers also refuse a banned seat's
+  reconnection restore with `ErrorCode::Banned` on `ReconnectionFailed`
+  (`ErrorCode::Banned` rustdoc and the errors guide), keeping the pending
+  ban record so a mid-window unban lets the token work again.
 - Added an `auto_reconnect` example: a complete, compiling auto-reconnection
   client showing the `ReconnectPolicy` factory pattern for the built-in
   `WebSocketTransport`, plus the same pattern in the reconnect rustdoc and

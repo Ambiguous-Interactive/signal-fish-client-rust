@@ -2866,7 +2866,7 @@ mod tests {
         // would abort the test thread; leaking this proof-only fixture is
         // the bounded outcome (the same deliberate-leak precedent as the
         // Emscripten close-before-delete policy).
-        #[allow(clippy::mem_forget)]
+        #[expect(clippy::mem_forget)]
         std::mem::forget(pathological);
     }
 
@@ -3781,6 +3781,95 @@ mod tests {
                 "sealed-spectator refusal must carry the code: {code:?}"
             );
             assert_eq!(spectator.pending_room_operation, None);
+        }
+    }
+
+    #[test]
+    fn access_control_reconnection_refusals_surface_codes_and_release_the_fence_in_every_form() {
+        // A banned seat's reconnection restore is refused with
+        // `ReconnectionFailed` (upstream server 0d33961; a banned seat can
+        // still hold an armed reconnection token when the ban lands while it
+        // is disconnected). The access-control codes must ride that frame
+        // exactly like the older `ReconnectionExpired` face: an ordinary
+        // event carrying the code, no violation event, and both the
+        // reconnect-credential queue and the pending room operation released
+        // in the legacy and negotiated admission forms.
+        for code in [crate::ErrorCode::Banned, crate::ErrorCode::PasswordRequired] {
+            let mut legacy = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut legacy, authenticated());
+            let _ = process(&mut legacy, protocol_info(Some(3)));
+            legacy.record_admission(ClientCore::admission_for(&ClientOperation::Reconnect(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            )));
+            let outcome = process(
+                &mut legacy,
+                ServerMessage::ReconnectionFailed {
+                    reason: "banned".into(),
+                    error_code: code.clone(),
+                },
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::ReconnectionFailed { reason, error_code: received, .. }] if *received == code && reason == "banned"
+                ),
+                "legacy reconnect refusal must carry the code: {code:?}"
+            );
+            assert_eq!(legacy.pending_room_operation, None);
+            assert!(legacy.pending_reconnects.is_empty());
+
+            let mut correlated = correlated_outside(ProtocolViolationPolicy::Observe);
+            let (_, id) = prepare_and_admit(
+                &mut correlated,
+                ClientOperation::Reconnect(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "submitted-token".into(),
+                ),
+            );
+            let outcome = process(
+                &mut correlated,
+                correlated_result(
+                    id,
+                    RoomOperationResult::ReconnectionFailed {
+                        reason: "banned".into(),
+                        error_code: code.clone(),
+                    },
+                ),
+            );
+            assert!(
+                matches!(
+                    outcome.events.as_slice(),
+                    [SignalFishEvent::ReconnectionFailed { reason, error_code: received, .. }] if *received == code && reason == "banned"
+                ),
+                "negotiated reconnect refusal must carry the code: {code:?}"
+            );
+            assert_eq!(correlated.pending_room_operation, None);
+            assert!(correlated.pending_reconnects.is_empty());
+
+            // The released fences admit fresh directed work in both forms.
+            assert!(
+                legacy
+                    .prepare_with_admission(ClientOperation::JoinRoom(JoinRoomParams::new(
+                        "game", "local",
+                    )))
+                    .is_ok(),
+                "legacy fence must admit a fresh join after the refusal: {code:?}"
+            );
+            assert!(
+                correlated
+                    .prepare_with_admission(ClientOperation::JoinRoom(JoinRoomParams::new(
+                        "game", "local",
+                    )))
+                    .is_ok(),
+                "negotiated fence must admit a fresh join after the refusal: {code:?}"
+            );
         }
     }
 
