@@ -4549,18 +4549,29 @@ mod safety_analysis_policy {
         );
         let server_target = read_project_file("fuzz/fuzz_targets/fuzz_server_message.rs");
         assert!(
-            server_target.contains("render/re-parse not idempotent"),
-            "fuzz_server_message must pin render/re-parse idempotence"
-        );
-        assert!(
             server_target.contains("PeerSignal parse/render identity broken"),
             "fuzz_server_message must pin the PeerSignal fixpoint"
         );
-        let client_target = read_project_file("fuzz/fuzz_targets/fuzz_client_message.rs");
+        // Both JSON targets share the render/re-parse oracle module; the
+        // byte-idempotence half lives there, tolerant of serde_json's
+        // documented (non `float_roundtrip`) one-ULP float parse drift.
+        let json_oracle = read_project_file("fuzz/fuzz_targets/json_oracle.rs");
         assert!(
-            client_target.contains("render/re-parse not idempotent"),
-            "fuzz_client_message must pin render/re-parse idempotence"
+            json_oracle.contains("render/re-parse not idempotent"),
+            "fuzz_targets/json_oracle.rs must pin render/re-parse idempotence"
         );
+        assert!(
+            json_oracle.contains("float drifted {drift} ULP"),
+            "json_oracle must bound float drift at one ULP"
+        );
+        let client_target = read_project_file("fuzz/fuzz_targets/fuzz_client_message.rs");
+        for target in [server_target, client_target] {
+            assert!(
+                target.contains("mod json_oracle")
+                    && target.contains("json_oracle::assert_render_stable"),
+                "both JSON fuzz targets must run the shared render/re-parse oracle"
+            );
+        }
         let token_target = read_project_file("fuzz/fuzz_targets/fuzz_token_binding.rs");
         assert!(
             token_target.contains("pending prepare advanced the token-binding sequence"),

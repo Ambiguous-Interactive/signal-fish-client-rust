@@ -1,34 +1,22 @@
 #![no_main]
 
+mod json_oracle;
+
 use libfuzzer_sys::fuzz_target;
 use signal_fish_client::protocol::ServerMessage;
-
-// Anything the JSON deserializer accepts must be byte-stable across a
-// re-encode/re-decode cycle (see fuzz_client_message for the client-side
-// twin): `to_string(m)` reparsed and re-rendered must produce the identical
-// text. Server deliverables are decoded from the wire and their payloads are
-// re-rendered into events, so a decode that could not survive its own
-// serialization would corrupt the ambient-log/event pipeline.
-fn assert_stable(message: &ServerMessage) {
-    let once = serde_json::to_string(message).expect("re-render decoded ServerMessage");
-    let reparsed: ServerMessage =
-        serde_json::from_str(&once).expect("re-parse rendered ServerMessage");
-    let twice = serde_json::to_string(&reparsed).expect("re-render reparsed ServerMessage");
-    assert_eq!(twice, once, "ServerMessage render/re-parse not idempotent");
-}
 
 fuzz_target!(|data: &[u8]| {
     // Exercise the raw-byte deserialization path (includes serde_json's
     // own UTF-8 validation and error handling for invalid sequences).
     if let Ok(message) = serde_json::from_slice::<ServerMessage>(data) {
-        assert_stable(&message);
+        json_oracle::assert_render_stable(&message, "ServerMessage");
     }
 
     // Also exercise the str-based path for valid UTF-8 input, and pin that
     // both entry points classify identical text identically.
     if let Ok(text) = std::str::from_utf8(data) {
         if let Ok(message) = serde_json::from_str::<ServerMessage>(text) {
-            assert_stable(&message);
+            json_oracle::assert_render_stable(&message, "ServerMessage");
             let from_bytes = serde_json::from_slice::<ServerMessage>(data)
                 .expect("slice/str deserialization disagree on identical bytes");
             let rendered =
