@@ -422,7 +422,24 @@ jobs:
       - name: Install pinned Chromium automation
         run: |
           npm install --no-save --no-package-lock "playwright@${PLAYWRIGHT_VERSION}"
-          npx playwright install --with-deps chromium
+          # `--with-deps` runs `apt-get update` internally, and the runner
+          # image's third-party Google Chrome repo can be mid-publish (live:
+          # Packages.gz Hash Sum mismatch failed every browser cell for
+          # hours). The automation deps come only from Ubuntu's own repos,
+          # so drop the irrelevant source first; the retry covers any other
+          # third-party repo race.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list
+          for attempt in 1 2 3; do
+            if npx playwright install --with-deps chromium; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              printf 'playwright install failed after %d attempts\n' "${attempt}" >&2
+              exit 1
+            fi
+            printf 'playwright install attempt %d failed; retrying\n' "${attempt}" >&2
+            sleep 20
+          done
 
       - name: Download pinned Signal Fish server
         run: |
