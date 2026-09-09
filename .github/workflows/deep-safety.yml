@@ -73,7 +73,21 @@ jobs:
       - name: Install Rust nightly with Miri
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: miri
+          # cargo-miri would install rust-src lazily while preparing its
+          # source-built sysroot; declaring it here lets the mtime pin below
+          # run before that sysroot build instead of after it.
+          components: miri, rust-src
+
+      # cargo-miri builds its std sysroot from source and hashes every std
+      # source file's mtime into the sysroot cache check, so the fresh
+      # toolchain install every run invalidates the restored sysroot in the
+      # cache and forces a full rebuild. Pinning the sources to a fixed epoch
+      # keeps the restored sysroot fresh.
+      - name: Pin std source mtimes for build-std cache reuse
+        run: |
+          set -euo pipefail
+          find "$(rustc +nightly --print sysroot)/lib/rustlib/src/rust" \
+            -type f -exec touch -d '@0' {} +
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
@@ -114,6 +128,17 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+
+      # cargo fingerprints -Zbuild-std std sources by mtime; the fresh
+      # toolchain install every run stamps them newer than any restored
+      # artifact, forcing a full std + dependent rebuild despite the warm
+      # cache. Pinning the sources to a fixed epoch keeps restored artifacts
+      # fresh.
+      - name: Pin std source mtimes for build-std cache reuse
+        run: |
+          set -euo pipefail
+          find "$(rustc +nightly --print sysroot)/lib/rustlib/src/rust" \
+            -type f -exec touch -d '@0' {} +
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
