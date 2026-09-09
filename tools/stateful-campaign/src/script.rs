@@ -139,7 +139,7 @@ pub struct FrameMeta {
     pub bound_breaking: bool,
 }
 
-#[allow(clippy::large_enum_variant)] // scripts own their messages by design
+#[expect(clippy::large_enum_variant)] // scripts own their messages by design
 #[derive(Debug, Clone)]
 pub enum Step {
     /// Deliver a schema-valid `ServerMessage` text frame.

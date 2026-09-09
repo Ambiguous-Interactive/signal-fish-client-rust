@@ -3794,7 +3794,7 @@ mod tests {
 
         /// A mock that additionally records outbound binary frames verbatim
         /// instead of refusing them.
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity)]
         fn new_binary_recording(
             incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
         ) -> (
@@ -3809,7 +3809,6 @@ mod tests {
             (transport, sent, sent_binary, closed)
         }
 
-        #[allow(clippy::type_complexity)]
         fn new_shared(
             incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
         ) -> (
@@ -3850,7 +3849,7 @@ mod tests {
 
         /// A mock whose outbound sends block on a semaphore after the given
         /// number of initial permits are consumed.
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity)]
         fn new_send_gated(
             incoming: Vec<Option<std::result::Result<String, SignalFishError>>>,
             initial_permits: usize,
@@ -5587,7 +5586,7 @@ mod tests {
     }
 
     impl GatedSendTransport {
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity)]
         fn new(
             initial_permits: usize,
         ) -> (

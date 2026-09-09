@@ -349,7 +349,7 @@ fn repro(seed: u64, index: usize, policy: ProtocolViolationPolicy, prefix: usize
 /// The scoped `exit` allowance is load-bearing: a hung library call can never
 /// reach a cooperative stop flag, and a CI lane that hangs forever is worse
 /// than one that fails loudly with the stall label and frame count.
-#[allow(clippy::exit)]
+#[expect(clippy::exit)]
 fn spawn_watchdog(budget_secs: u64) {
     std::thread::spawn(move || {
         let started = Instant::now();

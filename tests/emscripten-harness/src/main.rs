@@ -1094,7 +1094,7 @@ enum Scenario {
 // by the driver's `ccall`, valid for this call); clippy cannot see that
 // cross-language guarantee.
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[expect(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn sfh_begin(url: *const c_char, mode: i32) -> i32 {
     // Fresh attribution: an error latched by dropping the previous scenario's
     // transport must fail the next scheduling step, not the previous scenario.

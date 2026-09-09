@@ -234,7 +234,7 @@ fn require_field<T>(slot: Option<T>, field: &str, version: &str) -> Result<T, St
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing)]
+#[expect(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

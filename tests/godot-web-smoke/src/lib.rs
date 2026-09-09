@@ -934,7 +934,7 @@ impl INode for SignalFishSmoke {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn poll_measured(
     client: &mut Option<Client>,
     poll_timing: &mut PollTimingWindow,
@@ -1241,7 +1241,7 @@ mod tests {
 // Emscripten WebSocket imports into an otherwise valid Godot GDExtension.
 // Official templates cannot resolve those optional JavaScript-library symbols.
 #[cfg(feature = "raw-emscripten-proof")]
-#[allow(deprecated)]
+#[expect(deprecated)]
 fn exercise_raw_emscripten_import() {
     let _ = signal_fish_client::EmscriptenWebSocketTransport::connect(SERVER_URL);
 }

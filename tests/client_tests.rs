@@ -49,7 +49,6 @@ use std::time::Duration;
 
 /// Start a client with the given scripted server responses. The first item
 /// is typically `authenticated_json()` so the auth handshake succeeds.
-#[allow(clippy::type_complexity)]
 async fn start_client(incoming: Vec<Option<Result<String, SignalFishError>>>) -> StartedClient {
     start_client_with_config(incoming, SignalFishConfig::new("mb_test_integration")).await
 }
