@@ -757,17 +757,36 @@ mod godot_issue_61_policy {
     fn wasm_lanes_share_one_pinned_emsdk_version() {
         // Both wasm lanes link against Godot 4.5's emsdk-sensitive export
         // toolchain; a one-sided bump would silently split the toolchains.
+        // Each workflow declares its pin once (env `EMSDK_VERSION`) and the
+        // setup-emsdk step references it.
         let godot_web = read_project_file(".github/workflows/godot-web.yml");
         let wasm = read_project_file(".github/workflows/wasm.yml");
         let godot_version = godot_web
             .lines()
             .find_map(|line| line.trim().strip_prefix("EMSDK_VERSION: \""))
             .and_then(|rest| rest.split('"').next())
-            .expect("godot-web.yml must pin EMSDK_VERSION");
-        assert!(
-            wasm.contains(&format!("version: {godot_version}")),
-            "wasm.yml must pin the same emsdk version as godot-web.yml ({godot_version})"
-        );
+            .expect("godot-web.yml must pin EMSDK_VERSION")
+            .to_owned();
+        for (name, workflow) in [("godot-web.yml", godot_web), ("wasm.yml", wasm)] {
+            let shared_pin = format!("EMSDK_VERSION: \"{godot_version}\"");
+            assert!(
+                workflow.lines().any(|line| line.trim() == shared_pin),
+                "{name} must declare the shared emsdk pin EMSDK_VERSION: \"{godot_version}\" \
+                 so neither lane can silently split the toolchain"
+            );
+            assert!(
+                workflow.contains("version: ${{ env.EMSDK_VERSION }}"),
+                "{name} must install emsdk from the pinned EMSDK_VERSION env"
+            );
+            assert!(
+                workflow.lines().any(|line| {
+                    line.trim() == "cache-key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}-${{ runner.arch }}"
+                }),
+                "{name} must share the exact version-pinned emsdk cache key \
+                 with the other wasm lane; a divergent key silently un-shares \
+                 the cache and lets either lane cold-download"
+            );
+        }
     }
 
     #[test]
@@ -1636,6 +1655,68 @@ mod workflow_cache_and_download_hardening {
                     && line.contains("${{ env.IPROUTE2_VERSION }}")),
             "the netem tc cache key must include the pinned IPROUTE2_VERSION"
         );
+        assert!(
+            godot_web
+                .lines()
+                .any(|line| line.contains("key: godot-editor-")
+                    && line.contains("${{ env.GODOT_VERSION }}")),
+            "the Godot editor/templates cache key must include the pinned \
+             GODOT_VERSION so a bump cannot keep restoring the old editor"
+        );
+    }
+
+    /// The 15 e2e cells compile byte-identical inputs inside one job, so
+    /// rust-cache already shares a job-id-keyed restore scope across the
+    /// matrix; saving from every cell would only upload near-identical
+    /// archives. The rust-cache step inside each such shared-scope job must
+    /// therefore save from the first cell only. (The clippy/test matrices
+    /// are deliberately excluded: their cells build different feature sets
+    /// into one shared scope, so first-cell-only saving would drop the
+    /// other cells' artifacts. Portability qualifies because a pruned cache
+    /// only ever costs rebuild time there — cargo fingerprints decide what
+    /// rebuilds, never what passes.)
+    #[test]
+    fn matrix_shared_caches_save_from_one_cell_only() {
+        for (name, path, job_header) in [
+            (
+                "the Server compatibility E2E matrix",
+                ".github/workflows/ci.yml",
+                "  server-mesh-e2e:",
+            ),
+            (
+                "the Portability check matrix",
+                ".github/workflows/portability.yml",
+                "  check:",
+            ),
+        ] {
+            let workflow = read_project_file(path);
+            let lines: Vec<&str> = workflow.lines().collect();
+            let job_start = lines
+                .iter()
+                .position(|line| *line == job_header)
+                .unwrap_or_else(|| panic!("{name}: could not locate its matrix job block"));
+            // Cut the block at the next top-level job header (a line indented
+            // exactly two spaces followed by a non-space character) so a
+            // later job's rust-cache step cannot satisfy this pin.
+            let job_end = lines[job_start + 1..]
+                .iter()
+                .position(|line| {
+                    line.starts_with("  ") && !line.starts_with("   ") && !line.trim().is_empty()
+                })
+                .map(|offset| job_start + 1 + offset)
+                .unwrap_or(lines.len());
+            let job_block = lines[job_start..job_end].join("\n");
+            assert!(
+                job_block.contains("uses: Swatinem/rust-cache@"),
+                "{name}: its matrix job must cache Cargo artifacts with rust-cache"
+            );
+            assert!(
+                job_block.contains("save-if: ${{ strategy.job-index == 0 }}"),
+                "{name}: its rust-cache step must save from the first cell \
+                 only (save-if: ${{{{ strategy.job-index == 0 }}}}); per-cell \
+                 saves race near-identical uploads"
+            );
+        }
     }
 
     /// The #245 hardening: curl exit 35 (TLS handshake) is non-transient to

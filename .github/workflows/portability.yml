@@ -3,10 +3,13 @@
 # Weekly scheduled `cargo check` lanes for the desktop targets that round 51
 # verified by hand (Windows MSVC and macOS ARM64), so a Windows-only or
 # macOS-only compile break surfaces within seven days instead of at the next
-# cross-platform session audit. Scheduled only, by design: per-PR Windows or
-# macOS runners would contradict the measured CI-cost policy (issue #225) for
-# a regression class that has never failed. Promotion to a required check
-# additionally needs the ruleset plumbing in `.github/required-checks.json`.
+# cross-platform session audit. The lanes also run on manifest-touching PRs
+# (hosted ubuntu cross-checks only — per-PR Windows or macOS runners would
+# contradict the measured CI-cost policy (issue #225)). A rust-cache step
+# keeps each run's dependency builds warm within its branch scope (GitHub
+# isolates PR caches from scheduled main runs). Promotion to a required
+# check additionally needs the ruleset plumbing in
+# `.github/required-checks.json`.
 #
 # The opt-in `tls` feature's `ring` needs the target C toolchain, so lanes
 # run the max NON-crypto feature set and leave `tls` to upstream ring
@@ -74,6 +77,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2.9.2
+        with:
+          # All four cells share the job-id-keyed restore scope, but only
+          # the first cell (windows-msvc × workspace default) saves, so the
+          # warm archive carries the shared registry plus that cell's
+          # dependency artifacts; every other cell — including the other
+          # target — rebuilds its own feature/target-specific deps. That is
+          # still strictly faster than today's fully cold builds, and a
+          # cold or pruned cache only costs time: cargo fingerprints decide
+          # what rebuilds, never what passes.
+          save-if: ${{ strategy.job-index == 0 }}
 
       - name: Check workspace compiles for target
         run: cargo check ${{ matrix.cell.flags }} --all-targets --locked --target ${{ matrix.target }}

@@ -4,7 +4,9 @@
 # the report as an artifact for trend tracking.
 #
 # Runs on every push to main and every PR for continuous tracking. Scheduled
-# weekdays at 03:00 UTC — staggered before deep-safety at 04:00.
+# Mondays at 03:00 UTC — staggered before the deep-safety slot; the gate
+# itself already measures every PR and push, so the scheduled run is trend
+# telemetry only and does not need a daily cadence.
 
 name: Coverage
 
@@ -13,8 +15,8 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekdays at 03:00 UTC — staggered before deep-safety at 04:00
-    - cron: "0 3 * * 1-5"
+    # Mondays at 03:00 UTC — staggered before deep-safety's 04:00 slot
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:

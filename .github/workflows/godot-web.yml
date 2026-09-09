@@ -67,6 +67,10 @@ jobs:
         uses: emscripten-core/setup-emsdk@v16
         with:
           version: ${{ env.EMSDK_VERSION }}
+          # One emsdk cache shared with wasm.yml (both pin 3.1.74): the
+          # default cache key is per-workflow, so either workflow could
+          # cold-download after its own scope was evicted.
+          cache-key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}-${{ runner.arch }}
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
@@ -82,7 +86,21 @@ jobs:
             tests/godot-web-smoke/target
             tests/godot-compat-min/target
 
+      - name: Restore pinned Godot editor and templates
+        id: godot-cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            .godot
+            ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.stable
+          key: godot-editor-${{ runner.os }}-${{ runner.arch }}-${{ env.GODOT_VERSION }}-stable
+        # Trust boundary: identical to the netem tc cache — the restored
+        # editor and export templates are SHA512-SUMS-verified artifacts of a
+        # same-repo branch run (fork PRs cannot write caches). The ~1 GB
+        # download and its checksum verification apply only on cache misses.
+
       - name: Install official Godot editor and templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           release="${GODOT_VERSION}-stable"

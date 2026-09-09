@@ -251,6 +251,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
+        with:
+          # All 15 cells compile byte-identical inputs and already share the
+          # job-id-keyed restore scope; saving from every cell would upload
+          # 15 near-identical archives. Only the first cell saves.
+          save-if: ${{ strategy.job-index == 0 }}
       - name: Download pinned Signal Fish server
         run: |
           set -euo pipefail
