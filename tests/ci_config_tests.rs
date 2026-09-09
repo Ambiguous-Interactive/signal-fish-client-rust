@@ -4541,7 +4541,8 @@ mod safety_analysis_policy {
         }
 
         // Semantic-oracle strength pins: crash-only fuzz targets would let
-        // silent mis-encodes and state corruption pass 100% of fuzz minutes.
+        // silent encoding corruption and state damage pass 100% of fuzz
+        // minutes.
         assert!(
             binary_target.contains("decode/encode identity broken"),
             "fuzz_binary_game_data must pin the decode/encode fixpoint"
