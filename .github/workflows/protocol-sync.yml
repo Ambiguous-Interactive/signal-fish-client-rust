@@ -58,7 +58,8 @@ jobs:
           base="https://raw.githubusercontent.com/Ambiguous-Interactive/signal-fish-server/main/.llm/code-samples/protocol"
           drift=0
           for f in v2-client-messages v2-server-messages v3-client-messages v3-server-messages; do
-            curl -fsS "$base/$f.jsonl" -o "/tmp/$f.jsonl"
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              "$base/$f.jsonl" -o "/tmp/$f.jsonl"
             if ! diff -q "tests/wire-samples/$f.jsonl" "/tmp/$f.jsonl" >/dev/null 2>&1; then
               echo "::error::wire-sample drift detected in $f.jsonl — upstream changed"
               diff "tests/wire-samples/$f.jsonl" "/tmp/$f.jsonl" || true
@@ -76,7 +77,8 @@ jobs:
         run: |
           set -euo pipefail
           url="https://raw.githubusercontent.com/Ambiguous-Interactive/signal-fish-server/main/spec/signal-fish-protocol.asyncapi.yaml"
-          curl -fsS "$url" -o /tmp/signal-fish-protocol.asyncapi.yaml
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            "$url" -o /tmp/signal-fish-protocol.asyncapi.yaml
           if ! diff -q tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml >/dev/null 2>&1; then
             echo "::error::server AsyncAPI spec drift detected — upstream changed (new error codes or messages?)"
             diff tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.yaml || true

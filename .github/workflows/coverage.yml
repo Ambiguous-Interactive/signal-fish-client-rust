@@ -52,13 +52,17 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Regenerating here would rewrite the tracked lock from the live
+      # registry, so coverage could measure a dependency graph no other lane
+      # pinned. Verify the tracked lock instead, failing closed on
+      # manifest/lock drift.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Run tests with coverage instrumentation
         # The performance harness is executable measurement infrastructure;
         # its own required job executes every cell and planted control.
-        run: cargo llvm-cov --workspace --all-features --exclude signal-fish-client-perf-lab --no-report
+        run: cargo llvm-cov --locked --workspace --all-features --exclude signal-fish-client-perf-lab --no-report
 
       - name: Generate LCOV report
         run: cargo llvm-cov report --ignore-filename-regex 'tools/perf-lab/' --lcov --output-path lcov.info

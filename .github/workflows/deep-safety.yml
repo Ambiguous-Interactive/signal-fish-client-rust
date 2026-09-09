@@ -78,11 +78,15 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Regenerating here would rewrite the tracked lock from the live
+      # registry, so the sanitizer/mutation lanes could measure a dependency
+      # graph no other lane pinned. Verify the tracked lock instead, failing
+      # closed on manifest/lock drift.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Run Miri on protocol tests
-        run: cargo +nightly miri test --test protocol_tests --all-features
+        run: cargo +nightly miri test --locked --test protocol_tests --all-features
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
 
@@ -114,8 +118,12 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Regenerating here would rewrite the tracked lock from the live
+      # registry, so the sanitizer/mutation lanes could measure a dependency
+      # graph no other lane pinned. Verify the tracked lock instead, failing
+      # closed on manifest/lock drift.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Run workspace tests under ThreadSanitizer
         env:
@@ -127,7 +135,7 @@ jobs:
             printf 'Unable to determine the nightly Rust host target.\n' >&2
             exit 1
           fi
-          cargo +nightly test -Zbuild-std --target "$host" --workspace --all-features --tests
+          cargo +nightly test --locked -Zbuild-std --target "$host" --workspace --all-features --tests
 
   # ──────────────────────────────────────────────────────────────
   # Fuzz — smoke test protocol and token-binding parsers with random input
@@ -229,8 +237,12 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Regenerating here would rewrite the tracked lock from the live
+      # registry, so the sanitizer/mutation lanes could measure a dependency
+      # graph no other lane pinned. Verify the tracked lock instead, failing
+      # closed on manifest/lock drift.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-mutants
         uses: taiki-e/install-action@v2.87.5

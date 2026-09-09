@@ -492,6 +492,8 @@ name = "signal-fish-client-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "rmp-serde",
+ "serde",
  "serde_json",
  "signal-fish-client",
 ]

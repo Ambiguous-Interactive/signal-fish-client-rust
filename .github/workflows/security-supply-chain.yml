@@ -57,8 +57,10 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # Audit/deny must scan the tracked, release-pinned dependency graph,
+      # not a live re-resolution of it.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2.87.5
@@ -111,8 +113,10 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2.9.2
 
-      - name: Generate lockfile
-        run: bash scripts/cargo-retry.sh generate-lockfile
+      # SBOMs must describe the tracked, release-pinned dependency graph,
+      # not a live re-resolution of it.
+      - name: Verify workspace lockfile is current
+        run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-cyclonedx
         uses: taiki-e/install-action@v2.87.5

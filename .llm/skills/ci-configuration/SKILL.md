@@ -274,14 +274,14 @@ A common MSRV breakage pattern: a transitive dependency publishes a new version 
 - `getrandom 0.4.1` requires `edition = "2024"` (Rust 1.85.0+)
 - The crate itself uses `edition = "2021"` but cannot build on older Rust
 
-**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Restore the Cargo cache before generating the ephemeral lockfile, then use `scripts/cargo-retry.sh generate-lockfile` + `--locked` in CI for reproducible MSRV testing:
+**Fix:** Bump the MSRV to the minimum version that can compile all transitive dependencies. Never regenerate `Cargo.lock` in CI (a live re-resolution defangs every downstream `--locked` and lets one lane measure a graph no other lane pinned). Restore the Cargo cache, verify the tracked lock, then run `--locked` builds/tests:
 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
   with:
     toolchain: 1.87.0
 - uses: Swatinem/rust-cache@v2.9.2
-- run: bash scripts/cargo-retry.sh generate-lockfile
+- run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 - run: cargo build --locked --all-features && cargo test --locked --all-features
 ```
 
@@ -359,5 +359,5 @@ the parser gap.
 |---|---|
 | `scripts/validate.sh` | Pre-flight: cargo fmt/clippy/test + `.lychee.toml` validation + markdownlint |
 | `scripts/ci-validate.sh` | Lightweight local CI (15 checks): fmt, clippy, test, typos, TOML/JSON, shell portability, devcontainer policy/Dockerfile |
-| `scripts/check-all.sh` | Full 23-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
+| `scripts/check-all.sh` | Full 24-phase CI parity. `--quick` for mandatory baseline (phases 1-4) |
 | `scripts/check-test-io-unwrap.sh` | Scans test `.rs` for bare `.unwrap()` on I/O ops (Phase 20 / Check 13) |
