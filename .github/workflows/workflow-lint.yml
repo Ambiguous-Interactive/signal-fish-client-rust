@@ -50,8 +50,11 @@ jobs:
           curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
           printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${asset}" | sha256sum --check
           tar -xzf "${asset}" actionlint
+          mkdir -p "${HOME}/.local/bin"
           install -m 0755 actionlint "${HOME}/.local/bin/actionlint"
-          "${HOME}/.local/bin/actionlint" --version | grep -Fx "${ACTIONLINT_VERSION}"
+          # The installed binary must self-report the pinned version
+          # (substring match: wrong-version installs cannot contain it).
+          "${HOME}/.local/bin/actionlint" --version | grep -F "${ACTIONLINT_VERSION}"
 
       - name: Run actionlint
         run: '"${HOME}/.local/bin/actionlint" -color'
