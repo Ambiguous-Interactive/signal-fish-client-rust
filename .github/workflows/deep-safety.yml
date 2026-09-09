@@ -73,7 +73,10 @@ jobs:
       - name: Install Rust nightly with Miri
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: miri
+          # cargo-miri would install rust-src lazily while preparing its
+          # source-built sysroot; declaring it here lets the mtime pin below
+          # run before that sysroot build instead of after it.
+          components: miri, rust-src
 
       # cargo-miri builds its std sysroot from source and hashes every std
       # source file's mtime into the sysroot cache check, so the fresh
