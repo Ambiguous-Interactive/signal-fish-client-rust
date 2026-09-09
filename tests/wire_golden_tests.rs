@@ -408,9 +408,12 @@ fn spectator_server_wire_fixtures_conform() {
 /// (`tests/server-spec/signal-fish-protocol.asyncapi.yaml`, checksum-pinned):
 /// `AuthorityChanged` (peer/you/`null`-vacated authority), `RelayStats`
 /// (cumulative counters), `PlayerReconnected` (v2 epoch-less and v3 `epoch`
-/// faces), `PlayerLeft` (v3 terminal-watermark face), `RoomJoinFailed` (with
-/// and without the schema-optional `error_code`), and the spectator
-/// fan-out-slimming v3 faces (`current_spectators: []` + `spectator_count`).
+/// faces), `PlayerLeft` (v3 terminal-watermark face and the bare v2
+/// top-level face), `RoomJoinFailed` (with and without the schema-optional
+/// `error_code`), the spectator fan-out-slimming v3 faces
+/// (`current_spectators: []` + `spectator_count`), the granted
+/// `AuthorityResponse` face (`reason` schema-required, nullable), and the
+/// `GoingAway` advisory with the optional `retry_after_secs` omitted.
 /// Every line must deserialize into `ServerMessage` and round-trip to a
 /// semantically identical JSON object, exactly like the complete v3 samples.
 #[test]
@@ -427,8 +430,151 @@ fn authority_relay_reconnect_server_wire_fixtures_conform() {
 {"type": "RoomJoinFailed", "data": {"reason": "room not found"}}
 {"type": "NewSpectatorJoined", "data": {"spectator": {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}, "current_spectators": [], "reason": "joined", "spectator_count": 3}}
 {"type": "SpectatorDisconnected", "data": {"spectator_id": "00000000-0000-0000-0000-0000000000c2", "reason": "disconnected", "current_spectators": [], "spectator_count": 0}}
+{"type": "PlayerLeft", "data": {"player_id": "00000000-0000-0000-0000-00000000000a"}}
+{"type": "AuthorityResponse", "data": {"granted": true, "reason": null}}
+{"type": "GoingAway", "data": {"deadline_ms": 1730000000000}}
 "#;
     assert_conformance::<ServerMessage>("authority-relay-reconnect-fixtures", SERVER_MESSAGES);
+}
+
+/// Hand-built `GameDataBinary` JSON wire fixtures.
+///
+/// The vendored `.jsonl` corpus carries **no** `"type": "GameDataBinary"`
+/// line: the AsyncAPI authority models the message's transport face as the
+/// raw MessagePack envelope (`contentType: application/msgpack`), so no
+/// sample exercises the typed variant's serde shape. The only prior
+/// coverage was self-referential `serde_bytes` round-trips — a payload
+/// face, encoding-token, or optional-`seq`/`epoch` drift passed the entire
+/// suite. Both faces the authority's envelope schemas define are pinned: the
+/// v3 face with delivery stamps and the minimal (pre-v3, stamp-less) face.
+/// (The authority's transport face for this message is msgpack-only; these
+/// lines pin the typed variant's JSON serde face, whose field vocabulary
+/// the schemas prescribe.)
+#[test]
+fn binary_game_data_server_wire_fixtures_conform() {
+    const GAME_DATA_BINARY_SERVER_MESSAGES: &str = r#"
+{"type": "GameDataBinary", "data": {"from_player": "00000000-0000-0000-0000-00000000000a", "encoding": "json", "payload": [104, 105], "seq": 42, "epoch": 1}}
+{"type": "GameDataBinary", "data": {"from_player": "00000000-0000-0000-0000-00000000000a", "encoding": "message_pack", "payload": [104, 105]}}
+"#;
+    assert_conformance::<ServerMessage>(
+        "binary-game-data-fixtures",
+        GAME_DATA_BINARY_SERVER_MESSAGES,
+    );
+}
+
+/// The v2-dialect client-message floor must parse from hand-built wire
+/// lines.
+///
+/// The vendored v2 client samples are illustrative placeholders that the
+/// corpus tests only check for JSON validity (`assert_structural`), so
+/// `AuthorityRequest`, `PlayerReady`, `ProvideConnectionInfo`, and `Ping`
+/// had no wire-shaped deserialize coverage — only struct round-trips built
+/// from the types under test. These lines are the authority's complete v2
+/// shapes: the no-payload schemas (`Ping`, `PlayerReady`) require only the
+/// `type` tag (our serializer likewise omits `data`; the tolerant
+/// `"data": null` input face is a serde detail, not the pinned wire form),
+/// and `ProvideConnectionInfo` wraps an internally-tagged `direct` info
+/// object.
+#[test]
+fn v2_client_message_wire_fixtures_conform() {
+    const V2_CLIENT_MESSAGES: &str = r#"
+{"type": "AuthorityRequest", "data": {"become_authority": true}}
+{"type": "PlayerReady"}
+{"type": "Ping"}
+{"type": "ProvideConnectionInfo", "data": {"connection_info": {"type": "direct", "host": "127.0.0.1", "port": 7777}}}
+"#;
+    assert_conformance::<ClientMessage>("v2-client-fixtures", V2_CLIENT_MESSAGES);
+}
+
+/// The binary game-data envelopes must decode from hand-assembled bytes.
+///
+/// The fuzz seed corpus and every prior test built envelopes with this
+/// repository's own encoder, so a decoder/encoder co-drift (both faces
+/// moving together) was invisible. These goldens are assembled by hand from
+/// the checksum-pinned authority's envelope schemas
+/// (`V2BinaryGameDataEnvelope` / `V3BinaryGameDataEnvelope`): fixmap
+/// headers, `bin8` UUID/payload fields, the string encoding tokens, and
+/// minimal-width integer stamps. The third face deliberately uses
+/// non-minimal encodings (`map16`, `bin16`, `uint32`, `uint16`) to pin the
+/// decoder's documented "type-level shape, not minimal-length" tolerance.
+#[test]
+fn binary_game_data_envelopes_decode_from_hand_assembled_bytes() {
+    use signal_fish_client::protocol::{
+        decode_v2_binary_game_data, decode_v3_binary_game_data, GameDataEncoding,
+    };
+
+    fn from_hex(segments: &[&str]) -> Vec<u8> {
+        segments
+            .concat()
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                assert_eq!(pair.len(), 2, "golden hex must have paired digits");
+                let high = (pair[0] as char).to_digit(16).expect("hex digit");
+                let low = (pair[1] as char).to_digit(16).expect("hex digit");
+                (high * 16 + low) as u8
+            })
+            .collect()
+    }
+
+    let player = "00000000-0000-0000-0000-00000000000a";
+
+    // fixmap(3) { "from_player": bin8(uuid), "encoding": "message_pack",
+    //             "payload": bin8("hi") }
+    let v2 = from_hex(&[
+        "83",                                   // fixmap(3)
+        "AB66726F6D5F706C61796572",             // "from_player"
+        "C4100000000000000000000000000000000A", // bin8 uuid
+        "A8656E636F64696E67",                   // "encoding"
+        "AC6D6573736167655F7061636B",           // "message_pack"
+        "A77061796C6F6164",                     // "payload"
+        "C4026869",                             // bin8("hi")
+    ]);
+    let v2_frame = decode_v2_binary_game_data(&v2).expect("hand-assembled v2 envelope must decode");
+    assert_eq!(v2_frame.from_player.to_string(), player);
+    assert_eq!(v2_frame.encoding, GameDataEncoding::MessagePack);
+    assert_eq!(v2_frame.payload, b"hi");
+
+    // fixmap(5) { "from_player": bin8(uuid), "encoding": "json",
+    //             "payload": bin8("hi"), "seq": 42, "epoch": 1 }
+    let v3 = from_hex(&[
+        "85",                                   // fixmap(5)
+        "AB66726F6D5F706C61796572",             // "from_player"
+        "C4100000000000000000000000000000000A", // bin8 uuid
+        "A8656E636F64696E67",                   // "encoding"
+        "A46A736F6E",                           // "json"
+        "A77061796C6F6164",                     // "payload"
+        "C4026869",                             // bin8("hi")
+        "A3736571",                             // "seq"
+        "2A",                                   // 42
+        "A565706F6368",                         // "epoch"
+        "01",                                   // 1
+    ]);
+    let v3_frame = decode_v3_binary_game_data(&v3).expect("hand-assembled v3 envelope must decode");
+    assert_eq!(v3_frame.from_player.to_string(), player);
+    assert_eq!(v3_frame.encoding, GameDataEncoding::Json);
+    assert_eq!(v3_frame.payload, b"hi");
+    assert_eq!(v3_frame.seq, 42);
+    assert_eq!(v3_frame.epoch, 1);
+
+    // The same v3 envelope in deliberately non-minimal widths:
+    // map16(5), bin16 UUID, uint32 seq, uint16 epoch.
+    let v3_wide = from_hex(&[
+        "DE0005",                                 // map16(5)
+        "AB66726F6D5F706C61796572",               // "from_player"
+        "C500100000000000000000000000000000000A", // bin16 uuid
+        "A8656E636F64696E67",                     // "encoding"
+        "A46A736F6E",                             // "json"
+        "A77061796C6F6164",                       // "payload"
+        "C4026869",                               // bin8("hi")
+        "A3736571",                               // "seq"
+        "CE0000002A",                             // uint32 42
+        "A565706F6368",                           // "epoch"
+        "CD0001",                                 // uint16 1
+    ]);
+    let wide_frame =
+        decode_v3_binary_game_data(&v3_wide).expect("non-minimal-width v3 envelope must decode");
+    assert_eq!(wide_frame, v3_frame);
 }
 
 /// The `fuzz_binary_game_data` seed corpus must stay decodable.

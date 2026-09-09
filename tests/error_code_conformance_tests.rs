@@ -256,6 +256,35 @@ fn compatibility_only_error_codes_match_the_public_marker() {
     assert_eq!(public, expected);
 }
 
+/// The compatibility-only tokens must also parse back from their literals.
+///
+/// These tokens are absent from the vendored spec, so the spec-scan
+/// deserialize test never feeds them; the marker test above pins only the
+/// serialize direction. Older deployments can still emit them, so the
+/// retained contract is bidirectional: each literal must deserialize into
+/// exactly its documented variant (a serde rename drift on the parse side
+/// would strand an old server's `Error` frame undecodable).
+#[test]
+fn compatibility_only_error_codes_parse_from_their_wire_tokens() {
+    let pairs: &[(&str, ErrorCode)] = &[
+        ("INVALID_TOKEN", ErrorCode::InvalidToken),
+        ("AUTHENTICATION_REQUIRED", ErrorCode::AuthenticationRequired),
+        ("APP_ID_EXPIRED", ErrorCode::AppIdExpired),
+        ("APP_ID_REVOKED", ErrorCode::AppIdRevoked),
+        ("APP_ID_SUSPENDED", ErrorCode::AppIdSuspended),
+        ("SERVICE_UNAVAILABLE", ErrorCode::ServiceUnavailable),
+    ];
+    assert_eq!(pairs.len(), CLIENT_ONLY_ALLOWLIST.len());
+    for (token, expected) in pairs {
+        let parsed: ErrorCode =
+            serde_json::from_str(&format!("\"{token}\"")).unwrap_or_else(|error| {
+                panic!("compatibility token {token} must deserialize: {error}")
+            });
+        assert_eq!(&parsed, expected, "{token} must parse into its variant");
+        assert_eq!(&wire_token(&parsed), token);
+    }
+}
+
 #[test]
 fn every_server_error_code_token_deserializes_into_a_client_variant() {
     let tokens = extract_spec_error_tokens();
