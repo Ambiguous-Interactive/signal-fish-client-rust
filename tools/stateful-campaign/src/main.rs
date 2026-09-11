@@ -15,7 +15,7 @@ use signal_fish_client_stateful_campaign::run::{
     render_prefix, run_prefix_verbose, run_script, set_oracle_neutered, ReducedFailure,
     CURRENT_LABEL, DELIVERED, HEARTBEAT,
 };
-use signal_fish_client_stateful_campaign::script::Script;
+use signal_fish_client_stateful_campaign::script::{self, Script};
 use signal_fish_client_stateful_campaign::transport::lock;
 use signal_fish_client_stateful_campaign::{canary, gen, soak};
 
@@ -242,40 +242,7 @@ fn print_summary(started: Instant, stats: &Stats, failure_report: &str) {
         println!("\nzero findings.");
     }
     let delivered = lock(&DELIVERED);
-    let all_variants = [
-        "Authenticated",
-        "ProtocolInfo",
-        "AuthenticationError",
-        "RoomJoined",
-        "RoomJoinFailed",
-        "RoomLeft",
-        "PlayerJoined",
-        "PlayerLeft",
-        "GameData",
-        "GameDataBinary",
-        "AuthorityChanged",
-        "AuthorityResponse",
-        "LobbyStateChanged",
-        "GameStarting",
-        "Pong",
-        "Reconnected",
-        "ReconnectionFailed",
-        "PlayerReconnected",
-        "SpectatorJoined",
-        "SpectatorJoinFailed",
-        "SpectatorLeft",
-        "RoomOperationResult",
-        "NewSpectatorJoined",
-        "SpectatorDisconnected",
-        "Error",
-        "Signal",
-        "NewPeer",
-        "SessionPlan",
-        "PeerTransportStatus",
-        "RelayStats",
-        "GoingAway",
-        "DeliveryReport",
-    ];
+    let all_variants = script::ALL_VARIANT_NAMES;
     let never: Vec<&str> = all_variants
         .iter()
         .copied()
@@ -292,21 +259,14 @@ fn print_summary(started: Instant, stats: &Stats, failure_report: &str) {
     } else {
         println!("NEVER delivered: {never:?}");
     }
-    let echo_kinds = [
-        "RoomOperationResult::RoomJoined",
-        "RoomOperationResult::RoomJoinFailed",
-        "RoomOperationResult::RoomLeft",
-        "RoomOperationResult::Reconnected",
-        "RoomOperationResult::ReconnectionFailed",
-        "RoomOperationResult::SpectatorJoined",
-        "RoomOperationResult::SpectatorJoinFailed",
-        "RoomOperationResult::SpectatorLeft",
-        "RoomOperationResult::OperationFailed",
-    ];
-    let missing_echo: Vec<String> = echo_kinds
+    let echo_labels: Vec<String> = script::EchoKind::ALL
         .iter()
-        .map(|kind| (*kind).to_string())
+        .map(|kind| format!("RoomOperationResult::{}", kind.name()))
+        .collect();
+    let missing_echo: Vec<String> = echo_labels
+        .iter()
         .filter(|kind| !delivered.contains(kind.as_str()))
+        .cloned()
         .collect();
     if missing_echo.is_empty() {
         println!("every RoomOperationResult sub-variant was delivered at least once.");

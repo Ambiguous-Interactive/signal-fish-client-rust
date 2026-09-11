@@ -1758,6 +1758,9 @@ fn execute_cmd(
         Cmd::JoinRoomMax(max) => client.join_room(
             JoinRoomParams::new("hostile-game", "hostile-player").with_max_players(*max),
         ),
+        Cmd::JoinRoomPassword(pw) => client.join_room(
+            JoinRoomParams::new("hostile-game", "hostile-player").with_password(pw.clone()),
+        ),
         Cmd::LeaveRoom => client.leave_room(),
         Cmd::SendGameData(v) => client.send_game_data(v.clone()),
         Cmd::SendGameDataLatest(k) => client.send_game_data_with_delivery(
@@ -1782,6 +1785,12 @@ fn execute_cmd(
         Cmd::JoinAsSpectator => {
             client.join_as_spectator("hostile-game".into(), "R1".into(), "spec".into())
         }
+        Cmd::JoinAsSpectatorPassword(pw) => client.join_as_spectator_with_password(
+            "hostile-game".into(),
+            "R1".into(),
+            "spec".into(),
+            pw.clone(),
+        ),
         Cmd::LeaveSpectator => client.leave_spectator(),
         Cmd::Ping => client.ping(),
         Cmd::SendSignal => client.send_signal(
@@ -1901,6 +1910,27 @@ fn build_echo_message(
         EchoKind::OperationFailed => RoomOperationResult::OperationFailed {
             reason: "echo-op-failed".into(),
             error_code: Some(signal_fish_client::ErrorCode::InvalidInput),
+        },
+        // Authority-moderation results (server issue #525 tier). The SDK
+        // never issues these operations, so every delivery is unsolicited by
+        // construction and must classify as a lifecycle violation.
+        EchoKind::PlayerKicked => RoomOperationResult::PlayerKicked {
+            player_id: PlayerId::from_u128(0x4000),
+        },
+        EchoKind::RoomCodeRegenerated => RoomOperationResult::RoomCodeRegenerated {
+            room_code: "ECHO2".into(),
+        },
+        EchoKind::RoomAccessUpdated => RoomOperationResult::RoomAccessUpdated {
+            requires_password: true,
+        },
+        EchoKind::PlayerBanned => RoomOperationResult::PlayerBanned {
+            player_id: PlayerId::from_u128(0x4000),
+        },
+        EchoKind::PlayerUnbanned => RoomOperationResult::PlayerUnbanned {
+            player_id: PlayerId::from_u128(0x4000),
+        },
+        EchoKind::AuthorityTransferred => RoomOperationResult::AuthorityTransferred {
+            player_id: PlayerId::from_u128(0x2000),
         },
     };
     (
@@ -2069,6 +2099,16 @@ pub(crate) fn run_prefix(
                         }
                         EchoKind::SpectatorLeaveOk => Some(FenceKind::LeaveSpectator),
                         EchoKind::OperationFailed => state.oracle.fence,
+                        // Unsolicited moderation results never match a fence,
+                        // so this arm is unreachable by construction (the
+                        // enclosing `kind_matched_fence` is false) — listed
+                        // for exhaustiveness.
+                        EchoKind::PlayerKicked
+                        | EchoKind::RoomCodeRegenerated
+                        | EchoKind::RoomAccessUpdated
+                        | EchoKind::PlayerBanned
+                        | EchoKind::PlayerUnbanned
+                        | EchoKind::AuthorityTransferred => None,
                     }
                 } else {
                     None

@@ -23,6 +23,17 @@ pub enum EchoKind {
     SpectatorJoinFailed,
     SpectatorLeaveOk,
     OperationFailed,
+    /// Unsolicited authority-moderation results (server issue #525 tier:
+    /// `PlayerKicked`/`RoomCodeRegenerated`/`RoomAccessUpdated`/`PlayerBanned`
+    /// /`PlayerUnbanned`/`AuthorityTransferred`). The SDK never issues those
+    /// operations, so no pending fence can ever match them; every delivery
+    /// must classify as a lifecycle violation.
+    PlayerKicked,
+    RoomCodeRegenerated,
+    RoomAccessUpdated,
+    PlayerBanned,
+    PlayerUnbanned,
+    AuthorityTransferred,
 }
 
 impl EchoKind {
@@ -37,14 +48,44 @@ impl EchoKind {
             EchoKind::SpectatorJoinFailed => "SpectatorJoinFailed",
             EchoKind::SpectatorLeaveOk => "SpectatorLeft",
             EchoKind::OperationFailed => "OperationFailed",
+            EchoKind::PlayerKicked => "PlayerKicked",
+            EchoKind::RoomCodeRegenerated => "RoomCodeRegenerated",
+            EchoKind::RoomAccessUpdated => "RoomAccessUpdated",
+            EchoKind::PlayerBanned => "PlayerBanned",
+            EchoKind::PlayerUnbanned => "PlayerUnbanned",
+            EchoKind::AuthorityTransferred => "AuthorityTransferred",
         }
     }
+
+    /// Every echo kind, for the report's coverage ledger. Keep in lockstep
+    /// with the arms above: `name()` is a wildcard-free exhaustive match, so
+    /// a new kind fails to compile until it is named — extend this list in
+    /// the same change or the coverage report silently under-reports.
+    pub const ALL: &[EchoKind] = &[
+        EchoKind::JoinOk,
+        EchoKind::JoinFailed,
+        EchoKind::LeaveOk,
+        EchoKind::ReconnectOk,
+        EchoKind::ReconnectFailed,
+        EchoKind::SpectatorJoinOk,
+        EchoKind::SpectatorJoinFailed,
+        EchoKind::SpectatorLeaveOk,
+        EchoKind::OperationFailed,
+        EchoKind::PlayerKicked,
+        EchoKind::RoomCodeRegenerated,
+        EchoKind::RoomAccessUpdated,
+        EchoKind::PlayerBanned,
+        EchoKind::PlayerUnbanned,
+        EchoKind::AuthorityTransferred,
+    ];
 }
 
 #[derive(Debug, Clone)]
 pub enum Cmd {
     JoinRoom,
     JoinRoomMax(u8),
+    /// Sealed-room join: `JoinRoomParams::with_password` (round 57 surface).
+    JoinRoomPassword(String),
     LeaveRoom,
     SendGameData(serde_json::Value),
     SendGameDataLatest(u32),
@@ -56,6 +97,9 @@ pub enum Cmd {
     ProvideConnectionInfo,
     Reconnect(PlayerId, PlayerId),
     JoinAsSpectator,
+    /// Sealed-room spectator entry: `join_as_spectator_with_password`
+    /// (round 57 surface).
+    JoinAsSpectatorPassword(String),
     LeaveSpectator,
     Ping,
     SendSignal,
@@ -66,7 +110,7 @@ pub enum Cmd {
 impl Cmd {
     pub fn name(&self) -> &'static str {
         match self {
-            Cmd::JoinRoom | Cmd::JoinRoomMax(_) => "join_room",
+            Cmd::JoinRoom | Cmd::JoinRoomMax(_) | Cmd::JoinRoomPassword(_) => "join_room",
             Cmd::LeaveRoom => "leave_room",
             Cmd::SendGameData(_) => "send_game_data",
             Cmd::SendGameDataLatest(_) => "send_game_data(Latest)",
@@ -77,7 +121,7 @@ impl Cmd {
             Cmd::RequestAuthority(_) => "request_authority",
             Cmd::ProvideConnectionInfo => "provide_connection_info",
             Cmd::Reconnect(..) => "reconnect",
-            Cmd::JoinAsSpectator => "join_as_spectator",
+            Cmd::JoinAsSpectator | Cmd::JoinAsSpectatorPassword(_) => "join_as_spectator",
             Cmd::LeaveSpectator => "leave_spectator",
             Cmd::Ping => "ping",
             Cmd::SendSignal => "send_signal",
@@ -90,10 +134,14 @@ impl Cmd {
     /// admission (mirrors `ClientCore`'s pending-operation model).
     pub fn fence(self: &Cmd) -> Option<FenceKind> {
         match self {
-            Cmd::JoinRoom | Cmd::JoinRoomMax(_) => Some(FenceKind::JoinPlayer),
+            Cmd::JoinRoom | Cmd::JoinRoomMax(_) | Cmd::JoinRoomPassword(_) => {
+                Some(FenceKind::JoinPlayer)
+            }
             Cmd::LeaveRoom => Some(FenceKind::LeavePlayer),
             Cmd::Reconnect(..) => Some(FenceKind::ReconnectPlayer),
-            Cmd::JoinAsSpectator => Some(FenceKind::JoinSpectator),
+            Cmd::JoinAsSpectator | Cmd::JoinAsSpectatorPassword(_) => {
+                Some(FenceKind::JoinSpectator)
+            }
             Cmd::LeaveSpectator => Some(FenceKind::LeaveSpectator),
             _ => None,
         }
@@ -226,6 +274,46 @@ fn meta_suffix(meta: &FrameMeta) -> String {
         format!(" {{{}}}", parts.join(","))
     }
 }
+
+/// The wire-coverage inventory for the report's ledger. Keep in lockstep
+/// with `msg_variant_name` (whose wildcard-free match is compile-enforced on
+/// new `ServerMessage` variants): a new variant must join this list in the
+/// same change, or the coverage report silently under-reports its
+/// reachability.
+pub const ALL_VARIANT_NAMES: &[&str] = &[
+    "Authenticated",
+    "ProtocolInfo",
+    "AuthenticationError",
+    "RoomJoined",
+    "RoomJoinFailed",
+    "RoomLeft",
+    "PlayerJoined",
+    "PlayerLeft",
+    "GameData",
+    "GameDataBinary",
+    "AuthorityChanged",
+    "AuthorityResponse",
+    "LobbyStateChanged",
+    "GameStarting",
+    "Pong",
+    "Reconnected",
+    "ReconnectionFailed",
+    "PlayerReconnected",
+    "SpectatorJoined",
+    "SpectatorJoinFailed",
+    "SpectatorLeft",
+    "RoomOperationResult",
+    "NewSpectatorJoined",
+    "SpectatorDisconnected",
+    "Error",
+    "Signal",
+    "NewPeer",
+    "SessionPlan",
+    "PeerTransportStatus",
+    "RelayStats",
+    "GoingAway",
+    "DeliveryReport",
+];
 
 pub fn msg_variant_name(msg: &ServerMessage) -> &'static str {
     match msg {

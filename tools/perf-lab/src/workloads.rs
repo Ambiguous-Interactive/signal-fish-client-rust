@@ -445,36 +445,8 @@ impl EventAccumulator {
             SignalFishEvent::RoomLeft => 9,
             SignalFishEvent::PlayerJoined { .. } => 10,
             SignalFishEvent::PlayerLeft { .. } => 11,
-            SignalFishEvent::GameData {
-                from_player,
-                data,
-                seq,
-                epoch,
-                class,
-                key,
-            } => {
-                self.fingerprint(from_player.as_bytes());
-                self.fingerprint(&seq.unwrap_or_default().to_le_bytes());
-                self.fingerprint(&epoch.unwrap_or_default().to_le_bytes());
-                self.fingerprint(&[delivery_class_byte(class)]);
-                self.fingerprint(&key.unwrap_or_default().to_le_bytes());
-                fingerprint_json(&mut self.payload_fingerprint, &data)?;
-                12
-            }
-            SignalFishEvent::GameDataBinary {
-                from_player,
-                encoding,
-                payload,
-                seq,
-                epoch,
-            } => {
-                self.fingerprint(from_player.as_bytes());
-                self.fingerprint(&[encoding_byte(encoding)]);
-                self.fingerprint(&seq.unwrap_or_default().to_le_bytes());
-                self.fingerprint(&epoch.unwrap_or_default().to_le_bytes());
-                self.fingerprint(&payload);
-                13
-            }
+            SignalFishEvent::GameData { .. } => 12,
+            SignalFishEvent::GameDataBinary { .. } => 13,
             SignalFishEvent::AuthorityChanged { .. } => 14,
             SignalFishEvent::AuthorityResponse { .. } => 15,
             SignalFishEvent::LobbyStateChanged { .. } => 16,
@@ -519,9 +491,11 @@ impl EventAccumulator {
             SignalFishEvent::RoomOperationFailed { .. } => 35,
             // The perf-lab fixtures never configure a reconnect policy, so
             // these never fire. They deliberately have no ledger slot: a
-            // fixture that starts emitting them fails loudly here, forcing a
-            // reviewed ledger extension (EVENT_KIND_COUNT plus a digest
-            // refresh) instead of silently shifting pinned indices.
+            // fixture that starts emitting them fails loudly — in
+            // fingerprint_event_payload (no payload arm) before this match
+            // even runs — forcing a reviewed ledger extension (EVENT_KIND_COUNT
+            // plus a digest refresh) instead of silently shifting pinned
+            // indices.
             SignalFishEvent::Reconnecting { .. } => 36,
             SignalFishEvent::ReconnectAbandoned { .. } => 37,
         };
@@ -657,7 +631,64 @@ impl EventAccumulator {
                 16,
                 &(lobby_state, ready_players, all_ready),
             ),
-            _ => Ok(()),
+            SignalFishEvent::GameData {
+                from_player,
+                data,
+                seq,
+                epoch,
+                class,
+                key,
+            } => {
+                self.fingerprint(from_player.as_bytes());
+                // Presence bytes keep `None` and `Some(0)` on the optional
+                // seq/epoch/key faces distinguishable; a normalization
+                // regression between them is exactly the boundary this
+                // ledger exists to pin.
+                self.fingerprint(&[u8::from(seq.is_some())]);
+                self.fingerprint(&seq.unwrap_or_default().to_le_bytes());
+                self.fingerprint(&[u8::from(epoch.is_some())]);
+                self.fingerprint(&epoch.unwrap_or_default().to_le_bytes());
+                self.fingerprint(&[delivery_class_byte(*class)]);
+                self.fingerprint(&[u8::from(key.is_some())]);
+                self.fingerprint(&key.unwrap_or_default().to_le_bytes());
+                fingerprint_json(&mut self.payload_fingerprint, data)
+            }
+            SignalFishEvent::GameDataBinary {
+                from_player,
+                encoding,
+                payload,
+                seq,
+                epoch,
+            } => {
+                self.fingerprint(from_player.as_bytes());
+                self.fingerprint(&[encoding_byte(*encoding)]);
+                self.fingerprint(&[u8::from(seq.is_some())]);
+                self.fingerprint(&seq.unwrap_or_default().to_le_bytes());
+                self.fingerprint(&[u8::from(epoch.is_some())]);
+                self.fingerprint(&epoch.unwrap_or_default().to_le_bytes());
+                self.fingerprint(payload);
+                Ok(())
+            }
+            // Field-less variants carry nothing beyond the index byte and
+            // count that `observe` already fingerprints.
+            SignalFishEvent::Connected | SignalFishEvent::RoomLeft | SignalFishEvent::Pong => {
+                Ok(())
+            }
+            // Synthetic and never ledger-legal in a workload fixture: let
+            // `observe`'s dedicated diagnostic arm produce the specific
+            // failure message instead of this function's generic one.
+            SignalFishEvent::ProtocolViolation { .. } => Ok(()),
+            // Every payload-carrying kind must contribute its content, or a
+            // future workload could silently pass while that event's payload
+            // regressed (the historical catch-all digested such kinds as
+            // count + index only). Fail loudly and force a reviewed arm; the
+            // reconnect-policy kinds additionally have no ledger slot, so a
+            // fixture emitting them fails before any state mutation either
+            // way.
+            _ => Err(format!(
+                "event has no payload-fingerprint arm; extend \
+                 fingerprint_event_payload before pinning workloads that emit it: {event:?}"
+            )),
         }
     }
 }
