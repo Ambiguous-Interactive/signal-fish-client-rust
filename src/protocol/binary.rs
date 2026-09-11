@@ -51,10 +51,15 @@ impl std::fmt::Debug for V2BinaryGameDataFrame {
 /// Strictly decode the frozen protocol-v2 MessagePack envelope.
 pub fn decode_v2_binary_game_data(wire: &[u8]) -> Result<V2BinaryGameDataFrame, String> {
     let parts = decode_v2_parts(wire)?;
+    let range = parts.payload_range;
+    let payload = wire
+        .get(range.clone())
+        .ok_or_else(|| "v2 binary GameData payload range out of bounds".to_string())?
+        .to_vec();
     Ok(V2BinaryGameDataFrame {
         from_player: parts.from_player,
         encoding: parts.encoding,
-        payload: parts.payload.to_vec(),
+        payload,
     })
 }
 
@@ -82,14 +87,13 @@ pub(crate) fn decode_v2_binary_game_data_in_place(
 }
 
 /// Strictly decoded v2 envelope fields with the payload left in the wire.
-struct V2FrameParts<'a> {
+struct V2FrameParts {
     from_player: PlayerId,
     encoding: GameDataEncoding,
-    payload: &'a [u8],
     payload_range: std::ops::Range<usize>,
 }
 
-fn decode_v2_parts(wire: &[u8]) -> Result<V2FrameParts<'_>, String> {
+fn decode_v2_parts(wire: &[u8]) -> Result<V2FrameParts, String> {
     let mut remaining = wire;
     let field_count = read_map_len(&mut remaining)
         .map_err(|error| format!("v2 binary GameData envelope is not a map: {error}"))?;
@@ -122,7 +126,8 @@ fn decode_v2_parts(wire: &[u8]) -> Result<V2FrameParts<'_>, String> {
             "payload" => {
                 reject_duplicate(&payload, key, "v2")?;
                 let bytes = read_binary(&mut remaining, key, "v2")?;
-                payload = Some((bytes, payload_range(wire, remaining, bytes.len(), "v2")?));
+                let range = payload_range(wire, remaining, bytes.len(), "v2")?;
+                payload = Some((bytes, range));
             }
             unknown => {
                 return Err(format!(
@@ -134,11 +139,10 @@ fn decode_v2_parts(wire: &[u8]) -> Result<V2FrameParts<'_>, String> {
     if !remaining.is_empty() {
         return Err("v2 binary GameData envelope contains trailing bytes".to_string());
     }
-    let (payload, payload_range) = require_field(payload, "payload", "v2")?;
+    let (_, payload_range) = require_field(payload, "payload", "v2")?;
     Ok(V2FrameParts {
         from_player: require_field(from_player, "from_player", "v2")?,
         encoding: require_field(encoding, "encoding", "v2")?,
-        payload,
         payload_range,
     })
 }
@@ -152,10 +156,15 @@ fn decode_v2_parts(wire: &[u8]) -> Result<V2FrameParts<'_>, String> {
 /// width that carries the value, and map headers may use any size prefix.
 pub fn decode_v3_binary_game_data(wire: &[u8]) -> Result<V3BinaryGameDataFrame, String> {
     let parts = decode_v3_parts(wire)?;
+    let range = parts.payload_range;
+    let payload = wire
+        .get(range.clone())
+        .ok_or_else(|| "v3 binary GameData payload range out of bounds".to_string())?
+        .to_vec();
     Ok(V3BinaryGameDataFrame {
         from_player: parts.from_player,
         encoding: parts.encoding,
-        payload: parts.payload.to_vec(),
+        payload,
         seq: parts.seq,
         epoch: parts.epoch,
     })
@@ -193,16 +202,15 @@ pub(crate) fn decode_v3_binary_game_data_in_place(
 }
 
 /// Strictly decoded v3 envelope fields with the payload left in the wire.
-struct V3FrameParts<'a> {
+struct V3FrameParts {
     from_player: PlayerId,
     encoding: GameDataEncoding,
-    payload: &'a [u8],
     payload_range: std::ops::Range<usize>,
     seq: u64,
     epoch: u32,
 }
 
-fn decode_v3_parts(wire: &[u8]) -> Result<V3FrameParts<'_>, String> {
+fn decode_v3_parts(wire: &[u8]) -> Result<V3FrameParts, String> {
     let mut remaining = wire;
     let field_count = read_map_len(&mut remaining)
         .map_err(|error| format!("v3 binary GameData envelope is not a map: {error}"))?;
@@ -274,11 +282,10 @@ fn decode_v3_parts(wire: &[u8]) -> Result<V3FrameParts<'_>, String> {
         return Err("v3 binary GameData envelope contains trailing bytes".to_string());
     }
 
-    let (payload, payload_range) = require_field(payload, "payload", "v3")?;
+    let (_, payload_range) = require_field(payload, "payload", "v3")?;
     Ok(V3FrameParts {
         from_player: require_field(from_player, "from_player", "v3")?,
         encoding: require_field(encoding, "encoding", "v3")?,
-        payload,
         payload_range,
         seq: require_field(seq, "seq", "v3")?,
         epoch: require_field(epoch, "epoch", "v3")?,
