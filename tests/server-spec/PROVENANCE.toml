@@ -7,29 +7,25 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-08 refresh: upstream added the room access-control tier (server
-# issue #525 follow-up, PR #545) — the PASSWORD_REQUIRED / BANNED /
-# TRANSFER_TARGET_NOT_FOUND error codes, the authority-only SetRoomAccess /
-# BanPlayer / UnbanPlayer / TransferAuthority operations, their four
-# RoomOperationResult responses, the additive JoinRoom / JoinAsSpectator
-# `password` field, and the v3-only additive `spectator_count`
-# delta-count field on NewSpectatorJoined / SpectatorDisconnected (additive
-# only; existing schema lines untouched). The 2026-09-08 follow-up refresh
-# at b602fc1d (server PR #548, issue #546) is descriptive-only: a password
-# presented to an open room is now also refused with PASSWORD_REQUIRED
-# (previously "ignored"), so the password/PasswordRequired prose changed on
-# both sides; zero schema-shape, token, or sample changes. The Server 0.8.0
+# 2026-09-11 refresh: upstream descriptive-only prose (server PRs #563/#565/#567,
+# issues #396/#561/#566) reworded the kick/ban/PlayerKicked descriptions
+# (a pending reconnection record is tombstoned instead of a seat removed; the
+# 4007 `kicked` close is withheld when the target is live in another room) and
+# documented that RegenerateRoomCode's result goes only to the acting
+# authority, so a post-rotation TransferAuthority needs the new code shared
+# out of band. Zero schema-shape, token, or sample changes; all four wire
+# samples are byte-identical at the new pin. The Server 0.8.0
 # release pin
 # (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
 # access-control surface, so the released runtime compatibility binding stays
 # at that release. This evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "b602fc1d6138c06836a2b5101f4e04b7838a6292"
+commit = "ac118f846f26ac55e2fc1f3231dcc9aec86a7275"
 # ISO 8601 date of the last refresh.
-synced = "2026-09-08"
+synced = "2026-09-11"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "fa0b3b6ecb63a8155dcff18933dd31818562ce2a0b7a1dd981300fb383bb5630"
+"signal-fish-protocol.asyncapi.yaml" = "89378f499a8fbe7da28b8a952a941463768d6d3c5ec9f102e97a4ba879a37321"
