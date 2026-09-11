@@ -518,8 +518,10 @@ impl EventAccumulator {
             SignalFishEvent::Error { .. } => 34,
             SignalFishEvent::RoomOperationFailed { .. } => 35,
             // The perf-lab fixtures never configure a reconnect policy, so
-            // these never fire; appended (not inserted) to keep every pinned
-            // event index stable.
+            // these never fire. They deliberately have no ledger slot: a
+            // fixture that starts emitting them fails loudly here, forcing a
+            // reviewed ledger extension (EVENT_KIND_COUNT plus a digest
+            // refresh) instead of silently shifting pinned indices.
             SignalFishEvent::Reconnecting { .. } => 36,
             SignalFishEvent::ReconnectAbandoned { .. } => 37,
         };
