@@ -102,10 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the core crate's `tokio` dependency no longer enables
   `sync`/`macros` unconditionally — they moved into the `tokio-runtime`
   feature alongside `rt`/`time` — and `futures-util` is now declared without
-  default features, so polling/Emscripten/mesh-only builds compile a leaner
-  graph; only no-default-features builds that relied on those transitive
-  features are affected (declare them on your own `tokio`/`futures-util`
-  dependency).
+  default features. Every build (default included) compiles one fewer
+  proc-macro (`futures-macro`); polling/Emscripten/mesh-only builds
+  additionally compile tokio without its sync/macros machinery. Only builds
+  that relied on these transitive features without declaring them — on their
+  own `tokio`/`futures-util` dependency — are affected.
 - `RoomOperationPending`'s Display (and the error-table docs) now name all
   five directed room operations the fence covers, not just join/leave/reconnect.
 - `Timeout`'s Display remedy now names both connect knobs

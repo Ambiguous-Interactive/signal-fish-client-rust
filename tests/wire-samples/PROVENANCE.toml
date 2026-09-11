@@ -16,8 +16,8 @@ path = ".llm/code-samples/protocol"
 # compatibility binding stays at that release; the evidence authority
 # advances together across compatibility.toml and both PROVENANCE files.
 # (The 2026-09-08 b602fc1d follow-up is spec-prose only; the samples are
-# unchanged there too. The 2026-09-11 refresh at ac118f84 (server PRs
-# #563/#565/#567) is again spec-prose only — kick/ban tombstone semantics and
+# unchanged there too. The 2026-09-11 refresh at ac118f84 (spec-prose server
+# PRs #565/#567) is again spec-prose only — kick/ban tombstone semantics and
 # out-of-band post-rotation code sharing — and the four files are
 # byte-identical there as well.)
 commit = "ac118f846f26ac55e2fc1f3231dcc9aec86a7275"

@@ -210,7 +210,9 @@ pub enum ErrorCode {
     /// removes them exactly like a kick (close code `4007`/`kicked`). Newer
     /// upstream servers also refuse a banned seat's reconnection restore
     /// with this code on `ReconnectionFailed`, keeping the pending record so
-    /// a mid-window unban lets the token work again.
+    /// a mid-window unban lets the token work again, tombstone a banned
+    /// pending record instead of removing a seat, and withhold the 4007
+    /// close when the target is live in another room.
     Banned,
     /// The player named by `TransferAuthority` is not a seated member of the
     /// room.

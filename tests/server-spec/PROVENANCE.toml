@@ -7,8 +7,9 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-11 refresh: upstream descriptive-only prose (server PRs #563/#565/#567,
-# issues #396/#561/#566) reworded the kick/ban/PlayerKicked descriptions
+# 2026-09-11 refresh: upstream descriptive-only spec prose (server PRs #565
+# and #567, issues #396/#561/#566) reworded the kick/ban/PlayerKicked
+# descriptions
 # (a pending reconnection record is tombstoned instead of a seat removed; the
 # 4007 `kicked` close is withheld when the target is live in another room) and
 # documented that RegenerateRoomCode's result goes only to the acting

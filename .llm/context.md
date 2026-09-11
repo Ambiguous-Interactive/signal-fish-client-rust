@@ -333,7 +333,7 @@ strings at least 4 KiB use capacity-aware serialization. See its README.
 
 | Crate | Purpose |
 |-------|---------|
-| `tokio` | Async runtime (sync, macros, rt, time features) |
+| `tokio` | Async runtime (features resolved via `tokio-runtime`) |
 | `serde` + `serde_json` + `serde_bytes` | JSON serialization of protocol messages |
 | `rmp` + `rmp-serde` | Strict protocol-v3 MessagePack envelope decoding |
 | `uuid` | Player/room IDs serialized as lowercase hyphenated wire strings |

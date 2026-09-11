@@ -482,29 +482,21 @@ mod tests {
     fn pending_and_timeout_displays_name_every_fenced_operation_and_both_connect_knobs() {
         // The fence arms for all five directed room operations
         // (client_core::validate), so the Display must not under-enumerate.
-        let pending = SignalFishError::RoomOperationPending;
-        let pending_text = pending.to_string();
-        for operation in [
-            "join",
-            "spectator join",
-            "leave",
-            "spectator leave",
-            "reconnect",
-        ] {
-            assert!(
-                pending_text.contains(operation),
-                "RoomOperationPending display must name every fenced operation, \
-                 missing {operation:?}: {pending_text}"
-            );
-        }
+        // Full-string equality keeps the pin airtight (substring membership
+        // would let "join" pass as part of "spectator join" alone).
+        assert_eq!(
+            SignalFishError::RoomOperationPending.to_string(),
+            "a directed room operation (join, spectator join, leave, spectator \
+             leave, or reconnect) is already pending"
+        );
 
         // Both eager and lazy connect paths emit this variant, so the remedy
         // must name both knobs.
-        let timeout = SignalFishError::Timeout.to_string();
-        assert!(
-            timeout.contains("connect_with_timeout")
-                && timeout.contains("connect_lazy_with_timeout"),
-            "Timeout display must cover both connect knobs: {timeout}"
+        assert_eq!(
+            SignalFishError::Timeout.to_string(),
+            "the WebSocket handshake did not complete within its deadline; retry \
+             or raise the connect timeout (connect_with_timeout / \
+             connect_lazy_with_timeout)"
         );
     }
 
