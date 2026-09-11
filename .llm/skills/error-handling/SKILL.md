@@ -38,7 +38,8 @@ pub enum SignalFishError {
     #[error("transport connection closed")]
     TransportClosed,
 
-    /// Failed to serialize or deserialize a protocol message.
+    /// Compatibility only: no production constructor. Inbound decode
+    /// problems surface as the bounded `DecodeFailed` event instead.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

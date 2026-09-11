@@ -474,12 +474,12 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `TransportSend(cause)` | Failed to write to the transport; `cause` is the backend's boxed original error (`Error::source()` reaches the root cause). |
 | `TransportReceive(cause)` | Failed to read from the transport; like `TransportSend`, the boxed cause stays inspectable. |
 | `TransportClosed` | The transport connection closed unexpectedly. |
-| `Serialization(serde_json::Error)` | JSON serialization / deserialization failed. |
+| `Serialization(serde_json::Error)` | Compatibility only — no current server/SDK combination constructs this variant (inbound decode problems surface as the bounded `DecodeFailed` event instead). |
 | `NotConnected` | Attempted an operation without an active connection. |
 | `SendBufferFull { capacity }` | The bounded outgoing command queue is full; the message was refused, not queued. See [Non-Blocking Command Sending](#non-blocking-command-sending). |
 | `NotInRoom` | Attempted a room operation without being in a room. |
 | `AlreadyInRoom` | Attempted to join or reconnect while already a player or spectator. |
-| `RoomOperationPending` | A prior admitted join, leave, or reconnect still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. |
+| `RoomOperationPending` | A prior admitted directed room operation (join, spectator join, leave, spectator leave, or reconnect) still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. |
 | `WrongRoomRole { required, actual }` | The operation requires player or spectator membership of a different kind. |
 | `AuthorityRequired` | The current player is not authorized for an authority-only command. |
 | `NotAuthenticated` | A directed room operation was attempted before the server confirmed authentication; wait for the `Authenticated` event first. |
@@ -490,7 +490,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `BinaryFormatNotNegotiated` | Binary game data was requested on a negotiated v3 connection whose effective format is JSON. (On a v2 connection the v3 gate refuses first with `ProtocolUnsupported`.) |
 | `PayloadTooDeep { max_depth }` | A caller-supplied JSON payload was refused because its container nesting exceeds the outbound depth bound (128 nested containers, matching `serde_json`'s recursion limit). Applies to JSON game data, raw WebRTC signals, and `ConnectionInfo::Custom`; refused at the call site, before queuing, so flattening the payload is required. |
 | `TokenBinding(TokenBindingFailure)` | Native token-binding negotiation or proof generation failed (see `TokenBindingFailure` for the specific reason). |
-| `Timeout` | The WebSocket handshake did not complete within its `connect_with_timeout` deadline (see [Errors](errors.md)); this variant has that single producer. |
+| `Timeout` | The WebSocket handshake did not complete within its deadline — emitted by the eager `connect_with_timeout` and by the lazy constructors (see [Errors](errors.md)). |
 | `InvalidConfig { field, problem }` | A configuration value was rejected because it is unusable (zero size limit, unparsable URL, `wss://` without the `tls` feature); correcting the value is required, retrying is not enough. |
 | `Io(std::io::Error)` | An underlying I/O error occurred. |
 
