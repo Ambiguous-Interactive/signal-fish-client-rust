@@ -581,7 +581,12 @@ fn spectator_joined(
 }
 
 fn error_msg(rng: &mut Rng) -> ServerMessage {
-    let code = match rng.below(8) {
+    // The menu spans the server-infra/error families the campaign can
+    // legally surface on a generic `Error` frame, including the
+    // access-control/moderation tier (round 56/57) so the client's typed
+    // decode of those codes is exercised end to end. The remaining
+    // room-admission codes also ride their dedicated failure frames below.
+    let code = match rng.below(14) {
         0 => Some(ErrorCode::InternalError),
         1 => Some(ErrorCode::SlowConsumer),
         2 => Some(ErrorCode::RateLimitExceeded),
@@ -589,7 +594,13 @@ fn error_msg(rng: &mut Rng) -> ServerMessage {
         4 => Some(ErrorCode::ConnectionIdleTimeout),
         5 => None,
         6 => Some(ErrorCode::ServerDraining),
-        _ => Some(ErrorCode::ActivityTimeout),
+        7 => Some(ErrorCode::ActivityTimeout),
+        8 => Some(ErrorCode::PasswordRequired),
+        9 => Some(ErrorCode::Banned),
+        10 => Some(ErrorCode::Kicked),
+        11 => Some(ErrorCode::NotRoomAuthority),
+        12 => Some(ErrorCode::KickTargetNotFound),
+        _ => Some(ErrorCode::TransferTargetNotFound),
     };
     ServerMessage::Error {
         message: if rng.chance(10) {
@@ -811,24 +822,28 @@ pub const RAW_OVERLIMIT_STRING: &str = r#"{"type":"Authenticated","data":{"app_n
 // ── Command menu ────────────────────────────────────────────────────
 
 pub fn random_cmd(rng: &mut Rng, ctx: &Ctx) -> Cmd {
-    match rng.below(17) {
+    match rng.below(19) {
         0 => Cmd::JoinRoom,
         1 => Cmd::JoinRoomMax(1usize.saturating_add(rng.below(8)) as u8),
-        2 => Cmd::LeaveRoom,
-        3 => Cmd::SendGameData(hostile_json_value(rng)),
-        4 => Cmd::SendGameDataLatest(rng.next_u64() as u32),
-        5 => Cmd::SendGameDataVolatile,
-        6 => Cmd::SendBinaryGameData(1usize.saturating_add(rng.below(128))),
-        7 => Cmd::SetReady,
-        8 => Cmd::StartGame,
-        9 => Cmd::RequestAuthority(rng.chance(50)),
-        10 => Cmd::ProvideConnectionInfo,
-        11 => Cmd::Reconnect(ctx.self_id, ctx.room_id),
-        12 => Cmd::JoinAsSpectator,
-        13 => Cmd::LeaveSpectator,
-        14 => Cmd::Ping,
-        15 if rng.chance(50) => Cmd::SendSignal,
-        15 => Cmd::SendRawSignal,
+        // Sealed-room faces: a real password and the empty-password
+        // boundary (both schema-valid `Some(...)` wire shapes).
+        2 => Cmd::JoinRoomPassword(rng.pick(&["hunter2", ""]).to_string()),
+        3 => Cmd::LeaveRoom,
+        4 => Cmd::SendGameData(hostile_json_value(rng)),
+        5 => Cmd::SendGameDataLatest(rng.next_u64() as u32),
+        6 => Cmd::SendGameDataVolatile,
+        7 => Cmd::SendBinaryGameData(1usize.saturating_add(rng.below(128))),
+        8 => Cmd::SetReady,
+        9 => Cmd::StartGame,
+        10 => Cmd::RequestAuthority(rng.chance(50)),
+        11 => Cmd::ProvideConnectionInfo,
+        12 => Cmd::Reconnect(ctx.self_id, ctx.room_id),
+        13 => Cmd::JoinAsSpectator,
+        14 => Cmd::JoinAsSpectatorPassword(rng.pick(&["hunter2", ""]).to_string()),
+        15 => Cmd::LeaveSpectator,
+        16 => Cmd::Ping,
+        17 if rng.chance(50) => Cmd::SendSignal,
+        17 => Cmd::SendRawSignal,
         _ => Cmd::ReportTransportStatus,
     }
 }
@@ -1370,7 +1385,12 @@ fn arch_spectator_churn(
                         "spec",
                     ),
                     current_spectators: vec![],
-                    spectator_count: None,
+                    // Documented v3 delta-count face: `Some(n)` alongside an
+                    // empty roster snapshot. The client passes the count
+                    // through unvalidated, so any n is schema-legal.
+                    spectator_count: rng
+                        .chance(50)
+                        .then(|| 1u32.saturating_add(rng.below(4) as u32)),
                     reason: Some(SpectatorStateChangeReason::Joined),
                 },
                 FrameMeta::default(),
@@ -1383,7 +1403,9 @@ fn arch_spectator_churn(
                     ),
                     reason: Some(SpectatorStateChangeReason::Disconnected),
                     current_spectators: vec![],
-                    spectator_count: None,
+                    spectator_count: rng
+                        .chance(50)
+                        .then(|| 1u32.saturating_add(rng.below(4) as u32)),
                 },
                 FrameMeta::default(),
             ),
@@ -1638,15 +1660,32 @@ fn arch_command_storm(
                 ServerMessage::RoomLeft,
                 ServerMessage::RoomJoinFailed {
                     reason: "x".into(),
-                    error_code: None,
+                    error_code: Some(
+                        rng.pick(&[
+                            ErrorCode::RoomNotFound,
+                            ErrorCode::RoomFull,
+                            ErrorCode::PasswordRequired,
+                            ErrorCode::Banned,
+                        ])
+                        .clone(),
+                    ),
                 },
                 ServerMessage::SpectatorJoinFailed {
                     reason: "x".into(),
-                    error_code: None,
+                    error_code: Some(
+                        rng.pick(&[
+                            ErrorCode::TooManySpectators,
+                            ErrorCode::SpectatorNotAllowed,
+                            ErrorCode::PasswordRequired,
+                        ])
+                        .clone(),
+                    ),
                 },
                 ServerMessage::ReconnectionFailed {
                     reason: "x".into(),
-                    error_code: ErrorCode::ReconnectionTokenInvalid,
+                    error_code: rng
+                        .pick(&[ErrorCode::ReconnectionTokenInvalid, ErrorCode::Banned])
+                        .clone(),
                 },
                 going_away(rng),
             ];
@@ -1716,8 +1755,22 @@ fn arch_echo_zoo(
         steps.push(Step::Poll(2));
         maybe_cmd(rng, ctx, &mut steps, 20);
     }
-    // Correlated results without any pending operation (lifecycle offenders).
-    for _ in 0..4 {
+    // Correlated results without any pending operation (lifecycle offenders):
+    // every unsolicited authority-moderation result (the SDK never issues
+    // those operations, so no fence can ever match them) plus the generic
+    // operation-failed face.
+    for kind in [
+        EchoKind::PlayerKicked,
+        EchoKind::RoomCodeRegenerated,
+        EchoKind::RoomAccessUpdated,
+        EchoKind::PlayerBanned,
+        EchoKind::PlayerUnbanned,
+        EchoKind::AuthorityTransferred,
+    ] {
+        steps.push(Step::DeliverEcho(kind, EchoId::Wrong));
+        steps.push(Step::Poll(1));
+    }
+    for _ in 0..2 {
         steps.push(Step::DeliverEcho(EchoKind::OperationFailed, EchoId::Wrong));
         steps.push(Step::Poll(1));
     }

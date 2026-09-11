@@ -26,6 +26,13 @@ cargo run -p signal-fish-client-perf-lab --features perf --bin perf-smoke -- --e
 That mode still enforces every semantic ledger invariant; only the checked-in
 digest comparison is skipped so the proposed replacement is observable.
 
+Ledger digesting is payload-complete: every payload-carrying event kind must
+have a reviewed `fingerprint_event_payload` arm (optional `seq`/`epoch`/`key`
+faces fingerprint a presence byte first, so `None` and `Some(0)` stay
+distinguishable), and a workload that emits an arm-less kind fails loudly
+instead of digesting as a bare count. Extending the ledger with a new event
+kind therefore forces a reviewed arm and a digest refresh in the same change.
+
 Fixture construction, serialization, warm-up, digesting, and ledger
 verification are outside each measured region. Timing defaults to 25 samples
 after one sacrificial run. Allocation accounting uses an isolated child
@@ -143,3 +150,15 @@ digests were intentionally refreshed; reconnect-only cells without a join
 remain unchanged. Fixture construction is still outside the measured regions,
 all semantic ledger invariants pass, and both debug and release allocation
 ceilings remain unchanged.
+
+The +24-byte queue-cell growth above was accompanied by a live observation
+refresh (2026-09-11, Rust 1.96.1 host) of the seven stale byte ceilings it
+enlarged — `bytes_allocated`/`bytes_reallocated` for `json/out/256/burst64`,
+`bytes_allocated` for `json/out/4096/burst64`, and both columns for
+`classified/latest`/`classified/volatile` — which had kept their pre-growth
+values, leaving 0.6–4.1 points below the documented 10% headroom (5.9% at
+the thinnest, 9.4% where the growth barely bit). They now
+follow the standard observed-plus-10% rule again; counts and every other
+column were already current. The measured region brackets `run_measured`
+only, so transport `close()`/`abort()`/flush teardown allocations remain
+deliberately outside every ceiling, consistently across all cells.

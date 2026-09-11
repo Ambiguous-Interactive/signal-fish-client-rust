@@ -32,7 +32,7 @@
 #  21. Devcontainer compat    (delegates to check + fixture test scripts)
 #  22. Devcontainer Dockerfile (optional — docker buildx build --check)
 #  23. Stateful hostility campaign (canaries + reduced deterministic run)
-#  24. Perf-lab enforcement   (perf-smoke — protocol ledger + allocation pins)
+#  24. Perf-lab enforcement   (perf-smoke ledgers + perf-allocations debug ceilings)
 #
 # Notes:
 #   - MSRV (1.87.0) verification is CI-only (requires rustup toolchain override)
@@ -614,7 +614,7 @@ if ! command -v cargo-mutants &>/dev/null; then
     echo "  Install: cargo install cargo-mutants"
     PHASE_RESULTS[17]="SKIP"
 else
-    if cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/error_codes.rs --file src/error.rs 2>&1; then
+    if cargo mutants --gitignore true --timeout 60 --no-shuffle -j 2 --file src/protocol.rs --file src/protocol/binary.rs --file src/terminal_drain.rs --file src/error_codes.rs --file src/error.rs 2>&1; then
         echo -e "${GREEN}Phase 17: PASS${NC}"
         PHASE_RESULTS[17]="PASS"
     else
@@ -762,15 +762,18 @@ echo ""
 # ── Phase 24: Perf-lab protocol/allocation enforcement ─────────────
 # Local mirror of CI's performance-contract lane. The enforcement suite
 # runs in well under a second once built; without it, allocation-ceiling
-# regressions surface only after a full CI round-trip. Protocol ledger
-# pins also execute through the workspace test suite (phase 4), but the
-# bin path is the only place the parent/child allocation machinery runs.
-echo -e "${YELLOW}Phase 24/$TOTAL_PHASES: Perf-lab enforcement (perf-smoke)...${NC}"
+# regressions surface only after a full CI round-trip. perf-smoke pins the
+# 28 protocol ledgers; perf-allocations is the only place the parent/child
+# allocation machinery runs, so it is mirrored here in the debug profile
+# (CI additionally enforces release ceilings and captures diagnostics-only
+# timing, both of which stay CI-only locally).
+echo -e "${YELLOW}Phase 24/$TOTAL_PHASES: Perf-lab enforcement (perf-smoke + perf-allocations)...${NC}"
 if [ ! -f "$REPO_ROOT/tools/perf-lab/Cargo.toml" ]; then
     echo -e "${YELLOW}SKIP: tools/perf-lab not found.${NC}"
     PHASE_RESULTS[24]="SKIP"
 else
-    if cargo run --locked -p signal-fish-client-perf-lab --features perf --bin perf-smoke 2>&1; then
+    if cargo run --locked -p signal-fish-client-perf-lab --features perf --bin perf-smoke 2>&1 &&
+        cargo run --locked -p signal-fish-client-perf-lab --features perf --bin perf-allocations -- --samples 10 2>&1; then
         echo -e "${GREEN}Phase 24: PASS${NC}"
         PHASE_RESULTS[24]="PASS"
     else
