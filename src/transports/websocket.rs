@@ -4368,6 +4368,9 @@ mod tests {
                 .await
                 .expect("timeout server must accept the TCP connection");
             let _ = accepted_tx.send(());
+            // Hold the accepted connection open for the timeout window; this
+            // pending future never completes — the task is aborted when the
+            // test ends.
             std::future::pending::<()>().await;
         });
 

@@ -166,26 +166,28 @@ pub(crate) fn bounded_binary_preview(bytes: &[u8]) -> String {
 
 #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 pub(crate) fn decode_binary_server_message(
-    bytes: &[u8],
+    bytes: Vec<u8>,
     protocol_v3: bool,
-) -> std::result::Result<ServerMessage, String> {
+) -> std::result::Result<ServerMessage, (String, Vec<u8>)> {
     if protocol_v3 {
-        let frame = crate::protocol::decode_v3_binary_game_data(bytes)?;
-        Ok(ServerMessage::GameDataBinary {
-            from_player: frame.from_player,
-            encoding: frame.encoding,
-            payload: frame.payload,
-            seq: Some(frame.seq),
-            epoch: Some(frame.epoch),
+        crate::protocol::binary::decode_v3_binary_game_data_in_place(bytes).map(|frame| {
+            ServerMessage::GameDataBinary {
+                from_player: frame.from_player,
+                encoding: frame.encoding,
+                payload: frame.payload,
+                seq: Some(frame.seq),
+                epoch: Some(frame.epoch),
+            }
         })
     } else {
-        let frame = crate::protocol::decode_v2_binary_game_data(bytes)?;
-        Ok(ServerMessage::GameDataBinary {
-            from_player: frame.from_player,
-            encoding: frame.encoding,
-            payload: frame.payload,
-            seq: None,
-            epoch: None,
+        crate::protocol::binary::decode_v2_binary_game_data_in_place(bytes).map(|frame| {
+            ServerMessage::GameDataBinary {
+                from_player: frame.from_player,
+                encoding: frame.encoding,
+                payload: frame.payload,
+                seq: None,
+                epoch: None,
+            }
         })
     }
 }
@@ -2787,6 +2789,9 @@ async fn wait_for_terminal_deadline(deadline: Option<tokio::time::Instant>) {
     if let Some(deadline) = deadline {
         tokio::time::sleep_until(deadline).await;
     } else {
+        // No deadline: park forever — a pending future that never completes
+        // on its own and is dropped when the select! serving the driver loop
+        // shuts down.
         std::future::pending::<()>().await;
     }
 }
