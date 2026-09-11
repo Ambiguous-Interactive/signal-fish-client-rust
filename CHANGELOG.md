@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Room snapshots without `connected_at` on `PlayerInfo` and `SpectatorInfo`
+  now deserialize instead of failing the whole frame. Protocol-v3 room
+  snapshots may trim the field for privacy (signal-fish-server #539); the
+  SDK reads it back as an empty string, so the timestamp is unknown to this
+  SDK version. The public field type is unchanged.
 - **Breaking:** the core crate's `tokio` dependency no longer enables
   `sync`/`macros` unconditionally — they moved into the `tokio-runtime`
   feature alongside `rt`/`time` — and `futures-util` is now declared without

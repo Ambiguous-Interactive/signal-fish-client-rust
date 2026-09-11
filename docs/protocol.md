@@ -292,7 +292,7 @@ pub struct PlayerInfo {
 | `name` | `String` | Display name chosen at join time. |
 | `is_authority` | `bool` | Whether this player is the room authority. |
 | `is_ready` | `bool` | Whether the player has signaled readiness. |
-| `connected_at` | `String` | ISO 8601 timestamp of when the player connected. |
+| `connected_at` | `String` | ISO 8601 timestamp of when the player connected. Empty when the server omits the field: protocol-v3 room snapshots may trim it for privacy (signal-fish-server #539). |
 | `connection_info` | `Option<ConnectionInfo>` | Legacy self-declared P2P metadata. Protocol-v2 room snapshots may include it; protocol-v3 room snapshots omit it (the authoritative copy reaches peers via `GameStarting`'s `PeerConnectionInfo`). |
 | `epoch` | `Option<u32>` | Protocol v3 only: the player's current incarnation epoch. |
 | `seq` | `Option<u64>` | Protocol v3 only: the player's exact relay baseline; delivery obligations start at `seq + 1`. |
@@ -315,7 +315,7 @@ pub struct SpectatorInfo {
 |-------|------|-------------|
 | `id` | `PlayerId` | The spectator's unique identifier. |
 | `name` | `String` | Display name. |
-| `connected_at` | `String` | ISO 8601 timestamp of when the spectator joined. |
+| `connected_at` | `String` | ISO 8601 timestamp of when the spectator joined. Empty when the server omits the field (see `PlayerInfo`). |
 
 ---
 
