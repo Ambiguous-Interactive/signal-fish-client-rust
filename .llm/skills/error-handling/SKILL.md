@@ -38,7 +38,8 @@ pub enum SignalFishError {
     #[error("transport connection closed")]
     TransportClosed,
 
-    /// Failed to serialize or deserialize a protocol message.
+    /// Compatibility only: no production constructor. Inbound decode
+    /// problems surface as the bounded `DecodeFailed` event instead.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -70,7 +71,7 @@ pub enum SignalFishError {
 
     /// Attempted a room operation while a prior room transition awaits a
     /// matching typed terminal response.
-    #[error("a room join, leave, or reconnect operation is already pending")]
+    #[error("a directed room operation (join, spectator join, leave, spectator leave, or reconnect) is already pending")]
     RoomOperationPending,
 
     /// Attempted an operation that is not valid for the current room role.
@@ -125,10 +126,11 @@ pub enum SignalFishError {
     #[error("token binding error: {0}")]
     TokenBinding(TokenBindingFailure),
 
-    /// The WebSocket handshake did not complete within the deadline given to
-    /// `WebSocketTransport::connect_with_timeout`.
+    /// The WebSocket handshake did not complete within its deadline: the
+    /// one given to `WebSocketTransport::connect_with_timeout`, the
+    /// `connect_lazy_with_timeout` argument, or the lazy default.
     #[error(
-        "the WebSocket handshake did not complete within its deadline; retry or raise the connect_with_timeout duration"
+        "the WebSocket handshake did not complete within its deadline; retry or raise the connect timeout (connect_with_timeout / connect_lazy_with_timeout)"
     )]
     Timeout,
 

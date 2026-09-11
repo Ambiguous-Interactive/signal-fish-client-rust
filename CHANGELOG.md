@@ -99,6 +99,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the core crate's `tokio` dependency no longer enables
+  `sync`/`macros` unconditionally — they moved into the `tokio-runtime`
+  feature alongside `rt`/`time` — and `futures-util` is now declared without
+  default features. Every build (default included) compiles one fewer
+  proc-macro (`futures-macro`); polling/Emscripten/mesh-only builds
+  additionally compile tokio without its sync/macros machinery. Only builds
+  that relied on these transitive features without declaring them — on their
+  own `tokio`/`futures-util` dependency — are affected.
+- `RoomOperationPending`'s Display (and the error-table docs) now name all
+  five directed room operations the fence covers, not just join/leave/reconnect.
+- `Timeout`'s Display remedy now names both connect knobs
+  (`connect_with_timeout` / `connect_lazy_with_timeout`), since the lazy
+  constructors emit the same variant.
 - Protocol v3 room snapshots on upstream Server `main` (post-0.8.0) no longer echo `connection_info`; the client decodes both shapes unchanged, and the protocol guide's `PlayerInfo` fields (`epoch`/`seq`, visibility contract) now document the omission.
 - The `WebRtcDriver::disconnect` contract now requires drivers to retire the
   torn-down peer's queued, unpollled output, so stale events cannot cross a
@@ -128,6 +141,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Emscripten transport no longer double-prefixes an already-typed
+  inbound error ("transport receive error: transport receive error: …"): the
+  corrupt-UTF-8 refusal now travels through the callback queue as the
+  classified `SignalFishError`, keeping the error chain intact.
 - The devcontainer now opens with a user-owned npm installation, current Codex,
   Claude Code, Copilot, OpenCode, and Nanocoder CLIs, and durable GitHub and Z.AI
   MCP configuration with shared `.env.local` credentials, explicit Codex

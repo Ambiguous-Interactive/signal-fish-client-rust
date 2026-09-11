@@ -144,7 +144,7 @@ the capability you need:
 | Feature | Purpose |
 | --- | --- |
 | `transport-websocket` | Built-in native WebSocket transport; enabled by default |
-| `tokio-runtime` | Async driver task and timing support; enabled by the default transport |
+| `tokio-runtime` | Async driver task, timing, and channel support; enabled by the default transport |
 | `tls` | Native `wss://` connections |
 | `polling-client` | Caller-driven client for game loops |
 | `mesh` | Protocol-v3 WebRTC mesh state and controller APIs |

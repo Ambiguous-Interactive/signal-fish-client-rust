@@ -326,14 +326,14 @@ strings at least 4 KiB use capacity-aware serialization. See its README.
 | `tls` | off | `wss://` TLS for the built-in WebSocket transport (rustls + ring provider + webpki roots) |
 | `transport-websocket-emscripten` | off | Emscripten WebSocket transport; enables `polling-client` |
 | `polling-client` | off | `SignalFishPollingClient` — sync, polling-based client for any `Transport` |
-| `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` features |
+| `tokio-runtime` | off (on via `transport-websocket`) | Tokio `rt` + `time` + `sync` + `macros` features |
 | `mesh` | off | Protocol v3 mesh: `MeshSession` tracker + `WebRtcDriver` seam + `MeshController` |
 
 ## Dependencies
 
 | Crate | Purpose |
 |-------|---------|
-| `tokio` | Async runtime (sync, macros, rt, time features) |
+| `tokio` | Async runtime (features resolved via `tokio-runtime`) |
 | `serde` + `serde_json` + `serde_bytes` | JSON serialization of protocol messages |
 | `rmp` + `rmp-serde` | Strict protocol-v3 MessagePack envelope decoding |
 | `uuid` | Player/room IDs serialized as lowercase hyphenated wire strings |

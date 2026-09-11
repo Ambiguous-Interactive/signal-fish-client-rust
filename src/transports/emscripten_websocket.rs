@@ -245,7 +245,11 @@ extern "C" {
 enum IncomingEvent {
     Open,
     Message(TransportFrame),
-    Error(String),
+    /// Typed terminal input error. Carrying the classified error (instead
+    /// of its Display text) keeps `poll_recv` from re-wrapping an
+    /// already-typed `TransportReceive` — a second "transport receive
+    /// error:" prefix and a flattened string cause.
+    Error(SignalFishError),
     Close {
         code: u16,
         was_clean: bool,
@@ -788,7 +792,11 @@ extern "C" fn on_message_callback(
     state.inbound_queue.set(bound);
     if let Err(refusal) = admission {
         if !matches!(refusal, QueueRefusal::AlreadyFused) {
-            let _ = state.tx.send(IncomingEvent::Error(refusal.message()));
+            let _ = state
+                .tx
+                .send(IncomingEvent::Error(SignalFishError::TransportReceive(
+                    refusal.message().into(),
+                )));
         }
         return 1; // EM_TRUE
     }
@@ -820,7 +828,10 @@ extern "C" fn on_message_callback(
                 let mut bound = state.inbound_queue.get();
                 bound.fuse();
                 state.inbound_queue.set(bound);
-                let _ = state.tx.send(IncomingEvent::Error(error.to_string()));
+                // Typed pass-through: the helper already classified this as a
+                // terminal `TransportReceive`; stringifying here would
+                // double-prefix the Display and flatten the error chain.
+                let _ = state.tx.send(IncomingEvent::Error(error));
             }
         }
     } else {
@@ -847,7 +858,9 @@ extern "C" fn on_error_callback(
     let state = unsafe { &*(user_data as *const CallbackState) };
     let _ = state
         .tx
-        .send(IncomingEvent::Error("WebSocket error".into()));
+        .send(IncomingEvent::Error(SignalFishError::TransportReceive(
+            "WebSocket error".into(),
+        )));
     1 // EM_TRUE
 }
 
@@ -986,9 +999,7 @@ impl Transport for EmscriptenWebSocketTransport {
                             break;
                         }
                     }
-                    return std::task::Poll::Ready(Some(Err(SignalFishError::TransportReceive(
-                        error.into(),
-                    ))));
+                    return std::task::Poll::Ready(Some(Err(error)));
                 }
                 Ok(IncomingEvent::Close {
                     code,
