@@ -83,143 +83,106 @@ fn extract_spec_error_tokens() -> Vec<String> {
     tokens
 }
 
+/// One entry per client `ErrorCode` variant. This single list drives both
+/// [`all_client_error_codes`] and [`exhaustiveness_guard`], so adding a
+/// variant extends the runtime inventory and the compile-time guard in one
+/// edit and the inventory cannot go stale.
+macro_rules! for_each_client_error_code {
+    ($mac:ident) => {
+        $mac!(
+            Unauthorized,
+            InvalidToken,
+            AuthenticationRequired,
+            InvalidAppId,
+            AppIdExpired,
+            AppIdRevoked,
+            AppIdSuspended,
+            MissingAppId,
+            AuthenticationTimeout,
+            SdkVersionUnsupported,
+            UnsupportedGameDataFormat,
+            InvalidInput,
+            InvalidGameName,
+            InvalidRoomCode,
+            InvalidPlayerName,
+            InvalidMaxPlayers,
+            MessageTooLarge,
+            RoomNotFound,
+            RoomFull,
+            AlreadyInRoom,
+            NotInRoom,
+            RoomCreationFailed,
+            MaxRoomsPerGameExceeded,
+            InvalidRoomState,
+            AuthorityNotSupported,
+            AuthorityConflict,
+            AuthorityDenied,
+            RateLimitExceeded,
+            TooManyConnections,
+            ReconnectionFailed,
+            ReconnectionTokenInvalid,
+            ReconnectionExpired,
+            PlayerAlreadyConnected,
+            SpectatorNotAllowed,
+            TooManySpectators,
+            NotASpectator,
+            SpectatorJoinFailed,
+            InternalError,
+            StorageError,
+            ServiceUnavailable,
+            GameStartNotReady,
+            GameStartForbidden,
+            RoomSessionIncompatible,
+            CrossRoomSignal,
+            UnsupportedTransport,
+            SignalTargetNotFound,
+            SignalRateLimited,
+            SignalTooLarge,
+            ConnectionIdleTimeout,
+            SlowConsumer,
+            ActivityTimeout,
+            ServerDraining,
+            InvalidDeliveryClass,
+            UnsupportedProtocolVersion,
+            NotRoomAuthority,
+            KickTargetNotFound,
+            Kicked,
+            PasswordRequired,
+            Banned,
+            TransferTargetNotFound,
+        );
+    };
+}
+
 /// Every client `ErrorCode` variant, exactly once.
 ///
-/// Kept honest by [`exhaustiveness_guard`]: adding an enum variant fails to
-/// compile there, forcing an edit to this file — extend BOTH the guard match
-/// and this list.
+/// Mechanically exhaustive: the list lives in [`for_each_client_error_code`],
+/// shared with [`exhaustiveness_guard`].
 fn all_client_error_codes() -> Vec<ErrorCode> {
-    vec![
-        ErrorCode::Unauthorized,
-        ErrorCode::InvalidToken,
-        ErrorCode::AuthenticationRequired,
-        ErrorCode::InvalidAppId,
-        ErrorCode::AppIdExpired,
-        ErrorCode::AppIdRevoked,
-        ErrorCode::AppIdSuspended,
-        ErrorCode::MissingAppId,
-        ErrorCode::AuthenticationTimeout,
-        ErrorCode::SdkVersionUnsupported,
-        ErrorCode::UnsupportedGameDataFormat,
-        ErrorCode::InvalidInput,
-        ErrorCode::InvalidGameName,
-        ErrorCode::InvalidRoomCode,
-        ErrorCode::InvalidPlayerName,
-        ErrorCode::InvalidMaxPlayers,
-        ErrorCode::MessageTooLarge,
-        ErrorCode::RoomNotFound,
-        ErrorCode::RoomFull,
-        ErrorCode::AlreadyInRoom,
-        ErrorCode::NotInRoom,
-        ErrorCode::RoomCreationFailed,
-        ErrorCode::MaxRoomsPerGameExceeded,
-        ErrorCode::InvalidRoomState,
-        ErrorCode::AuthorityNotSupported,
-        ErrorCode::AuthorityConflict,
-        ErrorCode::AuthorityDenied,
-        ErrorCode::RateLimitExceeded,
-        ErrorCode::TooManyConnections,
-        ErrorCode::ReconnectionFailed,
-        ErrorCode::ReconnectionTokenInvalid,
-        ErrorCode::ReconnectionExpired,
-        ErrorCode::PlayerAlreadyConnected,
-        ErrorCode::SpectatorNotAllowed,
-        ErrorCode::TooManySpectators,
-        ErrorCode::NotASpectator,
-        ErrorCode::SpectatorJoinFailed,
-        ErrorCode::InternalError,
-        ErrorCode::StorageError,
-        ErrorCode::ServiceUnavailable,
-        ErrorCode::GameStartNotReady,
-        ErrorCode::GameStartForbidden,
-        ErrorCode::RoomSessionIncompatible,
-        ErrorCode::CrossRoomSignal,
-        ErrorCode::UnsupportedTransport,
-        ErrorCode::SignalTargetNotFound,
-        ErrorCode::SignalRateLimited,
-        ErrorCode::SignalTooLarge,
-        ErrorCode::ConnectionIdleTimeout,
-        ErrorCode::SlowConsumer,
-        ErrorCode::ActivityTimeout,
-        ErrorCode::ServerDraining,
-        ErrorCode::InvalidDeliveryClass,
-        ErrorCode::UnsupportedProtocolVersion,
-        ErrorCode::NotRoomAuthority,
-        ErrorCode::KickTargetNotFound,
-        ErrorCode::Kicked,
-        ErrorCode::PasswordRequired,
-        ErrorCode::Banned,
-        ErrorCode::TransferTargetNotFound,
-    ]
+    let mut codes = Vec::new();
+    macro_rules! push {
+        ($($variant:ident),+ $(,)?) => {
+            $(codes.push(ErrorCode::$variant);)+
+        };
+    }
+    for_each_client_error_code!(push);
+    codes
 }
 
 /// Compile-time exhaustiveness guard: one arm per variant, no wildcard.
 ///
-/// A new `ErrorCode` variant fails compilation here until both this match and
-/// [`all_client_error_codes`] are extended.
+/// A new `ErrorCode` variant fails compilation here until it joins the
+/// shared [`for_each_client_error_code`] list, which extends
+/// [`all_client_error_codes`] in the same edit.
 fn exhaustiveness_guard(code: &ErrorCode) {
-    match code {
-        ErrorCode::Unauthorized
-        | ErrorCode::InvalidToken
-        | ErrorCode::AuthenticationRequired
-        | ErrorCode::InvalidAppId
-        | ErrorCode::AppIdExpired
-        | ErrorCode::AppIdRevoked
-        | ErrorCode::AppIdSuspended
-        | ErrorCode::MissingAppId
-        | ErrorCode::AuthenticationTimeout
-        | ErrorCode::SdkVersionUnsupported
-        | ErrorCode::UnsupportedGameDataFormat
-        | ErrorCode::InvalidInput
-        | ErrorCode::InvalidGameName
-        | ErrorCode::InvalidRoomCode
-        | ErrorCode::InvalidPlayerName
-        | ErrorCode::InvalidMaxPlayers
-        | ErrorCode::MessageTooLarge
-        | ErrorCode::RoomNotFound
-        | ErrorCode::RoomFull
-        | ErrorCode::AlreadyInRoom
-        | ErrorCode::NotInRoom
-        | ErrorCode::RoomCreationFailed
-        | ErrorCode::MaxRoomsPerGameExceeded
-        | ErrorCode::InvalidRoomState
-        | ErrorCode::AuthorityNotSupported
-        | ErrorCode::AuthorityConflict
-        | ErrorCode::AuthorityDenied
-        | ErrorCode::RateLimitExceeded
-        | ErrorCode::TooManyConnections
-        | ErrorCode::ReconnectionFailed
-        | ErrorCode::ReconnectionTokenInvalid
-        | ErrorCode::ReconnectionExpired
-        | ErrorCode::PlayerAlreadyConnected
-        | ErrorCode::SpectatorNotAllowed
-        | ErrorCode::TooManySpectators
-        | ErrorCode::NotASpectator
-        | ErrorCode::SpectatorJoinFailed
-        | ErrorCode::InternalError
-        | ErrorCode::StorageError
-        | ErrorCode::ServiceUnavailable
-        | ErrorCode::GameStartNotReady
-        | ErrorCode::GameStartForbidden
-        | ErrorCode::RoomSessionIncompatible
-        | ErrorCode::CrossRoomSignal
-        | ErrorCode::UnsupportedTransport
-        | ErrorCode::SignalTargetNotFound
-        | ErrorCode::SignalRateLimited
-        | ErrorCode::SignalTooLarge
-        | ErrorCode::ConnectionIdleTimeout
-        | ErrorCode::SlowConsumer
-        | ErrorCode::ActivityTimeout
-        | ErrorCode::ServerDraining
-        | ErrorCode::InvalidDeliveryClass
-        | ErrorCode::UnsupportedProtocolVersion
-        | ErrorCode::NotRoomAuthority
-        | ErrorCode::KickTargetNotFound
-        | ErrorCode::Kicked
-        | ErrorCode::PasswordRequired
-        | ErrorCode::Banned
-        | ErrorCode::TransferTargetNotFound => {}
+    macro_rules! match_arms {
+        ($($variant:ident),+ $(,)?) => {
+            match code {
+                $(ErrorCode::$variant => {})+
+            }
+        };
     }
+    for_each_client_error_code!(match_arms);
 }
 
 fn wire_token(code: &ErrorCode) -> String {

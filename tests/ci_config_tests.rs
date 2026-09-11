@@ -11531,6 +11531,185 @@ mod protocol_wire_conformance_policy {
     }
 
     #[test]
+    fn wire_sample_and_spec_sets_are_pinned_by_every_surface() {
+        // Every vendored protocol-evidence file must be named by every pin
+        // surface — the directory contents, `SAMPLE_FILES`,
+        // `compatibility.toml`, both PROVENANCE `[files]` tables, the
+        // wire-golden `include_str!`s, and the protocol-sync fetch loops — so
+        // a new, renamed, or extra entry cannot escape the hash, golden, or
+        // upstream-truth gates by falling outside a hand-maintained list.
+        let listed: std::collections::BTreeSet<String> = SAMPLE_FILES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        let metadata_files: std::collections::BTreeSet<String> = ["README.md", "PROVENANCE.toml"]
+            .into_iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+
+        let mut on_disk = std::collections::BTreeSet::new();
+        collect_vendored_samples(&project_root().join("tests/wire-samples"), &mut on_disk);
+        let mut expected_wire = listed.clone();
+        expected_wire.extend(metadata_files.clone());
+        assert_eq!(
+            on_disk, expected_wire,
+            "tests/wire-samples must hold exactly the pinned sample files plus \
+             README.md and PROVENANCE.toml"
+        );
+
+        let manifest: toml::Value = toml::from_str(&read_project_file("tests/compatibility.toml"))
+            .expect("compatibility.toml must be valid TOML");
+        assert_eq!(
+            toml_table_keys(&manifest, "wire_samples"),
+            listed,
+            "[wire_samples] keys must match the pinned sample set"
+        );
+        assert_eq!(
+            toml_table_keys(&manifest, "server_spec"),
+            spec_entries(),
+            "[server_spec] keys must match the vendored spec files"
+        );
+
+        let wire_provenance: toml::Value =
+            toml::from_str(&read_project_file("tests/wire-samples/PROVENANCE.toml"))
+                .expect("wire-samples PROVENANCE.toml must be valid TOML");
+        assert_eq!(
+            toml_table_keys(&wire_provenance, "files"),
+            listed,
+            "wire-sample PROVENANCE [files] must name exactly the pinned \
+             samples — an extra entry would never be hash-verified"
+        );
+
+        let mut spec_on_disk = std::collections::BTreeSet::new();
+        collect_vendored_samples(&project_root().join("tests/server-spec"), &mut spec_on_disk);
+        let mut expected_spec = spec_entries();
+        expected_spec.extend(metadata_files);
+        assert_eq!(
+            spec_on_disk, expected_spec,
+            "tests/server-spec must hold exactly the pinned spec files plus \
+             README.md and PROVENANCE.toml"
+        );
+        let spec_provenance: toml::Value =
+            toml::from_str(&read_project_file("tests/server-spec/PROVENANCE.toml"))
+                .expect("server-spec PROVENANCE.toml must be valid TOML");
+        assert_eq!(
+            toml_table_keys(&spec_provenance, "files"),
+            spec_entries(),
+            "server-spec PROVENANCE [files] must name exactly the vendored spec files"
+        );
+
+        // Every sample must be consumed by a wire-golden `include_str!` (the
+        // round-trip conformance gate), and no golden may include an unlisted
+        // sample.
+        let golden = read_project_file("tests/wire_golden_tests.rs");
+        let mut golden_samples = std::collections::BTreeSet::new();
+        for (occurrence, _) in golden.match_indices("wire-samples/") {
+            let rest = &golden[occurrence + "wire-samples/".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| *c != '"' && *c != ')' && !c.is_whitespace())
+                .collect();
+            if name.ends_with(".jsonl") {
+                golden_samples.insert(name);
+            }
+        }
+        assert_eq!(
+            golden_samples, listed,
+            "tests/wire_golden_tests.rs include_str!s must pin exactly the \
+             vendored sample set"
+        );
+
+        // The protocol-sync gates must cover exactly the pinned sets so
+        // upstream additions stay visible: every `for f in` fetch loop (the
+        // upstream-`main` comparison and the pinned-commit comparison) must
+        // name every sample, the pinned-commit fetch must exist, and the
+        // vendored spec must be diffed by both comparisons — being named in
+        // the `paths:` trigger alone proves nothing.
+        let sync = read_project_file(".github/workflows/protocol-sync.yml");
+        let loop_lines: Vec<&str> = sync
+            .lines()
+            .filter(|line| line.trim_start().starts_with("for f in "))
+            .collect();
+        assert!(
+            !loop_lines.is_empty(),
+            "protocol-sync must fetch each vendored wire sample"
+        );
+        for line in &loop_lines {
+            for name in SAMPLE_FILES {
+                assert!(
+                    line.contains(name.trim_end_matches(".jsonl")),
+                    "protocol-sync wire-sample fetch loop must cover {name}: {line}"
+                );
+            }
+        }
+        assert!(
+            sync.contains("signal-fish-server/$pin/"),
+            "protocol-sync must fetch evidence at the pinned protocol-authority commit"
+        );
+        let spec_diff_lines = sync
+            .lines()
+            .filter(|line| {
+                line.trim_start().starts_with("diff")
+                    && line.contains("tests/server-spec/signal-fish-protocol.asyncapi.yaml")
+            })
+            .count();
+        assert!(
+            spec_diff_lines >= 2,
+            "protocol-sync must diff the vendored spec against both upstream \
+             main and the pinned protocol-authority commit"
+        );
+    }
+
+    /// Spec authority files vendored under `tests/server-spec/` (README and
+    /// PROVENANCE are pinned separately by the directory-content assertion).
+    fn spec_entries() -> std::collections::BTreeSet<String> {
+        ["signal-fish-protocol.asyncapi.yaml"]
+            .into_iter()
+            .map(std::string::ToString::to_string)
+            .collect()
+    }
+
+    /// Recursively collects every vendored evidence file name relative to the
+    /// vendored directory. Anything that is neither a directory nor a regular
+    /// file (symlinks, devices, ...) fails closed.
+    fn collect_vendored_samples(directory: &Path, names: &mut std::collections::BTreeSet<String>) {
+        for entry in std::fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", directory.display()))
+        {
+            let entry = entry.expect("vendored evidence entry must be readable");
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .expect("vendored evidence entry type must be readable");
+            if file_type.is_dir() {
+                collect_vendored_samples(&path, names);
+            } else if file_type.is_file() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("vendored evidence file names must be UTF-8");
+                names.insert(name.to_string());
+            } else {
+                panic!(
+                    "vendored evidence must hold only regular files: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Reads the keys of a top-level `[table]` from a parsed TOML document.
+    fn toml_table_keys(document: &toml::Value, table: &str) -> std::collections::BTreeSet<String> {
+        document
+            .get(table)
+            .and_then(toml::Value::as_table)
+            .expect("[table] required")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
     fn no_protocol_type_uses_deny_unknown_fields() {
         // Forward-compat: protocol types must tolerate unknown (additive) server
         // fields, so `deny_unknown_fields` must never appear in the protocol layer.

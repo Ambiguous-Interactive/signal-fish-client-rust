@@ -73,6 +73,43 @@ jobs:
           fi
           echo "Vendored wire samples are in sync with upstream."
 
+      - name: Verify vendored bytes match the pinned protocol-authority commit
+        run: |
+          set -euo pipefail
+          # The offline gates prove hash consistency; this step proves the
+          # vendored bytes really are the pinned commit's blobs (fail closed
+          # on an unparseable pin).
+          pin="$(awk '/^\[protocol_authority\]/{pinned=1; next} /^\[/{pinned=0} pinned && /^commit = /{sub(/^commit = "/, ""); sub(/"$/, ""); print; exit}' tests/compatibility.toml)"
+          if ! printf '%s' "$pin" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::[protocol_authority].commit is not a 40-char hex SHA: '$pin'"
+            exit 1
+          fi
+          drift=0
+          proto_base="https://raw.githubusercontent.com/Ambiguous-Interactive/signal-fish-server/$pin/.llm/code-samples/protocol"
+          for f in v2-client-messages v2-server-messages v3-client-messages v3-server-messages; do
+            curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+              "$proto_base/$f.jsonl" -o "/tmp/$f.pinned.jsonl"
+            if ! diff -q "tests/wire-samples/$f.jsonl" "/tmp/$f.pinned.jsonl" >/dev/null 2>&1; then
+              echo "::error::vendored $f.jsonl does not match the pinned authority commit $pin"
+              diff "tests/wire-samples/$f.jsonl" "/tmp/$f.pinned.jsonl" || true
+              drift=1
+            fi
+          done
+          spec_base="https://raw.githubusercontent.com/Ambiguous-Interactive/signal-fish-server/$pin/spec"
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            "$spec_base/signal-fish-protocol.asyncapi.yaml" -o /tmp/signal-fish-protocol.asyncapi.pinned.yaml
+          if ! diff -q tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.pinned.yaml >/dev/null 2>&1; then
+            echo "::error::vendored AsyncAPI spec does not match the pinned authority commit $pin"
+            diff tests/server-spec/signal-fish-protocol.asyncapi.yaml /tmp/signal-fish-protocol.asyncapi.pinned.yaml || true
+            drift=1
+          fi
+          if [ "$drift" -ne 0 ]; then
+            echo "Vendored evidence diverges from the pinned protocol-authority commit."
+            echo "Refresh per .llm/skills/protocol-wire-conformance/SKILL.md and reconcile any type changes."
+            exit 1
+          fi
+          echo "Vendored evidence byte-matches the pinned protocol-authority commit."
+
       - name: Compare vendored AsyncAPI spec to upstream and fail on drift
         run: |
           set -euo pipefail

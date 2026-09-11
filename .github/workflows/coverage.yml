@@ -92,8 +92,15 @@ jobs:
 
       - name: Print coverage summary and enforce baseline
         if: always()
-        # Measured at 93.70% after the issue #61 regression expansion. Keep a
-        # little platform/toolchain rounding headroom while preventing drift.
+        # The number is a blended lines-only ratio over the core crate, the
+        # Godot adapter (fake-backend suite), and the stateful-campaign tool;
+        # perf-lab is excluded (its own required job executes every cell), and
+        # doctests plus the target-gated Emscripten FFI transport file are
+        # outside the denominator by construction. `--all-features` also
+        # compiles the doc(hidden) internal-fuzz-facade code, which only the
+        # fuzz lane executes. Measured at 93.70% after the issue #61
+        # regression expansion; keep a little platform/toolchain rounding
+        # headroom while preventing drift.
         run: cargo llvm-cov report --ignore-filename-regex 'tools/perf-lab/' --summary-only --fail-under-lines 93
 
   required:

@@ -5456,6 +5456,58 @@ mod tests {
     }
 
     #[test]
+    fn public_queue_age_peak_reset_matches_the_sampled_clock_twin() {
+        // `reset_queue_age_peak` is the public wrapper around
+        // `reset_queue_age_peak_at(Instant::now())` (its other callers — the
+        // perf-lab tool and the godot-web-smoke fixture — live outside the
+        // coverage denominator): pin that the public entry collapses the
+        // peak onto the freshly sampled current age.
+        let allow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport = TogglePendingSendTransport {
+            allow: std::sync::Arc::clone(&allow),
+            sent: Vec::new(),
+            _sent_binary: Vec::new(),
+        };
+        let mut client = SignalFishPollingClient::new(transport, default_config());
+        let base = Instant::now();
+        client
+            .cmd_queue
+            .front_mut()
+            .expect("Authenticate should be queued")
+            .enqueued_at = base;
+
+        let _ = client.poll_at(base + Duration::from_millis(30));
+        assert_eq!(
+            client.queue_age_stats().peak_oldest_queue_age,
+            Duration::from_millis(30),
+            "the pending frame's age must be sampled at the poll"
+        );
+
+        // Backend acceptance ends client ownership: the sampled current age
+        // collapses to zero, while the peak preserves the last client-owned
+        // sample (the frame was still queued at the acceptance poll's own
+        // sampling point, aged 40 ms).
+        allow.store(true, std::sync::atomic::Ordering::Release);
+        let _ = client.poll_at(base + Duration::from_millis(40));
+        let aged = client.queue_age_stats();
+        assert_eq!(aged.current_oldest_queue_age, Duration::ZERO);
+        assert_eq!(
+            aged.peak_oldest_queue_age,
+            Duration::from_millis(40),
+            "the peak must survive acceptance until an explicit reset"
+        );
+
+        client.reset_queue_age_peak();
+        let reset = client.queue_age_stats();
+        assert_eq!(
+            reset.peak_oldest_queue_age,
+            Duration::ZERO,
+            "the public reset must collapse the peak onto the sampled current age"
+        );
+        assert_eq!(reset.current_oldest_queue_age, Duration::ZERO);
+    }
+
+    #[test]
     fn serialization_failure_cleanup_stops_queue_age_and_preserves_peak() {
         let mut client = SignalFishPollingClient::new(MockTransport::new(), default_config());
         let base = Instant::now();

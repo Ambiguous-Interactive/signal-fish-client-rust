@@ -40,6 +40,15 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         version_parts.next().is_none(),
         "client_version must be strict X.Y.Z"
     );
+    // The manifest's client version is the released workspace version; the
+    // release tooling rewrites both in the same commit, so a manual bump of
+    // one side must fail here instead of drifting silently until release.
+    assert_eq!(
+        client_version,
+        env!("CARGO_PKG_VERSION"),
+        "tests/compatibility.toml client_version must match the core crate \
+         version (bump both together, as Prepare Release does)"
+    );
     assert_eq!(manifest["server_version"].as_str(), Some("0.8.0"));
     assert_eq!(manifest["server_tag"].as_str(), Some("v0.8.0"));
     let commit = manifest["server_commit"]
