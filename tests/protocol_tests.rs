@@ -2555,6 +2555,37 @@ fn spectator_info_round_trip() {
     assert_eq!(deser.connected_at, "2026-03-01T15:00:00Z");
 }
 
+/// The server may omit `connected_at` from protocol-v3 room snapshots
+/// (signal-fish-server #539 trims it for privacy), so both structs must
+/// deserialize a snapshot payload without the field instead of failing the
+/// whole frame. The value reads back as an empty string: the timestamp is
+/// unknown to this SDK version.
+#[test]
+fn room_snapshot_without_connected_at_still_parses() {
+    let player_json = r#"{
+        "id": "00000000-0000-0000-0000-0000000000c8",
+        "name": "TrimmedV3",
+        "is_authority": true,
+        "is_ready": false
+    }"#;
+    let player: PlayerInfo = serde_json::from_str(player_json).expect("deserialize player");
+    assert_eq!(player.name, "TrimmedV3");
+    assert!(player.is_authority);
+    assert_eq!(player.connected_at, "");
+    assert!(player.connection_info.is_none());
+    assert!(player.epoch.is_none());
+    assert!(player.seq.is_none());
+
+    let spectator_json = r#"{
+        "id": "00000000-0000-0000-0000-000000000190",
+        "name": "TrimmedWatcher"
+    }"#;
+    let spectator: SpectatorInfo =
+        serde_json::from_str(spectator_json).expect("deserialize spectator");
+    assert_eq!(spectator.name, "TrimmedWatcher");
+    assert_eq!(spectator.connected_at, "");
+}
+
 #[test]
 fn peer_connection_info_round_trip() {
     let info = PeerConnectionInfo {

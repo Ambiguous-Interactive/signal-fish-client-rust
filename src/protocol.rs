@@ -386,6 +386,11 @@ pub struct PlayerInfo {
     pub name: String,
     pub is_authority: bool,
     pub is_ready: bool,
+    /// ISO 8601 connect timestamp. Defaults to an empty string when the
+    /// server omits it: protocol-v3 room snapshots may trim this field for
+    /// privacy (signal-fish-server #539), and dropping the whole frame over
+    /// a metadata field would break the session.
+    #[serde(default)]
     pub connected_at: String,
     /// Legacy self-declared connection info for P2P establishment. Protocol
     /// v2 room snapshots may include it (when the player provided it);
@@ -406,6 +411,9 @@ pub struct PlayerInfo {
 pub struct SpectatorInfo {
     pub id: PlayerId,
     pub name: String,
+    /// ISO 8601 join timestamp. Defaults to an empty string when the server
+    /// omits it (see [`PlayerInfo::connected_at`]).
+    #[serde(default)]
     pub connected_at: String,
 }
 
