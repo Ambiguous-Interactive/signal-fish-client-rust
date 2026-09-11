@@ -21,15 +21,17 @@ fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// True when the checkout carries git metadata. cargo-mutants and
+/// source-distribution checks deliberately copy the crate without it.
+fn has_git_metadata() -> bool {
+    project_root().join(".git").exists()
+}
+
 mod repository_artifact_policy {
     use super::*;
 
     fn has_git_metadata_at(root: &Path) -> bool {
         root.join(".git").exists()
-    }
-
-    fn has_git_metadata() -> bool {
-        has_git_metadata_at(&project_root())
     }
 
     fn git_paths(arguments: &[&str]) -> Vec<String> {
@@ -845,6 +847,76 @@ fn read_project_file(relative_path: &str) -> String {
             e
         )
     })
+}
+
+/// Tracked `.rs` files under the given repository-relative roots, resolved
+/// through the git index instead of a filesystem walk.
+///
+/// Fixture build trees (`tests/*/target/`) are gitignored generated output,
+/// not test sources; scanning them made policy verdicts depend on unrelated
+/// build artifacts and cost ~100 s per full suite once a fixture had been
+/// built. The index gives the exact scan set. Untracked scratch files are
+/// deliberately outside the scan set: a scan verdict describes the
+/// repository's content, not a worktree in progress. Git failures inside a
+/// real checkout fail loudly; a silent empty list would turn policy scans
+/// into green no-ops (the same rule the repository's hook scripts follow).
+///
+/// Metadata-less copies (cargo-mutants, source-distribution checks) have no
+/// index to consult; there the fallback is a disk walk that prunes cargo
+/// `target` directories, keeping every environment's scan meaningful.
+fn git_tracked_rs_files(roots: &[&str]) -> Vec<PathBuf> {
+    if !has_git_metadata() {
+        let mut files = Vec::new();
+        for root in roots {
+            collect_rs_files_pruning_target_dirs(&project_root().join(root), &mut files);
+        }
+        return files;
+    }
+    let output = std::process::Command::new("git")
+        .arg("ls-files")
+        .arg("-z")
+        .arg("--")
+        .args(roots)
+        .current_dir(project_root())
+        .output()
+        .expect("git must be available for CI configuration policy checks");
+    assert!(
+        output.status.success(),
+        "git ls-files -- {} failed: {}",
+        roots.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| project_root().join(String::from_utf8_lossy(entry).to_string()))
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("rs"))
+        .collect()
+}
+
+/// Disk-walk fallback for metadata-less copies: every `.rs` file below
+/// `dir`, pruning any cargo `target` build directory at any depth.
+fn collect_rs_files_pruning_target_dirs(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if path.file_name().and_then(|name| name.to_str()) == Some("target") {
+                continue;
+            }
+            collect_rs_files_pruning_target_dirs(&path, files);
+        } else if file_type.is_file()
+            && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+        {
+            files.push(path);
+        }
+    }
 }
 
 /// Reads the version from a workspace source manifest or a standalone package manifest.
@@ -8988,27 +9060,6 @@ mod pending_future_documentation {
         let root = project_root();
         let mut violations: Vec<String> = Vec::new();
 
-        fn visit_rs_files(
-            dir: &std::path::Path,
-            root: &std::path::Path,
-            violations: &mut Vec<String>,
-        ) {
-            // Tolerant traversal: concurrent processes (rust-analyzer, builds)
-            // may make listed entries vanish mid-walk; skipping them keeps the
-            // scanner deterministic on stable trees without racing.
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    visit_rs_files(&path, root, violations);
-                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    check_file(&path, root, violations);
-                }
-            }
-        }
-
         fn check_file(
             path: &std::path::Path,
             root: &std::path::Path,
@@ -9032,9 +9083,12 @@ mod pending_future_documentation {
                 "never completes",
             ];
 
-            // Build the search needle by concatenation so this test file
-            // does not self-match when scanned.
+            // Build the search needles by concatenation so this test file
+            // does not self-match when scanned. Both the plain and the
+            // turbofish call form are matched; `std::future::pending::<T>()`
+            // is the same never-waking future and previously escaped.
             let needle = format!("std::future::{}().await", "pending");
+            let turbofish_needle = format!("std::future::{}::<", "pending");
 
             for (i, line) in lines.iter().enumerate() {
                 let trimmed = line.trim();
@@ -9043,7 +9097,9 @@ mod pending_future_documentation {
                 // - doc comments that merely discuss the pattern
                 // - string literals that mention the function name
                 // - comments referencing the function
-                if !trimmed.contains(&needle) {
+                let is_turbofish_call =
+                    trimmed.contains(&turbofish_needle) && trimmed.contains(".await");
+                if !trimmed.contains(&needle) && !is_turbofish_call {
                     continue;
                 }
 
@@ -9083,12 +9139,11 @@ mod pending_future_documentation {
             }
         }
 
-        // Scan both src/ and tests/ directories.
-        let src_dir = root.join("src");
-        let tests_dir = root.join("tests");
-        visit_rs_files(&src_dir, &root, &mut violations);
-        if tests_dir.is_dir() {
-            visit_rs_files(&tests_dir, &root, &mut violations);
+        // Scan tracked sources under both src/ and tests/. Fixture build
+        // trees (tests/*/target/) are gitignored generated output, not
+        // sources; the git index keeps the scan set exact and fast.
+        for path in git_tracked_rs_files(&["src", "tests"]) {
+            check_file(&path, &root, &mut violations);
         }
 
         let needle_display = format!("std::future::{}().await", "pending");
@@ -10471,12 +10526,6 @@ mod test_code_quality {
     /// those are standard test patterns.
     #[test]
     fn test_files_avoid_bare_unwrap_on_io_operations() {
-        let tests_dir = project_root().join("tests");
-        assert!(
-            tests_dir.is_dir(),
-            "Expected tests/ directory to exist at project root."
-        );
-
         let mut violations: Vec<String> = Vec::new();
 
         // I/O function patterns that should use unwrap_or_else, not bare unwrap.
@@ -10498,66 +10547,48 @@ mod test_code_quality {
             "fs::rename(",
         ];
 
-        fn visit_rs_files(
-            dir: &std::path::Path,
+        fn check_tracked_file(
+            path: &std::path::Path,
             root: &std::path::Path,
             io_patterns: &[&str],
             violations: &mut Vec<String>,
         ) {
-            // Tolerant traversal: concurrent processes (rust-analyzer, builds)
-            // may make listed entries vanish mid-walk; skipping them keeps the
-            // scanner deterministic on stable trees without racing.
-            let Ok(entries) = std::fs::read_dir(dir) else {
+            let Ok(contents) = std::fs::read_to_string(path) else {
                 return;
             };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    visit_rs_files(&path, root, io_patterns, violations);
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                    continue;
-                }
-                let Ok(contents) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .to_string();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
 
-                let mut in_block_comment = false;
-                for (line_num, line) in contents.lines().enumerate() {
-                    // Strip comments (including multi-line block comments)
-                    // and string literals so we don't match I/O patterns
-                    // that only appear inside strings or comments.
-                    let code_only = strip_non_code_stateful(line, &mut in_block_comment);
-                    // Skip lines that use unwrap_or_else (the correct pattern).
-                    if code_only.contains("unwrap_or_else") {
-                        continue;
-                    }
-                    // Skip lines that don't have .unwrap() at all.
-                    if !code_only.contains(".unwrap()") {
-                        continue;
-                    }
-                    // Check if the line contains any of the I/O patterns.
-                    for pattern in io_patterns {
-                        if code_only.contains(pattern) {
-                            violations.push(format!(
-                                "{relative}:{}: {}",
-                                line_num + 1,
-                                line.trim()
-                            ));
-                            break;
-                        }
+            let mut in_block_comment = false;
+            for (line_num, line) in contents.lines().enumerate() {
+                // Strip comments (including multi-line block comments)
+                // and string literals so we don't match I/O patterns
+                // that only appear inside strings or comments.
+                let code_only = strip_non_code_stateful(line, &mut in_block_comment);
+                // Skip lines that use unwrap_or_else (the correct pattern).
+                if code_only.contains("unwrap_or_else") {
+                    continue;
+                }
+                // Skip lines that don't have .unwrap() at all.
+                if !code_only.contains(".unwrap()") {
+                    continue;
+                }
+                // Check if the line contains any of the I/O patterns.
+                for pattern in io_patterns {
+                    if code_only.contains(pattern) {
+                        violations.push(format!("{relative}:{}: {}", line_num + 1, line.trim()));
+                        break;
                     }
                 }
             }
         }
 
-        visit_rs_files(&tests_dir, &project_root(), io_patterns, &mut violations);
+        for path in git_tracked_rs_files(&["tests"]) {
+            check_tracked_file(&path, &project_root(), io_patterns, &mut violations);
+        }
 
         let joined = violations.join("\n  ");
         assert!(
@@ -10664,53 +10695,34 @@ mod dev_dependency_usage {
         false
     }
 
-    /// Returns true if any `.rs` file under `dir` contains a reference to
-    /// the given crate name as a complete identifier (word-boundary-aware).
+    /// Returns true if any tracked `.rs` file in `files` contains a
+    /// reference to the given crate name as a complete identifier
+    /// (word-boundary-aware).
     ///
     /// Uses [`strip_non_code_stateful`] to correctly handle line comments,
     /// inline block comments, multi-line block comments, and string literals
     /// (including raw strings). Code after a closing `*/` delimiter is still
     /// scanned, and `/* ... */` inside string literals does not confuse the
     /// tracker.
-    fn is_crate_referenced_in_dir(dir: &std::path::Path, rust_name: &str) -> bool {
-        if !dir.is_dir() {
-            return false;
-        }
+    fn is_crate_referenced_in_files(files: &[PathBuf], rust_name: &str) -> bool {
+        files
+            .iter()
+            .any(|path| file_references_crate(path, rust_name))
+    }
 
-        fn scan_dir(dir: &std::path::Path, rust_name: &str) -> bool {
-            let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
-                panic!("Failed to read directory '{}': {e}", dir.display());
-            });
-            for entry in entries {
-                let entry = entry.unwrap_or_else(|e| {
-                    panic!("Failed to read entry in directory '{}': {e}", dir.display());
-                });
-                let path = entry.path();
-                if path.is_dir() {
-                    if scan_dir(&path, rust_name) {
-                        return true;
-                    }
-                    continue;
-                }
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                    continue;
-                }
-                let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("Failed to read '{}': {e}", path.display());
-                });
+    fn file_references_crate(path: &std::path::Path, rust_name: &str) -> bool {
+        let contents = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!("Failed to read '{}': {e}", path.display());
+        });
 
-                let mut in_block_comment = false;
-                for line in contents.lines() {
-                    let code_only = strip_non_code_stateful(line, &mut in_block_comment);
-                    if !code_only.is_empty() && line_references_crate(code_only.trim(), rust_name) {
-                        return true;
-                    }
-                }
+        let mut in_block_comment = false;
+        for line in contents.lines() {
+            let code_only = strip_non_code_stateful(line, &mut in_block_comment);
+            if !code_only.is_empty() && line_references_crate(code_only.trim(), rust_name) {
+                return true;
             }
-            false
         }
-
-        scan_dir(dir, rust_name)
+        false
     }
 
     /// Every dev-dependency declared in Cargo.toml must be actually used
@@ -10724,7 +10736,6 @@ mod dev_dependency_usage {
     /// `DEV_DEP_USAGE_EXCEPTIONS`.
     #[test]
     fn all_dev_dependencies_are_used() {
-        let root = project_root();
         let regular_deps = regular_dependency_names();
 
         let exception_names: Vec<&str> = DEV_DEP_USAGE_EXCEPTIONS
@@ -10734,6 +10745,9 @@ mod dev_dependency_usage {
 
         let dev_deps = dev_dependency_names();
         let mut unused = Vec::new();
+
+        let test_only_sources = git_tracked_rs_files(&["tests", "examples", "benches"]);
+        let test_and_lib_sources = git_tracked_rs_files(&["tests", "examples", "benches", "src"]);
 
         for dep_name in &dev_deps {
             // Skip known usage exceptions.
@@ -10756,24 +10770,13 @@ mod dev_dependency_usage {
             // it will be falsely flagged as unused. In practice, such deps
             // are typically also used in tests/ or examples/.
             let is_also_regular_dep = regular_deps.contains(dep_name);
-            let search_dirs: Vec<std::path::PathBuf> = if is_also_regular_dep {
-                vec![
-                    root.join("tests"),
-                    root.join("examples"),
-                    root.join("benches"),
-                ]
+            let scan_set = if is_also_regular_dep {
+                &test_only_sources
             } else {
-                vec![
-                    root.join("tests"),
-                    root.join("examples"),
-                    root.join("benches"),
-                    root.join("src"),
-                ]
+                &test_and_lib_sources
             };
 
-            let found = search_dirs
-                .iter()
-                .any(|dir| is_crate_referenced_in_dir(dir, &rust_name));
+            let found = is_crate_referenced_in_files(scan_set, &rust_name);
 
             if !found {
                 unused.push(dep_name.clone());

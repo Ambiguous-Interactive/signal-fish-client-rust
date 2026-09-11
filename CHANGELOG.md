@@ -99,6 +99,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reduced per-frame allocation churn on both drivers: inbound binary game
+  data now reuses the transport's wire buffer for the payload instead of
+  copying it into a fresh allocation, and every direct JSON string game
+  payload (previously only those of at least 4 KiB) serializes with a
+  capacity hint instead of geometric buffer growth. The wire format, frame
+  ownership, backpressure, delivery accounting, error behavior, and
+  structured-JSON paths are unchanged.
 - Room snapshots without `connected_at` on `PlayerInfo` and `SpectatorInfo`
   now deserialize instead of failing the whole frame. Protocol-v3 room
   snapshots may trim the field for privacy (signal-fish-server #539); the

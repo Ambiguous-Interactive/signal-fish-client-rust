@@ -40,7 +40,6 @@ pub(crate) enum CoreCommand {
 }
 
 const GAME_DATA_JSON_ENVELOPE_CAPACITY: usize = 128;
-const GAME_DATA_JSON_PREALLOCATION_THRESHOLD: usize = 4_096;
 
 /// Maximum container nesting accepted for outbound JSON game data.
 ///
@@ -80,8 +79,8 @@ fn game_data_depth_within(value: &serde_json::Value, budget: usize) -> bool {
 ///
 /// `serde_json::to_string` begins with a small fixed buffer. That is a good
 /// default for control messages, but it repeatedly reallocates when a
-/// direct `GameData` string is already known to be large. Its existing byte
-/// length gives an O(1) capacity hint, with fixed space for the adjacent-tagged
+/// direct `GameData` string's byte length is already known. That length
+/// gives an O(1) capacity hint, with fixed space for the adjacent-tagged
 /// envelope, delivery class, and key. Heavily escaped strings may still grow
 /// the buffer; ordinary game payloads avoid both an extra scan and geometric
 /// reallocations. Structured values retain serde_json's default path until a
@@ -94,9 +93,6 @@ pub(crate) fn serialize_client_message(message: &ClientMessage) -> serde_json::R
     let serde_json::Value::String(data) = data else {
         return serde_json::to_string(message);
     };
-    if data.len() < GAME_DATA_JSON_PREALLOCATION_THRESHOLD {
-        return serde_json::to_string(message);
-    }
     let value_capacity = data.len().saturating_add(2);
     let capacity = value_capacity.saturating_add(GAME_DATA_JSON_ENVELOPE_CAPACITY);
     let mut encoded = Vec::with_capacity(capacity);
@@ -1425,9 +1421,9 @@ impl ClientCore {
             .snapshot
             .negotiated_protocol_version
             .is_some_and(|version| version >= 3);
-        let server_msg = match decode_binary_server_message(&bytes, protocol_v3) {
+        let server_msg = match decode_binary_server_message(bytes, protocol_v3) {
             Ok(message) => message,
-            Err(error) => {
+            Err((error, bytes)) => {
                 let disconnect = self.observe_undecodable(&mut outcome.events);
                 self.stats.messages_undecodable = self.stats.messages_undecodable.saturating_add(1);
                 // The binary decoders quote wire-supplied tokens verbatim

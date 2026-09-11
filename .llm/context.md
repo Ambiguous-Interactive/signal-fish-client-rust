@@ -314,8 +314,8 @@ Use the polling client's read-only `transport()` accessor for Godot's zero-expec
 ### Performance Contract
 
 The opt-in `tools/perf-lab` drives 28 deterministic polling-client workloads;
-pinned CI gates their protocol ledgers and allocation counters. Direct JSON
-strings at least 4 KiB use capacity-aware serialization. See its README.
+pinned CI gates their protocol ledgers and allocation counters. Direct JSON string game payloads use measured capacity-aware serialization.
+See its README.
 
 ## Feature Flags
 

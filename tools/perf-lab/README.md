@@ -73,12 +73,15 @@ has the same four queue reallocations and no serializer allocation. On the
 optimized head, the Serde growth stacks disappear and only the four queue
 growths remain.
 
-Both drivers now share capacity-aware serialization only for direct JSON
-string game payloads of at least 4 KiB, the measured class. The hint reads the
-existing string length in constant time and leaves structured or smaller JSON
-on Serde's default path. Serde remains the canonical encoder, including for
-large escaped and multibyte strings; underestimated escaping merely uses its
-normal safe buffer growth.
+Both drivers share capacity-aware serialization for every direct JSON
+string game payload. The hint reads the existing string length in constant
+time and leaves structured JSON on Serde's default path. Serde remains the
+canonical encoder, including for large escaped and multibyte strings;
+underestimated escaping merely uses its normal safe buffer growth. Inbound
+binary frames likewise reuse the transport's wire buffer for the payload —
+the strict decoder locates the payload in place and the driver-owned frame
+buffer becomes the event's payload allocation, removing one payload copy
+per binary frame in both drivers.
 
 ## Baseline
 
@@ -89,7 +92,14 @@ Allocation columns are exact across 10 isolated samples in both debug and
 release profiles; both profiles produced identical values. `A/D/R` means
 allocation, deallocation, and reallocation. Byte columns use the same order.
 Queue age is the maximum observed oldest queued frame age, so inbound-only
-cells correctly report zero.
+cells correctly report zero. The six rows changed by the 2026-09-11
+capacity-hint extension and zero-copy inbound binary path were re-measured
+on Rust 1.98.0; A/D/R counts are exact across toolchains, and byte columns
+shift a few hundred bytes with the toolchain's allocator bins. Those six
+ceilings were tightened to the new observed values plus the standard margin
+after the counts were verified exact across stable-debug, stable-release,
+and nightly-release toolchains; the baseline file's `toolchain` field stays
+the CI verification toolchain (1.96.1).
 
 | Workload | Median ns | ns/op | ops/s | Peak queue ns | A/D/R | Bytes A/D/R |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -100,14 +110,14 @@ cells correctly report zero.
 | `json/in/256/burst64` | 34101 | 532 | 1876777 | 0 | 129/129/4 | 108544/136192/17280 |
 | `json/in/4096/single` | 3000 | 3000 | 333333 | 0 | 3/3/0 | 6400/10672/0 |
 | `json/in/4096/burst64` | 73204 | 1143 | 874269 | 0 | 133/133/8 | 355456/628864/13824 |
-| `json/out/256/single` | 2000 | 2000 | 500000 | 700 | 1/1/2 | 582/256/454 |
-| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/132 | 47328/16384/39136 |
+| `json/out/256/single` | 2000 | 2000 | 500000 | 700 | 1/1/0 | 386/256/0 |
+| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/4 | 34784/16384/10080 |
 | `json/out/4096/single` | 3600 | 3600 | 277777 | 1000 | 1/1/0 | 4226/4096/0 |
 | `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 280544/262144/10080 |
-| `binary/in/256/single` | 2200 | 2200 | 454545 | 0 | 3/3/0 | 2560/2944/0 |
-| `binary/in/256/burst64` | 17201 | 268 | 3720713 | 0 | 129/129/4 | 108544/133120/17280 |
-| `binary/in/4096/single` | 2300 | 2300 | 434782 | 0 | 3/3/0 | 6400/10624/0 |
-| `binary/in/4096/burst64` | 30102 | 470 | 2126104 | 0 | 133/133/8 | 355456/625792/13824 |
+| `binary/in/256/single` | 2200 | 2200 | 454545 | 0 | 2/2/0 | 2368/2368/0 |
+| `binary/in/256/burst64` | 17201 | 268 | 3720713 | 0 | 65/65/4 | 94720/94720/17760 |
+| `binary/in/4096/single` | 2300 | 2300 | 434782 | 0 | 2/2/0 | 2368/2368/0 |
+| `binary/in/4096/burst64` | 30102 | 470 | 2126104 | 0 | 69/69/8 | 95904/95904/14208 |
 | `binary/out/256/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
 | `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 10080/0/10080 |
 | `binary/out/4096/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
