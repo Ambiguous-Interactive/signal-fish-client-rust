@@ -6051,6 +6051,46 @@ mod tests {
         client.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn send_game_data_with_delivery_reliable_preserves_delivery_class_on_wire() {
+        // The waiting classified send is a public entry point with no other
+        // test consumer: pin that the caller's delivery class survives the
+        // reliable (queue-capacity-waiting) path onto the v3 wire unchanged.
+        let (transport, sent, _closed) = MockTransport::new(vec![
+            Some(Ok(authenticated_json())),
+            Some(Ok(protocol_info_v3_json())),
+            Some(Ok(finalized_room_v3_json(uuid::Uuid::from_u128(7)))),
+        ]);
+        let config = SignalFishConfig::new("mb_test").enable_v3();
+        let (mut client, mut events) = SignalFishClient::start(transport, config);
+        enter_scripted_player_room(&mut client, &mut events).await;
+
+        client
+            .send_game_data_with_delivery_reliable(
+                serde_json::json!({ "hp": 42 }),
+                GameDataDelivery::Latest { key: 7 },
+            )
+            .await
+            .expect("the reliable classified send must queue and resolve");
+
+        wait_for_sent_len(&sent, 3).await;
+        {
+            let messages = sent.lock().unwrap();
+            let wire: ClientMessage = serde_json::from_str(&messages[2])
+                .expect("third queued frame must be a valid ClientMessage");
+            match wire {
+                ClientMessage::GameData { data, class, key } => {
+                    assert_eq!(data, serde_json::json!({ "hp": 42 }));
+                    assert_eq!(class, Some(crate::protocol::DeliveryClass::Latest));
+                    assert_eq!(key, Some(7));
+                }
+                other => panic!("expected classified GameData on the wire, got {other:?}"),
+            }
+        }
+
+        client.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reliable_send_revalidates_admission_after_reserving_capacity() {
         let (transport, entered_send, permits, _sent) = GatedSendTransport::new(0);
@@ -8908,6 +8948,19 @@ mod tests {
         .await
         .expect("reliable send must resolve promptly after a terminal close");
         assert!(matches!(reliable, Err(SignalFishError::NotConnected)));
+        let reliable_latest = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.send_game_data_with_delivery_reliable(
+                serde_json::json!({ "n": 1 }),
+                GameDataDelivery::Latest { key: 2 },
+            ),
+        )
+        .await
+        .expect("reliable classified send must resolve promptly after a terminal close");
+        assert!(matches!(
+            reliable_latest,
+            Err(SignalFishError::NotConnected)
+        ));
 
         // A shutdown after the self-terminated loop stays prompt and
         // idempotent.

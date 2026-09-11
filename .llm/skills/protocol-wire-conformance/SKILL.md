@@ -34,9 +34,9 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`af4e6795fac0681e0079b7b5672d141ae91a2e6b`, advanced from the Server 0.8.0
+`ac118f846f26ac55e2fc1f3231dcc9aec86a7275`, advanced from the Server 0.8.0
 release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
-plus three deliberate additive changes (the v3 room-member snapshot excludes the
+plus the deliberate additive changes (the v3 room-member snapshot excludes the
 legacy `connection_info` echo — server issue #529; the authority-only
 moderation surface — server issue #525 — added the NOT_ROOM_AUTHORITY /
 KICK_TARGET_NOT_FOUND / KICKED error codes, the KickPlayer / RegenerateRoomCode
