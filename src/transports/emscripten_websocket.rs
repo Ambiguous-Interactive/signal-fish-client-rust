@@ -245,10 +245,10 @@ extern "C" {
 enum IncomingEvent {
     Open,
     Message(TransportFrame),
-    /// Typed terminal input error. Carrying the classified error (instead of
-    /// its Display text) keeps the `#[source]` chain intact and avoids
-    /// re-prefixing an already-typed `TransportReceive` when `poll_recv`
-    /// surfaces it.
+    /// Typed terminal input error. Carrying the classified error (instead
+    /// of its Display text) keeps `poll_recv` from re-wrapping an
+    /// already-typed `TransportReceive` — a second "transport receive
+    /// error:" prefix and a flattened string cause.
     Error(SignalFishError),
     Close {
         code: u16,
