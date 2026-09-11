@@ -63,6 +63,7 @@ pub fn decode_v2_binary_game_data(wire: &[u8]) -> Result<V2BinaryGameDataFrame, 
 ///
 /// On failure the original buffer is returned alongside the diagnostic so
 /// bounded previews of hostile input still work.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 pub(crate) fn decode_v2_binary_game_data_in_place(
     mut wire: Vec<u8>,
 ) -> Result<V2BinaryGameDataFrame, (String, Vec<u8>)> {
@@ -165,6 +166,7 @@ pub fn decode_v3_binary_game_data(wire: &[u8]) -> Result<V3BinaryGameDataFrame, 
 ///
 /// On failure the original buffer is returned alongside the diagnostic so
 /// bounded previews of hostile input still work.
+#[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
 pub(crate) fn decode_v3_binary_game_data_in_place(
     mut wire: Vec<u8>,
 ) -> Result<V3BinaryGameDataFrame, (String, Vec<u8>)> {
@@ -383,6 +385,7 @@ mod tests {
     /// decoders byte for byte — same frames accepted, same diagnostics, and
     /// the returned buffer is the untouched wire on failure.
     #[test]
+    #[cfg(any(feature = "tokio-runtime", feature = "polling-client"))]
     fn in_place_decode_matches_borrowed_decode_byte_for_byte() {
         fn mp_wire(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
             let mut wire = Vec::new();
