@@ -96,7 +96,7 @@ Dependabot uses one root-workspace updater; minimum/latest Godot fixtures stay s
 | `src/protocol/binary.rs` | Strict physical MessagePack envelope decoders for v2/v3 binary game data |
 | `src/accountability.rs` | Server-0.4.0-derived delivery-accountability state machine |
 | `src/signal.rs` | `PeerSignal` — typed, matchbox-compatible WebRTC signal (protocol v3) |
-| `src/error_codes.rs` | `ErrorCode` enum — 60 variants from server (54 in the post-0.7 authority, 6 compatibility-only) |
+| `src/error_codes.rs` | `ErrorCode` enum — 61 variants from server (55 in the post-0.7 authority, 6 compatibility-only) |
 | `src/error.rs` | `SignalFishError` error type |
 | `src/event.rs` | `SignalFishEvent` high-level event stream |
 | `src/client_core.rs` | Shared command construction, decoding, accountability, state, events, and statistics |
@@ -217,6 +217,7 @@ refusal. Authoritative room/connection teardown discards obsolete work.
 ```rust,ignore
 pub struct SignalFishConfig {
     pub app_id: String,
+    pub connect_token: Option<String>,        // secret tenant credential (with_connect_token); omitted wire field when unset
     pub sdk_version: Option<String>,          // defaults to crate version
     pub platform: Option<String>,             // e.g. "unity", "godot", "rust"
     pub game_data_format: Option<GameDataEncoding>,

@@ -35,6 +35,7 @@ let config = SignalFishConfig::new("mb_app_abc123");
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `app_id` | `String` | *(required)* | Public App ID that identifies the game application. |
+| `connect_token` | `Option<String>` | `None` | Optional secret tenant credential (`sfct_v1.` token) sent on `Authenticate` for hosted deployments with tenant verification. Omitted from the wire when unset; redacted to presence and byte length in `Debug` output. See [Authentication & Credentials](authentication.md#tenant-connect-tokens-optional-hosted-deployments). |
 | `sdk_version` | `Option<String>` | Crate version at compile time | SDK version string sent during authentication. |
 | `platform` | `Option<String>` | `None` | Platform identifier (e.g. `"unity"`, `"godot"`, `"rust"`). |
 | `game_data_format` | `Option<GameDataEncoding>` | `None` | Requested game-data encoding (`Json`, `MessagePack`, or reserved `Rkyv`). The effective wire format is resolved from the first authoritative `ProtocolInfo`; omission and unsupported requests resolve to JSON on Server 0.8. |
@@ -63,6 +64,7 @@ All builder methods are `#[must_use]` — you must chain or assign the return va
 | `.with_topologies(values)` | `impl IntoIterator<Item = Topology>` | Advertise supported session topologies. Power-user API. |
 | `.with_protocol_violation_policy(policy)` | `ProtocolViolationPolicy` | Select `Quarantine` (default), `Disconnect`, or `Observe`. |
 | `.with_reconnect_policy(policy)` | `ReconnectPolicy` | Automate fresh transports, backoff, re-authentication, and player-room reconnects after retryable disconnects. Async client only. |
+| `.with_connect_token(token)` | `impl Into<String>` | Present a control-plane-minted tenant token on `Authenticate`. Secret: redacted from `Debug`/tracing; rotate by issuing a fresh token and starting a new client. |
 
 ### Full Example
 

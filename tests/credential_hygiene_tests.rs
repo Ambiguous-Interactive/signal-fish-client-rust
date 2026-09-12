@@ -7,26 +7,54 @@
 )]
 //! Guard for the cloud-auth credential story (issue #222).
 //!
-//! The SDK has no surface for secret-form application keys (`sfk_…`): the
-//! `app_id` is a public label and the documented credential slot is reserved
-//! for a future wire contract. Until that surface exists, no example, doc
-//! page, or README may normalize pasting a credential-shaped `sfk_` key into
-//! the SDK — the hygiene failure the future credential API must never
-//! reintroduce.
+//! The SDK's credential surfaces are deliberate and secret-shaped: the
+//! `app_id` is a public label, the legacy cloud control-plane key is an
+//! `sfk_…` string that never belongs in this repository, and the tenant
+//! connect token (`sfct_v1.…`, upstream issue #517) is configured through
+//! `SignalFishConfig::with_connect_token`. No example, doc page, or README
+//! may normalize pasting credential-shaped material into the SDK — the
+//! hygiene failure the credential API must never reintroduce.
 //!
 //! The scan is repository-relative and fails loudly when the documentation
 //! tree cannot be found: layout drift must fix the guard, not skip it. (The
 //! published packages exclude `tests/`, so crate-packaging test runs never
 //! execute this file.) Known limitation: a credential wrapped across a line
-//! break stays under the per-line hex-run threshold.
+//! break stays under the per-line run threshold.
 
 use std::path::{Path, PathBuf};
 
-const CREDENTIAL_PREFIX: &str = "sfk_";
-/// A credential-shaped literal carries at least this many hex characters
-/// after the prefix. Generic mentions of the prefix (the docs page that
+/// Credential-shaped prefixes this repository must never carry as literals:
+/// the legacy cloud `sfk_` application keys and the `sfct_v1.` tenant
+/// connect tokens (their signed wire form).
+const CREDENTIAL_PREFIXES: &[(&str, CredentialShape)] = &[
+    ("sfk_", CredentialShape::Hex),
+    ("sfct_v1.", CredentialShape::Base64UrlSegment),
+];
+
+/// The character run that must follow a prefix for the line to count as a
+/// credential literal. Generic mentions of the prefix (the docs page that
 /// defines the credential story) do not match.
-const MIN_HEX_RUN: usize = 8;
+#[derive(Clone, Copy)]
+enum CredentialShape {
+    /// Legacy `sfk_` keys are hex runs.
+    Hex,
+    /// A `sfct_v1.` token's payload segment is a base64url run followed by
+    /// the segment separator.
+    Base64UrlSegment,
+}
+
+impl CredentialShape {
+    fn is_run_char(self, c: char) -> bool {
+        match self {
+            Self::Hex => c.is_ascii_hexdigit(),
+            Self::Base64UrlSegment => c.is_ascii_alphanumeric() || c == '_' || c == '-',
+        }
+    }
+}
+
+/// A credential-shaped literal carries at least this many run characters
+/// after the prefix.
+const MIN_RUN: usize = 8;
 
 fn repo_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -44,14 +72,16 @@ fn repo_root() -> PathBuf {
 }
 
 fn is_credential_literal(line: &str) -> bool {
-    let mut rest = line;
-    while let Some(position) = rest.find(CREDENTIAL_PREFIX) {
-        let after = &rest[position + CREDENTIAL_PREFIX.len()..];
-        let hex_run = after.chars().take_while(char::is_ascii_hexdigit).count();
-        if hex_run >= MIN_HEX_RUN {
-            return true;
+    for (prefix, shape) in CREDENTIAL_PREFIXES {
+        let mut rest = line;
+        while let Some(position) = rest.find(prefix) {
+            let after = &rest[position + prefix.len()..];
+            let run = after.chars().take_while(|c| shape.is_run_char(*c)).count();
+            if run >= MIN_RUN {
+                return true;
+            }
+            rest = after;
         }
-        rest = after;
     }
     false
 }
@@ -149,10 +179,21 @@ fn credential_shape_detection_is_precise() {
     // Credential-shaped: prefix plus a hex run.
     assert!(is_credential_literal("app_id = \"sfk_0123456789abcdef\""));
     assert!(is_credential_literal("token: sfk_DEADBEEF"));
+    // Credential-shaped: token prefix plus a base64url payload segment.
+    assert!(is_credential_literal(
+        "connect_token: sfct_v1.cGF5bG9hZEJ5dGVz.sig"
+    ));
+    assert!(is_credential_literal(
+        ".with_connect_token(\"sfct_v1.AAAA-BBBB_CCCC-DDDD.signature\")"
+    ));
     // Generic mentions stay legal.
     assert!(!is_credential_literal("secret keys (`sfk_…`)"));
     assert!(!is_credential_literal("never paste sfk_ keys here"));
     assert!(!is_credential_literal("no prefix at all"));
+    // The documented token format is prose, not a literal.
+    assert!(!is_credential_literal("`sfct_v1.<base64url(payload)>`"));
     // Short hex runs are not credentials.
     assert!(!is_credential_literal("sfk_1234"));
+    // A lone `sfct_v1.` mention without a payload run is not a credential.
+    assert!(!is_credential_literal("the sfct_v1. token format"));
 }

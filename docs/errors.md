@@ -95,9 +95,9 @@ fn try_join(client: &mut SignalFishClient) {
 
 ## `ErrorCode`
 
-`ErrorCode` is a protocol-level enum with **60 variants** representing
+`ErrorCode` is a protocol-level enum with **61 variants** representing
 structured error codes returned by compatible Signal Fish servers. The
-post-0.7 protocol authority declares 54 of them; six variants remain decodable
+post-0.7 protocol authority declares 55 of them; six variants remain decodable
 for older servers and are listed by `ErrorCode::NON_EMITTED`. It derives `Debug`,
 `Clone`, `PartialEq`, `Eq`, `Serialize`, and `Deserialize`.
 
@@ -114,7 +114,7 @@ println!("{}", code.description());
 // "The requested room could not be found. It may have been closed or the code is incorrect."
 ```
 
-### Authentication (11)
+### Authentication (12)
 
 | Variant | Description |
 |---------|-------------|
@@ -129,6 +129,7 @@ println!("{}", code.description());
 | `AuthenticationTimeout` | Authentication took too long to complete. |
 | `SdkVersionUnsupported` | The SDK version you are using is no longer supported. |
 | `UnsupportedGameDataFormat` | The requested game data format is not supported. |
+| `ConnectTokenInvalid` | The optional tenant connect token failed verification (encoding, signature, expiry, TTL ceiling, or app-id binding). The socket stays open; the configured token is fixed for a client's lifetime, so recovery means issuing a fresh control-plane token and starting a new client. See [Authentication & Credentials](authentication.md#tenant-connect-tokens-optional-hosted-deployments). |
 
 ### Validation (6)
 

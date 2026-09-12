@@ -23,6 +23,34 @@ and browser dev tools.
 
 ## What is secret
 
+### Tenant connect tokens (optional, hosted deployments)
+
+Hosted Signal Fish deployments can require a **tenant connect token**: a
+short-lived credential minted by the deployment's control plane as
+`sfct_v1.<base64url(payload)>.<base64url(signature)>` and signed with the
+deployment's Ed25519 public key. The server verifies the token during
+authentication and never logs or echoes it. Self-hosted deployments without
+a verification key keep the public-`app_id` handshake and refuse any
+presented token, so only set one when your deployment documents tenant
+verification.
+
+```rust
+let config = SignalFishConfig::new("mb_app_abc123")
+    .with_connect_token(token_from_your_control_plane);
+```
+
+- The SDK sends the exact string on `Authenticate` — including each
+  reconnection round's fresh handshake — and never inspects its contents.
+- Omitting it (the default) omits the wire field entirely; the handshake
+  bytes are identical to previous SDK releases.
+- It is a secret: SDK `Debug` impls and tracing report presence and byte
+  length only.
+- Tokens are short-lived by design (an upstream five-minute TTL plus a
+  60-second clock-skew allowance — server PR #575's verification
+  constants). A failed verification surfaces as the `ConnectTokenInvalid`
+  error code; since the configured token is fixed for a client's lifetime,
+  recovery means issuing a fresh token and starting a new client.
+
 ### Reconnection tokens
 
 Protocol v3 rooms issue a reconnection token in `RoomJoined` and rotate it on
@@ -63,6 +91,7 @@ the mTLS fingerprint profile.
 | Secret | Issued | Rotate | On failure |
 |---|---|---|---|
 | Reconnection token | `RoomJoined` | Every `Reconnected` — persist the replacement | `ReconnectionExpired` / `ReconnectionTokenInvalid`: fall back to a normal `join_room` |
+| Tenant connect token | Deployment control plane | Before expiry (upstream TTL: 5 minutes + 60-second skew) | `ConnectTokenInvalid`: issue a fresh token and start a new client |
 | TLS session | Connect | Every new physical connection (fresh handshake, fresh proofs) | Reconnect with a fresh transport |
 | App ID | Deployment | N/A — it is a public label | The server rejects unknown labels at authentication |
 
@@ -88,9 +117,12 @@ keystore, and keep them out of logs, URLs, and error messages.
 ## Cloud credentials (status)
 
 Signal Fish Server 0.8 authenticates connections with the public app ID
-alone. If your deployment's control plane issues secret-form application keys
-(`sfk_…`), the SDK has **no surface for them today**: do not pass them as the
-`app_id`, and never embed them in the URL. A dedicated credentials API is
-being designed with the upstream wire contract; it will be explicit,
-redacted in all diagnostics, and announced in the
-[changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md).
+alone. Upstream has since ratified the optional tenant connect-token wire
+contract (server PR #575): hosted deployments that enable verification
+accept a control-plane-minted `sfct_v1.` token, and this SDK presents it
+through
+[`with_connect_token`](client.md#signalfishconfig). Legacy secret-form
+application keys (`sfk_…`) remain unsupported: do not pass them as the
+`app_id`, and never embed any credential in the URL. Credential-shaped
+literals are kept out of this repository's examples and docs by a
+repository hygiene guard.

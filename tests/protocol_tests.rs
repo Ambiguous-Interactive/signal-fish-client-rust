@@ -58,6 +58,7 @@ fn client_message_authenticate_round_trip() {
         supported_transports: None,
         supported_topologies: None,
         requested_capabilities: None,
+        connect_token: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let deser: ClientMessage = serde_json::from_str(&json).expect("deserialize");
@@ -70,6 +71,7 @@ fn client_message_authenticate_round_trip() {
         supported_transports,
         supported_topologies,
         requested_capabilities,
+        connect_token,
     } = deser
     {
         assert_eq!(app_id, "mb_app_test");
@@ -81,6 +83,7 @@ fn client_message_authenticate_round_trip() {
         assert!(supported_transports.is_none());
         assert!(supported_topologies.is_none());
         assert!(requested_capabilities.is_none());
+        assert!(connect_token.is_none());
     } else {
         panic!("expected Authenticate variant");
     }
@@ -1602,6 +1605,7 @@ fn authenticate_relay_floor_omits_v3_fields() {
         supported_transports: None,
         supported_topologies: None,
         requested_capabilities: None,
+        connect_token: None,
     };
     let json = serde_json::to_string(&msg).expect("ser");
     assert!(
@@ -1610,6 +1614,61 @@ fn authenticate_relay_floor_omits_v3_fields() {
     );
     assert!(!json.contains("supported_transports"), "{json}");
     assert!(!json.contains("supported_topologies"), "{json}");
+}
+
+#[test]
+fn authenticate_connect_token_is_additive_and_omitted_when_unset() {
+    // Unset: the field is omitted, so the handshake stays byte-identical to
+    // the pre-#517 wire (upstream PR #575: absent field == public app_id).
+    let unset = ClientMessage::Authenticate {
+        app_id: "mb_app".into(),
+        sdk_version: None,
+        platform: None,
+        game_data_format: None,
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
+        requested_capabilities: None,
+        connect_token: None,
+    };
+    let unset_json = serde_json::to_string(&unset).expect("ser");
+    assert!(
+        !unset_json.contains("connect_token"),
+        "unset token must be omitted, not null: {unset_json}"
+    );
+
+    // Set: the exact caller string rides the Authenticate data payload.
+    let set = ClientMessage::Authenticate {
+        app_id: "mb_app".into(),
+        sdk_version: None,
+        platform: None,
+        game_data_format: None,
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
+        requested_capabilities: None,
+        connect_token: Some("sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl".into()),
+    };
+    let val: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&set).expect("ser")).expect("parse");
+    assert_eq!(val["type"], "Authenticate");
+    assert_eq!(
+        val["data"]["connect_token"],
+        "sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl"
+    );
+
+    // An incoming frame from a pre-#517 peer (no field) still parses.
+    let legacy: ClientMessage = serde_json::from_str(&unset_json).expect("parse");
+    assert!(matches!(legacy, ClientMessage::Authenticate { .. }));
+}
+
+#[test]
+fn connect_token_invalid_error_code_uses_the_upstream_wire_token() {
+    let code = ErrorCode::ConnectTokenInvalid;
+    let json = serde_json::to_string(&code).expect("serialize");
+    assert_eq!(json, "\"CONNECT_TOKEN_INVALID\"");
+    let parsed: ErrorCode = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed, code);
 }
 
 #[test]
@@ -1623,6 +1682,7 @@ fn authenticate_mesh_includes_v3_fields_with_exact_strings() {
         supported_transports: Some(vec![TransportKind::WebRtc, TransportKind::Relay]),
         supported_topologies: Some(vec![Topology::Mesh, Topology::Host, Topology::Relay]),
         requested_capabilities: Some(vec!["room_operation_ids".into()]),
+        connect_token: None,
     };
     let val: serde_json::Value =
         serde_json::from_str(&serde_json::to_string(&msg).expect("ser")).expect("parse");
@@ -2659,6 +2719,7 @@ fn client_message_uses_type_and_content_tags() {
         supported_transports: None,
         supported_topologies: None,
         requested_capabilities: None,
+        connect_token: None,
     };
     let json = serde_json::to_string(&msg).expect("serialize");
     let val: serde_json::Value = serde_json::from_str(&json).expect("parse");
@@ -2917,6 +2978,7 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         "turn-secret",
         "sdp-ice-secret",
         "application-secret",
+        "connect-token-secret",
     ];
     let assert_redacted = |debug: String| {
         for secret in SECRETS {
@@ -3024,6 +3086,19 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
     let join_params = signal_fish_client::JoinRoomParams::new("game", "player")
         .with_room_code("room-secret")
         .with_password("join-secret");
+    let credentialed_config =
+        signal_fish_client::SignalFishConfig::new("app").with_connect_token("connect-token-secret");
+    let credentialed_auth = ClientMessage::Authenticate {
+        app_id: "app".into(),
+        sdk_version: None,
+        platform: None,
+        game_data_format: None,
+        protocol_version: None,
+        supported_transports: None,
+        supported_topologies: None,
+        requested_capabilities: None,
+        connect_token: Some("connect-token-secret".into()),
+    };
 
     for (debug, safe_marker) in [
         (format!("{relay:?}"), "ConnectionInfo::Relay"),
@@ -3032,6 +3107,8 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         (format!("{reconnected:?}"), "ReconnectedPayload"),
         (format!("{spectator_joined:?}"), "SpectatorJoinedPayload"),
         (format!("{join_params:?}"), "JoinRoomParams"),
+        (format!("{credentialed_config:?}"), "SignalFishConfig"),
+        (format!("{credentialed_auth:?}"), "Authenticate"),
         (format!("{:?}", ClientMessage::Ping), "Ping"),
         (format!("{:?}", ServerMessage::Pong), "Pong"),
     ] {
@@ -3052,6 +3129,8 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
         format!("{reconnected:?}"),
         format!("{spectator_joined:?}"),
         format!("{join_params:?}"),
+        format!("{credentialed_config:?}"),
+        format!("{credentialed_auth:?}"),
         format!(
             "{:?}",
             ClientMessage::Reconnect {
@@ -3121,4 +3200,14 @@ fn debug_redacts_credentials_signaling_and_application_payloads_transitively() {
     for output in outputs {
         assert_redacted(output);
     }
+
+    // The config's credential must keep the documented presence-and-length
+    // form, not merely be absent — a silently dropped field would also pass
+    // the secret-absence check above.
+    let config_debug = format!("{credentialed_config:?}");
+    assert!(
+        config_debug.contains("connect_token: Some(20)"),
+        "Debug must report the credential as presence and byte length only: \
+         {config_debug:?}"
+    );
 }

@@ -798,6 +798,16 @@ pub enum ClientMessage {
         /// ignored by the server for forward compatibility.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         requested_capabilities: Option<Vec<String>>,
+        /// Optional tenant credential (upstream issue #517): a control-plane
+        /// minted `sfct_v1.` Ed25519 token.
+        ///
+        /// Omitted on the wire when unset, which keeps the public-`app_id`
+        /// semantics and byte-identical handshake bytes on every path that
+        /// does not configure a credential. The server never logs or echoes
+        /// the value; this SDK never formats it into `Debug` or tracing
+        /// output either.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connect_token: Option<String>,
     },
     /// Join or create a room for a specific game.
     JoinRoom {

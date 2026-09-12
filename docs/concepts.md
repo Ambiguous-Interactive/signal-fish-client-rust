@@ -500,8 +500,8 @@ migration](migration-0.11.md#structured-transport-error-causes).
 
 ### Server-Side: `ErrorCode`
 
-`ErrorCode` is a 60-variant enum that arrives inside events. The post-0.7
-protocol authority declares 54 variants; six compatibility variants remain
+`ErrorCode` is a 61-variant enum that arrives inside events. The post-0.7
+protocol authority declares 55 variants; six compatibility variants remain
 decodable for older servers. The wire uses `SCREAMING_SNAKE_CASE` strings
 (e.g., `"ROOM_NOT_FOUND"`).
 
