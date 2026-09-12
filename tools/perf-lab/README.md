@@ -177,11 +177,13 @@ The optional tenant `connect_token` field (upstream PR #575, issue #222)
 then grew the `ClientMessage` value by another 24 bytes. The same queue-growth
 mechanism moved +1,440 bytes in the 64-command out-burst cells and +672 in
 the 17-command ready-frame cell; every operation count, protocol digest, and
-semantic invariant is unchanged. Five byte ceilings were refreshed to the
+semantic invariant is unchanged. Seven byte ceilings were refreshed to the
 standard observed-plus-10% rule (`bytes_reallocated` for `json/out/256/burst64`
 and `json/out/4096/burst64`, both byte columns for
 `binary/out/256/burst64` and `binary/out/4096/burst64`, plus
 `bytes_reallocated` for `polling/ready-frame-burst`), and the ready-frame
 cell's `bytes_allocated` ceiling was refreshed alongside them because the
-same growth had left 0.21% headroom (observed 7552, ceiling 7568). The
-observed-values table above reflects the post-change live run.
+same growth had left 0.21% headroom (observed 7552, ceiling 7568); the two
+`json/out` burst `bytes_allocated` columns joined the refresh for the same
+reason — they had sat exactly at the rule and the growth left them at 5.3%
+and 8.6%. The observed-values table above reflects the post-change live run.
