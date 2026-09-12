@@ -125,6 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refreshed fifteen `ErrorCode::description()` texts to the current server
+  wording (e.g. `Unauthorized` is now "Access denied by the app-ID handshake
+  policy"; `ConnectionIdleTimeout` names the keep-alive remedy), with matching
+  `docs/errors.md` rows where stale, leaving client-specific behavioral
+  guidance and typed surfaces unchanged.
 - `ErrorCode::UnsupportedProtocolVersion` and `ErrorCode::SdkVersionUnsupported`
   rustdocs and human-readable descriptions now name current server behavior
   (upstream server PR #577): the handshake refusals arrive on an open socket
