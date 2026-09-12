@@ -261,6 +261,13 @@ pub enum ErrorCode {
 Serializes as `SCREAMING_SNAKE_CASE` (e.g. `"ROOM_NOT_FOUND"`).
 Call `error_code.description()` for a human-readable explanation.
 
+The vendored spec carries error-code *tokens* only; the per-code *prose*
+authority is the server's `src/protocol/error_codes.rs` `description()`.
+New codes are forced by the token bijection test, but prose-only server
+edits surface nowhere else — reconcile the client texts against that file
+during drift checks (round 70 adopted 15 stale paraphrases; the 12
+client-enhanced texts carrying verified behavioral guidance stay).
+
 ## Mapping External Errors
 
 `SignalFishError::TokenBinding(TokenBindingFailure)` carries only static,

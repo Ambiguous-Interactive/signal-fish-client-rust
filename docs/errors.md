@@ -118,15 +118,15 @@ println!("{}", code.description());
 
 | Variant | Description |
 |---------|-------------|
-| `Unauthorized` | Access denied. Authentication credentials are missing or invalid. |
+| `Unauthorized` | Access denied by the app-ID handshake policy. |
 | `InvalidToken` *(compatibility-only)* | The authentication token is invalid, malformed, or has expired. |
-| `AuthenticationRequired` *(compatibility-only)* | This operation requires authentication. |
+| `AuthenticationRequired` *(compatibility-only)* | Complete the legacy Authenticate handshake before this operation. |
 | `InvalidAppId` | The provided application ID is not recognized. Verify the app ID is correct and free of control characters (maximum 256 bytes). |
 | `AppIdExpired` *(compatibility-only)* | The application ID has expired. |
 | `AppIdRevoked` *(compatibility-only)* | The application ID has been revoked. |
 | `AppIdSuspended` *(compatibility-only)* | The application ID has been suspended. |
-| `MissingAppId` | Application ID is required but was not provided. |
-| `AuthenticationTimeout` | Authentication took too long to complete. |
+| `MissingAppId` | The required app-ID handshake was not completed. Send Authenticate before application messages. |
+| `AuthenticationTimeout` | The app-ID and protocol handshake took too long to complete. Please try again. |
 | `SdkVersionUnsupported` | The SDK version you are using is no longer supported. Upgrade the SDK or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection). |
 | `UnsupportedGameDataFormat` | The requested game data format is not supported. |
 | `ConnectTokenInvalid` | The optional tenant connect token failed verification (encoding, signature, expiry, TTL ceiling, or app-id binding). The socket stays open; the configured token is fixed for a client's lifetime, so recovery means issuing a fresh control-plane token and starting a new client. See [Authentication & Credentials](authentication.md#tenant-connect-tokens-optional-hosted-deployments). |
@@ -205,8 +205,8 @@ Applications migrating from readiness-based auto-start must call it after an
 
 | Variant | Description |
 |---------|-------------|
-| `GameStartNotReady` | Cannot start the game: not every player in the room is ready yet. |
-| `GameStartForbidden` | You are not permitted to start the game. Only the room's authority may start it. |
+| `GameStartNotReady` | The game cannot start yet. Every current player must be ready before StartGame is accepted. |
+| `GameStartForbidden` | You are not permitted to start the game. Only the room's authority player may start it. |
 
 ### Finalized Room Sessions (1)
 
@@ -222,17 +222,17 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 
 | Variant | Description |
 |---------|-------------|
-| `CrossRoomSignal` | The signal targets a peer that is not in your room. |
-| `UnsupportedTransport` | The requested data-path transport is not supported or was not negotiated for this connection. |
-| `SignalTargetNotFound` | The signal's target peer could not be found in the room. |
-| `SignalRateLimited` | Too many signaling messages were sent in a short time. Slow down and try again. |
-| `SignalTooLarge` | The signal payload exceeds the maximum size allowed by the server. |
+| `CrossRoomSignal` | Cannot signal a peer in a different room. WebRTC signaling is restricted to peers within the same room. |
+| `UnsupportedTransport` | Signaling requires the WebRTC transport, which was not negotiated for this connection. Re-authenticate advertising WebRTC support. |
+| `SignalTargetNotFound` | The signal target peer could not be found in your room, or does not support WebRTC. Verify the peer id and that the peer is connected. |
+| `SignalRateLimited` | Too many signaling messages in a short time. Slow down trickle-ICE and try again shortly. |
+| `SignalTooLarge` | The signal payload exceeds the maximum allowed size. Send smaller SDP/ICE payloads, e.g. individual trickle-ICE candidates. |
 
 ### Connection Lifecycle — protocol v3 (1)
 
 | Variant | Description |
 |---------|-------------|
-| `ConnectionIdleTimeout` | The connection was closed by the server after being idle for too long. |
+| `ConnectionIdleTimeout` | The connection was closed because no messages were received within the idle timeout. Send periodic Ping messages to keep the connection alive. |
 
 ### Delivery & Liveness (4)
 

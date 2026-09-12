@@ -4706,7 +4706,9 @@ mod safety_analysis_policy {
         );
         // Both JSON targets share the render/re-parse oracle module; the
         // byte-idempotence half lives there, tolerant of serde_json's
-        // documented (non `float_roundtrip`) one-ULP float parse drift.
+        // documented (non `float_roundtrip`) two-ULP float parse drift
+        // (2 is the probe-measured empirical bound; CI artifact
+        // crash-6e661a71 exceeded the original one-ULP bound).
         let json_oracle = read_project_file("fuzz/fuzz_targets/json_oracle.rs");
         assert!(
             json_oracle.contains("render/re-parse not idempotent"),
@@ -4714,7 +4716,7 @@ mod safety_analysis_policy {
         );
         assert!(
             json_oracle.contains("float drifted {drift} ULP"),
-            "json_oracle must bound float drift at one ULP"
+            "json_oracle must bound float drift at two ULP"
         );
         let client_target = read_project_file("fuzz/fuzz_targets/fuzz_client_message.rs");
         for target in [server_target, client_target] {

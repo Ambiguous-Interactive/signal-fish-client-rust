@@ -16,7 +16,7 @@ use std::fmt;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // Authentication errors
-    /// Authentication credentials were missing or invalid.
+    /// Access was denied by the app-ID handshake policy.
     Unauthorized,
     /// Compatibility only (see [`NON_EMITTED`](ErrorCode::NON_EMITTED)): no
     /// longer emitted by Server 0.7+; retained so older deployments stay
@@ -155,10 +155,11 @@ pub enum ErrorCode {
     // Signaling errors (protocol v3)
     /// The signal's target is not a participant of this room.
     CrossRoomSignal,
-    /// The requested data-path transport is unsupported or was not
+    /// Signaling requires the WebRTC transport, which was not
     /// negotiated for this connection.
     UnsupportedTransport,
-    /// The signal's target peer could not be found in the room.
+    /// The signal's target peer could not be found in the room, or does not
+    /// support WebRTC.
     SignalTargetNotFound,
     /// Too many signaling messages were sent in the current window.
     SignalRateLimited,
@@ -256,16 +257,16 @@ impl ErrorCode {
         match self {
             // Authentication errors
             Self::Unauthorized => {
-                "Access denied. Authentication credentials are missing or invalid."
+                "Access denied by the app-ID handshake policy."
             }
             Self::InvalidToken => {
                 "The authentication token is invalid, malformed, or has expired. Please obtain a new token."
             }
             Self::AuthenticationRequired => {
-                "This operation requires authentication. Please provide valid credentials."
+                "Complete the legacy Authenticate handshake before this operation."
             }
             Self::InvalidAppId => {
-                "The provided application ID is not recognized or is not acceptable. Verify your app ID is correct and free of control characters (maximum 256 bytes)."
+                "The provided application ID is not recognized. Verify your app ID is correct."
             }
             Self::AppIdExpired => {
                 "The application ID has expired. Please renew your application registration."
@@ -277,10 +278,10 @@ impl ErrorCode {
                 "The application ID has been suspended. Contact the administrator for assistance."
             }
             Self::MissingAppId => {
-                "Application ID is required but was not provided. Include your app ID in the request."
+                "The required app-ID handshake was not completed. Send Authenticate before application messages."
             }
             Self::AuthenticationTimeout => {
-                "Authentication took too long to complete. Please try again."
+                "The app-ID and protocol handshake took too long to complete. Please try again."
             }
             Self::SdkVersionUnsupported => {
                 "This SDK version is no longer supported by the server. Upgrade the SDK or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection)."
@@ -392,10 +393,10 @@ impl ErrorCode {
 
             // Game-start errors (protocol v2)
             Self::GameStartNotReady => {
-                "Cannot start the game: not every player in the room is ready yet."
+                "The game cannot start yet. Every current player must be ready before StartGame is accepted."
             }
             Self::GameStartForbidden => {
-                "You are not permitted to start the game. Only the room's authority may start it."
+                "You are not permitted to start the game. Only the room's authority player may start it."
             }
             Self::RoomSessionIncompatible => {
                 "This room already started a peer-to-peer session with a topology or transport this client did not negotiate. Reconnect with compatible capabilities or join another room; rooms finalized to the relay floor remain open to everyone."
@@ -403,24 +404,24 @@ impl ErrorCode {
 
             // Signaling errors (protocol v3)
             Self::CrossRoomSignal => {
-                "The signal targets a peer that is not in your room."
+                "Cannot signal a peer in a different room. WebRTC signaling is restricted to peers within the same room."
             }
             Self::UnsupportedTransport => {
-                "The requested data-path transport is not supported or was not negotiated for this connection."
+                "Signaling requires the WebRTC transport, which was not negotiated for this connection. Re-authenticate advertising WebRTC support."
             }
             Self::SignalTargetNotFound => {
-                "The signal's target peer could not be found in the room."
+                "The signal target peer could not be found in your room, or does not support WebRTC. Verify the peer id and that the peer is connected."
             }
             Self::SignalRateLimited => {
-                "Too many signaling messages were sent in a short time. Please slow down and try again."
+                "Too many signaling messages in a short time. Please slow down trickle-ICE and try again shortly."
             }
             Self::SignalTooLarge => {
-                "The signal payload exceeds the maximum size allowed by the server."
+                "The signal payload exceeds the maximum allowed size. Send smaller SDP/ICE payloads, e.g. individual trickle-ICE candidates."
             }
 
             // Connection lifecycle (protocol v3)
             Self::ConnectionIdleTimeout => {
-                "The connection was closed by the server after being idle for too long."
+                "The connection was closed because no messages were received within the idle timeout. Send periodic Ping messages to keep the connection alive."
             }
 
             // Delivery & liveness
@@ -434,7 +435,7 @@ impl ErrorCode {
                 "The server is shutting down and is refusing new room creation, reconnection attempts, and spectator joins. Existing sockets close with code 4000 at the drain deadline; retry on another healthy instance."
             }
             Self::InvalidDeliveryClass => {
-                "The requested game-data delivery class and key combination is invalid. Latest requires a key; reliable and volatile forbid one."
+                "The game-data delivery class is invalid: latest requires a key, while reliable and volatile must not include one."
             }
             Self::UnsupportedProtocolVersion => {
                 "The client's highest supported protocol version is below this server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection)."
@@ -448,7 +449,7 @@ impl ErrorCode {
                 "The player to kick is not a current member of this room."
             }
             Self::Kicked => {
-                "You were removed from the room by its authority player. The kicked seat cannot be reconnected; join again with a valid room code."
+                "You were removed from the room by its authority player. Reconnection is not offered; join again with a valid room code."
             }
             Self::PasswordRequired => {
                 "This room is password-protected, or the join presented a password to an open room. Send the password chosen by the room's authority player, or join without one."

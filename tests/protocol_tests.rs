@@ -2973,10 +2973,7 @@ fn player_name_rules_accepts_every_authority_valid_symbol_shape() {
 fn error_code_description_is_actionable() {
     let code = ErrorCode::Unauthorized;
     let desc = code.description();
-    assert_eq!(
-        desc,
-        "Access denied. Authentication credentials are missing or invalid."
-    );
+    assert_eq!(desc, "Access denied by the app-ID handshake policy.");
 }
 
 #[test]
