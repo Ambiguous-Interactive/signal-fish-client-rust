@@ -344,6 +344,49 @@ async fn auth_flow_connected_then_authenticated() {
     client.shutdown().await;
 }
 
+#[tokio::test]
+async fn authenticate_carries_the_configured_connect_token() {
+    // Issue #222: the credential rides the first (and every reconnection
+    // round's) Authenticate without touching the app_id or the URL.
+    let config = SignalFishConfig::new("mb_test_integration")
+        .with_connect_token("sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl");
+    let (mut client, mut events, sent, _closed) =
+        start_client_with_config(vec![Some(Ok(authenticated_json()))], config).await;
+
+    let ev = events.recv().await.expect("event");
+    assert!(matches!(ev, SignalFishEvent::Connected));
+    let ev = events.recv().await.expect("event");
+    assert!(matches!(ev, SignalFishEvent::Authenticated { .. }));
+
+    let (app_id, connect_token, first) = {
+        let messages = sent.lock().unwrap();
+        let first = messages
+            .first()
+            .expect("the handshake must queue an Authenticate frame")
+            .clone();
+        let parsed: ClientMessage = serde_json::from_str(&first).expect("parse auth message");
+        let ClientMessage::Authenticate {
+            app_id,
+            connect_token,
+            ..
+        } = parsed
+        else {
+            panic!("expected Authenticate, got {parsed:?}");
+        };
+        (app_id, connect_token, first)
+    };
+    assert_eq!(app_id, "mb_test_integration");
+    assert_eq!(
+        connect_token.as_deref(),
+        Some("sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl")
+    );
+    // Ambient-log safety: the recorded frame is wire data, but the config
+    // never formatted the token into it beyond the caller's own value.
+    assert!(first.contains("sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl"));
+
+    client.shutdown().await;
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Room join → leave → rejoin flow
 // ════════════════════════════════════════════════════════════════════

@@ -111,24 +111,24 @@ the CI verification toolchain (1.96.1).
 | `json/in/4096/single` | 3000 | 3000 | 333333 | 0 | 3/3/0 | 6400/10672/0 |
 | `json/in/4096/burst64` | 73204 | 1143 | 874269 | 0 | 133/133/8 | 355456/628864/13824 |
 | `json/out/256/single` | 2000 | 2000 | 500000 | 700 | 1/1/0 | 386/256/0 |
-| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/4 | 34784/16384/10080 |
+| `json/out/256/burst64` | 54003 | 843 | 1185119 | 67104 | 64/64/4 | 36224/16384/11520 |
 | `json/out/4096/single` | 3600 | 3600 | 277777 | 1000 | 1/1/0 | 4226/4096/0 |
-| `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 280544/262144/10080 |
+| `json/out/4096/burst64` | 151207 | 2362 | 423260 | 119306 | 64/64/4 | 281984/262144/11520 |
 | `binary/in/256/single` | 2200 | 2200 | 454545 | 0 | 2/2/0 | 2368/2368/0 |
 | `binary/in/256/burst64` | 17201 | 268 | 3720713 | 0 | 65/65/4 | 94720/94720/17760 |
 | `binary/in/4096/single` | 2300 | 2300 | 434782 | 0 | 2/2/0 | 2368/2368/0 |
 | `binary/in/4096/burst64` | 30102 | 470 | 2126104 | 0 | 69/69/8 | 95904/95904/14208 |
 | `binary/out/256/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
-| `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 10080/0/10080 |
+| `binary/out/256/burst64` | 38902 | 607 | 1645159 | 49902 | 0/0/4 | 11520/0/11520 |
 | `binary/out/4096/single` | 1700 | 1700 | 588235 | 900 | 0/0/0 | 0/0/0 |
-| `binary/out/4096/burst64` | 42602 | 665 | 1502276 | 42002 | 0/0/4 | 10080/0/10080 |
+| `binary/out/4096/burst64` | 42602 | 665 | 1502276 | 42002 | 0/0/4 | 11520/0/11520 |
 | `classified/latest` | 59803 | 934 | 1070180 | 36602 | 64/256/132 | 50124/57600/41932 |
 | `classified/volatile` | 58603 | 915 | 1092094 | 76204 | 64/256/132 | 50124/57600/41932 |
 | `classified/authorized-gap` | 4100 | 4100 | 243902 | 0 | 14/11/0 | 7378/6472/0 |
 | `reconnect/2` | 5101 | 5101 | 196039 | 700 | 25/10/1 | 6916/6534/128 |
 | `reconnect/8` | 8001 | 8001 | 124984 | 600 | 37/10/3 | 8108/8582/960 |
 | `reconnect/16` | 12301 | 12301 | 81294 | 801 | 61/16/5 | 12882/14470/2624 |
-| `polling/ready-frame-burst` | 15601 | 917 | 1089673 | 61204 | 17/68/3 | 6880/11492/4704 |
+| `polling/ready-frame-burst` | 15601 | 917 | 1089673 | 61204 | 17/68/3 | 7552/11492/5376 |
 | `polling/ready-byte-burst` | 6900 | 1725 | 579710 | 6100 | 4/16/8 | 6048/5376/5536 |
 | `polling/pending-recovery` | 2600 | 2600 | 384615 | 1501 | 1/4/2 | 624/900/496 |
 
@@ -172,3 +172,18 @@ follow the standard observed-plus-10% rule again; counts and every other
 column were already current. The measured region brackets `run_measured`
 only, so transport `close()`/`abort()`/flush teardown allocations remain
 deliberately outside every ceiling, consistently across all cells.
+
+The optional tenant `connect_token` field (upstream PR #575, issue #222)
+then grew the `ClientMessage` value by another 24 bytes. The same queue-growth
+mechanism moved +1,440 bytes in the 64-command out-burst cells and +672 in
+the 17-command ready-frame cell; every operation count, protocol digest, and
+semantic invariant is unchanged. Seven byte ceilings were refreshed to the
+standard observed-plus-10% rule (`bytes_reallocated` for `json/out/256/burst64`
+and `json/out/4096/burst64`, both byte columns for
+`binary/out/256/burst64` and `binary/out/4096/burst64`, plus
+`bytes_reallocated` for `polling/ready-frame-burst`), and the ready-frame
+cell's `bytes_allocated` ceiling was refreshed alongside them because the
+same growth had left 0.21% headroom (observed 7552, ceiling 7568); the two
+`json/out` burst `bytes_allocated` columns joined the refresh for the same
+reason — they had sat exactly at the rule and the growth left them at 5.3%
+and 8.6%. The observed-values table above reflects the post-change live run.

@@ -311,6 +311,22 @@ pub struct SignalFishConfig {
     /// [`with_reconnect_policy`](Self::with_reconnect_policy) to opt in. The
     /// polling client is caller-driven by design and ignores this option.
     pub reconnect_policy: Option<ReconnectPolicy>,
+    /// Optional tenant credential presented with `Authenticate`
+    /// (upstream issue #517).
+    ///
+    /// A control-plane-minted `sfct_v1.` Ed25519 connect token for hosted
+    /// deployments that enable tenant verification. `None` (the default)
+    /// keeps the public-`app_id` handshake; the wire field is omitted and
+    /// the handshake bytes are unchanged. Set it with
+    /// [`with_connect_token`](Self::with_connect_token). The value is a
+    /// secret: it is never formatted into `Debug` output or SDK tracing
+    /// (presence and byte length only), and the server never logs or echoes
+    /// it. A token is short-lived by design (upstream TTL: 5 minutes plus a
+    /// 60-second clock-skew allowance); a refused token surfaces as
+    /// [`ErrorCode::ConnectTokenInvalid`](crate::error_codes::ErrorCode::ConnectTokenInvalid)
+    /// on the [`SignalFishEvent::AuthenticationError`] event — issue a fresh
+    /// token and start a new client.
+    pub connect_token: Option<String>,
 }
 
 impl std::fmt::Debug for SignalFishConfig {
@@ -334,6 +350,13 @@ impl std::fmt::Debug for SignalFishConfig {
                     .as_ref()
                     .map(|_| "ReconnectPolicy { .. }"),
             )
+            // A connect token is a secret credential: the ambient `Debug`
+            // path reports presence and byte length only — the same form as
+            // `JoinRoomParams::password`.
+            .field(
+                "connect_token",
+                &self.connect_token.as_ref().map(String::len),
+            )
             .finish()
     }
 }
@@ -353,6 +376,7 @@ impl PartialEq for SignalFishConfig {
             && self.protocol_violation_policy == other.protocol_violation_policy
             && Self::reconnect_tuning(self.reconnect_policy.as_ref())
                 == Self::reconnect_tuning(other.reconnect_policy.as_ref())
+            && self.connect_token == other.connect_token
     }
 }
 
@@ -399,6 +423,7 @@ impl SignalFishConfig {
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             protocol_violation_policy: ProtocolViolationPolicy::Quarantine,
             reconnect_policy: None,
+            connect_token: None,
         }
     }
 
@@ -455,6 +480,33 @@ impl SignalFishConfig {
     #[must_use]
     pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
         self.reconnect_policy = Some(policy);
+        self
+    }
+
+    /// Present an optional tenant connect token with `Authenticate`
+    /// (upstream issue #517).
+    ///
+    /// Hosted Signal Fish deployments can verify a control-plane-minted
+    /// `sfct_v1.` Ed25519 token per connection; self-hosted deployments
+    /// without a verification key keep the public-`app_id` handshake and
+    /// refuse any presented token, so only set this when your deployment
+    /// documents tenant verification. The SDK sends the exact string you
+    /// provide on every `Authenticate` — including each reconnection round's
+    /// fresh handshake — and never inspects its contents. Omitting the token
+    /// (the default) omits the wire field entirely, keeping handshake bytes
+    /// identical to previous SDK releases.
+    ///
+    /// Tokens are short-lived by design (upstream TTL: five minutes plus a
+    /// 60-second clock-skew allowance). A refused token surfaces as
+    /// [`ErrorCode::ConnectTokenInvalid`](crate::error_codes::ErrorCode::ConnectTokenInvalid);
+    /// the SDK sends the same configured value on every reconnection round's
+    /// handshake, so retrying cannot succeed — issue a fresh token and start
+    /// a new client. The value is a secret: this crate's `Debug` impls and
+    /// tracing report only presence and byte length, and the server never
+    /// logs or echoes it.
+    #[must_use]
+    pub fn with_connect_token(mut self, token: impl Into<String>) -> Self {
+        self.connect_token = Some(token.into());
         self
     }
 
@@ -9245,6 +9297,81 @@ mod tests {
             let message: serde_json::Value = serde_json::from_str(last).unwrap();
             assert_eq!(message["type"], "Reconnect");
             assert_eq!(message["data"]["auth_token"], "tok-1");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_rounds_reseed_the_configured_connect_token() {
+        // The builder doc promises the credential rides "each reconnection
+        // round's fresh handshake" — the frozen `auth_message` must carry it
+        // on every round, not only the first. The rounds are closed
+        // deterministically from the test (after the frame is observed on
+        // the wire) so the assertions never race the loop's deliberately
+        // fair `select!`.
+        let (transport1, sent1, _closed1, controls1) =
+            MockTransport::new_shared(vec![Some(Ok(authenticated_json()))]);
+        let (transport2, sent2, _closed2, _controls2) =
+            MockTransport::new_shared(vec![Some(Ok(authenticated_json()))]);
+        let pool = transport_pool(vec![transport2]);
+        let policy = ReconnectPolicy::new(pool_factory(&pool))
+            .with_max_attempts(3)
+            .with_initial_backoff(Duration::from_millis(50));
+        let config = SignalFishConfig::new("mb_reconnect")
+            .with_connect_token("sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl")
+            .with_reconnect_policy(policy);
+        let (mut client, mut events) = SignalFishClient::start(transport1, config);
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+
+        // Round 1: the credential rides the handshake, then the test closes
+        // the round deterministically.
+        wait_for_sent_len(&sent1, 1).await;
+        {
+            let frames = sent1.lock().unwrap();
+            let message: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+            assert_eq!(message["type"], "Authenticate");
+            assert_eq!(
+                message["data"]["connect_token"], "sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl",
+                "round 1 must present the configured credential"
+            );
+        }
+        controls1.close_peer();
+
+        match events.recv().await {
+            Some(SignalFishEvent::Disconnected { .. }) => {}
+            other => panic!("expected Disconnected, got {other:?}"),
+        }
+        match events.recv().await {
+            Some(SignalFishEvent::Reconnecting { attempt: 1, .. }) => {}
+            other => panic!("expected Reconnecting, got {other:?}"),
+        }
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Connected)
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(SignalFishEvent::Authenticated { .. })
+        ));
+
+        // Round 2: the re-seeded handshake carries the same credential.
+        wait_for_sent_len(&sent2, 1).await;
+        {
+            let frames = sent2.lock().unwrap();
+            let message: serde_json::Value = serde_json::from_str(&frames[0]).unwrap();
+            assert_eq!(message["type"], "Authenticate");
+            assert_eq!(
+                message["data"]["connect_token"], "sfct_v1.cGF5bG9hZA.c2lnbmF0dXJl",
+                "round 2 must reseed the configured credential"
+            );
         }
         client.shutdown().await;
     }

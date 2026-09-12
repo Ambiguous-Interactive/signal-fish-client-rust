@@ -330,6 +330,7 @@ impl ClientCore {
             requested_capabilities: config
                 .requests_room_operation_ids()
                 .then(|| vec![ROOM_OPERATION_IDS_CAPABILITY.to_string()]),
+            connect_token: config.connect_token.clone(),
         }
     }
 
@@ -2821,6 +2822,40 @@ mod tests {
             value = serde_json::Value::Array(vec![value]);
         }
         value
+    }
+
+    #[test]
+    fn authenticate_message_stamps_the_configured_connect_token() {
+        // Shared seam of both drivers: the async loop and the polling client
+        // obtain their first frame from this function, so the credential must
+        // ride (or stay absent from) the wire here and nowhere else.
+        let plain = ClientCore::authenticate_message(&SignalFishConfig::new("app"));
+        let ClientMessage::Authenticate { connect_token, .. } = plain else {
+            panic!("authenticate must build an Authenticate message");
+        };
+        assert!(
+            connect_token.is_none(),
+            "the default config must leave the credential off the wire"
+        );
+
+        let credentialed = ClientCore::authenticate_message(
+            &SignalFishConfig::new("app").with_connect_token("sfct_v1.payload.sig"),
+        );
+        let ClientMessage::Authenticate {
+            ref connect_token, ..
+        } = credentialed
+        else {
+            panic!("authenticate must build an Authenticate message");
+        };
+        assert_eq!(connect_token.as_deref(), Some("sfct_v1.payload.sig"));
+        // The credential appears exactly once on the wire and nowhere else in
+        // the frame.
+        let json = serde_json::to_string(&credentialed).expect("Authenticate must serialize");
+        assert_eq!(
+            json.matches("sfct_v1.payload.sig").count(),
+            1,
+            "the token must appear exactly once: {json}"
+        );
     }
 
     #[test]

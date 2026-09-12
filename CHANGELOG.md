@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Breaking:** the SDK presents the ratified cloud-auth tenant credential —
+  `SignalFishConfig` gains a `connect_token` field (`with_connect_token`) that
+  rides `Authenticate` on hosted deployments with tenant verification (upstream
+  server PR #575); exhaustive struct literals must add it, usually
+  `connect_token: None`. The wire field is omitted when unset, the value is a
+  secret redacted from `Debug`/tracing (presence and byte length only), and
+  rotation guidance lives in the Authentication & Credentials guide.
+- **Breaking:** the exhaustive error-code enum adds `ConnectTokenInvalid`, so
+  a refused tenant token (encoding, signature, expiry, TTL ceiling, or app-id
+  binding) surfaces as a typed authentication error whose recovery is a fresh
+  token plus a new client; add an arm to exhaustive matches.
+
 - **Breaking:** the wire types gained the upstream room access-control tier —
   exhaustive `ErrorCode` adds `PasswordRequired`, `Banned`, and
   `TransferTargetNotFound`; `RoomOperationRequest` adds `SetRoomAccess`,

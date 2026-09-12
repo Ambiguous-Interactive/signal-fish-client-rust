@@ -49,6 +49,11 @@ pub enum ErrorCode {
     /// The requested game-data format is unsupported; the server falls back
     /// to JSON.
     UnsupportedGameDataFormat,
+    /// The optional tenant connect token failed verification (encoding,
+    /// signature, expiry, TTL ceiling, or app-id binding). The socket stays
+    /// open; since the configured token is fixed for a client's lifetime,
+    /// recovery means issuing a fresh token and starting a new client.
+    ConnectTokenInvalid,
 
     // Validation errors
     /// A request parameter was invalid or malformed.
@@ -441,6 +446,9 @@ impl ErrorCode {
             }
             Self::TransferTargetNotFound => {
                 "The player to transfer authority to is not a current member of this room."
+            }
+            Self::ConnectTokenInvalid => {
+                "The optional tenant connect token failed verification (encoding, signature, expiry, TTL ceiling, or app-id binding). Issue a fresh token from your deployment's control plane and start a new client; the configured token is fixed for this client's lifetime."
             }
         }
     }

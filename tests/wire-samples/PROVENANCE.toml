@@ -16,16 +16,17 @@ path = ".llm/code-samples/protocol"
 # compatibility binding stays at that release; the evidence authority
 # advances together across compatibility.toml and both PROVENANCE files.
 # (The 2026-09-08 b602fc1d follow-up is spec-prose only; the samples are
-# unchanged there too. The 2026-09-11 refresh at ac118f84 (spec-prose server
-# PRs #565/#567) is again spec-prose only — kick/ban tombstone semantics and
-# out-of-band post-rotation code sharing — and the four files are
-# byte-identical there as well.)
-commit = "ac118f846f26ac55e2fc1f3231dcc9aec86a7275"
+# unchanged there too. The 2026-09-12 refresh at a6cbbf69 (upstream PR #575,
+# the ratified cloud-auth wire contract) added the optional
+# `Authenticate.connect_token` field and the CONNECT_TOKEN_INVALID error code
+# to the spec only — an omitted field is byte-identical, and the four files
+# are byte-identical there as well.)
+commit = "a6cbbf69dc7356a97ee5847b5a1e8d09a1283b14"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
 # ISO 8601 date of the last refresh.
-synced = "2026-09-11"
+synced = "2026-09-12"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so a sample
 # cannot be edited without also updating this marker (keeps provenance honest).

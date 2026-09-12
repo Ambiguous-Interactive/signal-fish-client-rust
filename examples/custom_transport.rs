@@ -160,7 +160,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let Some(auth_msg) = server.rx.recv().await else {
         return Err("server channel closed before Authenticate was received".into());
     };
-    tracing::info!("Server received: {auth_msg}");
+    // A frame can carry credential material (an optional tenant connect
+    // token rides Authenticate), so log the message type only — never the
+    // frame body.
+    let message_type = serde_json::from_str::<serde_json::Value>(&auth_msg)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|tag| tag.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "<undecodable>".to_owned());
+    tracing::info!("Server received message type: {message_type}");
 
     // Respond with a synthetic Authenticated event (the JSON must match
     // the server's wire format — adjacently-tagged: {"type": "Variant", "data": {…}}).
