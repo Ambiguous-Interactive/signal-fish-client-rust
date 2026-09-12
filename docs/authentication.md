@@ -29,10 +29,12 @@ Hosted Signal Fish deployments can require a **tenant connect token**: a
 short-lived credential minted by the deployment's control plane as
 `sfct_v1.<base64url(payload)>.<base64url(signature)>` and signed with the
 deployment's Ed25519 public key. The server verifies the token during
-authentication and never logs or echoes it. Self-hosted deployments without
-a verification key keep the public-`app_id` handshake and refuse any
-presented token, so only set one when your deployment documents tenant
-verification.
+authentication and never logs or echoes it. A deployment can also *enforce*
+the credential: a token-less handshake against an enforcing deployment is
+refused with `ConnectTokenRequired` while the socket stays open. Self-hosted
+deployments without a verification key keep the public-`app_id` handshake and
+refuse any presented token, so only set one when your deployment documents
+tenant verification.
 
 ```rust
 let config = SignalFishConfig::new("mb_app_abc123")
@@ -91,7 +93,7 @@ the mTLS fingerprint profile.
 | Secret | Issued | Rotate | On failure |
 |---|---|---|---|
 | Reconnection token | `RoomJoined` | Every `Reconnected` — persist the replacement | `ReconnectionExpired` / `ReconnectionTokenInvalid`: fall back to a normal `join_room` |
-| Tenant connect token | Deployment control plane | Before expiry (upstream TTL: 5 minutes + 60-second skew) | `ConnectTokenInvalid`: issue a fresh token and start a new client |
+| Tenant connect token | Deployment control plane | Before expiry (upstream TTL: 5 minutes + 60-second skew) | `ConnectTokenInvalid` / `ConnectTokenRequired`: issue a fresh token and start a new client |
 | TLS session | Connect | Every new physical connection (fresh handshake, fresh proofs) | Reconnect with a fresh transport |
 | App ID | Deployment | N/A — it is a public label | The server rejects unknown labels at authentication |
 

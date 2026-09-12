@@ -20,8 +20,10 @@ path = ".llm/code-samples/protocol"
 # the ratified cloud-auth wire contract) added the optional
 # `Authenticate.connect_token` field and the CONNECT_TOKEN_INVALID error code
 # to the spec only — an omitted field is byte-identical, and the four files
-# are byte-identical there as well.)
-commit = "a6cbbf69dc7356a97ee5847b5a1e8d09a1283b14"
+# are byte-identical there as well. The same-day 018cd0f7 follow-up (upstream
+# PR #576) added the CONNECT_TOKEN_REQUIRED spec enum entry; the samples are
+# unchanged there too.)
+commit = "018cd0f7656827a7ff6181c9f4a1d87d759d3e42"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3

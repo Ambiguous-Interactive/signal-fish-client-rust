@@ -7,11 +7,13 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-12 refresh: upstream PR #575 (server issue #517, the ratified cloud
-# auth wire contract) added the optional `Authenticate.connect_token` tenant
-# credential field and the `CONNECT_TOKEN_INVALID` error code. Both are
-# additive: an omitted field is byte-identical to the previous wire on every
-# path, and all four wire samples are byte-identical at the new pin. The
+# 2026-09-12 refresh: upstream PR #576 (server issue #574) added the
+# `CONNECT_TOKEN_REQUIRED` error code (the enforcement face of the #517
+# cloud-auth tier: a deployment that enforces tenant credentials refuses a
+# token-less handshake with it) plus the matching enforcement prose on
+# `Authenticate.connect_token`. The enum addition is a typed-surface change
+# reconciled in lockstep (`ErrorCode::ConnectTokenRequired`); all four wire
+# samples are byte-identical at the new pin. The
 # Server 0.8.0
 # release pin
 # (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
@@ -19,11 +21,11 @@ path = "spec"
 # at that release. This evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "a6cbbf69dc7356a97ee5847b5a1e8d09a1283b14"
+commit = "018cd0f7656827a7ff6181c9f4a1d87d759d3e42"
 # ISO 8601 date of the last refresh.
 synced = "2026-09-12"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "55dd84e22ab0580e3d2dec25c3989646eb0a2fc66449682adb4e4d77c7b56684"
+"signal-fish-protocol.asyncapi.yaml" = "70cfd73118014e285f6e166e9e1151b9c787606d39ffd09df8de1f89f7556764"

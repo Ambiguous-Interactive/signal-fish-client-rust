@@ -54,6 +54,13 @@ pub enum ErrorCode {
     /// open; since the configured token is fixed for a client's lifetime,
     /// recovery means issuing a fresh token and starting a new client.
     ConnectTokenInvalid,
+    /// The deployment enforces tenant credentials and the handshake carried
+    /// no connect token at all. The socket stays open; recovery means
+    /// obtaining an `sfct_v1.` token from the deployment's control plane,
+    /// presenting it via
+    /// [`with_connect_token`](crate::SignalFishConfig::with_connect_token),
+    /// and starting a new client.
+    ConnectTokenRequired,
 
     // Validation errors
     /// A request parameter was invalid or malformed.
@@ -449,6 +456,9 @@ impl ErrorCode {
             }
             Self::ConnectTokenInvalid => {
                 "The optional tenant connect token failed verification (encoding, signature, expiry, TTL ceiling, or app-id binding). Issue a fresh token from your deployment's control plane and start a new client; the configured token is fixed for this client's lifetime."
+            }
+            Self::ConnectTokenRequired => {
+                "This deployment requires a tenant connect token and the handshake carried none. Obtain an sfct_v1. token from your deployment's control plane, present it via with_connect_token, and start a new client."
             }
         }
     }
