@@ -2814,6 +2814,7 @@ mod tests {
         RateLimitInfo, ReconnectedPayload, ReplayStatus, RoomJoinedPayload, SenderWatermark,
         SessionPeer, SpectatorJoinedPayload, V2BinaryGameDataFrame,
     };
+    use crate::ErrorCode;
 
     /// A chain of `depth` nested arrays around one scalar.
     fn nested_chain(depth: u32) -> serde_json::Value {
@@ -5643,6 +5644,90 @@ mod tests {
             assert_eq!(core.snapshot().quarantined, quarantined, "{policy:?}");
             assert_eq!(core.snapshot().session_generation, generation_before);
             assert!(core.snapshot().authenticated);
+        }
+    }
+
+    #[test]
+    fn pre_auth_retryable_refusal_loop_stays_phase_valid_and_attributes_the_latest_refusal() {
+        // Upstream server PR #577 (906a9e3c): handshake-pending sockets —
+        // allowlist mode or enforced open — receive a *retryable*
+        // AuthenticationError and keep the socket open where legacy behavior
+        // closed them. The client sends exactly one Authenticate per
+        // connection, so the loop is server-driven; the classifier must stay
+        // phase-valid for every refusal in the retryable class, under every
+        // policy, and the eventual disconnect (the server times the silent
+        // socket out) must attribute the latest refusal.
+        let refusal_class = [
+            ErrorCode::ConnectTokenRequired,
+            ErrorCode::ConnectTokenInvalid,
+            ErrorCode::UnsupportedProtocolVersion,
+            ErrorCode::SdkVersionUnsupported,
+        ];
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            for code in &refusal_class {
+                let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
+                for round in 0..3u8 {
+                    let outcome = process(
+                        &mut core,
+                        ServerMessage::AuthenticationError {
+                            error: format!("refusal {round}"),
+                            error_code: code.clone(),
+                        },
+                    );
+                    assert!(
+                        matches!(
+                            outcome.events.as_slice(),
+                            [SignalFishEvent::AuthenticationError { error_code, .. }]
+                                if error_code == code
+                        ),
+                        "{policy:?} refusal {round}: {:#?}",
+                        outcome.events
+                    );
+                    assert!(!outcome.disconnect, "{policy:?} refusal {round}");
+                    assert!(!core.snapshot().quarantined, "{policy:?} refusal {round}");
+                    assert!(!core.snapshot().authenticated, "{policy:?} refusal {round}");
+                }
+                let SignalFishEvent::Disconnected {
+                    last_server_error, ..
+                } = core.disconnect(None)
+                else {
+                    panic!("disconnect must emit Disconnected");
+                };
+                let attributed = last_server_error.expect("the latest refusal must be attributed");
+                assert_eq!(attributed.error_code.as_ref(), Some(code));
+                assert_eq!(attributed.message, "refusal 2");
+            }
+        }
+
+        // Counter-face: once authentication completes, a refused-handshake
+        // frame is a server bug and fails closed as a lifecycle violation.
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
+            let _ = process(&mut core, authenticated());
+            let outcome = process(
+                &mut core,
+                ServerMessage::AuthenticationError {
+                    error: "post-auth refusal".into(),
+                    error_code: ErrorCode::ConnectTokenRequired,
+                },
+            );
+            assert_lifecycle_violation(&outcome);
+            assert_eq!(
+                outcome.disconnect,
+                policy == ProtocolViolationPolicy::Disconnect
+            );
+            assert_eq!(
+                core.snapshot().quarantined,
+                policy == ProtocolViolationPolicy::Quarantine
+            );
         }
     }
 

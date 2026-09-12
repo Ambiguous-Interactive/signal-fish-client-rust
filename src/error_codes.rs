@@ -44,7 +44,10 @@ pub enum ErrorCode {
     MissingAppId,
     /// Authentication did not complete within the server's time limit.
     AuthenticationTimeout,
-    /// This SDK version is no longer supported by the server.
+    /// This SDK version is no longer supported by the server. Current
+    /// servers deliver this refusal on an open socket as a retryable
+    /// handshake refusal (upstream PR #577); recovery is upgrading the SDK
+    /// or connecting to a deployment that accepts this version.
     SdkVersionUnsupported,
     /// The requested game-data format is unsupported; the server falls back
     /// to JSON.
@@ -189,7 +192,9 @@ pub enum ErrorCode {
     /// The client's highest supported protocol version is below the server's
     /// configured minimum, or a pre-v3 connection sent a frame class that
     /// requires a newer protocol surface (such as the v3 `RoomOperation`
-    /// envelope).
+    /// envelope). Current servers deliver this on an open socket as a
+    /// retryable handshake refusal (upstream PR #577); the deployment governs
+    /// the socket's fate.
     UnsupportedProtocolVersion,
 
     // Moderation errors (authority-only room operations)
@@ -278,7 +283,7 @@ impl ErrorCode {
                 "Authentication took too long to complete. Please try again."
             }
             Self::SdkVersionUnsupported => {
-                "The SDK version you are using is no longer supported. Please upgrade to the latest version."
+                "This SDK version is no longer supported by the server. Upgrade the SDK or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection)."
             }
             Self::UnsupportedGameDataFormat => {
                 "The requested game data format is not supported by this server. Falling back to JSON encoding."
@@ -432,7 +437,7 @@ impl ErrorCode {
                 "The requested game-data delivery class and key combination is invalid. Latest requires a key; reliable and volatile forbid one."
             }
             Self::UnsupportedProtocolVersion => {
-                "The client's highest supported protocol version is below this server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment."
+                "The client's highest supported protocol version is below this server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection)."
             }
 
             // Moderation errors (authority-only room operations)

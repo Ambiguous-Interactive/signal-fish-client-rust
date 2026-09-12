@@ -127,7 +127,7 @@ println!("{}", code.description());
 | `AppIdSuspended` *(compatibility-only)* | The application ID has been suspended. |
 | `MissingAppId` | Application ID is required but was not provided. |
 | `AuthenticationTimeout` | Authentication took too long to complete. |
-| `SdkVersionUnsupported` | The SDK version you are using is no longer supported. |
+| `SdkVersionUnsupported` | The SDK version you are using is no longer supported. Upgrade the SDK or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection). |
 | `UnsupportedGameDataFormat` | The requested game data format is not supported. |
 | `ConnectTokenInvalid` | The optional tenant connect token failed verification (encoding, signature, expiry, TTL ceiling, or app-id binding). The socket stays open; the configured token is fixed for a client's lifetime, so recovery means issuing a fresh control-plane token and starting a new client. See [Authentication & Credentials](authentication.md#tenant-connect-tokens-optional-hosted-deployments). |
 | `ConnectTokenRequired` | The deployment enforces tenant credentials and the handshake carried no connect token. The socket stays open; recovery means obtaining an `sfct_v1.` token from the deployment's control plane, presenting it via `with_connect_token`, and starting a new client. See [Authentication & Credentials](authentication.md#tenant-connect-tokens-optional-hosted-deployments). |
@@ -247,7 +247,7 @@ that the server could not honor. See the [Mesh Guide](mesh-guide.md).
 
 | Variant | Description |
 |---------|-------------|
-| `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. |
+| `UnsupportedProtocolVersion` | The client's highest supported protocol version is below the server's configured minimum, or a pre-v3 connection sent a frame class that requires a newer protocol surface. Upgrade the client or connect to a compatible deployment; current servers deliver this refusal on an open socket (the deployment, not the client, ends the connection). |
 
 ### Moderation (3)
 

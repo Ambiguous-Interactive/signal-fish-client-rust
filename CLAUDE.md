@@ -14,6 +14,12 @@ cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warning
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## Session Pace
+
+Target **~1 hour per working session** (past sessions ran much longer). Scope
+a session to one coherent deliverable and record leftovers as issues or
+next-round surfaces instead of expanding the session.
+
 ## GitHub Tool Order
 
 For every GitHub operation, follow
