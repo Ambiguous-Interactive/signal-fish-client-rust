@@ -13,13 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignalFishConfig` gains a `connect_token` field (`with_connect_token`) that
   rides `Authenticate` on hosted deployments with tenant verification (upstream
   server PR #575); exhaustive struct literals must add it, usually
-  `connect_token: None`. The wire field is omitted when unset, the value is a
-  secret redacted from `Debug`/tracing (presence and byte length only), and
-  rotation guidance lives in the Authentication & Credentials guide.
+  `connect_token: None`, and the same field joined the public
+  `ClientMessage::Authenticate` wire variant. The wire field is omitted when
+  unset, the value is a secret redacted from `Debug`/tracing (presence and byte
+  length only), and rotation guidance lives in the Authentication & Credentials
+  guide.
 - **Breaking:** the exhaustive error-code enum adds `ConnectTokenInvalid`, so
   a refused tenant token (encoding, signature, expiry, TTL ceiling, or app-id
   binding) surfaces as a typed authentication error whose recovery is a fresh
   token plus a new client; add an arm to exhaustive matches.
+- **Breaking:** the exhaustive error-code enum adds `ConnectTokenRequired` for
+  upstream server PR #576's enforcement face of the tenant tier: a deployment
+  that mandates connect tokens refuses a token-less handshake with it, so the
+  refusal surfaces typed instead of failing the frame decode; add an arm to
+  exhaustive matches. Recovery is a control-plane token via
+  `with_connect_token` plus a new client.
 
 - **Breaking:** the wire types gained the upstream room access-control tier —
   exhaustive `ErrorCode` adds `PasswordRequired`, `Banned`, and
@@ -34,8 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `JoinRoomParams::with_password` sets the join password for
   password-protected rooms, serialized into `JoinRoom` (and its negotiated
   form) via the new additive `password` field and omitted when unset, so
-  existing joins keep byte-identical wire behavior; the value is redacted
-  from `Debug` output.
+  existing joins keep byte-identical wire behavior; the value is redacted from
+  `Debug` output. The field also joined `JoinRoomParams` itself plus the
+  `ClientMessage::JoinRoom`, `ClientMessage::JoinAsSpectator`,
+  `RoomOperationRequest::JoinRoom`, and `RoomOperationRequest::JoinAsSpectator`
+  wire variants: exhaustive literals and field-wise matches must add it.
 - **Breaking:** `join_as_spectator_with_password` on both drivers and the
   `SignalFishClientApi` trait (implementors add one method) presents a sealed
   room's join password on `JoinAsSpectator`, so spectator entry into
@@ -44,7 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SignalFishEvent::SpectatorDisconnected` gain the additive
   `spectator_count: Option<u32>` field, carrying the room's spectator total
   on servers with the v3 spectator fan-out slimming tier (`None` on the
-  full-roster face and older servers).
+  full-roster face and older servers); the same field joined the
+  `ServerMessage::NewSpectatorJoined` and `ServerMessage::SpectatorDisconnected`
+  wire variants, so exhaustive wire literals and field-wise matches must add
+  it.
 - **Breaking:** the wire types gained the upstream authority-moderation
   surface — exhaustive `ErrorCode` adds `NotRoomAuthority`, `KickTargetNotFound`,
   and `Kicked`; `RoomOperationRequest` adds `KickPlayer { player_id }` and

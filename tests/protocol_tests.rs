@@ -1672,6 +1672,24 @@ fn connect_token_invalid_error_code_uses_the_upstream_wire_token() {
 }
 
 #[test]
+fn connect_token_required_error_code_uses_the_upstream_wire_token() {
+    // Upstream PR #576: a deployment enforcing tenant credentials refuses a
+    // token-less handshake with this code on the still-open socket.
+    let code = ErrorCode::ConnectTokenRequired;
+    let json = serde_json::to_string(&code).expect("serialize");
+    assert_eq!(json, "\"CONNECT_TOKEN_REQUIRED\"");
+    let parsed: ErrorCode = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed, code);
+    // The full enforced-server refusal frame surfaces typed end to end.
+    let frame = r#"{"type":"AuthenticationError","data":{"error":"tenant connect token required","error_code":"CONNECT_TOKEN_REQUIRED"}}"#;
+    let message: ServerMessage = serde_json::from_str(frame).expect("decode");
+    let ServerMessage::AuthenticationError { error_code, .. } = message else {
+        panic!("AuthenticationError frame must decode");
+    };
+    assert_eq!(error_code, ErrorCode::ConnectTokenRequired);
+}
+
+#[test]
 fn authenticate_mesh_includes_v3_fields_with_exact_strings() {
     let msg = ClientMessage::Authenticate {
         app_id: "mb_app".into(),
