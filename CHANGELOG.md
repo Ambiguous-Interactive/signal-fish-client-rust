@@ -125,6 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ErrorCode::UnsupportedProtocolVersion` and `ErrorCode::SdkVersionUnsupported`
+  rustdocs and human-readable descriptions now name current server behavior
+  (upstream server PR #577): the handshake refusals arrive on an open socket
+  as retryable, and the deployment — not the client — ends the connection.
+  Documentation only; typed surfaces and wire bytes are unchanged, and a new
+  pin holds the retryable pre-auth refusal loop (including both codes)
+  phase-valid with latest-refusal disconnect attribution.
 - Reduced per-frame allocation churn on both drivers: inbound binary game
   data now reuses the transport's wire buffer for the payload instead of
   copying it into a fresh allocation, and every direct JSON string game

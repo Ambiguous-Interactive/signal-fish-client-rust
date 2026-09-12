@@ -14,6 +14,13 @@ cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warning
 
 Run this before every commit. All three steps must pass with zero warnings.
 
+## Session Pace
+
+Target **~1 hour per working session** (past sessions ran much longer). Scope
+a session to one coherent deliverable — drift check plus one focused audit
+surface — and record anything left over as an issue or next-round surface
+instead of expanding the session.
+
 ## CI/CD Action Reference Policy
 
 Use version tags in workflow `uses:` references, not commit hashes.
