@@ -101,6 +101,7 @@ macro_rules! for_each_client_error_code {
             AuthenticationTimeout,
             SdkVersionUnsupported,
             UnsupportedGameDataFormat,
+            ConnectTokenInvalid,
             InvalidInput,
             InvalidGameName,
             InvalidRoomCode,

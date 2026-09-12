@@ -95,8 +95,10 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     // The evidence authority (all vendored protocol artifacts) advances with
     // descriptive drift plus reviewed deliberate schema changes; the released
     // runtime binding above stays at the 0.8.0 release commit. Keep this
-    // literal review-forced.
-    assert_eq!(protocol_commit, "ac118f846f26ac55e2fc1f3231dcc9aec86a7275");
+    // literal review-forced. a6cbbf69 is upstream PR #575: the ratified
+    // cloud-auth wire contract (optional `Authenticate.connect_token` +
+    // CONNECT_TOKEN_INVALID), additive-only.
+    assert_eq!(protocol_commit, "a6cbbf69dc7356a97ee5847b5a1e8d09a1283b14");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)

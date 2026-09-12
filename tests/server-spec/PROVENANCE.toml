@@ -7,26 +7,23 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-11 refresh: upstream descriptive-only spec prose (server PRs #565
-# and #567, issues #396/#561/#566) reworded the kick/ban/PlayerKicked
-# descriptions
-# (a pending reconnection record is tombstoned instead of a seat removed; the
-# 4007 `kicked` close is withheld when the target is live in another room) and
-# documented that RegenerateRoomCode's result goes only to the acting
-# authority, so a post-rotation TransferAuthority needs the new code shared
-# out of band. Zero schema-shape, token, or sample changes; all four wire
-# samples are byte-identical at the new pin. The Server 0.8.0
+# 2026-09-12 refresh: upstream PR #575 (server issue #517, the ratified cloud
+# auth wire contract) added the optional `Authenticate.connect_token` tenant
+# credential field and the `CONNECT_TOKEN_INVALID` error code. Both are
+# additive: an omitted field is byte-identical to the previous wire on every
+# path, and all four wire samples are byte-identical at the new pin. The
+# Server 0.8.0
 # release pin
 # (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) does not declare the
 # access-control surface, so the released runtime compatibility binding stays
 # at that release. This evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "ac118f846f26ac55e2fc1f3231dcc9aec86a7275"
+commit = "a6cbbf69dc7356a97ee5847b5a1e8d09a1283b14"
 # ISO 8601 date of the last refresh.
-synced = "2026-09-11"
+synced = "2026-09-12"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "89378f499a8fbe7da28b8a952a941463768d6d3c5ec9f102e97a4ba879a37321"
+"signal-fish-protocol.asyncapi.yaml" = "55dd84e22ab0580e3d2dec25c3989646eb0a2fc66449682adb4e4d77c7b56684"
