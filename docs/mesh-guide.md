@@ -11,11 +11,11 @@ drive the whole handshake for you.
     `tokio-runtime` feature.
 
     ```toml
-    signal-fish-client = { version = "0.12.0", features = ["mesh"] }
+    signal-fish-client = { version = "0.13.0", features = ["mesh"] }
     ```
 
     The generation-bearing protocol-v3 mesh APIs in this guide are all
-    published as of client release 0.12.0; the
+    published as of client release 0.13.0; the
     [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
     says which release added each.
 
