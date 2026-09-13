@@ -49,12 +49,12 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         "tests/compatibility.toml client_version must match the core crate \
          version (bump both together, as Prepare Release does)"
     );
-    assert_eq!(manifest["server_version"].as_str(), Some("0.8.0"));
-    assert_eq!(manifest["server_tag"].as_str(), Some("v0.8.0"));
+    assert_eq!(manifest["server_version"].as_str(), Some("0.9.0"));
+    assert_eq!(manifest["server_tag"].as_str(), Some("v0.9.0"));
     let commit = manifest["server_commit"]
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
-    assert_eq!(commit, "d79dcdc7549777c8c2bd9fcb2d132641532d8c86");
+    assert_eq!(commit, "803c9968f23f4449c6287d1564701b4cc6259261");
     assert_eq!(manifest["legacy_server"]["version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["legacy_server"]["tag"].as_str(), Some("v0.4.0"));
     assert_eq!(
@@ -67,9 +67,9 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     );
     assert_eq!(
         manifest["server_release_artifacts"]
-            ["signal-fish-server-v0.8.0-x86_64-unknown-linux-gnu.tar.gz"]
+            ["signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz"]
             .as_str(),
-        Some("28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515")
+        Some("3248880708da70b695eb74f64a9f2c5441e243799c6f7ef206808c47260bd925")
     );
     assert_eq!(
         manifest["server_release_artifacts"]
@@ -94,10 +94,13 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
     // The evidence authority (all vendored protocol artifacts) advances with
     // descriptive drift plus reviewed deliberate schema changes; the released
-    // runtime binding above stays at the 0.8.0 release commit. Keep this
+    // runtime binding above is the Server 0.9.0 release, whose client-
+    // observable wire is byte-identical to the 0.8.0 release (all five
+    // vendored artifacts SHA-verified identical at 803c9968). Keep this
     // literal review-forced. 018cd0f7 is upstream PR #576: the optional
     // tenant connect_token enforcement knob plus the CONNECT_TOKEN_REQUIRED
-    // refusal code (spec enum + prose only; wire samples byte-identical).
+    // refusal code (spec enum + prose only; wire samples byte-identical;
+    // zero protocol change through the 0.9.0 release).
     assert_eq!(protocol_commit, "018cd0f7656827a7ff6181c9f4a1d87d759d3e42");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),

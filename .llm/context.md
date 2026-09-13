@@ -168,7 +168,7 @@ transfers ownership immediately; browser buffering is observed separately.
 SDK-created Godot peers set an 8 MiB inbound buffer and raise the independent queued-packet cap from 4,096 to 65,536 before connecting; the byte storage may reserve roughly 16 MiB in Godot, plus packet metadata. At the inbound bound Godot's web backend silently drops newly arriving frames while the native backend stops reading and backpressures until the application drains queued packets, so enough unusually small frames can still reach the finite packet cap first (web) or stall delivery (native); `from_peer` preserves caller settings. Outbound keeps Godot's legacy 65,535-byte default: a single frame over that size on native (at or above it on web) parks as `Pending`, growing only capacity diagnostics. The
 blocking workflow covers official native/web Godot 4.5, requires a valid frame
 over the legacy 65,535-byte default, and runs clean, seeded-netem impaired, and
-3,600-frame soak jobs on Server 0.8 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
+3,600-frame soak jobs on Server 0.9 plus a clean Server 0.4 gate. It checksum-verifies and builds iproute2
 6.6.0 for seeded netem rather than relying on the runner's older `tc`.
 The fixture uses a peer-independent fixed 18 Hz simulation cadence with a
 20-frame Fortress prediction window (60-frame renderer/JIT warm-up bounded by
@@ -379,7 +379,7 @@ Receive polls bound skipped controls, flush Pong/Close, and fuse terminal errors
 
 `ClientMessage` and `ServerMessage` use adjacently-tagged serde encoding
 (`#[serde(tag = "type", content = "data")]`) to match the Signal Fish server
-v2 JSON protocol. Server 0.8.0 commit `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` is the released runtime compatibility binding.
+v2 JSON protocol. Server 0.9.0 commit `803c9968f23f4449c6287d1564701b4cc6259261` is the released runtime compatibility binding (wire byte-identical to the 0.8.0 release).
 The samples are byte-identical to the earlier post-0.7 preview at commit `5de9105e4c269a29919ae29880f5b67fc8d630c3` (room-correlation extension, advertised outbound limit, room-session incompatibility error); the vendored AsyncAPI authority re-syncs to upstream `main` prose only.
 Never change serde attributes without verifying both bindings. See `skills/serde-patterns/SKILL.md` and `skills/protocol-wire-conformance/SKILL.md` for details.
 
