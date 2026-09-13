@@ -501,6 +501,34 @@ def replace_required(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
+DISCOVERED_PIN_LINE_RE = re.compile(
+    rf"^(?![A-Za-z0-9_.-]*{SNIPPET_CRATE})[A-Za-z0-9_.-]+\s*=\s*"
+)
+
+
+def replace_discovered_doc_versions(path: Path, old: str, new: str) -> None:
+    """Line-aware bump for a discovered doc.
+
+    Discovered docs are included without a human re-checking their content,
+    so a dependency pin for an unrelated crate must not ride the client's
+    replace: a `fortress-rollback = "=0.13.0"` pin in docs/fortress.md
+    collides with the lockstep client version and would otherwise be
+    silently rewritten at the next bump. A crate-pin line for another crate
+    keeps its version; every other line (client snippets, prose references)
+    is replaced.
+    """
+    text = path.read_text(encoding="utf-8")
+    if old not in text:
+        raise ReleaseError(f"{path} does not contain required value {old!r}")
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if old in line and DISCOVERED_PIN_LINE_RE.match(line.strip()):
+            lines.append(line)
+            continue
+        lines.append(line.replace(old, new))
+    path.write_text("".join(lines), encoding="utf-8")
+
+
 def cut_changelog(
     path: Path, old: str, new: str, date: str, breaking: bool = False
 ) -> None:
@@ -886,8 +914,12 @@ def prepare(
         replace_present_lockstep_package_versions(
             root / relative, package_names, old, new
         )
+    explicit_inventory = frozenset(VERSION_FILES)
     for relative in version_files:
-        replace_required(root / relative, old, new)
+        if relative in explicit_inventory:
+            replace_required(root / relative, old, new)
+        else:
+            replace_discovered_doc_versions(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
     header, separator, sections = compatibility_text.partition("\n[")
     header, count = re.subn(

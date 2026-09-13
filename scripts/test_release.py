@@ -232,6 +232,7 @@ class PreparationTests(unittest.TestCase):
         (self.root / "docs/guide.md").write_text(
             'signal-fish-client = { version = "1.2.3", features = ["mesh"] }\n'
             'signal-fish-client-adapter = "1.2.3"\n'
+            'unrelated-crate = "1.2.3"\n'
             "A prose mention of signal-fish-client is not a snippet.\n"
             "Published as of client release 1.2.3; a versioned\n"
             '`signal-fish-client = "1.2.3"` dependency is sufficient.\n',
@@ -312,8 +313,10 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
         guide = (self.root / "docs/guide.md").read_text(encoding="utf-8")
-        self.assertNotIn("1.2.3", guide)
         self.assertEqual(guide.count("1.3.0"), 4)
+        # An unrelated crate's pin that collides with the client version must
+        # not ride the discovered doc's replace.
+        self.assertIn('unrelated-crate = "1.2.3"', guide)
         gitmain = (self.root / "docs/gitmain.md").read_text(encoding="utf-8")
         self.assertNotIn("1.3.0", gitmain)
 
