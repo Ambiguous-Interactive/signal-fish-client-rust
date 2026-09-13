@@ -10,6 +10,10 @@ on:
 
 permissions:
   contents: read
+  # GET /repos/{owner}/{repo}/environments/{name} requires the Actions
+  # repository permission for installation tokens (GITHUB_TOKEN); every
+  # unspecified permission is none. Read-only.
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}

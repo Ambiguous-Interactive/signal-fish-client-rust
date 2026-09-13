@@ -22,5 +22,10 @@
     "dismiss_stale_reviews_on_push": true,
     "required_review_thread_resolution": true,
     "strict_required_status_checks_policy": true
+  },
+  "release_environment": {
+    "name": "crates-io",
+    "required_reviewers": 1,
+    "protected_branches": true
   }
 }

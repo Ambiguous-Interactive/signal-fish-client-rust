@@ -330,6 +330,32 @@ mod required_check_policy {
     }
 
     #[test]
+    fn release_environment_policy_is_audited_fail_closed() {
+        // The crates-io environment's approval gate is the documented
+        // authorization to publish (docs/releasing.md). Pin the checked-in
+        // policy and the audit's enforcement so the gate cannot silently
+        // regress to an unprotected environment again.
+        let audit = read_project_file("scripts/audit-repository-rules.py");
+        let workflow = read_project_file(".github/workflows/repository-policy.yml");
+        let policy: serde_json::Value =
+            serde_json::from_str(&read_project_file(".github/required-checks.json"))
+                .expect("required-checks policy must be valid JSON");
+        let environment = &policy["release_environment"];
+        assert_eq!(environment["name"], serde_json::json!("crates-io"));
+        assert_eq!(environment["required_reviewers"], serde_json::json!(1));
+        assert_eq!(environment["protected_branches"], serde_json::json!(true));
+        // The audit must validate the policy block itself, fetch the live
+        // environment, and assert both faces of its protection.
+        assert!(audit.contains("policy has no release_environment object"));
+        assert!(audit.contains("/environments/{quoted}"));
+        assert!(audit.contains("required reviewers; "));
+        assert!(audit.contains("protected branches"));
+        // GET .../environments/{name} needs the Actions permission for
+        // installation tokens; unspecified workflow permissions are none.
+        assert!(workflow.contains("actions: read"));
+    }
+
+    #[test]
     fn required_multi_trigger_workflows_do_not_share_one_concurrency_group() {
         // A fully static concurrency group is shared by every trigger: with
         // GitHub's one-pending-run-per-group behavior, a newer queued run of

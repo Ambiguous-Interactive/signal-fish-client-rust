@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,20 @@ def fetch_rulesets(repository: str, token: str) -> list[dict[str, Any]]:
     if not isinstance(summaries, list):
         raise ValueError("GitHub rulesets response was not a list")
     return [fetch_json(f"{base}/{summary['id']}", token) for summary in summaries]
+
+
+def fetch_environment(repository: str, name: str, token: str) -> dict[str, Any]:
+    quoted = urllib.parse.quote(name, safe="")
+    url = f"https://api.github.com/repos/{repository}/environments/{quoted}"
+    try:
+        environment = fetch_json(url, token)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise ValueError(f"release environment {name!r} does not exist") from None
+        raise
+    if not isinstance(environment, dict):
+        raise ValueError("GitHub environment response was not an object")
+    return environment
 
 
 def audit_ruleset(
@@ -99,6 +115,77 @@ def audit_ruleset(
         )
         if strict is not expected.get("strict_required_status_checks_policy"):
             failures.append("required status checks must require an up-to-date branch")
+    return failures
+
+
+def release_environment_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    """Validate the checked-in release-environment policy; return it."""
+    expected = policy.get("release_environment")
+    if not isinstance(expected, dict):
+        raise ValueError("policy has no release_environment object")
+    # can_admins_bypass is deliberately unasserted: the environments API does
+    # not expose a way to set it, and docs/releasing.md does not promise it.
+    supported_keys = {"name", "required_reviewers", "protected_branches"}
+    unsupported_keys = sorted(set(expected) - supported_keys)
+    if unsupported_keys:
+        raise ValueError(
+            "unsupported release_environment keys: " + ", ".join(unsupported_keys)
+        )
+    name = expected.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("release_environment.name must be a non-empty string")
+    reviewers = expected.get("required_reviewers")
+    if not isinstance(reviewers, int) or isinstance(reviewers, bool) or reviewers < 1:
+        raise ValueError(
+            "release_environment.required_reviewers must be a positive integer"
+        )
+    protected = expected.get("protected_branches")
+    if not isinstance(protected, bool):
+        raise ValueError("release_environment.protected_branches must be a boolean")
+    return expected
+
+
+def audit_environment(
+    expected: dict[str, Any], environment: dict[str, Any]
+) -> list[str]:
+    """Audit one live environment payload against the checked-in policy."""
+    failures: list[str] = []
+    if environment.get("name") != expected["name"]:
+        failures.append(
+            f"audited environment {environment.get('name')!r} is not "
+            f"{expected['name']!r}"
+        )
+    rules = environment.get("protection_rules")
+    if not isinstance(rules, list):
+        return failures + ["protection_rules response was not a list"]
+    configured = 0
+    for rule in rules:
+        if rule.get("type") != "required_reviewers":
+            continue
+        reviewers = rule.get("reviewers")
+        if not isinstance(reviewers, list):
+            # A malformed reviewers field protects nobody; count it as zero
+            # so the reviewer-count failure below fires instead of len()
+            # accepting a dict or string as "reviewers".
+            continue
+        configured = max(configured, len(reviewers))
+    required = expected["required_reviewers"]
+    if configured < required:
+        failures.append(
+            f"environment has {configured} required reviewers; "
+            f"policy requires {required}"
+        )
+    branch_policy = environment.get("deployment_branch_policy")
+    if not isinstance(branch_policy, dict):
+        failures.append("deployment branch policy is not configured")
+    elif branch_policy.get("protected_branches") is not expected["protected_branches"]:
+        if expected["protected_branches"]:
+            failures.append(
+                "deployment branch policy must restrict deployments to "
+                "protected branches"
+            )
+        else:
+            failures.append("deployment branch policy must not restrict deployments")
     return failures
 
 
@@ -193,6 +280,7 @@ def main() -> int:
         "--repository", default="Ambiguous-Interactive/signal-fish-client-rust"
     )
     parser.add_argument("--rulesets", type=Path)
+    parser.add_argument("--environment", type=Path)
     args = parser.parse_args()
     try:
         policy = load_json(args.policy)
@@ -204,7 +292,19 @@ def main() -> int:
         )
         if not isinstance(policy, dict) or not isinstance(rulesets, list):
             raise ValueError("policy must be an object and rulesets must be a list")
-        failures = audit(policy, rulesets)
+        environment_expected = release_environment_policy(policy)
+        environment = (
+            load_json(args.environment)
+            if args.environment
+            else fetch_environment(
+                args.repository, environment_expected["name"], token
+            )
+        )
+        if not isinstance(environment, dict):
+            raise ValueError("environment payload must be an object")
+        failures = audit(policy, rulesets) + audit_environment(
+            environment_expected, environment
+        )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"repository-policy error: {error}", file=sys.stderr)
         return 1
@@ -213,7 +313,7 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
-    print("Repository rules match the checked-in policy.")
+    print("Repository rules and the release environment match the checked-in policy.")
     return 0
 
 

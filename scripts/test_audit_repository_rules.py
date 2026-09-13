@@ -190,5 +190,205 @@ class RepositoryRuleTests(unittest.TestCase):
         )
 
 
+class ReleaseEnvironmentPolicyTests(unittest.TestCase):
+    policy = {
+        "required_checks": [{"workflow": "CI", "job": "CI Required"}],
+        "repository_rules": {
+            "target": "branch",
+            "enforcement": "active",
+            "include": ["~DEFAULT_BRANCH"],
+            "exclude": [],
+            "required_approving_review_count": 0,
+        },
+        "release_environment": {
+            "name": "crates-io",
+            "required_reviewers": 1,
+            "protected_branches": True,
+        },
+    }
+
+    def test_accepts_the_documented_policy(self) -> None:
+        self.assertEqual(
+            audit.release_environment_policy(self.policy),
+            self.policy["release_environment"],
+        )
+
+    def test_rejects_a_policy_without_an_environment_block(self) -> None:
+        for release_environment in (None, "crates-io", [], {}):
+            with self.subTest(release_environment=release_environment):
+                policy = {**self.policy, "release_environment": release_environment}
+                with self.assertRaisesRegex(
+                    ValueError, "release_environment"
+                ):
+                    audit.release_environment_policy(policy)
+
+    def test_rejects_unsupported_environment_keys(self) -> None:
+        policy = {
+            **self.policy,
+            "release_environment": {
+                **self.policy["release_environment"],
+                "can_admins_bypass": False,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "unsupported release_environment"):
+            audit.release_environment_policy(policy)
+
+    def test_rejects_empty_or_missing_environment_name(self) -> None:
+        for name in (None, "", "   "):
+            with self.subTest(name=name):
+                policy = {
+                    **self.policy,
+                    "release_environment": {
+                        **self.policy["release_environment"],
+                        "name": name,
+                    },
+                }
+                with self.assertRaisesRegex(ValueError, "non-empty string"):
+                    audit.release_environment_policy(policy)
+
+    def test_rejects_non_positive_reviewer_counts(self) -> None:
+        for reviewers in (None, 0, -1, 1.5, True, "1"):
+            with self.subTest(reviewers=reviewers):
+                policy = {
+                    **self.policy,
+                    "release_environment": {
+                        **self.policy["release_environment"],
+                        "required_reviewers": reviewers,
+                    },
+                }
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    audit.release_environment_policy(policy)
+
+    def test_rejects_non_boolean_branch_protection(self) -> None:
+        for protected in (None, 1, "true"):
+            with self.subTest(protected=protected):
+                policy = {
+                    **self.policy,
+                    "release_environment": {
+                        **self.policy["release_environment"],
+                        "protected_branches": protected,
+                    },
+                }
+                with self.assertRaisesRegex(ValueError, "must be a boolean"):
+                    audit.release_environment_policy(policy)
+
+
+class ReleaseEnvironmentAuditTests(unittest.TestCase):
+    expected = {
+        "name": "crates-io",
+        "required_reviewers": 1,
+        "protected_branches": True,
+    }
+
+    @staticmethod
+    def environment() -> dict[str, object]:
+        # Mirrors GET /repos/{owner}/{repo}/environments/crates-io.
+        return {
+            "name": "crates-io",
+            "protection_rules": [
+                {
+                    "id": 65476915,
+                    "type": "required_reviewers",
+                    "prevent_self_review": False,
+                    "reviewers": [
+                        {
+                            "type": "User",
+                            "reviewer": {"login": "wallstop", "id": 1045249},
+                        }
+                    ],
+                },
+                {"id": 65476916, "type": "branch_policy"},
+            ],
+            "deployment_branch_policy": {
+                "protected_branches": True,
+                "custom_branch_policies": False,
+            },
+        }
+
+    def test_accepts_the_protected_environment(self) -> None:
+        self.assertEqual(audit.audit_environment(self.expected, self.environment()), [])
+
+    def test_rejects_missing_or_malformed_protection_rules(self) -> None:
+        for rules in (None, {}, "[]"):
+            with self.subTest(rules=rules):
+                environment = {**self.environment(), "protection_rules": rules}
+                self.assertEqual(
+                    audit.audit_environment(self.expected, environment),
+                    ["protection_rules response was not a list"],
+                )
+
+    def test_rejects_an_unprotected_environment(self) -> None:
+        # The exact live state issue #265 was filed against.
+        environment = self.environment()
+        environment["protection_rules"] = []
+        environment["deployment_branch_policy"] = None
+        self.assertEqual(
+            audit.audit_environment(self.expected, environment),
+            [
+                "environment has 0 required reviewers; policy requires 1",
+                "deployment branch policy is not configured",
+            ],
+        )
+
+    def test_rejects_fewer_reviewers_than_policy_requires(self) -> None:
+        environment = self.environment()
+        environment["protection_rules"][0]["reviewers"] = []
+        self.assertEqual(
+            audit.audit_environment(self.expected, environment),
+            ["environment has 0 required reviewers; policy requires 1"],
+        )
+
+    def test_rejects_a_malformed_reviewers_field_instead_of_len_passing(self) -> None:
+        # len() of a dict or string would satisfy the reviewer count with
+        # zero real reviewers; only a list counts.
+        for reviewers in ({"type": "User"}, "wallstop", 1, True):
+            with self.subTest(reviewers=reviewers):
+                environment = self.environment()
+                environment["protection_rules"][0]["reviewers"] = reviewers
+                self.assertEqual(
+                    audit.audit_environment(self.expected, environment),
+                    ["environment has 0 required reviewers; policy requires 1"],
+                )
+
+    def test_rejects_a_payload_for_a_different_environment(self) -> None:
+        environment = self.environment()
+        environment["name"] = "staging"
+        self.assertEqual(
+            audit.audit_environment(self.expected, environment),
+            ["audited environment 'staging' is not 'crates-io'"],
+        )
+
+    def test_accepts_more_reviewers_than_policy_requires(self) -> None:
+        environment = self.environment()
+        environment["protection_rules"][0]["reviewers"].append(
+            {"type": "User", "reviewer": {"login": "second", "id": 2}}
+        )
+        self.assertEqual(audit.audit_environment(self.expected, environment), [])
+
+    def test_rejects_an_unset_branch_policy(self) -> None:
+        environment = self.environment()
+        environment["deployment_branch_policy"] = None
+        self.assertEqual(
+            audit.audit_environment(self.expected, environment),
+            ["deployment branch policy is not configured"],
+        )
+
+    def test_rejects_custom_branch_policies_in_place_of_protection(self) -> None:
+        # custom_branch_policies=True means deployments follow an arbitrary
+        # custom list; only protected-branch restriction satisfies the policy.
+        environment = self.environment()
+        environment["deployment_branch_policy"] = {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        }
+        self.assertEqual(
+            audit.audit_environment(self.expected, environment),
+            [
+                "deployment branch policy must restrict deployments to "
+                "protected branches"
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
