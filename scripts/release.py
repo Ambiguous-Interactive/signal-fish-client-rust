@@ -38,6 +38,14 @@ PARTIAL_LOCKFILES = (
     "fuzz/Cargo.lock",
     "tests/emscripten-harness/Cargo.lock",
 )
+# Files carrying the lockstep version outside TOML dependency snippets
+# (badges, sdk_version literals, docs.rs links, context headers). Versioned
+# dependency snippets under docs/ that no entry covers are discovered from
+# the tree and appended by [`release_version_files`]: an explicit-only
+# inventory drifted from docs reality once (docs/fortress.md and
+# docs/token-binding.md were missing, so the 0.13.0 preparation failed
+# closed in mandatory verification), and additive discovery closes that gap
+# for future docs.
 VERSION_FILES = (
     "README.md",
     "crates/signal-fish-client-godot/README.md",
@@ -424,11 +432,101 @@ def release_intent(root: Path) -> dict[str, Any]:
     }
 
 
+GIT_MAIN_DEPENDENCY_URL = (
+    "https://github.com/Ambiguous-Interactive/signal-fish-client-rust"
+)
+SNIPPET_CRATE = "signal-fish-client"
+
+
+def is_canonical_git_main_dependency(line: str) -> bool:
+    """Mirror of the CI detector for the exempt unreleased git-main pin.
+
+    Keep in lockstep with `is_canonical_git_main_dependency` in
+    tests/ci_config_tests.rs.
+    """
+    return (
+        f'git = "{GIT_MAIN_DEPENDENCY_URL}"' in line
+        and "version" not in line
+        and "branch" not in line
+        and "rev" not in line
+        and "tag" not in line
+    )
+
+
+def docs_version_files(root: Path) -> tuple[str, ...]:
+    """Discover docs/**/*.md files with a versioned dependency snippet.
+
+    A snippet line is a trimmed line starting with `signal-fish-client`
+    followed by `=`, excluding the git-main pin that intentionally carries no
+    registry version. Discovery is additive to [`VERSION_FILES`]; the caller
+    still validates every discovered file contains the old version, so a doc
+    that lost its version reference fails closed instead of skipping the
+    bump.
+    """
+    docs = root / "docs"
+    if not docs.is_dir():
+        return ()
+    discovered: list[str] = []
+    for path in sorted(docs.rglob("*.md")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            trimmed = line.strip()
+            if not trimmed.startswith(SNIPPET_CRATE):
+                continue
+            after_name = trimmed[len(SNIPPET_CRATE) :].lstrip()
+            if not after_name.startswith("="):
+                continue
+            if is_canonical_git_main_dependency(trimmed):
+                continue
+            discovered.append(path.relative_to(root).as_posix())
+            break
+    return tuple(discovered)
+
+
+def release_version_files(root: Path) -> tuple[str, ...]:
+    """Explicit inventory plus discovered snippet docs, deduplicated.
+
+    Every entry must contain the old version and is blanket-replaced exactly
+    once, so a file that is both explicit and discovered must appear only at
+    its explicit position.
+    """
+    files = list(VERSION_FILES)
+    files.extend(path for path in docs_version_files(root) if path not in files)
+    return tuple(files)
+
+
 def replace_required(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8")
     if old not in text:
         raise ReleaseError(f"{path} does not contain required value {old!r}")
     path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+DISCOVERED_PIN_LINE_RE = re.compile(
+    rf"^(?![A-Za-z0-9_.-]*{SNIPPET_CRATE})[A-Za-z0-9_.-]+\s*=\s*"
+)
+
+
+def replace_discovered_doc_versions(path: Path, old: str, new: str) -> None:
+    """Line-aware bump for a discovered doc.
+
+    Discovered docs are included without a human re-checking their content,
+    so a dependency pin for an unrelated crate must not ride the client's
+    replace: a `fortress-rollback = "=0.13.0"` pin in docs/fortress.md
+    collides with the lockstep client version and would otherwise be
+    silently rewritten at the next bump. A crate-pin line for another crate
+    keeps its version; every other line (client snippets, prose references)
+    is replaced.
+    """
+    text = path.read_text(encoding="utf-8")
+    if old not in text:
+        raise ReleaseError(f"{path} does not contain required value {old!r}")
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if old in line and DISCOVERED_PIN_LINE_RE.match(line.strip()):
+            lines.append(line)
+            continue
+        lines.append(line.replace(old, new))
+    path.write_text("".join(lines), encoding="utf-8")
 
 
 def cut_changelog(
@@ -747,7 +845,8 @@ def prepare(
 
     # Validate every required source before writing any file. A stale inventory
     # must not leave a plausible-looking partial release bump behind.
-    for relative in VERSION_FILES:
+    version_files = release_version_files(root)
+    for relative in version_files:
         if old not in (root / relative).read_text(encoding="utf-8"):
             raise ReleaseError(f"{relative} does not contain required value {old!r}")
     for relative in LOCKSTEP_LOCKFILES:
@@ -815,8 +914,12 @@ def prepare(
         replace_present_lockstep_package_versions(
             root / relative, package_names, old, new
         )
-    for relative in VERSION_FILES:
-        replace_required(root / relative, old, new)
+    explicit_inventory = frozenset(VERSION_FILES)
+    for relative in version_files:
+        if relative in explicit_inventory:
+            replace_required(root / relative, old, new)
+        else:
+            replace_discovered_doc_versions(root / relative, old, new)
     compatibility = root / "tests/compatibility.toml"
     header, separator, sections = compatibility_text.partition("\n[")
     header, count = re.subn(

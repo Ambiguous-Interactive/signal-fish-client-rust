@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -225,6 +226,26 @@ class PreparationTests(unittest.TestCase):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("release 1.2.3\n", encoding="utf-8")
+        # docs/ versioned snippets are discovered, not inventoried: a guide
+        # like docs/fortress.md must ride the bump without a script edit.
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / "docs/guide.md").write_text(
+            'signal-fish-client = { version = "1.2.3", features = ["mesh"] }\n'
+            'signal-fish-client-adapter = "1.2.3"\n'
+            'unrelated-crate = "1.2.3"\n'
+            "A prose mention of signal-fish-client is not a snippet.\n"
+            "Published as of client release 1.2.3; a versioned\n"
+            '`signal-fish-client = "1.2.3"` dependency is sufficient.\n',
+            encoding="utf-8",
+        )
+        # The unreleased git-main pin carries no registry version and is
+        # exempt from both discovery and the bump.
+        (self.root / "docs/gitmain.md").write_text(
+            'signal-fish-client = { git = "'
+            "https://github.com/Ambiguous-Interactive/signal-fish-client-rust"
+            '" }\n',
+            encoding="utf-8",
+        )
         (self.root / "tests").mkdir()
         (self.root / "tests/compatibility.toml").write_text(
             'client_version = "1.2.3"\nsynced = "2020-01-01"\n\n'
@@ -291,6 +312,64 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(compatibility.count('synced = "2020-01-02"'), 1)
         self.assertEqual(release.previous_version(self.root, "1.3.0"), "1.2.3")
         self.assertEqual(release.semver_policy(self.root, "1.3.0"), "minor")
+        guide = (self.root / "docs/guide.md").read_text(encoding="utf-8")
+        self.assertEqual(guide.count("1.3.0"), 4)
+        # An unrelated crate's pin that collides with the client version must
+        # not ride the discovered doc's replace.
+        self.assertIn('unrelated-crate = "1.2.3"', guide)
+        gitmain = (self.root / "docs/gitmain.md").read_text(encoding="utf-8")
+        self.assertNotIn("1.3.0", gitmain)
+
+    def test_release_version_files_appends_discovered_docs_without_duplicates(
+        self,
+    ) -> None:
+        files = release.release_version_files(self.root)
+        self.assertEqual(files[: len(release.VERSION_FILES)], release.VERSION_FILES)
+        self.assertEqual(files[len(release.VERSION_FILES) :], ("docs/guide.md",))
+        self.assertEqual(len(files), len(set(files)))
+
+    def test_docs_version_files_discovers_versioned_snippets_only(self) -> None:
+        docs = self.root / "docs"
+        (docs / "nested").mkdir()
+        (docs / "token-binding.md").write_text(
+            'signal-fish-client = { version = "1.2.3", features = ["tls"] }\n',
+            encoding="utf-8",
+        )
+        (docs / "nested/inner.md").write_text(
+            'signal-fish-client="1.2.3"\n',
+            encoding="utf-8",
+        )
+        (docs / "prose.md").write_text(
+            "signal-fish-client provides version tracking.\n",
+            encoding="utf-8",
+        )
+        (docs / "adapter-only.md").write_text(
+            'signal-fish-client-adapter = "1.2.3"\n',
+            encoding="utf-8",
+        )
+        (self.root / "other.md").write_text(
+            'signal-fish-client = "1.2.3"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            release.docs_version_files(self.root),
+            ("docs/guide.md", "docs/nested/inner.md", "docs/token-binding.md"),
+        )
+
+    def test_docs_version_files_ignores_missing_docs_directory(self) -> None:
+        shutil.rmtree(self.root / "docs")
+        self.assertEqual(release.docs_version_files(self.root), ())
+
+    def test_discovered_doc_without_old_version_fails_before_writes(self) -> None:
+        stale = self.root / "docs/guide.md"
+        stale.write_text(
+            'signal-fish-client = { version = "9.9.9", features = ["mesh"] }\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(release.ReleaseError, "required value"):
+            release.prepare(self.root, "patch", "2026-07-13", allow_dirty=True)
+        self.assertEqual(release.package_version(self.root), "1.2.3")
+        self.assertIn("9.9.9", stale.read_text(encoding="utf-8"))
 
     def test_prepare_requires_top_level_identity_in_header_table(self) -> None:
         path = self.root / "tests/compatibility.toml"
