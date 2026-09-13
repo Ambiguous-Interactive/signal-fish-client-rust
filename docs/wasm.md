@@ -133,8 +133,8 @@ signal-fish-client = { git = "https://github.com/Ambiguous-Interactive/signal-fi
 ```
 
 These snippets use `main` so the ownership, bounded-work, and admission
-guarantees documented below stay current. The published `0.12.0` dependency
-with its [versioned API docs](https://docs.rs/signal-fish-client/0.12.0/)
+guarantees documented below stay current. The published `0.13.0` dependency
+with its [versioned API docs](https://docs.rs/signal-fish-client/0.13.0/)
 already contains them; the
 [changelog](https://github.com/Ambiguous-Interactive/signal-fish-client-rust/blob/main/CHANGELOG.md)
 says which release added each.

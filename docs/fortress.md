@@ -10,8 +10,8 @@ Add the rollback library beside the SDK in the Godot GDExtension crate:
 fortress-rollback = "=0.13.0"
 godot = { version = "0.5.5", features = ["api-custom", "experimental-wasm", "experimental-wasm-nothreads", "lazy-function-tables"] }
 serde = { version = "1.0", features = ["derive"] }
-signal-fish-client = { version = "0.12.0", default-features = false, features = ["polling-client"] }
-signal-fish-client-godot = "0.12.0"
+signal-fish-client = { version = "0.13.0", default-features = false, features = ["polling-client"] }
+signal-fish-client-godot = "0.13.0"
 ```
 
 The adapter supports godot-rust 0.4.5 through 0.5.x and requires Rust 1.94;
@@ -22,8 +22,8 @@ the framed-transport-agnostic core remains compatible with Rust 1.87. Keep the d
 because bindings from different versions are distinct Rust types.
 
 The issue #61 polling and admission guarantees in this guide are published as
-of client release 0.12.0; a versioned
-`signal-fish-client = "0.12.0"` dependency is sufficient.
+of client release 0.13.0; a versioned
+`signal-fish-client = "0.13.0"` dependency is sufficient.
 
 ## Configure Signal Fish
 
