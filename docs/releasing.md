@@ -32,7 +32,12 @@ default-branch deployment restriction, and a `CRATES_IO_TOKEN` secret. For the
 first adapter release, create a crates.io token scoped to the
 `signal-fish-client*` crate pattern with both `publish-new` and
 `publish-update`. After every crate has been published once, rotate it to
-`publish-update` only. Artifact attestations must also be enabled.
+`publish-update` only. Artifact attestations must also be enabled. The
+Repository Policy audit (`.github/required-checks.json`
+`release_environment`) fails closed if the live environment's reviewers or
+deployment restriction drift from this policy. GitHub's
+administrator-bypass setting is left unasserted: the REST API offers no
+way to set it, so repository admins could still bypass the approval.
 
 Protect the default branch with an active ruleset that has no bypass actors and
 requires:
