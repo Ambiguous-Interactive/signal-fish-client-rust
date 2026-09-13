@@ -30,12 +30,12 @@ env:
   NETEM_SEED: "6101"
   IPROUTE2_VERSION: "6.6.0"
   IPROUTE2_SHA256: "8738c804afd09f0bf756937f0c3de23117832a98d8cbbf50386cf5005cd613ce"
-  NATIVE_SERVER_VERSION: "0.8.0"
+  NATIVE_SERVER_VERSION: "0.9.0"
   # Digest-pinned like ci.yml's server-mesh-e2e matrix (whose values must stay
   # byte-identical to tests/compatibility.toml): release assets are mutable, so
   # verifying the tarball against a same-origin .sha256 would let a replaced
   # asset attest itself.
-  SERVER_SHA256_080: "28ed5f0c8dd1c1b453911cfc76d42a55a832f58d57a8053c2966dd3269782515"
+  SERVER_SHA256_090: "3248880708da70b695eb74f64a9f2c5441e243799c6f7ef206808c47260bd925"
   SERVER_SHA256_040: "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
 
 jobs:
@@ -152,7 +152,7 @@ jobs:
           asset="signal-fish-server-v${NATIVE_SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${NATIVE_SERVER_VERSION}"
           curl --fail --location --retry 5 --retry-all-errors --output "${asset}" "${base}/${asset}"
-          printf '%s  %s\n' "${SERVER_SHA256_080}" "${asset}" | sha256sum --check
+          printf '%s  %s\n' "${SERVER_SHA256_090}" "${asset}" | sha256sum --check
           native_fixture=".godot-native-project"
           mkdir -p .signal-fish-native-server "${native_fixture}"
           cp -R tests/godot-web-smoke/project/. "${native_fixture}/"
@@ -390,16 +390,16 @@ jobs:
       matrix:
         include:
           - scenario: clean
-            server_version: "0.8.0"
+            server_version: "0.9.0"
             timeout: 30
           - scenario: clean
             server_version: "0.4.0"
             timeout: 30
           - scenario: impaired
-            server_version: "0.8.0"
+            server_version: "0.9.0"
             timeout: 30
           - scenario: soak
-            server_version: "0.8.0"
+            server_version: "0.9.0"
             timeout: 75
     steps:
       - name: Checkout repository
@@ -447,7 +447,7 @@ jobs:
           if [ "${SERVER_VERSION}" = "0.4.0" ]; then
             server_sha256="${SERVER_SHA256_040}"
           else
-            server_sha256="${SERVER_SHA256_080}"
+            server_sha256="${SERVER_SHA256_090}"
           fi
           asset="signal-fish-server-v${SERVER_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           base="https://github.com/Ambiguous-Interactive/signal-fish-server/releases/download/v${SERVER_VERSION}"

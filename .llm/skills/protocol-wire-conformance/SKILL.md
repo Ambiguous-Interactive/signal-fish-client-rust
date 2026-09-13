@@ -34,27 +34,32 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`ac118f846f26ac55e2fc1f3231dcc9aec86a7275`, advanced from the Server 0.8.0
+`018cd0f7656827a7ff6181c9f4a1d87d759d3e42`, advanced from the Server 0.8.0
 release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
 plus the deliberate additive changes (the v3 room-member snapshot excludes the
 legacy `connection_info` echo — server issue #529; the authority-only
 moderation surface — server issue #525 — added the NOT_ROOM_AUTHORITY /
 KICK_TARGET_NOT_FOUND / KICKED error codes, the KickPlayer / RegenerateRoomCode
-operations, and the PlayerKicked / RoomCodeRegenerated results; and the room
+operations, and the PlayerKicked / RoomCodeRegenerated results; the room
 access-control tier — server PR #545 — added the PASSWORD_REQUIRED / BANNED /
 TRANSFER_TARGET_NOT_FOUND error codes, the SetRoomAccess / BanPlayer /
 UnbanPlayer / TransferAuthority operations and their four results, the additive
 join `password` field, and the v3-only additive `spectator_count` delta-count
-field; the v2 shapes
+field; and the optional tenant connect_token credential with its
+CONNECT_TOKEN_INVALID / CONNECT_TOKEN_REQUIRED refusals — server PRs #575/#576;
+the v2 shapes
 are frozen and no access-control wire samples exist yet, so pre-existing sample
 lines stay byte-identical to the release pin).
-Released runtime compatibility stays bound to the Server 0.8.0 release in
+Released runtime compatibility is bound to the Server 0.9.0 release
+(`803c9968f23f4449c6287d1564701b4cc6259261`; client-observable wire
+byte-identical to the 0.8.0 release) in
 `tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to
 upstream `main` at every refresh — descriptive prose drift is absorbed
 without wire impact, and any schema/message/error-code change triggers the
-full reconciliation below. The older Server 0.7.0
-commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` remains the prior released
-binding in history. The client retains six legacy
+full reconciliation below. The Server 0.8.0 release
+(`d79dcdc7549777c8c2bd9fcb2d132641532d8c86`) is the prior released binding in
+history; Server 0.7.0
+commit `3f7f43d4cd4b3cc7f8fb893220dc35c9b1fad333` precedes it. The client retains six legacy
 `ErrorCode::NON_EMITTED` variants outside the 0.7 emitted-token set; conformance
 must compare the spec plus that explicit compatibility marker, not delete them.
 
