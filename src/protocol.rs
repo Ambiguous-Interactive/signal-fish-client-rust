@@ -387,10 +387,12 @@ pub struct PlayerInfo {
     pub is_authority: bool,
     pub is_ready: bool,
     /// ISO 8601 connect timestamp. Defaults to an empty string when the
-    /// server omits it: protocol-v3 room snapshots may trim this field for
+    /// server omits it: protocol-v3 room snapshots trim this field for
     /// privacy (signal-fish-server #539), and dropping the whole frame over
-    /// a metadata field would break the session.
-    #[serde(default)]
+    /// a metadata field would break the session. Re-serialization omits the
+    /// field while it is empty, so a decoded v3 snapshot round-trips to the
+    /// exact wire shape the server now publishes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub connected_at: String,
     /// Legacy self-declared connection info for P2P establishment. Protocol
     /// v2 room snapshots may include it (when the player provided it);
@@ -412,8 +414,10 @@ pub struct SpectatorInfo {
     pub id: PlayerId,
     pub name: String,
     /// ISO 8601 join timestamp. Defaults to an empty string when the server
-    /// omits it (see [`PlayerInfo::connected_at`]).
-    #[serde(default)]
+    /// omits it (see [`PlayerInfo::connected_at`]); the empty field is also
+    /// omitted on re-serialization, matching the protocol-v3 spectator
+    /// snapshot shape (signal-fish-server #539).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub connected_at: String,
 }
 
