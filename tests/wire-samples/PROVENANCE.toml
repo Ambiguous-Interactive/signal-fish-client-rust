@@ -6,9 +6,11 @@
 [upstream]
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = ".llm/code-samples/protocol"
-# Exact server commit the .jsonl bytes were copied from. The bytes are
+# Exact server commit the .jsonl bytes were copied from. The bytes were
 # byte-identical from the Server 0.8.0 release pin (d79dcdc7549777c8c2bd9fcb2d132641532d8c86)
-# through the 2026-09-08 refresh: upstream's room access-control tier (server
+# through the 2026-09-13 0.9.0-binding refresh (the evidence pin 018cd0f7 was
+# set on 2026-09-12 and the four hashes were unchanged by the binding
+# advance): upstream's room access-control tier (server
 # PR #545) added no wire samples — the four files are unchanged from the
 # 2026-09-07 moderation-surface refresh, so the pre-existing lines stay
 # byte-identical to the release pin. The released runtime compatibility
@@ -24,13 +26,17 @@ path = ".llm/code-samples/protocol"
 # to the spec only — an omitted field is byte-identical, and the four files
 # are byte-identical there as well. The same-day 018cd0f7 follow-up (upstream
 # PR #576) added the CONNECT_TOKEN_REQUIRED spec enum entry; the samples are
-# unchanged there too.)
-commit = "018cd0f7656827a7ff6181c9f4a1d87d759d3e42"
+# unchanged there too. The 2026-09-14 refresh at e1b65b9 (upstream PR #588,
+# server issue #539) rewrote the two v3 snapshot lines — `RoomJoined` and
+# `Reconnected` — so their `current_players` entries no longer carry the
+# server-internal `connected_at` join timestamp; the v2 lines keep the frozen
+# shape and the other three files stay byte-identical.)
+commit = "e1b65b965390355e9fd15661dc95a8a4321eab17"
 # Protocol version range these samples exercise.
 protocol_version_min = 2
 protocol_version_max = 3
 # ISO 8601 date of the last refresh.
-synced = "2026-09-12"
+synced = "2026-09-14"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so a sample
 # cannot be edited without also updating this marker (keeps provenance honest).
@@ -38,4 +44,4 @@ synced = "2026-09-12"
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
 "v2-server-messages.jsonl" = "b5aee60d2cbd410c1088da1bbd1142d88d89600bc600f00b2d1849586f1654cd"
 "v3-client-messages.jsonl" = "5f6e92f550e7bb0b2ea4be02dea30f5b09677ecf4e01b5451d41d824f405b4cb"
-"v3-server-messages.jsonl" = "5d210777ffe3db0ba36b10be6f40f2354acbbe9c5f4b6b83544eafa95daedbd6"
+"v3-server-messages.jsonl" = "a175151b8b4dffa95818b11d41651551d499f9388e00309c95e0ba12159bbfce"

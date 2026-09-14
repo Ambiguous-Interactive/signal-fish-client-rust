@@ -7,27 +7,28 @@
 repo = "https://github.com/Ambiguous-Interactive/signal-fish-server"
 path = "spec"
 # Exact server commit the spec bytes were copied from.
-# 2026-09-12 refresh: upstream PR #576 (server issue #574) added the
-# `CONNECT_TOKEN_REQUIRED` error code (the enforcement face of the #517
-# cloud-auth tier: a deployment that enforces tenant credentials refuses a
-# token-less handshake with it) plus the matching enforcement prose on
-# `Authenticate.connect_token`. The enum addition is a typed-surface change
-# reconciled in lockstep (`ErrorCode::ConnectTokenRequired`); all four wire
-# samples are byte-identical at the new pin. The
-# released runtime compatibility binding in tests/compatibility.toml is the
-# Server 0.9.0
+# 2026-09-14 refresh: upstream PR #588 (server issue #539) trimmed the
+# server-internal `connected_at` join timestamp from every protocol-v3
+# snapshot payload — `V3PlayerInfo` drops the field and the shared
+# `SpectatorInfo` schema split into version-disjoint V2/V3 shapes (v3 omits
+# it; v2 keeps the frozen shape). The client face was reconciled in lockstep:
+# decode tolerance shipped in 0.13.0 (`#[serde(default)]`, reads back as an
+# empty string), and re-serialization now omits the empty field so the
+# semantic round-trip matches the trimmed v3 shape. The v3 server wire
+# samples advanced with the same commit; the v2 samples are byte-identical.
+# The released runtime compatibility binding in tests/compatibility.toml is
+# the Server 0.9.0
 # release pin
 # (803c9968f23f4449c6287d1564701b4cc6259261), whose client-observable wire is
 # byte-identical to the 0.8.0 release (d79dcdc7549777c8c2bd9fcb2d132641532d8c86)
-# — this evidence authority saw zero client-observable wire change through
-# 0.9.0. This evidence authority advances together with
+# — this evidence authority advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
-commit = "018cd0f7656827a7ff6181c9f4a1d87d759d3e42"
+commit = "e1b65b965390355e9fd15661dc95a8a4321eab17"
 # ISO 8601 date of the last refresh.
-synced = "2026-09-12"
+synced = "2026-09-14"
 
 # SHA-256 of each vendored file. A policy test recomputes these, so the spec
 # cannot be edited without also updating this marker (keeps provenance honest).
 [files]
-"signal-fish-protocol.asyncapi.yaml" = "70cfd73118014e285f6e166e9e1151b9c787606d39ffd09df8de1f89f7556764"
+"signal-fish-protocol.asyncapi.yaml" = "e8e88599651f6af5a5f44efd27fd6848f907c5c3dc33e2e09816c8764658a666"

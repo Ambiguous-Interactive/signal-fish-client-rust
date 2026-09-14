@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Re-serializing a `PlayerInfo` or `SpectatorInfo` whose `connected_at` is
+  empty (protocol-v3 snapshots trim the field for privacy — signal-fish-server
+  #539) now omits the key instead of writing an empty string, so decoded v3
+  snapshots round-trip to the exact wire shape the server publishes; decoding
+  and the public field type are unchanged.
+
 ## [0.13.0] - 2026-09-13
 
 <!-- semver-checks: major -->

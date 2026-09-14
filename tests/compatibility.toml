@@ -10,8 +10,8 @@ synced = "2026-09-13"
 # files) without touching the released runtime binding above; any schema,
 # message, or error-code change triggers full type reconciliation.
 [protocol_authority]
-commit = "018cd0f7656827a7ff6181c9f4a1d87d759d3e42"
-synced = "2026-09-12"
+commit = "e1b65b965390355e9fd15661dc95a8a4321eab17"
+synced = "2026-09-14"
 
 [legacy_server]
 version = "0.4.0"
@@ -27,7 +27,7 @@ generation = "omitted"
 "v2-client-messages.jsonl" = "929f25d702d3e21f2cca640cd14f9ce044945a6ef9c2c258de56f3f112164227"
 "v2-server-messages.jsonl" = "b5aee60d2cbd410c1088da1bbd1142d88d89600bc600f00b2d1849586f1654cd"
 "v3-client-messages.jsonl" = "5f6e92f550e7bb0b2ea4be02dea30f5b09677ecf4e01b5451d41d824f405b4cb"
-"v3-server-messages.jsonl" = "5d210777ffe3db0ba36b10be6f40f2354acbbe9c5f4b6b83544eafa95daedbd6"
+"v3-server-messages.jsonl" = "a175151b8b4dffa95818b11d41651551d499f9388e00309c95e0ba12159bbfce"
 
 [server_spec]
-"signal-fish-protocol.asyncapi.yaml" = "70cfd73118014e285f6e166e9e1151b9c787606d39ffd09df8de1f89f7556764"
+"signal-fish-protocol.asyncapi.yaml" = "e8e88599651f6af5a5f44efd27fd6848f907c5c3dc33e2e09816c8764658a666"

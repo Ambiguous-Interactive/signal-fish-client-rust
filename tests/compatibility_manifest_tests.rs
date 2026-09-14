@@ -94,14 +94,15 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
     // The evidence authority (all vendored protocol artifacts) advances with
     // descriptive drift plus reviewed deliberate schema changes; the released
-    // runtime binding above is the Server 0.9.0 release, whose client-
-    // observable wire is byte-identical to the 0.8.0 release (all five
-    // vendored artifacts SHA-verified identical at 803c9968). Keep this
-    // literal review-forced. 018cd0f7 is upstream PR #576: the optional
-    // tenant connect_token enforcement knob plus the CONNECT_TOKEN_REQUIRED
-    // refusal code (spec enum + prose only; wire samples byte-identical;
-    // zero protocol change through the 0.9.0 release).
-    assert_eq!(protocol_commit, "018cd0f7656827a7ff6181c9f4a1d87d759d3e42");
+    // runtime binding above is the Server 0.9.0 release. Keep this
+    // literal review-forced. e1b65b9 is upstream PR #588: the server-internal
+    // `connected_at` join timestamp is trimmed from every protocol-v3
+    // snapshot payload (`V3PlayerInfo` drops the field; `SpectatorInfo`
+    // splits into version-disjoint V2/V3 shapes), rewriting the v3
+    // `RoomJoined`/`Reconnected` sample lines. The client reconciled in
+    // lockstep: decode tolerance shipped in 0.13.0 and re-serialization now
+    // omits the empty field (v3-faithful round-trip).
+    assert_eq!(protocol_commit, "e1b65b965390355e9fd15661dc95a8a4321eab17");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),
         Some(protocol_commit)

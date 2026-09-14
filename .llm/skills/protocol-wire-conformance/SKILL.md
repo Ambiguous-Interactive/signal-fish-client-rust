@@ -34,9 +34,9 @@ the blind spot where a server-side error-code addition passes the wire-sample
 golden tests (they pin message *shapes*, not the error-code value space).
 
 The canonical corpus pins protocol-authority commit
-`018cd0f7656827a7ff6181c9f4a1d87d759d3e42`, advanced from the Server 0.8.0
+`e1b65b965390355e9fd15661dc95a8a4321eab17`, advanced from the Server 0.8.0
 release pin `d79dcdc7549777c8c2bd9fcb2d132641532d8c86` by descriptive prose
-plus the deliberate additive changes (the v3 room-member snapshot excludes the
+plus reviewed deliberate wire changes (the v3 room-member snapshot excludes the
 legacy `connection_info` echo — server issue #529; the authority-only
 moderation surface — server issue #525 — added the NOT_ROOM_AUTHORITY /
 KICK_TARGET_NOT_FOUND / KICKED error codes, the KickPlayer / RegenerateRoomCode
@@ -45,11 +45,15 @@ access-control tier — server PR #545 — added the PASSWORD_REQUIRED / BANNED 
 TRANSFER_TARGET_NOT_FOUND error codes, the SetRoomAccess / BanPlayer /
 UnbanPlayer / TransferAuthority operations and their four results, the additive
 join `password` field, and the v3-only additive `spectator_count` delta-count
-field; and the optional tenant connect_token credential with its
+field; the optional tenant connect_token credential with its
 CONNECT_TOKEN_INVALID / CONNECT_TOKEN_REQUIRED refusals — server PRs #575/#576;
+and the v3 snapshot trim of the server-internal `connected_at` join timestamp —
+server issue #539 — which rewrote the v3 `RoomJoined`/`Reconnected` sample
+lines and split `SpectatorInfo` into version-disjoint V2/V3 spec shapes;
 the v2 shapes
-are frozen and no access-control wire samples exist yet, so pre-existing sample
-lines stay byte-identical to the release pin).
+are frozen and no access-control wire samples exist yet, so the v2 sample
+lines stay byte-identical to the release pin — only the #539 v3 snapshot
+lines differ from it).
 Released runtime compatibility is bound to the Server 0.9.0 release
 (`803c9968f23f4449c6287d1564701b4cc6259261`; client-observable wire
 byte-identical to the 0.8.0 release) in

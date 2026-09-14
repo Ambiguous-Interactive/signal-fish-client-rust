@@ -281,7 +281,9 @@ Notifications about other players joining or leaving the room you are in.
 
 `PlayerInfo` contains `id`, `name`, `is_authority`, `is_ready`,
 `connected_at`, optional `connection_info`, and optional protocol-v3 `epoch`
-and `seq` snapshot metadata.
+and `seq` snapshot metadata. `connected_at` reads back as an empty string on
+protocol-v3 snapshots, which trim the server-internal join timestamp for
+privacy (signal-fish-server #539).
 
 ```rust,ignore
 match event {
