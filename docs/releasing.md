@@ -140,12 +140,30 @@ dependent remains unpublished, the rerun uses
 `--no-verify` after full workspace verification and exact dependency checksum
 matching so crates.io sparse-index propagation cannot strand recovery.
 
-After success, confirm crates.io and docs.rs show every planned package and
-verify each downloaded crate attestation:
+## Post-release integrity audit
 
-```sh
-gh attestation verify signal-fish-client-X.Y.Z.crate \
-  --repo Ambiguous-Interactive/signal-fish-client-rust
-gh attestation verify signal-fish-client-godot-X.Y.Z.crate \
-  --repo Ambiguous-Interactive/signal-fish-client-rust
-```
+Run this once after publication (it re-derives provenance from public state,
+so a silent bad release cannot hide behind a green publish job):
+
+1. The annotated tag targets the default-branch commit the **Release** run
+   tagged — the squash-merged release-preparation commit when release
+   follows preparation directly (`git log -1 --format=%s vX.Y.Z` shows the
+   `chore!: prepare release X.Y.Z (#N)` subject).
+2. The GitHub Release carries exactly `SHA256SUMS`, one `.crate` per
+   published crate, and one CycloneDX SBOM per crate — and `SHA256SUMS`
+   matches both the release assets and the bytes downloaded from crates.io,
+   which must also equal the registry's own recorded checksum.
+3. Each downloaded crate attestation verifies against this repository:
+
+   ```sh
+   gh attestation verify signal-fish-client-X.Y.Z.crate \
+     --repo Ambiguous-Interactive/signal-fish-client-rust
+   gh attestation verify signal-fish-client-godot-X.Y.Z.crate \
+     --repo Ambiguous-Interactive/signal-fish-client-rust
+   ```
+
+4. docs.rs builds each crate version — the build status on
+   `docs.rs/crate/<name>/<version>` is green and the docs pages render.
+5. crates.io reports every planned package at the expected version and
+   license with `yanked: false`, and the **Release** workflow run is green
+   end to end.
