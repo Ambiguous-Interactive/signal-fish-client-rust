@@ -345,8 +345,10 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
     let sender = *rng.pick(&[ctx.peer_a, ctx.peer_b, ctx.unknown]);
     let epoch = ctx.epoch_of(sender);
     // Modes 0, 1, 3, 4 are structurally invalid; mode 2 (an unsupported-format
-    // run) is validity-ambiguous, so it is not marked bound-breaking.
-    let (gaps, bound_breaking) = match rng.below(5) {
+    // run) is validity-ambiguous, so it is not marked bound-breaking. Mode 5
+    // is the server scheduler's counter-only shape (validity-ambiguous: the
+    // oracle tolerates both the accepted and counter-drift faces).
+    let (gaps, bound_breaking) = match rng.below(6) {
         // Overlapping ranges.
         0 => (
             vec![
@@ -403,7 +405,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
             true,
         ),
         // Over the per-report cap.
-        _ => (
+        4 => (
             (0..=DELIVERY_REPORT_MAX_GAPS)
                 .map(|i| {
                     singleton_gap(
@@ -416,6 +418,8 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                 .collect(),
             true,
         ),
+        // Counter-only snapshot: no gaps, monotonic counters.
+        _ => (Vec::new(), false),
     };
     (
         ServerMessage::DeliveryReport(Box::new(DeliveryReportPayload {
@@ -1005,8 +1009,15 @@ fn arch_journey(
     deliver(&mut steps, game_starting(rng, ctx), FrameMeta::default());
 
     if v3 {
-        // Authoritative plan churn: fresh gen, duplicate, replay.
+        // Authoritative plan churn: fresh gen, duplicate, replay. The
+        // pre-plan signal races the first plan and must be suppressed
+        // silently; the same generation then delivers after the plan.
         let g0 = ctx.gen_uuid(0);
+        deliver(
+            &mut steps,
+            signal_from(rng, ctx, ctx.peer_a, Some(g0)),
+            FrameMeta::default(),
+        );
         deliver(
             &mut steps,
             session_plan(rng, ctx, Some(g0), 0, &[ctx.peer_a, ctx.peer_b], false),

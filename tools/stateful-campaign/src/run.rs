@@ -788,12 +788,13 @@ impl Oracle {
             M::Signal {
                 from, generation, ..
             } => {
-                if !self.is_player() || !self.v3 || !self.plan_seen {
+                if !self.is_player() || !self.v3 {
                     return violation_only();
                 }
-                if generation != &self.session_generation {
-                    // Stale/unknown generation: silently suppressed. The
-                    // documented suppression check precedes sender checks.
+                if !self.plan_seen || generation != &self.session_generation {
+                    // Pre-plan and stale/unknown-generation signals are
+                    // benignly suppressed. The documented suppression check
+                    // precedes sender checks.
                     return one_of(vec![AllowedOutcome::empty()]);
                 }
                 if self.session_transport != Some(TransportKind::WebRtc) {
@@ -859,12 +860,19 @@ impl Oracle {
                 }
                 exactly("GoingAway")
             }
-            M::DeliveryReport(_) => {
-                if !self.in_room() || !self.v3 {
+            M::DeliveryReport(report) => {
+                if !self.v3 {
                     return violation_only();
                 }
                 if meta.bound_breaking {
                     return violation_outcomes(self.policy, Some("DeliveryReport"));
+                }
+                if !self.in_room() && !report.gaps.is_empty() {
+                    // Gapped roomless reports stay lifecycle violations:
+                    // their senders cannot be validated without membership.
+                    // Counter-only reports are connection-scoped and pass
+                    // phase validation like `RelayStats`.
+                    return violation_only();
                 }
                 event_or_violation("DeliveryReport")
             }
@@ -1342,7 +1350,9 @@ impl Oracle {
                 phase(self.authenticated && self.membership.is_some())?;
             }
             SignalFishEvent::DeliveryReport(_) => {
-                phase(self.authenticated && self.membership.is_some() && self.v3)?;
+                // Counter-only reports are connection-scoped: legal in any
+                // post-negotiation phase, matching `RelayStats`.
+                phase(self.authenticated && self.v3)?;
             }
             SignalFishEvent::SignalReceived { .. } => {
                 phase(
