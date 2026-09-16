@@ -348,7 +348,10 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
     // run) is validity-ambiguous, so it is not marked bound-breaking. Mode 5
     // is the server scheduler's counter-only shape (validity-ambiguous: the
     // oracle tolerates both the accepted and counter-drift faces).
-    let (gaps, bound_breaking) = match rng.below(6) {
+    let mode = rng.below(6);
+    let mut loss_counters =
+        || counters_with_superseded(rng.next_u64().checked_rem(1000).unwrap_or(0));
+    let (gaps, per_class, bound_breaking) = match mode {
         // Overlapping ranges.
         0 => (
             vec![
@@ -369,6 +372,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                     reason: DeliveryGapReason::VolatileDropped,
                 },
             ],
+            loss_counters(),
             true,
         ),
         // Reversed / miscounted ranges.
@@ -380,6 +384,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                 to_seq: 10,
                 reason: DeliveryGapReason::LatestDroppedFull,
             }],
+            loss_counters(),
             true,
         ),
         // Unsupported-format ranges with a later (possibly legal) advisory.
@@ -394,6 +399,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                     )
                 })
                 .collect(),
+            loss_counters(),
             false,
         ),
         // Wrong-sender / wrong-epoch gaps.
@@ -402,6 +408,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                 singleton_gap(ctx.unknown, 999, 1, DeliveryGapReason::LatestSuperseded),
                 singleton_gap(sender, 0, 2, DeliveryGapReason::VolatileDropped),
             ],
+            loss_counters(),
             true,
         ),
         // Over the per-report cap.
@@ -416,16 +423,28 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
                     )
                 })
                 .collect(),
+            loss_counters(),
             true,
         ),
-        // Counter-only snapshot: no gaps, monotonic counters.
-        _ => (Vec::new(), false),
+        // Counter-only snapshot: no gaps. The loss buckets drift freely
+        // against the client's exact-delta gate, and the monotonic-only
+        // `delivered`/`abandoned` buckets include the issue-#275 poisoning
+        // face (u64::MAX), so both admission faces stay exercised every sweep.
+        _ => {
+            let mut counters = loss_counters();
+            if rng.below(3) == 0 {
+                counters.reliable.delivered = u64::MAX;
+                counters.latest.delivered = u64::MAX;
+                counters.volatile.delivered = u64::MAX;
+                counters.reliable.abandoned = u64::MAX;
+                counters.latest.abandoned = u64::MAX;
+                counters.volatile.abandoned = u64::MAX;
+            }
+            (Vec::new(), counters, false)
+        }
     };
     (
-        ServerMessage::DeliveryReport(Box::new(DeliveryReportPayload {
-            gaps,
-            per_class: counters_with_superseded(rng.next_u64().checked_rem(1000).unwrap_or(0)),
-        })),
+        ServerMessage::DeliveryReport(Box::new(DeliveryReportPayload { gaps, per_class })),
         FrameMeta {
             stamp: StampMode::None,
             bound_breaking,
