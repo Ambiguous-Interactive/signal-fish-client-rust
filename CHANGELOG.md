@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Counter-only `DeliveryReport` snapshots are accepted and delivered in every
+  roomless phase (before a join, after a leave, and during a reconnect
+  re-handshake), matching the connection-scoped `RelayStats` sibling; they no
+  longer raise a spurious `ProtocolViolation` (quarantine, or teardown under
+  the `Disconnect` policy). Gapped reports roomless still violate.
+- An inbound protocol-v3 `Signal` arriving before the first `SessionPlan` (a
+  relay-ordering race) is now silently discarded as documented instead of
+  raising a `ProtocolViolation` and latching quarantine or tearing down the
+  connection; `Signal` stays v3-only and every other signal fence is
+  unchanged.
+
 ### Changed
 
 - Re-serializing a `PlayerInfo` or `SpectatorInfo` whose `connected_at` is

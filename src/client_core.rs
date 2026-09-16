@@ -1160,7 +1160,7 @@ impl ClientCore {
                 tracing::debug!(
                     ?generation,
                     current_generation = ?self.snapshot.session_generation,
-                    "discarding signal for a stale, unknown, or legacy-unfenceable session generation"
+                    "discarding signal arriving before an authoritative plan or for a stale, unknown, or legacy-unfenceable session generation"
                 );
                 return outcome;
             }
@@ -1554,8 +1554,16 @@ impl ClientCore {
             | ServerMessage::GameStarting { .. }
             | ServerMessage::PlayerReconnected { .. }
             | ServerMessage::NewSpectatorJoined { .. }
-            | ServerMessage::SpectatorDisconnected { .. }
-            | ServerMessage::DeliveryReport(_) => authenticated && membership.is_some(),
+            | ServerMessage::SpectatorDisconnected { .. } => authenticated && membership.is_some(),
+            ServerMessage::DeliveryReport(report) => {
+                // Counter-only reports are connection-scoped: the server's
+                // stats scheduler emits them whenever the v3 handshake is
+                // complete, with no room precondition (the roomless window
+                // between `ProtocolInfo` and `RoomJoined`, and the whole
+                // post-leave lifetime). Gapped reports still require
+                // membership so their senders can be validated.
+                authenticated && (membership.is_some() || report.gaps.is_empty())
+            }
             ServerMessage::Signal { .. }
             | ServerMessage::NewPeer { .. }
             | ServerMessage::SessionPlan(_)
@@ -1709,13 +1717,16 @@ impl ClientCore {
             ServerMessage::Signal {
                 from, generation, ..
             } => {
-                if !self.session_plan_seen {
-                    return Err(
-                        "lifecycle violation: Signal arrived before an authoritative SessionPlan"
-                            .into(),
-                    );
-                }
-                if self.should_suppress_inbound_signal(*from, *generation) {
+                // A signal racing its authoritative plan is a benign
+                // relay-ordering race, not an integrity failure: the
+                // documented contract drops it (docs/protocol.md), both
+                // upstream reference clients discard it silently, and the
+                // shared suppression discard below already models this
+                // exact face. Return `Ok` so that discard, not a lifecycle
+                // violation, classifies it.
+                if !self.session_plan_seen
+                    || self.should_suppress_inbound_signal(*from, *generation)
+                {
                     return Ok(());
                 }
                 if self.snapshot.session_transport != Some(TransportKind::WebRtc) {
