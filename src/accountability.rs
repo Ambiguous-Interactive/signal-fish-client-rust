@@ -2054,6 +2054,63 @@ mod tests {
         split.observe_server_message(true).unwrap();
     }
 
+    /// Issue #275 decision: the `delivered`/`abandoned` buckets are
+    /// monotonicity-checked only. The report carries no evidence structure to
+    /// delta-check them against (a delivered frame is by definition not a
+    /// gap), the wire contract imposes no other cross-report invariant, and
+    /// any admission ceiling would be an arbitrary threshold that
+    /// false-rejects conformant high-throughput servers. A hostile server can
+    /// poison these buckets so later honest reports regress — deliberate
+    /// server-misbehavior diagnostics under the violation policy; the four
+    /// delta-checked buckets are equally poisonable through spec-consistent
+    /// overshoot, and a fresh client is the documented recovery. Both faces
+    /// stay pinned here so a semantics change must consciously update them.
+    #[test]
+    fn delivered_and_abandoned_buckets_are_monotonicity_checked_only() {
+        let poisoned = counters(u64::MAX);
+        let mut state = DeliveryAccountability::default();
+
+        // Counter-only shape (no gaps): connection-scoped, roomless-legal
+        // since round 76. The absurd single-report jump is accepted.
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: poisoned,
+                gaps: Vec::new(),
+            })
+            .unwrap();
+        // Equal cumulative values stay monotonic and keep every loss-bucket
+        // delta at zero, so the poison is sticky by design.
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: poisoned,
+                gaps: Vec::new(),
+            })
+            .unwrap();
+
+        // A later honest report carrying the true cumulative values regresses
+        // the poisoned buckets and must be refused as moved backward.
+        let honest = counters(4);
+        let error = state
+            .record_report(&DeliveryReportPayload {
+                per_class: honest,
+                gaps: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("cumulative per-class counters moved backward"),
+            "{error}"
+        );
+
+        // The refused report committed nothing: the poisoned baseline stays
+        // authoritative and equal-to-baseline reports are still accepted.
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: poisoned,
+                gaps: Vec::new(),
+            })
+            .unwrap();
+    }
+
     #[test]
     fn relay_stats_are_positive_stable_and_cumulative_per_connection() {
         let mut valid = DeliveryAccountability::default();
