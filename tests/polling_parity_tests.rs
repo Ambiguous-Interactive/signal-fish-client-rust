@@ -3869,6 +3869,174 @@ async fn lifecycle_plan_and_signal_matrix_has_complete_driver_parity() {
 }
 
 #[tokio::test]
+async fn counter_only_delivery_reports_are_connection_scoped_in_both_drivers() {
+    // The server's stats scheduler emits counter-only `DeliveryReport`
+    // snapshots whenever the v3 handshake is complete, with no room
+    // precondition. They must be accepted and delivered under every
+    // violation policy in the roomless windows: between `ProtocolInfo` and
+    // `RoomJoined`, and after `RoomLeft` (mirroring `RelayStats`).
+    let counter_only = || {
+        text_server_frame(ServerMessage::DeliveryReport(Box::new(
+            DeliveryReportPayload {
+                gaps: vec![],
+                per_class: DeliveryCountersByClass::default(),
+            },
+        )))
+    };
+    let sender = uuid::Uuid::from_u128(304);
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let config = SignalFishConfig::new("app")
+            .enable_v3()
+            .with_protocol_violation_policy(policy);
+        let pre_room = assert_frame_trace_parity(
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                counter_only(),
+            ],
+            config.clone(),
+        )
+        .await;
+        assert!(
+            pre_room
+                .iter()
+                .any(|event| event.starts_with("DeliveryReport")),
+            "{policy:?}: counter-only pre-room report must be delivered: {pre_room:?}"
+        );
+        assert!(
+            pre_room
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "{policy:?}: counter-only pre-room report must not violate: {pre_room:?}"
+        );
+
+        let mut post_leave = binary_accountability_prefix(sender);
+        post_leave.push(text_server_frame(ServerMessage::RoomLeft));
+        post_leave.push(counter_only());
+        let post_leave = assert_frame_trace_parity(post_leave, config).await;
+        assert!(
+            post_leave
+                .iter()
+                .any(|event| event.starts_with("DeliveryReport")),
+            "{policy:?}: counter-only post-leave report must be delivered: {post_leave:?}"
+        );
+        assert!(
+            post_leave
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "{policy:?}: counter-only post-leave report must not violate: {post_leave:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pre_plan_signal_is_benignly_suppressed_in_both_drivers() {
+    // A signal racing its authoritative plan is a documented benign drop
+    // (docs/protocol.md; both upstream reference clients discard it): no
+    // violation under any policy, the connection survives `Disconnect`,
+    // and a later current-generation signal still delivers.
+    let peer = uuid::Uuid::from_u128(350);
+    let generation = uuid::Uuid::from_u128(351);
+    use signal_fish_client::protocol::{SessionPeer, SessionPlanPayload};
+    let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(generation),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer,
+            player_name: "peer".into(),
+            is_authority: false,
+            initiate: false,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }));
+    let signal = |generation: Option<uuid::Uuid>, offer: &str| {
+        text_server_frame(ServerMessage::Signal {
+            from: peer,
+            generation,
+            signal: serde_json::json!({ "Offer": offer }),
+        })
+    };
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let mut room_prefix = binary_accountability_prefix(peer);
+        room_prefix.push(text_server_frame(ServerMessage::LobbyStateChanged {
+            lobby_state: LobbyState::Finalized,
+            ready_players: vec![],
+            all_ready: true,
+        }));
+        room_prefix.push(signal(Some(generation), "pre-plan race"));
+        room_prefix.push(text_server_frame(plan.clone()));
+        room_prefix.push(signal(Some(generation), "current"));
+        let events = assert_frame_trace_parity(
+            room_prefix,
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "{policy:?}: the pre-plan signal must not violate: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SignalReceived"))
+                .count(),
+            1,
+            "{policy:?}: only the post-plan current-generation signal may deliver, proving the \
+             pre-plan signal tore nothing down: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("SignalReceived") && event.contains("current")),
+            "{policy:?}: the delivered signal must be the post-plan one: {events:?}"
+        );
+    }
+
+    // Under a v2 negotiation the pre-plan signal still violates: signals
+    // are v3-only regardless of plan state.
+    let v2_trace = vec![
+        TransportFrame::Text(AUTH.into()),
+        TransportFrame::Text(PI_V2.into()),
+        finalized_v2_room_frame(),
+        signal(Some(generation), "v2"),
+    ];
+    let events = assert_frame_trace_parity(
+        v2_trace,
+        SignalFishConfig::new("app")
+            .with_protocol_violation_policy(ProtocolViolationPolicy::Disconnect),
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("ProtocolViolation")),
+        "a v2-negotiated signal must still violate: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.starts_with("SignalReceived")),
+        "a v2-negotiated signal must never deliver: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn superseded_session_plan_replay_has_complete_driver_policy_parity() {
     use signal_fish_client::protocol::{SessionPeer, SessionPlanPayload, Topology};
 
