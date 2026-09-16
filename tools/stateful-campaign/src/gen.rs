@@ -349,8 +349,7 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
     // is the server scheduler's counter-only shape (validity-ambiguous: the
     // oracle tolerates both the accepted and counter-drift faces).
     let mode = rng.below(6);
-    let mut loss_counters =
-        || counters_with_superseded(rng.next_u64().checked_rem(1000).unwrap_or(0));
+    let mut loss_counters = || counters_with_superseded(rng.next_u64() % 1000);
     let (gaps, per_class, bound_breaking) = match mode {
         // Overlapping ranges.
         0 => (
@@ -429,7 +428,8 @@ fn hostile_report(rng: &mut Rng, ctx: &Ctx) -> (ServerMessage, FrameMeta) {
         // Counter-only snapshot: no gaps. The loss buckets drift freely
         // against the client's exact-delta gate, and the monotonic-only
         // `delivered`/`abandoned` buckets include the issue-#275 poisoning
-        // face (u64::MAX), so both admission faces stay exercised every sweep.
+        // face (u64::MAX), so both admission faces are exercised whenever the
+        // accountability archetype runs.
         _ => {
             let mut counters = loss_counters();
             if rng.below(3) == 0 {
