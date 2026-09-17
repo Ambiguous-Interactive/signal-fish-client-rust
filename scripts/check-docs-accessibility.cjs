@@ -13,12 +13,19 @@ const repoRoot = path.resolve(__dirname, "..");
 // 20-minute ceiling, so a genuine hang still fails fast.
 const ACCESSIBILITY_BUDGET_MS = 600_000;
 
-// Healthy phases finish in seconds. This bound exists for the wedged-step
-// failure mode observed on hosted runners (2026-08-29: one Playwright call
-// never settled and burned the whole 600-second budget): a phase that
-// outlives it is retried once on a fresh page, and the retry bound keeps a
-// genuinely broken site failing fast instead of stalling to the deadline.
-const PHASE_BUDGET_MS = 90_000;
+// Healthy phases finish in seconds (2026-09-17 hosted data: heaviest phase
+// 2-20 s across green runs). This bound exists for the wedged-step failure
+// mode observed on hosted runners (2026-08-29: one Playwright call never
+// settled and burned the whole 600-second budget): a phase that outlives it
+// is retried once on a fresh page, and the retry bound keeps a genuinely
+// broken site failing fast instead of stalling to the deadline. 150 s (not
+// the historical 90 s) because run #645 measured the keyboard-driven drawer
+// phase exceeding 90 s TWICE on one loaded runner — slow evaluations, not a
+// wedge — while the identical tree passed on the PR run 21 minutes earlier
+// and on the re-run; a duration bound on a work-count-bounded phase needs
+// headroom for runner-load variance. A real hang still fails fast well
+// inside the 600-second global budget.
+const PHASE_BUDGET_MS = 150_000;
 
 let origin;
 let activeBrowser;
