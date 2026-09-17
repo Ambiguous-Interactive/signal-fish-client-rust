@@ -49,12 +49,12 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         "tests/compatibility.toml client_version must match the core crate \
          version (bump both together, as Prepare Release does)"
     );
-    assert_eq!(manifest["server_version"].as_str(), Some("0.9.0"));
-    assert_eq!(manifest["server_tag"].as_str(), Some("v0.9.0"));
+    assert_eq!(manifest["server_version"].as_str(), Some("0.9.1"));
+    assert_eq!(manifest["server_tag"].as_str(), Some("v0.9.1"));
     let commit = manifest["server_commit"]
         .as_str()
         .unwrap_or_else(|| panic!("server_commit must be a string"));
-    assert_eq!(commit, "803c9968f23f4449c6287d1564701b4cc6259261");
+    assert_eq!(commit, "24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d");
     assert_eq!(manifest["legacy_server"]["version"].as_str(), Some("0.4.0"));
     assert_eq!(manifest["legacy_server"]["tag"].as_str(), Some("v0.4.0"));
     assert_eq!(
@@ -67,9 +67,9 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
     );
     assert_eq!(
         manifest["server_release_artifacts"]
-            ["signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz"]
+            ["signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz"]
             .as_str(),
-        Some("3248880708da70b695eb74f64a9f2c5441e243799c6f7ef206808c47260bd925")
+        Some("348a200b6ccc6af20e61e0fbdd9820b98035add64beb86a93c4d49204d55e2ac")
     );
     assert_eq!(
         manifest["server_release_artifacts"]
@@ -94,14 +94,15 @@ fn compatibility_manifest_binds_exact_server_artifacts() {
         .unwrap_or_else(|| panic!("protocol authority commit must be a string"));
     // The evidence authority (all vendored protocol artifacts) advances with
     // descriptive drift plus reviewed deliberate schema changes; the released
-    // runtime binding above is the Server 0.9.0 release. Keep this
-    // literal review-forced. e1b65b9 is upstream PR #588: the server-internal
-    // `connected_at` join timestamp is trimmed from every protocol-v3
-    // snapshot payload (`V3PlayerInfo` drops the field; `SpectatorInfo`
-    // splits into version-disjoint V2/V3 shapes), rewriting the v3
-    // `RoomJoined`/`Reconnected` sample lines. The client reconciled in
-    // lockstep: decode tolerance shipped in 0.13.0 and re-serialization now
-    // omits the empty field (v3-faithful round-trip).
+    // runtime binding above is the Server 0.9.1 release, whose client-
+    // observable wire is byte-identical to the e1b65b9 evidence authority.
+    // Keep this literal review-forced. e1b65b9 is upstream PR #588: the
+    // server-internal `connected_at` join timestamp is trimmed from every
+    // protocol-v3 snapshot payload (`V3PlayerInfo` drops the field;
+    // `SpectatorInfo` splits into version-disjoint V2/V3 shapes), rewriting
+    // the v3 `RoomJoined`/`Reconnected` sample lines. The client reconciled
+    // in lockstep: decode tolerance shipped in 0.13.0 and re-serialization
+    // now omits the empty field (v3-faithful round-trip).
     assert_eq!(protocol_commit, "e1b65b965390355e9fd15661dc95a8a4321eab17");
     assert_eq!(
         wire_provenance["upstream"]["commit"].as_str(),

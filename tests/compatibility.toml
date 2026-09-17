@@ -1,9 +1,9 @@
 # Canonical client/server protocol compatibility binding.
 client_version = "0.13.0"
-server_version = "0.9.0"
-server_tag = "v0.9.0"
-server_commit = "803c9968f23f4449c6287d1564701b4cc6259261"
-synced = "2026-09-13"
+server_version = "0.9.1"
+server_tag = "v0.9.1"
+server_commit = "24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d"
+synced = "2026-09-17"
 
 # The evidence authority all vendored protocol artifacts are synced to.
 # Descriptive-only upstream spec drift advances this (and both PROVENANCE
@@ -20,7 +20,7 @@ commit = "50b28a9a13dc2b99d301bfb2482c5fd6f768a2e8"
 generation = "omitted"
 
 [server_release_artifacts]
-"signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz" = "3248880708da70b695eb74f64a9f2c5441e243799c6f7ef206808c47260bd925"
+"signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz" = "348a200b6ccc6af20e61e0fbdd9820b98035add64beb86a93c4d49204d55e2ac"
 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz" = "971410b9503dd2f0c9f69c8a0a97e043e3979c79bf3d305e2ad03e21da8584e9"
 
 [wire_samples]

@@ -17,11 +17,11 @@ path = "spec"
 # semantic round-trip matches the trimmed v3 shape. The v3 server wire
 # samples advanced with the same commit; the v2 samples are byte-identical.
 # The released runtime compatibility binding in tests/compatibility.toml is
-# the Server 0.9.0
-# release pin
-# (803c9968f23f4449c6287d1564701b4cc6259261), whose client-observable wire is
-# byte-identical to the 0.8.0 release (d79dcdc7549777c8c2bd9fcb2d132641532d8c86)
-# — this evidence authority advances together with
+# the Server 0.9.1 release pin
+# (24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d), whose client-observable wire is
+# byte-identical to the 0.8.0/0.9.0 releases
+# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86) — this evidence authority
+# advances together with
 # tests/compatibility.toml's [protocol_authority] and the wire-samples
 # PROVENANCE.
 commit = "e1b65b965390355e9fd15661dc95a8a4321eab17"
