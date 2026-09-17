@@ -676,7 +676,7 @@ mod godot_issue_61_policy {
         assert!(fortress_runner.contains("finalAgeValidation.ok"));
         assert!(
             workflow.contains("server_version: \"0.4.0\"")
-                && workflow.contains("server_version: \"0.9.0\"")
+                && workflow.contains("server_version: \"0.9.1\"")
                 && workflow.contains("SERVER_VERSION: ${{ matrix.server_version }}")
                 && workflow.contains("run-godot-fortress-e2e.mjs")
                 && workflow.contains("scenario: clean")
@@ -2340,74 +2340,74 @@ mod ci_workflow_policy {
             .expect("server_release_artifacts must be a table");
         let pinned_seams = [
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_generation_signal_and_host_replan",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_generation_signal_and_host_replan",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_rkyv_request_resolves_to_json",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_rkyv_request_resolves_to_json",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
                 "e2e_reconnect_after_disconnect_uses_server_token",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
                 "e2e_slow_consumer_eviction_is_observable",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
                 "e2e_sender_ping_survives_own_game_data_flood",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_required_token_binding_wss",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_required_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_rejects_invalid_token_binding_proofs",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_rejects_invalid_token_binding_proofs",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_required_client_fingerprint_token_binding_wss",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_required_client_fingerprint_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_require_client_fingerprint_option_rejects_fingerprint_less_signer",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_require_client_fingerprint_option_rejects_fingerprint_less_signer",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_polling_client_fingerprint_token_binding_wss",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_polling_client_fingerprint_token_binding_wss",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_rejects_invalid_client_fingerprint_proofs",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_rejects_invalid_client_fingerprint_proofs",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_going_away_close_4000",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_going_away_close_4000",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_spectator_live_smoke",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_spectator_live_smoke",
             ),
             (
-                "signal-fish-server-v0.9.0-x86_64-unknown-linux-gnu.tar.gz",
-                "0.9.0",
-                "e2e_server_090_authority_handoff_and_latest_delivery",
+                "signal-fish-server-v0.9.1-x86_64-unknown-linux-gnu.tar.gz",
+                "0.9.1",
+                "e2e_server_091_authority_handoff_and_latest_delivery",
             ),
             (
                 "signal-fish-server-v0.4.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -2444,7 +2444,7 @@ mod ci_workflow_policy {
                 .unwrap_or_else(|| panic!("{asset} release digest must be a string"));
             let constant = match version {
                 "0.4.0" => "SERVER_SHA256_040",
-                _ => "SERVER_SHA256_090",
+                _ => "SERVER_SHA256_091",
             };
             assert!(
                 godot_web.contains(&format!("{constant}: \"{digest}\"")),

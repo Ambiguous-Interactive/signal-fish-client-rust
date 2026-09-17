@@ -1,4 +1,14 @@
 server_repository = "https://github.com/Ambiguous-Interactive/signal-fish-server"
+# The scheme is the 0.8.0 ratification and stays pinned there on purpose: the
+# two scheme sources (`src/security/token_binding.rs`,
+# `src/websocket/token_binding.rs`) and the client certificate are
+# byte-identical through the Server 0.9.0 and 0.9.1 releases (re-verified
+# 2026-09-17 against the 0.9.1 release commit). The other recorded files are
+# auxiliary (TLS setup, docs, server-side tests) and drifted at 0.9.0 for
+# housekeeping only — fingerprint-header doc wording, a dropped unused
+# candidate header, and server tests gaining the ratified connect_token/
+# password fields; the token-binding wire and proofs are unchanged, proven by
+# the hosted token-binding E2E cells against the real 0.9.x server.
 server_release = "0.8.0"
 server_commit = "d79dcdc7549777c8c2bd9fcb2d132641532d8c86"
 synced = "2026-09-01"

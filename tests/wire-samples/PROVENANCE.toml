@@ -14,10 +14,10 @@ path = ".llm/code-samples/protocol"
 # PR #545) added no wire samples — the four files are unchanged from the
 # 2026-09-07 moderation-surface refresh, so the pre-existing lines stay
 # byte-identical to the release pin. The released runtime compatibility
-# binding in tests/compatibility.toml is the Server 0.9.0 release pin
-# (803c9968f23f4449c6287d1564701b4cc6259261), whose client-observable wire is
-# byte-identical to the 0.8.0 release (d79dcdc7549777c8c2bd9fcb2d132641532d8c86);
-# the evidence authority
+# binding in tests/compatibility.toml is the Server 0.9.1 release pin
+# (24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d), whose client-observable wire is
+# byte-identical to the 0.8.0/0.9.0 releases
+# (d79dcdc7549777c8c2bd9fcb2d132641532d8c86); the evidence authority
 # advances together across compatibility.toml and both PROVENANCE files.
 # (The 2026-09-08 b602fc1d follow-up is spec-prose only; the samples are
 # unchanged there too. The 2026-09-12 refresh at a6cbbf69 (upstream PR #575,

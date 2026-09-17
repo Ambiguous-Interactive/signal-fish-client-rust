@@ -54,9 +54,9 @@ the v2 shapes
 are frozen and no access-control wire samples exist yet, so the v2 sample
 lines stay byte-identical to the release pin — only the #539 v3 snapshot
 lines differ from it).
-Released runtime compatibility is bound to the Server 0.9.0 release
-(`803c9968f23f4449c6287d1564701b4cc6259261`; client-observable wire
-byte-identical to the 0.8.0 release) in
+Released runtime compatibility is bound to the Server 0.9.1 release
+(`24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d`; client-observable wire
+byte-identical to the 0.8.0/0.9.0 releases) in
 `tests/compatibility.toml`, while the vendored AsyncAPI spec re-syncs to
 upstream `main` at every refresh — descriptive prose drift is absorbed
 without wire impact, and any schema/message/error-code change triggers the
