@@ -1,9 +1,9 @@
 # Canonical client/server protocol compatibility binding.
-client_version = "0.13.0"
+client_version = "0.14.0"
 server_version = "0.9.1"
 server_tag = "v0.9.1"
 server_commit = "24a5d10b9e1700cdbef24f05dfe7fe1f0719ac3d"
-synced = "2026-09-17"
+synced = "2026-09-18"
 
 # The evidence authority all vendored protocol artifacts are synced to.
 # Descriptive-only upstream spec drift advances this (and both PROVENANCE

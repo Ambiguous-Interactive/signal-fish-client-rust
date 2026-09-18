@@ -719,7 +719,7 @@ Every message on the wire is a JSON object with two top-level keys:
         "type": "Authenticate",
         "data": {
             "app_id": "mb_app_abc123",
-            "sdk_version": "0.13.0"
+            "sdk_version": "0.14.0"
         }
     }
     ```

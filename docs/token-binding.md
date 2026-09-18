@@ -7,7 +7,7 @@ feature.
 
 ```toml
 [dependencies]
-signal-fish-client = { version = "0.13.0", features = ["token-binding", "tls"] }
+signal-fish-client = { version = "0.14.0", features = ["token-binding", "tls"] }
 ```
 
 `token-binding` is not a default feature. Ordinary builds therefore keep the
