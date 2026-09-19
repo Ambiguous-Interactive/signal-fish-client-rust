@@ -3934,6 +3934,235 @@ async fn counter_only_delivery_reports_are_connection_scoped_in_both_drivers() {
 }
 
 #[tokio::test]
+async fn gapped_delivery_reports_still_violate_while_roomless() {
+    // The connection-scoped relaxation admits only counter-only snapshots;
+    // a gapped report needs room membership so its senders can be
+    // validated. Every roomless window (pre-room, post-leave) must still
+    // raise the lifecycle violation under every policy.
+    let gapped = || {
+        text_server_frame(ServerMessage::DeliveryReport(Box::new(
+            DeliveryReportPayload {
+                gaps: vec![DeliveryGap {
+                    from_player: uuid::Uuid::from_u128(304),
+                    epoch: 1,
+                    from_seq: 1,
+                    to_seq: 2,
+                    reason: DeliveryGapReason::VolatileDropped,
+                }],
+                per_class: DeliveryCountersByClass::default(),
+            },
+        )))
+    };
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let config = SignalFishConfig::new("app")
+            .enable_v3()
+            .with_protocol_violation_policy(policy);
+        let pre_room = assert_frame_trace_parity(
+            vec![
+                TransportFrame::Text(AUTH.into()),
+                TransportFrame::Text(PI_V3.into()),
+                gapped(),
+            ],
+            config.clone(),
+        )
+        .await;
+        assert!(
+            pre_room
+                .iter()
+                .any(|event| event.starts_with("ProtocolViolation")),
+            "{policy:?}: a gapped pre-room report must violate: {pre_room:?}"
+        );
+        assert!(
+            pre_room
+                .iter()
+                .all(|event| !event.starts_with("DeliveryReport")),
+            "{policy:?}: a gapped pre-room report must not be delivered: {pre_room:?}"
+        );
+
+        let mut post_leave = binary_accountability_prefix(uuid::Uuid::from_u128(304));
+        post_leave.push(text_server_frame(ServerMessage::RoomLeft));
+        post_leave.push(gapped());
+        let post_leave = assert_frame_trace_parity(post_leave, config).await;
+        assert!(
+            post_leave
+                .iter()
+                .any(|event| event.starts_with("ProtocolViolation")),
+            "{policy:?}: a gapped post-leave report must violate: {post_leave:?}"
+        );
+        assert!(
+            post_leave
+                .iter()
+                .all(|event| !event.starts_with("DeliveryReport")),
+            "{policy:?}: a gapped post-leave report must not be delivered: {post_leave:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn spectator_core_accepts_counter_only_delivery_reports() {
+    // The server's stats scheduler has no room precondition and
+    // spectator-facing baselines carry the same per-sender stamps, so a
+    // spectator-role core must accept and deliver counter-only reports
+    // under every policy exactly like a player-role core.
+    let counter_only = || {
+        text_server_frame(ServerMessage::DeliveryReport(Box::new(
+            DeliveryReportPayload {
+                gaps: vec![],
+                per_class: DeliveryCountersByClass::default(),
+            },
+        )))
+    };
+    let sender = uuid::Uuid::from_u128(304);
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let mut trace = spectator_accountability_prefix(sender);
+        trace.push(counter_only());
+        let events = assert_frame_trace_parity(
+            trace,
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("SpectatorJoined")),
+            "{policy:?}: the spectator baseline must be joined: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("DeliveryReport")),
+            "{policy:?}: the spectator core must deliver the counter-only report: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "{policy:?}: the spectator core must not violate on the counter-only report: \
+             {events:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn signal_during_reconnect_fence_is_benignly_suppressed() {
+    // After `Reconnected` the plan-less fence drops inbound signals
+    // silently ("drops incoming signals before a plan"): no violation under
+    // any policy, then the fresh live plan restores delivery. Under
+    // `Disconnect` this is the difference between teardown and a benign
+    // drop.
+    let peer = uuid::Uuid::from_u128(350);
+    let generation = uuid::Uuid::from_u128(351);
+    use signal_fish_client::protocol::{SessionPeer, SessionPlanPayload};
+    let mut reconnected =
+        match serde_json::from_str::<ServerMessage>(&reconnected_with_missed(vec![]))
+            .expect("decode reconnect fixture")
+        {
+            ServerMessage::Reconnected(payload) => *payload,
+            _ => unreachable!("reconnect fixture must decode as Reconnected"),
+        };
+    // The reconnect fixture's roster is local-only; the fence journey needs
+    // the plan's peer on the roster and its watermark admitted.
+    reconnected.current_players.push(PlayerInfo {
+        id: peer,
+        name: "peer".into(),
+        is_authority: false,
+        is_ready: false,
+        connected_at: "2026-01-01T00:00:00Z".into(),
+        connection_info: None,
+        epoch: Some(1),
+        seq: Some(0),
+    });
+    reconnected.sender_watermarks.push(SenderWatermark {
+        player_id: peer,
+        epoch: 1,
+        seq: 0,
+    });
+    let plan = ServerMessage::SessionPlan(Box::new(SessionPlanPayload {
+        generation: Some(generation),
+        topology: Topology::Mesh,
+        transport: TransportKind::WebRtc,
+        host: None,
+        direct_endpoint: None,
+        peers: vec![SessionPeer {
+            player_id: peer,
+            player_name: "peer".into(),
+            is_authority: false,
+            initiate: false,
+        }],
+        ice_servers: vec![],
+        fallback: TransportKind::Relay,
+    }));
+    let signal = |offer: &str| {
+        text_server_frame(ServerMessage::Signal {
+            from: peer,
+            generation: Some(generation),
+            signal: serde_json::json!({ "Offer": offer }),
+        })
+    };
+    for policy in [
+        ProtocolViolationPolicy::Quarantine,
+        ProtocolViolationPolicy::Disconnect,
+        ProtocolViolationPolicy::Observe,
+    ] {
+        let trace = vec![
+            TransportFrame::Text(AUTH.into()),
+            TransportFrame::Text(PI_V3.into()),
+            text_server_frame(ServerMessage::Reconnected(Box::new(reconnected.clone()))),
+            signal("fenced"),
+            text_server_frame(ServerMessage::LobbyStateChanged {
+                lobby_state: LobbyState::Finalized,
+                ready_players: vec![],
+                all_ready: true,
+            }),
+            text_server_frame(plan.clone()),
+            signal("current"),
+        ];
+        let events = assert_frame_trace_parity_with_reconnect(
+            trace,
+            SignalFishConfig::new("app")
+                .enable_v3()
+                .with_protocol_violation_policy(policy),
+            true,
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| event.starts_with("Reconnected")),
+            "{policy:?}: the reconnect fence must be reached: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.starts_with("ProtocolViolation")),
+            "{policy:?}: the fenced signal must be dropped benignly: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("SignalReceived"))
+                .count(),
+            1,
+            "{policy:?}: only the post-plan signal may deliver: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.starts_with("SignalReceived") && event.contains("current")),
+            "{policy:?}: the delivered signal must be the post-plan one: {events:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn pre_plan_signal_is_benignly_suppressed_in_both_drivers() {
     // A signal racing its authoritative plan is a documented benign drop
     // (docs/protocol.md; both upstream reference clients discard it): no

@@ -384,7 +384,11 @@ fn v3_signal_payload_is_externally_tagged_in_samples() {
 /// (`tests/server-spec/signal-fish-protocol.asyncapi.yaml`, checksum-pinned):
 /// `SpectatorJoined` oneOf branches (V2/V3/empty-room), `SpectatorJoinFailed`,
 /// `SpectatorLeft` (including the schema-optional `room_id` omission),
-/// `NewSpectatorJoined`, and `SpectatorDisconnected`. Every line must
+/// `NewSpectatorJoined` (including the v3 `connected_at` trim the upstream
+/// #588 resync introduced — the omission must round-trip, not become an
+/// empty string; the trimmed entry in the roster is the deliberate way to
+/// exercise a `SpectatorInfo` without a timestamp, since v3 rosters are
+/// empty on real servers), and `SpectatorDisconnected`. Every line must
 /// deserialize into `ServerMessage` and round-trip to a semantically
 /// identical JSON object, exactly like the complete v3 samples.
 #[test]
@@ -398,6 +402,7 @@ fn spectator_server_wire_fixtures_conform() {
 {"type": "SpectatorLeft", "data": {"room_id": "11111111-1111-1111-1111-111111111111", "room_code": "ABC123", "reason": "voluntary_leave", "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}]}}
 {"type": "SpectatorLeft", "data": {"reason": "removed", "current_spectators": []}}
 {"type": "NewSpectatorJoined", "data": {"spectator": {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}, "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}, {"id": "00000000-0000-0000-0000-0000000000c2", "name": "Second", "connected_at": "2024-01-02T03:06:08Z"}], "reason": "joined"}}
+{"type": "NewSpectatorJoined", "data": {"spectator": {"id": "00000000-0000-0000-0000-0000000000c3", "name": "Third"}, "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c3", "name": "Third"}], "reason": "joined"}}
 {"type": "SpectatorDisconnected", "data": {"spectator_id": "00000000-0000-0000-0000-0000000000c2", "reason": "disconnected", "current_spectators": [{"id": "00000000-0000-0000-0000-0000000000c1", "name": "Observer", "connected_at": "2024-01-02T03:06:07Z"}]}}
 "#;
     assert_conformance::<ServerMessage>("spectator-server-fixtures", SPECTATOR_SERVER_MESSAGES);
