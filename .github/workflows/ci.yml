@@ -64,7 +64,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run typos spell checker
-        uses: crate-ci/typos@v1.50.2
+        uses: crate-ci/typos@v1.51.1
         with:
           config: .typos.toml
 
@@ -432,7 +432,7 @@ jobs:
         run: cargo +"${RELEASE_RUST}" run --locked --release -p signal-fish-client-perf-lab --features perf --bin perf-timing -- --samples 5 > timing-release.json
       - name: Upload measurement reports
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: client-core-performance-${{ github.sha }}
           path: |

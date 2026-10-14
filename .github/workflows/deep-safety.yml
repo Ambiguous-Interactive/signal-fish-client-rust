@@ -188,7 +188,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.87.27
         with:
           tool: cargo-fuzz@0.13.2
 
@@ -232,7 +232,7 @@ jobs:
 
       - name: Upload fuzz crash artifacts
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: fuzz/artifacts/
@@ -270,7 +270,7 @@ jobs:
         run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.87.27
         with:
           tool: cargo-mutants@27.1.0
 
@@ -289,7 +289,7 @@ jobs:
 
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: mutants-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: mutants.out/
