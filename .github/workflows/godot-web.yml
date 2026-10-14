@@ -309,7 +309,7 @@ jobs:
 
       - name: Upload native large-inbound evidence
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: godot-native-large-inbound-evidence
           path: |
@@ -369,7 +369,7 @@ jobs:
             --export-release Web build/index.html
 
       - name: Upload exported browser fixture
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: godot-web-export
           path: |
@@ -408,7 +408,7 @@ jobs:
           persist-credentials: false
 
       - name: Download exported browser fixture
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8.0.2
         with:
           name: godot-web-export
           path: tests/godot-web-smoke/project
@@ -632,7 +632,7 @@ jobs:
 
       - name: Upload complete scenario evidence
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: godot-web-${{ matrix.scenario }}-server-${{ matrix.server_version }}-evidence
           path: |

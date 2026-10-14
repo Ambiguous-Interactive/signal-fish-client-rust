@@ -63,7 +63,7 @@ jobs:
         run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.87.27
         with:
           tool: cargo-audit@0.22.2
 
@@ -119,7 +119,7 @@ jobs:
         run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.87.27
         with:
           tool: cargo-cyclonedx@0.5.9
 
@@ -127,7 +127,7 @@ jobs:
         run: cargo cyclonedx --format json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: sbom-cyclonedx-${{ github.run_id }}-${{ github.run_attempt }}
           path: ./**/*.cdx.json
