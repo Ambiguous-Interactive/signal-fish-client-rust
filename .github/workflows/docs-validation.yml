@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
 
       - name: Run markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v24.2.0
+        uses: DavidAnson/markdownlint-cli2-action@v25.0.0
         with:
           globs: |
             **/*.md
@@ -85,7 +85,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v7.0.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
 
