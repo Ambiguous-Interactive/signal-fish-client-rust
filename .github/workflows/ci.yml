@@ -64,7 +64,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run typos spell checker
-        uses: crate-ci/typos@v1.50.2
+        uses: crate-ci/typos@v1.51.1
         with:
           config: .typos.toml
 
@@ -121,7 +121,7 @@ jobs:
         with:
           components: clippy
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Run Clippy
         run: cargo clippy ${{ matrix.scope }} --all-targets ${{ matrix.flags }} --locked -- -D warnings
 
@@ -176,7 +176,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Run tests
         run: cargo test ${{ matrix.scope }} ${{ matrix.flags }} --locked
 
@@ -250,7 +250,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # All 15 cells compile byte-identical inputs and already share the
           # job-id-keyed restore scope; saving from every cell would upload
@@ -310,7 +310,7 @@ jobs:
         with:
           toolchain: 1.96.1
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Compile repository core tests with MSRV
         run: cargo +1.87.0 test --locked --package signal-fish-client --all-features --no-run
       - name: Test repository core library with MSRV
@@ -353,7 +353,7 @@ jobs:
         with:
           toolchain: 1.94.0
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Test adapter with its MSRV
         run: cargo test --locked -p signal-fish-client-godot
 
@@ -373,7 +373,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Build documentation
         run: cargo doc --workspace --all-features --no-deps --locked
       - name: Install nightly toolchain
@@ -415,7 +415,7 @@ jobs:
         with:
           toolchain: ${{ env.RELEASE_RUST }}
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       # Regenerating here would rewrite the tracked lock from the live
       # registry, so the --locked flags below would validate a graph nothing
       # else pinned. Verify the tracked lock instead, failing closed on
@@ -432,7 +432,7 @@ jobs:
         run: cargo +"${RELEASE_RUST}" run --locked --release -p signal-fish-client-perf-lab --features perf --bin perf-timing -- --samples 5 > timing-release.json
       - name: Upload measurement reports
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: client-core-performance-${{ github.sha }}
           path: |
@@ -460,7 +460,7 @@ jobs:
         with:
           toolchain: ${{ env.RELEASE_RUST }}
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Run publish dry-run
         run: |
           python3 scripts/release.py workspace-plan > "$RUNNER_TEMP/workspace-plan.json"

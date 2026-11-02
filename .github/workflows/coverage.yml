@@ -47,12 +47,12 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.88.1
         with:
           tool: cargo-llvm-cov@0.9.0
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       # Regenerating here would rewrite the tracked lock from the live
       # registry, so coverage could measure a dependency graph no other lane
@@ -74,7 +74,7 @@ jobs:
 
       - name: Upload HTML coverage report
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-html-${{ github.run_id }}-${{ github.run_attempt }}
           path: coverage-html/
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload LCOV coverage data
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-lcov-${{ github.run_id }}-${{ github.run_attempt }}
           path: lcov.info

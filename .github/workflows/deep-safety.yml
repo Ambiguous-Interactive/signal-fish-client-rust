@@ -90,7 +90,7 @@ jobs:
             -type f -exec touch -d '@0' {} +
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       # Regenerating here would rewrite the tracked lock from the live
       # registry, so the sanitizer/mutation lanes could measure a dependency
@@ -141,7 +141,7 @@ jobs:
             -type f -exec touch -d '@0' {} +
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       # Regenerating here would rewrite the tracked lock from the live
       # registry, so the sanitizer/mutation lanes could measure a dependency
@@ -188,12 +188,12 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.88.1
         with:
           tool: cargo-fuzz@0.13.2
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: fuzz
 
@@ -232,7 +232,7 @@ jobs:
 
       - name: Upload fuzz crash artifacts
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: fuzz/artifacts/
@@ -260,7 +260,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       # Regenerating here would rewrite the tracked lock from the live
       # registry, so the sanitizer/mutation lanes could measure a dependency
@@ -270,7 +270,7 @@ jobs:
         run: bash scripts/cargo-retry.sh metadata --locked > /dev/null
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.88.1
         with:
           tool: cargo-mutants@27.1.0
 
@@ -289,7 +289,7 @@ jobs:
 
       - name: Upload mutation results
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: mutants-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: mutants.out/
@@ -318,7 +318,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Run oracle canaries
         run: >-

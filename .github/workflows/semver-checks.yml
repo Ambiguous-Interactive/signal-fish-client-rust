@@ -66,10 +66,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@v2.87.15
+        uses: taiki-e/install-action@v2.88.1
         with:
           tool: cargo-semver-checks@0.50.0
 
