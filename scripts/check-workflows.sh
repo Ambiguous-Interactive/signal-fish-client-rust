@@ -29,7 +29,7 @@ TMP_MAJOR_ONLY_VIOLATIONS="$(mktemp -t signal-fish-major-only-violations.XXXXXX)
 TMP_CONCURRENCY_VIOLATIONS="$(mktemp -t signal-fish-concurrency-violations.XXXXXX)"
 TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS="$(mktemp -t signal-fish-dependabot-automerge-violations.XXXXXX)"
 
-# shellcheck disable=SC2317  # trap handler invoked indirectly
+# shellcheck disable=SC2317,SC2329  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
     rm -f "$TMP_STEP_NAME_VIOLATIONS"
@@ -428,7 +428,12 @@ while IFS= read -r workflow_path; do
     case "$workflow_path" in
         .github/workflows/docs-deploy.yml | .github/workflows/prepare-release.yml | .github/workflows/publish.yml) write_allowed=true ;;
     esac
-    if ! "$write_allowed" && printf '%s\n' "$workflow_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
+    write_policy_code="$workflow_code"
+    if [[ "$workflow_path" == .github/workflows/openai-review.yml ]] &&
+        printf '%s\n' "$workflow_code" | grep -Eq '^    uses: ambiguous-interactive/review-tools/\.github/workflows/openai-review\.yml@v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        write_policy_code="$(printf '%s\n' "$workflow_code" | sed '/^[[:space:]]*pull-requests:[[:space:]]*write[[:space:]]*$/d')"
+    fi
+    if ! "$write_allowed" && printf '%s\n' "$write_policy_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
         forbidden_merge=true
     fi
     if "$forbidden_merge"; then

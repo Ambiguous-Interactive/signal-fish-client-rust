@@ -4855,6 +4855,18 @@ mod dependency_policy {
             })
     }
 
+    fn advisory_review_requests_only_comments(contents: &str) -> bool {
+        contents.lines().any(|line| {
+            line.trim() == "uses: Ambiguous-Interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0"
+        }) && !workflow_requests_write(
+            &contents
+                .lines()
+                .filter(|line| line.trim() != "pull-requests: write")
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
     fn cargo_toml() -> toml::Value {
         let contents = read_project_file("Cargo.toml");
         toml::from_str(&contents).expect("Cargo.toml must be valid TOML")
@@ -4907,8 +4919,11 @@ mod dependency_policy {
                 path.file_name().and_then(std::ffi::OsStr::to_str),
                 Some("docs-deploy.yml" | "prepare-release.yml" | "publish.yml")
             );
+            let advisory_comments_allowed = path.file_name().and_then(std::ffi::OsStr::to_str)
+                == Some("openai-review.yml")
+                && advisory_review_requests_only_comments(&contents);
             assert!(
-                write_allowed || !workflow_requests_write(&contents),
+                write_allowed || advisory_comments_allowed || !workflow_requests_write(&contents),
                 "{} requests write permission outside the explicit release-workflow allowlist",
                 path.display()
             );
@@ -4929,6 +4944,16 @@ mod dependency_policy {
             assert!(has_forbidden_dependabot_merge_workflow(forbidden));
         }
         assert!(workflow_requests_write("permissions: write-all"));
+        let review = "uses: Ambiguous-Interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0\npermissions:\n  pull-requests: write\n";
+        assert!(advisory_review_requests_only_comments(review));
+        for forbidden in ["contents: write", "issues: write", "permissions: write-all"] {
+            assert!(!advisory_review_requests_only_comments(&format!(
+                "{review}\n{forbidden}"
+            )));
+        }
+        assert!(!advisory_review_requests_only_comments(
+            &review.replace("@v1.1.0", "@main")
+        ));
         assert!(!has_forbidden_dependabot_merge_workflow(
             "run: yamllint .github/dependabot.yml"
         ));
