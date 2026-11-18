@@ -439,11 +439,14 @@ while IFS= read -r workflow_path; do
                 for (i = 1; i <= NR; i++) {
                     line = lines[i]
                     if (boundary(line)) {
-                        review = (line == "  review:"); trusted = 0; permissions = 0
+                        review = (line == "  review:"); trusted = 0; permissions = 0; uses = 0; invalid = 0
                         if (review) {
                             for (j = i + 1; j <= NR && !boundary(lines[j]); j++) {
                                 if (lines[j] ~ /^    uses: ambiguous-interactive\/review-tools\/\.github\/workflows\/openai-review\.yml@v1\.1\.0$/) trusted = 1
+                                if (lines[j] ~ /^    uses:/) uses++
+                                if (lines[j] ~ /^    [^ ]/ && lines[j] !~ /^    (if:|uses:|with:|secrets:|permissions:)/) invalid = 1
                             }
+                            trusted = trusted && uses == 1 && !invalid
                         }
                     }
                     if (line ~ /^    [^ ]/) permissions = (line == "    permissions:")

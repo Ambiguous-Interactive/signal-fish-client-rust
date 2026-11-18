@@ -13,10 +13,12 @@ class ReviewWritePolicyTests(unittest.TestCase):
         policy = source.split("# Phase 9: forbid checked-in Dependabot auto-merge.")[1]
         policy = policy.split("# Result.")[0]
         caller = (root / ".github/workflows/openai-review.yml").read_text()
+        quoted_caller = caller[:caller.index("    uses:")] + '    name: "display\n    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0\n    display"\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: write\n    steps:\n      - name: Ordinary job\n        run: echo should-not-receive-write\n'
         cases = [
             ("trusted", "openai-review.yml", caller, True),
             ("permissions-first", "openai-review.yml", caller.replace("    permissions:\n      contents: read\n      pull-requests: write\n", "").replace("    uses:", "    permissions:\n      contents: read\n      pull-requests: write\n    uses:"), True),
             ("commented-job", "openai-review.yml", caller.replace("  review:", "  review: # advisory"), True),
+            ("quoted-trusted-reference", "openai-review.yml", quoted_caller, False),
             ("sibling-job", "openai-review.yml", caller + "\n  other:\n    runs-on: ubuntu-latest\n    permissions:\n      pull-requests: write\n    steps:\n      - run: echo unsafe\n", False),
             ("workflow-scope", "openai-review.yml", caller.replace("permissions:\n  contents: read", "permissions:\n  contents: read\n  pull-requests: write"), False),
             ("trusted-sibling", "openai-review.yml", caller.replace("  review:", "  other:") + "\n  review:\n    permissions:\n      pull-requests: write\n    runs-on: ubuntu-latest\n", False),

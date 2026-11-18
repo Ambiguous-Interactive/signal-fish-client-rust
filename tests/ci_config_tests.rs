@@ -4880,7 +4880,24 @@ mod dependency_policy {
             if boundary(code) {
                 review = code == "  review:";
                 permissions = false;
-                trusted = review && lines[index + 1..].iter().take_while(|line| !boundary(line)).any(|line| line == "    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0");
+                let job: Vec<_> = lines[index + 1..]
+                    .iter()
+                    .take_while(|line| !boundary(line))
+                    .collect();
+                let allowed_fields = [
+                    "    if:",
+                    "    uses:",
+                    "    with:",
+                    "    secrets:",
+                    "    permissions:",
+                ];
+                trusted = review
+                    && job.iter().any(|line| line.as_str() == "    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0")
+                    && job.iter().filter(|line| line.starts_with("    uses:")).count() == 1
+                    && job.iter().all(|line| {
+                        !line.starts_with("    ") || !line.chars().nth(4).is_some_and(|c| !c.is_whitespace())
+                            || allowed_fields.iter().any(|field| line.starts_with(field))
+                    });
             }
             if code.starts_with("    ") && code.chars().nth(4).is_some_and(|c| !c.is_whitespace()) {
                 permissions = code == "    permissions:";
@@ -4983,6 +5000,8 @@ mod dependency_policy {
         assert!(!advisory_review_has_scoped_write(
             &review.replace("@v1.1.0", "@main")
         ));
+        let quoted_caller = format!("{}{}", review.split("    uses:").next().unwrap_or_default(), "    name: \"display\n    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0\n    display\"\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      pull-requests: write\n    steps:\n      - name: Ordinary job\n        run: echo should-not-receive-write\n");
+        assert!(!advisory_review_has_scoped_write(&quoted_caller));
         let permissions_first = review
             .replace(
                 "    permissions:\n      contents: read\n      pull-requests: write\n",
