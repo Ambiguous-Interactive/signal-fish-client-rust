@@ -4861,34 +4861,36 @@ mod dependency_policy {
         let mut permissions = false;
         let mut exempted = false;
         let mut remaining = String::new();
-        for line in contents.lines() {
-            let code = line
-                .split('#')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if code.starts_with(|c: char| !c.is_whitespace()) {
-                review = false;
-                trusted = false;
-                permissions = false;
-            }
-            if code.starts_with("  ") && code.chars().nth(2).is_some_and(|c| !c.is_whitespace()) {
+        let lines: Vec<_> = contents
+            .lines()
+            .map(|line| {
+                line.split('#')
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end()
+                    .to_ascii_lowercase()
+            })
+            .collect();
+        let boundary = |line: &str| {
+            line.starts_with(|c: char| !c.is_whitespace())
+                || (line.starts_with("  ")
+                    && line.chars().nth(2).is_some_and(|c| !c.is_whitespace()))
+        };
+        for (index, code) in lines.iter().enumerate() {
+            if boundary(code) {
                 review = code == "  review:";
-                trusted = false;
                 permissions = false;
+                trusted = review && lines[index + 1..].iter().take_while(|line| !boundary(line)).any(|line| line == "    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0");
             }
             if code.starts_with("    ") && code.chars().nth(4).is_some_and(|c| !c.is_whitespace()) {
                 permissions = code == "    permissions:";
-            }
-            if review && code == "    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0" {
-                trusted = true;
             }
             if review && trusted && permissions && !exempted && code == "      pull-requests: write"
             {
                 exempted = true;
                 continue;
             }
-            remaining.push_str(&code);
+            remaining.push_str(code);
             remaining.push('\n');
         }
         exempted && !workflow_requests_write(&remaining)
@@ -4980,6 +4982,19 @@ mod dependency_policy {
         }
         assert!(!advisory_review_has_scoped_write(
             &review.replace("@v1.1.0", "@main")
+        ));
+        let permissions_first = review
+            .replace(
+                "    permissions:\n      contents: read\n      pull-requests: write\n",
+                "",
+            )
+            .replace(
+                "    uses:",
+                "    permissions:\n      contents: read\n      pull-requests: write\n    uses:",
+            );
+        assert!(advisory_review_has_scoped_write(&permissions_first));
+        assert!(advisory_review_has_scoped_write(
+            &review.replace("  review:", "  review: # advisory")
         ));
         for forbidden in [
             format!("{review}\n  other:\n    permissions:\n      pull-requests: write\n"),

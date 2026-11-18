@@ -15,6 +15,8 @@ class ReviewWritePolicyTests(unittest.TestCase):
         caller = (root / ".github/workflows/openai-review.yml").read_text()
         cases = [
             ("trusted", "openai-review.yml", caller, True),
+            ("permissions-first", "openai-review.yml", caller.replace("    permissions:\n      contents: read\n      pull-requests: write\n", "").replace("    uses:", "    permissions:\n      contents: read\n      pull-requests: write\n    uses:"), True),
+            ("commented-job", "openai-review.yml", caller.replace("  review:", "  review: # advisory"), True),
             ("sibling-job", "openai-review.yml", caller + "\n  other:\n    runs-on: ubuntu-latest\n    permissions:\n      pull-requests: write\n    steps:\n      - run: echo unsafe\n", False),
             ("workflow-scope", "openai-review.yml", caller.replace("permissions:\n  contents: read", "permissions:\n  contents: read\n  pull-requests: write"), False),
             ("trusted-sibling", "openai-review.yml", caller.replace("  review:", "  other:") + "\n  review:\n    permissions:\n      pull-requests: write\n    runs-on: ubuntu-latest\n", False),

@@ -433,13 +433,26 @@ while IFS= read -r workflow_path; do
         # Fail closed: only the trusted review job's block-style grant is
         # exempt. Preserve workflow-level and sibling-job write permissions.
         write_policy_code="$(printf '%s\n' "$workflow_code" | awk '
-            /^[^ ]/ { review = 0; trusted = 0; permissions = 0 }
-            /^  [^ ]/ { review = ($0 == "  review:"); trusted = 0; permissions = 0 }
-            /^    [^ ]/ { permissions = ($0 == "    permissions:") }
-            /^    uses: ambiguous-interactive\/review-tools\/\.github\/workflows\/openai-review\.yml@v1\.1\.0$/ { if (review) trusted = 1 }
-            review && trusted && permissions && !exempted && /^      pull-requests: write$/ { exempted = 1; next }
-            { print }
+            function boundary(line) { return line ~ /^[^ ]/ || line ~ /^  [^ ]/ }
+            { lines[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    line = lines[i]
+                    if (boundary(line)) {
+                        review = (line == "  review:"); trusted = 0; permissions = 0
+                        if (review) {
+                            for (j = i + 1; j <= NR && !boundary(lines[j]); j++) {
+                                if (lines[j] ~ /^    uses: ambiguous-interactive\/review-tools\/\.github\/workflows\/openai-review\.yml@v1\.1\.0$/) trusted = 1
+                            }
+                        }
+                    }
+                    if (line ~ /^    [^ ]/) permissions = (line == "    permissions:")
+                    if (review && trusted && permissions && !exempted && line == "      pull-requests: write") { exempted = 1; continue }
+                    print line
+                }
+            }
         ')"
+
     fi
     if ! "$write_allowed" && printf '%s\n' "$write_policy_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
         forbidden_merge=true
