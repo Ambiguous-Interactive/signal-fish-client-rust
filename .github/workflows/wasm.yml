@@ -68,7 +68,7 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Build for WASM target
         run: cargo build --target wasm32-unknown-unknown --no-default-features --locked
       - name: Clippy check for WASM target
@@ -121,7 +121,7 @@ jobs:
           # workflow could cold-download after its own scope was evicted.
           cache-key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}-${{ runner.arch }}
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
       - name: Validate Emscripten FFI safety policy
         run: |
           bash scripts/test_check_ffi_safety.sh
