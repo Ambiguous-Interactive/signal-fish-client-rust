@@ -429,9 +429,17 @@ while IFS= read -r workflow_path; do
         .github/workflows/docs-deploy.yml | .github/workflows/prepare-release.yml | .github/workflows/publish.yml) write_allowed=true ;;
     esac
     write_policy_code="$workflow_code"
-    if [[ "$workflow_path" == .github/workflows/openai-review.yml ]] &&
-        printf '%s\n' "$workflow_code" | grep -Eq '^    uses: ambiguous-interactive/review-tools/\.github/workflows/openai-review\.yml@v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        write_policy_code="$(printf '%s\n' "$workflow_code" | sed '/^[[:space:]]*pull-requests:[[:space:]]*write[[:space:]]*$/d')"
+    if [[ "$workflow_path" == .github/workflows/openai-review.yml ]]; then
+        # Fail closed: only the trusted review job's block-style grant is
+        # exempt. Preserve workflow-level and sibling-job write permissions.
+        write_policy_code="$(printf '%s\n' "$workflow_code" | awk '
+            /^[^ ]/ { review = 0; trusted = 0; permissions = 0 }
+            /^  [^ ]/ { review = ($0 == "  review:"); trusted = 0; permissions = 0 }
+            /^    [^ ]/ { permissions = ($0 == "    permissions:") }
+            /^    uses: ambiguous-interactive\/review-tools\/\.github\/workflows\/openai-review\.yml@v1\.1\.0$/ { if (review) trusted = 1 }
+            review && trusted && permissions && !exempted && /^      pull-requests: write$/ { exempted = 1; next }
+            { print }
+        ')"
     fi
     if ! "$write_allowed" && printf '%s\n' "$write_policy_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
         forbidden_merge=true

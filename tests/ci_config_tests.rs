@@ -4855,16 +4855,43 @@ mod dependency_policy {
             })
     }
 
-    fn advisory_review_requests_only_comments(contents: &str) -> bool {
-        contents.lines().any(|line| {
-            line.trim() == "uses: Ambiguous-Interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0"
-        }) && !workflow_requests_write(
-            &contents
-                .lines()
-                .filter(|line| line.trim() != "pull-requests: write")
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+    fn advisory_review_has_scoped_write(contents: &str) -> bool {
+        let mut review = false;
+        let mut trusted = false;
+        let mut permissions = false;
+        let mut exempted = false;
+        let mut remaining = String::new();
+        for line in contents.lines() {
+            let code = line
+                .split('#')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if code.starts_with(|c: char| !c.is_whitespace()) {
+                review = false;
+                trusted = false;
+                permissions = false;
+            }
+            if code.starts_with("  ") && code.chars().nth(2).is_some_and(|c| !c.is_whitespace()) {
+                review = code == "  review:";
+                trusted = false;
+                permissions = false;
+            }
+            if code.starts_with("    ") && code.chars().nth(4).is_some_and(|c| !c.is_whitespace()) {
+                permissions = code == "    permissions:";
+            }
+            if review && code == "    uses: ambiguous-interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0" {
+                trusted = true;
+            }
+            if review && trusted && permissions && !exempted && code == "      pull-requests: write"
+            {
+                exempted = true;
+                continue;
+            }
+            remaining.push_str(&code);
+            remaining.push('\n');
+        }
+        exempted && !workflow_requests_write(&remaining)
     }
 
     fn cargo_toml() -> toml::Value {
@@ -4921,7 +4948,7 @@ mod dependency_policy {
             );
             let advisory_comments_allowed = path.file_name().and_then(std::ffi::OsStr::to_str)
                 == Some("openai-review.yml")
-                && advisory_review_requests_only_comments(&contents);
+                && advisory_review_has_scoped_write(&contents);
             assert!(
                 write_allowed || advisory_comments_allowed || !workflow_requests_write(&contents),
                 "{} requests write permission outside the explicit release-workflow allowlist",
@@ -4944,16 +4971,29 @@ mod dependency_policy {
             assert!(has_forbidden_dependabot_merge_workflow(forbidden));
         }
         assert!(workflow_requests_write("permissions: write-all"));
-        let review = "uses: Ambiguous-Interactive/review-tools/.github/workflows/openai-review.yml@v1.1.0\npermissions:\n  pull-requests: write\n";
-        assert!(advisory_review_requests_only_comments(review));
+        let review = read_project_file(".github/workflows/openai-review.yml");
+        assert!(advisory_review_has_scoped_write(&review));
         for forbidden in ["contents: write", "issues: write", "permissions: write-all"] {
-            assert!(!advisory_review_requests_only_comments(&format!(
+            assert!(!advisory_review_has_scoped_write(&format!(
                 "{review}\n{forbidden}"
             )));
         }
-        assert!(!advisory_review_requests_only_comments(
+        assert!(!advisory_review_has_scoped_write(
             &review.replace("@v1.1.0", "@main")
         ));
+        for forbidden in [
+            format!("{review}\n  other:\n    permissions:\n      pull-requests: write\n"),
+            review.replace(
+                "permissions:\n  contents: read",
+                "permissions:\n  contents: read\n  pull-requests: write",
+            ),
+            format!(
+                "{}\n  review:\n    permissions:\n      pull-requests: write\n",
+                review.replace("  review:", "  other:")
+            ),
+        ] {
+            assert!(!advisory_review_has_scoped_write(&forbidden));
+        }
         assert!(!has_forbidden_dependabot_merge_workflow(
             "run: yamllint .github/dependabot.yml"
         ));
