@@ -140,6 +140,7 @@ jobs:
           python3 -m unittest
           scripts/test_release.py
           scripts/test_required_checks.py
+          scripts/test_review_workflow_permissions.py
           scripts/test_audit_repository_rules.py
           scripts/test_check_devcontainer_agents.py
 

@@ -29,7 +29,7 @@ TMP_MAJOR_ONLY_VIOLATIONS="$(mktemp -t signal-fish-major-only-violations.XXXXXX)
 TMP_CONCURRENCY_VIOLATIONS="$(mktemp -t signal-fish-concurrency-violations.XXXXXX)"
 TMP_DEPENDABOT_AUTOMERGE_VIOLATIONS="$(mktemp -t signal-fish-dependabot-automerge-violations.XXXXXX)"
 
-# shellcheck disable=SC2317  # trap handler invoked indirectly
+# shellcheck disable=SC2317,SC2329  # trap handler invoked indirectly
 cleanup() {
     rm -f "$TMP_TOOLCHAIN_VIOLATIONS"
     rm -f "$TMP_STEP_NAME_VIOLATIONS"
@@ -428,7 +428,36 @@ while IFS= read -r workflow_path; do
     case "$workflow_path" in
         .github/workflows/docs-deploy.yml | .github/workflows/prepare-release.yml | .github/workflows/publish.yml) write_allowed=true ;;
     esac
-    if ! "$write_allowed" && printf '%s\n' "$workflow_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
+    write_policy_code="$workflow_code"
+    if [[ "$workflow_path" == .github/workflows/openai-review.yml ]]; then
+        # Fail closed: only the trusted review job's block-style grant is
+        # exempt. Preserve workflow-level and sibling-job write permissions.
+        write_policy_code="$(printf '%s\n' "$workflow_code" | awk '
+            function boundary(line) { return line ~ /^[^ ]/ || line ~ /^  [^ ]/ }
+            { lines[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) {
+                    line = lines[i]
+                    if (boundary(line)) {
+                        review = (line == "  review:"); trusted = 0; permissions = 0; uses = 0; invalid = 0
+                        if (review) {
+                            for (j = i + 1; j <= NR && !boundary(lines[j]); j++) {
+                                if (lines[j] ~ /^    uses: ambiguous-interactive\/review-tools\/\.github\/workflows\/openai-review\.yml@v1\.1\.0$/) trusted = 1
+                                if (lines[j] ~ /^    uses:/) uses++
+                                if (lines[j] ~ /^    [^ ]/ && lines[j] !~ /^    (if:|uses:|with:|secrets:|permissions:)/) invalid = 1
+                            }
+                            trusted = trusted && uses == 1 && !invalid
+                        }
+                    }
+                    if (line ~ /^    [^ ]/) permissions = (line == "    permissions:")
+                    if (review && trusted && permissions && !exempted && line == "      pull-requests: write") { exempted = 1; continue }
+                    print line
+                }
+            }
+        ')"
+
+    fi
+    if ! "$write_allowed" && printf '%s\n' "$write_policy_code" | grep -Eq 'permissions:[[:space:]]*write-all|(^|[[:space:]])[[:alnum:]-]+:[[:space:]]*write'; then
         forbidden_merge=true
     fi
     if "$forbidden_merge"; then
