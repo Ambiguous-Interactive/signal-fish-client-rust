@@ -87,7 +87,13 @@ lifecycle epochs, exact gap coverage, reports, terminal watermarks, and
 reconnect baselines. A sequence hole is authorized only by the union of prior
 exact `DeliveryReport` ranges for that sender and epoch; aggregate
 `RelayStats` and counter deltas are diagnostics, not authorization. A
-`RelayStats` frame that violates the authority's own invariants — a
+retained range may not cover the delivered sequence itself, even when earlier
+ranges explain a skipped prefix. The validator rejects that contradiction
+before it changes any retained range or sender progress. This applies to
+current and announced epochs and to departed tails. No wire change is needed:
+a conforming server never sends a covered sequence.
+
+A `RelayStats` frame that violates the authority's own invariants — a
 non-positive or changed-mid-connection `interval_ms`, or non-monotonic
 counters — is itself rejected: the frame is suppressed and reported as a
 `ProtocolViolation { Counters }` diagnostic (under `Observe`, the violating
