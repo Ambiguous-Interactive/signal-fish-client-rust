@@ -89,8 +89,9 @@ exact `DeliveryReport` ranges for that sender and epoch; aggregate
 `RelayStats` and counter deltas are diagnostics, not authorization. A
 retained range may not cover the delivered sequence itself, even when earlier
 ranges explain a skipped prefix. The validator rejects that contradiction
-before it changes any retained range or sender progress. A
-`RelayStats` frame that violates the authority's own invariants — a
+before it changes any retained range or sender progress.
+
+A `RelayStats` frame that violates the authority's own invariants — a
 non-positive or changed-mid-connection `interval_ms`, or non-monotonic
 counters — is itself rejected: the frame is suppressed and reported as a
 `ProtocolViolation { Counters }` diagnostic (under `Observe`, the violating
