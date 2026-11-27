@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject protocol-v3 `GameData` whose sequence a retained `DeliveryReport`
+  already reports dropped, including after an explained prefix. The rejected
+  frame leaves every retained range and sender progress unchanged. (#296)
+
 ## [0.14.0] - 2026-09-18
 
 ### Fixed

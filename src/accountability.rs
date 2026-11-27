@@ -885,6 +885,20 @@ impl DeliveryAccountability {
                 received.saturating_sub(1)
             ));
         }
+        // The prefix is fully explained, but the delivered sequence itself
+        // must not be covered by the next retained range. Without this guard,
+        // a range that starts exactly at `received` is accepted after its
+        // prefix has been consumed (issue #296). Reject before draining so a
+        // refused frame leaves every range and the sender progress untouched.
+        if gaps
+            .get(consumed)
+            .is_some_and(|following| following.from_seq <= received)
+        {
+            return Err(format!(
+                "delivery accountability violation: prior gap report for {} epoch {} includes delivered seq {received}",
+                key.0, key.1
+            ));
+        }
         gaps.drain(..consumed);
         if gaps.is_empty() {
             self.pending_gaps.remove(&key);
@@ -1347,6 +1361,154 @@ mod tests {
                 "{name} exact cause must fail"
             );
         }
+    }
+
+    #[test]
+    fn covered_delivery_after_an_explained_prefix_is_rejected_and_recovers_exactly() {
+        let sender = id(21);
+        let mut state = DeliveryAccountability::default();
+        state.note_player_joined(&player(sender, 1)).unwrap();
+        state
+            .record_game_data(sender, Some(1), Some(1), None, None)
+            .unwrap();
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(4),
+                gaps: vec![gap(sender, 2, 2), gap(sender, 3, 5)],
+            })
+            .unwrap();
+
+        for covered in [3_u64, 4, 5] {
+            let error = state
+                .record_game_data(sender, Some(covered), Some(1), None, None)
+                .expect_err("a delivered sequence covered by a retained range must be rejected");
+            assert!(
+                error.contains("delivery accountability violation"),
+                "covered {covered}: {error}"
+            );
+            let ranges = state
+                .pending_gaps
+                .get(&(sender, 1))
+                .expect("rejection must preserve every retained range");
+            assert_eq!(ranges.len(), 2, "covered {covered}: ranges preserved");
+            assert_eq!(
+                state.senders.get(&sender).unwrap().last_seq,
+                1,
+                "covered {covered}: sender progress preserved"
+            );
+        }
+
+        // Rejection must not consume the explained prefix, so the next valid
+        // delivery still drains both exact ranges.
+        assert_eq!(
+            state
+                .record_game_data(sender, Some(6), Some(1), None, None)
+                .unwrap(),
+            GameDataDisposition::Apply
+        );
+        assert!(state.pending_gaps.is_empty());
+    }
+
+    #[test]
+    fn covered_delivery_is_rejected_when_reports_are_split() {
+        let sender = id(22);
+        let mut state = DeliveryAccountability::default();
+        state.note_player_joined(&player(sender, 1)).unwrap();
+        state
+            .record_game_data(sender, Some(1), Some(1), None, None)
+            .unwrap();
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(1),
+                gaps: vec![gap(sender, 2, 2)],
+            })
+            .unwrap();
+        state
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(4),
+                gaps: vec![gap(sender, 3, 5)],
+            })
+            .unwrap();
+
+        let error = state
+            .record_game_data(sender, Some(3), Some(1), None, None)
+            .expect_err("split reports must not excuse a covered delivery");
+        assert!(
+            error.contains("prior gap report for") && error.contains("includes delivered seq 3"),
+            "{error}"
+        );
+        assert_eq!(
+            state.pending_gaps.get(&(sender, 1)).unwrap().len(),
+            2,
+            "split rejection must preserve both ranges"
+        );
+        assert_eq!(state.senders.get(&sender).unwrap().last_seq, 1);
+
+        assert_eq!(
+            state
+                .record_game_data(sender, Some(6), Some(1), None, None)
+                .unwrap(),
+            GameDataDisposition::Apply
+        );
+        assert!(state.pending_gaps.is_empty());
+    }
+
+    #[test]
+    fn covered_delivery_is_rejected_for_announced_epochs_and_departed_tails() {
+        let sender = id(23);
+
+        let mut announced = DeliveryAccountability::default();
+        announced.note_player_joined(&player(sender, 1)).unwrap();
+        announced.note_player_reconnected(sender, Some(2)).unwrap();
+        announced
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(4),
+                gaps: vec![gap_at_epoch(sender, 2, 1, 1), gap_at_epoch(sender, 2, 2, 4)],
+            })
+            .unwrap();
+        let error = announced
+            .record_game_data(sender, Some(2), Some(2), None, None)
+            .expect_err("an announced epoch must reject a covered delivery");
+        assert!(
+            error.contains("prior gap report for") && error.contains("includes delivered seq 2"),
+            "{error}"
+        );
+        assert_eq!(announced.senders.get(&sender).unwrap().epoch, 1);
+        assert_eq!(announced.pending_gaps.get(&(sender, 2)).unwrap().len(), 2);
+        assert_eq!(
+            announced
+                .record_game_data(sender, Some(5), Some(2), None, None)
+                .unwrap(),
+            GameDataDisposition::Apply
+        );
+        assert!(announced.pending_gaps.is_empty());
+
+        let mut departed = DeliveryAccountability::default();
+        departed.note_player_joined(&player(sender, 1)).unwrap();
+        departed.note_player_left(sender, Some(1), Some(5)).unwrap();
+        departed
+            .record_report(&DeliveryReportPayload {
+                per_class: counters_with_superseded(4),
+                gaps: vec![gap(sender, 1, 1), gap(sender, 2, 4)],
+            })
+            .unwrap();
+        let error = departed
+            .record_game_data(sender, Some(2), Some(1), None, None)
+            .expect_err("a departed tail must reject a covered delivery");
+        assert!(
+            error.contains("prior gap report for") && error.contains("includes delivered seq 2"),
+            "{error}"
+        );
+        assert_eq!(departed.senders.get(&sender).unwrap().last_seq, 0);
+        assert_eq!(departed.pending_gaps.get(&(sender, 1)).unwrap().len(), 2);
+        assert_eq!(
+            departed
+                .record_game_data(sender, Some(5), Some(1), None, None)
+                .unwrap(),
+            GameDataDisposition::Stale
+        );
+        assert!(departed.pending_gaps.is_empty());
+        assert!(departed.departed_senders.is_empty());
     }
 
     #[test]
