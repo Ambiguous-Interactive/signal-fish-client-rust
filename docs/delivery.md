@@ -90,7 +90,8 @@ exact `DeliveryReport` ranges for that sender and epoch; aggregate
 retained range may not cover the delivered sequence itself, even when earlier
 ranges explain a skipped prefix. The validator rejects that contradiction
 before it changes any retained range or sender progress. This applies to
-current and announced epochs and to departed tails.
+current and announced epochs and to departed tails. No wire change is needed:
+a conforming server never sends a covered sequence.
 
 A `RelayStats` frame that violates the authority's own invariants — a
 non-positive or changed-mid-connection `interval_ms`, or non-monotonic
