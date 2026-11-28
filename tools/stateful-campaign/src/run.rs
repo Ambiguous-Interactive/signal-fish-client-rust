@@ -906,64 +906,29 @@ impl Oracle {
         self.binary_representation_outcomes()
     }
 
-    /// Whether a violating baseline retires its answered fence: the round-12
-    /// `retire_answered_room_operation` rule applies to accountability-invalid
-    /// baselines; a definite lifecycle rejection keeps the fence armed.
+    /// Whether a violating baseline retires its answered fence.
+    ///
+    /// A decoded authoritative baseline that matches the pending operation is
+    /// still the typed terminal answer even when its payload fails validation.
+    /// The client emits a `ProtocolViolation` and releases that fence so the
+    /// caller may retry (issue #307). Forged or mismatched operation IDs and
+    /// wrong-kind frames are rejected before this seam and stay fenced.
     pub(crate) fn retire_on_violation(&self, msg: &ServerMessage) -> Option<FenceKind> {
         use ServerMessage as M;
+        let eligible = |kind: FenceKind| {
+            self.authenticated
+                && self.membership.is_none()
+                && self.fence == Some(kind)
+                && !self.correlation
+        };
         match msg {
-            M::RoomJoined(payload) => {
-                if !self.authenticated
-                    || self.membership.is_some()
-                    || self.fence != Some(FenceKind::JoinPlayer)
-                    || self.correlation
-                {
-                    return None;
-                }
-                // v2 token/ICE exposure and roster-shape failures are
-                // definite lifecycle rejections; stamp failures are the
-                // accountability layer and retire the answered fence.
-                if (!self.v3
-                    && (payload.reconnection_token.is_some() || !payload.ice_servers.is_empty()))
-                    || !baseline_roster_shape_valid(
-                        payload.player_id,
-                        payload.is_authority,
-                        &payload.current_players,
-                    )
-                {
-                    return None;
-                }
-                Some(FenceKind::JoinPlayer)
-            }
-            M::Reconnected(payload) => {
-                if !self.authenticated
-                    || self.membership.is_some()
-                    || self.fence != Some(FenceKind::ReconnectPlayer)
-                    || self.pending_reconnects == 0
-                    || self.correlation
-                {
-                    return None;
-                }
-                if self.v3 {
-                    if payload.replay.is_none() || payload.reconnection_token.is_none() {
-                        return None;
-                    }
-                } else if payload.replay.is_some()
-                    || !payload.sender_watermarks.is_empty()
-                    || payload.reconnection_token.is_some()
-                {
-                    return None;
-                }
+            M::RoomJoined(_) if eligible(FenceKind::JoinPlayer) => Some(FenceKind::JoinPlayer),
+            M::Reconnected(_)
+                if eligible(FenceKind::ReconnectPlayer) && self.pending_reconnects > 0 =>
+            {
                 Some(FenceKind::ReconnectPlayer)
             }
-            M::SpectatorJoined(_payload) => {
-                if !self.authenticated
-                    || self.membership.is_some()
-                    || self.fence != Some(FenceKind::JoinSpectator)
-                    || self.correlation
-                {
-                    return None;
-                }
+            M::SpectatorJoined(_) if eligible(FenceKind::JoinSpectator) => {
                 Some(FenceKind::JoinSpectator)
             }
             _ => None,
@@ -2090,14 +2055,12 @@ pub(crate) fn run_prefix(
                     .fence
                     .is_some_and(|fence| echo_kind_matches_fence(*kind, fence));
                 let expected = state.oracle.expectation_for_echo(*kind, id_matches);
-                // A violating echo retires the answered fence only when the
-                // expectation was accountability-ambiguous (the round-12
-                // retire rule); definite lifecycle rejections keep it armed.
-                // Event outcomes release the fence through event tracking.
-                let accountability_ambiguous = expected
-                    .iter()
-                    .any(|alt| alt.violations > 0 && !alt.events.is_empty());
-                let fence_retired_on_violation = if accountability_ambiguous && kind_matched_fence {
+                // A violating echo retires the answered fence when its exact
+                // operation ID matched (issue #307). Mismatched IDs stay
+                // fenced; event outcomes release the fence through event
+                // tracking.
+                let rejected = expected.iter().any(|alt| alt.violations > 0);
+                let fence_retired_on_violation = if rejected && kind_matched_fence && id_matches {
                     match kind {
                         EchoKind::JoinOk | EchoKind::JoinFailed => Some(FenceKind::JoinPlayer),
                         EchoKind::LeaveOk => Some(FenceKind::LeavePlayer),
