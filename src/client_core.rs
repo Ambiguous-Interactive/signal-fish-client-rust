@@ -1186,8 +1186,8 @@ impl ClientCore {
             return outcome;
         }
 
-        self.update_state(&server_msg);
         if !duplicate_reconnect {
+            self.update_state(&server_msg);
             outcome.events.push(SignalFishEvent::from(server_msg));
         }
         outcome
@@ -6839,6 +6839,24 @@ mod tests {
         );
         assert!(core.room_players.contains(&peer));
         assert_eq!(core.authority_player, Some(peer));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: Some(2),
+                final_seq: Some(1),
+            },
+        );
+        assert!(!core.room_players.contains(&peer));
+        let after_leave = core.process_frame(TransportFrame::Text(reconnected.to_string()));
+        assert!(
+            after_leave.events.is_empty(),
+            "a delayed duplicate must not resurface a departed player: {:#?}",
+            after_leave.events
+        );
+        assert!(!core.room_players.contains(&peer));
+        assert_eq!(core.authority_player, None);
     }
 
     fn reconnect_frame(
@@ -7245,6 +7263,16 @@ mod tests {
             expected.quarantined = policy == ProtocolViolationPolicy::Quarantine;
             assert_eq!(core.snapshot(), expected);
             assert_eq!(core.stats(), ClientStats::default());
+            // Invalid lifecycle frames keep the admitted fence: a forged or
+            // mismatched answer must not release serialization for a valid
+            // one. The rejected baseline stays unapplied.
+            assert_eq!(
+                core.pending_room_operation
+                    .as_ref()
+                    .map(|pending| pending.kind),
+                Some(PendingRoomOperation::ReconnectPlayer)
+            );
+            assert_eq!(core.pending_reconnects.len(), 1);
         }
 
         let valid = ServerMessage::PlayerReconnected {
