@@ -264,6 +264,27 @@ impl DeliveryAccountability {
         self.note_epoch(player_id, epoch, epoch.map(|_| 0), "PlayerReconnected")
     }
 
+    /// Whether a reconnect repeats the current protocol-v3 incarnation.
+    ///
+    /// The caller still validates the frame; a duplicate only suppresses the
+    /// notification so consumers do not receive a second reconnect callback.
+    /// Protocol v2 carries no epoch, so its repeats cannot be distinguished.
+    pub(crate) fn is_duplicate_reconnect(&self, player_id: PlayerId, epoch: Option<u32>) -> bool {
+        if !self.protocol_v3 {
+            return false;
+        }
+        let Some(epoch) = epoch else {
+            return false;
+        };
+        self.senders
+            .get(&player_id)
+            .is_some_and(|progress| progress.epoch == epoch)
+            || self
+                .announced_epochs
+                .get(&player_id)
+                .is_some_and(|announced| announced.contains(&epoch))
+    }
+
     pub fn note_player_left(
         &mut self,
         player_id: PlayerId,
@@ -1100,7 +1121,9 @@ pub(crate) fn validate_server_message(
             epoch,
             final_seq,
         } => state.note_player_left(*player_id, *epoch, *final_seq)?,
-        ServerMessage::PlayerReconnected { player_id, epoch } => {
+        ServerMessage::PlayerReconnected {
+            player_id, epoch, ..
+        } => {
             state.note_player_reconnected(*player_id, *epoch)?;
         }
         ServerMessage::GameData {

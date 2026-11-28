@@ -1208,6 +1208,7 @@ fn arch_roster_storm(
             ServerMessage::PlayerReconnected {
                 player_id: sender,
                 epoch: Some(epoch),
+                player: None,
             },
             FrameMeta::default(),
         );
@@ -1238,6 +1239,7 @@ fn arch_roster_storm(
             ServerMessage::PlayerReconnected {
                 player_id: ctx.unknown,
                 epoch: Some(epoch),
+                player: None,
             },
             FrameMeta::default(),
         );

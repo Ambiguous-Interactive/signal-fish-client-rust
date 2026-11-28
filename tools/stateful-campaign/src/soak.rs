@@ -81,6 +81,7 @@ pub fn soak_probe() -> usize {
                 ServerMessage::PlayerReconnected {
                     player_id: peer,
                     epoch: Some(epoch),
+                    player: None,
                 },
                 Default::default(),
             ));

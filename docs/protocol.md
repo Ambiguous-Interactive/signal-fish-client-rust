@@ -642,7 +642,7 @@ pub enum ServerMessage { /* ... */ }
 | `Pong` | Connection-scoped response to a `Ping`, including before authentication/negotiation completes. |
 | `Reconnected` | Reconnection successful. Contains full room state and the canonical replayable control-event subset. Under v3, replay status, a rotated nonempty token, exact snapshot stamps, and complete matching sender watermarks are required. |
 | `ReconnectionFailed` | Reconnection failed. |
-| `PlayerReconnected` | Another player reconnected. |
+| `PlayerReconnected` | Another player reconnected. Successful restores may include optional current `PlayerInfo` metadata. |
 | `SpectatorJoined` | Successfully joined as a spectator. |
 | `SpectatorJoinFailed` | Failed to join as a spectator. |
 | `SpectatorLeft` | The spectator left the room: an answer to an admitted voluntary leave, or an authoritative exit (`reason`: `removed`, `disconnected`, or `room_closed`). Room identity fields are optional on the wire; a named room must match the current one. |

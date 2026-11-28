@@ -549,7 +549,13 @@ On success the server replays any events that were missed.
 |---------|------------|-------------|
 | `Reconnected` | `room_id`, `room_code`, `player_id`, `missed_events`, … | Reconnection succeeded; state is restored. |
 | `ReconnectionFailed` | `reason: String`, `error_code: ErrorCode` | Reconnection failed. |
-| `PlayerReconnected` | `player_id: PlayerId`, `epoch: Option<u32>` | Another player reconnected; v3 carries the new incarnation epoch. |
+| `PlayerReconnected` | `player_id: PlayerId`, `epoch: Option<u32>`, `player: Option<PlayerInfo>` | Another player reconnected; v3 carries the new incarnation epoch, and successful restores include current peer metadata. |
+
+The optional `player` snapshot updates the SDK's active player roster before
+the event. Use its name, authority, and readiness fields. Older servers and
+terminal repair notifications omit it; the SDK then keeps legacy behavior. A
+duplicate protocol-v3 notification for the same incarnation does not emit a
+second event.
 
 ### `Reconnected`
 
@@ -581,6 +587,16 @@ match event {
     }
     SignalFishEvent::ReconnectionFailed { reason, error_code } => {
         eprintln!("Reconnection failed [{error_code}]: {reason}");
+    }
+    SignalFishEvent::PlayerReconnected {
+        player_id,
+        player: Some(player),
+        ..
+    } => {
+        println!(
+            "Player {player_id} reconnected as {} (ready: {})",
+            player.name, player.is_ready
+        );
     }
     SignalFishEvent::PlayerReconnected { player_id, .. } => {
         println!("Player {player_id} reconnected");

@@ -1994,6 +1994,7 @@ async fn player_reconnected_event() {
     let pr_json = serde_json::to_string(&ServerMessage::PlayerReconnected {
         player_id: uuid::Uuid::from_u128(700),
         epoch: None,
+        player: None,
     })
     .expect("serialize");
 
@@ -2013,9 +2014,69 @@ async fn player_reconnected_event() {
     ));
 
     let ev = events.recv().await.expect("event");
-    if let SignalFishEvent::PlayerReconnected { player_id, epoch } = ev {
+    if let SignalFishEvent::PlayerReconnected {
+        player_id,
+        epoch,
+        player,
+    } = ev
+    {
         assert_eq!(player_id, uuid::Uuid::from_u128(700));
         assert!(epoch.is_none());
+        assert!(player.is_none());
+    } else {
+        panic!("expected PlayerReconnected event, got {ev:?}");
+    }
+
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn player_reconnected_event_carries_current_metadata() {
+    let peer = uuid::Uuid::from_u128(700);
+    let pr_json = serde_json::to_string(&ServerMessage::PlayerReconnected {
+        player_id: peer,
+        epoch: None,
+        player: Some(Box::new(signal_fish_client::protocol::PlayerInfo {
+            id: peer,
+            name: "Current Name".into(),
+            is_authority: true,
+            is_ready: true,
+            connected_at: "2026-01-01T00:00:00Z".into(),
+            connection_info: None,
+            epoch: None,
+            seq: None,
+        })),
+    })
+    .expect("serialize");
+
+    let (mut client, mut events, _sent, _closed) = start_client(vec![
+        Some(Ok(authenticated_json())),
+        Some(Ok(protocol_info_json(None))),
+        Some(Ok(v2_room_baseline_json(peer))),
+        Some(Ok(pr_json)),
+    ])
+    .await;
+
+    drain_until_authenticated(&mut events).await;
+    drain_until_protocol_info(&mut events).await;
+    assert!(matches!(
+        events.recv().await,
+        Some(SignalFishEvent::RoomJoined { .. })
+    ));
+
+    let ev = events.recv().await.expect("event");
+    if let SignalFishEvent::PlayerReconnected {
+        player_id,
+        epoch,
+        player,
+    } = ev
+    {
+        assert_eq!(player_id, peer);
+        assert!(epoch.is_none());
+        let player = player.expect("current reconnect metadata");
+        assert_eq!(player.name, "Current Name");
+        assert!(player.is_authority);
+        assert!(player.is_ready);
     } else {
         panic!("expected PlayerReconnected event, got {ev:?}");
     }

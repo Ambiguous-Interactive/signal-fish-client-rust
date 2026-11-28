@@ -5042,6 +5042,7 @@ mod tests {
         let json = serde_json::to_string(&ServerMessage::PlayerReconnected {
             player_id,
             epoch: None,
+            player: None,
         })
         .expect("PlayerReconnected ServerMessage must serialize to JSON");
 
