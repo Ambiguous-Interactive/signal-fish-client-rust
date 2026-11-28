@@ -407,8 +407,9 @@ commands return `RoomOperationPending` until a matching typed terminal
 response, so FIFO work cannot silently cross a pending leave or join. A decoded
 authoritative baseline that fails payload validation still settles that
 operation's fence after a `ProtocolViolation`; membership is unchanged and the
-caller may retry. Wrong-kind, undecodable, forged, or mismatched-ID responses
-remain fail-closed. Generic server errors and absent responses also remain
+caller may retry. Wrong-kind, undecodable, forged, mismatched-ID, or
+wrong-identity responses remain fail-closed. Generic server errors and absent
+responses also remain
 fail-closed until transport teardown; start a new connection to retry after
 teardown.
 
@@ -483,7 +484,7 @@ directly from client methods as `Result<(), SignalFishError>`.
 | `SendBufferFull { capacity }` | The bounded outgoing command queue is full; the message was refused, not queued. See [Non-Blocking Command Sending](#non-blocking-command-sending). |
 | `NotInRoom` | Attempted a room operation without being in a room. |
 | `AlreadyInRoom` | Attempted to join or reconnect while already a player or spectator. |
-| `RoomOperationPending` | A prior admitted directed room operation (join, spectator join, leave, spectator leave, or reconnect) still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. A decoded authoritative baseline with an invalid payload still settles its own fence after a `ProtocolViolation`, so the caller may retry; wrong-kind, undecodable, forged, or mismatched-ID responses stay fenced. |
+| `RoomOperationPending` | A prior admitted directed room operation (join, spectator join, leave, spectator leave, or reconnect) still awaits a matching typed terminal response. Generic errors and absent responses stay fenced until transport teardown. A decoded authoritative baseline with an invalid payload still settles its own fence after a `ProtocolViolation`, so the caller may retry; wrong-kind, undecodable, forged, mismatched-ID, or wrong-identity responses stay fenced. |
 | `WrongRoomRole { required, actual }` | The operation requires player or spectator membership of a different kind. |
 | `AuthorityRequired` | The current player is not authorized for an authority-only command. |
 | `NotAuthenticated` | A directed room operation was attempted before the server confirmed authentication; wait for the `Authenticated` event first. |

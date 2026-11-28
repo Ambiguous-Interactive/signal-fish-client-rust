@@ -1383,8 +1383,9 @@ impl ClientCore {
     /// Keeping the fence armed would turn one malformed frame into a permanent
     /// local admission lockout under `Observe`/`Quarantine`, where the
     /// connection stays open. Only the three authoritative baselines release
-    /// it; forged or mismatched operation ids are rejected before this seam,
-    /// and wrong-kind or non-baseline frames stay fenced by contract.
+    /// it; forged or mismatched operation ids and mismatched reconnect
+    /// identities stay fenced, and wrong-kind or non-baseline frames stay
+    /// fenced by contract.
     fn retire_rejected_terminal_baseline(&mut self, message: &ServerMessage) {
         if !matches!(
             message,
@@ -1405,6 +1406,19 @@ impl ClientCore {
             return;
         }
         if kind == PendingRoomOperation::ReconnectPlayer {
+            // Legacy frames carry no correlation UUID, so the admitted
+            // identity is the only proof that this rejected baseline answers
+            // our reconnect. A mismatched player or room is a forged or stale
+            // answer and stays fenced.
+            let ServerMessage::Reconnected(payload) = message else {
+                return;
+            };
+            let Some(pending) = self.pending_reconnects.front() else {
+                return;
+            };
+            if payload.player_id != pending.player_id || payload.room_id != pending.room_id {
+                return;
+            }
             self.pending_reconnects.pop_front();
         }
         self.pending_room_operation = None;
@@ -3714,6 +3728,55 @@ mod tests {
             .is_ok(),
             "a fresh join must be admitted after the rejected answer"
         );
+    }
+
+    #[test]
+    fn rejected_reconnect_baseline_with_wrong_identity_stays_fenced() {
+        for (wrong_player, wrong_room) in [(PEER, 10), (LOCAL, 11)] {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                true,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            let reconnect = || {
+                ClientOperation::Reconnect(
+                    PlayerId::from_u128(LOCAL),
+                    RoomId::from_u128(10),
+                    "submitted-token".into(),
+                )
+            };
+            let (_, admission) = core
+                .prepare_with_admission(reconnect())
+                .expect("reconnect should prepare");
+            core.record_admission(admission);
+
+            let ServerMessage::Reconnected(mut payload) = reconnected(vec![]) else {
+                unreachable!("reconnected helper always returns Reconnected")
+            };
+            payload.player_id = PlayerId::from_u128(wrong_player);
+            payload.is_authority = wrong_player == LOCAL;
+            payload.room_id = RoomId::from_u128(wrong_room);
+            let outcome = process(&mut core, ServerMessage::Reconnected(payload));
+            assert_lifecycle_violation_containing(&outcome, "identity did not match");
+            assert_eq!(
+                core.pending_room_operation
+                    .as_ref()
+                    .map(|pending| pending.kind),
+                Some(PendingRoomOperation::ReconnectPlayer),
+                "a wrong-identity answer must not release the fence"
+            );
+            assert_eq!(
+                core.pending_reconnects.len(),
+                1,
+                "a wrong-identity answer must not discard the admitted reconnect"
+            );
+            assert!(matches!(
+                core.prepare_with_admission(reconnect()),
+                Err(crate::SignalFishError::RoomOperationPending)
+            ));
+        }
     }
 
     #[test]

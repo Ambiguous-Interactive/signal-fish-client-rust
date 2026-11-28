@@ -806,8 +806,10 @@ authoritative baseline (`RoomJoined`, `SpectatorJoined`, or `Reconnected`) with
 an invalid payload is still the typed answer to its admitted operation: the
 frame is reported as `ProtocolViolation`, membership is unchanged, and that
 operation's fence is released so the caller may retry. A forged or mismatched
-operation UUID, an undecodable frame, or a non-baseline response keeps the
-fence armed. If the server does not echo the capability, the
+operation UUID, a mismatched reconnect identity, an undecodable frame, or a
+wrong-kind response keeps the fence armed. A matching `RoomJoinFailed` or
+`ReconnectionFailed` is a terminal failure and releases it. If the server does
+not echo the capability, the
 connection continues with the legacy Server 0.7 wire behavior. Operations
 admitted before the first `ProtocolInfo` also remain legacy for their complete
 request/response lifetime, even if negotiation finishes while one is pending.

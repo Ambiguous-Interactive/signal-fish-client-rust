@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A decoded `RoomJoined`, `SpectatorJoined`, or `Reconnected` frame that fails
   payload validation no longer leaves the client permanently fenced with
   `RoomOperationPending`. The frame still surfaces as a `ProtocolViolation`;
-  membership is unchanged and the failed operation may be retried. (#307)
+  membership is unchanged and the failed operation may be retried. Wrong-kind,
+  forged, mismatched-ID, and wrong-identity answers stay fenced. (#307)
 
 ## [0.14.0] - 2026-09-18
 

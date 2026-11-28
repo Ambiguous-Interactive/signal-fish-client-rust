@@ -370,6 +370,9 @@ pub(crate) struct Oracle {
     // Expectation-oracle state (mirrors the client's documented fences).
     pub(crate) fence: Option<FenceKind>,
     pub(crate) pending_reconnects: usize,
+    /// Player and room identity of the admitted reconnect, used to reject a
+    /// wrong-identity terminal answer that stays fenced.
+    pub(crate) pending_reconnect_identity: Option<(PlayerId, PlayerId)>,
     /// Armed when an authoritative SpectatorLeft overtook a pending voluntary
     /// leave: exactly one matching late reply is silently absorbed. The id is
     /// captured by the runner from the outbound log right after the exit.
@@ -425,6 +428,7 @@ impl Oracle {
             quarantine_latched: false,
             fence: None,
             pending_reconnects: 0,
+            pending_reconnect_identity: None,
             absorbed_leave_armed: false,
             absorbed_leave_id: None,
             relay_interval: None,
@@ -911,8 +915,8 @@ impl Oracle {
     /// A decoded authoritative baseline that matches the pending operation is
     /// still the typed terminal answer even when its payload fails validation.
     /// The client emits a `ProtocolViolation` and releases that fence so the
-    /// caller may retry (issue #307). Forged or mismatched operation IDs and
-    /// wrong-kind frames are rejected before this seam and stay fenced.
+    /// caller may retry (issue #307). Forged or mismatched operation IDs,
+    /// mismatched reconnect identities, and wrong-kind frames stay fenced.
     pub(crate) fn retire_on_violation(&self, msg: &ServerMessage) -> Option<FenceKind> {
         use ServerMessage as M;
         let eligible = |kind: FenceKind| {
@@ -923,8 +927,11 @@ impl Oracle {
         };
         match msg {
             M::RoomJoined(_) if eligible(FenceKind::JoinPlayer) => Some(FenceKind::JoinPlayer),
-            M::Reconnected(_)
-                if eligible(FenceKind::ReconnectPlayer) && self.pending_reconnects > 0 =>
+            M::Reconnected(payload)
+                if eligible(FenceKind::ReconnectPlayer)
+                    && self.pending_reconnects > 0
+                    && self.pending_reconnect_identity
+                        == Some((payload.player_id, payload.room_id)) =>
             {
                 Some(FenceKind::ReconnectPlayer)
             }
@@ -1038,6 +1045,7 @@ impl Oracle {
                 if self.fence == Some(FenceKind::ReconnectPlayer) {
                     self.fence = None;
                 }
+                self.pending_reconnect_identity = None;
             }
             SignalFishEvent::SpectatorJoined {
                 spectator_id,
@@ -1130,12 +1138,14 @@ impl Oracle {
                 if self.fence == Some(FenceKind::ReconnectPlayer) {
                     self.fence = None;
                 }
+                self.pending_reconnect_identity = None;
             }
             SignalFishEvent::RoomOperationFailed { .. } => {
                 if self.fence == Some(FenceKind::ReconnectPlayer) {
                     self.pending_reconnects = self.pending_reconnects.saturating_sub(1);
                 }
                 self.fence = None;
+                self.pending_reconnect_identity = None;
             }
             SignalFishEvent::PlayerJoined { player } => {
                 self.roster.insert(player.id);
@@ -1184,6 +1194,7 @@ impl Oracle {
             }
             SignalFishEvent::Disconnected { .. } => {
                 self.fence = None;
+                self.pending_reconnect_identity = None;
                 self.absorbed_leave_armed = false;
                 self.absorbed_leave_id = None;
             }
@@ -1191,10 +1202,16 @@ impl Oracle {
         }
     }
 
-    pub(crate) fn arm_fence(&mut self, kind: FenceKind) {
+    pub(crate) fn arm_fence(
+        &mut self,
+        kind: FenceKind,
+        reconnect_identity: Option<(PlayerId, PlayerId)>,
+    ) {
         self.fence = Some(kind);
+        self.pending_reconnect_identity = None;
         if kind == FenceKind::ReconnectPlayer {
             self.pending_reconnects = self.pending_reconnects.saturating_add(1);
+            self.pending_reconnect_identity = reconnect_identity;
         }
     }
 
@@ -2060,32 +2077,47 @@ pub(crate) fn run_prefix(
                 // fenced; event outcomes release the fence through event
                 // tracking.
                 let rejected = expected.iter().any(|alt| alt.violations > 0);
-                let fence_retired_on_violation = if rejected && kind_matched_fence && id_matches {
-                    match kind {
-                        EchoKind::JoinOk | EchoKind::JoinFailed => Some(FenceKind::JoinPlayer),
-                        EchoKind::LeaveOk => Some(FenceKind::LeavePlayer),
-                        EchoKind::ReconnectOk | EchoKind::ReconnectFailed => {
-                            Some(FenceKind::ReconnectPlayer)
+                let fence_retired_on_violation =
+                    if rejected && kind_matched_fence && id_matches && state.oracle.correlation {
+                        match kind {
+                            EchoKind::JoinOk => Some(FenceKind::JoinPlayer),
+                            EchoKind::SpectatorJoinOk => Some(FenceKind::JoinSpectator),
+                            EchoKind::ReconnectOk => {
+                                let identity = match &msg {
+                                    ServerMessage::RoomOperationResult { result, .. } => {
+                                        match result.as_ref() {
+                                            RoomOperationResult::Reconnected(payload) => {
+                                                Some((payload.player_id, payload.room_id))
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                identity
+                                    .filter(|identity| {
+                                        state.oracle.pending_reconnect_identity == Some(*identity)
+                                    })
+                                    .map(|_| FenceKind::ReconnectPlayer)
+                            }
+                            // A rejected failure result is not an authoritative
+                            // baseline, so it does not release the fence.
+                            EchoKind::JoinFailed
+                            | EchoKind::ReconnectFailed
+                            | EchoKind::SpectatorJoinFailed
+                            | EchoKind::LeaveOk
+                            | EchoKind::SpectatorLeaveOk
+                            | EchoKind::OperationFailed
+                            | EchoKind::PlayerKicked
+                            | EchoKind::RoomCodeRegenerated
+                            | EchoKind::RoomAccessUpdated
+                            | EchoKind::PlayerBanned
+                            | EchoKind::PlayerUnbanned
+                            | EchoKind::AuthorityTransferred => None,
                         }
-                        EchoKind::SpectatorJoinOk | EchoKind::SpectatorJoinFailed => {
-                            Some(FenceKind::JoinSpectator)
-                        }
-                        EchoKind::SpectatorLeaveOk => Some(FenceKind::LeaveSpectator),
-                        EchoKind::OperationFailed => state.oracle.fence,
-                        // Unsolicited moderation results never match a fence,
-                        // so this arm is unreachable by construction (the
-                        // enclosing `kind_matched_fence` is false) — listed
-                        // for exhaustiveness.
-                        EchoKind::PlayerKicked
-                        | EchoKind::RoomCodeRegenerated
-                        | EchoKind::RoomAccessUpdated
-                        | EchoKind::PlayerBanned
-                        | EchoKind::PlayerUnbanned
-                        | EchoKind::AuthorityTransferred => None,
-                    }
-                } else {
-                    None
-                };
+                    } else {
+                        None
+                    };
                 state.oracle.slots.push_back(Slot {
                     alternatives: expected,
                     frame: "RoomOperationResult",
@@ -2106,7 +2138,11 @@ pub(crate) fn run_prefix(
                     state.outcome.commands_accepted =
                         state.outcome.commands_accepted.saturating_add(1);
                     if let Some(fence) = cmd.fence() {
-                        state.oracle.arm_fence(fence);
+                        let reconnect_identity = match cmd {
+                            Cmd::Reconnect(player_id, room_id) => Some((*player_id, *room_id)),
+                            _ => None,
+                        };
+                        state.oracle.arm_fence(fence, reconnect_identity);
                     }
                     if let Cmd::SendGameData(payload) = cmd {
                         if let Some(marker) = payload.get("marker").and_then(|m| m.as_u64()) {
