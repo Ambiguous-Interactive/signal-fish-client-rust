@@ -160,6 +160,11 @@ impl FrameOutcome {
 /// while bounding per-room memory under generation churn.
 const RETIRED_SESSION_GENERATION_FENCE: usize = 8;
 
+/// How many terminal reconnect incarnations stay fenced against a delayed
+/// duplicate. The server assigns monotonically increasing epochs, and a full
+/// room baseline clears the fence, so the realistic window is one room stay.
+const RETIRED_RECONNECT_FENCE: usize = 64;
+
 /// Absolute roster admission fallback for baselines that do not advertise a
 /// capacity (spectator joins). `max_players` is a `u8` on the wire, so no
 /// legitimate room can hold more distinct players than this; the fallback
@@ -220,6 +225,10 @@ pub(crate) struct ClientCore {
     // bound is O(distinct departed peers between generation bumps), because
     // Server 0.8 re-plans on membership churn.
     retired_signal_peers: HashSet<PlayerId>,
+    // Terminal (player, epoch) pairs whose later duplicate reconnect frames
+    // must not resurrect roster or authority state. Bounded and cleared by a
+    // fresh authoritative room baseline.
+    retired_reconnect_incarnations: VecDeque<(PlayerId, u32)>,
     pending_room_operation: Option<PendingRoomOperationState>,
     // The reply to an admitted voluntary spectator leave may legally arrive
     // after an authoritative exit (`Disconnected`/`Removed`/`RoomClosed`)
@@ -379,6 +388,7 @@ impl ClientCore {
             session_peers: HashSet::new(),
             retired_session_generations: VecDeque::new(),
             retired_signal_peers: HashSet::new(),
+            retired_reconnect_incarnations: VecDeque::new(),
             pending_room_operation: None,
             absorbed_spectator_leave: None,
             pending_reconnects: VecDeque::new(),
@@ -956,6 +966,7 @@ impl ClientCore {
         self.session_peers.clear();
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
+        self.retired_reconnect_incarnations.clear();
         self.pending_room_operation = None;
         self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
@@ -1079,6 +1090,23 @@ impl ClientCore {
 
         if let Err(diagnostic) = self.validate_inbound_message(&server_msg) {
             self.reject_inbound(&mut outcome, diagnostic);
+            return outcome;
+        }
+
+        // A reconnect for an incarnation already ended by `PlayerLeft` is a
+        // delayed duplicate. Discard it before accountability so it cannot
+        // resurrect roster, authority, or sender state.
+        if matches!(
+            &server_msg,
+            ServerMessage::PlayerReconnected {
+                player_id,
+                epoch: Some(epoch),
+                ..
+            } if self
+                .retired_reconnect_incarnations
+                .contains(&(*player_id, *epoch))
+        ) {
+            tracing::debug!("discarding a reconnect for a retired incarnation");
             return outcome;
         }
 
@@ -2320,7 +2348,9 @@ impl ClientCore {
                 self.session_peers.insert(*peer_id);
                 self.retired_signal_peers.remove(peer_id);
             }
-            ServerMessage::PlayerLeft { player_id, .. } => {
+            ServerMessage::PlayerLeft {
+                player_id, epoch, ..
+            } => {
                 if self.authority_player == Some(*player_id) {
                     self.authority_player = None;
                 }
@@ -2328,6 +2358,13 @@ impl ClientCore {
                     && self.session_peers.contains(player_id)
                 {
                     self.retired_signal_peers.insert(*player_id);
+                }
+                if let Some(epoch) = epoch {
+                    self.retired_reconnect_incarnations
+                        .push_back((*player_id, *epoch));
+                    while self.retired_reconnect_incarnations.len() > RETIRED_RECONNECT_FENCE {
+                        self.retired_reconnect_incarnations.pop_front();
+                    }
                 }
                 self.session_peers.remove(player_id);
                 self.room_players.remove(player_id);
@@ -2382,6 +2419,7 @@ impl ClientCore {
         self.session_peers.clear();
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
+        self.retired_reconnect_incarnations.clear();
         self.pending_room_operation = None;
         self.absorbed_spectator_leave = None;
         self.pending_reconnects.clear();
@@ -2426,6 +2464,7 @@ impl ClientCore {
         self.session_peers.clear();
         self.retired_session_generations.clear();
         self.retired_signal_peers.clear();
+        self.retired_reconnect_incarnations.clear();
         self.pending_room_operation = None;
         // Clearing these two here is unobservable: the fence is cleared in
         // tandem, every reader is fence-gated, and the SpectatorLeft caller
@@ -6845,7 +6884,7 @@ mod tests {
             ServerMessage::PlayerLeft {
                 player_id: peer,
                 epoch: Some(2),
-                final_seq: Some(1),
+                final_seq: Some(0),
             },
         );
         assert!(!core.room_players.contains(&peer));
