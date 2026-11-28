@@ -599,7 +599,9 @@ credential of an admitted `Reconnect` command. Under v3, the client accepts a
 reconnect baseline only when it contains replay status, a nonempty rotated
 token, exact player stamps, and sender watermarks covering the complete
 current-player snapshot. Malformed
-baselines are never applied, including under `ProtocolViolationPolicy::Observe`.
+baselines are never applied, including under `ProtocolViolationPolicy::Observe`;
+the rejected baseline still settles its admitted operation's fence so the
+caller may retry with a fresh reconnect or join.
 
 Reconnect is also a hard session-plan boundary. The old generation and peer
 set are fenced immediately, and Server 0.8 follows `Reconnected` with a fresh
@@ -798,9 +800,14 @@ a new connection may retry.
 Configurations that can negotiate v3 automatically request the
 `room_operation_ids` capability. Once the server echoes it in `ProtocolInfo`,
 each directed room operation carries a fresh UUID and only the terminal result
-with that exact UUID can release the fence. Delayed, duplicate, wrong-kind,
-malformed, or legacy unwrapped results are reported as `ProtocolViolation`
-without changing membership. If the server does not echo the capability, the
+with that exact UUID can release the fence. Delayed, duplicate, or wrong-kind
+results are reported as `ProtocolViolation` and stay fenced. A decoded
+authoritative baseline (`RoomJoined`, `SpectatorJoined`, or `Reconnected`) with
+an invalid payload is still the typed answer to its admitted operation: the
+frame is reported as `ProtocolViolation`, membership is unchanged, and that
+operation's fence is released so the caller may retry. A forged or mismatched
+operation UUID, an undecodable frame, or a non-baseline response keeps the
+fence armed. If the server does not echo the capability, the
 connection continues with the legacy Server 0.7 wire behavior. Operations
 admitted before the first `ProtocolInfo` also remain legacy for their complete
 request/response lifetime, even if negotiation finishes while one is pending.

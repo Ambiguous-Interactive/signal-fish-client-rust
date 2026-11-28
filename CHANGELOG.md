@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject protocol-v3 `GameData` whose sequence a retained `DeliveryReport`
   already reports dropped, including after an explained prefix. The rejected
   frame leaves every retained range and sender progress unchanged. (#296)
+- A decoded `RoomJoined`, `SpectatorJoined`, or `Reconnected` frame that fails
+  payload validation no longer leaves the client permanently fenced with
+  `RoomOperationPending`. The frame still surfaces as a `ProtocolViolation`;
+  membership is unchanged and the failed operation may be retried. (#307)
 
 ## [0.14.0] - 2026-09-18
 
