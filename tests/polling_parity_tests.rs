@@ -2624,7 +2624,7 @@ async fn malformed_duplicate_and_around_negotiation_frames_have_complete_parity(
             "ProtocolViolation",
             "ProtocolInfo",
             "ProtocolViolation",
-            "Reconnected",
+            "ProtocolViolation",
         ]
     );
     assert_eq!(
@@ -2636,7 +2636,10 @@ async fn malformed_duplicate_and_around_negotiation_frames_have_complete_parity(
         Some(GameDataEncoding::MessagePack),
         "invalid or duplicate negotiation must not partially replace effective state"
     );
-    assert!(snapshot.room_id.is_some());
+    assert!(
+        snapshot.room_id.is_none(),
+        "the first rejected Reconnected settles its fence; the later now-unsolicited baseline must not apply"
+    );
 }
 
 #[tokio::test]
@@ -5788,13 +5791,17 @@ async fn malformed_reconnect_baselines_have_complete_driver_parity() {
         )
         .await;
         assert!(events[2].starts_with("ProtocolViolation|Lifecycle|"));
-        assert!(events[3].starts_with("Reconnected|"));
-        assert_eq!(snapshot.room_id, Some(uuid::Uuid::from_u128(100)));
-        assert_eq!(
-            snapshot.reconnection_token.as_deref(),
-            Some("rotated-token")
+        assert!(
+            events[3].starts_with("ProtocolViolation|Lifecycle|"),
+            "the rejected baseline settles its fence; the late valid answer is unsolicited"
         );
-        assert!(!snapshot.quarantined);
+        assert_eq!(snapshot.room_id, None);
+        assert_eq!(snapshot.reconnection_token, None);
+        if policy == ProtocolViolationPolicy::Quarantine {
+            assert!(snapshot.quarantined);
+        } else {
+            assert!(!snapshot.quarantined);
+        }
     }
 
     let events = assert_frame_trace_parity_with_reconnect(
