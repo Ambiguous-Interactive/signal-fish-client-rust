@@ -408,6 +408,18 @@ fn spectator_server_wire_fixtures_conform() {
     assert_conformance::<ServerMessage>("spectator-server-fixtures", SPECTATOR_SERVER_MESSAGES);
 }
 
+/// Reconnect metadata added after the pinned AsyncAPI authority (server PR
+/// #1169). The optional `player` snapshot extends v2 and v3 without changing
+/// the older frame shape. Both faces must decode and round-trip exactly.
+#[test]
+fn reconnect_metadata_server_wire_fixtures_conform() {
+    const SERVER_MESSAGES: &str = r#"
+{"type": "PlayerReconnected", "data": {"player_id": "00000000-0000-0000-0000-00000000000a", "player": {"id": "00000000-0000-0000-0000-00000000000a", "name": "Current Name", "is_authority": true, "is_ready": true}}}
+{"type": "PlayerReconnected", "data": {"player_id": "00000000-0000-0000-0000-00000000000a", "epoch": 2, "player": {"id": "00000000-0000-0000-0000-00000000000a", "name": "Current Name", "is_authority": false, "is_ready": false, "epoch": 2, "seq": 0}}}
+"#;
+    assert_conformance::<ServerMessage>("reconnect-metadata-fixtures", SERVER_MESSAGES);
+}
+
 /// Hand-built authority/relay/reconnect server-message wire fixtures.
 ///
 /// The upstream server publishes no `AuthorityChanged`, `RelayStats`,

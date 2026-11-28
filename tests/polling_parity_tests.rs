@@ -1891,9 +1891,11 @@ fn canonical_event(event: &SignalFishEvent) -> String {
         SignalFishEvent::ReconnectionFailed { reason, error_code } => {
             event_fields!("ReconnectionFailed", reason, error_code)
         }
-        SignalFishEvent::PlayerReconnected { player_id, epoch } => {
-            event_fields!("PlayerReconnected", player_id, epoch)
-        }
+        SignalFishEvent::PlayerReconnected {
+            player_id,
+            epoch,
+            player,
+        } => event_fields!("PlayerReconnected", player_id, epoch, player),
         SignalFishEvent::SpectatorJoined {
             room_id,
             room_code,
@@ -4488,6 +4490,7 @@ async fn suppressed_receipts_and_lifetime_stats_have_exact_driver_parity() {
         text_server_frame(ServerMessage::PlayerReconnected {
             player_id: sender,
             epoch: Some(2),
+            player: None,
         }),
         game_data(2, 1),
         game_data(3, 2),

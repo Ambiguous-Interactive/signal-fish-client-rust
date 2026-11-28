@@ -1082,6 +1082,15 @@ impl ClientCore {
             return outcome;
         }
 
+        // An exact protocol-v3 repeat of the current reconnect incarnation is
+        // idempotent at the wire, but it must not surface a second callback.
+        // Compute this before accountability records the first announcement.
+        let duplicate_reconnect = matches!(
+            &server_msg,
+            ServerMessage::PlayerReconnected { player_id, epoch, .. }
+                if self.accountability.is_duplicate_reconnect(*player_id, *epoch)
+        );
+
         // `validate_inbound_message` rejects any second `ProtocolInfo` before
         // this point, so the accountability swap below always runs on the one
         // permitted negotiation frame.
@@ -1178,7 +1187,9 @@ impl ClientCore {
         }
 
         self.update_state(&server_msg);
-        outcome.events.push(SignalFishEvent::from(server_msg));
+        if !duplicate_reconnect {
+            outcome.events.push(SignalFishEvent::from(server_msg));
+        }
         outcome
     }
 
@@ -1791,6 +1802,33 @@ impl ClientCore {
                     self.roster_capacity()
                 ))
             }
+            ServerMessage::PlayerReconnected {
+                player_id,
+                epoch,
+                player,
+            } => {
+                let protocol_v3 = self
+                    .snapshot
+                    .negotiated_protocol_version
+                    .is_some_and(|version| version >= 3);
+                validate_reconnect_metadata(
+                    *player_id,
+                    *epoch,
+                    player.as_deref(),
+                    protocol_v3,
+                )?;
+                if player.as_ref().is_some_and(|player| {
+                    !self.room_players.contains(&player.id)
+                        && self.room_players.len() >= self.roster_capacity()
+                }) {
+                    return Err(format!(
+                        "lifecycle violation: PlayerReconnected {} exceeds the advertised room capacity of {} players",
+                        player_id,
+                        self.roster_capacity()
+                    ));
+                }
+                Ok(())
+            }
             ServerMessage::AuthorityChanged {
                 authority_player,
                 you_are_authority,
@@ -2037,8 +2075,19 @@ impl ClientCore {
                             epoch.is_none() && final_seq.is_none()
                         }
                 }
-                ServerMessage::PlayerReconnected { player_id, epoch } => {
+                ServerMessage::PlayerReconnected {
+                    player_id,
+                    epoch,
+                    player,
+                } => {
                     *player_id != payload.player_id
+                        && validate_reconnect_metadata(
+                            *player_id,
+                            *epoch,
+                            player.as_deref(),
+                            protocol_v3,
+                        )
+                        .is_ok()
                         && if protocol_v3 {
                             epoch.is_some_and(|epoch| epoch > 0)
                         } else {
@@ -2287,6 +2336,17 @@ impl ClientCore {
                 self.room_players.insert(player.id);
                 if player.is_authority {
                     self.authority_player = Some(player.id);
+                }
+            }
+            ServerMessage::PlayerReconnected {
+                player: Some(player),
+                ..
+            } => {
+                self.room_players.insert(player.id);
+                if player.is_authority {
+                    self.authority_player = Some(player.id);
+                } else if self.authority_player == Some(player.id) {
+                    self.authority_player = None;
                 }
             }
             ServerMessage::AuthorityChanged {
@@ -2706,6 +2766,42 @@ fn resolve_effective_game_data_format(
     requested
         .filter(|format| advertised.contains(format))
         .unwrap_or(GameDataEncoding::Json)
+}
+
+/// Check the optional reconnect metadata against its lifecycle frame.
+///
+/// The server publishes the returning member's current `PlayerInfo` with the
+/// reconnect notification (signal-fish-server PR #1169). Its identity must
+/// match `player_id`; protocol v3 also repeats the new epoch and starts the
+/// relay sequence at zero, while protocol v2 omits both version-only fields.
+fn validate_reconnect_metadata(
+    player_id: PlayerId,
+    epoch: Option<u32>,
+    player: Option<&crate::protocol::PlayerInfo>,
+    protocol_v3: bool,
+) -> Result<(), String> {
+    let Some(player) = player else {
+        return Ok(());
+    };
+    if player.id != player_id {
+        return Err(format!(
+            "lifecycle violation: PlayerReconnected metadata names {} instead of {player_id}",
+            player.id
+        ));
+    }
+    if protocol_v3 {
+        if epoch.is_none() || player.epoch != epoch || player.seq != Some(0) {
+            return Err(
+                "lifecycle violation: PlayerReconnected metadata epoch/seq disagrees with its lifecycle"
+                    .to_string(),
+            );
+        }
+    } else if player.epoch.is_some() || player.seq.is_some() {
+        return Err(
+            "lifecycle violation: v2 PlayerReconnected metadata exposed epoch/seq".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_local_player_snapshot(
@@ -4808,6 +4904,7 @@ mod tests {
             ServerMessage::PlayerReconnected {
                 player_id: PlayerId::from_u128(PEER),
                 epoch: Some(2),
+                player: None,
             },
         );
         let stale = process(&mut core, game_data(2));
@@ -4895,6 +4992,17 @@ mod tests {
             lobby_state: LobbyState::Lobby,
             reason: None,
         }))
+    }
+
+    fn spectator_joined_v2() -> ServerMessage {
+        let ServerMessage::SpectatorJoined(mut payload) = spectator_joined() else {
+            unreachable!("spectator_joined helper always returns SpectatorJoined")
+        };
+        for player in &mut payload.current_players {
+            player.epoch = None;
+            player.seq = None;
+        }
+        ServerMessage::SpectatorJoined(payload)
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6663,6 +6771,537 @@ mod tests {
         };
         unrotated.reconnection_token = Some("submitted-token".into());
         assert_lifecycle_violation(&process(&mut failed, ServerMessage::Reconnected(unrotated)));
+    }
+
+    #[test]
+    fn reconnect_metadata_repairs_the_observer_roster() {
+        let mut core = v3_spectator(ProtocolViolationPolicy::Observe);
+        let peer = PlayerId::from_u128(PEER);
+        let left = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: Some(1),
+                final_seq: Some(1),
+            },
+        );
+        assert!(matches!(
+            left.events.as_slice(),
+            [SignalFishEvent::PlayerLeft { .. }]
+        ));
+        assert!(!core.room_players.contains(&peer));
+
+        let reconnected = serde_json::json!({
+            "type": "PlayerReconnected",
+            "data": {
+                "player_id": peer,
+                "epoch": 2,
+                "player": {
+                    "id": peer,
+                    "name": "current name",
+                    "is_authority": true,
+                    "is_ready": true,
+                    "epoch": 2,
+                    "seq": 0,
+                },
+            },
+        });
+        let outcome = core.process_frame(TransportFrame::Text(reconnected.to_string()));
+        let SignalFishEvent::PlayerReconnected {
+            player_id,
+            epoch,
+            player,
+        } = outcome
+            .events
+            .iter()
+            .find(|event| matches!(event, SignalFishEvent::PlayerReconnected { .. }))
+            .expect("reconnect event missing")
+        else {
+            unreachable!("the filtered event is PlayerReconnected")
+        };
+        assert_eq!(*player_id, peer);
+        assert_eq!(*epoch, Some(2));
+        let metadata = player.as_ref().expect("current reconnect metadata");
+        assert_eq!(metadata.name, "current name");
+        assert!(metadata.is_authority);
+        assert!(metadata.is_ready);
+        assert!(
+            core.room_players.contains(&peer),
+            "returning player must rejoin the observer roster"
+        );
+        assert_eq!(core.authority_player, Some(peer));
+
+        let duplicate = core.process_frame(TransportFrame::Text(reconnected.to_string()));
+        assert!(
+            duplicate.events.is_empty(),
+            "a duplicate v3 reconnect must not emit another callback: {:#?}",
+            duplicate.events
+        );
+        assert!(core.room_players.contains(&peer));
+        assert_eq!(core.authority_player, Some(peer));
+    }
+
+    fn reconnect_frame(
+        player_id: PlayerId,
+        epoch: Option<u32>,
+        player: Option<serde_json::Value>,
+    ) -> String {
+        let mut data = serde_json::json!({ "player_id": player_id });
+        if let Some(epoch) = epoch {
+            data["epoch"] = epoch.into();
+        }
+        if let Some(player) = player {
+            data["player"] = player;
+        }
+        serde_json::json!({ "type": "PlayerReconnected", "data": data }).to_string()
+    }
+
+    fn reconnect_metadata(
+        id: u128,
+        epoch: Option<u32>,
+        seq: Option<u64>,
+        name: &str,
+        authority: bool,
+        ready: bool,
+    ) -> serde_json::Value {
+        let mut metadata = serde_json::json!({
+            "id": PlayerId::from_u128(id),
+            "name": name,
+            "is_authority": authority,
+            "is_ready": ready,
+        });
+        if let Some(epoch) = epoch {
+            metadata["epoch"] = epoch.into();
+        }
+        if let Some(seq) = seq {
+            metadata["seq"] = seq.into();
+        }
+        metadata
+    }
+
+    #[test]
+    fn reconnect_metadata_repairs_a_v2_observer_roster() {
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            false,
+        );
+        assert_eq!(process(&mut core, authenticated()).events.len(), 1);
+        assert_eq!(process(&mut core, protocol_info(None)).events.len(), 1);
+        core.record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
+        ));
+        assert_eq!(process(&mut core, spectator_joined_v2()).events.len(), 1);
+        let peer = PlayerId::from_u128(PEER);
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: None,
+                final_seq: None,
+            },
+        );
+        assert!(!core.room_players.contains(&peer));
+
+        let frame = reconnect_frame(
+            peer,
+            None,
+            Some(reconnect_metadata(
+                PEER,
+                None,
+                None,
+                "current name",
+                true,
+                true,
+            )),
+        );
+        let outcome = core.process_frame(TransportFrame::Text(frame));
+        let SignalFishEvent::PlayerReconnected {
+            player_id,
+            epoch,
+            player,
+        } = outcome
+            .events
+            .iter()
+            .find(|event| matches!(event, SignalFishEvent::PlayerReconnected { .. }))
+            .expect("reconnect event missing")
+        else {
+            unreachable!("the filtered event is PlayerReconnected")
+        };
+        assert_eq!(*player_id, peer);
+        assert!(epoch.is_none());
+        let metadata = player.as_ref().expect("current reconnect metadata");
+        assert_eq!(metadata.name, "current name");
+        assert!(metadata.is_authority);
+        assert!(metadata.is_ready);
+        assert!(metadata.epoch.is_none() && metadata.seq.is_none());
+        assert!(core.room_players.contains(&peer));
+        assert_eq!(core.authority_player, Some(peer));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: None,
+                final_seq: None,
+            },
+        );
+        assert!(!core.room_players.contains(&peer));
+        assert_eq!(core.authority_player, None);
+    }
+
+    #[test]
+    fn reconnect_metadata_restores_a_spectator_admitted_during_absence() {
+        for version in [2u16, 3] {
+            let mut core = ClientCore::new(
+                Some(GameDataEncoding::Json),
+                ProtocolViolationPolicy::Observe,
+                version >= 3,
+            );
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info((version >= 3).then_some(version)));
+            core.record_admission(ClientCore::admission_for(
+                &ClientOperation::JoinAsSpectator(
+                    "game".into(),
+                    "ROOM".into(),
+                    "viewer".into(),
+                    None,
+                ),
+            ));
+            let mut baseline = if version >= 3 {
+                let ServerMessage::SpectatorJoined(payload) = spectator_joined() else {
+                    unreachable!("spectator_joined helper always returns SpectatorJoined")
+                };
+                *payload
+            } else {
+                let ServerMessage::SpectatorJoined(payload) = spectator_joined_v2() else {
+                    unreachable!("spectator_joined_v2 helper always returns SpectatorJoined")
+                };
+                *payload
+            };
+            baseline
+                .current_players
+                .retain(|player| player.id != PlayerId::from_u128(PEER));
+            let _ = process(
+                &mut core,
+                ServerMessage::SpectatorJoined(Box::new(baseline)),
+            );
+            assert!(!core.room_players.contains(&PlayerId::from_u128(PEER)));
+
+            let (epoch, metadata_epoch, metadata_seq) = if version >= 3 {
+                (Some(2), Some(2), Some(0))
+            } else {
+                (None, None, None)
+            };
+            let outcome = core.process_frame(TransportFrame::Text(reconnect_frame(
+                PlayerId::from_u128(PEER),
+                epoch,
+                Some(reconnect_metadata(
+                    PEER,
+                    metadata_epoch,
+                    metadata_seq,
+                    "admitted during absence",
+                    false,
+                    true,
+                )),
+            )));
+            let SignalFishEvent::PlayerReconnected { player, .. } = outcome
+                .events
+                .iter()
+                .find(|event| matches!(event, SignalFishEvent::PlayerReconnected { .. }))
+                .expect("reconnect event missing")
+            else {
+                unreachable!("the filtered event is PlayerReconnected")
+            };
+            assert_eq!(
+                player.as_ref().map(|player| player.name.as_str()),
+                Some("admitted during absence"),
+                "v{version}"
+            );
+            assert!(
+                core.room_players.contains(&PlayerId::from_u128(PEER)),
+                "v{version} roster"
+            );
+        }
+    }
+
+    #[test]
+    fn reconnect_metadata_is_cleared_by_terminal_leave_and_room_switch() {
+        let peer = PlayerId::from_u128(PEER);
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: Some(1),
+                final_seq: Some(0),
+            },
+        );
+        assert!(!core.room_players.contains(&peer));
+        let outcome = core.process_frame(TransportFrame::Text(reconnect_frame(
+            peer,
+            Some(2),
+            Some(reconnect_metadata(
+                PEER,
+                Some(2),
+                Some(0),
+                "current",
+                true,
+                true,
+            )),
+        )));
+        assert!(matches!(
+            outcome.events.as_slice(),
+            [SignalFishEvent::PlayerReconnected { .. }]
+        ));
+        assert!(core.room_players.contains(&peer));
+
+        let _ = process(
+            &mut core,
+            ServerMessage::PlayerLeft {
+                player_id: peer,
+                epoch: Some(2),
+                final_seq: Some(0),
+            },
+        );
+        assert!(!core.room_players.contains(&peer));
+
+        core.record_admission(ClientCore::admission_for(&ClientOperation::LeaveRoom));
+        assert!(matches!(
+            process(&mut core, ServerMessage::RoomLeft)
+                .events
+                .as_slice(),
+            [SignalFishEvent::RoomLeft]
+        ));
+        core.record_admission(ClientCore::admission_for(&ClientOperation::JoinRoom(
+            JoinRoomParams::new("game", "local"),
+        )));
+        let ServerMessage::RoomJoined(mut fresh) = room_joined() else {
+            unreachable!("room_joined helper always returns RoomJoined")
+        };
+        fresh.room_id = RoomId::from_u128(11);
+        fresh.room_code = "NEXT".into();
+        fresh.current_players = vec![player(LOCAL)];
+        assert!(matches!(
+            process(&mut core, ServerMessage::RoomJoined(fresh))
+                .events
+                .as_slice(),
+            [SignalFishEvent::RoomJoined { .. }]
+        ));
+        assert_eq!(core.room_players, [PlayerId::from_u128(LOCAL)].into());
+        assert_eq!(core.authority_player, Some(PlayerId::from_u128(LOCAL)));
+    }
+
+    #[test]
+    fn reconnect_metadata_must_match_its_lifecycle() {
+        let peer = PlayerId::from_u128(PEER);
+        let cases = [
+            (
+                "metadata identity",
+                reconnect_frame(
+                    peer,
+                    Some(2),
+                    Some(reconnect_metadata(4, Some(2), Some(0), "wrong", true, true)),
+                ),
+                "names",
+            ),
+            (
+                "metadata epoch",
+                reconnect_frame(
+                    peer,
+                    Some(2),
+                    Some(reconnect_metadata(
+                        PEER,
+                        Some(3),
+                        Some(0),
+                        "wrong",
+                        true,
+                        true,
+                    )),
+                ),
+                "epoch/seq",
+            ),
+            (
+                "metadata sequence",
+                reconnect_frame(
+                    peer,
+                    Some(2),
+                    Some(reconnect_metadata(
+                        PEER,
+                        Some(2),
+                        Some(1),
+                        "wrong",
+                        true,
+                        true,
+                    )),
+                ),
+                "epoch/seq",
+            ),
+        ];
+        for (case, frame, expected) in cases {
+            let mut core = v3_spectator(ProtocolViolationPolicy::Observe);
+            let _ = process(
+                &mut core,
+                ServerMessage::PlayerLeft {
+                    player_id: peer,
+                    epoch: Some(1),
+                    final_seq: Some(1),
+                },
+            );
+            let before = core.snapshot();
+            let outcome = core.process_frame(TransportFrame::Text(frame));
+            assert_lifecycle_violation_containing(&outcome, expected);
+            assert_eq!(core.snapshot(), before, "{case}");
+            assert!(!core.room_players.contains(&peer), "{case}");
+            assert_eq!(
+                core.authority_player,
+                Some(PlayerId::from_u128(LOCAL)),
+                "{case}"
+            );
+        }
+
+        let mut v2 = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            false,
+        );
+        let _ = process(&mut v2, authenticated());
+        let _ = process(&mut v2, protocol_info(None));
+        v2.record_admission(ClientCore::admission_for(
+            &ClientOperation::JoinAsSpectator("game".into(), "ROOM".into(), "viewer".into(), None),
+        ));
+        let _ = process(&mut v2, spectator_joined_v2());
+        let before = v2.snapshot();
+        let outcome = v2.process_frame(TransportFrame::Text(reconnect_frame(
+            peer,
+            None,
+            Some(reconnect_metadata(
+                PEER,
+                Some(2),
+                Some(0),
+                "wrong",
+                true,
+                true,
+            )),
+        )));
+        assert_lifecycle_violation_containing(&outcome, "v2 PlayerReconnected metadata");
+        assert_eq!(v2.snapshot(), before);
+    }
+
+    #[test]
+    fn reconnect_metadata_respects_the_roster_capacity() {
+        let mut core = v3_room(ProtocolViolationPolicy::Observe);
+        let joined = process(&mut core, ServerMessage::PlayerJoined { player: player(5) });
+        assert!(matches!(
+            joined.events.as_slice(),
+            [SignalFishEvent::PlayerJoined { .. }]
+        ));
+        let before = core.snapshot();
+        let outcome = core.process_frame(TransportFrame::Text(reconnect_frame(
+            PlayerId::from_u128(6),
+            Some(2),
+            Some(reconnect_metadata(
+                6,
+                Some(2),
+                Some(0),
+                "overflow",
+                true,
+                true,
+            )),
+        )));
+        assert_lifecycle_violation_containing(&outcome, "exceeds the advertised room capacity");
+        assert_eq!(core.snapshot(), before);
+        assert!(!core.room_players.contains(&PlayerId::from_u128(6)));
+    }
+
+    #[test]
+    fn reconnect_replay_metadata_is_validated_and_the_baseline_wins() {
+        let invalid = ServerMessage::PlayerReconnected {
+            player_id: PlayerId::from_u128(PEER),
+            epoch: Some(2),
+            player: Some(Box::new(PlayerInfo {
+                epoch: Some(3),
+                seq: Some(0),
+                ..player(PEER)
+            })),
+        };
+        for policy in [
+            ProtocolViolationPolicy::Quarantine,
+            ProtocolViolationPolicy::Disconnect,
+            ProtocolViolationPolicy::Observe,
+        ] {
+            let mut core = ClientCore::new(Some(GameDataEncoding::Json), policy, true);
+            let _ = process(&mut core, authenticated());
+            let _ = process(&mut core, protocol_info(Some(3)));
+            core.record_reconnect_admitted(
+                PlayerId::from_u128(LOCAL),
+                RoomId::from_u128(10),
+                "submitted-token".into(),
+            );
+            let before = core.snapshot();
+            let outcome = process(&mut core, reconnected(vec![invalid.clone()]));
+            assert_lifecycle_violation_containing(&outcome, "invalid self/version metadata");
+            let mut expected = before;
+            expected.quarantined = policy == ProtocolViolationPolicy::Quarantine;
+            assert_eq!(core.snapshot(), expected);
+            assert_eq!(core.stats(), ClientStats::default());
+        }
+
+        let valid = ServerMessage::PlayerReconnected {
+            player_id: PlayerId::from_u128(PEER),
+            epoch: Some(2),
+            player: Some(Box::new(PlayerInfo {
+                name: "current name".into(),
+                is_authority: true,
+                is_ready: true,
+                epoch: Some(2),
+                seq: Some(0),
+                ..player(PEER)
+            })),
+        };
+        let mut core = ClientCore::new(
+            Some(GameDataEncoding::Json),
+            ProtocolViolationPolicy::Observe,
+            true,
+        );
+        let _ = process(&mut core, authenticated());
+        let _ = process(&mut core, protocol_info(Some(3)));
+        core.record_reconnect_admitted(
+            PlayerId::from_u128(LOCAL),
+            RoomId::from_u128(10),
+            "submitted-token".into(),
+        );
+        let ServerMessage::Reconnected(mut payload) = reconnected(vec![valid]) else {
+            unreachable!("reconnected helper always returns Reconnected")
+        };
+        payload.current_players = vec![player(LOCAL)];
+        payload.sender_watermarks = vec![SenderWatermark {
+            player_id: PlayerId::from_u128(LOCAL),
+            epoch: 1,
+            seq: 0,
+        }];
+        let outcome = process(&mut core, ServerMessage::Reconnected(payload));
+        let SignalFishEvent::Reconnected { missed_events, .. } = outcome
+            .events
+            .iter()
+            .find(|event| matches!(event, SignalFishEvent::Reconnected { .. }))
+            .expect("reconnect baseline missing")
+        else {
+            unreachable!("the filtered event is Reconnected")
+        };
+        let SignalFishEvent::PlayerReconnected { player, .. } = missed_events
+            .iter()
+            .find(|event| matches!(event, SignalFishEvent::PlayerReconnected { .. }))
+            .expect("replayed reconnect missing")
+        else {
+            unreachable!("the filtered replay is PlayerReconnected")
+        };
+        assert_eq!(
+            player.as_ref().map(|player| player.name.as_str()),
+            Some("current name")
+        );
+        assert_eq!(core.room_players, [PlayerId::from_u128(LOCAL)].into());
+        assert_eq!(core.authority_player, Some(PlayerId::from_u128(LOCAL)));
     }
 
     #[test]

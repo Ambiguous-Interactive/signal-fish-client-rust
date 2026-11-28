@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `ServerMessage::PlayerReconnected` and
+  `SignalFishEvent::PlayerReconnected` now carry optional current `player`
+  metadata. Exhaustive literals must add the field. The SDK updates the player
+  roster before the event, and duplicate protocol-v3 notifications do not emit
+  a second event. (#294)
+
 ### Fixed
 
 - Reject protocol-v3 `GameData` whose sequence a retained `DeliveryReport`

@@ -547,6 +547,13 @@ pub enum SignalFishEvent {
         player_id: PlayerId,
         /// New incarnation epoch (protocol v3 only).
         epoch: Option<u32>,
+        /// Current metadata for the returning player, when the server sends
+        /// it. Older servers and terminal repair notifications omit it.
+        ///
+        /// The client applies this snapshot to its active player roster before
+        /// emitting this event, so consumers can match repeated lifecycle
+        /// messages without inventing a second join notification.
+        player: Option<PlayerInfo>,
     },
 
     // ── Spectator ───────────────────────────────────────────────────
@@ -1039,9 +1046,15 @@ impl From<ServerMessage> for SignalFishEvent {
             ServerMessage::ReconnectionFailed { reason, error_code } => {
                 Self::ReconnectionFailed { reason, error_code }
             }
-            ServerMessage::PlayerReconnected { player_id, epoch } => {
-                Self::PlayerReconnected { player_id, epoch }
-            }
+            ServerMessage::PlayerReconnected {
+                player_id,
+                epoch,
+                player,
+            } => Self::PlayerReconnected {
+                player_id,
+                epoch,
+                player: player.map(|player| *player),
+            },
             ServerMessage::SpectatorJoined(payload) => {
                 let p = *payload;
                 Self::SpectatorJoined {

@@ -841,11 +841,55 @@ fn server_message_player_reconnected_round_trip() {
     let msg = ServerMessage::PlayerReconnected {
         player_id: test_uuid(60),
         epoch: None,
+        player: None,
     };
     let deser = round_trip(&msg);
-    if let ServerMessage::PlayerReconnected { player_id, epoch } = deser {
+    if let ServerMessage::PlayerReconnected {
+        player_id,
+        epoch,
+        player,
+    } = deser
+    {
         assert_eq!(player_id, test_uuid(60));
         assert!(epoch.is_none());
+        assert!(player.is_none());
+    } else {
+        panic!("expected PlayerReconnected variant");
+    }
+}
+
+#[test]
+fn server_message_player_reconnected_metadata_round_trip() {
+    let player = signal_fish_client::protocol::PlayerInfo {
+        id: test_uuid(60),
+        name: "Current Name".into(),
+        is_authority: true,
+        is_ready: true,
+        connected_at: String::new(),
+        connection_info: None,
+        epoch: Some(2),
+        seq: Some(0),
+    };
+    let msg = ServerMessage::PlayerReconnected {
+        player_id: test_uuid(60),
+        epoch: Some(2),
+        player: Some(Box::new(player)),
+    };
+    let deser = round_trip(&msg);
+    if let ServerMessage::PlayerReconnected {
+        player_id,
+        epoch,
+        player,
+    } = deser
+    {
+        assert_eq!(player_id, test_uuid(60));
+        assert_eq!(epoch, Some(2));
+        let player = player.expect("metadata must survive the round trip");
+        assert_eq!(player.name, "Current Name");
+        assert!(player.is_authority);
+        assert!(player.is_ready);
+        assert_eq!(player.epoch, Some(2));
+        assert_eq!(player.seq, Some(0));
     } else {
         panic!("expected PlayerReconnected variant");
     }

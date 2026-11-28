@@ -1409,6 +1409,14 @@ pub enum ServerMessage {
         player_id: PlayerId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         epoch: Option<u32>,
+        /// Current metadata for the returning player (protocol v2 and v3).
+        ///
+        /// Successful restores include this snapshot so observers can replace
+        /// the roster entry before the reconnect event, including observers
+        /// admitted while the player was absent. Older servers and terminal
+        /// repair notifications omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player: Option<Box<PlayerInfo>>,
     },
     /// Successfully joined a room as spectator (boxed to reduce enum size).
     SpectatorJoined(Box<SpectatorJoinedPayload>),
